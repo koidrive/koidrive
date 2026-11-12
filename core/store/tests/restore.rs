@@ -113,7 +113,7 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
     // does not count it, and it is sent as it was built.
     let mut commits = load(&db);
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, 7)
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
         .cloned();
     let commit = commit.unwrap();
     assert_eq!(commit.ops[0].op, Some(op::Op::Restore(intent.op().clone())));
@@ -165,7 +165,10 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
         outcome: Outcome::Restored,
     };
     assert_eq!(commits.resolved(), [ended]);
-    assert_eq!(commits.build(&mut trees, &mut ids, NOW, HISTORY, 8), None);
+    assert_eq!(
+        commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 8),
+        None
+    );
 
     // 9. The store is replaced by the copy from before the commit was built. The server counts
     // a commit the copy does not know, so the space enters recovery, and the restore the copy
@@ -176,5 +179,8 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
     let mut commits = load(&backup);
     assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
     assert_eq!(queued(&commits), [request]);
-    assert_eq!(commits.build(&mut trees, &mut ids, NOW, HISTORY, 8), None);
+    assert_eq!(
+        commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 8),
+        None
+    );
 }

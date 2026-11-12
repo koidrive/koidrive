@@ -70,11 +70,20 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
             trash_group: String::new(),
             version_id: String::new(),
             edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote((*id).into(), node);
     }
     trees.settle();
     trees
+}
+
+fn mark(trees: &mut Trees, id: &str, stem: &str) {
+    let mut node = trees.remote().get(id).expect("in R").clone();
+    node.pending_for = Some(stem.into());
+    trees.set_remote(id.into(), node);
+    trees.settle();
 }
 
 /// The local nodes by ID with their parent and name, in order.
@@ -130,6 +139,8 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
         meta_edit_rev: 1,
         trash_group: String::new(),
         version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("r-a".into(), trashed);
     trees.settle();
@@ -151,6 +162,7 @@ fn a_folder_is_adopted_under_its_pending_name_when_a_file_holds_its_name() {
             ("r-docs", dir(ROOT, "docs (pending)")),
         ],
     );
+    mark(&mut trees, "r-docs", "docs");
     assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
     assert_eq!(
         local(&trees),
@@ -173,6 +185,22 @@ fn a_folder_is_not_adopted_under_a_name_the_engine_never_gives_as_pending() {
 }
 
 #[test]
+fn a_folder_is_not_adopted_under_a_name_a_user_gave_that_looks_pending() {
+    let mut trees = trees(
+        &[("l-docs", dir(ROOT, "docs"))],
+        &[
+            ("r-file", file(ROOT, "docs", 1)),
+            ("r-docs", dir(ROOT, "docs (pending)")),
+        ],
+    );
+    assert_eq!(adopt(&mut trees, false), ["l-docs"]);
+    assert_eq!(
+        local(&trees),
+        [("l-docs".into(), ROOT.into(), "docs".into())]
+    );
+}
+
+#[test]
 fn a_folder_two_pending_names_could_belong_to_is_held() {
     let mut trees = trees(
         &[("l-docs", dir(ROOT, "docs"))],
@@ -181,6 +209,8 @@ fn a_folder_two_pending_names_could_belong_to_is_held() {
             ("r-two", dir(ROOT, "docs (pending 2)")),
         ],
     );
+    mark(&mut trees, "r-one", "docs");
+    mark(&mut trees, "r-two", "docs");
     assert_eq!(adopt(&mut trees, false), ["l-docs"]);
     assert_eq!(
         local(&trees),
@@ -263,7 +293,7 @@ fn an_excluded_entry_is_neither_adopted_nor_held() {
 
 /// The ops of the next commit, each as its kind and node.
 fn ops(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Vec<(&'static str, String)> {
-    let Some(commit) = commits.build(trees, ids, NOW, HISTORY, 1) else {
+    let Some(commit) = commits.build(trees, ids, NOW, HISTORY, "me", 1) else {
         return Vec::new();
     };
     (commit.ops.iter())
@@ -518,6 +548,8 @@ fn renamed_create(commits: &mut Commits, trees: &mut Trees, id: &str, name: &str
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: seq,
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote(id.into(), node);
     let renamed = OpResult {
@@ -556,7 +588,10 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&head_moved), Ok(Failure::Abandoned));
+    assert_eq!(
+        commits.failed(&mut trees, &head_moved),
+        Ok(Failure::Abandoned)
+    );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), created);
     let mut commits = Commits::from_state(commits.state()).unwrap();
     renamed_create(&mut commits, &mut trees, "l-notes", "notes (conflict)", 2);
@@ -586,6 +621,8 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 3,
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("r-later".into(), theirs);
     renamed_create(&mut commits, &mut trees, "l-later", "later (conflict)", 3);
@@ -1104,6 +1141,8 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 2,
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("pad".into(), pad);
     let applied = OpResult {
@@ -1173,6 +1212,8 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         meta_edit_rev: 1,
         trash_group: String::new(),
         version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("p".into(), remote(dir(ROOT, "a")));
     trees.set_remote("c".into(), remote(dir("p", "child")));
@@ -1197,6 +1238,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         &mut IdGen::new(7),
         1_794_268_740_000,
         "history",
+        "me",
         1,
     );
     assert_eq!(trees.check(), Ok(()));
@@ -1233,6 +1275,8 @@ fn reclaim_with_waiting(
             meta_edit_rev: 1,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -1259,6 +1303,7 @@ fn reclaim_with_waiting(
         &mut IdGen::new(7),
         1_794_268_740_000,
         "history",
+        "me",
         1,
     );
     assert_eq!(trees.check(), Ok(()));
@@ -1530,6 +1575,8 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 2,
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("r-new".into(), remote(dir(ROOT, "new")));
     trees.set_remote("l-later".into(), remote(file("r-new", "later", 6)));
@@ -1553,7 +1600,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
 
     trees.set_rules(&root, None);
     trees.settle();
-    let sent = commits.build(&mut trees, &mut ids, NOW, HISTORY, 2);
+    let sent = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 2);
     assert!(sent.is_none(), "{sent:?}");
 }
 
@@ -1578,6 +1625,8 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
             trash_group: String::new(),
             version_id: String::new(),
             edit_rev: seq,
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote("l-b".into(), node);
         let applied = OpResult {
@@ -1593,7 +1642,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
         assert!(commits.acknowledge(trees, seq));
     };
     let sent = |commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen, base| {
-        let commit = commits.build(trees, ids, NOW, HISTORY, base);
+        let commit = commits.build(trees, ids, NOW, HISTORY, "me", base);
         (commit.into_iter().flat_map(|commit| &commit.ops))
             .map(|op| match &op.op {
                 Some(op::Op::CreateFile(create)) => ("create file", create.node_id.clone()),

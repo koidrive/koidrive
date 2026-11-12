@@ -277,7 +277,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
         ),
         Err(EffectError::DoesNotApply(download.effect_id.clone()))
     );
-    effects.failed(&download.effect_id).unwrap();
+    effects.failed(&mut trees, &download.effect_id).unwrap();
     effects.unblock("y");
     trees.settle();
     let mut ino = 10;

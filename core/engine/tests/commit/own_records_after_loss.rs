@@ -238,7 +238,7 @@ fn an_edit_still_in_flight_when_the_listing_after_a_loss_arrives_is_sent_again_w
     let (mut commits, mut trees, mut ids) = an_edit_in_flight_of_a_file_another_device_moved();
     trees.record_dropped_edits(commits.edited_in_flight());
     list_a_at_its_old_place_after_a_loss(&mut trees, &commits);
-    let refused = commits.failed(&refusal(error::Code::AheadOfServer, 0)).unwrap();
+    let refused = commits.failed(&mut trees, &refusal(error::Code::AheadOfServer, 0)).unwrap();
     assert_eq!(refused, Failure::Resync);
     let ops = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
     assert!(ops.contains(&update("a", 3)), "{ops:?}");

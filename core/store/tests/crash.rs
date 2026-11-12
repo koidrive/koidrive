@@ -101,6 +101,7 @@ fn write_input(tx: &Tx<'_>, seq: u64) -> Result<(), Error> {
         tx.put_synced_node(&SyncedNode {
             node_id: remote(n).node_id,
             shape: shape(n),
+            pending_for: String::new(),
         })?;
         tx.put_local_node(&LocalNode {
             node_id: remote(n).node_id,

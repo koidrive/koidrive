@@ -425,7 +425,7 @@ impl World {
             .retain(|deletion| trashing.contains(deletion) && unfinished.contains(deletion));
         let built = (self
             .commits
-            .build(&mut self.trees, &mut self.ids, self.now, "h", 7))
+            .build(&mut self.trees, &mut self.ids, self.now, "h", "me", 7))
         .is_some();
         assert!(!built, "this device changed nothing");
         self.trees.settle();
@@ -782,6 +782,8 @@ fn remote(node: &ServerNode) -> RemoteNode {
         trash_group: (node.trash.as_ref()).map_or_else(String::new, |t| t.group.clone()),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 

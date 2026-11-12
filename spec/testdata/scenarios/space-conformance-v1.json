@@ -7,17 +7,17 @@
   "mtime_ns": "1794268740123456789",
   "conventions": [
     "Each scenario starts from empty spaces (one named main unless the scenario lists spaces) and runs its steps in order. A step runs in the space named by its space field, main by default, at at_ms, or now_ms when absent; the runner pins the server clock to that time.",
-    "A scenario or step with reference_only checks behaviour that the server and the reference share but spec v0 and RFC 0001 do not define; its value says what is undefined. A runner for another implementation may skip it, and no later step depends on it. Every other expectation follows from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0015, RFC 0016, RFC 0018 and RFC 0019.",
+    "A scenario or step with reference_only checks behaviour that the server and the reference share but spec v0 and RFC 0001 do not define; its value says what is undefined. A runner for another implementation may skip it, and no later step depends on it. Every other expectation follows from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0015, RFC 0016, RFC 0017, RFC 0018 and RFC 0019.",
     "devices maps a device symbol to its session: name (the device name used in conflict names), role (owner by default, editor or viewer) and max_format (the newest space format the client supports, 1 by default).",
     "Every ID in a scenario is a symbol. root is the space's root (its space_id). A symbol that starts with = is the literal text after it. An op symbol not seen before is bound to a fresh UUIDv7 that the runner mints. A symbol in an expectation that is not bound yet is bound to the value the server returned; one already bound must equal it. Two different symbols never bind the same value.",
     "contents maps a content symbol to a file content. chunks lists its chunks: {text} is a chunk of those UTF-8 bytes, {counter_le32: n} is n chunks whose bytes are the 4-byte little-endian encodings of 0 to n-1, and repeat: n lists an entry's chunks n times in a row. A chunk's hash is the SHA-256 of its bytes and its size is its byte length unless size overrides it. The content's size is the sum of its chunk sizes unless size overrides it; mtime_ns is the file-level mtime_ns (an int64 written as a string, as in proto3 JSON), executable is false, encoding is 0, chunker is fastcdc2020-1m-4m-16m, and manifest_digest follows spec v0 section 5.1 over the listed (hash, size) pairs.",
-    "Ops: create_dir {node, parent, name}; create_file {node, parent, name, content}; update_content {node, content}; move {node, parent, name, from?} where from is {parent, name} (RFC 0019); delete {node, requires?} where requires is {node, content_rev, meta_rev}, the Delete's precondition (RFC 0015); restore {node, version?, parent?, name?} where absent fields are empty; empty {} is an Op with no op set. Two macros expand in place: {repeat: n, op} is n copies of op, and create_dir_chain {prefix, parent, count} creates directories prefix1 to prefixN, each named after its symbol and each inside the previous one, the first inside parent.",
+    "Ops: create_dir {node, parent, name, pending_for?}; create_file {node, parent, name, content}; update_content {node, content}; move {node, parent, name, pending_for?, from?} where from is {parent, name} (RFC 0019); delete {node, requires?} where requires is {node, content_rev, meta_rev}, the Delete's precondition (RFC 0015); restore {node, version?, parent?, name?} where absent fields are empty; empty {} is an Op with no op set. Two macros expand in place: {repeat: n, op} is n copies of op, and create_dir_chain {prefix, parent, count} creates directories prefix1 to prefixN, each named after its symbol and each inside the previous one, the first inside parent.",
     "commit: commit_id is a symbol (a fresh ID when absent), base_seq is sent as given. Unless upload is false, the runner first uploads every chunk of the contents the ops reference (PrepareUpload in batches of at most 1,000 distinct chunks, then a PUT for each chunk the plan says to upload) and sends the receipts it got. With upload false it sends the receipts that the device's earlier upload steps got in the space named by receipts_from (the step's space by default), each with its size increased by receipt_size_delta when that is set. history_id is a symbol (one not seen before is a fresh UUIDv7, so it names another history) and is the space's current history_id, as Welcome gives it, when absent. device_seq is sent as given. When absent, a commit_id the device sent before in that space keeps the device_seq it was first sent with, because a client resends a commit unchanged (RFC 0002 section 2); otherwise it is one more than the device_seq of the device's last commit in that space that was applied, that is, that returned a seq above every seq a commit returned in that space before (1 when there is none). require_head is sent as given, false when absent.",
     "upload {contents}: PrepareUpload and PUT for those contents' chunks; the receipts are kept for the device in that space. upload {last_missing: true} does the same for the chunks that the device's last MISSING_CHUNKS error from a commit in that space listed, each a chunk of some content. prepare_upload {chunks} or {contents} sends one PrepareUpload; expect.actions lists the action of each distinct chunk in order.",
     "Commit expectations: error is the whole-call error code; missing lists content symbols whose chunk hashes must be exactly the error's missing_chunks; missing_some {contents, count, total} requires that missing_chunks holds exactly count hashes, each a chunk of those contents, and that the first decimal number in the error's message is total. Otherwise seq, results (one per op, in order; code, and where given node, name and reason, compared exactly) and changed (the node symbols with a NodeState in the result's changes, compared as a set).",
     "list_versions {node, cursor, limit}: cursor is absent (empty), a literal written with =, or {returned: k}, the next_cursor an earlier step bound to k; limit is 0 when absent. Expectations: error, count (the number of versions), versions (each with version symbol, seq and content) and next_cursor, which is either empty (the last page) or {bind: k}, which requires another page and keeps its cursor as k without looking inside it.",
-    "nodes: each entry names a node and the fields it must have: parent, name, kind (DIR or FILE), status (LIVE or TRASHED), content_rev, meta_rev, meta_edit_rev, trash_group (a symbol, or null for none), content (a content symbol, compared by size, manifest digest, executable bit and mtime_ns), or absent: true when the server must not know the node. live lists every live node other than the root, as a set. head is the space's head_seq.",
-    "Expected values are written by hand from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0015, RFC 0016, RFC 0018 and RFC 0019, not produced by either implementation.",
+    "nodes: each entry names a node and the fields it must have: parent, name, kind (DIR or FILE), status (LIVE or TRASHED), content_rev, meta_rev, meta_edit_rev, trash_group (a symbol, or null for none), pending_for (a name, or null for none), pending_by (the device whose commit set the mark, or null for none), content (a content symbol, compared by size, manifest digest, executable bit and mtime_ns), or absent: true when the server must not know the node. live lists every live node other than the root, as a set. head is the space's head_seq.",
+    "Expected values are written by hand from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0015, RFC 0016, RFC 0017, RFC 0018 and RFC 0019, not produced by either implementation.",
     "Every field a scenario uses is listed here. A runner fails a scenario that has an unknown field, or a field of the wrong type, rather than skipping the check."
   ],
   "scenarios": [
@@ -12775,6 +12775,460 @@
             }
           ],
           "head": 2
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-a-mark-stays-until-a-move-without-one-clears-it",
+      "covers": [
+        "RFC 0017"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A (pending)",
+                  "pending_for": "A"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "name": "A (pending)",
+              "meta_rev": 1,
+              "pending_for": "A",
+              "pending_by": "a"
+            }
+          ],
+          "live": [
+            "d"
+          ]
+        },
+        {
+          "device": "b",
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "move": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "B (pending)",
+                  "pending_for": "B"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "name": "B (pending)",
+              "meta_rev": 2,
+              "pending_for": "B",
+              "pending_by": "b"
+            }
+          ],
+          "live": [
+            "d"
+          ]
+        },
+        {
+          "device": "b",
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "move": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "B"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "name": "B",
+              "meta_rev": 3,
+              "pending_for": null,
+              "pending_by": null
+            }
+          ],
+          "live": [
+            "d"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-a-mark-with-the-name-key-the-node-takes-is-not-kept",
+      "covers": [
+        "RFC 0017"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A",
+                  "pending_for": "a"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "name": "A",
+              "pending_for": null,
+              "pending_by": null
+            }
+          ],
+          "live": [
+            "d"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-a-mark-no-node-may-take-is-an-invalid-name",
+      "covers": [
+        "RFC 0017"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A (pending)",
+                  "pending_for": "a/b"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "REJECTED",
+                "reason": "INVALID_NAME"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "e",
+                  "parent": "root",
+                  "name": "e"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "move": {
+                  "node": "e",
+                  "parent": "root",
+                  "name": "E (pending)",
+                  "pending_for": ".."
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "REJECTED",
+                "reason": "INVALID_NAME"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "absent": true
+            },
+            {
+              "node": "e",
+              "name": "e",
+              "pending_for": null,
+              "pending_by": null
+            }
+          ],
+          "live": [
+            "e"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-a-mark-stays-through-the-trash-and-a-restore-that-gives-no-place",
+      "covers": [
+        "RFC 0017"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A (pending)",
+                  "pending_for": "A"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "d"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "TRASHED",
+              "pending_for": "A",
+              "pending_by": "a"
+            }
+          ],
+          "live": []
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "restore": {
+                  "node": "d"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "LIVE",
+              "name": "A (pending)",
+              "pending_for": "A",
+              "pending_by": "a"
+            }
+          ],
+          "live": [
+            "d"
+          ]
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "delete": {
+                  "node": "d"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "TRASHED",
+              "pending_for": "A",
+              "pending_by": "a"
+            }
+          ],
+          "live": []
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 4,
+            "ops": [
+              {
+                "restore": {
+                  "node": "d",
+                  "name": "B"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 5,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "LIVE",
+              "name": "B",
+              "pending_for": null,
+              "pending_by": null
+            }
+          ],
+          "live": [
+            "d"
+          ]
         }
       ]
     }

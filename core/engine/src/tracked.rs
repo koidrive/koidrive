@@ -172,6 +172,15 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
         self.map.entry(key).or_insert_with(value)
     }
 
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        for (key, value) in &self.map {
+            if !self.before.contains_key(key) {
+                self.before.insert(key.clone(), Some(value.clone()));
+            }
+        }
+        self.map.values_mut()
+    }
+
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
         let before = &mut self.before;
         self.map.retain(|key, value| {

@@ -98,6 +98,11 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("meta_edit_rev")) sql.exec("ALTER TABLE nodes ADD COLUMN meta_edit_rev INTEGER");
     if (!columns.includes("meta_edit_dev")) sql.exec("ALTER TABLE nodes ADD COLUMN meta_edit_dev TEXT");
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
+    if (!columns.includes("pending_for")) sql.exec("ALTER TABLE nodes ADD COLUMN pending_for TEXT");
+    if (!columns.includes("pending_by")) sql.exec("ALTER TABLE nodes ADD COLUMN pending_by TEXT");
+  },
 ];
 
 export function migrate(sql: Sql): void {

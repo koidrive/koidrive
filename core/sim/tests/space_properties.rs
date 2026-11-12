@@ -132,6 +132,7 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
                 node_id: fresh.clone(),
                 parent_id: pick(a.parent),
                 name,
+                pending_for: String::new(),
             }),
             Kind::Create => op::Op::CreateFile(CreateFile {
                 node_id: fresh.clone(),
@@ -149,6 +150,7 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
                 new_parent_id: pick(a.parent),
                 new_name: name,
                 from: None,
+                pending_for: String::new(),
             }),
             Kind::Delete => op::Op::Delete(Delete {
                 node_id: pick(a.target),

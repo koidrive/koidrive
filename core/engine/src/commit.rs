@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use koidrive_proto::v1::{self as proto, error, op, op_result};
 use prost::Message;
 
-use crate::classify::{Class, Origin, Trees, Waiting};
+use crate::classify::{Class, Origin, Trees, Waiting, path};
 use crate::effects;
 use crate::first_link;
 use crate::guard::{self, Guard, RemoteRemoval};
@@ -21,7 +21,7 @@ use crate::question::{
 };
 use crate::recovery;
 use crate::restore::{Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent};
-use crate::state::{Agreed, CommitsChanges, CommitsState, Pending, StateError};
+use crate::state::{Agreed, CommitsChanges, CommitsState, FinishOrigin, StateError};
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{Content, Kind, Names, NodeId, Shape, same, same_content};
 
@@ -188,7 +188,6 @@ pub struct Commits {
     /// until the server applies their create. The person chose to keep them beside what R holds,
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
-    pending: TrackedMap<NodeId, Pending>,
     guard: Guard,
 }
 
@@ -208,7 +207,6 @@ impl Commits {
             slots: (*self.slots).clone(),
             questions: (*self.questions).clone(),
             published: (*self.published).clone(),
-            pending: (*self.pending).clone(),
             guard: self.guard.state(),
         }
     }
@@ -228,7 +226,6 @@ impl Commits {
             slots,
             questions,
             published,
-            pending,
             guard,
         } = self;
         CommitsChanges {
@@ -244,7 +241,6 @@ impl Commits {
             slots: slots.take_changes(),
             questions: questions.take_changed().cloned(),
             published: published.take_changes(),
-            pending: pending.take_changes(),
             guard: guard.take_changes(),
         }
     }
@@ -310,7 +306,6 @@ impl Commits {
             slots,
             questions,
             published,
-            pending,
             guard,
         } = state;
         Ok(Self {
@@ -326,7 +321,6 @@ impl Commits {
             slots: slots.into(),
             questions: questions.into(),
             published: published.into(),
-            pending: pending.into(),
             guard: guard.into(),
         })
     }
@@ -1010,6 +1004,7 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
         history_id: &str,
+        device_id: &str,
         base: impl Into<Base>,
     ) -> Option<&proto::Commit> {
         let base = base.into();
@@ -1019,6 +1014,9 @@ impl Commits {
         if self.halted.is_none() {
             trees.resend_folders_of_changes();
         }
+        trees.unsend_finishes(None);
+        trees.applied_head(base.seq);
+        trees.check_finishes();
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
         if self.halted.is_some() || !trees.rules_known() {
             return None;
@@ -1096,7 +1094,6 @@ impl Commits {
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases
             .retain(|id, _| trees.local().get(id).is_some() && trees.reverted().contains(id));
-        self.retire_pending(trees);
         let intents = RecoveryGroup::RequestedBeforeReset;
         let held_restores: BTreeSet<&RestoreId> = (self.questions.iter())
             .filter(|question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
@@ -1111,7 +1108,7 @@ impl Commits {
             .map(|(id, intent)| (id.clone(), intent.clone()))
             .collect();
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
-        let (planned, deletes, reverts, pending) = plan(
+        let (planned, deletes, reverts) = plan(
             trees,
             &skip,
             &needed,
@@ -1120,17 +1117,75 @@ impl Commits {
             &self.split,
             &self.aliases,
             &restores,
-            &self.pending,
             &answers,
+            device_id,
         );
         for id in reverts {
             trees.revert(id);
         }
-        self.pending.extend(pending);
-        let ops: Vec<proto::Op> = planned.into_iter().chain(answered).collect();
+        for op in &planned {
+            let Some(op::Op::Move(moved)) = &op.op else {
+                continue;
+            };
+            let owed = (trees.remote().get(&moved.node_id)).is_some_and(|remote| {
+                remote.pending_by.as_deref() == Some(device_id)
+                    && remote.shape.parent == moved.new_parent_id
+                    && remote.pending_for.as_ref() == Some(&moved.new_name)
+            });
+            if owed {
+                trees.start_finish(&moved.node_id);
+            }
+        }
+        let finish = |trees: &Trees, op: &proto::Op| match &op.op {
+            Some(op::Op::Move(moved)) => (trees.pending_finishes().get(&moved.node_id))
+                .filter(|finish| {
+                    finish.parent == moved.new_parent_id && finish.name == moved.new_name
+                })
+                .map(|finish| (moved.node_id.clone(), finish.base.is_some())),
+            _ => None,
+        };
+        let mut ops: Vec<proto::Op> = (planned.into_iter().chain(answered))
+            .filter(|op| finish(trees, op).is_none_or(|(_, held)| !held))
+            .collect();
+        if ops.is_empty() && released.is_empty() {
+            let first: Vec<(NodeId, NodeId, String)> = (finishes(trees, &skip, Some(device_id)))
+                .filter(|(id, .., free)| !free || disk_first(trees, id))
+                .take(cap)
+                .map(|(id, parent, name, _)| (id.clone(), parent.clone(), name.to_owned()))
+                .collect();
+            for (id, parent, name) in first {
+                trees.start_finish(&id);
+                let pending = trees
+                    .remote()
+                    .get(&id)
+                    .expect("a node R marks")
+                    .shape
+                    .name
+                    .clone();
+                ops.push(proto::Op {
+                    op: Some(op::Op::Move(proto::Move {
+                        from: Some(proto::Place {
+                            parent_id: parent.clone(),
+                            name: pending,
+                        }),
+                        node_id: id,
+                        new_parent_id: parent,
+                        new_name: name,
+                        pending_for: String::new(),
+                    })),
+                });
+            }
+        }
         if ops.is_empty() {
             self.keep_unsent(trees, released);
             return None;
+        }
+        let finishing: Vec<NodeId> = (ops.iter())
+            .filter_map(|op| finish(trees, op))
+            .map(|(id, _)| id)
+            .collect();
+        for id in &finishing {
+            trees.send_finish(id);
         }
         trees.watch_content(ops.iter().filter_map(|op| match &op.op {
             Some(op::Op::CreateFile(create)) => Some(create.node_id.clone()),
@@ -1143,7 +1198,9 @@ impl Commits {
             .map(ToOwned::to_owned),
         );
 
-        let require_head = !released.is_empty()
+        let require_head = (finishing.iter())
+            .any(|id| trees.pending_finishes()[id].origin == FinishOrigin::Legacy)
+            || !released.is_empty()
             || (ops.iter().filter_map(|op| op.op.as_ref()))
                 .any(|op| trees.resends().contains(op_node(op)));
         let restores = (ops.iter().enumerate())
@@ -1276,14 +1333,15 @@ impl Commits {
     }
 
     /// Whether a build has something to do: a node is dirty or its S update waits, a restore is
-    /// queued, a conflict question is due ([`Commits::conflicts_due`]), or a node L and R both
-    /// hold at the pending name a commit gave it is owed its own name.
-    pub fn due(&self, trees: &Trees) -> bool {
+    /// queued, a conflict question is due ([`Commits::conflicts_due`]), or a node R marks with a
+    /// pending name may take that name (RFC 0017).
+    pub fn due(&self, trees: &Trees, device_id: &str) -> bool {
         !trees.dirty().is_empty()
             || !trees.waiting().is_empty()
             || !self.restores.is_empty()
             || self.conflicts_due(trees)
-            || renames_owed(trees, &self.pending).next().is_some()
+            || finishes(trees, &self.problems, Some(device_id))
+                .any(|(id, .., free)| !free || disk_first(trees, id))
     }
 
     /// Whether a build has something to do for a conflict question: a file of it was renamed,
@@ -1442,9 +1500,7 @@ impl Commits {
         if !recovering {
             self.record_served(trees, last_seq);
         }
-        let acknowledged = !recovering && self.acknowledge_flight(trees, last_seq);
-        self.retire_pending(trees);
-        acknowledged
+        !recovering && self.acknowledge_flight(trees, last_seq)
     }
 
     fn record_served(&self, trees: &mut Trees, last_seq: u64) {
@@ -1476,46 +1532,8 @@ impl Commits {
         }
     }
 
-    fn retire_pending(&mut self, trees: &mut Trees) {
-        let at_sent = |trees: &Trees, id: &str, pending: &Pending| {
-            (trees.remote().get(id))
-                .is_some_and(|remote| at_pending_name(trees, id, &remote.shape, pending))
-        };
-        let landed: Vec<NodeId> = (self.pending.iter())
-            .filter(|(id, pending)| !pending.landed && at_sent(trees, id, pending))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in landed {
-            if let Some(pending) = self.pending.get_mut(&id) {
-                pending.landed = true;
-            }
-        }
-        let flight = self.in_flight.as_ref();
-        self.pending.retain(|id, pending| {
-            let owed_in_flight = flight.is_some_and(|flight| {
-                flight.commit.ops.iter().any(|op| {
-                    matches!(&op.op, Some(op::Op::Move(moved))
-                        if moved.node_id == *id && nfc(&moved.new_name) == nfc(&pending.name))
-                })
-            });
-            let at_sent = at_sent(trees, id, pending);
-            let left = left_pending_name(trees, id, pending);
-            if left
-                && !owed_in_flight
-                && !revived_here(trees, id)
-                && take_owed_name(trees, id, pending)
-            {
-                return false;
-            }
-            let owed_locally = holds_owed_name(trees, id, pending);
-            at_sent
-                || (flight.is_some() && !pending.landed)
-                || (left && owed_locally)
-                || owed_in_flight
-        });
-    }
-
     fn acknowledge_flight(&mut self, trees: &mut Trees, last_seq: u64) -> bool {
+        trees.applied_head(last_seq);
         let Some(flight) = self
             .in_flight
             .take_if(|flight| flight.result.as_ref().is_some_and(|r| r.seq <= last_seq))
@@ -1523,7 +1541,6 @@ impl Commits {
             return false;
         };
         let result = flight.result.expect("taken with a result");
-        let sent_under = self.pending.clone();
         let commit_id = &flight.commit.commit_id;
         let (sent, questions): (Vec<Question>, Vec<Question>) = std::mem::take(self.questions.get_mut()).into_iter().partition(|question| {
             matches!(&question.kind, QuestionKind::Recovery { sent_in: Some(sent), .. } if sent == commit_id)
@@ -1590,6 +1607,11 @@ impl Commits {
                         synced.set(into, Some(shape));
                         merged.insert(create.node_id.clone(), into.clone());
                     } else if applied {
+                        if !create.pending_for.is_empty() {
+                            let (parent, pending) = (shape.parent.clone(), shape.name.clone());
+                            let (id, mark) = (&create.node_id, &create.pending_for);
+                            trees.owe_finish(id, parent, pending, mark, result.seq);
+                        }
                         agreed.extend(agree(trees, &create.node_id, result.seq));
                         synced.set(&create.node_id, Some(shape));
                     }
@@ -1653,35 +1675,39 @@ impl Commits {
                     let id = &moved.node_id;
                     let cycle = code == Code::Rejected && outcome.reject_reason == "CYCLE";
                     let target = parent(&moved.new_parent_id);
-                    if let Some(shape) = synced.get(trees, id)
+                    let before = synced.get(trees, id);
+                    let finishing = (trees.pending_finishes().get(id))
+                        .filter(|finish| finish.sending)
+                        .map(|finish| finish.disk_first);
+                    let superseded = code == Code::Superseded && moved.from.is_some();
+                    if finishing.is_some() && (applied || superseded) {
+                        trees.end_finish(id);
+                    }
+                    let finished = finishing == Some(false)
+                        && (before.as_ref()).is_some_and(|before| {
+                            (trees.local().get(id))
+                                .is_some_and(|local| local.shape.same_position(before))
+                        });
+                    if let Some(shape) = before
                         && applied
                         && target != *id
+                        && !finished
                     {
                         let shape = Shape {
                             parent: target.clone(),
                             name: name(&moved.new_name),
                             ..shape
                         };
+                        if !moved.pending_for.is_empty() {
+                            let (parent, pending) = (shape.parent.clone(), shape.name.clone());
+                            trees.owe_finish(id, parent, pending, &moved.pending_for, result.seq);
+                        }
                         agreed.extend(agree(trees, id, result.seq));
                         synced.set(id, Some(shape));
                     }
-                    let owed = sent_under.get(id).is_some_and(|pending| {
-                        nfc(&moved.new_name) == nfc(&pending.name)
-                            && trees.local().get(id).is_some_and(|local| {
-                                local.shape.parent == moved.new_parent_id
-                                    && nfc(&local.shape.name) == nfc(&pending.sent)
-                            })
-                    });
-                    if cycle || (applied && owed) {
+                    if cycle {
                         trees.revert(id.clone());
                     }
-                    if applied
-                        && (sent_under.get(id))
-                            .is_some_and(|pending| nfc(&moved.new_name) != nfc(&pending.sent))
-                    {
-                        self.pending.remove(id);
-                    }
-                    let superseded = code == Code::Superseded && moved.from.is_some();
                     if superseded {
                         let local = (trees.local().get(id))
                             .filter(|local| !local.parked)
@@ -1971,11 +1997,16 @@ impl Commits {
     ///
     /// The restores of a forgotten commit stay queued and go into the next commit, except on a
     /// device that is now read-only, where they end as rejected. A halt keeps them queued.
-    pub fn failed(&mut self, error: &proto::Error) -> Result<Failure, CommitError> {
+    pub fn failed(
+        &mut self,
+        trees: &mut Trees,
+        error: &proto::Error,
+    ) -> Result<Failure, CommitError> {
         use error::Code;
-        if self.in_flight.is_none() {
+        let Some(flight) = &*self.in_flight else {
             return Err(CommitError::NotInFlight);
-        }
+        };
+        let head_moved = (error.code == Code::HeadMoved as i32).then_some(flight.commit.base_seq);
         let failure = match Code::try_from(error.code) {
             Ok(Code::HistoryMismatch) => Failure::Halted(Halt::Recovery(RecoveryCause::of(
                 RecoveryTrigger::SpaceRewound,
@@ -2025,6 +2056,9 @@ impl Commits {
                     }
                 }
             }
+        }
+        if head_moved.is_some() {
+            trees.unsend_finishes(head_moved);
         }
         self.reject_unsent_when_read_only();
         Ok(failure)
@@ -2598,100 +2632,54 @@ fn agree(trees: &Trees, id: &str, seq: u64) -> Option<(NodeId, Agreed)> {
     (trees.position_after(id, seq)).map(|at| (id.to_owned(), at.clone()))
 }
 
-fn at_pending_name(trees: &Trees, id: &str, remote: &Shape, pending: &Pending) -> bool {
-    let parent = (trees.local().get(id).map(|local| &local.shape))
-        .or(trees.synced().live(id))
-        .map(|shape| &shape.parent);
-    nfc(&remote.name) == nfc(&pending.sent) && parent.is_none_or(|parent| *parent == remote.parent)
+pub(crate) fn disk_first(trees: &Trees, id: &str) -> bool {
+    (trees.pending_finishes().get(id)).is_some_and(|finish| finish.disk_first)
 }
 
-fn left_pending_name(trees: &Trees, id: &str, pending: &Pending) -> bool {
-    (trees.remote().get(id))
-        .is_some_and(|remote| remote.trashed || !at_pending_name(trees, id, &remote.shape, pending))
-}
-
-fn holds_owed_name(trees: &Trees, id: &str, pending: &Pending) -> bool {
-    let Some(local) = trees.local().get(id).filter(|local| !local.parked) else {
-        return false;
-    };
-    nfc(&local.shape.name) == nfc(&pending.name)
-        && trees.synced().live(id).is_none_or(|synced| {
-            synced.parent == local.shape.parent && nfc(&synced.name) == nfc(&pending.sent)
-        })
-}
-
-fn revived_here(trees: &Trees, id: &str) -> bool {
-    trees.remote().get(id).is_some_and(|remote| remote.trashed)
-        && (edited_here(trees, id) || changed_below(trees, id))
-}
-
-fn edited_here(trees: &Trees, id: &str) -> bool {
-    let local = trees
-        .local()
-        .live(id)
-        .and_then(|shape| shape.content.as_ref());
-    let synced = trees
-        .synced()
-        .live(id)
-        .and_then(|shape| shape.content.as_ref());
-    trees.unsent_edits().contains(id)
-        || local
-            .zip(synced)
-            .is_some_and(|(local, synced)| !same_content(local, synced))
-}
-
-fn changed_below(trees: &Trees, id: &str) -> bool {
-    let parked = (trees.local().iter())
-        .filter(|(_, local)| local.parked && local.shape.parent == id)
-        .map(|(child, _)| child);
-    trees.local_children(id).chain(parked).any(|child| {
-        let Some(local) = trees.local().get(child) else {
-            return false;
-        };
-        !trees.excluded(child)
-            && (trees
-                .synced()
-                .live(child)
-                .is_none_or(|synced| !synced.same(&local.shape))
-                || edited_here(trees, child)
-                || changed_below(trees, child))
-    })
-}
-
-fn take_owed_name(trees: &mut Trees, id: &str, pending: &Pending) -> bool {
-    let (Some(local), Some(synced)) = (trees.local().get(id), trees.synced().live(id)) else {
-        return false;
-    };
-    if local.parked
-        || trees.reverted().contains(id)
-        || trees.waiting().contains_key(id)
-        || local.shape.parent != synced.parent
-        || nfc(&local.shape.name) != nfc(&pending.name)
-        || nfc(&synced.name) != nfc(&pending.sent)
-    {
-        return false;
-    }
-    let shape = Shape {
-        name: local.shape.name.clone(),
-        ..synced.clone()
-    };
-    if !trees.set_synced_if_valid(id.to_owned(), Some(shape)) {
-        trees.revert(id.to_owned());
-    }
-    true
-}
-
-fn renames_owed<'a>(
+pub(crate) fn finishes<'a>(
     trees: &'a Trees,
-    pending: &'a BTreeMap<NodeId, Pending>,
-) -> impl Iterator<Item = (&'a NodeId, &'a Shape, &'a Pending)> + 'a {
-    (pending.iter())
-        .filter(|(id, _)| !trees.excluded(id) && !trees.held(id))
-        .filter_map(|(id, pending)| {
+    skip: &'a BTreeSet<NodeId>,
+    device_id: Option<&'a str>,
+) -> impl Iterator<Item = (&'a NodeId, &'a NodeId, &'a str, bool)> + 'a {
+    let recorded = (trees.pending_finishes().keys()).filter(|id| !trees.marked().contains(*id));
+    (trees.marked().iter())
+        .chain(recorded)
+        .filter(|id| {
+            !skip.contains(*id)
+                && !trees.excluded(id)
+                && !trees.held(id)
+                && !trees.waiting().contains_key(*id)
+        })
+        .filter_map(move |id| {
+            let remote = trees.remote().get(id).filter(|node| !node.trashed)?;
+            let finish = trees.pending_finishes().get(id);
+            let name = match finish {
+                Some(finish) if finish.sending || finish.base.is_some() => return None,
+                Some(finish)
+                    if finish.parent == remote.shape.parent
+                        && finish.pending == remote.shape.name =>
+                {
+                    finish.name.as_str()
+                }
+                Some(_) => return None,
+                None => remote.pending_for.as_deref()?,
+            };
             let local = trees.local().get(id).filter(|node| !node.parked)?;
-            let remote = trees.remote().live(id)?;
-            (nfc(&remote.name) == nfc(&pending.sent) && local.shape.same_position(remote))
-                .then_some((id, remote, pending))
+            let synced = trees.synced().live(id)?;
+            let parent = &remote.shape.parent;
+            let free = holder(trees, parent, name, id).is_none()
+                && trees.local_holders(parent, name).all(|other| other == id);
+            let owed = finish.is_some_and(|finish| finish.origin == FinishOrigin::Legacy)
+                || (remote.pending_by.is_some() && remote.pending_by.as_deref() == device_id);
+            if !local.shape.same_position(&remote.shape)
+                || !synced.same_position(&remote.shape)
+                || !(free || owed)
+            {
+                return None;
+            }
+            let (mut names, kind) = path(trees.local(), id)?;
+            *names.last_mut()? = name;
+            (!trees.ignores(&names, kind)).then_some((id, parent, name, free))
         })
 }
 
@@ -2779,9 +2767,18 @@ fn record_cost(shape: Option<&Shape>) -> usize {
 /// record carries the node's current content.
 fn cost(trees: &Trees, want: &Want) -> usize {
     match want {
-        Want::Create { shape, .. } => record_cost(Some(shape)),
-        Want::Move { id, name, .. } => {
-            record_cost(trees.remote().live(id).or(trees.synced().live(id))) + name.len()
+        Want::Create {
+            shape, pending_for, ..
+        } => record_cost(Some(shape)) + marked(pending_for),
+        Want::Move {
+            id,
+            name,
+            pending_for,
+            ..
+        } => {
+            record_cost(trees.remote().live(id).or(trees.synced().live(id)))
+                + name.len()
+                + marked(pending_for)
         }
         Want::Content { content, .. } => RECORD_BYTES + content.encoded_len(),
         Want::Delete { members, .. } => members
@@ -2796,16 +2793,22 @@ fn cost(trees: &Trees, want: &Want) -> usize {
     }
 }
 
+fn marked(pending_for: &Option<String>) -> usize {
+    pending_for.as_ref().map_or(0, |name| 2 * name.len())
+}
+
 enum Want {
     Create {
         id: NodeId,
         shape: Shape,
+        pending_for: Option<String>,
     },
     Move {
         id: NodeId,
         parent: NodeId,
         name: String,
         guarded: bool,
+        pending_for: Option<String>,
     },
     Content {
         id: NodeId,
@@ -2860,12 +2863,7 @@ enum Fit {
     Merged,
 }
 
-type Planned = (
-    Vec<proto::Op>,
-    BTreeMap<NodeId, Vec<NodeId>>,
-    Vec<NodeId>,
-    BTreeMap<NodeId, Pending>,
-);
+type Planned = (Vec<proto::Op>, BTreeMap<NodeId, Vec<NodeId>>, Vec<NodeId>);
 
 #[allow(clippy::too_many_arguments)]
 fn plan(
@@ -2877,8 +2875,8 @@ fn plan(
     split: &BTreeSet<NodeId>,
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
-    owed: &BTreeMap<NodeId, Pending>,
     answers: &BTreeSet<NodeId>,
+    device_id: &str,
 ) -> Planned {
     let mut wants = Vec::new();
     if !restores.is_empty() {
@@ -2901,7 +2899,6 @@ fn plan(
     }
     let mut deleted = BTreeSet::new();
     let mut reverts = Vec::new();
-    let mut pending = BTreeMap::new();
     for id in trees.dirty().iter().filter(|id| !problems.contains(*id)) {
         let class = trees.acknowledged_class(id);
         if !matches!(class, Class::Local | Class::Concurrent) {
@@ -2930,9 +2927,11 @@ fn plan(
         };
         let Some(remote) = trees.remote().get(id) else {
             if !trees.reverted().contains(id) && !trees.is_discarded(id) {
+                let pending_for = trees.create_mark(id).map(str::to_owned);
                 wants.push(Want::Create {
                     id: id.clone(),
                     shape: local.clone(),
+                    pending_for,
                 });
             }
             continue;
@@ -2945,25 +2944,23 @@ fn plan(
         if in_alias && (placed(synced) || placed(remote)) && !trees.reverted().contains(id) {
             reverts.push(id.clone());
         }
-        let yields = owed.get(id).is_some_and(|pending| {
-            holds_owed_name(trees, id, pending) && left_pending_name(trees, id, pending)
-        });
         if synced.is_none_or(|s| !s.same_position(local))
             && remote.is_none_or(|r| !r.same_position(local))
             && !trees.reverted().contains(id)
-            && !yields
         {
             wants.push(Want::Move {
                 id: id.clone(),
                 parent: local.parent.clone(),
                 name: local.name.clone(),
                 guarded: trees.resends().contains(id)
-                    || owed.get(id).is_some_and(|pending| {
-                        nfc(&local.name) == nfc(&pending.name)
-                            && (synced.or(remote)).is_some_and(|held| {
-                                held.parent == local.parent && nfc(&held.name) == nfc(&pending.sent)
-                            })
+                    || (trees.remote().live(id)).is_some_and(|remote| {
+                        let node = &trees.remote().get(id).expect("a live node of R");
+                        node.pending_by.as_deref() == Some(device_id)
+                            && remote.parent == local.parent
+                            && (node.pending_for.as_deref())
+                                .is_some_and(|mark| nfc(mark) == nfc(&local.name))
                     }),
+                pending_for: None,
             });
         }
         let differs = |shape: Option<&Shape>, content: &Content| {
@@ -2980,16 +2977,6 @@ fn plan(
                 content: content.clone(),
             });
         }
-    }
-    for (id, remote, pending) in
-        renames_owed(trees, owed).filter(|(id, ..)| !problems.contains(*id))
-    {
-        wants.push(Want::Move {
-            id: id.clone(),
-            parent: remote.parent.clone(),
-            name: pending.name.clone(),
-            guarded: true,
-        });
     }
     let mut scratch = Scratch::new(trees);
     let mut tops = Vec::new();
@@ -3068,7 +3055,11 @@ fn plan(
             }
         }
         let op = match want {
-            Want::Create { id, shape } => {
+            Want::Create {
+                id,
+                shape,
+                pending_for,
+            } => {
                 if shape.kind == Kind::Dir {
                     let targets = scratch.merge_targets(&shape.parent);
                     scratch.protected.extend(targets.iter().cloned());
@@ -3080,6 +3071,7 @@ fn plan(
                         node_id: id,
                         parent_id: shape.parent,
                         name: shape.name,
+                        pending_for: pending_for.unwrap_or_default(),
                     }),
                     Kind::File => op::Op::CreateFile(proto::CreateFile {
                         node_id: id,
@@ -3094,6 +3086,7 @@ fn plan(
                 parent,
                 name,
                 guarded,
+                pending_for,
             } => {
                 moving.remove(&id);
                 let held = &scratch.nodes[&id];
@@ -3114,6 +3107,7 @@ fn plan(
                     new_parent_id: parent,
                     new_name: name,
                     from,
+                    pending_for: pending_for.unwrap_or_default(),
                 })
             }
             Want::Content { id, content } => {
@@ -3148,6 +3142,7 @@ fn plan(
                         new_parent_id: shape.parent.clone(),
                         new_name: shape.name.clone(),
                         from: None,
+                        pending_for: String::new(),
                     });
                     ops.push(proto::Op { op: Some(placed) });
                 }
@@ -3275,23 +3270,16 @@ fn plan(
                 parent,
                 name,
                 guarded,
+                ..
             }) = &wants[cycle[0]]
             else {
                 unreachable!("a name cycle holds moves");
             };
-            let sent = scratch.free_name(parent, name);
-            pending.insert(
-                id.clone(),
-                Pending {
-                    sent: sent.clone(),
-                    name: name.clone(),
-                    landed: false,
-                },
-            );
             let aside = Want::Move {
                 id: id.clone(),
                 parent: parent.clone(),
-                name: sent,
+                name: scratch.free_name(parent, name),
+                pending_for: Some(name.clone()),
                 guarded: *guarded,
             };
             let all: usize = (cycle.iter())
@@ -3371,20 +3359,14 @@ fn plan(
         }
         emitted += ops;
         bytes += cost;
-        if let Some(Want::Create { id, shape }) = slot.as_mut()
+        if let Some(Want::Create {
+            shape, pending_for, ..
+        }) = slot.as_mut()
             && shape.kind == Kind::Dir
             && (scratch.holders(&shape.parent, &shape.name)).any(|other| moving.contains(other))
         {
-            let sent = scratch.free_name(&shape.parent, &shape.name);
-            let name = std::mem::replace(&mut shape.name, sent.clone());
-            pending.insert(
-                id.clone(),
-                Pending {
-                    sent,
-                    name,
-                    landed: false,
-                },
-            );
+            let name = scratch.free_name(&shape.parent, &shape.name);
+            *pending_for = Some(std::mem::replace(&mut shape.name, name));
         }
         emit(slot.take().expect("checked"), &mut scratch, &mut moving);
         for retrash in bundle {
@@ -3400,15 +3382,7 @@ fn plan(
             }
         }
     }
-    pending.retain(|id, pending| {
-        let last = ops.iter().rev().find_map(|op| match &op.op {
-            Some(op::Op::CreateDir(create)) if create.node_id == *id => Some(&create.name),
-            Some(op::Op::Move(moved)) if moved.node_id == *id => Some(&moved.new_name),
-            _ => None,
-        });
-        last == Some(&pending.sent)
-    });
-    (ops, deletes, reverts, pending)
+    (ops, deletes, reverts)
 }
 
 fn remote_below(trees: &Trees, id: &str, ancestors: &BTreeSet<&str>) -> bool {
@@ -3650,7 +3624,7 @@ impl Scratch {
 
     fn placement(&self, want: &Want, moving: &BTreeSet<NodeId>) -> Fit {
         match want {
-            Want::Create { id, shape } => self.fit_at(id, &shape.parent, &shape.name),
+            Want::Create { id, shape, .. } => self.fit_at(id, &shape.parent, &shape.name),
             Want::Move {
                 id, parent, name, ..
             } => self.fit_at(id, parent, name),

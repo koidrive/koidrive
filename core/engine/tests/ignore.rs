@@ -55,6 +55,8 @@ fn remote(shape: Shape) -> RemoteNode {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 
@@ -109,7 +111,7 @@ fn rules(text: &str) -> Option<RuleFile> {
 fn ops(trees: &mut Trees) -> Vec<op::Op> {
     trees.settle();
     let commit = Commits::default()
-        .build(trees, &mut IdGen::new(1), NOW, HISTORY, 7)
+        .build(trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
         .cloned();
     let ops = commit.map(|commit| commit.ops).unwrap_or_default();
     ops.into_iter().map(|op| op.op.unwrap()).collect()
@@ -430,6 +432,7 @@ fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it
         new_parent_id: ROOT.into(),
         new_name: "back.txt".into(),
         from: None,
+        pending_for: String::new(),
     });
     assert_eq!(
         ops(&mut trees),
@@ -450,6 +453,7 @@ fn a_node_the_user_moves_out_of_an_ignored_path_is_moved_on_the_server() {
         new_parent_id: ROOT.into(),
         new_name: "a.txt".into(),
         from: None,
+        pending_for: String::new(),
     });
     assert_eq!(ops(&mut trees), [moved]);
 }

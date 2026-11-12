@@ -14,7 +14,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, MovedHere, Pending, StateError, TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, MovedHere, PendingFinish, StateError,
+    TreesState,
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
 use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
@@ -40,6 +41,8 @@ fn remote(shape: Shape) -> RemoteNode {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 
@@ -132,6 +135,20 @@ fn trees_state() -> TreesState {
         local_changes: ["b".into()].into(),
         replaced_versions: [("a".into(), vec!["v1".into()])].into(),
         kept_originals: [("t".into(), "a".into())].into(),
+        unsent_marks: [("a".into(), "A".into())].into(),
+        pending_finishes: [(
+            "a".into(),
+            PendingFinish {
+                parent: "root".into(),
+                pending: "a (pending)".into(),
+                name: "a".into(),
+                origin: FinishOrigin::Legacy,
+                disk_first: true,
+                base: Some(4),
+                sending: true,
+            },
+        )]
+        .into(),
     }
 }
 
@@ -231,6 +248,7 @@ fn commits_state() -> CommitsState {
         new_parent_id: ROOT.into(),
         new_name: "n".into(),
         from: None,
+        pending_for: String::new(),
     };
     let ops = vec![
         Op {
@@ -273,15 +291,6 @@ fn commits_state() -> CommitsState {
         slots: [(2, 5), (3, 8)].into(),
         questions: questions(),
         published: ["n".into()].into(),
-        pending: [(
-            "q".into(),
-            Pending {
-                sent: "q (pending)".into(),
-                name: "q".into(),
-                landed: true,
-            },
-        )]
-        .into(),
         guard: guard_state(),
     }
 }

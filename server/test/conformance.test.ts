@@ -141,7 +141,7 @@ function within(prefix: string, check: () => void): void {
   }
 }
 
-const NODE_FIELDS = ["node", "parent", "name", "kind", "status", "content_rev", "meta_rev", "trash_group", "current"];
+const NODE_FIELDS = ["node", "parent", "name", "kind", "status", "content_rev", "meta_rev", "trash_group", "current", "pending_for", "pending_by"];
 const CURRENT_FIELDS = ["version", "seq", "content", "chunks_inline", "device", "user", "created_at_ms"];
 
 function strings(list: Json[], what: string): string[] {
@@ -483,8 +483,8 @@ class Run {
         continue;
       }
       const allowed: Record<string, string[]> = {
-        create_dir: ["node", "parent", "name"],
-        move: ["node", "parent", "name", "from"],
+        create_dir: ["node", "parent", "name", "pending_for"],
+        move: ["node", "parent", "name", "pending_for", "from"],
         create_file: ["node", "parent", "name", "content"],
         update_content: ["node", "content", "resend"],
         delete: ["node", "requires"],
@@ -501,19 +501,20 @@ class Run {
       const parent = optStr(body, "parent");
       const parentId = parent === undefined ? "" : this.id(space, parent);
       const name = optStr(body, "name") ?? "";
+      const pendingFor = optStr(body, "pending_for") ?? "";
       const content = () => {
         const symbol = req(optStr(body, "content"), "content");
         used.push(symbol);
         return this.content(symbol).content;
       };
       let op: Op;
-      if (kind === "create_dir") op = create(OpSchema, { op: { case: "createDir", value: { nodeId, parentId, name } } });
+      if (kind === "create_dir") op = create(OpSchema, { op: { case: "createDir", value: { nodeId, parentId, name, pendingFor } } });
       else if (kind === "create_file") op = create(OpSchema, { op: { case: "createFile", value: { nodeId, parentId, name, content: content() } } });
       else if (kind === "update_content") op = create(OpSchema, { op: { case: "updateContent", value: { nodeId, content: content(), resend: optBool(body, "resend") ?? false } } });
       else if (kind === "move") {
         const from = body.from === undefined ? undefined : keys(body.from, "from", ["parent", "name"]);
         const place = from && { parentId: this.id(space, req(optStr(from, "parent"), "parent")), name: req(optStr(from, "name"), "name") };
-        op = create(OpSchema, { op: { case: "move", value: { nodeId, newParentId: parentId, newName: name, from: place } } });
+        op = create(OpSchema, { op: { case: "move", value: { nodeId, newParentId: parentId, newName: name, pendingFor, from: place } } });
       }
       else if (kind === "delete") {
         const found = "requires" in body ? keys(body.requires, "requires", ["node", "content_rev", "meta_rev"]) : undefined;
@@ -853,7 +854,7 @@ class Run {
   private checkNodeState(space: string, wanted: Json, got: NodeState, complete: boolean): void {
     const want = keys(wanted, "a node", complete ? [...NODE_FIELDS, "edit_rev", "meta_edit_rev"] : [...NODE_FIELDS, "absent", "content", "edit_rev", "meta_edit_rev"]);
     if (complete) every(want, NODE_FIELDS);
-    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "editRev", "metaEditRev"]);
+    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev"]);
     const symbol = req(optStr(want, "node"), "node");
     within("node", () => this.expectId(space, symbol, got.nodeId));
     const differs = (field: string, value: unknown) => fail(`${symbol}.${field} is ${String(value)}, expected ${show(want[field])}`);
@@ -892,6 +893,16 @@ class Run {
           throw error;
         }
       } else fail(`trash_group must be a string or null, got ${show(group)}`);
+    }
+    if ("pending_for" in want) {
+      const pendingFor = want.pending_for;
+      if (pendingFor !== null && typeof pendingFor !== "string") fail(`pending_for must be a string or null, got ${show(pendingFor)}`);
+      if (got.pendingFor !== (pendingFor ?? "")) differs("pending_for", got.pendingFor);
+    }
+    if ("pending_by" in want) {
+      const pendingBy = want.pending_by;
+      if (pendingBy !== null && typeof pendingBy !== "string") fail(`pending_by must be a device or null, got ${show(pendingBy)}`);
+      if (got.pendingBy !== (pendingBy === null ? "" : this.device(pendingBy).deviceId)) differs("pending_by", got.pendingBy);
     }
     const content = optStr(want, "content");
     if (content !== undefined) {

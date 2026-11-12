@@ -17,6 +17,7 @@ fn commit_round_trips_through_binary_encoding() {
                     parent_id: "0190f3a0-0000-7000-8000-000000000004".into(),
                     name: "notes 1.txt".into(),
                 }),
+                pending_for: String::new(),
             })),
         }],
         receipts: vec![],

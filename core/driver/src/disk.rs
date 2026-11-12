@@ -1155,7 +1155,10 @@ fn settle(
     {
         let settled = match outcome {
             _ if !record.applies(&engine.trees, engine.commits.in_flight()) => {
-                engine.effects.failed(&record.effect_id).map_err(refused)?;
+                engine
+                    .effects
+                    .failed(&mut engine.trees, &record.effect_id)
+                    .map_err(refused)?;
                 engine.effects.unblock(&record.node);
                 Settled::Failed("L changed since it was planned".into())
             }
@@ -1189,7 +1192,7 @@ fn settle(
                     Reason::Overtaken => {
                         (engine.effects).overtaken(&mut engine.trees, &record.effect_id)
                     }
-                    _ => engine.effects.failed(&record.effect_id),
+                    _ => engine.effects.failed(&mut engine.trees, &record.effect_id),
                 }
                 .map_err(refused)?;
                 if retry && *reason == Reason::Interrupted {

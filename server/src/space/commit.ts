@@ -384,9 +384,23 @@ export class CommitApplier {
     return versionId;
   }
 
+  private mark(nodeId: string, pendingFor: string | null): void {
+    const key = pendingFor === null ? null : nameKey(pendingFor);
+    this.sql.exec(
+      "UPDATE nodes SET pending_for = CASE WHEN name_key = ? THEN NULL ELSE ? END, pending_by = CASE WHEN name_key = ? THEN NULL ELSE ? END WHERE node_id = ?",
+      key,
+      pendingFor,
+      key,
+      pendingFor === null ? null : this.ctx.committer.deviceId,
+      nodeId,
+    );
+  }
+
   private createDir(op: CreateDir): OpResult {
     const name = normalizeName(op.name);
     if (!name) return rejected("INVALID_NAME");
+    const pendingFor = pendingName(op.pendingFor);
+    if (pendingFor === undefined) return rejected("INVALID_NAME");
     if (getNode(this.sql, op.nodeId)) return rejected("ID_EXISTS");
     const parent = this.parentFor(op.parentId);
     if (typeof parent === "string") return rejected(parent);
@@ -398,6 +412,7 @@ export class CommitApplier {
     }
     const picked = this.pickName(parent.node_id, name, "");
     this.insertNode(op.nodeId, parent.node_id, picked.name, NodeKindValue.DIR, null, this.dev);
+    this.mark(op.nodeId, pendingFor);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
 
@@ -463,6 +478,8 @@ export class CommitApplier {
     if (!found.parent_id) return rejected("ROOT");
     const name = normalizeName(op.newName);
     if (!name) return rejected("INVALID_NAME");
+    const pendingFor = pendingName(op.pendingFor);
+    if (pendingFor === undefined) return rejected("INVALID_NAME");
     const target = this.node(op.newParentId);
     if (!target) return rejected("NOT_FOUND");
     if (target.kind !== NodeKindValue.DIR) return rejected("PARENT_NOT_DIR");
@@ -492,6 +509,7 @@ export class CommitApplier {
       const group = found.trash_group!;
       const picked = this.reviveOne(found, parent.node_id, name, this.dev);
       this.reviveGroup(found.node_id, group);
+      this.mark(found.node_id, pendingFor);
       return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
     }
     const picked = this.pickName(parent.node_id, name, found.node_id);
@@ -510,6 +528,7 @@ export class CommitApplier {
       op.from ? metaEditDev(found) : this.dev,
       found.node_id,
     );
+    this.mark(found.node_id, pendingFor);
     this.touch(found.node_id, found.parent_id);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
@@ -589,6 +608,11 @@ export class CommitApplier {
     const group = node.trash_group!;
     const picked = this.reviveOne(node, parent.node_id, name, this.dev);
     this.reviveGroup(node.node_id, group);
+    if (op.name || op.targetParentId) this.mark(node.node_id, null);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
+}
+
+function pendingName(name: string): string | null | undefined {
+  return name === "" ? null : normalizeName(name);
 }

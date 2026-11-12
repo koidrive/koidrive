@@ -436,6 +436,7 @@ async fn a_headless_device_pairs_links_and_follows_the_change_stream() {
             node_id: uuidv7(),
             parent_id: space.space_id.clone(),
             name: "From the owner".into(),
+            pending_for: String::new(),
         })),
     };
     let committed = session
@@ -1038,6 +1039,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 node_id: docs.clone(),
                 parent_id: space.space_id.clone(),
                 name: "docs".into(),
+                pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
                 node_id: note.clone(),
@@ -1218,6 +1220,7 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
                 node_id: docs.clone(),
                 parent_id: space.space_id.clone(),
                 name: "docs".into(),
+                pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
                 node_id: note.clone(),
@@ -1872,6 +1875,7 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
                 node_id: docs.clone(),
                 parent_id: space.space_id.clone(),
                 name: "Docs".into(),
+                pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
                 node_id: uuidv7(),
@@ -2137,6 +2141,7 @@ async fn refuses_local_replacements_and_edits_that_have_not_synced() {
                 node_id: docs.clone(),
                 parent_id: space.space_id.clone(),
                 name: "Docs".into(),
+                pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
                 node_id: original.clone(),

@@ -167,7 +167,7 @@ fn a_commit_that_does_not_fit_is_planned_again_in_halves_and_grows_back() {
     let mut sizes = vec![build(&mut commits, &mut trees, &mut ids).unwrap().ops.len()];
     for _ in 0..2 {
         assert_eq!(
-            commits.failed(&refusal(error::Code::LimitExceeded, 0)),
+            commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
             Ok(Failure::Split)
         );
         assert_eq!(commits.in_flight(), None);
@@ -210,7 +210,7 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [delete("d")]);
     assert_eq!(
-        commits.failed(&refusal(error::Code::LimitExceeded, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
         Ok(Failure::Split)
     );
     let mut second = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
@@ -254,7 +254,7 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
-        .failed(&refusal(error::Code::LimitExceeded, 0))
+        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
         .unwrap();
     for _ in 0..3 {
         let Some(commit) = build(&mut commits, &mut trees, &mut ids) else {
@@ -262,7 +262,7 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
         };
         assert_eq!(commit.ops.len(), 1);
         commits
-            .failed(&refusal(error::Code::LimitExceeded, 0))
+            .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
             .unwrap();
     }
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());

@@ -13,7 +13,7 @@ use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, Revisions,
 };
 use crate::restore::RestoreIntent;
-use crate::tree::{Kind, NodeId, Shape, pending_stem, same};
+use crate::tree::{Kind, NodeId, Shape, same};
 
 /// Whether `question` holds nodes a recovery classified, so that neither an effect nor a commit is
 /// planned for them. The entries created on this device go to a first link's question.
@@ -45,13 +45,16 @@ pub(crate) fn group(trees: &Trees, id: &str) -> Option<RecoveryGroup> {
     if live.is_some() && same(local, live) {
         return None;
     }
-    let pending = |local: &Shape, synced: &Shape| {
-        local.kind == Kind::Dir
-            && local.parent == synced.parent
-            && pending_stem(&synced.name) == Some(local.name.as_str())
+    let pending = |local: &Shape| {
+        remote.is_some_and(|r| {
+            !r.trashed
+                && local.kind == Kind::Dir
+                && local.parent == r.shape.parent
+                && r.pending_for.as_deref() == Some(local.name.as_str())
+        })
     };
     match (local, synced) {
-        (Some(l), _) if trees.adopted(id) && live.is_some_and(|r| pending(l, r)) => None,
+        (Some(l), _) if trees.adopted(id) && pending(l) => None,
         (Some(_), Some(_)) if same(local, synced) && remote.is_none() => {
             Some(RecoveryGroup::CreatedAfterRestorePoint)
         }

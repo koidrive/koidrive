@@ -638,6 +638,8 @@ const NODE_FIELDS: &[&str] = &[
     "meta_rev",
     "trash_group",
     "current",
+    "pending_for",
+    "pending_by",
 ];
 
 const CURRENT_FIELDS: &[&str] = &[
@@ -1198,6 +1200,7 @@ impl Run {
                             node_id: node_id.clone(),
                             parent_id: parent,
                             name: symbol,
+                            pending_for: String::new(),
                         })),
                     });
                     parent = node_id;
@@ -1205,8 +1208,8 @@ impl Run {
                 continue;
             }
             let allowed: &[&str] = match kind.as_str() {
-                "create_dir" => &["node", "parent", "name"],
-                "move" => &["node", "parent", "name", "from"],
+                "create_dir" => &["node", "parent", "name", "pending_for"],
+                "move" => &["node", "parent", "name", "pending_for", "from"],
                 "create_file" => &["node", "parent", "name", "content"],
                 "update_content" => &["node", "content", "resend"],
                 "delete" => &["node", "requires"],
@@ -1225,6 +1228,7 @@ impl Run {
                 None => String::new(),
             };
             let name = opt_str(body, "name")?.unwrap_or_default().to_owned();
+            let pending_for = opt_str(body, "pending_for")?.unwrap_or_default().to_owned();
             let mut content = || -> Result<Option<Content>, String> {
                 let Some(symbol) = opt_str(body, "content")? else {
                     return Ok(None);
@@ -1237,6 +1241,7 @@ impl Run {
                     node_id: node,
                     parent_id: parent,
                     name,
+                    pending_for,
                 }),
                 "create_file" => op::Op::CreateFile(CreateFile {
                     node_id: node,
@@ -1264,6 +1269,7 @@ impl Run {
                             })
                         }
                     },
+                    pending_for,
                 }),
                 "delete" => op::Op::Delete(Delete {
                     node_id: node,
@@ -1497,6 +1503,8 @@ impl Run {
             trash_group,
             current,
             edit_rev: _,
+            pending_for,
+            pending_by,
         } = node;
         let trash_group = if trash_group.is_empty() {
             Value::Null
@@ -1517,6 +1525,14 @@ impl Run {
             "meta_rev": meta_rev,
             "trash_group": trash_group,
             "current": current,
+            "pending_for": match pending_for.as_str() {
+                "" => Value::Null,
+                name => name.into(),
+            },
+            "pending_by": match pending_by.as_str() {
+                "" => Value::Null,
+                device_id => self.device_symbol(device_id)?.into(),
+            },
         }))
     }
 
@@ -1531,11 +1547,7 @@ impl Run {
         } = version;
         let mut devices: Vec<(&String, &Session)> = self.devices.iter().collect();
         devices.sort_by_key(|(symbol, _)| *symbol);
-        let device = devices
-            .iter()
-            .find(|(_, s)| s.device_id == *device_id)
-            .map(|(symbol, _)| symbol.to_string())
-            .ok_or_else(|| format!("device {device_id} is no scenario device"))?;
+        let device = self.device_symbol(device_id)?;
         let user = devices
             .iter()
             .find(|(_, s)| s.user_id == *user_id)
@@ -1980,6 +1992,8 @@ impl Run {
             trash_group,
             current,
             edit_rev,
+            pending_for,
+            pending_by,
         } = got;
         let symbol = req(opt_str(want, "node"), "node")?;
         self.expect_id(space, symbol, node_id)
@@ -2040,6 +2054,28 @@ impl Run {
                 return Err(format!("trash_group must be a string or null, got {other}"));
             }
         }
+        match want.get("pending_for") {
+            None => {}
+            Some(Value::Null) if pending_for.is_empty() => {}
+            Some(Value::String(name)) if pending_for == name => {}
+            Some(Value::Null | Value::String(_)) => {
+                return Err(differs("pending_for", pending_for));
+            }
+            Some(other) => {
+                return Err(format!("pending_for must be a string or null, got {other}"));
+            }
+        }
+        match want.get("pending_by") {
+            None => {}
+            Some(Value::Null) if pending_by.is_empty() => {}
+            Some(Value::String(device)) if *pending_by == self.session_of(device)?.device_id => {}
+            Some(Value::Null | Value::String(_)) => {
+                return Err(differs("pending_by", pending_by));
+            }
+            Some(other) => {
+                return Err(format!("pending_by must be a device or null, got {other}"));
+            }
+        }
         if let Some(content) = opt_str(want, "content")? {
             self.check_content(current.as_ref().and_then(|v| v.content.as_ref()), content)
                 .map_err(|e| format!("{symbol}: {e}"))?;
@@ -2096,6 +2132,16 @@ impl Run {
             (want, None) => Err(format!("no content, expected {want}")),
             (other, Some(_)) => Err(format!("content must be a string or null, got {other}")),
         }
+    }
+
+    fn device_symbol(&self, device_id: &str) -> Result<String, String> {
+        let mut devices: Vec<(&String, &Session)> = self.devices.iter().collect();
+        devices.sort_by_key(|(symbol, _)| *symbol);
+        devices
+            .iter()
+            .find(|(_, s)| s.device_id == device_id)
+            .map(|(symbol, _)| symbol.to_string())
+            .ok_or_else(|| format!("device {device_id} is no scenario device"))
     }
 
     fn session_of(&self, symbol: &str) -> Result<Session, String> {

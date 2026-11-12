@@ -71,6 +71,8 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             meta_edit_rev: *rev,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -83,6 +85,13 @@ fn live<'a>(id: &'a str, shape: Shape) -> Remote<'a> {
     Remote(id, shape, false, 1)
 }
 
+fn mark(trees: &mut Trees, id: &str, stem: &str) {
+    let mut node = trees.remote().get(id).expect("a node of R").clone();
+    node.pending_for = Some(stem.into());
+    trees.set_remote(id.into(), node);
+    trees.settle();
+}
+
 fn rewind() -> RecoveryCause {
     RecoveryCause::rewind(4, NOW as i64)
 }
@@ -91,14 +100,14 @@ fn recovered(trees: &mut Trees, device_seq: u64) -> (Commits, IdGen) {
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
-    assert_eq!(commits.build(trees, &mut ids, NOW, OLD, 9), None);
+    assert_eq!(commits.build(trees, &mut ids, NOW, OLD, "me", 9), None);
     commits.recover(trees, device_seq, &rewind(), &mut ids, NOW);
     trees.settle();
     (commits, ids)
 }
 
 fn ops(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Vec<(&'static str, String)> {
-    let Some(commit) = commits.build(trees, ids, NOW, NEW, 1) else {
+    let Some(commit) = commits.build(trees, ids, NOW, NEW, "me", 1) else {
         return Vec::new();
     };
     (commit.ops.iter())
@@ -250,7 +259,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
     trees.set_remote(
         "n".into(),
         RemoteNode {
@@ -262,6 +271,8 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
             meta_edit_rev: 2,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -299,7 +310,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
     trees.set_remote(
         "n".into(),
         RemoteNode {
@@ -311,6 +322,8 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
             meta_edit_rev: 2,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -447,6 +460,8 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
             meta_edit_rev: 1,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -489,6 +504,8 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
             meta_edit_rev: 2,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -529,6 +546,8 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
                 meta_edit_rev: 2,
                 trash_group: String::new(),
                 version_id: String::new(),
+                pending_for: None,
+                pending_by: None,
             },
         );
         trees.settle();
@@ -574,7 +593,9 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    let sent = commits.build(&mut trees, &mut ids, NOW, OLD, 1).cloned();
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, OLD, "me", 1)
+        .cloned();
     assert_eq!(sent.as_ref().map(|commit| commit.device_seq), Some(1));
     let welcome = Welcome {
         history_id: OLD.into(),
@@ -588,7 +609,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
     assert_eq!(commits.accepted(), 4);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert!(commits.decide(&question.id, Answer::Publish));
-    let commit = commits.build(&mut trees, &mut ids, NOW, NEW, Base::default());
+    let commit = commits.build(&mut trees, &mut ids, NOW, NEW, "me", Base::default());
     let commit = commit.expect("the published edit");
     assert_eq!(commit.device_seq, 5);
     assert_ne!(Some(&commit.commit_id), sent.as_ref().map(|c| &c.commit_id));
@@ -603,7 +624,11 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    assert!(commits.build(&mut trees, &mut ids, NOW, OLD, 1).is_some());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, OLD, "me", 1)
+            .is_some()
+    );
     commits.enter_recovery(rewind());
     let applied = OpResult {
         code: op_result::Code::Applied as i32,
@@ -819,6 +844,8 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
             meta_edit_rev: 1,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -836,12 +863,28 @@ fn a_folder_the_server_holds_under_its_pending_name_with_nothing_more_gets_its_n
             live("c", file("p", "kept.txt", 3)),
         ],
     );
+    mark(&mut trees, "p", "x");
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert_eq!(commits.questions(), []);
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "p".into())]
     );
+}
+
+#[test]
+fn a_folder_a_user_named_like_a_pending_name_is_not_taken_for_this_devices_folder() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "x")), ("f", file("d", "kept.txt", 3))],
+        &[],
+        &[
+            live("p", dir(ROOT, "x (pending)")),
+            live("c", file("p", "kept.txt", 3)),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["d", "f"]);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
 #[test]
@@ -854,6 +897,7 @@ fn a_folder_the_server_holds_under_its_pending_name_with_more_than_this_device_i
             live("c", file("p", "other-device.txt", 3)),
         ],
     );
+    mark(&mut trees, "p", "x");
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["d"]);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -938,6 +982,8 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
         meta_edit_rev: 2,
         trash_group: String::new(),
         version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
     };
     trees.set_remote("n".into(), renamed);
     trees.settle();
@@ -1040,7 +1086,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
     assert_eq!(again.answer, None);
@@ -1089,7 +1135,7 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
         code: error::Code::LimitExceeded as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&limit), Ok(Failure::Split));
+    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
     assert!(commits.decide(&question.id, Answer::Publish));
@@ -1138,6 +1184,8 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
             meta_edit_rev: 2,
             trash_group: String::new(),
             version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -1421,7 +1469,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
         code: error::Code::LimitExceeded as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&limit), Ok(Failure::Split));
+    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
     assert!(commits.decide(&question.id, Answer::Publish));
@@ -1473,13 +1521,17 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    assert!(commits.build(&mut trees, &mut ids, NOW, OLD, 1).is_some());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, OLD, "me", 1)
+            .is_some()
+    );
     let mismatch = Error {
         code: error::Code::HistoryMismatch as i32,
         ..Default::default()
     };
     assert!(matches!(
-        commits.failed(&mismatch),
+        commits.failed(&mut trees, &mismatch),
         Ok(Failure::Halted(Halt::Recovery(_)))
     ));
     let welcome = Welcome {
@@ -1492,5 +1544,132 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
     assert_eq!(
         commits.halted(),
         Some(Halt::Recovery(RecoveryCause::rewind(4, NOW as i64)))
+    );
+}
+
+fn rewound_folder(stem: Option<&str>) -> Trees {
+    let shape = dir(ROOT, "A (pending)");
+    let mut trees = trees(&[("p", shape.clone())], &[], &[live("p", shape.clone())]);
+    if let Some(stem) = stem {
+        mark(&mut trees, "p", stem);
+    }
+    trees.set_synced("p".into(), Some(shape));
+    trees.remove_remote("p");
+    trees.settle();
+    trees
+}
+
+fn dropped_from_s() -> Trees {
+    let mut trees = rewound_folder(Some("A"));
+    trees.set_synced("p".into(), None);
+    trees.settle();
+    assert_eq!(
+        trees.state().unsent_marks,
+        [("p".into(), "A".into())].into()
+    );
+    trees
+}
+
+fn created_dirs(
+    commits: &mut Commits,
+    trees: &mut Trees,
+    ids: &mut IdGen,
+) -> Vec<(String, String)> {
+    let Some(commit) = commits.build(trees, ids, NOW, NEW, "me", 1) else {
+        return Vec::new();
+    };
+    (commit.ops.iter())
+        .filter_map(|op| match &op.op {
+            Some(op::Op::CreateDir(create)) => {
+                Some((create.name.clone(), create.pending_for.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_folder_kept_after_a_rewind_is_created_again_pending_for_the_name_s_marked() {
+    let mut trees = rewound_folder(Some("A"));
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["p"]);
+    assert!(commits.decide(&question.id, Answer::Keep));
+    assert_eq!(
+        created_dirs(&mut commits, &mut trees, &mut ids),
+        [("A (pending)".into(), "A".into())]
+    );
+}
+
+#[test]
+fn a_folder_a_user_named_like_a_pending_name_is_created_again_unmarked_after_a_rewind() {
+    let mut trees = rewound_folder(None);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["p"]);
+    assert!(commits.decide(&question.id, Answer::Keep));
+    assert_eq!(
+        created_dirs(&mut commits, &mut trees, &mut ids),
+        [("A (pending)".into(), String::new())]
+    );
+}
+
+#[test]
+fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
+    let before = dropped_from_s();
+    let mut trees = Trees::new(ROOT);
+    for (id, node) in before.local().iter() {
+        trees.set_local(id.clone(), node.clone());
+    }
+    trees.restore(before.state()).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    assert_eq!(
+        created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
+        [("A (pending)".into(), "A".into())]
+    );
+}
+
+#[test]
+fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
+    let mut trees = dropped_from_s();
+    let node = RemoteNode {
+        meta_edit_rev: 5,
+        shape: dir(ROOT, "A (pending)"),
+        trashed: false,
+        content_rev: 5,
+        meta_rev: 5,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: Some("A".into()),
+        pending_by: Some("me".into()),
+        edit_rev: 5,
+    };
+    trees.set_remote("p".into(), node);
+    trees.settle();
+    assert!(trees.state().unsent_marks.is_empty());
+}
+
+#[test]
+fn a_mark_s_dropped_goes_when_the_user_renames_the_folder() {
+    let mut trees = dropped_from_s();
+    let mut node = trees.local().get("p").unwrap().clone();
+    node.shape.name = "B".into();
+    trees.set_local("p".into(), node);
+    trees.settle();
+    assert!(trees.state().unsent_marks.is_empty());
+    assert_eq!(
+        created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
+        [("B".into(), String::new())]
+    );
+}
+
+#[test]
+fn a_mark_s_dropped_goes_when_the_user_deletes_the_folder() {
+    let mut trees = dropped_from_s();
+    trees.remove_local("p");
+    trees.settle();
+    assert!(trees.state().unsent_marks.is_empty());
+    assert_eq!(
+        created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
+        []
     );
 }

@@ -89,6 +89,8 @@ pub(crate) struct Node {
     parent_dev: String,
     cur_version_id: Option<String>,
     trash_group: Option<String>,
+    pending_for: Option<String>,
+    pending_by: Option<String>,
     /// Insertion order, standing in for SQLite's rowid where the server reads rows without ORDER BY.
     row: u64,
 }
@@ -155,6 +157,8 @@ impl State {
             meta_rev: node.meta_rev,
             meta_edit_rev: node.meta_edit_rev,
             trash_group: node.trash_group.clone().unwrap_or_default(),
+            pending_for: node.pending_for.clone().unwrap_or_default(),
+            pending_by: node.pending_by.clone().unwrap_or_default(),
             current: node
                 .cur_version_id
                 .as_ref()
@@ -423,6 +427,8 @@ impl SpaceDo {
             parent_dev: String::new(),
             cur_version_id: None,
             trash_group: None,
+            pending_for: None,
+            pending_by: None,
             row: 1,
         };
         Self {
@@ -1174,6 +1180,7 @@ mod tests {
                 node_id: dir.clone(),
                 parent_id: root,
                 name: "legacy".into(),
+                pending_for: String::new(),
             }),
         );
         commit(
@@ -1193,6 +1200,7 @@ mod tests {
                 node_id: child,
                 parent_id: dir.clone(),
                 name: "child".into(),
+                pending_for: String::new(),
             }),
         );
         assert_eq!(result.results[0].code(), op_result::Code::Applied);

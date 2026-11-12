@@ -15,7 +15,9 @@ use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
 use koidrive_proto::v1::error;
 use koidrive_sim::world::disk::Place;
-use koidrive_sim::world::{Action, Cut, Failure, NAMES, Outcome, Reply, Step, TEXTS, World};
+use koidrive_sim::world::{
+    Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
+};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{RngSeed, TestRunner};
@@ -302,7 +304,7 @@ fn rewinds_converge_from_seed_122() {
 }
 
 #[test]
-#[ignore = "a folder keeps a pending name no user gave until the server marks pending names (GUN-547)"]
+#[ignore = "a store rollback republishes a download at a name the server has since moved it from (GUN-557)"]
 fn rewinds_converge_from_seed_605() {
     converges_from(test_name!(rewinds_converge_from_seed_605), 605, 4096);
 }
@@ -501,7 +503,10 @@ const EVENTS: [&str; 29] = [
 ];
 
 fn user(kind: u8, target: usize, parent: usize, name: &str) -> Step {
-    let name = NAMES.iter().position(|other| *other == name).unwrap();
+    let name = match name {
+        PENDING_NAME => NAMES.len(),
+        name => NAMES.iter().position(|other| *other == name).unwrap(),
+    };
     Step::User(Action {
         kind,
         target,
@@ -1445,6 +1450,220 @@ fn a_folder_revived_at_its_pending_name_after_its_delete_landed_takes_its_name()
         ],
     ];
     converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_swap_whose_store_rolls_back_after_its_pending_name_lands_ends_at_its_name() {
+    converge(
+        2,
+        &[
+            vec![(0, file("a")), (0, Step::CopyStore)],
+            vec![
+                (0, folder("A")),
+                (0, rename(0, 1, "a")),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::RollBack),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rewind_to_a_copy_taken_mid_swap_ends_at_the_swapped_name() {
+    converge(
+        2,
+        &[
+            vec![(0, file("c.txt"))],
+            vec![
+                (1, folder("C.TXT")),
+                (1, rename(0, 1, "a")),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (0, Step::Backup),
+                (0, Step::Rewind),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_pending_folder_the_user_deletes_during_a_recovery_comes_back_at_its_name() {
+    converge(
+        2,
+        &[
+            vec![(0, file("a")), (0, Step::CopyStore)],
+            vec![
+                (0, folder("A")),
+                (0, rename(0, 1, "a")),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::RollBack),
+                (0, delete(1)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_pending_folder_whose_device_never_returns_is_renamed_by_another_device() {
+    let world = converge(
+        2,
+        &[
+            vec![(0, file("a"))],
+            vec![
+                (0, folder("A")),
+                (0, rename(0, 1, "a")),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
+                (0, Step::Leave),
+            ],
+        ],
+    )
+    .unwrap();
+    let entries = world.devices[1].disk.entries();
+    let folder = (entries.values())
+        .find(|entry| entry.place == Place::Root)
+        .expect("a folder at the root");
+    assert_eq!(folder.name, "A");
+}
+
+#[test]
+fn a_folder_another_device_finished_then_rewound_before_its_disk_followed_is_renamed_by_the_device_that_kept_it()
+ {
+    let mut lost = vec![
+        (0, BACKUP),
+        (0, folder("A")),
+        (0, rename(0, 1, "a")),
+        (0, Step::Work(0)),
+        (0, Step::Work(0)),
+        (0, Step::Work(0)),
+    ];
+    lost.extend(std::iter::repeat_n((1, Step::Work(0)), 8));
+    lost.extend([(0, Step::Leave), (1, Step::Rewind), (1, Step::Connect)]);
+    lost.extend(std::iter::repeat_n((1, Step::Work(0)), 4));
+    lost.extend([(1, Step::Answer(0)), (1, Step::Work(0)), (1, Step::Work(0))]);
+    let world = converge(2, &[vec![(0, file("a"))], lost]).unwrap();
+    let entries = world.devices[1].disk.entries();
+    let folder = (entries.values())
+        .find(|entry| entry.place == Place::Root && entry.content.is_none())
+        .expect("a folder at the root");
+    assert_eq!(folder.name, "A (conflict from device-1 2026-11-09)");
+}
+
+#[test]
+fn a_swap_split_over_commits_ends_at_its_names_while_another_device_finishes_on_disk() {
+    let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+    let mut finished_elsewhere = 0;
+    for between in 0..16 {
+        let mut swap = vec![
+            (0, rename(0, 0, "ss")),
+            (0, rename(1, 0, "a")),
+            (0, rename(0, 0, "b")),
+            (0, SCAN),
+            (0, refused),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (0, refused),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+        ];
+        swap.extend(std::iter::repeat_n((1, Step::Work(0)), between));
+        swap.extend([(0, COMMIT), (0, COMMIT), (0, DELIVER)]);
+        let world = converge(2, &[vec![(0, folder("a")), (0, folder("b"))], swap]).unwrap();
+        assert_eq!(
+            world.seen["commit refused for its size, planned again in parts"],
+            2
+        );
+        for device in &world.devices {
+            let names: BTreeSet<String> = (device.disk.entries().values())
+                .filter(|entry| entry.place == Place::Root)
+                .map(|entry| entry.name.clone())
+                .collect();
+            assert_eq!(names, BTreeSet::from(["a".into(), "b".into()]), "{between}");
+        }
+        finished_elsewhere += usize::from(world.devices[1].engine.commits.accepted() > 0);
+    }
+    assert!(finished_elsewhere > 0);
+}
+
+#[test]
+fn a_finish_another_device_sent_before_the_setter_finished_and_its_user_renamed_again_keeps_the_newer_name()
+ {
+    let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+    for between in 0..16 {
+        let mut swap = vec![
+            (0, rename(0, 0, "ss")),
+            (0, rename(1, 0, "a")),
+            (0, rename(0, 0, "b")),
+            (0, SCAN),
+            (0, refused),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (0, refused),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+        ];
+        swap.extend(std::iter::repeat_n((1, Step::Work(0)), between));
+        swap.extend([
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (0, rename(0, 0, "c.txt")),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+        ]);
+        let world = converge(2, &[vec![(0, folder("a")), (0, folder("b"))], swap]).unwrap();
+        for device in &world.devices {
+            let names: BTreeSet<String> = (device.disk.entries().values())
+                .filter(|entry| entry.place == Place::Root)
+                .map(|entry| entry.name.clone())
+                .collect();
+            assert_eq!(
+                names,
+                BTreeSet::from(["a".into(), "c.txt".into()]),
+                "{between}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_store_rolled_back_after_finishing_another_devices_mark_publishes_no_pending_folder() {
+    let mut lost = vec![
+        (1, Step::CopyStore),
+        (0, folder("A")),
+        (0, rename(0, 1, "a")),
+    ];
+    lost.extend(std::iter::repeat_n((0, Step::Work(0)), 3));
+    lost.extend(std::iter::repeat_n((1, Step::Work(0)), 8));
+    lost.extend([(0, Step::Drop), (1, Step::RollBack), (1, Step::Connect)]);
+    lost.extend(std::iter::repeat_n((1, Step::Work(0)), 10));
+    let world = converge(2, &[vec![(0, file("a"))], lost]).unwrap();
+    for device in &world.devices {
+        let folders: Vec<&str> = (device.disk.entries().values())
+            .filter(|entry| entry.place == Place::Root && entry.content.is_none())
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(folders, ["A"]);
+    }
 }
 
 const BACKUP: Step = Step::Backup;
@@ -4362,20 +4581,291 @@ fn a_second_loss_before_the_download_moves_the_file_keeps_the_authors_name() {
     }
 }
 
-fn owe_a_folder_its_name_while_another_device_changes_it(lose_answer: bool, change: Step) -> World {
-    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
-    let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
-    steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
-    steps.push((0, if lose_answer { Step::Drop } else { DELIVER }));
-    steps.extend([(1, Step::Work(0)); 8]);
-    steps.extend([(1, change), (1, SCAN)]);
-    steps.extend([(1, Step::Work(0)); 8]);
-    if lose_answer {
-        steps.push((0, Step::Connect));
-    }
-    steps.extend([(0, Step::Work(0)); 16]);
-    world.phase(1, &steps).unwrap();
-    world
+#[test]
+fn a_pending_file_whose_name_its_conflict_copy_takes_is_renamed_by_the_device_that_marked_it() {
+    converge(
+        3,
+        &[
+            vec![
+                (1, Step::Work(16274642324747499124)),
+                (1, Step::Connect),
+                (0, Step::Effect(Outcome::Run)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 4,
+                        target: 4540723837931170798,
+                        parent: 13161747283576780999,
+                        name: 5,
+                        text: 3,
+                    }),
+                ),
+                (0, Step::Scan),
+                (1, Step::Work(14001882461254173322)),
+                (1, Step::Deliver(10280263283177231077)),
+                (0, Step::Effect(Outcome::Crash(Cut::Placed))),
+                (0, Step::Work(3150538074527436651)),
+                (1, Step::Drop),
+                (2, Step::Commit(Reply::Served)),
+                (0, Step::Commit(Reply::Served)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 3074524351106235926,
+                        parent: 15622149868922993437,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Work(12709215057847084410)),
+                (2, Step::Work(13195197093511105023)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 2007127410610402069,
+                        parent: 14009461238078843770,
+                        name: 2,
+                        text: 3,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 4636927101850804754,
+                        parent: 7194277078085297665,
+                        name: 2,
+                        text: 1,
+                    }),
+                ),
+                (0, Step::Work(8321255590853366247)),
+                (2, Step::Scan),
+                (1, Step::Effect(Outcome::Crash(Cut::Done))),
+                (2, Step::Work(13496689005560533593)),
+                (0, Step::Drop),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 966963481405597494,
+                        parent: 8245514377295365874,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 225941396932957162,
+                        parent: 14792149289048557706,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Commit(Reply::Served)),
+                (1, Step::Commit(Reply::NoChunks)),
+                (0, Step::Drop),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 9006010326599423669,
+                        parent: 12030360673653429816,
+                        name: 6,
+                        text: 1,
+                    }),
+                ),
+                (0, Step::Crash),
+                (0, Step::Work(10532977848492514630)),
+                (0, Step::Deliver(9482183767260581062)),
+                (2, Step::Scan),
+                (2, Step::Work(7987139506101263081)),
+                (0, Step::Work(10342087221633046513)),
+                (1, Step::Commit(Reply::Served)),
+                (1, Step::Work(6790053865611655878)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 7525507307544980790,
+                        parent: 11794627914537811387,
+                        name: 3,
+                        text: 3,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 4222423626720987175,
+                        parent: 7107160187266153721,
+                        name: 0,
+                        text: 2,
+                    }),
+                ),
+            ],
+            vec![
+                (1, Step::Effect(Outcome::Crash(Cut::Quarantined))),
+                (1, Step::Effect(Outcome::Fail)),
+                (0, Step::Commit(Reply::Served)),
+                (1, Step::Work(14776020963067605780)),
+                (1, Step::Duplicate(5337902825096339581)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 13901156469230108672,
+                        parent: 11150338100498388762,
+                        name: 2,
+                        text: 3,
+                    }),
+                ),
+                (2, Step::Work(7038216941225261646)),
+                (0, Step::Work(2320670095518912407)),
+                (2, Step::Effect(Outcome::Run)),
+                (2, Step::Work(6702283563481621023)),
+                (0, Step::Effect(Outcome::Crash(Cut::Placed))),
+                (2, Step::Work(9488113402077087457)),
+                (0, Step::Work(918825349661777991)),
+                (2, Step::Deliver(7230566688530807512)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 11435112669801920197,
+                        parent: 1797153937022296474,
+                        name: 4,
+                        text: 2,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 7120082117506032661,
+                        parent: 6750420819364943549,
+                        name: 0,
+                        text: 1,
+                    }),
+                ),
+                (1, Step::Commit(Reply::Served)),
+                (2, Step::Commit(Reply::Served)),
+                (0, Step::Work(8407811867281122132)),
+                (2, Step::Commit(Reply::Served)),
+                (2, Step::Work(1884201276037343489)),
+                (1, Step::Work(7135757195114882032)),
+                (2, Step::Work(14687530289417874012)),
+                (2, Step::Work(2956825658628593075)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 6865901930919790778,
+                        parent: 8288472523108843720,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Work(5124846217184249120)),
+                (0, Step::Deliver(10658715262855600137)),
+                (0, Step::Commit(Reply::Refused(error::Code::LimitExceeded))),
+                (2, Step::Work(15438777473916274418)),
+                (2, Step::Commit(Reply::Served)),
+                (1, Step::Crash),
+                (0, Step::Effect(Outcome::Crash(Cut::Done))),
+                (
+                    1,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 17703314385067399982,
+                        parent: 17656894473945846841,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Connect),
+                (2, Step::Duplicate(15079964782730117166)),
+                (0, Step::Work(17321021939675765847)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 3475983964813192413,
+                        parent: 3142939760521600814,
+                        name: 1,
+                        text: 1,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 1603506240037526712,
+                        parent: 12162886444757042084,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Work(11201822032332675027)),
+            ],
+            vec![
+                (2, Step::Scan),
+                (2, Step::Crash),
+                (2, Step::Drop),
+                (0, Step::Work(6015854605376741563)),
+                (2, Step::Work(14327447256282067683)),
+                (2, Step::Work(13842812011217849245)),
+                (1, Step::Work(14146307605526031779)),
+                (2, Step::Duplicate(16712681527797065823)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 4,
+                        target: 337520903820340153,
+                        parent: 3629187529615689769,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Scan),
+                (0, Step::Effect(Outcome::Run)),
+                (2, Step::Crash),
+                (2, Step::Duplicate(18096242046457636208)),
+                (1, Step::Deliver(736796987841017770)),
+                (0, Step::Commit(Reply::Served)),
+                (0, Step::Work(13078245784386167280)),
+                (0, Step::Effect(Outcome::Run)),
+                (2, Step::Connect),
+                (1, Step::Effect(Outcome::Run)),
+                (0, Step::Scan),
+                (0, Step::Deliver(3633961901045387142)),
+                (0, Step::Connect),
+                (1, Step::Work(5790155795775849372)),
+                (1, Step::Work(17994945317265741320)),
+                (0, Step::Commit(Reply::NoChunks)),
+                (1, Step::Commit(Reply::Served)),
+                (2, Step::Work(11664352604933389001)),
+                (1, Step::Deliver(3379023900342304746)),
+                (0, Step::Scan),
+                (1, Step::Drop),
+                (1, Step::Work(4608420094548971993)),
+                (1, Step::Scan),
+                (0, Step::Deliver(8678034364532486451)),
+                (0, Step::Connect),
+                (2, Step::Work(5903877029157569881)),
+                (1, Step::Work(2457473270522847108)),
+                (2, Step::Duplicate(10767262520509640516)),
+                (2, Step::Duplicate(4851272950074024160)),
+                (1, Step::Deliver(11340430273384828348)),
+                (1, Step::Work(15569514617193981134)),
+                (2, Step::Commit(Reply::Served)),
+            ],
+        ],
+    )
+    .unwrap();
 }
 
 fn names(world: &World) -> Vec<Vec<&str>> {
@@ -4390,28 +4880,133 @@ fn names(world: &World) -> Vec<Vec<&str>> {
         .collect()
 }
 
+fn owe_a_folder_its_name_while_another_device_changes_it(lose_answer: bool, change: Step) -> World {
+    owe_a_folder_its_name_after_downloads(lose_answer, change, 8).unwrap()
+}
+
+fn owe_a_folder_its_name_after_downloads(
+    lose_answer: bool,
+    change: Step,
+    downloads: usize,
+) -> Result<World, Failure> {
+    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
+    let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
+    steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
+    steps.push((0, if lose_answer { Step::Drop } else { DELIVER }));
+    steps.extend(vec![(1, Step::Work(0)); downloads]);
+    steps.extend([(1, change), (1, SCAN)]);
+    steps.extend([(1, Step::Work(0)); 8]);
+    if lose_answer {
+        steps.push((0, Step::Connect));
+    }
+    steps.extend([(0, Step::Work(0)); 16]);
+    world.phase(1, &steps)?;
+    Ok(world)
+}
+
+#[test]
+fn a_folder_deleted_at_any_point_before_its_owed_rename_stays_deleted() {
+    for downloads in 0..=8 {
+        for lose_answer in [false, true] {
+            let world = owe_a_folder_its_name_after_downloads(lose_answer, delete(1), downloads)
+                .unwrap_or_else(|failure| {
+                    panic!("{downloads} downloads, lost {lose_answer}: {failure}")
+                });
+            let kept: &[&str] = if downloads < 5 { &["A", "a"] } else { &[] };
+            assert_eq!(
+                disk_names(&world),
+                [kept, kept],
+                "{downloads} downloads, lost {lose_answer}"
+            );
+        }
+    }
+}
+
+fn disk_names(world: &World) -> Vec<Vec<&str>> {
+    (world.devices.iter())
+        .map(|device| {
+            let mut names: Vec<&str> = (device.disk.entries().values())
+                .map(|entry| entry.name.as_str())
+                .collect();
+            names.sort();
+            names
+        })
+        .collect()
+}
+
 #[test]
 fn a_folder_deleted_before_its_creator_hears_it_landed_stays_deleted() {
     let world = owe_a_folder_its_name_while_another_device_changes_it(true, delete(1));
-    assert_eq!(names(&world), [Vec::<&str>::new(), vec![]]);
+    assert_eq!(disk_names(&world), [Vec::<&str>::new(), vec![]]);
 }
 
 #[test]
 fn a_folder_deleted_before_it_takes_its_own_name_stays_deleted() {
     let world = owe_a_folder_its_name_while_another_device_changes_it(false, delete(1));
-    assert_eq!(names(&world), [Vec::<&str>::new(), vec![]]);
+    assert_eq!(disk_names(&world), [Vec::<&str>::new(), vec![]]);
 }
 
 #[test]
 fn a_folder_renamed_before_it_takes_its_own_name_keeps_that_name() {
     let world = owe_a_folder_its_name_while_another_device_changes_it(false, rename(1, 0, "b"));
-    assert_eq!(names(&world), [["a", "b"], ["a", "b"]]);
+    assert_eq!(disk_names(&world), [["a", "b"], ["a", "b"]]);
 }
 
 #[test]
 fn a_folder_renamed_before_its_creator_hears_it_landed_keeps_that_name() {
     let world = owe_a_folder_its_name_while_another_device_changes_it(true, rename(1, 0, "b"));
-    assert_eq!(names(&world), [["a", "b"], ["a", "b"]]);
+    assert_eq!(disk_names(&world), [["a", "b"], ["a", "b"]]);
+}
+
+fn rename_a_folder_to_its_owed_name_and_back(downloads: usize, works: usize) -> World {
+    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
+    let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
+    steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT), (0, DELIVER)]);
+    steps.extend(vec![(1, Step::Work(0)); downloads]);
+    steps.extend([(1, rename(1, 0, "A")), (1, SCAN)]);
+    steps.extend(vec![(1, Step::Work(0)); works]);
+    steps.extend([(1, rename(1, 0, PENDING_NAME)), (1, SCAN)]);
+    steps.extend([(1, Step::Work(0)); 8]);
+    steps.extend([(0, Step::Work(0)); 16]);
+    steps.extend([(1, Step::Work(0)); 8]);
+    world.phase(1, &steps).unwrap();
+    world
+}
+
+#[test]
+fn a_folder_renamed_to_its_owed_name_and_back_while_the_disk_takes_it_keeps_the_pending_name() {
+    let world = rename_a_folder_to_its_owed_name_and_back(6, 1);
+    assert_eq!(
+        disk_names(&world),
+        [[PENDING_NAME, "a"], [PENDING_NAME, "a"]]
+    );
+}
+
+#[test]
+fn a_folder_renamed_back_once_its_owed_rename_is_built_keeps_the_pending_name() {
+    let world = rename_a_folder_to_its_owed_name_and_back(7, 1);
+    assert_eq!(
+        disk_names(&world),
+        [[PENDING_NAME, "a"], [PENDING_NAME, "a"]]
+    );
+}
+
+#[test]
+fn a_folder_renamed_back_once_its_owed_rename_is_sent_keeps_the_pending_name() {
+    let world = rename_a_folder_to_its_owed_name_and_back(7, 2);
+    assert_eq!(
+        disk_names(&world),
+        [[PENDING_NAME, "a"], [PENDING_NAME, "a"]]
+    );
+}
+
+#[test]
+fn a_folder_renamed_twice_while_its_owed_rename_is_in_flight_keeps_the_pending_name() {
+    let world = rename_a_folder_to_its_owed_name_and_back(8, 1);
+    assert_eq!(
+        disk_names(&world),
+        [[PENDING_NAME, "a"], [PENDING_NAME, "a"]]
+    );
 }
 
 #[test]
@@ -4423,7 +5018,7 @@ fn a_folder_deleted_while_its_creator_writes_into_it_takes_its_own_name() {
     steps.extend([(1, Step::Work(0)); 10]);
     steps.extend([(1, delete(1)), (1, SCAN)]);
     world.phase(1, &steps).unwrap();
-    assert_eq!(names(&world), [["A", "c.txt"], ["A", "c.txt"]]);
+    assert_eq!(disk_names(&world), [["A", "c.txt"], ["A", "c.txt"]]);
 }
 
 #[test]
