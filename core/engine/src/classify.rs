@@ -941,6 +941,12 @@ impl Trees {
         }
     }
 
+    pub(crate) fn undo_disk_first(&mut self, id: &str) {
+        if let Some(finish) = self.pending_finishes.get_mut(id) {
+            finish.disk_first = false;
+        }
+    }
+
     pub(crate) fn send_finish(&mut self, id: &str) {
         if let Some(finish) = self.pending_finishes.get_mut(id) {
             finish.sending = true;

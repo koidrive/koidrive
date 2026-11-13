@@ -1523,6 +1523,51 @@ fn a_file_another_device_deletes_while_this_device_edits_it_takes_its_owed_name_
 }
 
 #[test]
+fn a_folder_this_device_puts_back_at_its_pending_name_takes_the_name_the_server_gives_its_finish() {
+    let (mut commits, mut trees, mut ids) = owing_its_name(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a (pending)")),
+            Some(remote(dir(ROOT, "a (pending)"))),
+        ),
+        synced("x", file(ROOT, "A", 1)),
+    ]);
+    let mut state = trees.state();
+    state.pending_finishes.insert("a".into(), PendingFinish {
+        parent: ROOT.into(),
+        pending: "a (pending)".into(),
+        name: "a".into(),
+        origin: FinishOrigin::Mark { meta_rev: 1 },
+        disk_first: true,
+        base: None,
+        sending: false,
+    });
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    trees.revert("a".into());
+    trees.settle();
+    effects_for(&mut trees, &mut ids, "a");
+    let at = |trees: &Trees| (trees.local().get("a")).map(|local| local.shape.name.clone());
+    assert_eq!(at(&trees).as_deref(), Some("a (pending)"));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("a", ROOT, "a")]);
+    let renamed = OpResult {
+        name: "a (conflict)".into(),
+        ..outcome(op_result::Code::AppliedRenamed)
+    };
+    trees.set_remote("a".into(), remote_at(dir(ROOT, "a (conflict)"), 2));
+    commits.received(result(2, vec![renamed])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle();
+    effects_for(&mut trees, &mut ids, "a");
+    assert_eq!(at(&trees).as_deref(), Some("a (conflict)"));
+    let next = build(&mut commits, &mut trees, &mut ids);
+    assert_eq!(next.as_ref().map(ops), None);
+}
+
+#[test]
 fn a_folder_another_device_deletes_takes_its_owed_name_once_a_parked_edit_below_it_brings_it_back() {
     let (mut commits, mut trees, mut ids) = owing_its_name(&[
         (
