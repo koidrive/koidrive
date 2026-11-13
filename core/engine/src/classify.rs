@@ -853,6 +853,63 @@ impl Trees {
             .map(|(id, _)| id)
     }
 
+    pub(crate) fn reviving(&self, id: &str) -> bool {
+        self.pending_finishes.contains_key(id)
+            && self.r.get(id).is_some_and(|remote| remote.trashed)
+    }
+
+    pub(crate) fn send_revivals(&mut self, nodes: &BTreeSet<NodeId>) {
+        let reviving: Vec<NodeId> = (self.pending_finishes.keys())
+            .filter(|id| self.reviving(id))
+            .filter(|id| {
+                let folder = BTreeSet::from([(*id).clone()]);
+                nodes.contains(*id) || (nodes.iter()).any(|node| below(&self.l, node, &folder))
+            })
+            .cloned()
+            .collect();
+        for id in reviving {
+            self.send_finish(&id);
+        }
+    }
+
+    pub(crate) fn restart_finish(&mut self, id: &str, meta_rev: u64) {
+        if let Some(finish) = self.pending_finishes.get_mut(id) {
+            finish.sending = false;
+            if matches!(finish.origin, FinishOrigin::Mark { .. }) {
+                finish.origin = FinishOrigin::Mark { meta_rev };
+            }
+        }
+    }
+
+    fn revives(&self, id: &str) -> bool {
+        let edited = |id: &str| {
+            let local = self.l.live(id).and_then(|shape| shape.content.as_ref());
+            let synced = self.s.live(id).and_then(|shape| shape.content.as_ref());
+            self.unsent_edits.contains(id)
+                || (local.zip(synced)).is_some_and(|(local, synced)| !same_content(local, synced))
+        };
+        let mut below = vec![id.to_owned()];
+        let mut seen = BTreeSet::new();
+        while let Some(node) = below.pop() {
+            if !seen.insert(node.clone()) {
+                continue;
+            }
+            let changed = node != id
+                && (self.l.get(&node)).is_some_and(|local| {
+                    !self.excluded(&node)
+                        && (self.s.live(&node)).is_none_or(|synced| !synced.same(&local.shape))
+                });
+            if changed || edited(&node) {
+                return true;
+            }
+            let parked = (self.l.iter())
+                .filter(|(_, local)| local.parked && local.shape.parent == node)
+                .map(|(child, _)| child.clone());
+            below.extend(self.local_children(&node).cloned().chain(parked));
+        }
+        false
+    }
+
     pub(crate) fn start_finish(&mut self, id: &str) {
         let Some(node) = self.r.get(id).filter(|node| !node.trashed) else {
             return;
@@ -944,9 +1001,9 @@ impl Trees {
                         .get(id)
                         .is_none_or(|synced| at(synced, &finish.pending))
                     && self.r.get(id).is_none_or(|remote| {
-                        !remote.trashed
-                            && at(&remote.shape, &finish.pending)
+                        at(&remote.shape, &finish.pending)
                             && match finish.origin {
+                                _ if remote.trashed => self.revives(id),
                                 FinishOrigin::Mark { meta_rev } => {
                                     remote.meta_rev == meta_rev
                                         && (remote.pending_for.as_ref())

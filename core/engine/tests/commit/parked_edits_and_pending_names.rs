@@ -1776,3 +1776,122 @@ fn a_folder_named_like_the_pending_name_of_a_held_finish_is_created_under_a_pend
         .unwrap();
     assert_eq!(ops(&next).first(), Some(&mv("a", ROOT, "a")), "{next:?}");
 }
+
+fn an_owed_folder_deleted_while_an_edit_below_it_waits(marked: bool) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(&[
+        (
+            "h",
+            Some(file("n", "child", 1)),
+            Some(file(ROOT, "a", 1)),
+            Some(remote(file(ROOT, "a", 1))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let created = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(ops(&created).as_slice(), [op::Op::CreateDir(create), ..]
+        if create.node_id == "n" && create.pending_for == "a"));
+    trees.set_remote("n".into(), owed_at(marked, 8));
+    trees.set_remote("h".into(), remote_at(file("n", "child", 1), 8));
+    commits
+        .received(result(
+            8,
+            vec![outcome(op_result::Code::Applied); created.ops.len()],
+        ))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 8));
+    trees.settle();
+    trees.set_local("h".into(), local(file("n", "child", 2), 1));
+    for id in ["n", "h"] {
+        let deleted = RemoteNode {
+            trashed: true,
+            meta_rev: 9,
+            trash_group: "9:0".into(),
+            ..trees.remote().get(id).unwrap().clone()
+        };
+        trees.set_remote(id.into(), deleted);
+    }
+    trees.settle();
+    (commits, trees, ids)
+}
+
+fn owed_at(marked: bool, rev: u64) -> RemoteNode {
+    RemoteNode {
+        pending_for: marked.then(|| "a".into()),
+        pending_by: marked.then(|| "me".into()),
+        ..remote_at(dir(ROOT, "a (pending)"), rev)
+    }
+}
+
+fn revive(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> proto::Commit {
+    let revive = (commits.build(trees, ids, NOW, HISTORY, "me", 9).cloned()).unwrap();
+    assert!(
+        !(ops(&revive).iter()).any(|op| matches!(op, op::Op::Move(moved) if moved.node_id == "n")),
+        "{revive:?}"
+    );
+    assert!(
+        (ops(&revive).iter())
+            .any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "h")),
+        "{revive:?}"
+    );
+    revive
+}
+
+fn acknowledge_revival(commits: &mut Commits, trees: &mut Trees, sent: &proto::Commit, seq: u64) {
+    let child = RemoteNode {
+        content_rev: seq,
+        edit_rev: seq,
+        ..remote_at(file("n", "child", 2), seq)
+    };
+    trees.set_remote("h".into(), child);
+    let applied = vec![outcome(op_result::Code::Applied); sent.ops.len()];
+    commits.received(result(seq, applied)).unwrap();
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle();
+}
+
+#[test]
+fn a_folder_an_edit_revives_takes_its_owed_name_from_a_server_that_keeps_marks() {
+    a_folder_an_edit_revives_takes_its_owed_name(true);
+}
+
+#[test]
+fn a_folder_an_edit_revives_takes_its_owed_name_from_a_server_that_keeps_no_marks() {
+    a_folder_an_edit_revives_takes_its_owed_name(false);
+}
+
+fn a_folder_an_edit_revives_takes_its_owed_name(marked: bool) {
+    let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(marked);
+    let sent = revive(&mut commits, &mut trees, &mut ids);
+    trees.set_remote("n".into(), owed_at(marked, 10));
+    acknowledge_revival(&mut commits, &mut trees, &sent, 10);
+    effects_for(&mut trees, &mut ids, "n");
+    let rename = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 10).cloned();
+    assert_eq!(rename.as_ref().map(ops), Some(vec![mv("n", ROOT, "a")]));
+}
+
+#[test]
+fn an_owed_rename_ends_when_another_device_revives_the_folder_first() {
+    let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
+    let sent = revive(&mut commits, &mut trees, &mut ids);
+    trees.set_remote("n".into(), owed_at(false, 10));
+    acknowledge_revival(&mut commits, &mut trees, &sent, 11);
+    assert!(!trees.state().pending_finishes.contains_key("n"));
+    effects_for(&mut trees, &mut ids, "n");
+    let next = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 11).cloned();
+    assert!(
+        !next.as_ref().is_some_and(|commit| ops(commit).contains(&mv("n", ROOT, "a"))),
+        "{next:?}"
+    );
+}
+
+#[test]
+fn an_owed_rename_ends_when_the_user_deletes_the_folder_an_edit_would_revive() {
+    let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
+    trees.remove_local("h");
+    trees.remove_local("n");
+    trees.settle();
+    assert!(!trees.state().pending_finishes.contains_key("n"));
+    let next = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9).cloned();
+    assert_eq!(next.as_ref().map(ops), None);
+}

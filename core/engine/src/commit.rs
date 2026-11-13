@@ -1183,6 +1183,11 @@ impl Commits {
         for id in &finishing {
             trees.send_finish(id);
         }
+        trees.send_revivals(
+            &(ops.iter().filter_map(|op| op.op.as_ref()))
+                .map(|op| op_node(op).to_owned())
+                .collect(),
+        );
         trees.watch_content(ops.iter().filter_map(|op| match &op.op {
             Some(op::Op::CreateFile(create)) => Some(create.node_id.clone()),
             Some(op::Op::UpdateContent(update)) => Some(update.node_id.clone()),
@@ -1839,6 +1844,13 @@ impl Commits {
                     synced.set(id, None);
                 }
             }
+        }
+        let revived: Vec<NodeId> = (trees.pending_finishes().iter())
+            .filter(|(id, finish)| finish.sending && !placed.contains(id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in revived {
+            trees.restart_finish(&id, result.seq);
         }
         let mut rest = synced.apply(trees);
         let mut positions = Synced::default();
@@ -2943,6 +2955,7 @@ fn plan(
         if synced.is_none_or(|s| !s.same_position(local))
             && remote.is_none_or(|r| !r.same_position(local))
             && !trees.reverted().contains(id)
+            && !trees.reviving(id)
         {
             wants.push(Want::Move {
                 id: id.clone(),
