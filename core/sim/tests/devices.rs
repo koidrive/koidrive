@@ -1512,6 +1512,15 @@ fn a_pending_folder_the_user_deletes_during_a_recovery_comes_back_at_its_name() 
 }
 
 #[test]
+fn a_write_its_device_takes_away_before_sending_it_is_not_lost() {
+    converge(
+        2,
+        &[vec![(0, file("a"))], vec![(0, file("b")), (0, Step::Leave)]],
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_pending_folder_whose_device_never_returns_is_renamed_by_another_device() {
     let world = converge(
         2,

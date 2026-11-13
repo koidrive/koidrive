@@ -681,6 +681,11 @@ impl Trees {
         } else {
             self.marked.remove(&id);
         }
+        if (self.s.get(&id)).is_some_and(|synced| synced.same_position(&node.shape))
+            && self.s_marks.get(&id) != node.pending_for.as_ref()
+        {
+            self.set_synced_mark(id.clone(), node.pending_for.clone());
+        }
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
         self.r.insert(id.clone(), node);
@@ -842,6 +847,12 @@ impl Trees {
         &self.pending_finishes
     }
 
+    pub(crate) fn held_finishes(&self) -> impl Iterator<Item = &NodeId> {
+        (self.pending_finishes.iter())
+            .filter(|(_, finish)| finish.base.is_some())
+            .map(|(id, _)| id)
+    }
+
     pub(crate) fn start_finish(&mut self, id: &str) {
         let Some(node) = self.r.get(id).filter(|node| !node.trashed) else {
             return;
@@ -936,7 +947,11 @@ impl Trees {
                         !remote.trashed
                             && at(&remote.shape, &finish.pending)
                             && match finish.origin {
-                                FinishOrigin::Mark { meta_rev } => remote.meta_rev == meta_rev,
+                                FinishOrigin::Mark { meta_rev } => {
+                                    remote.meta_rev == meta_rev
+                                        && (remote.pending_for.as_ref())
+                                            .is_none_or(|mark| *mark == finish.name)
+                                }
                                 FinishOrigin::Legacy => true,
                             }
                     });

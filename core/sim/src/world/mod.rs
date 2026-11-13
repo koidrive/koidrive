@@ -2880,12 +2880,19 @@ impl World {
                 })
             })
         };
+        let kept_by_a_departed_writer = |write: i64, writer: usize| {
+            let device = &self.devices[writer];
+            device.left
+                && (device.disk.entries().values())
+                    .any(|entry| (entry.content.as_ref()).is_some_and(|c| c.mtime_ns == write))
+        };
         let lost = (self.writers.iter()).find(|(write, writer)| {
             !live.contains_key(write)
                 && !self.published.contains(write)
                 && !self.removed[**writer].contains(write)
                 && !self.discarded.contains(write)
                 && !same_bytes_on_server(**write, **writer)
+                && !kept_by_a_departed_writer(**write, **writer)
         });
         match lost {
             Some((write, writer)) => Err(Failure::Diverged(format!(

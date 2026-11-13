@@ -1630,3 +1630,149 @@ fn a_superseded_owed_rename_of_a_node_another_device_deleted_keeps_the_debt() {
     let rename = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&rename), [owed_mv("a", ROOT, "a", "a (pending)")]);
 }
+
+#[test]
+fn s_takes_the_mark_r_gives_the_position_s_already_holds() {
+    let (_, mut trees, _) = owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
+    assert_eq!(trees.synced_mark("a"), Some("a"));
+    let cleared = RemoteNode {
+        pending_for: None,
+        pending_by: None,
+        ..remote_at(dir(ROOT, "a (pending)"), 2)
+    };
+    trees.set_remote("a".into(), cleared);
+    trees.settle();
+    assert_eq!(trees.synced_mark("a"), None);
+}
+
+#[test]
+fn a_size_refusal_leaves_the_finishes_of_its_commit_due() {
+    let (mut commits, mut trees, mut ids) = owing_its_name(&[
+        synced("a", dir(ROOT, "a (pending)")),
+        synced("b", dir(ROOT, "a")),
+        synced("c", dir(ROOT, "c (pending)")),
+        synced("d", dir(ROOT, "c")),
+    ]);
+    let mut other = trees.remote().get("c").unwrap().clone();
+    other.pending_for = Some("c".into());
+    other.pending_by = Some("me".into());
+    trees.set_remote("c".into(), other);
+    trees.settle();
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [mv("a", ROOT, "a"), mv("c", ROOT, "c")]);
+    commits
+        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
+        .unwrap();
+    assert!(commits.due(&trees, "me"));
+}
+
+#[test]
+fn a_finish_kept_through_a_rewind_takes_the_name_the_rewound_server_marks() {
+    let (mut commits, mut trees, mut ids) = owing_its_name(&[
+        synced("a", dir(ROOT, "a (pending)")),
+        synced("b", dir(ROOT, "a")),
+        synced("c", dir(ROOT, "c")),
+    ]);
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [mv("a", ROOT, "a")]);
+    let mut after_rewind = trees.remote().get("a").unwrap().clone();
+    after_rewind.pending_for = Some("c".into());
+    trees.set_remote("a".into(), after_rewind);
+    commits.recover(
+        &mut trees,
+        0,
+        &RecoveryCause::of(RecoveryTrigger::SpaceRewound),
+        &mut ids,
+        NOW,
+    );
+    trees.settle();
+    let next = commits
+        .build(&mut trees, &mut ids, NOW, "new-history", "me", 7)
+        .cloned();
+    assert_eq!(next.as_ref().map(ops), Some(vec![mv("a", ROOT, "c")]));
+}
+
+#[test]
+fn a_folder_created_under_a_temporary_name_keeps_the_name_it_was_pending_for() {
+    let mut trees = trees(&[
+        ("n", Some(dir(ROOT, "a (pending)")), None, None),
+        (
+            "m",
+            Some(dir("n", "m")),
+            Some(dir(ROOT, "a (pending)")),
+            Some(remote(dir(ROOT, "a (pending)"))),
+        ),
+    ]);
+    let mut state = trees.state();
+    state.unsent_marks.insert("n".into(), "a".into());
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let create = (ops(&sent).into_iter())
+        .find_map(|op| match op {
+            op::Op::CreateDir(create) if create.node_id == "n" => Some(create),
+            _ => None,
+        })
+        .expect("n is created");
+    assert_ne!(create.name, "a (pending)", "{sent:?}");
+    assert_eq!(create.pending_for, "a", "{sent:?}");
+}
+
+#[test]
+fn a_finish_below_a_rules_file_that_failed_to_download_waits_for_the_rules() {
+    let (_, mut trees, mut ids) = marked_by(
+        &[
+            synced("p", dir(ROOT, "p")),
+            synced("a", dir("p", "a (pending)")),
+            ("r", None, None, Some(remote(file("p", ".koiignore", 4)))),
+        ],
+        "me",
+    );
+    let mut effects = Effects::default();
+    let first = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE).first().cloned().unwrap();
+    assert_eq!(first.node, "r");
+    effects.failed(&mut trees, &first.effect_id).unwrap();
+    trees.settle();
+    let next = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE).first().cloned();
+    assert!(next.as_ref().is_none_or(|record| record.node != "a"), "{next:?}");
+}
+
+#[test]
+fn a_folder_named_like_the_pending_name_of_a_held_finish_is_created_under_a_pending_name() {
+    let (mut commits, mut trees, mut ids) =
+        owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
+    effects_for(&mut trees, &mut ids, "a");
+    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("a", ROOT, "a")]);
+    commits
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .unwrap();
+    trees.set_local("n".into(), local(dir(ROOT, "a (pending)"), 50));
+    trees.settle();
+    let held = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created = proto::CreateDir {
+        node_id: "n".into(),
+        parent_id: ROOT.into(),
+        name: "a (pending) (pending)".into(),
+        pending_for: "a (pending)".into(),
+    };
+    assert_eq!(ops(&held), [op::Op::CreateDir(created)]);
+    let marked = RemoteNode {
+        pending_for: Some("a (pending)".into()),
+        pending_by: Some("me".into()),
+        ..remote_at(dir(ROOT, "a (pending) (pending)"), 8)
+    };
+    trees.set_remote("n".into(), marked);
+    commits
+        .received(result(8, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 8));
+    trees.settle();
+    let next = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 8)
+        .cloned()
+        .unwrap();
+    assert_eq!(ops(&next).first(), Some(&mv("a", ROOT, "a")), "{next:?}");
+}

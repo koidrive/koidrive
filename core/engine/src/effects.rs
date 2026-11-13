@@ -410,21 +410,24 @@ impl Effects {
             return chosen;
         }
         let none = BTreeSet::new();
-        let finish = (finishes(trees, &none, None)).find_map(|(id, parent, name, free)| {
-            let local = (trees.local().get(id)).filter(|_| free && !disk_first(trees, id))?;
-            let after = Shape {
-                parent: parent.clone(),
-                name: name.to_owned(),
-                ..local.shape.clone()
-            };
-            let effect = Effect::Move {
-                from: view.location(id)?,
-                identity: local.identity,
-                to: view.location_in(parent, name)?,
-            };
-            (self.failed.get(id) != Some(&effect) && !view.holds_position(id, &after, in_flight))
+        let finish = (finishes(trees, &none, None))
+            .filter(|(id, ..)| gates.is_empty() || !gated(id))
+            .find_map(|(id, parent, name, free)| {
+                let local = (trees.local().get(id)).filter(|_| free && !disk_first(trees, id))?;
+                let after = Shape {
+                    parent: parent.clone(),
+                    name: name.to_owned(),
+                    ..local.shape.clone()
+                };
+                let effect = Effect::Move {
+                    from: view.location(id)?,
+                    identity: local.identity,
+                    to: view.location_in(parent, name)?,
+                };
+                (self.failed.get(id) != Some(&effect)
+                    && !view.holds_position(id, &after, in_flight))
                 .then(|| (id.clone(), effect, Some(after)))
-        });
+            });
         if let Some(finish) = finish {
             return vec![finish];
         }

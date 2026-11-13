@@ -756,11 +756,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const logged = this.sql.exec("SELECT committed_at_ms FROM commits WHERE commit_id = ?", commitId).toArray()[0];
         result.committedAtMs = BigInt(Number(logged?.committed_at_ms ?? 0));
       }
+      const version = Number(row.digest_version);
       return {
         result,
         deviceId: String(row.device_id ?? ""),
         digest: row.request_digest === null ? null : new Uint8Array(row.request_digest as ArrayBuffer),
-        digestVersion: Number(row.digest_version) === 1 ? 1 : 2,
+        digestVersion: version === 1 || version === 2 ? version : 3,
       };
     }
 
@@ -815,7 +816,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         fail(Error_Code.LIMIT_EXCEEDED, "the commit's change records do not fit in one 1 MiB message; split the commit");
       }
       this.sql.exec(
-        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2)",
+        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 3)",
         Number(record.seq),
         record.commitId,
         record.deviceId,
@@ -897,16 +898,16 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           changes,
         });
         const result = create(CommitResultSchema, { seq: BigInt(ctx.seq), results, changes, committedAtMs: BigInt(nowMs) });
-        this.appendCommit(record, result, digests[2]);
+        this.appendCommit(record, result, digests[3]);
         this.sql.exec(
-          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, 2)
+          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, 3)
            ON CONFLICT (device_id) DO UPDATE SET device_seq = excluded.device_seq, commit_id = excluded.commit_id, results = excluded.results,
              request_digest = excluded.request_digest, digest_version = excluded.digest_version`,
           session.deviceId,
           Number(commit.deviceSeq),
           commit.commitId,
           toBinary(CommitResultSchema, result),
-          digests[2],
+          digests[3],
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
       });

@@ -1039,6 +1039,7 @@ impl Commits {
             .problems
             .iter()
             .chain(waiting)
+            .chain(trees.held_finishes())
             .chain(parked_until_moved(trees))
             .chain(
                 (self.questions.iter())
@@ -1141,12 +1142,10 @@ impl Commits {
                 .filter(|finish| {
                     finish.parent == moved.new_parent_id && finish.name == moved.new_name
                 })
-                .map(|finish| (moved.node_id.clone(), finish.base.is_some())),
+                .map(|_| moved.node_id.clone()),
             _ => None,
         };
-        let mut ops: Vec<proto::Op> = (planned.into_iter().chain(answered))
-            .filter(|op| finish(trees, op).is_none_or(|(_, held)| !held))
-            .collect();
+        let mut ops: Vec<proto::Op> = planned.into_iter().chain(answered).collect();
         if ops.is_empty() && released.is_empty() {
             let first: Vec<(NodeId, NodeId, String)> = (finishes(trees, &skip, Some(device_id)))
                 .filter(|(id, .., free)| !free || disk_first(trees, id))
@@ -1180,10 +1179,7 @@ impl Commits {
             self.keep_unsent(trees, released);
             return None;
         }
-        let finishing: Vec<NodeId> = (ops.iter())
-            .filter_map(|op| finish(trees, op))
-            .map(|(id, _)| id)
-            .collect();
+        let finishing: Vec<NodeId> = ops.iter().filter_map(|op| finish(trees, op)).collect();
         for id in &finishing {
             trees.send_finish(id);
         }
@@ -2057,7 +2053,7 @@ impl Commits {
                 }
             }
         }
-        if head_moved.is_some() {
+        if self.in_flight.is_none() {
             trees.unsend_finishes(head_moved);
         }
         self.reject_unsent_when_read_only();
@@ -3036,6 +3032,7 @@ fn plan(
             Want::Move { id, .. } => Some(id.clone()),
             _ => None,
         })
+        .chain(trees.held_finishes().cloned())
         .collect();
     let mut wants: Vec<Option<Want>> = wants.into_iter().map(Some).collect();
     let mut ops = Vec::new();
@@ -3366,7 +3363,8 @@ fn plan(
             && (scratch.holders(&shape.parent, &shape.name)).any(|other| moving.contains(other))
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
-            *pending_for = Some(std::mem::replace(&mut shape.name, name));
+            pending_for.get_or_insert_with(|| shape.name.clone());
+            shape.name = name;
         }
         emit(slot.take().expect("checked"), &mut scratch, &mut moving);
         for retrash in bundle {
