@@ -1523,6 +1523,64 @@ fn a_file_another_device_deletes_while_this_device_edits_it_takes_its_owed_name_
 }
 
 #[test]
+fn a_folder_another_device_deletes_takes_its_owed_name_once_a_parked_edit_below_it_brings_it_back() {
+    let (mut commits, mut trees, mut ids) = owing_its_name(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a (pending)")),
+            Some(trashed(dir(ROOT, "a (pending)"))),
+        ),
+        (
+            "k",
+            Some(file("a", "child", 1)),
+            Some(file("a", "child", 1)),
+            Some(trashed(file("a", "child", 1))),
+        ),
+        (
+            "h",
+            Some(file("a", "old", 1)),
+            Some(file("a", "old", 1)),
+            Some(trashed(file("a", "old", 1))),
+        ),
+    ]);
+    trees.set_local(
+        "h".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("a", "child", 2), 7)
+        },
+    );
+    let mut state = trees.state();
+    state.pending_finishes.insert("a".into(), PendingFinish {
+        parent: ROOT.into(),
+        pending: "a (pending)".into(),
+        name: "a".into(),
+        origin: FinishOrigin::Mark { meta_rev: 1 },
+        disk_first: true,
+        base: None,
+        sending: false,
+    });
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    assert!(!commits.acknowledge(&mut trees, 1));
+    trees.settle();
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote("a".into(), remote_at(dir(ROOT, "a (pending)"), 2));
+    let applied = vec![outcome(op_result::Code::Applied); sent.ops.len()];
+    commits.received(result(2, applied)).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle();
+    effects_for(&mut trees, &mut ids, "a");
+    let next = build(&mut commits, &mut trees, &mut ids);
+    assert!(
+        next.as_ref().is_some_and(|commit| ops(commit).contains(&mv("a", ROOT, "a"))),
+        "{next:?}"
+    );
+}
+
+#[test]
 fn a_folder_another_device_deletes_takes_its_owed_name_once_an_unsent_edit_below_it_brings_it_back()
 {
     let (mut commits, mut trees, mut ids) = owing_its_name(&[

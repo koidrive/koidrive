@@ -861,10 +861,7 @@ impl Trees {
     pub(crate) fn send_revivals(&mut self, nodes: &BTreeSet<NodeId>) {
         let reviving: Vec<NodeId> = (self.pending_finishes.keys())
             .filter(|id| self.reviving(id))
-            .filter(|id| {
-                let folder = BTreeSet::from([(*id).clone()]);
-                nodes.contains(*id) || (nodes.iter()).any(|node| below(&self.l, node, &folder))
-            })
+            .filter(|id| !self.subtree(id).is_disjoint(nodes))
             .cloned()
             .collect();
         for id in reviving {
@@ -888,26 +885,33 @@ impl Trees {
             self.unsent_edits.contains(id)
                 || (local.zip(synced)).is_some_and(|(local, synced)| !same_content(local, synced))
         };
-        let mut below = vec![id.to_owned()];
-        let mut seen = BTreeSet::new();
-        while let Some(node) = below.pop() {
-            if !seen.insert(node.clone()) {
-                continue;
-            }
-            let changed = node != id
-                && (self.l.get(&node)).is_some_and(|local| {
-                    !self.excluded(&node)
-                        && (self.s.live(&node)).is_none_or(|synced| !synced.same(&local.shape))
-                });
-            if changed || edited(&node) {
-                return true;
-            }
-            let parked = (self.l.iter())
-                .filter(|(_, local)| local.parked && local.shape.parent == node)
-                .map(|(child, _)| child.clone());
-            below.extend(self.local_children(&node).cloned().chain(parked));
+        let changed = |node: &str| {
+            (self.l.get(node)).is_some_and(|local| {
+                !self.excluded(node)
+                    && (self.s.live(node)).is_none_or(|synced| !synced.same(&local.shape))
+            })
+        };
+        (self.subtree(id).iter()).any(|node| edited(node) || (node != id && changed(node)))
+    }
+
+    fn subtree(&self, id: &str) -> BTreeSet<NodeId> {
+        let mut parked: BTreeMap<&str, Vec<&NodeId>> = BTreeMap::new();
+        for (child, local) in self.l.iter().filter(|(_, local)| local.parked) {
+            parked
+                .entry(local.shape.parent.as_str())
+                .or_default()
+                .push(child);
         }
-        false
+        let mut subtree = BTreeSet::new();
+        let mut below = vec![id.to_owned()];
+        while let Some(node) = below.pop() {
+            let children = self
+                .local_children(&node)
+                .chain(parked.get(node.as_str()).into_iter().flatten().copied());
+            below.extend(children.filter(|child| !subtree.contains(*child)).cloned());
+            subtree.insert(node);
+        }
+        subtree
     }
 
     pub(crate) fn start_finish(&mut self, id: &str) {
