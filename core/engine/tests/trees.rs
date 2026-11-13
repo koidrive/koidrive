@@ -5,6 +5,7 @@
 use koidrive_engine::classify::{Class, SETTLE_GROUP_LIMIT, Trees, classify};
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::names::{name_key, nfc};
+use koidrive_engine::state::MovedHere;
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, StateError, Tree, TreeError,
     same_content,
@@ -718,12 +719,12 @@ fn forgotten_after_a_loss() -> Trees {
     let shape = file(ROOT, "b", 1);
     trees.set_local("a".into(), local(shape.clone(), 1));
     trees.set_synced("a".into(), Some(shape.clone()));
-    trees.set_remote("a".into(), remote(shape));
+    trees.set_remote("a".into(), remote(shape.clone()));
     trees.remove_remote("a");
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
-        vec!["a".into()],
+        vec![("a".into(), Some(shape))],
         Vec::new(),
         Vec::new(),
         Default::default(),
@@ -782,7 +783,7 @@ fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees 
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
-        vec!["f".into()],
+        vec![("f".into(), Some(dir("p", "f")))],
         Vec::new(),
         Vec::new(),
         Default::default(),
@@ -825,6 +826,57 @@ fn a_file_the_user_makes_in_a_resent_folder_keeps_it_from_a_delete() {
     trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
     assert_eq!(trees.check(), Ok(()));
     assert_eq!(trees.class("f"), Class::Local);
+}
+
+fn created_here_and_lost(moved: Vec<(String, MovedHere)>) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    let shape = file(ROOT, "b", 1);
+    trees.set_local("a".into(), local(shape.clone(), 1));
+    trees.set_synced("a".into(), Some(shape.clone()));
+    trees.set_remote("a".into(), remote(shape));
+    trees.remove_remote("a");
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        moved,
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    assert_eq!(trees.class("a"), Class::Local);
+    trees
+}
+
+#[test]
+fn a_node_this_device_created_that_another_device_creates_again_after_a_loss_takes_its_position() {
+    let mut trees = created_here_and_lost(Vec::new());
+    trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.class("a"), Class::Remote);
+    assert!(trees.state().lost_creates.is_empty());
+}
+
+#[test]
+fn a_node_this_device_moved_that_another_device_creates_again_after_a_loss_keeps_its_position() {
+    let moved = MovedHere {
+        seq: 2,
+        upgraded: true,
+    };
+    let mut trees = created_here_and_lost(vec![("a".into(), moved)]);
+    trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.class("a"), Class::Concurrent);
+}
+
+#[test]
+fn a_node_this_device_created_and_renamed_after_a_loss_keeps_its_new_name() {
+    let mut trees = created_here_and_lost(Vec::new());
+    trees.set_local("a".into(), local(file(ROOT, "d", 1), 1));
+    trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.class("a"), Class::Concurrent);
 }
 
 fn spaces() -> impl Strategy<Value = Vec<(bool, Change, Change)>> {
