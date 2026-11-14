@@ -552,7 +552,7 @@ async fn locate(paths: &Paths, path: &Path) -> Result<(FolderStatus, Vec<String>
 
 fn real_path(path: &Path) -> Option<PathBuf> {
     let mut path = path.to_path_buf();
-    for _ in 0..32 {
+    for _ in 0..=32 {
         let (existing, rest) = deepest_existing(&path);
         let Some((name, rest)) = rest.split_first() else {
             return Some(existing);
@@ -1487,6 +1487,15 @@ mod tests {
             };
             symlink(&root.join(format!("chain{hop}")), &destination);
         }
+        for links in [31, 32, 33] {
+            for hop in 0..links {
+                let destination = match hop + 1 == links {
+                    true => PathBuf::from("Docs/Missing"),
+                    false => PathBuf::from(format!("links{links}-{}", hop + 1)),
+                };
+                symlink(&root.join(format!("links{links}-{hop}")), &destination);
+            }
+        }
         let placed = |path: PathBuf| {
             let paths = paths.clone();
             async move {
@@ -1537,6 +1546,14 @@ mod tests {
             );
         }
         assert_eq!(placed(base.join("Shortcut/../Plan.key")).await, refused);
+        for links in [31, 32] {
+            assert_eq!(
+                placed(root.join(format!("links{links}-0/Plan.key"))).await,
+                Ok((SPACE.into(), "Docs/Missing/Plan.key".into())),
+                "{links} links"
+            );
+        }
+        assert_eq!(placed(root.join("links33-0/Plan.key")).await, refused);
     }
 
     /// A profile signed in to a server that never answers, whose folder `Koidrive` syncs `SPACE`, and the record of the
