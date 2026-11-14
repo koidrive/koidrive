@@ -577,12 +577,8 @@ impl Task {
             .trim_matches(['[', ']'])
             .to_owned();
         let port = self.url.port_or_known_default().unwrap_or(80);
-        let unresolved = |error: &io::Error| {
-            Exit::transport(Transport {
-                cause: Cause::Dns,
-                ..Transport::of(Step::Connect, error)
-            })
-        };
+        let unresolved =
+            |error: &io::Error| Exit::transport(Transport::lookup(Step::Connect, error));
         let addresses: Vec<SocketAddr> = lookup_host((host.as_str(), port))
             .await
             .map_err(|error| unresolved(&error))?

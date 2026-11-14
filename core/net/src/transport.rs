@@ -63,6 +63,15 @@ impl Transport {
             detail,
         }
     }
+
+    pub(crate) fn lookup(step: Step, error: &(dyn Error + 'static)) -> Transport {
+        let (cause, detail) = Cause::seen(error, Some(Cause::Dns), has_default_route);
+        Transport {
+            step,
+            cause,
+            detail,
+        }
+    }
 }
 
 /// `error` and each of its sources, outermost first, joined with `: `.
@@ -134,10 +143,14 @@ impl Cause {
     /// The kind of the first error in `error`'s chain whose kind is known, and the chain, outermost first, joined
     /// with `: `.
     pub fn of(error: &(dyn Error + 'static)) -> (Cause, String) {
-        Cause::seen(error, has_default_route)
+        Cause::seen(error, None, has_default_route)
     }
 
-    fn seen(error: &(dyn Error + 'static), online: impl Fn() -> bool) -> (Cause, String) {
+    fn seen(
+        error: &(dyn Error + 'static),
+        known: Option<Cause>,
+        online: impl Fn() -> bool,
+    ) -> (Cause, String) {
         let mut detail = String::new();
         let mut cause = None;
         let mut next = Some(error);
@@ -152,7 +165,7 @@ impl Cause {
             cause = cause.or_else(|| cause_of(error));
             next = error.source();
         }
-        let cause = match cause.unwrap_or(Cause::Other) {
+        let cause = match known.or(cause).unwrap_or(Cause::Other) {
             Cause::Dns | Cause::Unreachable if !online() => Cause::NoInternet,
             cause => cause,
         };
@@ -229,11 +242,30 @@ mod tests {
     #[test]
     fn a_lookup_or_route_failure_without_any_network_is_no_internet() {
         let unreachable = io::Error::from(io::ErrorKind::NetworkUnreachable);
-        assert_eq!(Cause::seen(&Dns, || false).0, Cause::NoInternet);
-        assert_eq!(Cause::seen(&Dns, || true).0, Cause::Dns);
-        assert_eq!(Cause::seen(&unreachable, || false).0, Cause::NoInternet);
-        assert_eq!(Cause::seen(&unreachable, || true).0, Cause::Unreachable);
+        assert_eq!(Cause::seen(&Dns, None, || false).0, Cause::NoInternet);
+        assert_eq!(Cause::seen(&Dns, None, || true).0, Cause::Dns);
+        assert_eq!(
+            Cause::seen(&unreachable, None, || false).0,
+            Cause::NoInternet
+        );
+        assert_eq!(
+            Cause::seen(&unreachable, None, || true).0,
+            Cause::Unreachable
+        );
         let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
-        assert_eq!(Cause::seen(&refused, || false).0, Cause::Refused);
+        assert_eq!(Cause::seen(&refused, None, || false).0, Cause::Refused);
+    }
+
+    #[test]
+    fn a_failed_address_lookup_without_any_network_is_no_internet() {
+        let failed = io::Error::other("failed to lookup address information");
+        assert_eq!(
+            Cause::seen(&failed, Some(Cause::Dns), || false).0,
+            Cause::NoInternet
+        );
+        assert_eq!(
+            Cause::seen(&failed, Some(Cause::Dns), || true).0,
+            Cause::Dns
+        );
     }
 }

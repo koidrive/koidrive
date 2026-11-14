@@ -1104,7 +1104,7 @@ impl Folder {
         let reconnecting = (self.disconnected.as_ref()).filter(|disconnected| {
             disconnected.retry_at <= now
                 && disconnected.reason.unreachable()
-                && disconnected.since.elapsed() >= QUICK_RECONNECT
+                && (disconnected.shown || disconnected.since.elapsed() >= QUICK_RECONNECT)
         });
         let state = match &self.stream {
             _ if reconnect.is_some_and(|disconnected| disconnected.reason.unreachable())

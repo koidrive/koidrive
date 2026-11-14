@@ -509,6 +509,26 @@ fn a_quick_reconnect_shows_connecting_until_it_fails_again() {
 }
 
 #[test]
+fn a_folder_shown_offline_stays_offline_while_its_next_try_runs() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    for _ in 0..2 {
+        a.event(Event::Disconnected {
+            reason: unreachable_server(),
+            retry_in: Duration::from_millis(1),
+        })
+        .unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Offline);
+    assert_eq!(
+        offline_cause(&view).map(|(unreachable, next)| (unreachable.why, next)),
+        Some(("the server's address could not be found".to_owned(), None))
+    );
+}
+
+#[test]
 fn a_reconnect_still_under_way_after_a_moment_shows_offline_with_its_cause_and_no_next_try() {
     let mut remote = Remote::new();
     let (_site, mut a) = linked(&mut remote, "a");

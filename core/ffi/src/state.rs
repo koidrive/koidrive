@@ -132,7 +132,9 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 },
             ));
         }
-        if let Some((unreachable, retry_at_ms)) = folder.unreachable() {
+        if status.running
+            && let Some((unreachable, retry_at_ms)) = folder.unreachable()
+        {
             found.push((
                 format!("offline-{space}"),
                 String::new(),
@@ -802,7 +804,7 @@ mod unreachable_tests {
 
     #[test]
     fn a_device_without_internet_is_its_own_problem() {
-        let status = Status {
+        let mut status = Status {
             folders: vec![driver::FolderStatus {
                 space_id: "abc".into(),
                 space_name: "Documents".into(),
@@ -828,6 +830,7 @@ mod unreachable_tests {
                 }),
                 recovery: None,
             }],
+            running: true,
             ..Status::default()
         };
         let listed = problems(&status, &mut Seen::new());
@@ -838,6 +841,8 @@ mod unreachable_tests {
                 retry_at_ms: Some(7)
             }]
         );
+        status.running = false;
+        assert_eq!(problems(&status, &mut Seen::new()), []);
     }
 
     #[test]
