@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local SQLite state for one synced space on one device, as the sync engine
-//! design lays it out (docs/design/sync-engine.md §2.2 and §2.8):
+//! Local SQLite state for one synced space on one device:
 //!
 //! - the remote tree R: the `NodeState` records this device has applied, with
 //!   the `(history_id, last_seq)` cursor;

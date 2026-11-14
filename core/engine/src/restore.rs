@@ -196,8 +196,7 @@ impl Rejection {
         }
     }
 
-    /// The reason as the server spells it (spec v0 rule R11), which is also how the store keeps
-    /// it.
+    /// The reason as the server spells it, which is also how the store keeps it.
     pub fn reason(&self) -> &str {
         match self {
             Self::NotFound => "NOT_FOUND",
