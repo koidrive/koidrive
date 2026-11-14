@@ -883,3 +883,30 @@ fn a_file_whose_lost_edit_another_device_renamed_is_created_at_that_name() {
     assert!(trees.state().lost_positions.is_empty());
     assert!(trees.state().lost_creates.is_empty());
 }
+
+#[test]
+fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
+    let mut trees = trees(&[synced("f", file(ROOT, "x", 1))]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_local("f".into(), local(file(ROOT, "y", 1), 1));
+    trees.settle();
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
+    assert!(commits.own_record(2, &commit.commit_id));
+    commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
+    trees.set_local("f".into(), local(file(ROOT, "x", 1), 1));
+    trees.settle();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (trashed, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    assert!(trees.state().lost_positions.is_empty());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("x".to_owned(), 1)]);
+}
