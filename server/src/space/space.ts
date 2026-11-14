@@ -118,6 +118,20 @@ const EXPORT_RETRY_MS = 60_000;
 
 export type Role = "owner" | "editor" | "viewer";
 
+const MAX_CLOSE_REASON_BYTES = 123;
+
+export function closeReason(reason: string): string {
+  const encoder = new TextEncoder();
+  let kept = "";
+  let bytes = 0;
+  for (const char of reason) {
+    bytes += encoder.encode(char).length;
+    if (bytes > MAX_CLOSE_REASON_BYTES) break;
+    kept += char;
+  }
+  return kept;
+}
+
 export const RETIRED_HISTORY =
   "the space's storage holds a history that a rewind replaced, so it was restored outside a rewind; the server serves it again once its operator restores the storage the rewind left (RFC 0003 section 4)";
 
@@ -425,6 +439,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private storeLease(deviceId: string, check: SessionCheck, askedAtMs: number): void {
+      if (check.historyId === undefined) return;
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
     }
@@ -459,7 +474,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     protected historyRetired(check: SessionCheck): boolean {
-      return check.historyId !== null && check.historyId !== String(getMeta(this.sql, "history_id"));
+      return typeof check.historyId === "string" && check.historyId !== String(getMeta(this.sql, "history_id"));
     }
 
     protected async checkDevice(deviceId: string): Promise<SessionCheck | undefined> {
@@ -520,7 +535,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
       });
       for (const [deviceId, check] of Object.entries(answers ?? {})) if (check.revoked) this.recordRevoked(deviceId);
-      return answers;
+      return answers && Object.fromEntries(Object.entries(answers).filter(([, check]) => check.historyId !== undefined));
     }
 
     private checkOpen(): void {
@@ -555,7 +570,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private goodbye(ws: Socket, code: number, reason: string): void {
       try {
         this.send(ws, { case: "goodbye", value: create(GoodbyeSchema, { code, reason }) });
-        ws.close(code, reason);
+        ws.close(code, closeReason(reason));
       } catch {
       }
     }

@@ -125,7 +125,7 @@ export interface SessionCheck {
   active: boolean;
   revoked: boolean;
   closed: boolean;
-  historyId: string | null;
+  historyId?: string | null;
   kind: string;
   scope: string | null;
   leaseMs: number;
@@ -552,9 +552,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       };
     }
 
-    async isSpaceClosed(spaceId: string, historyId: string): Promise<boolean> {
+    async isSpaceClosed(spaceId: string, historyId?: string): Promise<boolean> {
+      if (this.heldClosed(spaceId) || historyId === undefined) return true;
       const current = this.currentHistory(spaceId);
-      return this.heldClosed(spaceId) || (current !== null && current !== historyId);
+      return current !== null && current !== historyId;
     }
 
     private currentHistory(spaceId: string): string | null {

@@ -1111,18 +1111,50 @@ async fn a_token_refused_with_an_unknown_code_stops_the_session_without_asking_a
 }
 
 #[tokio::test]
-async fn an_upgrade_refused_for_a_history_a_rewind_replaced_stops_the_session() {
+async fn an_upgrade_refused_for_a_history_a_rewind_replaced_waits_the_longest_backoff_and_connects_once_served()
+ {
     let (listener, auth) = listen().await;
     let (_session, mut events) = Session::start(auth, config()).unwrap();
     let (mut upgrade, _) = listener.accept().await.unwrap();
     answer_with_error(&mut upgrade, 409, refusal(Code::HistoryMismatch as i32, 0)).await;
     let event = next(&mut events).await;
-    assert!(
-        matches!(&event, Event::Stopped(StopReason::Refused(why)) if why == "CODE_HISTORY_MISMATCH: refused"),
-        "{event:?}"
+    let Event::Disconnected { reason, retry_in } = &event else {
+        panic!("{event:?}");
+    };
+    assert_eq!(
+        reason.to_string(),
+        "the server refused the connection: CODE_HISTORY_MISMATCH: refused"
     );
-    let again = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
-    assert!(again.is_err(), "no second upgrade");
+    assert!(*retry_in >= config().backoff.max, "{retry_in:?}");
+    let _ws = accept(&listener, welcome("h", 0)).await;
+    let event = next(&mut events).await;
+    assert!(matches!(event, Event::Connected(_)), "{event:?}");
+}
+
+#[tokio::test]
+async fn an_upgrade_refused_while_the_server_cannot_check_the_device_retries_at_the_normal_backoff_and_connects_once_served()
+ {
+    let (listener, auth) = listen().await;
+    let (_session, mut events) = Session::start(auth, config()).unwrap();
+    let (mut upgrade, _) = listener.accept().await.unwrap();
+    answer_in_two_parts(
+        &mut upgrade,
+        503,
+        b"could not check the device; retry later".to_vec(),
+    )
+    .await;
+    let event = next(&mut events).await;
+    let Event::Disconnected {
+        reason: DisconnectReason::Refused { status: 503 },
+        retry_in,
+    } = &event
+    else {
+        panic!("{event:?}");
+    };
+    assert!(*retry_in < config().backoff.max, "{retry_in:?}");
+    let _ws = accept(&listener, welcome("h", 0)).await;
+    let event = next(&mut events).await;
+    assert!(matches!(event, Event::Connected(_)), "{event:?}");
 }
 
 #[tokio::test]
