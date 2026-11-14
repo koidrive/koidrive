@@ -141,6 +141,34 @@ fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
 }
 
 #[test]
+fn a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_before_the_result() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(remote(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            ..remote(file(ROOT, "f", 1))
+        },
+    );
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class("y"), Class::Remote);
+}
+
+#[test]
 fn a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here() {
     let mut trees = trees(&[(
         "f",
@@ -515,4 +543,35 @@ fn a_resent_answer_delete_drops_its_precondition_once_a_delete_of_this_device_tr
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [delete("a")]);
+}
+
+#[test]
+fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed_before_the_build() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(remote(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            meta_rev: 3,
+            meta_edit_rev: 3,
+            ..remote(file(ROOT, "g", 1))
+        },
+    );
+    let commit = build(&mut commits, &mut trees, &mut ids);
+    let ops = commit.as_ref().map(ops).unwrap_or_default();
+    assert!(
+        !(ops.iter()).any(|op| matches!(op, op::Op::UpdateContent(u) if u.node_id == "f")),
+        "{ops:?}"
+    );
+    assert!(
+        !(ops.iter()).any(|op| matches!(op, op::Op::Move(m) if m.node_id == "f")),
+        "{ops:?}"
+    );
 }

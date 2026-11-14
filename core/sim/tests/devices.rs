@@ -8943,3 +8943,127 @@ fn a_file_renamed_by_the_server_stays_deleted_after_another_device_renames_it_th
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_conflict_copy_keeps_its_conflict_name_when_another_device_wrote_the_old_bytes_back() {
+    let phases = [
+        vec![(0, act(1, 0, 0, "b", 2))],
+        vec![
+            (1, act(2, 0, 0, "a", 1)),
+            (1, SCAN),
+            (1, COMMIT),
+            (1, COMMIT),
+            (2, act(2, 0, 0, "a", 0)),
+            (2, SCAN),
+            (2, COMMIT),
+            (0, DELIVER),
+            (0, EFFECT),
+            (0, EFFECT),
+            (0, act(2, 0, 0, "a", 2)),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (2, COMMIT),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_conflict_copy_stays_beside_a_file_another_device_renamed_and_wrote_the_old_bytes_back_to() {
+    let phases = [
+        vec![(0, act(1, 0, 0, "b", 2))],
+        vec![
+            (1, act(2, 0, 0, "a", 1)),
+            (1, SCAN),
+            (1, COMMIT),
+            (1, COMMIT),
+            (2, act(2, 0, 0, "a", 0)),
+            (2, SCAN),
+            (2, COMMIT),
+            (0, DELIVER),
+            (0, EFFECT),
+            (0, EFFECT),
+            (0, rename(0, 0, "c.txt")),
+            (0, act(2, 0, 0, "a", 2)),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (2, COMMIT),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn concurrent_edits_where_one_device_writes_the_old_bytes_back_converge_on_names_users_gave() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    for phases in [
+        vec![
+            vec![(0, u(1, 13459285071780083598, 15090632336170339986, 2, 2))],
+            vec![],
+            vec![
+                (1, u(2, 6846228097973329915, 16997254568395396320, 0, 1)),
+                (1, Work(7124272416478202763)),
+                (2, u(2, 8250755328995092475, 15625487702416996080, 0, 0)),
+                (1, Work(637084757681076362)),
+                (2, Scan),
+                (1, Work(1760270472639288887)),
+                (0, Work(5834330838535132810)),
+                (2, Work(17392962999597414141)),
+                (0, Work(9895299036337337540)),
+                (0, Effect(Outcome::Run)),
+                (0, u(2, 10141277894984578431, 8674810233147079745, 1, 2)),
+            ],
+        ],
+        vec![
+            vec![(0, u(1, 0, 0, 0, 0))],
+            vec![],
+            vec![
+                (1, u(2, 8315778575775617394, 13246257973490144963, 4, 2)),
+                (1, Work(15281732520451552266)),
+                (1, Work(544583987546661104)),
+                (1, Commit(Served)),
+                (2, u(2, 18306829752399694442, 6849046078299605455, 0, 1)),
+                (0, Deliver(6898774258070732023)),
+                (2, Work(15104450420068224993)),
+                (0, Work(5531422166622202347)),
+                (0, Work(16371720824298648351)),
+                (2, Work(16414392764868356334)),
+                (0, u(2, 1620988347724599361, 10091788995064837455, 1, 0)),
+            ],
+        ],
+        vec![
+            vec![
+                (1, u(0, 0, 0, 3, 0)),
+                (0, u(1, 0, 0, 0, 0)),
+                (0, u(3, 0, 0, 0, 0)),
+            ],
+            vec![
+                (1, u(2, 3027247001654897081, 0, 0, 0)),
+                (2, u(2, 655002586079826284, 0, 0, 0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (2, Work(3451872640308818705)),
+                (2, Commit(Served)),
+                (1, u(0, 0, 0, 0, 0)),
+                (0, Work(0)),
+                (0, Effect(Outcome::Run)),
+                (0, Effect(Outcome::Run)),
+                (0, u(2, 2980850165259953687, 0, 0, 0)),
+            ],
+        ],
+    ] {
+        converge(3, &phases).unwrap();
+    }
+}
