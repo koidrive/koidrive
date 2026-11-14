@@ -520,9 +520,14 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         false => {}
     }
     let config = paths.config_file.parent().map(Path::to_path_buf);
-    let config_in_state = config.as_ref() == Some(&paths.state_dir);
+    let config_shared =
+        unlisted.is_some() || others.iter().any(|other| uses_config(other, home, paths));
+    let config_in_state = !config_shared
+        && config
+            .as_deref()
+            .is_some_and(|config| same_dir(config, &paths.state_dir));
     match config {
-        Some(config) if others.iter().any(|other| uses_config(other, home, paths)) => {
+        Some(config) if config_shared => {
             if fs::symlink_metadata(&config).is_ok() {
                 kept.push(Kept::Shared {
                     path: config.display().to_string(),
@@ -584,7 +589,20 @@ fn uses_config(other: &service::Installed, home: &Path, paths: &Paths) -> bool {
             .and_then(|(_, value)| value.clone())
             .map(Into::into),
     })
-    .is_ok_and(|theirs| theirs.config_file == paths.config_file)
+    .is_ok_and(
+        |theirs| match (theirs.config_file.parent(), paths.config_file.parent()) {
+            (Some(theirs), Some(ours)) => same_dir(theirs, ours),
+            _ => false,
+        },
+    )
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => a == b,
+    }
 }
 
 fn application_folders(home: &Path) -> impl Iterator<Item = PathBuf> {

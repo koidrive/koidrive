@@ -422,9 +422,16 @@ fn unreadable_launch_agents_keep_the_shared_command() {
     assert!(!output.status.success(), "{envelope:#}");
     assert!(koi.is_file(), "{envelope:#}");
     assert!(
-        kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
+        machine.path("config/koidrive/config.toml").is_file(),
         "{envelope:#}"
     );
+    for path in [koi.clone(), machine.path("config/koidrive")] {
+        assert!(
+            kept(&envelope)
+                .contains(&json!({ "kind": "shared", "path": path.display().to_string() })),
+            "{envelope:#}"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -451,43 +458,63 @@ fn a_failed_app_removal_keeps_the_command_that_finishes_it() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_config_another_profile_uses_stays() {
-    let machine = Machine::new();
-    machine.profile();
-    let koi = machine.copy_koi(".local/bin/koi");
-    let (config, state) = (machine.path("config"), machine.path("other/state"));
-    let other = koidrive_driver::Paths::from_vars(|name| match name {
-        "XDG_CONFIG_HOME" => Some(config.clone().into()),
-        "XDG_STATE_HOME" => Some(state.clone().into()),
-        _ => None,
-    })
-    .unwrap();
-    let label = format!("dev.koidrive.koi.{}", other.state_key());
-    machine.write("other/state/koidrive/credential.json", "");
-    machine.write(
-        &format!("Library/LaunchAgents/{label}.plist"),
-        &format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string></dict></dict></plist>\n",
-            koi.display(),
-            config.display(),
-            state.display()
-        ),
-    );
+    for layout in ["same", "state", "alias"] {
+        let machine = Machine::new();
+        machine.profile();
+        let koi = machine.copy_koi(".local/bin/koi");
+        let ours = match layout {
+            "state" => machine.path("state"),
+            _ => machine.path("config"),
+        };
+        if layout == "state" {
+            machine.write(
+                "state/koidrive/config.toml",
+                "[service]\nbackground = false\n",
+            );
+        }
+        let config = match layout {
+            "alias" => {
+                std::os::unix::fs::symlink(&ours, machine.path("alias")).unwrap();
+                machine.path("alias")
+            }
+            _ => ours.clone(),
+        };
+        let state = machine.path("other/state");
+        let other = koidrive_driver::Paths::from_vars(|name| match name {
+            "XDG_CONFIG_HOME" => Some(config.clone().into()),
+            "XDG_STATE_HOME" => Some(state.clone().into()),
+            _ => None,
+        })
+        .unwrap();
+        let label = format!("dev.koidrive.koi.{}", other.state_key());
+        machine.write("other/state/koidrive/credential.json", "");
+        machine.write(
+            &format!("Library/LaunchAgents/{label}.plist"),
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string></dict></dict></plist>\n",
+                koi.display(),
+                config.display(),
+                state.display()
+            ),
+        );
+        let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+        command.env("XDG_CONFIG_HOME", &ours);
 
-    let (output, envelope) = machine.uninstall(&koi);
+        let (output, envelope) = machine.envelope(command);
 
-    assert!(output.status.success(), "{envelope:#}");
-    assert!(
-        machine.path("config/koidrive/config.toml").is_file(),
-        "{envelope:#}"
-    );
-    assert!(!machine.path("state/koidrive").exists(), "{envelope:#}");
-    assert!(
-        kept(&envelope).contains(&json!({
-            "kind": "shared",
-            "path": machine.path("config/koidrive").display().to_string(),
-        })),
-        "{envelope:#}"
-    );
+        assert!(output.status.success(), "{layout}: {envelope:#}");
+        assert!(
+            ours.join("koidrive/config.toml").is_file(),
+            "{layout}: {envelope:#}"
+        );
+        assert!(
+            kept(&envelope).contains(&json!({
+                "kind": "shared",
+                "path": ours.join("koidrive").display().to_string(),
+            })),
+            "{layout}: {envelope:#}"
+        );
+    }
 }
 
 #[test]
