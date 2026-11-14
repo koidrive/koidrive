@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rustix::io::Errno;
 
 use crate::root::{PRIVATE_DIR, make_dir};
-use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_fd, stat_path};
+use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_at, stat_fd, stat_path};
 
 /// The folder inside the private folder that holds parked entries (design
 /// §2.5).
@@ -212,6 +212,10 @@ impl Space {
         Ok(folder)
     }
 
+    pub(crate) fn find_folder(&self, id: FileId) -> Result<Option<Folder>, Unresolved> {
+        search(self.root_folder()?, id)
+    }
+
     /// Opens `.koidrive/<parts>`, creating the folders that are missing, and
     /// records the identity of each folder on the way, so that
     /// [`Space::recheck`] also notices one of them moved. Each part must be a
@@ -324,6 +328,51 @@ fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
         id: found,
         route,
     })
+}
+
+fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
+    let names = match crate::list(folder.fd()) {
+        Ok(names) => names,
+        Err(_) if !folder.route.is_empty() => return Ok(None),
+        Err(err) => {
+            return Err(Unresolved::Io {
+                path: PathBuf::new(),
+                err,
+            });
+        }
+    };
+    for name in names {
+        if folder.route.is_empty() && name == PRIVATE_DIR {
+            continue;
+        }
+        let fd = match open_beneath(folder.fd(), &name) {
+            Ok(fd) => fd,
+            Err(err) if stat_at(folder.fd(), &name).is_ok_and(|stat| stat.id == id) => {
+                return Err(Unresolved::Io {
+                    path: join(&folder.route, &name),
+                    err: err.into(),
+                });
+            }
+            Err(_) => continue,
+        };
+        let Ok(found) = identity(&fd, &folder.route, &name) else {
+            continue;
+        };
+        let mut route = folder.route.clone();
+        route.push(Dir { name, id: found });
+        let child = Folder {
+            fd,
+            id: found,
+            route,
+        };
+        if found == id {
+            return Ok(Some(child));
+        }
+        if let Some(found) = search(child, id)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
 }
 
 fn open_dir(parent: BorrowedFd<'_>, name: &OsStr, route: &[Dir]) -> Result<OwnedFd, Unresolved> {

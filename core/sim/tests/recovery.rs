@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use koidrive_engine::commit::{Commits, InFlight};
+use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
-use koidrive_sim::world::disk::{Disk, Place};
+use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
 use koidrive_sim::world::{Action, Cut, Failure, NAMES, Outcome, Reply, Step, World};
 
 fn user(kind: u8, target: usize, parent: usize, name: &str) -> Step {
@@ -3192,4 +3193,43 @@ fn a_file_a_device_deletes_after_another_device_keeps_it_through_a_rewind_stays_
         ],
     ];
     synced(3, &phases);
+}
+
+#[test]
+fn recovery_finds_no_folder_the_parked_directory_holds() {
+    for nested in [false, true] {
+        let mut disk = Disk::default();
+        let outer = disk.create(Place::Root, "g", None).unwrap();
+        let folder = disk.create(Place::In(outer), "f", None).unwrap();
+        let made = disk.create(Place::In(folder), "n", None).unwrap();
+        let record = EffectRecord {
+            effect_id: "e".to_owned(),
+            node: "n".to_owned(),
+            counter: 1,
+            effect: Effect::CreateDir {
+                at: Location::At {
+                    base: Base::Root,
+                    dirs: vec![Dir {
+                        name: "f".to_owned(),
+                        identity: identity(folder),
+                    }],
+                    name: "n".to_owned(),
+                },
+            },
+            after: None,
+            recoveries: 0,
+        };
+        disk.rename(folder, Place::Root, "moved").unwrap();
+        assert_eq!(
+            disk.clone().recover(&record).outcome,
+            Ok(Some(identity(made)))
+        );
+        let parked = if nested { outer } else { folder };
+        if nested {
+            disk.rename(folder, Place::In(outer), "f").unwrap();
+        }
+        disk.rename(parked, Place::Parked("p".to_owned()), "p")
+            .unwrap();
+        assert_eq!(disk.recover(&record).outcome, Err(Refused::Interrupted));
+    }
 }

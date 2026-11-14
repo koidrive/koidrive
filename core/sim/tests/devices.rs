@@ -9105,3 +9105,37 @@ fn concurrent_edits_where_one_device_writes_the_old_bytes_back_converge_on_names
         converge(3, &phases).unwrap();
     }
 }
+
+#[test]
+fn a_move_done_before_a_crash_stays_done_when_the_user_renames_its_folder_meanwhile() {
+    use Step::*;
+    let phases = vec![
+        vec![(0, act(1, 0, 0, "a", 0))],
+        vec![
+            (0, act(0, 0, 0, "A", 0)),
+            (0, act(3, 0, 1, "a", 0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(16691945262034010264)),
+            (2, Work(1182905539595131186)),
+            (2, Deliver(12394109872501274709)),
+            (
+                1,
+                act(3, 9749433821295776786, 13086762493433258022, "C.TXT", 1),
+            ),
+            (2, Work(10152572864536567276)),
+            (2, Work(8970849553851554287)),
+            (2, Work(2531863927574479736)),
+            (2, Work(11456895946976550503)),
+            (2, CRASH),
+            (
+                2,
+                act(3, 16470539760317716805, 5871752442717976254, "C.TXT", 1),
+            ),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
