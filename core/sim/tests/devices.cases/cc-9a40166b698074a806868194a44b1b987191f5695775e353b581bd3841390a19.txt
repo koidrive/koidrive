@@ -1,0 +1,1 @@
+cc 9a40166b698074a806868194a44b1b987191f5695775e353b581bd3841390a19 # shrinks to devices = 3, a node keeps the pending name "C.TXT (pending)" on a case-insensitive disk (GUN-773)
