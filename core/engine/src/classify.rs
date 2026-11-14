@@ -264,6 +264,7 @@ pub struct Trees {
     r_names: ByName,
     r_trashed: BTreeMap<NodeId, BTreeSet<NodeId>>,
     creates: BTreeSet<NodeId>,
+    ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
@@ -339,6 +340,7 @@ impl Trees {
             r_names: ByName::default(),
             r_trashed: BTreeMap::new(),
             creates: BTreeSet::new(),
+            ready: BTreeSet::new(),
             others: BTreeSet::new(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
@@ -431,7 +433,7 @@ impl Trees {
 
     fn clean(&mut self, id: &str) {
         self.dirty.remove(id);
-        self.creates.remove(id);
+        self.uncreate(id);
         self.others.remove(id);
     }
 
@@ -448,21 +450,54 @@ impl Trees {
         let dirty = self.dirty.contains(id);
         if dirty && self.creates_only(id) {
             self.others.remove(id);
-            self.creates.insert(id.to_owned());
+            let created = self.creates.insert(id.to_owned());
+            let parent = &self.l.get(id).expect("creates are in L").shape.parent;
+            match self.creates.contains(parent) {
+                true => self.ready.remove(id),
+                false => self.ready.insert(id.to_owned()),
+            };
+            if created {
+                self.ready_children(id);
+            }
         } else {
             self.unsort(id);
         }
     }
 
     fn unsort(&mut self, id: &str) {
-        self.creates.remove(id);
+        self.uncreate(id);
         if self.dirty.contains(id) {
             self.others.insert(id.to_owned());
         }
     }
 
+    fn uncreate(&mut self, id: &str) {
+        if self.creates.remove(id) {
+            self.ready.remove(id);
+            self.ready_children(id);
+        }
+    }
+
+    fn ready_children(&mut self, id: &str) {
+        let created = self.creates.contains(id);
+        let children: Vec<NodeId> = (self.l_names.children(id))
+            .filter(|child| self.creates.contains(*child))
+            .cloned()
+            .collect();
+        for child in children {
+            match created {
+                true => self.ready.remove(&child),
+                false => self.ready.insert(child),
+            };
+        }
+    }
+
     pub(crate) fn dirty_creates(&self) -> &BTreeSet<NodeId> {
         &self.creates
+    }
+
+    pub(crate) fn ready_creates(&self) -> &BTreeSet<NodeId> {
+        &self.ready
     }
 
     pub(crate) fn dirty_others(&self) -> &BTreeSet<NodeId> {
@@ -603,7 +638,7 @@ impl Trees {
 
     fn mark(&mut self, id: &str) {
         self.dirty.insert(id.to_owned());
-        self.creates.remove(id);
+        self.uncreate(id);
         self.others.insert(id.to_owned());
         self.unsettled.insert(id.to_owned());
         self.changed.insert(id.to_owned());
@@ -3013,6 +3048,11 @@ impl Trees {
             self.sort(id);
         }
         debug_assert!(self.creates.iter().all(|id| self.creates_only(id)));
+        debug_assert!(self.ready.is_subset(&self.creates));
+        debug_assert!(self.creates.iter().all(|id| {
+            let parent = &self.l.get(id).expect("creates are in L").shape.parent;
+            self.ready.contains(id) != self.creates.contains(parent)
+        }));
         debug_assert!(self.creates.is_disjoint(&self.others));
         debug_assert_eq!(self.creates.len() + self.others.len(), self.dirty.len());
     }
@@ -3484,6 +3524,7 @@ impl Trees {
             r_names: _,
             r_trashed: _,
             creates: _,
+            ready: _,
             others: _,
             orphaned: _,
             remote_rules_files: _,
@@ -3631,6 +3672,7 @@ impl Trees {
         self.orphaned.clear();
         self.others = dirty.clone();
         self.creates.clear();
+        self.ready.clear();
         self.dirty = dirty.into();
         self.unsearched = unsearched.into();
         self.reverted = reverted.into();

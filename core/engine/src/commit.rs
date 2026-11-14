@@ -4,7 +4,8 @@
 //! sections 2.4, 2.6, 2.7, 2.8 and 4.2, and RFC 0002): the rebase of concurrent changes onto R, the
 //! one commit in flight with its history and device slot, and what each result and error does.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 
 use koidrive_proto::v1::{self as proto, error, op, op_result};
 use prost::Message;
@@ -1121,36 +1122,73 @@ impl Commits {
             .map(|(id, intent)| (id.clone(), intent.clone()))
             .collect();
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
-        let creates = trees.dirty_creates();
+        let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
+        let aliased: Vec<&NodeId> = (self.aliases.keys())
+            .flat_map(|alias| trees.local_children(alias))
+            .filter(|id| creates.contains(*id) && !ready.contains(*id))
+            .collect();
         let mut window = 2 * cap;
         let (planned, deletes, reverts) = loop {
-            let bound = (window < creates.len()).then(|| {
-                creates
-                    .iter()
-                    .nth(window - 1)
-                    .expect("within the creates")
-                    .as_str()
-            });
-            let mut candidates: Vec<&NodeId> = (creates.iter().take(window))
-                .filter(|id| !trees.excluded(id) && !trees.held(id))
-                .chain(trees.dirty_others())
-                .collect();
-            candidates.sort_unstable();
-            let (planned, exact) = plan(
-                trees,
-                &candidates,
-                bound,
-                &skip,
-                &needed,
-                cap,
-                &answered,
-                &self.split,
-                &self.aliases,
-                &restores,
-                &answers,
-                device_id,
-            );
+            let mut seeds = ready.iter().peekable();
+            let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
+                aliased.iter().map(|id| Reverse((1, *id))).collect();
+            let mut picked = Vec::new();
+            let mut bound = None;
+            loop {
+                let seeded = match (seeds.peek(), next.peek()) {
+                    (Some(id), Some(Reverse(top))) => (1, *id) < *top,
+                    (seed, _) => seed.is_some(),
+                };
+                let popped = match seeded {
+                    true => seeds.next().map(|id| (1, id)),
+                    false => next.pop().map(|Reverse(key)| key),
+                };
+                let Some((pass, id)) = popped else {
+                    break;
+                };
+                if picked.len() == window {
+                    bound = Some((pass, id.as_str()));
+                    break;
+                }
+                picked.push(id);
+                if !self.aliases.contains_key(id) {
+                    next.extend(
+                        (trees.local_children(id))
+                            .filter(|child| creates.contains(*child))
+                            .map(|child| Reverse((pass + usize::from(child < id), child))),
+                    );
+                }
+            }
+            debug_assert!(bound.is_some() || picked.len() == creates.len());
+            let planned_from = |picked: Vec<&NodeId>, bound| {
+                let mut candidates: Vec<&NodeId> = (picked.into_iter())
+                    .filter(|id| !trees.excluded(id) && !trees.held(id))
+                    .chain(trees.dirty_others())
+                    .collect();
+                candidates.sort_unstable();
+                plan(
+                    trees,
+                    &candidates,
+                    bound,
+                    &skip,
+                    &needed,
+                    cap,
+                    &answered,
+                    &self.split,
+                    &self.aliases,
+                    &restores,
+                    &answers,
+                    device_id,
+                )
+            };
+            let (planned, exact) = planned_from(picked, bound);
             if exact {
+                debug_assert!(
+                    bound.is_none()
+                        || creates.len() > 512
+                        || planned == planned_from(creates.iter().collect(), None).0,
+                    "a windowed plan commits what a plan of every create commits"
+                );
                 break planned;
             }
             window *= 4;
@@ -2941,7 +2979,7 @@ type Planned = (Vec<proto::Op>, BTreeMap<NodeId, Vec<NodeId>>, Vec<NodeId>);
 fn plan(
     trees: &Trees,
     candidates: &[&NodeId],
-    bound: Option<&str>,
+    bound: Option<(usize, &str)>,
     problems: &BTreeSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
@@ -2975,7 +3013,7 @@ fn plan(
     let mut reverts = Vec::new();
     let mut within = None;
     for &id in candidates.iter().filter(|id| !problems.contains(**id)) {
-        if within.is_none() && bound.is_some_and(|bound| id.as_str() > bound) {
+        if within.is_none() && bound.is_some_and(|(_, bound)| id.as_str() >= bound) {
             within = Some(wants.len());
         }
         let class = trees.acknowledged_class(id);
@@ -3151,9 +3189,9 @@ fn plan(
                 pending_for,
             } => {
                 if shape.kind == Kind::Dir {
-                    let targets = scratch.merge_targets(&shape.parent);
-                    scratch.protected.extend(targets.iter().cloned());
-                    scratch.merges.insert(id.clone(), targets);
+                    let level = scratch.merge_level(&shape.parent);
+                    scratch.protected.insert(level.clone());
+                    scratch.merges.insert(id.clone(), level);
                 }
                 scratch.place(&id, &shape.parent, &shape.name, shape.kind);
                 match shape.kind {
@@ -3297,7 +3335,7 @@ fn plan(
     };
     let ordered = !(wants.iter().flatten())
         .any(|want| matches!(want, Want::Delete { .. } | Want::Restore { .. }));
-    let mut first = true;
+    let (mut pass, mut stalled) = (1, false);
     let mut filled_at = None;
     let capped = loop {
         let (mut progress, mut full) = (false, false);
@@ -3334,7 +3372,7 @@ fn plan(
                 progress = true;
             }
             if full {
-                filled_at = first.then_some(at);
+                filled_at = (!stalled).then_some((pass, at));
                 break;
             }
             let want = wants[at].as_ref().expect("checked");
@@ -3344,7 +3382,7 @@ fn plan(
             let alone = emitted == 0 && !bundle.is_empty();
             if !alone && !fits(emitted, bytes, ops, cost) {
                 full = true;
-                filled_at = first.then_some(at);
+                filled_at = (!stalled).then_some((pass, at));
                 break;
             }
             emitted += ops;
@@ -3362,10 +3400,11 @@ fn plan(
         if full {
             break true;
         }
-        first = false;
+        pass += 1;
         if progress {
             continue;
         }
+        stalled = true;
         if let Some(cycle) = name_cycle(&wants, &scratch, &moving) {
             let Some(Want::Move {
                 id,
@@ -3485,7 +3524,8 @@ fn plan(
             }
         }
     }
-    let exact = bound.is_none() || (ordered && filled_at.is_some_and(|at| at < within));
+    let exact = bound
+        .is_none_or(|(last, _)| ordered && filled_at.is_some_and(|filled| filled < (last, within)));
     ((ops, deletes, reverts), exact)
 }
 
@@ -3509,7 +3549,16 @@ fn deletes_before_create(
     moving: &BTreeSet<NodeId>,
     parent: &str,
 ) -> Vec<usize> {
-    let targets = scratch.merge_targets(parent);
+    let reached: Vec<(usize, &Want, &NodeId)> = (wants.iter().enumerate())
+        .filter_map(|(at, slot)| match slot {
+            Some(want @ Want::Delete { id, .. }) => Some((at, want, id)),
+            _ => None,
+        })
+        .filter(|(_, _, id)| scratch.merge_reaches(parent, id))
+        .collect();
+    if reached.is_empty() {
+        return Vec::new();
+    }
     let placing: Vec<&NodeId> = (wants.iter().flatten())
         .filter_map(|want| match want {
             Want::Create { shape, .. } => Some(&shape.parent),
@@ -3517,17 +3566,12 @@ fn deletes_before_create(
             _ => None,
         })
         .collect();
-    (wants.iter().enumerate())
-        .filter_map(|(at, slot)| match slot {
-            Some(want @ Want::Delete { id, .. })
-                if targets.iter().any(|target| scratch.inside(target, id))
-                    && !placing.iter().any(|to| scratch.inside(to, id))
-                    && scratch.fit(want, moving) == Fit::Valid =>
-            {
-                Some(at)
-            }
-            _ => None,
+    (reached.into_iter())
+        .filter(|(_, want, id)| {
+            !placing.iter().any(|to| scratch.inside(to, id))
+                && scratch.fit(want, moving) == Fit::Valid
         })
+        .map(|(at, ..)| at)
         .collect()
 }
 
@@ -3635,13 +3679,14 @@ struct Scratch<'a> {
     trees: &'a Trees,
     nodes: BTreeMap<NodeId, Entry>,
     children: BTreeMap<NodeId, BTreeMap<String, BTreeSet<NodeId>>>,
-    /// For each folder this commit creates, the folders the server may merge it into
-    /// (MERGED_INTO): every folder under its parent or under a folder its parent may be merged
-    /// into, since the server merges by the names it holds when the commit applies, and another
-    /// device may have renamed one of them since R. Deleting one in the same commit would trash
-    /// what the create brings, so their deletes wait for the next commit.
-    merges: BTreeMap<NodeId, Vec<NodeId>>,
-    protected: BTreeSet<NodeId>,
+    /// For each folder this commit creates, the nearest folder above it that the commit does not
+    /// create and how many levels below that folder it is. The server may merge it into any folder
+    /// at that level (MERGED_INTO), since it merges by the names it holds when the commit applies,
+    /// and another device may have renamed one of them since R. Deleting one in the same commit
+    /// would trash what the create brings, so their deletes wait for the next commit.
+    merges: BTreeMap<NodeId, (NodeId, usize)>,
+    protected: BTreeSet<(NodeId, usize)>,
+    pinned: BTreeSet<NodeId>,
     /// For each node a queued restore names, how many wants that change it are not emitted yet,
     /// and one more while the node is not settled: this build leaves it out, so its changes are
     /// not among the wants, or S has not taken what L and R agree on. The restore waits for all
@@ -3661,6 +3706,7 @@ impl<'a> Scratch<'a> {
             children: BTreeMap::new(),
             merges: BTreeMap::new(),
             protected: BTreeSet::new(),
+            pinned: BTreeSet::new(),
             unsent: BTreeMap::new(),
             restoring: BTreeSet::new(),
             owed: BTreeSet::new(),
@@ -3774,9 +3820,7 @@ impl<'a> Scratch<'a> {
                 let subtree = self.subtree(id);
                 if !subtree.iter().all(|node| members.contains(node)) {
                     Fit::Wait
-                } else if self.protected.contains(id)
-                    || subtree.iter().any(|node| self.protected.contains(node))
-                {
+                } else if self.protects(id) || subtree.iter().any(|node| self.protects(node)) {
                     Fit::Merged
                 } else {
                     Fit::Valid
@@ -3882,6 +3926,12 @@ impl<'a> Scratch<'a> {
     }
 
     fn place(&mut self, id: &str, parent: &str, name: &str, kind: Kind) {
+        if !self.protected.is_empty() {
+            let leaving: Vec<NodeId> = (std::iter::once(id.to_owned()).chain(self.subtree(id)))
+                .filter(|node| self.protects(node))
+                .collect();
+            self.pinned.extend(leaving);
+        }
         self.unlink(id);
         let entry = Entry {
             parent: parent.to_owned(),
@@ -3950,19 +4000,59 @@ impl<'a> Scratch<'a> {
             .chain(placed.into_iter().flatten())
     }
 
-    fn merge_targets(&self, parent: &str) -> Vec<NodeId> {
-        let parents = std::iter::once(parent).chain(
-            self.merges
-                .get(parent)
-                .into_iter()
-                .flatten()
-                .map(String::as_str),
-        );
-        parents
-            .flat_map(|parent| self.children_of(parent))
-            .filter(|id| self.kind(id) == Some(Kind::Dir))
-            .cloned()
-            .collect()
+    fn merge_level(&self, parent: &str) -> (NodeId, usize) {
+        match self.merges.get(parent) {
+            Some((anchor, depth)) => (anchor.clone(), depth + 1),
+            None => (parent.to_owned(), 1),
+        }
+    }
+
+    fn protects(&self, id: &str) -> bool {
+        if self.pinned.contains(id) {
+            return true;
+        }
+        if !self.live(id) || self.kind(id) != Some(Kind::Dir) {
+            return false;
+        }
+        let mut current = id;
+        for depth in 1..=self.trees.remote().len() + self.nodes.len() {
+            let Some(parent) = self.parent(current) else {
+                return false;
+            };
+            if self.protected.contains(&(parent.to_owned(), depth)) {
+                return true;
+            }
+            if !self.live(parent) {
+                return false;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    fn merge_reaches(&self, parent: &str, id: &str) -> bool {
+        let (anchor, depth) = self.merge_level(parent);
+        if self.inside(&anchor, id) {
+            return self.folder_below(&anchor, depth);
+        }
+        let mut above = id;
+        for left in (0..depth).rev() {
+            let Some(next) = self.parent(above) else {
+                return false;
+            };
+            if next == anchor {
+                return self.folder_below(id, left);
+            }
+            above = next;
+        }
+        false
+    }
+
+    fn folder_below(&self, folder: &str, levels: usize) -> bool {
+        match levels {
+            0 => self.live(folder) && self.kind(folder) == Some(Kind::Dir),
+            _ => (self.children_of(folder)).any(|child| self.folder_below(child, levels - 1)),
+        }
     }
 
     /// A name under `parent` that nothing holds, for a folder created while the node holding its

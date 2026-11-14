@@ -6,6 +6,7 @@ use std::cell::Cell;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
 
@@ -96,26 +97,79 @@ fn created(op: &op::Op) -> (String, Shape) {
     }
 }
 
-fn first_upload(files: usize, per_dir: usize) -> u64 {
+#[derive(Clone, Copy, Debug)]
+enum Ids {
+    FoldersFirst,
+    FilesFirst,
+    Shuffled,
+}
+
+impl Ids {
+    fn id(self, kind: Kind, n: usize) -> String {
+        let (dir, file) = match self {
+            Ids::FoldersFirst | Ids::Shuffled => ("d", "f"),
+            Ids::FilesFirst => ("z", "a"),
+        };
+        let prefix = if kind == Kind::Dir { dir } else { file };
+        match self {
+            Ids::Shuffled => {
+                let hash = (n as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40;
+                format!("{hash:06x}{prefix}{n}")
+            }
+            _ => format!("{prefix}{n:06}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Upload {
+    files: usize,
+    per_dir: usize,
+    ids: Ids,
+    nested: bool,
+    cap: Option<usize>,
+}
+
+fn first_upload(upload: Upload) -> u64 {
+    let Upload {
+        files,
+        per_dir,
+        ids: order,
+        nested,
+        cap,
+    } = upload;
     let mut trees = Trees::new(ROOT);
     trees.rules_scanned();
     let dirs = files.div_ceil(per_dir);
     for d in 0..dirs {
+        let parent = match nested && d > 0 {
+            true => order.id(Kind::Dir, (d - 1) / 3),
+            false => ROOT.into(),
+        };
         trees.set_local(
-            format!("d{d:06}"),
-            local(ROOT.into(), format!("folder {d}"), Kind::Dir, d as u128 + 1),
+            order.id(Kind::Dir, d),
+            local(parent, format!("folder {d}"), Kind::Dir, d as u128 + 1),
         );
     }
     for f in 0..files {
-        let parent = format!("d{:06}", f / per_dir);
         let ino = (dirs + f) as u128 + 1;
         trees.set_local(
-            format!("f{f:06}"),
-            local(parent, format!("file {f}"), Kind::File, ino),
+            order.id(Kind::File, f),
+            local(
+                order.id(Kind::Dir, f / per_dir),
+                format!("file {f}"),
+                Kind::File,
+                ino,
+            ),
         );
     }
     trees.settle();
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let state = CommitsState {
+        cap,
+        ..Default::default()
+    };
+    let mut commits = Commits::from_state(state).unwrap();
+    let mut ids = IdGen::new(1);
     let before = allocated();
     let (mut seq, mut sent) = (0, 0);
     while let Some(commit) = commits
@@ -162,13 +216,39 @@ fn first_upload(files: usize, per_dir: usize) -> u64 {
 
 #[test]
 fn a_first_upload_takes_work_in_proportion_to_its_files() {
-    for per_dir in [100, 5000] {
-        let small = first_upload(2000, per_dir);
-        let large = first_upload(20_000, per_dir);
-        let bytes = large as f64 / small as f64;
-        assert!(
-            bytes < 12.0,
-            "{per_dir} per folder: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
-        );
+    for ids in [Ids::FoldersFirst, Ids::FilesFirst] {
+        for per_dir in [1, 100, 5000] {
+            let upload = |files| Upload {
+                files,
+                per_dir,
+                ids,
+                nested: false,
+                cap: None,
+            };
+            let small = first_upload(upload(2000));
+            let large = first_upload(upload(20_000));
+            let bytes = large as f64 / small as f64;
+            assert!(
+                bytes < 12.0,
+                "{ids:?}, {per_dir} per folder: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_first_upload_in_small_commits_sends_every_file_whatever_order_its_ids_take() {
+    for ids in [Ids::FoldersFirst, Ids::FilesFirst, Ids::Shuffled] {
+        for nested in [false, true] {
+            for per_dir in [1, 3, 40] {
+                first_upload(Upload {
+                    files: 150,
+                    per_dir,
+                    ids,
+                    nested,
+                    cap: Some(5),
+                });
+            }
+        }
     }
 }
