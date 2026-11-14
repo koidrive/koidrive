@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, Weak};
@@ -48,6 +49,7 @@ struct Inner {
     server: Option<Api>,
     status: Status,
     questions: Vec<driver::Question>,
+    conflicts: BTreeMap<String, driver::QuestionKind>,
     halted: Halted,
     sent: SessionState,
 }
@@ -90,6 +92,7 @@ impl DaemonCore {
                 server: None,
                 status: Status::default(),
                 questions: Vec::new(),
+                conflicts: BTreeMap::new(),
                 halted: Halted::new(),
                 sent: SessionState {
                     status: SyncStatus::Stopped,
@@ -140,6 +143,10 @@ impl DaemonCore {
     fn observe(&self, status: Status, questions: Vec<driver::Question>) {
         let mut inner = self.lock();
         inner.status = status;
+        let conflicts = (questions.iter())
+            .filter(|asked| matches!(asked.kind, driver::QuestionKind::Conflict { .. }))
+            .map(|asked| (asked.id.clone(), asked.kind.clone()));
+        inner.conflicts.extend(conflicts);
         inner.questions = questions;
         self.send(&mut inner, false);
     }
@@ -687,8 +694,13 @@ impl Core for DaemonCore {
     fn answer(&self, question_id: &str, answer: Answer) -> Result<(), SessionError> {
         let word = {
             let inner = self.lock();
-            let asked = inner.questions.iter().find(|asked| asked.id == question_id);
-            state::word(answer, asked.map(|asked| &asked.kind))
+            match state::word(answer, inner.conflicts.get(question_id)) {
+                Some(word) => word,
+                None if inner.questions.iter().any(|asked| asked.id == question_id) => {
+                    return Err(SessionError::AnswerNotAllowed);
+                }
+                None => return Err(SessionError::QuestionNotFound),
+            }
         };
         let done =
             (self.change(&["resolve", "--", question_id, &word])).map_err(

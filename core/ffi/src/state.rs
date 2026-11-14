@@ -272,7 +272,7 @@ fn recovery_cause(cause: Option<driver::RecoveryCause>) -> RecoveryCause {
     }
 }
 
-pub(crate) fn word(answer: Answer, kind: Option<&driver::QuestionKind>) -> String {
+pub(crate) fn word(answer: Answer, kind: Option<&driver::QuestionKind>) -> Option<String> {
     let conflict = match kind {
         Some(driver::QuestionKind::Conflict { original, copy, .. }) => Some((original, copy)),
         _ => None,
@@ -291,11 +291,15 @@ pub(crate) fn word(answer: Answer, kind: Option<&driver::QuestionKind>) -> Strin
     };
     match (engine, conflict) {
         (driver::Answer::KeepOriginal, Some((original, _))) => {
-            format!("keep-node:{}", original.node_id)
+            Some(format!("keep-node:{}", original.node_id))
         }
-        (driver::Answer::KeepCopy, Some((_, copy))) => format!("keep-node:{}", copy.node_id),
-        (driver::Answer::KeepBoth, Some(_)) => "keep-both".to_owned(),
-        (engine, _) => engine.as_str().to_owned(),
+        (driver::Answer::KeepCopy, Some((_, copy))) => Some(format!("keep-node:{}", copy.node_id)),
+        (driver::Answer::KeepBoth, Some(_)) => Some("keep-both".to_owned()),
+        (
+            driver::Answer::KeepOriginal | driver::Answer::KeepCopy | driver::Answer::KeepBoth,
+            None,
+        ) => None,
+        (engine, _) => Some(engine.as_str().to_owned()),
     }
 }
 
@@ -682,11 +686,11 @@ mod tests {
             (Answer::Publish, "publish"),
             (Answer::Repeat, "repeat"),
             (Answer::Cancel, "cancel"),
-            (Answer::KeepOriginal, "keep_original"),
-            (Answer::KeepCopy, "keep_copy"),
-            (Answer::KeepBoth, "keep_both"),
         ] {
-            assert_eq!(word(answer, None), expected);
+            assert_eq!(word(answer, None).as_deref(), Some(expected));
+        }
+        for answer in [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth] {
+            assert_eq!(word(answer, None), None);
         }
         let conflict: driver::QuestionKind = serde_json::from_value(serde_json::json!({
             "type": "conflict",
@@ -700,7 +704,7 @@ mod tests {
             (Answer::KeepBoth, "keep-both"),
             (Answer::Delete, "delete"),
         ] {
-            assert_eq!(word(answer, Some(&conflict)), expected);
+            assert_eq!(word(answer, Some(&conflict)).as_deref(), Some(expected));
         }
     }
 }

@@ -770,21 +770,30 @@ fn a_stopped_profiles_conflict_is_a_question_answered_with_the_node_koi_keeps() 
     for answer in [Answer::KeepCopy, Answer::KeepOriginal, Answer::KeepBoth] {
         koi.core.answer("q-conflict", answer).unwrap();
     }
-    koi.answer(
-        "resolve",
-        refused("stale_decision", "the decision was replaced", &[]),
-    );
+
+    let mut answered = ok(signed_in(false));
+    answered["decisions"] = json!([]);
+    koi.answer("status", answered);
+    koi.core.reload();
+    assert!(koi.core.state().questions.is_empty());
+    koi.answer("resolve", json!({ "outcome": "unchanged", "data": {} }));
     assert_eq!(
-        koi.core.answer("q-gone", Answer::KeepCopy),
+        koi.core.answer("q-conflict", Answer::KeepCopy),
         Err(SessionError::QuestionNotFound)
     );
+    for answer in [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth] {
+        assert_eq!(
+            koi.core.answer("q-gone", answer),
+            Err(SessionError::QuestionNotFound)
+        );
+    }
     assert_eq!(
         koi.calls_of("resolve"),
         [
             "resolve -- q-conflict keep-node:copy",
             "resolve -- q-conflict keep-node:original",
             "resolve -- q-conflict keep-both",
-            "resolve -- q-gone keep_copy",
+            "resolve -- q-conflict keep-node:copy",
         ]
     );
 }
