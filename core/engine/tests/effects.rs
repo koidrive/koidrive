@@ -1069,6 +1069,36 @@ fn done_refuses_an_outcome_whose_name_another_node_took() {
     assert_eq!(trees.check(), Ok(()));
 }
 
+#[test]
+fn done_refuses_a_download_or_a_move_whose_node_a_rewind_took_from_r() {
+    let cases = [
+        (None, file(ROOT, "a", 1)),
+        (None, dir(ROOT, "a")),
+        (Some(file(ROOT, "x", 1)), file(ROOT, "a", 1)),
+    ];
+    for (synced, shape) in cases {
+        let (mut trees, _) = space(&[("n", synced.clone(), Some(shape))]);
+        trees.settle();
+        let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+        let record = effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+            .unwrap();
+        assert!(record.applies(&trees, None));
+        trees.remove_remote("n");
+        trees.settle();
+        assert!(!record.applies(&trees, None), "{record:?}");
+        assert_eq!(
+            effects.done(&mut trees, None, &record.effect_id, Some(identity(5))),
+            Err(EffectError::DoesNotApply(record.effect_id.clone()))
+        );
+        let local = trees.local().get("n").map(|node| &node.shape);
+        assert_eq!(local, synced.as_ref());
+        assert_eq!(trees.synced().get("n"), synced.as_ref());
+    }
+}
+
 /// One node's draw for one tree: ⊥, or its rank, a parent choice and a name.
 type Draw = Option<(u8, u8, u8)>;
 /// GUN-334. The server trashed `f`, and its removal was in flight when another device's commit

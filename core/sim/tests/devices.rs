@@ -7940,3 +7940,24 @@ fn a_recovery_answer_does_not_put_a_disk_first_finish_back_at_its_pending_name()
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_download_a_rewind_takes_from_the_server_is_not_sent_again_after_a_rename() {
+    use Step::*;
+    let phases = vec![vec![
+        (0, act(1, 0, 0, "b", 0)),
+        (0, Work(0)),
+        (0, Backup),
+        (0, act(0, 0, 0, "a", 0)),
+        (0, Work(1589739715403761288)),
+        (0, Work(22617199788577236)),
+        (1, Work(0)),
+        (0, Rewind),
+        (1, Work(0)),
+        (1, Connect),
+        (1, Deliver(0)),
+        (1, Effect(Outcome::Run)),
+        (1, act(3, 0, 0, "a", 0)),
+    ]];
+    converge(2, &phases).unwrap();
+}

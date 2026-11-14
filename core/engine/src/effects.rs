@@ -117,9 +117,10 @@ impl EffectRecord {
     /// creates into L. A commit's rebase or result may also have given the entry that a move or a
     /// replacement takes to another node of L. L also keeps the position of a node that a commit in
     /// flight moves or creates, while that commit is in flight, and of a node the user moved, as
-    /// when a scan sees the user's move after the effect was planned. The planner plans none of
-    /// these either, so an effect that fails for one of them and is unblocked is planned again only
-    /// once L or R has changed.
+    /// when a scan sees the user's move after the effect was planned. Once R no longer holds the
+    /// node, as after a rewind that took it from the server, only a move back to the node's own
+    /// place in L is taken. The planner plans none of these either, so an effect that fails for
+    /// one of them and is unblocked is planned again only once L or R has changed.
     pub fn applies(&self, trees: &Trees, in_flight: Option<&InFlight>) -> bool {
         View::new(trees).applies(self, in_flight)
     }
@@ -1075,6 +1076,14 @@ impl<'a> View<'a> {
         }
         if record.parks() {
             return true;
+        }
+        if self.trees.remote().get(&record.node).is_none() {
+            let unparks = matches!(record.effect, Effect::Move { .. })
+                && (self.trees.local().get(&record.node))
+                    .is_some_and(|node| node.shape.same_position(after));
+            if !unparks {
+                return false;
+            }
         }
         let creates = matches!(
             record.effect,
