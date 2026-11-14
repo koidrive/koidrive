@@ -86,13 +86,66 @@ fn known_events<'de, D: serde::Deserializer<'de>>(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "StoredOut")]
 struct Out {
     id: InstallId,
     batch: Batch,
     uuids: Vec<EventUuid>,
 }
 
+#[derive(Deserialize)]
+struct StoredOut {
+    id: InstallId,
+    batch: StoredBatch,
+    uuids: Vec<EventUuid>,
+}
+
+#[derive(Deserialize)]
+struct StoredBatch {
+    #[serde(default)]
+    hours: Vec<HourlyReport>,
+    #[serde(default)]
+    events: Vec<Value>,
+}
+
+impl From<StoredOut> for Out {
+    fn from(stored: StoredOut) -> Self {
+        let hours = stored.batch.hours.len();
+        let mut uuids = stored.uuids;
+        let event_uuids = match uuids.len() == hours + stored.batch.events.len() {
+            true => uuids.split_off(hours),
+            false => Vec::new(),
+        };
+        let mut out = Out {
+            id: stored.id,
+            batch: Batch {
+                hours: stored.batch.hours,
+                events: Vec::new(),
+            },
+            uuids,
+        };
+        for (value, uuid) in stored.batch.events.into_iter().zip(event_uuids) {
+            if let Ok(event) = serde_json::from_value(value) {
+                out.batch.events.push(event);
+                out.uuids.push(uuid);
+            }
+        }
+        out
+    }
+}
+
 impl Out {
+    fn keep_events(&mut self, mut keep: impl FnMut(&Queued) -> bool) {
+        let uuids = self.uuids.split_off(self.batch.hours.len());
+        let events = std::mem::take(&mut self.batch.events);
+        for (event, uuid) in events.into_iter().zip(uuids) {
+            if keep(&event) {
+                self.batch.events.push(event);
+                self.uuids.push(uuid);
+            }
+        }
+    }
+
     fn new(id: InstallId, batch: Batch) -> io::Result<Self> {
         let uuids = (0..batch.hours.len() + batch.events.len())
             .map(|_| EventUuid::generate().map_err(io::Error::other))
@@ -117,28 +170,16 @@ impl Out {
                 out.uuids.push(uuid);
             }
         }
-        for (event, uuid) in self.batch.events.into_iter().zip(uuids) {
-            if event.event.hour() >= oldest {
-                out.batch.events.push(event);
-                out.uuids.push(uuid);
-            }
-        }
+        out.uuids.extend(uuids);
+        out.batch.events = self.batch.events;
+        out.keep_events(|event| event.event.hour() >= oldest);
         (!out.batch.is_empty()).then_some(out)
     }
 }
 
 impl Queue {
     fn put(&mut self, hours: impl IntoIterator<Item = HourlyReport>, events: Vec<Queued>) {
-        for report in hours {
-            let hour = report.hour;
-            self.hours
-                .entry(hour)
-                .or_insert_with(|| HourlyReport {
-                    hour,
-                    ..HourlyReport::default()
-                })
-                .merge(report);
-        }
+        self.put_hours(hours);
         for event in events {
             let (kind, group, label) = event.event.kind();
             let admitted = (self.admitted.entry(event.event.day()).or_default())
@@ -148,6 +189,19 @@ impl Queue {
                 *admitted += 1;
                 self.events.push(event);
             }
+        }
+    }
+
+    fn put_hours(&mut self, hours: impl IntoIterator<Item = HourlyReport>) {
+        for report in hours {
+            let hour = report.hour;
+            self.hours
+                .entry(hour)
+                .or_insert_with(|| HourlyReport {
+                    hour,
+                    ..HourlyReport::default()
+                })
+                .merge(report);
         }
     }
 
@@ -163,11 +217,16 @@ impl Queue {
         self.events.retain(|event| event.event.hour() >= oldest);
         self.admitted = self.admitted.split_off(&(oldest / 24));
         let mut over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
-        self.events.retain(|queued| {
+        let mut keep = |queued: &Queued| {
             let evicted = over > 0 && !matches!(queued.event, Event::Panic { .. });
             over -= usize::from(evicted);
             !evicted
-        });
+        };
+        if let Some(out) = &mut self.out {
+            out.keep_events(&mut keep);
+        }
+        self.out = self.out.take().filter(|out| !out.batch.is_empty());
+        self.events.retain(|queued| keep(queued));
         self.events.drain(..over.min(self.events.len()));
     }
 }
@@ -441,12 +500,15 @@ impl Store {
     /// Everything in the queue, this hour and a batch that is out included, without taking it.
     pub fn peek(&self) -> io::Result<Batch> {
         let mut queue = self.queue()?;
+        let mut events = Vec::new();
         if let Some(out) = queue.out.take() {
-            queue.put(out.batch.hours, out.batch.events);
+            queue.put_hours(out.batch.hours);
+            events = out.batch.events;
         }
+        events.extend(queue.events);
         Ok(Batch {
             hours: queue.hours.into_values().collect(),
-            events: queue.events,
+            events,
         })
     }
 
@@ -944,6 +1006,85 @@ mod tests {
         let queued = store.peek().unwrap();
         assert_eq!(queued.events.len(), MAX_EVENTS);
         assert!((queued.events.iter()).any(|queued| matches!(queued.event, Event::Panic { .. })));
+    }
+
+    fn panics(at_hour: u32, n: usize) -> Pending {
+        Pending {
+            hours: BTreeMap::new(),
+            events: vec![panic_on(at_hour); n],
+        }
+    }
+
+    #[test]
+    fn a_batch_given_back_still_shows_in_full() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        store
+            .absorb_at(panics(99, Event::PER_KIND_PER_DAY), 100, true)
+            .unwrap();
+        drop(store.take(100).unwrap().unwrap());
+        assert_eq!(store.peek().unwrap().events.len(), Event::PER_KIND_PER_DAY);
+    }
+
+    #[test]
+    fn an_unknown_event_in_a_batch_out_leaves_the_rest_with_their_uuids() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let mut pending = panics(99, 2);
+        if let Event::Panic { line, .. } = &mut pending.events[1] {
+            *line = 8;
+        }
+        store.absorb_at(pending, 100, true).unwrap();
+        let sending = store.take(100).unwrap().unwrap();
+        let uuids = sending.uuids.clone();
+        drop(sending);
+        let path = store.dir.join(QUEUE);
+        let mut file: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        file["out"]["batch"]["events"][0] =
+            serde_json::json!({ "type": "from_a_later_release", "at": 1 });
+        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let again = store.take(100).unwrap().unwrap();
+        assert_eq!(again.uuids, uuids[1..]);
+        assert!(matches!(
+            again.batch.events[..],
+            [Queued {
+                event: Event::Panic { line: 8, .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_full_batch_out_makes_room_for_a_new_panic() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let now = 1_000;
+        for day in 0..13 {
+            let events = (Failure::all().take(3))
+                .flat_map(|problem| {
+                    (0..Event::PER_KIND_PER_DAY).map(move |n| Event::Problem {
+                        at: u64::from(now - 13 * 24 + day * 24) * 3600 + n as u64,
+                        problem,
+                        count: 1,
+                    })
+                })
+                .collect();
+            let pending = Pending {
+                hours: BTreeMap::new(),
+                events,
+            };
+            store.absorb_at(pending, now, true).unwrap();
+        }
+        drop(store.take(now).unwrap().unwrap());
+        store.absorb_at(panics(now, 1), now, true).unwrap();
+        let queued = store.peek().unwrap();
+        assert_eq!(queued.events.len(), MAX_EVENTS);
+        assert!((queued.events.iter()).any(|queued| matches!(queued.event, Event::Panic { .. })));
+        let sending = store.take(now).unwrap().unwrap();
+        assert_eq!(
+            sending.uuids.len(),
+            sending.batch.hours.len() + sending.batch.events.len()
+        );
     }
 
     #[test]
