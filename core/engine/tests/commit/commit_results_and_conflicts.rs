@@ -544,3 +544,34 @@ fn a_resent_answer_delete_drops_its_precondition_once_a_delete_of_this_device_tr
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [delete("a")]);
 }
+
+#[test]
+fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed_before_the_build() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(remote(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            meta_rev: 3,
+            meta_edit_rev: 3,
+            ..remote(file(ROOT, "g", 1))
+        },
+    );
+    let commit = build(&mut commits, &mut trees, &mut ids);
+    let ops = commit.as_ref().map(ops).unwrap_or_default();
+    assert!(
+        !(ops.iter()).any(|op| matches!(op, op::Op::UpdateContent(u) if u.node_id == "f")),
+        "{ops:?}"
+    );
+    assert!(
+        !(ops.iter()).any(|op| matches!(op, op::Op::Move(m) if m.node_id == "f")),
+        "{ops:?}"
+    );
+}
