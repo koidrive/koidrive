@@ -2588,3 +2588,83 @@ fn an_edit_after_a_child_of_a_server_folder_in_a_discarded_folder_is_purged_keep
         "the changed subtree's folder was not reclaimed: {sent:?}"
     );
 }
+
+#[test]
+fn a_user_folder_parked_below_a_folder_the_server_added_keeps_the_discarded_folder_the_users() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("c", file("x", "child", 9)),
+            ("u", dir("f", "mine")),
+        ],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(!trees.reclaimed("f"));
+
+    let server = trees.remote().get("x").unwrap().clone();
+    let added = RemoteNode {
+        shape: dir("x", "added"),
+        ..server.clone()
+    };
+    trees.set_remote("d".into(), added);
+    let mut moved = trees.local().get("u").unwrap().clone();
+    moved.shape.parent = "x".into();
+    trees.set_local_changed("u".into(), moved);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    let download = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(download.node, "d");
+    let identity = FileIdentity {
+        dev: 1,
+        ino: 901,
+        birth_ns: Some(0),
+    };
+    (effects.done(
+        &mut trees,
+        commits.in_flight(),
+        &download.effect_id,
+        Some(identity),
+    ))
+    .unwrap();
+    let collision = RemoteNode {
+        shape: dir("d", "mine"),
+        ..server
+    };
+    trees.set_remote("z".into(), collision);
+    let mut moved = trees.local().get("u").unwrap().clone();
+    moved.shape.parent = "d".into();
+    trees.set_local_changed("u".into(), moved);
+    trees.settle();
+    let park = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert!(matches!(park.effect, Effect::Move { .. }) && park.node == "u");
+    (effects.done(&mut trees, commits.in_flight(), &park.effect_id, None)).unwrap();
+    trees.settle();
+    assert!(trees.local().get("u").unwrap().parked);
+
+    assert!(trees.reclaimed("f"));
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        (planned.iter()).all(|record| record.node != "x"),
+        "the server folder leaves the folder that is the user's again: {planned:?}"
+    );
+}

@@ -1665,7 +1665,8 @@ impl Trees {
         match (self.l.get(id), self.r.live(id)) {
             (Some(local), Some(remote)) => {
                 local.shape.same(remote)
-                    && (self.local_children(id)).all(|child| self.as_the_server_holds(child))
+                    && (self.local_children_placed_or_parked(id))
+                        .all(|child| self.as_the_server_holds(child))
                     && self.keeps_the_synced_children(id)
             }
             (local, remote) => local.is_none() && remote.is_none(),
@@ -1752,7 +1753,7 @@ impl Trees {
                 _ => false,
             },
             Kind::Dir => {
-                let children: Vec<&NodeId> = self.local_children(id).collect();
+                let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
                 children
                     .into_iter()
                     .all(|child| self.server_copy(child, kept))
