@@ -413,7 +413,7 @@ impl Effects {
         let mut chosen = Vec::new();
         let mut claimed = BTreeSet::new();
         let mut bytes = 0;
-        for id in trees.dirty() {
+        for id in trees.dirty_others() {
             if chosen.len() >= limit.effects {
                 break;
             }
@@ -777,7 +777,7 @@ pub fn stuck(
     in_flight: Option<&InFlight>,
 ) -> BTreeMap<NodeId, Stuck> {
     let view = View::new(trees);
-    let planned: Vec<&NodeId> = (trees.dirty().iter())
+    let planned: Vec<&NodeId> = (trees.dirty_others().iter())
         .filter(|id| candidate(trees, id) && !trees.held(id))
         .collect();
     let unplaced: Vec<(&NodeId, &str)> = (planned.iter())

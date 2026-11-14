@@ -1,55 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
 use koidrive_engine::effects::BatchLimit;
 use koidrive_engine::tree::FileIdentity;
 use koidrive_proto::v1::{Content, NodeKind, NodeState, NodeStatus, VersionInfo};
 use koidrive_store::{Error, Store};
 
 use super::{Engine, remote_node};
+use crate::counting::allocated;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
-
-struct Counting;
-
-thread_local! {
-    static ALLOCATED: Cell<u64> = const { Cell::new(0) };
-}
-
-fn count(bytes: usize) {
-    let _ = ALLOCATED.try_with(|allocated| allocated.set(allocated.get() + bytes as u64));
-}
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count(layout.size());
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        count(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count(new_size.saturating_sub(layout.size()));
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
-
-fn allocated() -> u64 {
-    ALLOCATED.with(Cell::get)
-}
 
 fn remote(id: String, parent: &str, name: String, kind: NodeKind, size: u64) -> NodeState {
     let current = (kind == NodeKind::File).then(|| VersionInfo {
