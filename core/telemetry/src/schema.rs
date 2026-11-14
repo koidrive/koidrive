@@ -157,6 +157,13 @@ pub fn magnitude(value: u64) -> u8 {
     (64 - value.leading_zeros()) as u8
 }
 
+/// The release and process that recorded an event, which it is reported under whoever sends it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub koi_version: Version,
+    pub client: Client,
+}
+
 /// Something that happened once, sent on its own rather than summed into the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

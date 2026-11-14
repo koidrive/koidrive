@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::consent::{self, Status};
 use crate::recorder::Pending;
-use crate::schema::{Event, EventUuid, HourlyReport, InstallId};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
 
 pub const KEEP_HOURS: u32 = 14 * 24;
 pub const MAX_EVENTS: usize = 500;
@@ -34,8 +34,17 @@ pub struct Settings {
 pub struct Batch {
     #[serde(default)]
     pub hours: Vec<HourlyReport>,
-    #[serde(default)]
-    pub events: Vec<Event>,
+    #[serde(default, deserialize_with = "known_events")]
+    pub events: Vec<Queued>,
+}
+
+/// An event in the queue, with the release and process that recorded it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Queued {
+    #[serde(flatten)]
+    pub event: Event,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 impl Batch {
@@ -56,18 +65,27 @@ pub struct Sending {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Queue {
     #[serde(default)]
     hours: BTreeMap<u32, HourlyReport>,
-    #[serde(default)]
-    events: Vec<Event>,
+    #[serde(default, deserialize_with = "known_events")]
+    events: Vec<Queued>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     out: Option<Out>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    admitted: BTreeMap<u32, BTreeMap<String, usize>>,
+}
+
+fn known_events<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Queued>, D::Error> {
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    Ok((values.into_iter())
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Out {
     id: InstallId,
     batch: Batch,
@@ -100,7 +118,7 @@ impl Out {
             }
         }
         for (event, uuid) in self.batch.events.into_iter().zip(uuids) {
-            if event.hour() >= oldest {
+            if event.event.hour() >= oldest {
                 out.batch.events.push(event);
                 out.uuids.push(uuid);
             }
@@ -110,7 +128,7 @@ impl Out {
 }
 
 impl Queue {
-    fn put(&mut self, hours: impl IntoIterator<Item = HourlyReport>, events: Vec<Event>) {
+    fn put(&mut self, hours: impl IntoIterator<Item = HourlyReport>, events: Vec<Queued>) {
         for report in hours {
             let hour = report.hour;
             self.hours
@@ -122,16 +140,18 @@ impl Queue {
                 .merge(report);
         }
         for event in events {
-            let same = (self.events.iter().chain(self.out_events()))
-                .filter(|held| held.kind() == event.kind() && held.day() == event.day())
-                .count();
-            if same < Event::PER_KIND_PER_DAY {
+            let (kind, group, label) = event.event.kind();
+            let admitted = (self.admitted.entry(event.event.day()).or_default())
+                .entry(format!("{kind}.{group}.{label}"))
+                .or_default();
+            if *admitted < Event::PER_KIND_PER_DAY {
+                *admitted += 1;
                 self.events.push(event);
             }
         }
     }
 
-    fn out_events(&self) -> impl Iterator<Item = &Event> {
+    fn out_events(&self) -> impl Iterator<Item = &Queued> {
         self.out.iter().flat_map(|out| &out.batch.events)
     }
 
@@ -140,8 +160,14 @@ impl Queue {
         let oldest = hour.saturating_sub(KEEP_HOURS);
         self.hours
             .retain(|hour, report| *hour >= oldest && !report.is_empty());
-        self.events.retain(|event| event.hour() >= oldest);
-        let over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
+        self.events.retain(|event| event.event.hour() >= oldest);
+        self.admitted = self.admitted.split_off(&(oldest / 24));
+        let mut over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
+        self.events.retain(|queued| {
+            let evicted = over > 0 && !matches!(queued.event, Event::Panic { .. });
+            over -= usize::from(evicted);
+            !evicted
+        });
         self.events.drain(..over.min(self.events.len()));
     }
 }
@@ -209,6 +235,7 @@ pub struct SendingOld {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Store {
     dir: PathBuf,
+    origin: Option<Origin>,
 }
 
 impl Store {
@@ -216,6 +243,15 @@ impl Store {
     pub fn new(state_dir: &Path) -> Self {
         Store {
             dir: state_dir.join("telemetry"),
+            origin: None,
+        }
+    }
+
+    /// The same files, with events this store queues marked as recorded by `origin`.
+    pub fn recorded_by(self, origin: Origin) -> Self {
+        Store {
+            origin: Some(origin),
+            ..self
         }
     }
 
@@ -327,7 +363,13 @@ impl Store {
             _ => {}
         }
         let mut queue = self.queue()?;
-        queue.put(pending.hours.into_values(), pending.events);
+        let events = (pending.events.into_iter())
+            .map(|event| Queued {
+                event,
+                origin: self.origin.clone(),
+            })
+            .collect();
+        queue.put(pending.hours.into_values(), events);
         queue.trim(hour);
         write(&self.dir.join(QUEUE), &queue)
     }
@@ -558,7 +600,7 @@ fn remove(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::Recorder;
-    use crate::schema::{Command, Counter, SourceFile};
+    use crate::schema::{Command, Counter, Failure, SourceFile};
 
     #[test]
     fn an_earlier_release_queue_stays_when_it_cannot_be_read_after_its_batch_went() {
@@ -850,6 +892,78 @@ mod tests {
     }
 
     #[test]
+    fn the_daily_cap_holds_across_sends() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let problem = Failure::all().next().unwrap();
+        let mut sent = 0;
+        for minute in 0..100 {
+            let pending = Pending {
+                hours: BTreeMap::new(),
+                events: vec![Event::Problem {
+                    at: 100 * 3600 + minute,
+                    problem,
+                    count: 1,
+                }],
+            };
+            store.absorb_at(pending, 100, true).unwrap();
+            let sending = store.take(101).unwrap().unwrap();
+            sent += sending.batch.events.len();
+            store.sent(sending).unwrap();
+        }
+        assert_eq!(sent, Event::PER_KIND_PER_DAY);
+    }
+
+    #[test]
+    fn a_full_queue_drops_other_events_before_a_panic() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let now = 1_000;
+        let oldest = now - 13 * 24;
+        let panic = Pending {
+            hours: BTreeMap::new(),
+            events: vec![panic_on(oldest)],
+        };
+        store.absorb_at(panic, now, true).unwrap();
+        for day in 0..13 {
+            let events = (Failure::all().take(3))
+                .flat_map(|problem| {
+                    (0..Event::PER_KIND_PER_DAY).map(move |n| Event::Problem {
+                        at: u64::from(oldest + day * 24) * 3600 + n as u64,
+                        problem,
+                        count: 1,
+                    })
+                })
+                .collect();
+            let pending = Pending {
+                hours: BTreeMap::new(),
+                events,
+            };
+            store.absorb_at(pending, now, true).unwrap();
+        }
+        let queued = store.peek().unwrap();
+        assert_eq!(queued.events.len(), MAX_EVENTS);
+        assert!((queued.events.iter()).any(|queued| matches!(queued.event, Event::Panic { .. })));
+    }
+
+    #[test]
+    fn an_event_this_build_does_not_know_drops_only_itself() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        fs::write(
+            store.dir.join(QUEUE),
+            br#"{"events":[{"type":"panic","at":3600,"file":"cli/src/main.rs","line":7},{"type":"from_a_later_release","at":3600}],"later_field":1}"#,
+        )
+        .unwrap();
+        let queued = store.peek().unwrap();
+        assert_eq!(queued.events.len(), 1);
+        assert!(matches!(
+            queued.events[0].event,
+            Event::Panic { line: 7, .. }
+        ));
+    }
+
+    #[test]
     fn a_batch_partly_expired_while_out_still_settles() {
         let (_dir, store) = store();
         store.set(true).unwrap();
@@ -993,7 +1107,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [400]
         );
-        assert!(queued.events.iter().all(|event| event.hour() == 400));
+        assert!(
+            queued
+                .events
+                .iter()
+                .all(|queued| queued.event.hour() == 400)
+        );
     }
 
     #[test]

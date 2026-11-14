@@ -19,12 +19,12 @@ pub use consent::{Mode, Source, Status, VARIABLE, resolve, should_ask};
 pub use cpu::Cpu;
 pub use panic::install_panic_hook;
 pub use recorder::{Pending, Recorder};
-pub use schema::{Event, EventUuid, HourlyReport, InstallId};
+pub use schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
 pub use send::{
     ENDPOINT, ENDPOINT_VARIABLE, PROJECT_TOKEN, Sent, TOKEN_VARIABLE, UploadError, Uploader, batch,
     old_batch, send,
 };
-pub use store::{Batch, OldBatch, Sending, Settings, Store};
+pub use store::{Batch, OldBatch, Queued, Sending, Settings, Store};
 pub use system::Environment;
 
 /// Seconds since 1970-01-01T00:00Z, the time an event carries.

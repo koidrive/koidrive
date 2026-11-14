@@ -663,6 +663,42 @@ fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
     (url, bodies)
 }
 
+#[test]
+fn the_next_command_sends_a_crash_queued_before_it_but_preview_sends_nothing() {
+    use koidrive_telemetry::schema::{Event, SourceFile};
+    use koidrive_telemetry::{Pending, Store};
+
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let store = Store::new(&home.path().join("state/koidrive"));
+    let pending = Pending {
+        events: vec![Event::Panic {
+            at: koidrive_telemetry::now(),
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 41,
+            frames: vec![],
+        }],
+        ..Pending::default()
+    };
+    store.absorb(pending).unwrap();
+    let (url, bodies) = posthog(0);
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+    ];
+    stdout(&koi(home.path(), &["telemetry", "preview"], &vars));
+    assert!(bodies.recv_timeout(Duration::from_secs(3)).is_err());
+    stdout(&koi(home.path(), &["setup"], &vars));
+    let body = bodies
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the next command sent nothing");
+    let panics = (body["batch"].as_array().unwrap().iter())
+        .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 41)
+        .count();
+    assert_eq!(panics, 1, "{body}");
+    assert!(store.peek().unwrap().events.is_empty());
+}
+
 fn posthog_answering(failures: usize) -> (String, mpsc::Receiver<(u16, serde_json::Value)>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());

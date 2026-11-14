@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_telemetry::schema::Event;
-use koidrive_telemetry::{Store, install_panic_hook};
+use koidrive_telemetry::schema::{Client, Event, Version};
+use koidrive_telemetry::{Origin, Queued, Store, install_panic_hook};
 
 #[inline(never)]
 fn crash_site(path: &str) {
@@ -15,7 +15,11 @@ fn a_real_panic_is_queued_with_koidrive_frames_and_nothing_of_its_message() {
         std::env::remove_var("KOIDRIVE_TELEMETRY");
     }
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path());
+    let origin = Origin {
+        koi_version: Version::parse("0.1.0-alpha.9").unwrap(),
+        client: Client::CliCommand,
+    };
+    let store = Store::new(dir.path()).recorded_by(origin.clone());
     store.set(true).unwrap();
     install_panic_hook(store.clone());
     let secret = "/home/alice/Private Notes.docx";
@@ -23,9 +27,16 @@ fn a_real_panic_is_queued_with_koidrive_frames_and_nothing_of_its_message() {
     assert!(crashed.is_err());
 
     let queued = store.peek().unwrap();
-    let [Event::Panic { file, frames, .. }] = queued.events.as_slice() else {
+    let [
+        Queued {
+            event: Event::Panic { file, frames, .. },
+            origin: recorded,
+        },
+    ] = queued.events.as_slice()
+    else {
         panic!("no single panic queued: {queued:?}");
     };
+    assert_eq!(recorded.as_ref(), Some(&origin));
     assert_eq!(
         String::from(file.clone()),
         "core/telemetry/tests/koidrive_crash.rs"

@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::consent::Mode;
 use crate::schema::{Event, EventUuid, HourlyReport, InstallId, SCHEMA};
-use crate::store::{Batch, OldBatch, Store};
+use crate::store::{Batch, OldBatch, Queued, Store};
 use crate::system::Environment;
 
 pub const ENDPOINT: &str = "https://tel.koidrive.com";
@@ -212,13 +212,17 @@ pub fn batch(
         properties.extend(sums(report));
         events.push(json!({ "event": "hourly_report", "properties": properties, "timestamp": time(u64::from(report.hour) * 3600) }));
     }
-    for event in &batch.events {
+    for Queued { event, origin } in &batch.events {
         let Value::Object(mut fields) = serde_json::to_value(event).unwrap_or_default() else {
             continue;
         };
         let name = fields.remove("type").unwrap_or_default();
         fields.remove("at");
         let mut properties = common(id, environment);
+        if let Some(origin) = origin {
+            properties.insert("koi_version".into(), json!(origin.koi_version));
+            properties.insert("client".into(), json!(origin.client));
+        }
         properties.extend(fields);
         events.push(
             json!({ "event": name, "properties": properties, "timestamp": time(event.at()) }),
@@ -358,8 +362,8 @@ mod tests {
     use crate::recorder::Recorder;
     use crate::schema::{
         Arch, Build, Client, Command, Counter, Distro, ErrorCode, Event, Failure, Halted, Level,
-        Measure, Os, OsVersion, Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Symbol, Synced,
-        Version,
+        Measure, Origin, Os, OsVersion, Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Symbol,
+        Synced, Version,
     };
 
     #[test]
@@ -409,7 +413,12 @@ mod tests {
         let pending = recorder.take();
         let reports = Batch {
             hours: pending.hours.into_values().collect(),
-            events: pending.events,
+            events: (pending.events.into_iter())
+                .map(|event| Queued {
+                    event,
+                    origin: None,
+                })
+                .collect(),
         };
         let environment = Environment {
             client: Client::CliDaemon,
@@ -443,11 +452,6 @@ mod tests {
             2 => include_str!("../tests/fixtures/report-schema-v2.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
-        std::fs::write(
-            "/tmp/koi619-v2.json",
-            serde_json::to_string_pretty(&actual).unwrap(),
-        )
-        .unwrap();
         let expected: Value = serde_json::from_str(fixture).unwrap();
         assert_eq!(
             actual, expected,
@@ -457,6 +461,30 @@ mod tests {
 
     fn environment() -> Environment {
         Environment::detect(Client::CliDaemon, "0.1.0")
+    }
+
+    #[test]
+    fn an_event_goes_under_the_release_and_client_that_recorded_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Origin {
+            koi_version: Version::parse("0.1.0-alpha.9").unwrap(),
+            client: Client::CliCommand,
+        };
+        let store = Store::new(dir.path()).recorded_by(old);
+        store.set(true).unwrap();
+        let recorder = Recorder::on();
+        recorder.event(Event::Panic {
+            at: crate::now(),
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 7,
+            frames: vec![],
+        });
+        store.absorb(recorder.take()).unwrap();
+        let id = store.settings().unwrap().install_id.unwrap();
+        let body = batch("phc_test", &id, &environment(), &store.peek().unwrap(), &[]);
+        let properties = &body["batch"][0]["properties"];
+        assert_eq!(properties["koi_version"], "0.1.0-alpha.9", "{body}");
+        assert_eq!(properties["client"], "cli_command", "{body}");
     }
 
     const HOUR: u32 = 20_404 * 24;

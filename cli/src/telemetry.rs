@@ -14,7 +14,7 @@ use koidrive_telemetry::schema::{
     magnitude,
 };
 use koidrive_telemetry::{
-    Environment, Event, InstallId, Mode, Recorder, Sent, Source, Store, Uploader,
+    Environment, Event, InstallId, Mode, Origin, Recorder, Sent, Source, Store, Uploader,
     install_panic_hook, should_ask,
 };
 use schemars::JsonSchema;
@@ -76,7 +76,15 @@ pub async fn start(
     command: schema::Command,
     flow: Option<SetupFlow>,
 ) {
-    let store = Store::new(&paths.state_dir);
+    let client = match command {
+        schema::Command::Daemon => Client::CliDaemon,
+        _ => Client::CliCommand,
+    };
+    let environment = Environment::detect(client, env!("CARGO_PKG_VERSION"));
+    let store = Store::new(&paths.state_dir).recorded_by(Origin {
+        koi_version: environment.koi_version,
+        client,
+    });
     if let Some(switch) = switch
         && let Err(error) = store.set(switch == Switch::On)
     {
@@ -222,7 +230,9 @@ impl Drop for Running {
 pub async fn finish() {
     let Some(run) = RUN.get() else { return };
     let events_written = run.flush(run.mode());
-    if events_written > 0 {
+    let waiting = run.command != schema::Command::Telemetry
+        && (run.store.peek()).is_ok_and(|queued| !queued.events.is_empty());
+    if events_written > 0 || waiting {
         let _ = tokio::time::timeout(EXIT_SEND, send(&run.store, Client::CliCommand)).await;
     }
 }
