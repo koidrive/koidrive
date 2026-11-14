@@ -56,7 +56,26 @@ pub fn wait_cause(wait: &koidrive_driver::Wait, now_ms: i64) -> String {
         koidrive_driver::WaitKind::Quota => "Storage is full or a daily limit was reached.",
         koidrive_driver::WaitKind::Retry => "Sync is waiting to retry an operation.",
     };
-    let seconds = (wait.until_ms.saturating_sub(now_ms).max(0) as u64).div_ceil(1000);
+    let cause = match &wait.unreachable {
+        Some(unreachable) => {
+            let mut cause = format!(
+                "Cannot reach the server: {}",
+                crate::printable(&unreachable.why)
+            );
+            if !cause.ends_with(['.', '!', '?']) {
+                cause.push('.');
+            }
+            cause
+        }
+        None if wait.kind == koidrive_driver::WaitKind::Retry && wait.until_ms.is_none() => {
+            "A sync operation needs another try.".to_owned()
+        }
+        None => cause.to_owned(),
+    };
+    let Some(until_ms) = wait.until_ms else {
+        return format!("{cause} Retrying now.");
+    };
+    let seconds = (until_ms.saturating_sub(now_ms).max(0) as u64).div_ceil(1000);
     let retry = match seconds {
         0 => "Retry is due now.".to_owned(),
         1..=60 => format!("Retry in {}.", crate::count(seconds, "second")),
@@ -194,11 +213,36 @@ mod tests {
             ] {
                 let wait = koidrive_driver::Wait {
                     kind,
-                    until_ms: 1_000_000 + delay,
+                    until_ms: Some(1_000_000 + delay),
+                    unreachable: None,
                 };
                 assert_eq!(wait_cause(&wait, 1_000_000), format!("{cause} {retry}"));
             }
         }
+    }
+
+    #[test]
+    fn wait_causes_keep_offline_reasons_and_identify_an_active_retry() {
+        let mut wait = koidrive_driver::Wait {
+            kind: koidrive_driver::WaitKind::Retry,
+            until_ms: None,
+            unreachable: Some(koidrive_driver::Unreachable {
+                why: "the server's address could not be found\u{1b}[2J".into(),
+                no_internet: false,
+            }),
+        };
+        assert_eq!(
+            wait_cause(&wait, 1_000_000),
+            "Cannot reach the server: the server's address could not be found\\u{1b}[2J. Retrying now."
+        );
+        wait.until_ms = Some(1_001_000);
+        assert!(wait_cause(&wait, 1_000_000).ends_with("Retry in 1 second."));
+        wait.until_ms = None;
+        wait.unreachable = None;
+        assert_eq!(
+            wait_cause(&wait, 1_000_000),
+            "A sync operation needs another try. Retrying now."
+        );
     }
 
     #[test]

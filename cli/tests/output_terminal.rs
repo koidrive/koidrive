@@ -386,6 +386,54 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
 }
 
 #[test]
+fn summary_regression_offline_causes_show_active_and_scheduled_retries() {
+    for active in [true, false] {
+        let profile = Profile::new();
+        let path = profile.0.path().join("Work").display().to_string();
+        let server = profile.fixture(1, move |request| {
+            assert_eq!(request["request"], "status");
+            json!({"response":"status", "status":{
+                "account":null, "running":true,
+                "folders":[{"space_id":"s1", "space_name":"Work", "path":path,
+                    "state":"offline", "history_id":null, "last_seq":null, "head_seq":null,
+                    "remote_nodes":0, "local_entries":0, "questions":0, "problem":null,
+                    "wait":{"kind":"retry", "until_ms":if active { Value::Null } else { json!(i64::MAX) },
+                        "unreachable":{"why":"the server's address could not be found", "no_internet":false}}}]
+            }})
+        });
+        let output = profile.run(&["status"], true, false, &[("NO_COLOR", "1")]);
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        assert!(
+            output.terminal.contains("~/Work: Offline."),
+            "{}",
+            output.terminal
+        );
+        assert!(
+            output
+                .terminal
+                .contains("Cannot reach the server: the server's address could not be found."),
+            "{}",
+            output.terminal
+        );
+        assert!(
+            !output.terminal.contains("Offline. Check your connection"),
+            "{}",
+            output.terminal
+        );
+        assert!(
+            output.terminal.contains(if active {
+                "Retrying now."
+            } else {
+                "Retry in about"
+            }),
+            "{}",
+            output.terminal
+        );
+    }
+}
+
+#[test]
 fn summary_regression_pending_restores_explain_wait_causes() {
     for (kind, cause) in [
         ("quota", "Storage is full or a daily limit was reached."),

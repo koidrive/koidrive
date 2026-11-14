@@ -2345,6 +2345,7 @@ fn status_summary(
             FolderState::Bootstrapping => "Preparing the first sync",
             FolderState::CatchingUp => "Syncing",
             FolderState::UpToDate => "Up to date",
+            FolderState::Offline if folder.unreachable().is_some() => "Offline",
             FolderState::Offline => "Offline. Check your connection",
             FolderState::Halted => "Sync stopped",
         };
@@ -2932,6 +2933,20 @@ mod tests {
         let summary = status_summary(&status, &[], &service, &notice);
         assert!(summary.contains("koi folder restart"));
         assert!(!summary.contains("koi diagnose"), "{summary}");
+    }
+
+    #[test]
+    fn global_verbose_keeps_the_update_commands_detail_option() {
+        for args in [
+            ["koi", "update", "--verbose"],
+            ["koi", "--verbose", "update"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Update { verbose: true })
+            ));
+        }
     }
 
     #[test]
