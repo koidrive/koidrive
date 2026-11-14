@@ -12,7 +12,7 @@ curl -fsSL https://koidrive.com/install.sh | sh
 
 On a Mac, the installer continues into guided setup in your terminal. Setup installs and verifies the macOS app and helps you connect this machine. On Linux, run `~/.local/bin/koi setup` after installation.
 
-The installer downloads the latest [GitHub release](https://github.com/koidrive/koidrive/releases) for your system, checks it against the release's `SHA256SUMS` file, checks that the file is signed with the Koidrive release key and installs `koi` in `~/.local/bin`. It downloads only over HTTPS and never needs root. The release includes the server, so you can deploy a server without Node.js or Rust. On macOS, the release's `koi` is signed with a Developer ID and notarized, and the installer refuses a `koi` without Koidrive's Developer ID signature.
+The installer downloads the latest [GitHub release](https://github.com/koidrive/koidrive/releases) for your system, checks it against the release's `SHA256SUMS` file, checks that the file is signed with the Koidrive release key and installs `koi` in `~/.local/bin`. It prints one line for each step. Add `--verbose`, or set `KOIDRIVE_VERBOSE=1`, to print each check as well. It downloads only over HTTPS and never needs root. The release includes the server, so you can deploy a server without Node.js or Rust. On macOS, the release's `koi` is signed with a Developer ID and notarized, and the installer refuses a `koi` without Koidrive's Developer ID signature.
 
 ## Use koi in your shell
 
@@ -34,7 +34,7 @@ You can also set `KOIDRIVE_NO_SETUP=1` or `KOIDRIVE_NO_MODIFY_PATH=1` for `sh`:
 curl -fsSL https://koidrive.com/install.sh | KOIDRIVE_NO_SETUP=1 KOIDRIVE_NO_MODIFY_PATH=1 sh
 ```
 
-CI and unattended installs do not change profiles or start setup. Automatic setup requires terminal output and error streams, a controlling terminal for input, and no `CI` environment variable. To start it later, run `~/.local/bin/koi setup`, or use your custom install directory. `koi setup --no-app` runs setup without the app.
+CI and unattended installs do not change profiles or start setup. Automatic setup requires terminal output and error streams, a controlling terminal for input, and no `CI` environment variable. Without it, the installer prints the setup command when this device is not set up. To start setup later, run `~/.local/bin/koi setup`, or use your custom install directory. `koi setup --no-app` runs setup without the app.
 
 ## Install with Homebrew
 
