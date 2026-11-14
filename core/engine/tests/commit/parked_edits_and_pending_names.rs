@@ -1974,6 +1974,27 @@ fn a_folder_an_edit_revives_takes_its_owed_name(marked: bool) {
 }
 
 #[test]
+fn a_folder_an_edit_revives_takes_its_owed_name_once_the_held_edit_is_released() {
+    let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
+    trees.set_rules_unknown("n");
+    let held = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9).cloned();
+    assert!(
+        !held.as_ref().is_some_and(|commit| (ops(commit).iter())
+            .any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "h"))),
+        "{held:?}"
+    );
+    assert!(trees.state().pending_finishes.contains_key("n"));
+    trees.set_rules_known("n");
+    trees.settle();
+    let sent = revive(&mut commits, &mut trees, &mut ids);
+    trees.set_remote("n".into(), owed_at(false, 10));
+    acknowledge_revival(&mut commits, &mut trees, &sent, 10);
+    effects_for(&mut trees, &mut ids, "n");
+    let rename = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 10).cloned();
+    assert_eq!(rename.as_ref().map(ops), Some(vec![mv("n", ROOT, "a")]));
+}
+
+#[test]
 fn an_owed_rename_ends_when_another_device_revives_the_folder_first() {
     let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
     let sent = revive(&mut commits, &mut trees, &mut ids);
