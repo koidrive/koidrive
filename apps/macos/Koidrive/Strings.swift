@@ -314,6 +314,14 @@ extension SessionError {
         case .FolderOfOtherDevice: String(localized: "Another device syncs this folder. Unlink it there first.")
         case .MarkerOfOtherSpace: String(localized: "This folder belongs to another space. Unlink it there first.")
         case .UnsupportedFileSystem: String(localized: "Choose a folder on your Mac's disk. This file system isn't supported.")
+        case .PathNotInLinkedFolder(let path): String(localized: "\(path) isn't in a linked folder.")
+        case .PathIsLinkedFolder: String(localized: "Choose a file or folder inside the linked folder.")
+        case .NothingAtPath: String(localized: "This item isn't on the server.")
+        case .PathIsFolder: String(localized: "Only files have versions.")
+        case .NotDeleted: String(localized: "This item isn't deleted.")
+        case .DeletedItemNotFound: String(localized: "This item is no longer in the trash.")
+        case .VersionNotFound: String(localized: "This version no longer exists.")
+        case .VersionIsCurrent: String(localized: "This is already the current version.")
         case .Failed(let reason): reason
         }
     }
