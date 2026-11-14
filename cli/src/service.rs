@@ -222,6 +222,8 @@ fn plist_binary(plist: &str) -> Option<String> {
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Running,
+    /// The service manager is about to start the daemon again, such as launchd waiting out its restart throttle.
+    Starting,
     /// Installed, but not running: it failed.
     Stopped,
     /// The launch agent is installed but launchd lists it as disabled: the person switched koi off in Login Items.
@@ -240,6 +242,9 @@ pub trait Manager {
     fn installed(&self, service: &Service) -> Option<String>;
     fn start(&self, service: &Service, restart: bool) -> Result<(), String>;
     fn remove(&self, service: &Service) -> Result<(), String>;
+    fn crashed(&self, _service: &Service) -> Option<String> {
+        None
+    }
     fn lingers(&self) -> Option<bool> {
         None
     }
@@ -260,6 +265,7 @@ pub fn plan(folders: usize, state: State, asked: bool) -> Action {
         (_, State::Unavailable | State::Off) => Action::Leave,
         (0, State::NotInstalled) => Action::Leave,
         (0, _) => Action::Remove,
+        (_, State::Starting) => Action::Leave,
         (_, State::SwitchedOff) if !asked => Action::Leave,
         _ => Action::Start,
     }
@@ -410,6 +416,7 @@ impl Report {
     pub fn status_line(&self) -> String {
         let state = match self.state {
             State::Running => format!("running ({})", self.name),
+            State::Starting => format!("starting ({})", self.name),
             State::Stopped => format!("installed, not running ({}); log: {}", self.name, self.log),
             State::SwitchedOff => format!("switched off in Login Items ({})", self.name),
             State::NotInstalled => "not installed; it starts when you link a folder".to_owned(),
@@ -682,12 +689,16 @@ pub async fn converge(
                 Action::Remove => manager.remove(service),
             };
             let mut after = manager.state(service).unwrap_or(before);
-            let spawned = Instant::now() + SPAWN;
-            while action == Action::Start
-                && outcome.is_ok()
-                && after != State::Running
-                && Instant::now() < spawned
-            {
+            let spawned = Instant::now()
+                + match after {
+                    State::Starting => STARTUP,
+                    _ => SPAWN,
+                };
+            let started = |after| match after {
+                State::Starting => false,
+                _ => action != Action::Start || outcome.is_err() || after == State::Running,
+            };
+            while !started(after) && Instant::now() < spawned {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 after = manager.state(service).unwrap_or(after);
             }
@@ -788,6 +799,14 @@ async fn reconcile_with(
         return report;
     }
     if !answers(paths, STARTUP).await {
+        if let Some(exit) = manager.crashed(&service) {
+            report.state = State::Stopped;
+            report.problem = Some(format!(
+                "its daemon keeps exiting ({exit}); its log: {}",
+                report.log
+            ));
+            return report;
+        }
         report.problem = Some(format!(
             "it started, but its daemon did not answer within {} seconds; its log: {}",
             STARTUP.as_secs(),
@@ -800,7 +819,7 @@ async fn reconcile_with(
 }
 
 async fn daemon_status(paths: &Paths) -> Result<Status, String> {
-    match ipc::run_replying_within(paths, Request::Status, Some(PROBE)).await {
+    match ipc::run(paths, Request::Status).await {
         Ok(Response::Status { status }) => Ok(status),
         Ok(_) => Err("the daemon sent no status".into()),
         Err(error) => Err(error.message),
@@ -1075,14 +1094,17 @@ impl Manager for Launchd {
                 .to_owned()
         })?;
         Ok(match self.loaded(service)? {
-            Some(job) if job.lines().any(|line| line.trim() == "state = running") => State::Running,
-            Some(_) => State::Stopped,
+            Some(job) => launchd_state(&job),
             None => unloaded(service.plist_file().exists(), self.disabled(service)?),
         })
     }
 
     fn installed(&self, service: &Service) -> Option<String> {
         plist_binary(&fs::read_to_string(service.plist_file()).ok()?)
+    }
+
+    fn crashed(&self, service: &Service) -> Option<String> {
+        launchd_exit(&self.loaded(service).ok()??)
     }
 
     fn start(&self, service: &Service, restart: bool) -> Result<(), String> {
@@ -1142,6 +1164,26 @@ fn unloaded(plist: bool, disabled: bool) -> State {
         (false, _) => State::NotInstalled,
         (true, true) => State::SwitchedOff,
         (true, false) => State::Stopped,
+    }
+}
+
+fn launchd_field<'a>(job: &'a str, name: &str) -> Option<&'a str> {
+    job.lines()
+        .find_map(|line| line.trim().strip_prefix(name)?.strip_prefix(" = "))
+}
+
+fn launchd_state(job: &str) -> State {
+    match (launchd_field(job, "state"), launchd_exit(job)) {
+        (Some("running"), _) => State::Running,
+        (Some("SIGTERMed" | "spawn scheduled"), None) => State::Starting,
+        _ => State::Stopped,
+    }
+}
+
+fn launchd_exit(job: &str) -> Option<String> {
+    match launchd_field(job, "last exit code")?.parse::<i32>() {
+        Ok(0) | Err(_) => None,
+        Ok(code) => Some(format!("exit code {code}")),
     }
 }
 
@@ -1424,6 +1466,7 @@ mod tests {
         remove_problem: Option<&'static str>,
         service_lock: Option<PathBuf>,
         locked_at_start: Cell<Option<bool>>,
+        crashed: Option<&'static str>,
     }
 
     impl Manager for Fake {
@@ -1448,6 +1491,10 @@ mod tests {
                 (true, false) => State::Stopped,
                 (false, false) => State::NotInstalled,
             })
+        }
+
+        fn crashed(&self, _: &Service) -> Option<String> {
+            self.crashed.map(str::to_owned)
         }
 
         fn installed(&self, _: &Service) -> Option<String> {
@@ -2641,6 +2688,62 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             result.unwrap_err(),
             "the daemon did not answer within 5 seconds"
         );
+    }
+
+    #[test]
+    fn launchd_reports_a_restarting_service_as_starting_and_a_crashing_one_as_stopped() {
+        let job = |state: &str, exit: &str| {
+            format!(
+                "gui/501/dev.koidrive.koi = {{\n\tstate = {state}\n\truns = 2\n\t{exit}\n\tendpoints = {{\n\t\tstate = active\n\t}}\n}}\n"
+            )
+        };
+        assert_eq!(
+            launchd_state(&job("running", "last exit code = 1")),
+            State::Running
+        );
+        assert_eq!(
+            launchd_state(&job("SIGTERMed", "last exit code = (never exited)")),
+            State::Starting
+        );
+        assert_eq!(
+            launchd_state(&job("spawn scheduled", "last exit code = 0")),
+            State::Starting
+        );
+        assert_eq!(
+            launchd_state(&job(
+                "spawn scheduled",
+                "last terminating signal = Terminated: 15"
+            )),
+            State::Starting
+        );
+        assert_eq!(
+            launchd_state(&job("spawn scheduled", "last exit code = 1")),
+            State::Stopped
+        );
+        assert_eq!(launchd_state(&job("not running", "")), State::Stopped);
+        assert_eq!(
+            launchd_exit(&job("running", "last exit code = 78")).as_deref(),
+            Some("exit code 78")
+        );
+        assert!(plan(1, State::Starting, false) == Action::Leave);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_keeps_exiting_is_a_stopped_service_that_names_its_exit_and_log() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let fake = Fake {
+            crashed: Some("exit code 1"),
+            ..Fake::default()
+        };
+        let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
+        assert_eq!(report.state, State::Stopped);
+        let problem = report.problem.clone().unwrap();
+        assert!(
+            problem.starts_with("its daemon keeps exiting (exit code 1); its log: "),
+            "{problem}"
+        );
+        assert!(report.failed());
+        assert!(!report.retryable());
     }
 
     #[test]

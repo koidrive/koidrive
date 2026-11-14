@@ -452,10 +452,10 @@ fn trashed_at<'a>(
 /// The folders the profile links, from the daemon, or from the profile's stores read without writing anything when no
 /// daemon runs.
 async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
-    let reached = match koidrive_ipc::ask(paths, &Request::Status).await? {
+    let reached = match ipc::ask(paths, &Request::Status).await? {
         Some(response) => ipc::Reached::Daemon(Box::new(response)),
         None => {
-            ipc::reach(paths, &Request::Status, ipc::STARTING, None, || {
+            ipc::reach(paths, &Request::Status, ipc::STARTING, || {
                 Driver::linked_folders(paths)
             })
             .await?

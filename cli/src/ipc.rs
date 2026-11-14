@@ -328,20 +328,18 @@ pub enum Reached<T> {
     Profile(T),
 }
 
-async fn ask(
-    paths: &Paths,
-    request: &Request,
-    reply: Option<Duration>,
-) -> Result<Option<Response>, CliError> {
+pub const REPLY: Duration = Duration::from_secs(5);
+
+pub async fn ask(paths: &Paths, request: &Request) -> Result<Option<Response>, CliError> {
     let asked = koidrive_ipc::ask(paths, request);
-    let Some(reply) = reply else {
+    if !matches!(request, Request::Status) {
         return Ok(asked.await?);
-    };
-    match tokio::time::timeout(reply, asked).await {
+    }
+    match tokio::time::timeout(REPLY, asked).await {
         Ok(answer) => Ok(answer?),
         Err(_) => Err(CliError::from(format!(
             "the daemon did not answer within {} seconds",
-            reply.as_secs()
+            REPLY.as_secs()
         ))),
     }
 }
@@ -350,7 +348,6 @@ pub async fn reach<T>(
     paths: &Paths,
     request: &Request,
     within: Duration,
-    reply: Option<Duration>,
     open: impl Fn() -> Result<T, DriverError>,
 ) -> Result<Reached<T>, CliError> {
     let deadline = tokio::time::Instant::now() + within;
@@ -372,22 +369,14 @@ pub async fn reach<T>(
             }
             Err(other) => return Err(CliError::from(other)),
         }
-        if let Some(response) = ask(paths, request, reply).await? {
+        if let Some(response) = ask(paths, request).await? {
             return Ok(Reached::Daemon(Box::new(response)));
         }
     }
 }
 
 pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> {
-    run_replying_within(paths, request, None).await
-}
-
-pub async fn run_replying_within(
-    paths: &Paths,
-    request: Request,
-    reply: Option<Duration>,
-) -> Result<Response, CliError> {
-    let response = match ask(paths, &request, reply).await? {
+    let response = match ask(paths, &request).await? {
         Some(response) => response,
         None if matches!(request, Request::Status) && !paths.state_dir.exists() => {
             let update = match koidrive_driver::update::is_on(paths) {
@@ -414,7 +403,7 @@ pub async fn run_replying_within(
         None if matches!(request, Request::Resume) && !paths.state_dir.exists() => {
             Response::NotPaused
         }
-        None => match reach(paths, &request, STARTING, reply, || {
+        None => match reach(paths, &request, STARTING, || {
             Driver::open_with_telemetry(paths.clone(), crate::telemetry::recorder())
         })
         .await?
@@ -586,18 +575,29 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit() {
+        let (_dir, paths, _root) = linked_profile();
+        let listener = bind(&paths.socket()).unwrap();
+        let daemon = tokio::spawn(async move {
+            let _held = listener.accept().await.unwrap();
+            std::future::pending::<()>().await
+        });
+        let started = tokio::time::Instant::now();
+        let error = run(&paths, Request::Status).await.unwrap_err();
+        assert!(started.elapsed() < REPLY + Duration::from_secs(2));
+        assert_eq!(error.message, "the daemon did not answer within 5 seconds");
+        daemon.abort();
+    }
+
+    #[tokio::test]
     async fn a_profile_held_by_a_daemon_that_never_answers_is_a_retryable_error() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let _held = Driver::open(paths.clone()).unwrap();
         let started = tokio::time::Instant::now();
-        let Err(error) = reach(
-            &paths,
-            &Request::Status,
-            Duration::from_secs(1),
-            None,
-            || Driver::open(paths.clone()),
-        )
+        let Err(error) = reach(&paths, &Request::Status, Duration::from_secs(1), || {
+            Driver::open(paths.clone())
+        })
         .await
         else {
             panic!("a held profile was opened");
