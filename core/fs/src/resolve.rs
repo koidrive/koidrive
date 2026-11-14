@@ -213,7 +213,7 @@ impl Space {
     }
 
     pub(crate) fn find_folder(&self, id: FileId) -> Result<Option<Folder>, Unresolved> {
-        Ok(search(self.root_folder()?, id))
+        search(self.root_folder()?, id)
     }
 
     /// Opens `.koidrive/<parts>`, creating the folders that are missing, and
@@ -330,17 +330,29 @@ fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
     })
 }
 
-fn search(folder: Folder, id: FileId) -> Option<Folder> {
-    let names = crate::list(folder.fd()).ok()?;
+fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
+    let names = crate::list(folder.fd()).map_err(|err| Unresolved::Io {
+        path: folder
+            .route
+            .iter()
+            .map(|dir| dir.name.as_os_str())
+            .collect(),
+        err,
+    })?;
+    let mut unread = None;
     for name in names {
         if folder.route.is_empty() && name == PRIVATE_DIR {
             continue;
         }
-        let Ok(fd) = open_beneath(folder.fd(), &name) else {
-            continue;
-        };
-        let Ok(found) = identity(&fd, &folder.route, &name) else {
-            continue;
+        let opened = open_dir(folder.fd(), &name, &folder.route)
+            .and_then(|fd| Ok((identity(&fd, &folder.route, &name)?, fd)));
+        let (found, fd) = match opened {
+            Ok(opened) => opened,
+            Err(Unresolved::Missing(_) | Unresolved::NotAFolder(_)) => continue,
+            Err(err) => {
+                unread.get_or_insert(err);
+                continue;
+            }
         };
         let mut route = folder.route.clone();
         route.push(Dir { name, id: found });
@@ -350,13 +362,17 @@ fn search(folder: Folder, id: FileId) -> Option<Folder> {
             route,
         };
         if found == id {
-            return Some(child);
+            return Ok(Some(child));
         }
-        if let Some(found) = search(child, id) {
-            return Some(found);
+        match search(child, id) {
+            Ok(None) => {}
+            Err(err) => {
+                unread.get_or_insert(err);
+            }
+            found => return found,
         }
     }
-    None
+    unread.map_or(Ok(None), Err)
 }
 
 fn open_dir(parent: BorrowedFd<'_>, name: &OsStr, route: &[Dir]) -> Result<OwnedFd, Unresolved> {

@@ -736,6 +736,58 @@ fn recovery_of_a_done_effect_whose_folder_the_user_renamed_and_moved_reports_it_
 }
 
 #[test]
+fn recovery_of_a_done_effect_whose_folder_moved_into_an_unlistable_folder_fails_until_it_can_look()
+{
+    use std::os::unix::fs::PermissionsExt;
+    for (scenario, folder) in [
+        ("replace", "docs"),
+        ("write_new", "docs"),
+        ("create_dir", "docs"),
+        ("move", "other"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(common::scenario(scenario), root);
+        let done = apply(root, &effect, |_| {});
+        let vault = root.join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::set_permissions(&vault, fs::Permissions::from_mode(0o311)).unwrap();
+        fs::rename(root.join(folder), vault.join("renamed")).unwrap();
+        if fs::read_dir(&vault).is_ok() {
+            fs::set_permissions(&vault, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("SKIPPED {scenario}: running as root, so permissions do not block reads");
+            continue;
+        }
+        let blocked = recover_one(&bind(root), &effect, &mut |_| {});
+        fs::set_permissions(&vault, fs::Permissions::from_mode(0o755)).unwrap();
+        let err = blocked.expect_err(scenario);
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{scenario}"
+        );
+        let outcome = recover_one(&bind(root), &effect, &mut |_| {}).unwrap();
+        assert_eq!(outcome, done, "{scenario}");
+    }
+}
+
+#[test]
+fn recovery_of_a_done_effect_whose_folder_moved_beside_an_unlistable_folder_reports_it_done() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(common::scenario("move"), root);
+    let done = apply(root, &effect, |_| {});
+    fs::create_dir(root.join("A")).unwrap();
+    fs::set_permissions(root.join("A"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::create_dir(root.join("Z")).unwrap();
+    fs::rename(root.join("other"), root.join("Z/renamed")).unwrap();
+    let outcome = recover_one(&bind(root), &effect, &mut |_| {});
+    fs::set_permissions(root.join("A"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(outcome.unwrap(), done);
+}
+
+#[test]
 fn recovery_of_a_replacement_whose_target_the_user_changed_is_overtaken() {
     let remove: fn(&Path) = |file| fs::remove_file(file).unwrap();
     let write: fn(&Path) = |file| fs::write(file, EDITED).unwrap();
