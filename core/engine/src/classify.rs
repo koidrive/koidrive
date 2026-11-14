@@ -261,6 +261,11 @@ pub struct Trees {
     /// The nodes of S.
     s_names: ByName,
     s_marks: BTreeMap<NodeId, String>,
+    r_names: ByName,
+    r_trashed: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    creates: BTreeSet<NodeId>,
+    ready: BTreeSet<NodeId>,
+    others: BTreeSet<NodeId>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -332,6 +337,11 @@ impl Trees {
             l_identities: HashMap::new(),
             s_names: ByName::default(),
             s_marks: BTreeMap::new(),
+            r_names: ByName::default(),
+            r_trashed: BTreeMap::new(),
+            creates: BTreeSet::new(),
+            ready: BTreeSet::new(),
+            others: BTreeSet::new(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
@@ -415,6 +425,85 @@ impl Trees {
         &self.dirty
     }
 
+    fn keep_dirty(&mut self, id: &str) {
+        if self.dirty.insert(id.to_owned()) {
+            self.others.insert(id.to_owned());
+        }
+    }
+
+    fn clean(&mut self, id: &str) {
+        self.dirty.remove(id);
+        self.uncreate(id);
+        self.others.remove(id);
+    }
+
+    fn creates_only(&self, id: &str) -> bool {
+        self.l.get(id).is_some_and(|node| !node.parked)
+            && self.s.get(id).is_none()
+            && self.r.get(id).is_none()
+            && !self.waiting.contains_key(id)
+            && !self.reverted.contains(id)
+            && !self.discarded.contains_key(id)
+    }
+
+    fn sort(&mut self, id: &str) {
+        let dirty = self.dirty.contains(id);
+        if dirty && self.creates_only(id) {
+            self.others.remove(id);
+            let created = self.creates.insert(id.to_owned());
+            let parent = &self.l.get(id).expect("creates are in L").shape.parent;
+            match self.creates.contains(parent) {
+                true => self.ready.remove(id),
+                false => self.ready.insert(id.to_owned()),
+            };
+            if created {
+                self.ready_children(id);
+            }
+        } else {
+            self.unsort(id);
+        }
+    }
+
+    fn unsort(&mut self, id: &str) {
+        self.uncreate(id);
+        if self.dirty.contains(id) {
+            self.others.insert(id.to_owned());
+        }
+    }
+
+    fn uncreate(&mut self, id: &str) {
+        if self.creates.remove(id) {
+            self.ready.remove(id);
+            self.ready_children(id);
+        }
+    }
+
+    fn ready_children(&mut self, id: &str) {
+        let created = self.creates.contains(id);
+        let children: Vec<NodeId> = (self.l_names.children(id))
+            .filter(|child| self.creates.contains(*child))
+            .cloned()
+            .collect();
+        for child in children {
+            match created {
+                true => self.ready.remove(&child),
+                false => self.ready.insert(child),
+            };
+        }
+    }
+
+    pub(crate) fn dirty_creates(&self) -> &BTreeSet<NodeId> {
+        &self.creates
+    }
+
+    pub(crate) fn ready_creates(&self) -> &BTreeSet<NodeId> {
+        &self.ready
+    }
+
+    pub(crate) fn dirty_others(&self) -> &BTreeSet<NodeId> {
+        &self.others
+    }
+
     /// The nodes whose entry in R, L or S changed since the last call, which empties the set. Each
     /// mutation adds its node, and so does [`Trees::settle`] for each node whose S it updates.
     pub fn take_changed(&mut self) -> BTreeSet<NodeId> {
@@ -429,6 +518,84 @@ impl Trees {
     /// The nodes of S under `parent`.
     pub fn synced_children<'a>(&'a self, parent: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
         self.s_names.children(parent)
+    }
+
+    pub(crate) fn remote_children<'a>(
+        &'a self,
+        parent: &'a str,
+    ) -> impl Iterator<Item = &'a NodeId> + 'a {
+        self.r_names.children(parent)
+    }
+
+    pub(crate) fn remote_trashed_children<'a>(
+        &'a self,
+        parent: &str,
+    ) -> impl Iterator<Item = &'a NodeId> + use<'a> {
+        self.r_trashed.get(parent).into_iter().flatten()
+    }
+
+    pub(crate) fn fits_synced_together(&self, updates: &[(NodeId, Option<Shape>)]) -> bool {
+        let next: BTreeMap<&str, Option<&Shape>> = (updates.iter())
+            .map(|(id, shape)| (id.as_str(), shape.as_ref()))
+            .collect();
+        let mut named: BTreeMap<(&str, String), usize> = BTreeMap::new();
+        for shape in next.values().flatten() {
+            *named
+                .entry((&shape.parent, name_key(&shape.name)))
+                .or_default() += 1;
+        }
+        let parents: BTreeSet<&str> = named.keys().map(|(parent, _)| *parent).collect();
+        let shape = |id: &str| match next.get(id) {
+            Some(shape) => *shape,
+            None => self.s.live(id),
+        };
+        let has_children = |id: &str| {
+            (self.s_names.children(id)).any(|child| shape(child).is_some_and(|s| s.parent == id))
+                || parents.contains(id)
+        };
+        let bound = self.s.len() + next.len();
+        next.iter().all(|(&id, new)| {
+            if id == self.s.root {
+                return false;
+            }
+            let Some(new) = new else {
+                return !has_children(id);
+            };
+            if new.kind != Kind::Dir && has_children(id) {
+                return false;
+            }
+            if new.parent != self.s.root
+                && shape(&new.parent).is_none_or(|parent| parent.kind != Kind::Dir)
+            {
+                return false;
+            }
+            let mut ancestor = new.parent.as_str();
+            for _ in 0..=bound {
+                if ancestor == self.s.root || ancestor == id {
+                    break;
+                }
+                match shape(ancestor) {
+                    Some(parent) => ancestor = &parent.parent,
+                    None => return false,
+                }
+            }
+            if ancestor != self.s.root {
+                return false;
+            }
+            let key = (new.parent.as_str(), name_key(&new.name));
+            named[&key] == 1
+                && !(self.s_names.holders(&new.parent, &new.name))
+                    .any(|other| other != id && !next.contains_key(other.as_str()))
+        })
+    }
+
+    pub(crate) fn remote_holders_of_key<'a>(
+        &'a self,
+        parent: &str,
+        key: &str,
+    ) -> impl Iterator<Item = &'a NodeId> + use<'a> {
+        let key = (parent.to_owned(), key.to_owned());
+        self.r_names.0.get(&key).into_iter().flatten()
     }
 
     /// The nodes of S under `parent` whose name has the `name_key` of `name`.
@@ -471,6 +638,8 @@ impl Trees {
 
     fn mark(&mut self, id: &str) {
         self.dirty.insert(id.to_owned());
+        self.uncreate(id);
+        self.others.insert(id.to_owned());
         self.unsettled.insert(id.to_owned());
         self.changed.insert(id.to_owned());
     }
@@ -721,7 +890,8 @@ impl Trees {
         }
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
-        self.r.insert(id.clone(), node);
+        let old = self.r.insert(id.clone(), node);
+        self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
         self.note_position(&id);
@@ -791,6 +961,10 @@ impl Trees {
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
         let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
+        if !self.others.iter().any(lacking) {
+            self.yield_resends();
+            return;
+        }
         let released: Vec<NodeId> = (self.changes().into_iter())
             .filter(|id| !self.held(id))
             .cloned()
@@ -862,8 +1036,35 @@ impl Trees {
         self.resends.remove(id);
         self.moved_here.remove(id);
         self.past_positions.remove(id);
-        if self.r.remove(id).is_some() {
+        if let Some(old) = self.r.remove(id) {
+            self.index_remote(id, Some(&old));
             self.mark(id);
+        }
+    }
+
+    fn index_remote(&mut self, id: &str, old: Option<&RemoteNode>) {
+        match old {
+            Some(old) if old.trashed => {
+                if let Some(trashed) = self.r_trashed.get_mut(&old.shape.parent) {
+                    trashed.remove(id);
+                    if trashed.is_empty() {
+                        self.r_trashed.remove(&old.shape.parent);
+                    }
+                }
+            }
+            Some(old) => self.r_names.remove(id, &old.shape),
+            None => {}
+        }
+        match self.r.get(id) {
+            Some(new) if new.trashed => {
+                let parent = new.shape.parent.clone();
+                self.r_trashed
+                    .entry(parent)
+                    .or_default()
+                    .insert(id.to_owned());
+            }
+            Some(new) => self.r_names.insert(id, &new.shape),
+            None => {}
         }
     }
 
@@ -1350,6 +1551,7 @@ impl Trees {
 
     pub(crate) fn rekey_discarded(&mut self, from: &str, to: &str) {
         if let Some(shape) = self.discarded.remove(from) {
+            self.unsort(to);
             self.discarded.insert(to.to_owned(), shape);
         }
         let children: Vec<NodeId> = (self.discarded.iter())
@@ -1373,6 +1575,7 @@ impl Trees {
                 self.mark(&id);
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
+                self.unsort(&id);
                 self.discarded.insert(id, shape.clone());
             }
         }
@@ -2771,14 +2974,14 @@ impl Trees {
             pending.remove(&id);
             match self.class(&id) {
                 Class::InSync if !self.parked(&id) => {
-                    self.dirty.remove(&id);
+                    self.clean(&id);
                 }
                 Class::Same => {
-                    self.dirty.insert(id.clone());
+                    self.keep_dirty(&id);
                     pending.insert(id);
                 }
                 _ => {
-                    self.dirty.insert(id);
+                    self.keep_dirty(&id);
                 }
             }
         }
@@ -2824,7 +3027,7 @@ impl Trees {
                 self.removed_here.insert(id.clone(), remote.meta_rev);
             }
             if !self.parked(&id) && !self.unsent_edits.contains(&id) {
-                self.dirty.remove(&id);
+                self.clean(&id);
             }
         }
         for id in &pending {
@@ -2851,6 +3054,17 @@ impl Trees {
                 }
                 (local, remote) => local.is_some() || remote.is_some(),
             });
+        for id in &queue {
+            self.sort(id);
+        }
+        debug_assert!(self.creates.iter().all(|id| self.creates_only(id)));
+        debug_assert!(self.ready.is_subset(&self.creates));
+        debug_assert!(self.creates.iter().all(|id| {
+            let parent = &self.l.get(id).expect("creates are in L").shape.parent;
+            self.ready.contains(id) != self.creates.contains(parent)
+        }));
+        debug_assert!(self.creates.is_disjoint(&self.others));
+        debug_assert_eq!(self.creates.len() + self.others.len(), self.dirty.len());
     }
 
     /// Every dirty node with its class, in `node_id` order. This reads the whole dirty set.
@@ -3317,6 +3531,11 @@ impl Trees {
             s_names: _,
             s_marks: _,
             marked: _,
+            r_names: _,
+            r_trashed: _,
+            creates: _,
+            ready: _,
+            others: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;
@@ -3461,6 +3680,9 @@ impl Trees {
         self.unsettled = dirty.clone();
         self.same.clear();
         self.orphaned.clear();
+        self.others = dirty.clone();
+        self.creates.clear();
+        self.ready.clear();
         self.dirty = dirty.into();
         self.unsearched = unsearched.into();
         self.reverted = reverted.into();

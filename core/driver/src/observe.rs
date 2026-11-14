@@ -13,9 +13,10 @@
 //! the engine can freeze the node at its synced position, and what a move out of one brings into the sync tree is
 //! reported as created, each entry with its identity and every file with its content.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io;
+use std::ops::Bound;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
@@ -156,7 +157,7 @@ pub struct FsObserver {
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
-    unread: BTreeMap<PathBuf, Retry>,
+    unread: Unread,
     /// Whether the caller has stopped waiting for observations.
     stopped: Arc<dyn Fn() -> bool + Send + Sync>,
 }
@@ -165,6 +166,86 @@ pub struct FsObserver {
 struct Retry {
     failures: u32,
     due: Instant,
+}
+
+#[derive(Debug, Default)]
+struct Unread {
+    files: BTreeMap<PathBuf, Retry>,
+    due: BTreeSet<(Instant, PathBuf)>,
+}
+
+impl Unread {
+    fn insert(&mut self, path: PathBuf, retry: Retry) -> Option<Retry> {
+        let old = self.files.insert(path.clone(), retry);
+        if let Some(old) = old {
+            self.due.remove(&(old.due, path.clone()));
+        }
+        self.due.insert((retry.due, path));
+        old
+    }
+
+    fn remove(&mut self, path: &Path) -> Option<Retry> {
+        let old = self.files.remove(path)?;
+        self.due.remove(&(old.due, path.to_path_buf()));
+        Some(old)
+    }
+
+    fn get(&self, path: &Path) -> Option<&Retry> {
+        self.files.get(path)
+    }
+
+    fn contains_key(&self, path: &Path) -> bool {
+        self.files.contains_key(path)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = (&PathBuf, &Retry)> {
+        self.files.iter()
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.keys()
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Retry> {
+        self.files.values()
+    }
+
+    fn below(&self, dir: &Path) -> impl Iterator<Item = &PathBuf> {
+        (self
+            .files
+            .range::<Path, _>((Bound::Included(dir), Bound::Unbounded)))
+        .take_while(move |(path, _)| path.starts_with(dir))
+        .map(|(path, _)| path)
+    }
+
+    fn first_due(&self) -> Option<Instant> {
+        self.due.first().map(|(due, _)| *due)
+    }
+
+    fn next_due(
+        &self,
+        now: Instant,
+        after: Option<&(Instant, PathBuf)>,
+    ) -> Option<(Instant, PathBuf)> {
+        let from = after.map_or(Bound::Unbounded, Bound::Excluded);
+        (self.due.range((from, Bound::Unbounded)))
+            .next()
+            .filter(|(due, _)| *due <= now)
+            .cloned()
+    }
 }
 
 /// The reads of one observation.
@@ -248,7 +329,7 @@ impl FsObserver {
             first: true,
             settling: true,
             reset: false,
-            unread: BTreeMap::new(),
+            unread: Unread::default(),
             stopped,
         })
     }
@@ -267,7 +348,10 @@ impl FsObserver {
     pub fn reset(&mut self, resets: Vec<Reset>) {
         self.reset |= !resets.is_empty();
         for Reset { scope, known } in resets {
-            self.unread.retain(|path, _| !path.starts_with(&scope));
+            let below: Vec<PathBuf> = self.unread.below(&scope).cloned().collect();
+            for path in below {
+                self.unread.remove(&path);
+            }
             self.watcher.reset(&scope, known);
         }
     }
@@ -352,14 +436,17 @@ impl FsObserver {
                 Change::Created { .. } | Change::Modified { .. } | Change::Reidentified { .. } => {}
             }
         }
-        for (path, retry) in std::mem::take(&mut self.unread) {
-            let Some((from, to)) = path
-                .ancestors()
+        let below: BTreeSet<PathBuf> = (moves.keys())
+            .flat_map(|from| self.unread.below(from).cloned())
+            .collect();
+        let left: Vec<(PathBuf, Retry)> = (below.into_iter())
+            .filter_map(|path| Some((path.clone(), self.unread.remove(&path)?)))
+            .collect();
+        let mut placed = BTreeSet::new();
+        for (path, retry) in left {
+            let (from, to) = (path.ancestors())
                 .find_map(|above| moves.get_key_value(above))
-            else {
-                self.unread.insert(path, retry);
-                continue;
-            };
+                .expect("below a moved path");
             let Some(to) = to else { continue };
             let rest = path.strip_prefix(from).expect("an ancestor of the path");
             let moved = if rest.as_os_str().is_empty() {
@@ -367,7 +454,11 @@ impl FsObserver {
             } else {
                 to.join(rest)
             };
-            self.unread.insert(moved, retry);
+            let kept = !placed.contains(&moved) && self.unread.contains_key(&moved) && moved > path;
+            if !kept {
+                self.unread.insert(moved.clone(), retry);
+                placed.insert(moved);
+            }
         }
         for change in changes {
             if let Change::Created { path, .. } | Change::Modified { path } = change {
@@ -381,12 +472,12 @@ impl FsObserver {
     /// budget left out gets the first turn of a later observation, also when it is larger than the budget. A read that
     /// fails once the caller has stopped ends the retry and leaves that file and the rest due as they were.
     fn retry(&mut self, now: Instant, out: &mut Vec<Observed>, reads: &mut Reads) {
-        let mut due: Vec<(Instant, PathBuf)> = (self.unread.iter())
-            .filter(|(_, retry)| retry.due <= now)
-            .map(|(path, retry)| (retry.due, path.clone()))
-            .collect();
-        due.sort();
-        for (_, path) in due {
+        let mut at = None;
+        while reads.files < READ_FILES
+            && let Some(next) = self.unread.next_due(now, at.as_ref())
+        {
+            let path = next.1.clone();
+            at = Some(next);
             let entry = self.watcher.snapshot().entries.get(&path).copied();
             let Some(entry) = entry.filter(|entry| entry.kind == EntryKind::File) else {
                 self.unread.remove(&path);
@@ -407,7 +498,7 @@ impl FsObserver {
                 }
                 Err(_) if (self.stopped)() => break,
                 _ => {
-                    let failures = self.unread[&path].failures + 1;
+                    let failures = self.unread.get(&path).expect("an unread file").failures + 1;
                     self.unread.insert(path, Retry::after(failures, now));
                 }
             }
@@ -450,7 +541,7 @@ impl FsObserver {
 
 impl Observer for FsObserver {
     fn observe(&mut self, timeout: Duration) -> Result<Option<Observation>, FsError> {
-        let timeout = match self.unread.values().map(|retry| retry.due).min() {
+        let timeout = match self.unread.first_due() {
             Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
             None => timeout,
         };
@@ -943,6 +1034,37 @@ mod tests {
                 Observed::Modified { path, content: None, .. } if path == Path::new("a.txt")
             )),
             "{next:?}"
+        );
+    }
+
+    fn work_to_observe_with_waiting(waiting: usize) -> u64 {
+        let dir = marked();
+        let mut observer = observer(dir.path());
+        observe_until(&mut observer, |_| true);
+        let later = Instant::now() + Duration::from_secs(3600);
+        for file in 0..waiting {
+            let retry = Retry {
+                failures: 0,
+                due: later,
+            };
+            observer.unread.insert(format!("{file}").into(), retry);
+        }
+        let before = crate::counting::allocations();
+        for _ in 0..20 {
+            observer.observe(Duration::ZERO).unwrap();
+        }
+        crate::counting::allocations() - before
+    }
+
+    #[test]
+    fn an_observation_takes_no_more_work_while_more_files_wait_to_be_read_again() {
+        let few = work_to_observe_with_waiting(READ_FILES);
+        let many = work_to_observe_with_waiting(10 * READ_FILES);
+        assert!(
+            many < 2 * few.max(1_000),
+            "20 observations made {few} allocations while {} files waited and {many} while {} did",
+            READ_FILES,
+            10 * READ_FILES
         );
     }
 

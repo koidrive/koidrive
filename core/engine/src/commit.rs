@@ -4,7 +4,8 @@
 //! sections 2.4, 2.6, 2.7, 2.8 and 4.2, and RFC 0002): the rebase of concurrent changes onto R, the
 //! one commit in flight with its history and device slot, and what each result and error does.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 
 use koidrive_proto::v1::{self as proto, error, op, op_result};
 use prost::Message;
@@ -23,7 +24,7 @@ use crate::recovery;
 use crate::restore::{Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent};
 use crate::state::{Agreed, CommitsChanges, CommitsState, FinishOrigin, StateError};
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
-use crate::tree::{Content, Kind, Names, NodeId, Shape, same, same_content};
+use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
@@ -1062,7 +1063,7 @@ impl Commits {
             .collect();
         let (needed, agreed) = rebase(trees, ids, now_ms, &skip);
         skip.extend(parked_until_moved(trees).cloned());
-        let excluded: Vec<NodeId> = (trees.dirty().iter())
+        let excluded: Vec<NodeId> = (trees.dirty_others().iter())
             .filter(|id| trees.excluded(id) || trees.held(id))
             .cloned()
             .collect();
@@ -1082,7 +1083,7 @@ impl Commits {
         let mut asked = index.map(|index| self.questions.get_mut().remove(index));
         let open = asked.as_ref().map(|question| question.id.clone());
         skip.extend(self.questions.iter().flat_map(Question::holds).cloned());
-        let deleted = (trees.dirty().iter())
+        let deleted = (trees.dirty_others().iter())
             .filter(|id| !skip.contains(*id) && deletes(trees, id, &needed))
             .cloned()
             .collect();
@@ -1121,18 +1122,79 @@ impl Commits {
             .map(|(id, intent)| (id.clone(), intent.clone()))
             .collect();
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
-        let (planned, deletes, reverts) = plan(
-            trees,
-            &skip,
-            &needed,
-            cap,
-            &answered,
-            &self.split,
-            &self.aliases,
-            &restores,
-            &answers,
-            device_id,
-        );
+        let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
+        let aliased: Vec<&NodeId> = (self.aliases.keys())
+            .flat_map(|alias| trees.local_children(alias))
+            .filter(|id| creates.contains(*id) && !ready.contains(*id))
+            .collect();
+        let mut window = 2 * cap;
+        let (planned, deletes, reverts) = loop {
+            let mut seeds = ready.iter().peekable();
+            let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
+                aliased.iter().map(|id| Reverse((1, *id))).collect();
+            let mut picked = Vec::new();
+            let mut bound = None;
+            loop {
+                let seeded = match (seeds.peek(), next.peek()) {
+                    (Some(id), Some(Reverse(top))) => (1, *id) < *top,
+                    (seed, _) => seed.is_some(),
+                };
+                let popped = match seeded {
+                    true => seeds.next().map(|id| (1, id)),
+                    false => next.pop().map(|Reverse(key)| key),
+                };
+                let Some((pass, id)) = popped else {
+                    break;
+                };
+                if trees.excluded(id) || trees.held(id) {
+                    continue;
+                }
+                if picked.len() == window {
+                    bound = Some((pass, id.as_str()));
+                    break;
+                }
+                picked.push(id);
+                if !self.aliases.contains_key(id) {
+                    next.extend(
+                        (trees.local_children(id))
+                            .filter(|child| creates.contains(*child))
+                            .map(|child| Reverse((pass + usize::from(child < id), child))),
+                    );
+                }
+            }
+            let planned_from = |picked: Vec<&NodeId>, bound| {
+                let mut candidates: Vec<&NodeId> = (picked.into_iter())
+                    .filter(|id| !trees.excluded(id) && !trees.held(id))
+                    .chain(trees.dirty_others())
+                    .collect();
+                candidates.sort_unstable();
+                plan(
+                    trees,
+                    &candidates,
+                    bound,
+                    &skip,
+                    &needed,
+                    cap,
+                    &answered,
+                    &self.split,
+                    &self.aliases,
+                    &restores,
+                    &answers,
+                    device_id,
+                )
+            };
+            let (planned, exact) = planned_from(picked, bound);
+            if exact {
+                debug_assert!(
+                    bound.is_none()
+                        || creates.len() > 512
+                        || planned == planned_from(creates.iter().collect(), None).0,
+                    "a windowed plan commits what a plan of every create commits"
+                );
+                break planned;
+            }
+            window *= 4;
+        };
         for id in reverts {
             trees.revert(id);
         }
@@ -2339,14 +2401,7 @@ fn update_synced(
 /// Sets S for every node of `updates` when S stays a valid tree with all of them. Returns whether it
 /// did.
 fn set_synced_together(trees: &mut Trees, updates: &[(NodeId, Option<Shape>)]) -> bool {
-    let mut synced = trees.synced().clone();
-    for (id, shape) in updates {
-        match shape {
-            Some(shape) => synced.insert(id.clone(), shape.clone()),
-            None => synced.remove(id),
-        };
-    }
-    if synced.check(Names::ByKey).is_err() {
+    if !trees.fits_synced_together(updates) {
         return false;
     }
     for (id, shape) in updates {
@@ -2497,7 +2552,7 @@ fn rebase(
     now_ms: u64,
     skip: &BTreeSet<NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
-    let dirty: Vec<NodeId> = trees.dirty().iter().cloned().collect();
+    let dirty: Vec<NodeId> = trees.dirty_others().iter().cloned().collect();
     for id in &dirty {
         let held = trees.reverted().contains(id)
             || trees.waiting().contains_key(id)
@@ -2610,7 +2665,8 @@ fn holds_server_entry(trees: &Trees, id: &str) -> bool {
 
 fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
     let known = |id: &str| trees.remote().get(id).is_some() || trees.synced().get(id).is_some();
-    (trees.local().iter())
+    (trees.dirty_others().iter())
+        .filter_map(|id| Some((id, trees.local().get(id)?)))
         .filter(move |(id, node)| {
             node.parked
                 && !effects::kept_out(trees, id)
@@ -2924,6 +2980,8 @@ type Planned = (Vec<proto::Op>, BTreeMap<NodeId, Vec<NodeId>>, Vec<NodeId>);
 #[allow(clippy::too_many_arguments)]
 fn plan(
     trees: &Trees,
+    candidates: &[&NodeId],
+    bound: Option<(usize, &str)>,
     problems: &BTreeSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
@@ -2933,7 +2991,7 @@ fn plan(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
     device_id: &str,
-) -> Planned {
+) -> (Planned, bool) {
     let mut wants = Vec::new();
     if !restores.is_empty() {
         let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
@@ -2955,7 +3013,11 @@ fn plan(
     }
     let mut deleted = BTreeSet::new();
     let mut reverts = Vec::new();
-    for id in trees.dirty().iter().filter(|id| !problems.contains(*id)) {
+    let mut within = None;
+    for &id in candidates.iter().filter(|id| !problems.contains(**id)) {
+        if within.is_none() && bound.is_some_and(|(_, bound)| id.as_str() >= bound) {
+            within = Some(wants.len());
+        }
         let class = trees.acknowledged_class(id);
         if !matches!(class, Class::Local | Class::Concurrent) {
             continue;
@@ -3038,6 +3100,7 @@ fn plan(
             });
         }
     }
+    let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
     let mut tops = Vec::new();
     let mut children: BTreeMap<&str, Vec<&NodeId>> = BTreeMap::new();
@@ -3128,9 +3191,9 @@ fn plan(
                 pending_for,
             } => {
                 if shape.kind == Kind::Dir {
-                    let targets = scratch.merge_targets(&shape.parent);
-                    scratch.protected.extend(targets.iter().cloned());
-                    scratch.merges.insert(id.clone(), targets);
+                    let level = scratch.merge_level(&shape.parent);
+                    scratch.protected.insert(level.clone());
+                    scratch.merges.insert(id.clone(), level);
                 }
                 scratch.place(&id, &shape.parent, &shape.name, shape.kind);
                 match shape.kind {
@@ -3156,12 +3219,17 @@ fn plan(
                 pending_for,
             } => {
                 moving.remove(&id);
-                let held = &scratch.nodes[&id];
                 let from = guarded.then(|| proto::Place {
-                    parent_id: held.parent.clone(),
-                    name: held.name.clone(),
+                    parent_id: scratch
+                        .parent(&id)
+                        .expect("moved nodes are in R")
+                        .to_owned(),
+                    name: scratch.name(&id).expect("moved nodes are in R").to_owned(),
                 });
-                let (kind, group) = (held.kind, held.group.clone().filter(|_| !held.live));
+                let kind = scratch.kind(&id).expect("moved nodes are in R");
+                let group = (scratch.group(&id))
+                    .filter(|_| !scratch.live(&id))
+                    .map(str::to_owned);
                 scratch.place(&id, &parent, &name, kind);
                 if let Some(group) = group {
                     let revived = scratch.revive_group(&id, &group);
@@ -3267,6 +3335,10 @@ fn plan(
         *bytes += cost;
         true
     };
+    let ordered = !(wants.iter().flatten())
+        .any(|want| matches!(want, Want::Delete { .. } | Want::Restore { .. }));
+    let (mut pass, mut stalled) = (1, false);
+    let mut filled_at = None;
     let capped = loop {
         let (mut progress, mut full) = (false, false);
         for at in 0..wants.len() {
@@ -3302,6 +3374,7 @@ fn plan(
                 progress = true;
             }
             if full {
+                filled_at = (!stalled).then_some((pass, at));
                 break;
             }
             let want = wants[at].as_ref().expect("checked");
@@ -3311,6 +3384,7 @@ fn plan(
             let alone = emitted == 0 && !bundle.is_empty();
             if !alone && !fits(emitted, bytes, ops, cost) {
                 full = true;
+                filled_at = (!stalled).then_some((pass, at));
                 break;
             }
             emitted += ops;
@@ -3328,9 +3402,11 @@ fn plan(
         if full {
             break true;
         }
+        pass += 1;
         if progress {
             continue;
         }
+        stalled = true;
         if let Some(cycle) = name_cycle(&wants, &scratch, &moving) {
             let Some(Want::Move {
                 id,
@@ -3450,7 +3526,9 @@ fn plan(
             }
         }
     }
-    (ops, deletes, reverts)
+    let exact = bound
+        .is_none_or(|(last, _)| ordered && filled_at.is_some_and(|filled| filled < (last, within)));
+    ((ops, deletes, reverts), exact)
 }
 
 fn remote_below(trees: &Trees, id: &str, ancestors: &BTreeSet<&str>) -> bool {
@@ -3473,7 +3551,16 @@ fn deletes_before_create(
     moving: &BTreeSet<NodeId>,
     parent: &str,
 ) -> Vec<usize> {
-    let targets = scratch.merge_targets(parent);
+    let reached: Vec<(usize, &Want, &NodeId)> = (wants.iter().enumerate())
+        .filter_map(|(at, slot)| match slot {
+            Some(want @ Want::Delete { id, .. }) => Some((at, want, id)),
+            _ => None,
+        })
+        .filter(|(_, _, id)| scratch.merge_reaches(parent, id))
+        .collect();
+    if reached.is_empty() {
+        return Vec::new();
+    }
     let placing: Vec<&NodeId> = (wants.iter().flatten())
         .filter_map(|want| match want {
             Want::Create { shape, .. } => Some(&shape.parent),
@@ -3481,17 +3568,12 @@ fn deletes_before_create(
             _ => None,
         })
         .collect();
-    (wants.iter().enumerate())
-        .filter_map(|(at, slot)| match slot {
-            Some(want @ Want::Delete { id, .. })
-                if targets.iter().any(|target| scratch.inside(target, id))
-                    && !placing.iter().any(|to| scratch.inside(to, id))
-                    && scratch.fit(want, moving) == Fit::Valid =>
-            {
-                Some(at)
-            }
-            _ => None,
+    (reached.into_iter())
+        .filter(|(_, want, id)| {
+            !placing.iter().any(|to| scratch.inside(to, id))
+                && scratch.fit(want, moving) == Fit::Valid
         })
+        .map(|(at, ..)| at)
         .collect()
 }
 
@@ -3529,10 +3611,7 @@ fn name_cycle(
                 else {
                     unreachable!("indexed from the moves");
                 };
-                let holders: Vec<&NodeId> = (scratch.children.get(parent))
-                    .and_then(|keys| keys.get(&name_key(name)))
-                    .into_iter()
-                    .flatten()
+                let holders: Vec<&NodeId> = (scratch.holders(parent, name))
                     .filter(|holder| *holder != id)
                     .collect();
                 let [holder] = holders.as_slice() else {
@@ -3597,20 +3676,19 @@ struct Entry {
     group: Option<String>,
 }
 
-/// R as the ops emitted so far leave it on the server, as far as their order depends on it.
 #[derive(Clone)]
-struct Scratch {
-    root: NodeId,
+struct Scratch<'a> {
+    trees: &'a Trees,
     nodes: BTreeMap<NodeId, Entry>,
-    /// Live children by parent, then by name key.
     children: BTreeMap<NodeId, BTreeMap<String, BTreeSet<NodeId>>>,
-    /// For each folder this commit creates, the folders the server may merge it into
-    /// (MERGED_INTO): every folder under its parent or under a folder its parent may be merged
-    /// into, since the server merges by the names it holds when the commit applies, and another
-    /// device may have renamed one of them since R. Deleting one in the same commit would trash
-    /// what the create brings, so their deletes wait for the next commit.
-    merges: BTreeMap<NodeId, Vec<NodeId>>,
-    protected: BTreeSet<NodeId>,
+    /// For each folder this commit creates, the nearest folder above it that the commit does not
+    /// create and how many levels below that folder it is. The server may merge it into any folder
+    /// at that level (MERGED_INTO), since it merges by the names it holds when the commit applies,
+    /// and another device may have renamed one of them since R. Deleting one in the same commit
+    /// would trash what the create brings, so their deletes wait for the next commit.
+    merges: BTreeMap<NodeId, (NodeId, usize)>,
+    protected: BTreeSet<(NodeId, usize)>,
+    pinned: BTreeMap<NodeId, BTreeSet<(NodeId, usize)>>,
     /// For each node a queued restore names, how many wants that change it are not emitted yet,
     /// and one more while the node is not settled: this build leaves it out, so its changes are
     /// not among the wants, or S has not taken what L and R agree on. The restore waits for all
@@ -3618,69 +3696,109 @@ struct Scratch {
     /// holds.
     unsent: BTreeMap<NodeId, usize>,
     restoring: BTreeSet<NodeId>,
-    trashed: BTreeMap<NodeId, Vec<NodeId>>,
     owed: BTreeSet<NodeId>,
     creating: BTreeMap<NodeId, NodeId>,
 }
 
-impl Scratch {
-    fn new(trees: &Trees) -> Self {
-        let mut scratch = Self {
-            root: trees.remote().root.clone(),
+impl<'a> Scratch<'a> {
+    fn new(trees: &'a Trees) -> Self {
+        Self {
+            trees,
             nodes: BTreeMap::new(),
             children: BTreeMap::new(),
             merges: BTreeMap::new(),
             protected: BTreeSet::new(),
+            pinned: BTreeMap::new(),
             unsent: BTreeMap::new(),
             restoring: BTreeSet::new(),
-            trashed: BTreeMap::new(),
             owed: BTreeSet::new(),
             creating: BTreeMap::new(),
-        };
-        for (id, node) in trees.remote().iter() {
+        }
+    }
+
+    fn root(&self) -> &'a str {
+        &self.trees.remote().root
+    }
+
+    fn parent(&self, id: &str) -> Option<&str> {
+        match self.nodes.get(id) {
+            Some(entry) => Some(&entry.parent),
+            None => (self.trees.remote().get(id)).map(|node| node.shape.parent.as_str()),
+        }
+    }
+
+    fn name(&self, id: &str) -> Option<&str> {
+        match self.nodes.get(id) {
+            Some(entry) => Some(&entry.name),
+            None => (self.trees.remote().get(id)).map(|node| node.shape.name.as_str()),
+        }
+    }
+
+    fn kind(&self, id: &str) -> Option<Kind> {
+        match self.nodes.get(id) {
+            Some(entry) => Some(entry.kind),
+            None => (self.trees.remote().get(id)).map(|node| node.shape.kind),
+        }
+    }
+
+    fn live(&self, id: &str) -> bool {
+        match self.nodes.get(id) {
+            Some(entry) => entry.live,
+            None => self.trees.remote().live(id).is_some(),
+        }
+    }
+
+    fn group(&self, id: &str) -> Option<&str> {
+        match self.nodes.get(id) {
+            Some(entry) => entry.group.as_deref().filter(|_| !entry.live),
+            None => (self.trees.remote().get(id))
+                .filter(|node| node.trashed)
+                .map(|node| node.trash_group.as_str()),
+        }
+    }
+
+    fn in_trash(&self, id: &str) -> bool {
+        self.parent(id).is_some() && !self.live(id)
+    }
+
+    fn entry(&mut self, id: &str) -> &mut Entry {
+        if !self.nodes.contains_key(id) {
+            let node = self
+                .trees
+                .remote()
+                .get(id)
+                .expect("scratch nodes are in R or placed");
             let entry = Entry {
                 parent: node.shape.parent.clone(),
                 name: node.shape.name.clone(),
                 key: name_key(&node.shape.name),
                 kind: node.shape.kind,
-                live: false,
+                live: !node.trashed,
                 group: node.trashed.then(|| node.trash_group.clone()),
             };
-            scratch.nodes.insert(id.clone(), entry);
-            if node.trashed {
-                let siblings = scratch
-                    .trashed
-                    .entry(node.shape.parent.clone())
-                    .or_default();
-                siblings.push(id.clone());
-            } else {
-                scratch.link(id);
-            }
+            self.nodes.insert(id.to_owned(), entry);
         }
-        scratch
+        self.nodes.get_mut(id).expect("inserted above")
     }
 
     fn link(&mut self, id: &str) {
-        let entry = self.nodes.get_mut(id).expect("linked nodes exist");
+        let entry = self.entry(id);
         entry.live = true;
-        self.children
-            .entry(entry.parent.clone())
-            .or_default()
-            .entry(entry.key.clone())
+        let (parent, key) = (entry.parent.clone(), entry.key.clone());
+        (self.children.entry(parent).or_default())
+            .entry(key)
             .or_default()
             .insert(id.to_owned());
     }
 
     fn unlink(&mut self, id: &str) {
-        let Some(entry) = self.nodes.get_mut(id).filter(|entry| entry.live) else {
+        if !self.live(id) {
             return;
-        };
+        }
+        let entry = self.entry(id);
         entry.live = false;
-        if let Some(named) = self
-            .children
-            .get_mut(&entry.parent)
-            .and_then(|keys| keys.get_mut(&entry.key))
-        {
+        let (parent, key) = (entry.parent.clone(), entry.key.clone());
+        if let Some(named) = (self.children.get_mut(&parent)).and_then(|keys| keys.get_mut(&key)) {
             named.remove(id);
         }
     }
@@ -3704,9 +3822,7 @@ impl Scratch {
                 let subtree = self.subtree(id);
                 if !subtree.iter().all(|node| members.contains(node)) {
                     Fit::Wait
-                } else if self.protected.contains(id)
-                    || subtree.iter().any(|node| self.protected.contains(node))
-                {
+                } else if self.protects(id) || subtree.iter().any(|node| self.protects(node)) {
                     Fit::Merged
                 } else {
                     Fit::Valid
@@ -3717,12 +3833,8 @@ impl Scratch {
         }
     }
 
-    fn awaited_return<'a>(&'a self, want: &'a Want, moving: &BTreeSet<NodeId>) -> Option<&'a str> {
-        let trashed_parent = |id: &str| {
-            (self.nodes.get(id))
-                .filter(|entry| !entry.live)
-                .map(|entry| entry.parent.as_str())
-        };
+    fn awaited_return<'s>(&'s self, want: &'s Want, moving: &BTreeSet<NodeId>) -> Option<&'s str> {
+        let trashed_parent = |id: &str| self.parent(id).filter(|_| !self.live(id));
         let revived = match want {
             Want::Create { shape, .. } => Some(shape.parent.as_str()),
             Want::Move { id, parent, .. } => {
@@ -3741,21 +3853,23 @@ impl Scratch {
         revived.and_then(|id| self.returning_from_trash(id, moving))
     }
 
-    fn returning_from_trash<'a>(
-        &'a self,
-        id: &'a str,
+    fn returning_from_trash<'s>(
+        &'s self,
+        id: &'s str,
         moving: &BTreeSet<NodeId>,
-    ) -> Option<&'a str> {
+    ) -> Option<&'s str> {
         let mut current = id;
-        for _ in 0..=self.nodes.len() {
-            let entry = self.nodes.get(current).filter(|entry| !entry.live)?;
-            let in_trash = |id: &str| self.nodes.get(id).is_some_and(|entry| !entry.live);
+        for _ in 0..=self.trees.remote().len() + self.nodes.len() {
+            if self.live(current) {
+                return None;
+            }
+            let parent = self.parent(current)?;
             if self.restoring.contains(current)
-                || (moving.contains(current) && in_trash(&entry.parent))
+                || (moving.contains(current) && self.in_trash(parent))
             {
                 return Some(current);
             }
-            current = &entry.parent;
+            current = parent;
         }
         None
     }
@@ -3763,34 +3877,25 @@ impl Scratch {
     /// Whether `id` can take `name` under `parent`. A trashed parent counts: the server revives
     /// it (R8).
     fn fit_at(&self, id: &str, parent: &str, name: &str) -> Fit {
-        let is_dir = parent == self.root
-            || self
-                .nodes
-                .get(parent)
-                .is_some_and(|entry| entry.kind == Kind::Dir);
         if self.inside(parent, id) {
             return Fit::Cycle;
         }
-        if !is_dir {
+        if parent != self.root() && self.kind(parent) != Some(Kind::Dir) {
             return Fit::Wait;
         }
-        let taken = self
-            .children
-            .get(parent)
-            .and_then(|keys| keys.get(&name_key(name)))
-            .is_some_and(|named| named.iter().any(|other| other != id));
+        let taken = self.holders(parent, name).any(|other| other != id);
         if taken { Fit::NameTaken } else { Fit::Valid }
     }
 
     /// True when `ancestor` is `id` or holds it.
     fn inside(&self, id: &str, ancestor: &str) -> bool {
         let mut current = id;
-        for _ in 0..=self.nodes.len() + self.creating.len() {
+        for _ in 0..=self.trees.remote().len() + self.nodes.len() + self.creating.len() {
             if current == ancestor {
                 return true;
             }
-            match (self.nodes.get(current), self.creating.get(current)) {
-                (Some(entry), _) => current = &entry.parent,
+            match (self.parent(current), self.creating.get(current)) {
+                (Some(parent), _) => current = parent,
                 (None, Some(parent)) => current = parent,
                 (None, None) => return false,
             }
@@ -3798,17 +3903,23 @@ impl Scratch {
         false
     }
 
+    fn children_of<'s>(&'s self, parent: &'s str) -> impl Iterator<Item = &'s NodeId> + 's {
+        (self.trees.remote_children(parent))
+            .filter(|id| !self.nodes.contains_key(*id))
+            .chain(
+                self.children
+                    .get(parent)
+                    .into_iter()
+                    .flat_map(|keys| keys.values().flatten()),
+            )
+    }
+
     /// The live nodes under `id`.
     fn subtree(&self, id: &str) -> Vec<NodeId> {
         let mut found = Vec::new();
         let mut stack = vec![id.to_owned()];
         while let Some(current) = stack.pop() {
-            for child in self
-                .children
-                .get(&current)
-                .into_iter()
-                .flat_map(|keys| keys.values().flatten())
-            {
+            for child in self.children_of(&current) {
                 found.push(child.clone());
                 stack.push(child.clone());
             }
@@ -3817,6 +3928,19 @@ impl Scratch {
     }
 
     fn place(&mut self, id: &str, parent: &str, name: &str, kind: Kind) {
+        if !self.protected.is_empty() {
+            let leaving: Vec<(NodeId, Vec<(NodeId, usize)>)> = (std::iter::once(id.to_owned())
+                .chain(self.subtree(id)))
+            .map(|node| {
+                let levels = self.protected_levels(&node);
+                (node, levels)
+            })
+            .filter(|(_, levels)| !levels.is_empty())
+            .collect();
+            for (node, levels) in leaving {
+                self.pinned.entry(node).or_default().extend(levels);
+            }
+        }
         self.unlink(id);
         let entry = Entry {
             parent: parent.to_owned(),
@@ -3831,24 +3955,18 @@ impl Scratch {
         self.revive(parent);
     }
 
-    fn group(&self, id: &str) -> Option<&String> {
-        (self.nodes.get(id))
-            .filter(|entry| !entry.live)
-            .and_then(|entry| entry.group.as_ref())
-    }
-
     fn revive_group(&mut self, id: &str, group: &str) -> Vec<NodeId> {
+        let trees = self.trees;
         let mut revived = Vec::new();
         let mut parents = vec![id.to_owned()];
         while let Some(parent) = parents.pop() {
-            for child in self.trashed.get(&parent).cloned().unwrap_or_default() {
-                let entry = &self.nodes[&child];
-                if entry.live || entry.group.as_deref() != Some(group) {
+            for child in trees.remote_trashed_children(&parent) {
+                if self.group(child) != Some(group) {
                     continue;
                 }
-                self.link(&child);
+                self.link(child);
                 parents.push(child.clone());
-                revived.push(child);
+                revived.push(child.clone());
             }
         }
         revived
@@ -3857,17 +3975,19 @@ impl Scratch {
     /// Makes `id` live with the trashed ancestors it needs, as R8 does.
     fn revive(&mut self, id: &str) {
         let mut current = id.to_owned();
-        for _ in 0..=self.nodes.len() {
-            let Some(entry) = self.nodes.get(&current).filter(|entry| !entry.live) else {
+        for _ in 0..=self.trees.remote().len() + self.nodes.len() {
+            if self.live(&current) {
+                return;
+            }
+            let Some(parent) = self.parent(&current).map(str::to_owned) else {
                 return;
             };
-            let parent = entry.parent.clone();
             self.link(&current);
             current = parent;
         }
     }
 
-    fn name_holders<'a>(&'a self, want: &'a Want) -> impl Iterator<Item = &'a NodeId> + 'a {
+    fn name_holders<'s>(&'s self, want: &'s Want) -> impl Iterator<Item = &'s NodeId> + 's {
         let (parent, name) = match want {
             Want::Create { shape, .. } => (shape.parent.as_str(), shape.name.as_str()),
             Want::Move { parent, name, .. } => (parent.as_str(), name.as_str()),
@@ -3877,27 +3997,87 @@ impl Scratch {
     }
 
     /// The live nodes named `name` under `parent`.
-    fn holders<'a>(&'a self, parent: &str, name: &str) -> impl Iterator<Item = &'a NodeId> + 'a {
-        (self.children.get(parent))
-            .and_then(|keys| keys.get(&name_key(name)))
-            .into_iter()
-            .flatten()
+    fn holders<'s>(
+        &'s self,
+        parent: &str,
+        name: &str,
+    ) -> impl Iterator<Item = &'s NodeId> + use<'s, 'a> {
+        let key = name_key(name);
+        let placed = (self.children.get(parent)).and_then(|keys| keys.get(&key));
+        (self.trees.remote_holders_of_key(parent, &key))
+            .filter(|id| !self.nodes.contains_key(*id))
+            .chain(placed.into_iter().flatten())
     }
 
-    fn merge_targets(&self, parent: &str) -> Vec<NodeId> {
-        let parents = std::iter::once(parent).chain(
-            self.merges
-                .get(parent)
-                .into_iter()
-                .flatten()
-                .map(String::as_str),
-        );
-        parents
-            .flat_map(|parent| self.children.get(parent))
-            .flat_map(|keys| keys.values().flatten())
-            .filter(|id| self.nodes[*id].kind == Kind::Dir)
-            .cloned()
-            .collect()
+    fn merge_level(&self, parent: &str) -> (NodeId, usize) {
+        match self.merges.get(parent) {
+            Some((anchor, depth)) => (anchor.clone(), depth + 1),
+            None => (parent.to_owned(), 1),
+        }
+    }
+
+    fn protects(&self, id: &str) -> bool {
+        self.live(id) && self.kind(id) == Some(Kind::Dir) && !self.protected_levels(id).is_empty()
+    }
+
+    fn protected_levels(&self, id: &str) -> Vec<(NodeId, usize)> {
+        let mut found = Vec::new();
+        let mut current = id;
+        for depth in 0..=self.trees.remote().len() + self.nodes.len() {
+            let pinned = (self.pinned.get(current).into_iter().flatten())
+                .map(|(anchor, at)| (anchor.clone(), at + depth));
+            found.extend(pinned.filter(|level| self.protected.contains(level)));
+            let Some(parent) = self.parent(current) else {
+                break;
+            };
+            let level = (parent.to_owned(), depth + 1);
+            if self.protected.contains(&level) {
+                found.push(level);
+            }
+            current = parent;
+        }
+        found
+    }
+
+    fn merge_reaches(&self, parent: &str, id: &str) -> bool {
+        let (anchor, depth) = self.merge_level(parent);
+        let below = |node: &str, at: usize| at <= depth && self.folder_below(node, depth - at);
+        let pinned_at = |node: &str| {
+            (self.pinned.get(node).into_iter().flatten())
+                .filter(|(at_anchor, _)| *at_anchor == anchor)
+                .map(|(_, at)| *at)
+                .collect::<Vec<_>>()
+        };
+        if self.inside(&anchor, id) && below(&anchor, 0) {
+            return true;
+        }
+        let inside = (self.pinned.keys()).filter(|node| self.inside(node, id));
+        if inside
+            .into_iter()
+            .any(|node| pinned_at(node).into_iter().any(|at| below(node, at)))
+        {
+            return true;
+        }
+        let mut current = id;
+        for up in 1..=depth {
+            let Some(next) = self.parent(current) else {
+                return false;
+            };
+            if (next == anchor && below(id, up))
+                || pinned_at(next).into_iter().any(|at| below(id, at + up))
+            {
+                return true;
+            }
+            current = next;
+        }
+        false
+    }
+
+    fn folder_below(&self, folder: &str, levels: usize) -> bool {
+        match levels {
+            0 => self.live(folder) && self.kind(folder) == Some(Kind::Dir),
+            _ => (self.children_of(folder)).any(|child| self.folder_below(child, levels - 1)),
+        }
     }
 
     /// A name under `parent` that nothing holds, for a folder created while the node holding its
@@ -3917,20 +4097,13 @@ impl Scratch {
                 }
                 named(&stem)
             })
-            .find(|candidate| {
-                self.children
-                    .get(parent)
-                    .and_then(|keys| keys.get(&name_key(candidate)))
-                    .is_none_or(|named| named.is_empty())
-            })
+            .find(|candidate| self.holders(parent, candidate).next().is_none())
             .expect("a free name")
     }
 
     fn trash(&mut self, id: &str) {
         for node in self.subtree(id).into_iter().chain([id.to_owned()]) {
-            if let Some(entry) = self.nodes.get_mut(&node) {
-                entry.group = None;
-            }
+            self.entry(&node).group = None;
             self.unlink(&node);
         }
     }
@@ -3943,28 +4116,30 @@ impl Scratch {
                 let group = self.group(id).filter(|_| answers.contains(id));
                 (parent.clone(), group.map(|group| (id, group)))
             }
-            Want::Content { id, .. } => match self.nodes.get(id) {
-                Some(entry) => (entry.parent.clone(), None),
+            Want::Content { id, .. } => match self.parent(id) {
+                Some(parent) => (parent.to_owned(), None),
                 None => return 0,
             },
             Want::Delete { .. } | Want::Retrash { .. } | Want::Restore { .. } => return 0,
         };
         let mut bytes = 0;
-        for _ in 0..=self.nodes.len() {
-            let Some(entry) = self.nodes.get(&current).filter(|entry| !entry.live) else {
+        for _ in 0..=self.trees.remote().len() + self.nodes.len() {
+            if self.live(&current) {
+                break;
+            }
+            let Some(parent) = self.parent(&current) else {
                 break;
             };
             bytes += record(&current);
-            current = entry.parent.clone();
+            current = parent.to_owned();
         }
         let Some((id, group)) = group else {
             return bytes;
         };
-        let mut below = vec![id];
+        let mut below = vec![id.as_str()];
         while let Some(parent) = below.pop() {
-            for child in self.trashed.get(parent).into_iter().flatten() {
-                let entry = &self.nodes[child];
-                if !entry.live && entry.group.as_ref() == Some(group) {
+            for child in self.trees.remote_trashed_children(parent) {
+                if self.group(child) == Some(group) {
                     bytes += record(child);
                     below.push(child);
                 }
@@ -3992,17 +4167,21 @@ impl Scratch {
             return Some(Vec::new());
         };
         let mut scratch = self.clone();
-        scratch.place(id, parent, name, scratch.nodes[id].kind);
+        let kind = scratch.kind(id).expect("moved nodes are in R");
+        scratch.place(id, parent, name, kind);
         let revived: BTreeSet<NodeId> = scratch.revive_group(id, group).into_iter().collect();
-        let placed = |node: &NodeId| match answers.contains(node) {
-            true => trees.local().get(node).map(|local| &local.shape.parent),
-            false => Some(&scratch.nodes[node].parent),
+        let placed = |node: &str| match answers.contains(node) {
+            true => trees
+                .local()
+                .get(node)
+                .map(|local| local.shape.parent.as_str()),
+            false => scratch.parent(node),
         };
         let mut needed = BTreeSet::new();
         for answered in revived.iter().filter(|node| answers.contains(*node)) {
             let mut at = placed(answered);
             while let Some(parent) = at.filter(|parent| revived.contains(*parent))
-                && needed.insert(parent.clone())
+                && needed.insert(parent.to_owned())
             {
                 at = placed(parent);
             }
@@ -4012,7 +4191,10 @@ impl Scratch {
             .collect();
         let mut bundle = Vec::new();
         for top in &outside {
-            if outside.contains(&scratch.nodes[top].parent) {
+            if scratch
+                .parent(top)
+                .is_some_and(|parent| outside.contains(parent))
+            {
                 continue;
             }
             let members = (scratch.subtree(top).into_iter())

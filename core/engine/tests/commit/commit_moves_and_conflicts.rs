@@ -429,6 +429,34 @@ fn a_folder_a_new_one_may_be_merged_into_is_not_deleted_in_the_same_commit() {
 }
 
 #[test]
+fn a_merge_target_that_moves_keeps_its_folders_as_merge_targets() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "new top")), None, None),
+        (
+            "b",
+            Some(dir("t", "moved")),
+            Some(dir(ROOT, "old top")),
+            Some(remote(dir(ROOT, "old top"))),
+        ),
+        ("c", Some(dir("a", "new child")), None, None),
+        (
+            "d",
+            None,
+            Some(dir("b", "old child")),
+            Some(remote(dir("b", "old child"))),
+        ),
+        synced("t", dir(ROOT, "destination")),
+    ]);
+    trees.rules_scanned();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    let at = |found: fn(&op::Op) -> bool| sent.iter().position(found).unwrap();
+    let deleted = at(|op| matches!(op, op::Op::Delete(delete) if delete.node_id == "d"));
+    let created = at(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "c"));
+    assert!(deleted < created, "{sent:?}");
+}
+
+#[test]
 fn a_folder_created_where_a_moving_folder_still_is_takes_a_pending_name_first() {
     let mut trees = trees(&[
         (

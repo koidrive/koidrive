@@ -20,6 +20,8 @@
 
 mod claim;
 mod config;
+#[cfg(test)]
+mod counting;
 mod credential;
 mod disk;
 mod driver;
