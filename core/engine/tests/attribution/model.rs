@@ -1646,6 +1646,25 @@ impl World {
         ))
     }
 
+    fn follows(&self, later: Tok, earlier: Tok) -> bool {
+        let field = self.values[later.0 as usize].field;
+        let mut at = later;
+        for _ in 0..self.values.len() {
+            let value = self.values[at.0 as usize];
+            if value.author.is_none() || value.renamed_from.is_some() {
+                return false;
+            }
+            at = match field {
+                Field::Position => value.pos,
+                _ => value.content,
+            };
+            if at == earlier {
+                return true;
+            }
+        }
+        false
+    }
+
     fn undone_delete(&self, rules: Rules) -> Option<Broken> {
         if self.server.node().trashed.is_some() {
             return None;
@@ -1673,6 +1692,7 @@ impl World {
                             && value.author != delete.author
                             && value.field != Field::Existence
                             && delete.seen[slot(value.field)] != tok
+                            && !self.follows(delete.seen[slot(value.field)], tok)
                             && self.survived(tok)
                     })
             })
