@@ -86,6 +86,10 @@ extension URL {
         var path = plainPath(self)
         for _ in 0..<16 {
             let (existing, rest) = deepestExistingPart(of: path)
+            if let name = rest.first, let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: joined(existing, [name])) {
+                path = joined(destination.hasPrefix("/") ? destination : joined(existing, [destination]), Array(rest.dropFirst()))
+                continue
+            }
             let item = URL(filePath: existing)
             guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true,
                   let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else {

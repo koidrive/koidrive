@@ -577,6 +577,16 @@ private let fourVersions = [
         #expect(app.folder(containing: root.appending(path: "away/Plan.key")) == nil)
         #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: "away/Plan.key")))
         #expect(app.folder(containing: URL(filePath: shortcut.path + "/../Plan.key")) == nil)
+
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "gone").path(percentEncoded: false), withDestinationPath: outside.appending(path: "Missing").path(percentEncoded: false))
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "up").path(percentEncoded: false), withDestinationPath: "../Outside/Missing")
+        for path in ["gone/Plan.key", "up/Plan.key", "gone"] {
+            #expect(app.folder(containing: shortcut.appending(path: path)) == nil, "\(path)")
+            #expect(app.folder(containing: root.appending(path: path)) == nil, "\(path)")
+            #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: path)), "\(path)")
+        }
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "later").path(percentEncoded: false), withDestinationPath: "Docs/Later")
+        #expect(app.location(of: shortcut.appending(path: "later/Plan.key"))?.below == ["Docs", "Later", "Plan.key"])
     }
 
     @Test func aFileReachedThroughALinkFromAnotherLinkedFolderUsesTheFolderThatHoldsIt() async throws {
