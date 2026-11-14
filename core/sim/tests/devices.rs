@@ -7971,3 +7971,354 @@ fn a_recovery_answer_does_not_put_a_disk_first_finish_back_at_its_pending_name()
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+#[ignore]
+fn probe_484_enumerated() {
+    use Step::*;
+    let actions: Vec<(&str, Step)> = vec![
+        ("move file into folder", rename(2, 1, "c.txt")),
+        ("rename folder", rename(0, 0, "A")),
+        ("move folder into ss", rename(0, 2, "b")),
+        ("new file in folder", user(1, 0, 1, "C.TXT")),
+        ("overwrite file in folder", overwrite(1)),
+        ("delete folder", delete(0)),
+        ("move file out of folder", rename(1, 0, "a")),
+        ("new folder in folder", user(0, 0, 1, "ss")),
+    ];
+    let mut failures = Vec::new();
+    let mut runs = 0;
+    let mut seen: std::collections::BTreeMap<&'static str, u64> = Default::default();
+    for choice in 0..3usize {
+        for w2 in [0usize, 1, 2, 3, 5, 8] {
+            for (label, action) in &actions {
+                for pos in 0..4usize {
+                    for actor in 0..2usize {
+                        for second_backup in [false, true] {
+                            let mut p1 = vec![(0, Rewind), (0, Connect), (0, Work(0)), (0, Work(0)), (0, Work(0))];
+                            if pos == 0 { p1.push((actor, *action)); }
+                            p1.push((0, Answer(choice)));
+                            for _ in 0..w2 { p1.push((0, Work(0))); }
+                            if pos == 1 { p1.push((actor, *action)); }
+                            if second_backup { p1.push((0, Backup)); }
+                            p1.push((0, Rewind));
+                            if pos == 2 { p1.push((actor, *action)); }
+                            p1.push((0, Connect));
+                            p1.push((0, Work(0)));
+                            p1.push((0, Work(0)));
+                            if pos == 3 { p1.push((actor, *action)); }
+                            let phases = vec![
+                                vec![
+                                    (0, Backup),
+                                    (0, folder("b")),
+                                    (0, user(1, 0, 1, "a")),
+                                    (0, file("c.txt")),
+                                    (0, folder("ss")),
+                                ],
+                                p1,
+                            ];
+                            runs += 1;
+                            let mut world = world(2);
+                            let mut result = Ok(());
+                            for (phase, schedule) in phases.iter().enumerate() {
+                                if let Err(failure) = world.phase(phase, schedule) { result = Err(failure); break; }
+                            }
+                            for (k, v) in &world.seen { *seen.entry(k).or_default() += v.min(&1); }
+                            if let Err(failure) = result {
+                                let line = format!("choice={choice} w2={w2} action={label} pos={pos} actor={actor} backup2={second_backup}: {}", failure.to_string().lines().next().unwrap_or(""));
+                                failures.push(line);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("runs {runs}, failures {}", failures.len());
+    for (k, v) in &seen { println!("SEEN {v} {k}"); }
+    for failure in &failures { println!("FAIL {failure}"); }
+}
+
+
+#[test]
+#[ignore]
+fn probe_484_sampled() {
+    use Step::*;
+    let actions: Vec<(&str, Step)> = vec![
+        ("none", Scan),
+        ("move file into folder", rename(2, 1, "c.txt")),
+        ("move file into folder same name", rename(2, 1, "a")),
+        ("rename folder", rename(0, 0, "A")),
+        ("rename folder fold", rename(0, 0, "ss")),
+        ("move folder into ss", rename(0, 2, "b")),
+        ("new file in folder", user(1, 0, 1, "C.TXT")),
+        ("overwrite file in folder", overwrite(1)),
+        ("delete folder", delete(0)),
+        ("delete child", delete(1)),
+        ("move file out of folder", rename(1, 0, "a")),
+        ("new folder in folder", user(0, 0, 1, "ss")),
+        ("move ss into folder", rename(3, 1, "ss")),
+    ];
+    let pres: Vec<(&str, Vec<Step>)> = vec![
+        ("none", vec![]),
+        ("overwrite child", vec![overwrite(1)]),
+        ("overwrite child, new file in folder", vec![overwrite(1), user(1, 0, 1, "c.txt")]),
+        ("rename child", vec![rename(1, 1, "A")]),
+        ("move child out", vec![rename(1, 0, "ss")]),
+    ];
+    let mids: Vec<(&str, Vec<Step>)> = vec![
+        ("none", vec![]),
+        ("delete child", vec![delete(1)]),
+        ("move child out", vec![rename(1, 0, "A")]),
+        ("rename folder", vec![rename(0, 0, "A")]),
+        ("new folder", vec![folder("A")]),
+    ];
+    let cases: u64 = std::env::var("PROBE_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let mut state: u64 = 0x9e3779b97f4a7c15;
+    let mut next = |n: usize| -> usize {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((state >> 33) as usize) % n
+    };
+    let mut failures = Vec::new();
+    let mut seen: std::collections::BTreeMap<&'static str, u64> = Default::default();
+    for _ in 0..cases {
+        let pre = next(pres.len());
+        let mid = next(mids.len());
+        let c1 = next(3);
+        let c2 = next(4);
+        let w2 = [0usize, 1, 2, 3, 5, 8][next(6)];
+        let ai = next(actions.len());
+        let pos = next(5);
+        let actor = next(2);
+        let b2 = next(2) == 1;
+        let third = next(3) == 0;
+        let action = actions[ai].1;
+        let mut p1 = vec![(0, Rewind)];
+        for step in &pres[pre].1 { p1.push((0, *step)); }
+        p1.extend([(0, Connect), (0, Work(0)), (0, Work(0)), (0, Work(0))]);
+        for step in &mids[mid].1 { p1.push((0, *step)); }
+        if pos == 0 { p1.push((actor, action)); }
+        p1.push((0, Answer(c1)));
+        if c2 < 3 { p1.push((0, Answer(c2))); }
+        for _ in 0..w2 { p1.push((0, Work(0))); }
+        if pos == 1 { p1.push((actor, action)); }
+        if b2 { p1.push((0, Backup)); }
+        p1.push((0, Rewind));
+        if pos == 2 { p1.push((actor, action)); }
+        p1.extend([(0, Connect), (0, Work(0)), (0, Work(0))]);
+        if pos == 3 { p1.push((actor, action)); }
+        if third {
+            p1.extend([(0, Answer(c1)), (0, Work(0)), (0, Work(0)), (0, Rewind), (0, Connect), (0, Work(0))]);
+        }
+        if pos == 4 { p1.push((actor, action)); }
+        let phases = vec![
+            vec![
+                (0, Backup),
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, file("c.txt")),
+                (0, folder("ss")),
+            ],
+            p1,
+        ];
+        let mut world = world(2);
+        let mut result = Ok(());
+        for (phase, schedule) in phases.iter().enumerate() {
+            if let Err(failure) = world.phase(phase, schedule) { result = Err(failure); break; }
+        }
+        for (k, v) in &world.seen { *seen.entry(k).or_default() += v.min(&1); }
+        if let Err(failure) = result {
+            let kind = match failure { Failure::Broken(_) => "BROKEN", Failure::Diverged(_) => "DIVERGED" };
+            failures.push(format!("{kind} pre={} mid={} c1={c1} c2={c2} w2={w2} action={} pos={pos} actor={actor} b2={b2} third={third}: {}", pres[pre].0, mids[mid].0, actions[ai].0, failure.to_string().lines().next().unwrap_or("")));
+        }
+    }
+    println!("runs {cases}, failures {}", failures.len());
+    for (k, v) in &seen { println!("SEEN {v} {k}"); }
+    for failure in &failures { println!("FAIL {failure}"); }
+}
+
+
+fn probe_484_one_phases(answer_first: bool, wait: usize) -> Vec<Vec<(usize, Step)>> {
+    use Step::*;
+    let mut p1 = vec![(0, Rewind), (0, overwrite(1)), (0, Connect), (0, Work(0)), (0, Work(0)), (0, delete(1))];
+    if answer_first { p1.push((0, Answer(0))); }
+    for _ in 0..wait { p1.push((0, Work(0))); }
+    p1.extend([(0, Rewind), (0, rename(1, 1, "c.txt"))]);
+    vec![
+        vec![
+            (0, Backup),
+            (0, folder("b")),
+            (0, user(1, 0, 1, "a")),
+            (0, file("c.txt")),
+            (0, folder("ss")),
+        ],
+        p1,
+    ]
+}
+
+#[test]
+#[ignore]
+fn probe_484_one() {
+    for wait in 0..6 {
+        let result = converge(2, &probe_484_one_phases(true, wait));
+        println!("wait {wait}: {:?}", result.err().map(|f| f.to_string().lines().next().unwrap_or("").to_owned()));
+    }
+}
+
+
+fn probe_484_mutate(base: Vec<Vec<(usize, Step)>>) -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
+    (
+        prop::collection::vec((any::<prop::sample::Index>(), 0..2usize, step(Losses::Rewinds)), 0..8),
+        prop::collection::vec(any::<prop::sample::Index>(), 0..2),
+        0..4usize,
+    )
+        .prop_map(move |(inserts, removals, answer)| {
+            let mut phases = base.clone();
+            let p1 = &mut phases[1];
+            for step in p1.iter_mut() {
+                if let (_, Step::Answer(choice)) = step {
+                    *choice = (*choice + answer) % 4;
+                }
+            }
+            for index in removals {
+                if p1.len() > 1 {
+                    let at = index.index(p1.len());
+                    if !matches!(p1[at].1, Step::Rewind) {
+                        p1.remove(at);
+                    }
+                }
+            }
+            for (index, device, step) in inserts {
+                let at = index.index(p1.len() + 1);
+                p1.insert(at, (device, step));
+            }
+            phases
+        })
+}
+
+fn probe_484_pr_schedule() -> Vec<Vec<(usize, Step)>> {
+    use Step::*;
+    vec![
+        vec![
+            (0, act(1, 0, 0, "a", 0)),
+            (2, act(0, 0, 0, "ß", 0)),
+            (0, act(0, 0, 0, "A", 0)),
+            (1, act(1, 0, 0, "a", 0)),
+            (0, act(1, 0, 10946984146616059648, "a", 0)),
+            (0, Backup),
+        ],
+        vec![
+            (0, Rewind),
+            (0, act(2, 584749217343519893, 0, "a", 0)),
+            (0, Connect),
+            (2, Work(0)),
+            (0, Work(0)),
+            (0, act(4, 7060515144603055748, 0, "a", 0)),
+            (0, Answer(0)),
+            (0, act(0, 0, 0, "A", 0)),
+            (0, Work(248128602350464)),
+            (0, Work(0)),
+            (0, act(2, 2677073389278261, 0, "a", 0)),
+            (0, Rewind),
+            (2, act(3, 13714120292099792963, 8654499468257011757, "a", 0)),
+        ],
+    ]
+}
+
+fn probe_484_run(name: &'static str, seed: u64, strategy: impl Strategy<Value = Vec<Vec<(usize, Step)>>>) {
+    let cases: u32 = std::env::var("PROBE_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    let mut runner = TestRunner::new(ProptestConfig {
+        rng_seed: RngSeed::Fixed(seed),
+        failure_persistence: None,
+        test_name: Some(name),
+        ..ProptestConfig::with_cases(cases)
+    });
+    let result = runner.run(&(2..=3usize, strategy), |(devices, phases)| {
+        converge(devices, &phases).map(drop).map_err(|failure| TestCaseError::fail(failure.to_string()))
+    });
+    if let Err(error) = result {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_484_mutate_core() {
+    let seed = std::env::var("PROBE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let strategy = (0..6usize).prop_flat_map(|wait| probe_484_mutate(probe_484_one_phases(true, wait)));
+    probe_484_run("probe_484_mutate_core", seed, strategy);
+}
+
+#[test]
+#[ignore]
+fn probe_484_mutate_pr() {
+    let seed = std::env::var("PROBE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    probe_484_run("probe_484_mutate_pr", seed, probe_484_mutate(probe_484_pr_schedule()));
+}
+
+
+#[test]
+#[ignore]
+fn probe_484_core_matrix() {
+    use Step::*;
+    let actions: Vec<(&str, Vec<Step>)> = vec![
+        ("move file into folder", vec![rename(1, 1, "c.txt")]),
+        ("move folder into folder", vec![rename(2, 1, "ss")]),
+        ("rename folder", vec![rename(0, 0, "A")]),
+        ("move file in, rename folder", vec![rename(1, 1, "c.txt"), rename(0, 0, "A")]),
+        ("move folder into ss", vec![rename(0, 2, "b")]),
+        ("new file in folder", vec![user(1, 0, 1, "C.TXT")]),
+        ("new subfolder, move file into it", vec![user(0, 0, 1, "A"), rename(1, 3, "c.txt")]),
+        ("move file in under the deleted child's name", vec![rename(1, 1, "a")]),
+        ("rename file in place", vec![rename(1, 0, "C.TXT")]),
+        ("move file into ss", vec![rename(1, 2, "c.txt")]),
+        ("delete folder", vec![delete(0)]),
+        ("move file in, then overwrite it", vec![rename(1, 1, "c.txt"), overwrite(1)]),
+    ];
+    let mut failures = Vec::new();
+    let mut runs = 0;
+    for (label, action) in &actions {
+        for wait in 0..6usize {
+            for pos in 0..4usize {
+                for c1 in 0..3usize {
+                    for c2 in 0..4usize {
+                        for third in [false, true] {
+                            let mut p1 = vec![(0, Rewind), (0, overwrite(1)), (0, Connect), (0, Work(0)), (0, Work(0)), (0, delete(1))];
+                            let put = |p1: &mut Vec<(usize, Step)>| p1.extend(action.iter().map(|step| (0, *step)));
+                            if pos == 0 { put(&mut p1); }
+                            p1.push((0, Answer(c1)));
+                            if c2 < 3 { p1.push((0, Answer(c2))); }
+                            for _ in 0..wait { p1.push((0, Work(0))); }
+                            if pos == 1 { put(&mut p1); }
+                            p1.push((0, Rewind));
+                            if pos == 2 { put(&mut p1); }
+                            p1.extend([(0, Connect), (0, Work(0)), (0, Work(0))]);
+                            if pos == 3 { put(&mut p1); }
+                            if third {
+                                p1.extend([(0, Answer(c1)), (0, Work(0)), (0, Work(0)), (0, Rewind), (0, Connect), (0, Work(0))]);
+                            }
+                            let phases = vec![
+                                vec![
+                                    (0, Backup),
+                                    (0, folder("b")),
+                                    (0, user(1, 0, 1, "a")),
+                                    (0, file("c.txt")),
+                                    (0, folder("ss")),
+                                ],
+                                p1,
+                            ];
+                            runs += 1;
+                            if let Err(failure) = converge(2, &phases) {
+                                let kind = match failure { Failure::Broken(_) => "BROKEN", Failure::Diverged(_) => "DIVERGED" };
+                                failures.push(format!("{kind} action={label} wait={wait} pos={pos} c1={c1} c2={c2} third={third}: {}", failure.to_string().lines().next().unwrap_or("")));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("runs {runs}, failures {}", failures.len());
+    for failure in &failures { println!("FAIL {failure}"); }
+}
+
