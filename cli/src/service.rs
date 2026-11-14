@@ -697,17 +697,17 @@ pub async fn converge(
                 Action::Remove => manager.remove(service),
             };
             let mut after = manager.state(service).unwrap_or(before);
-            let spawned = Instant::now()
-                + match (before, after) {
-                    (State::Starting, _) => Duration::ZERO,
-                    (_, State::Starting) => ipc::STARTING,
-                    _ => SPAWN,
-                };
+            let waiting = Instant::now();
+            let budget = |after| match (before, after) {
+                (State::Starting, _) => Duration::ZERO,
+                (_, State::Starting) => ipc::STARTING,
+                _ => SPAWN,
+            };
             let started = |after| match after {
                 State::Starting => false,
                 _ => action != Action::Start || outcome.is_err() || after == State::Running,
             };
-            while !started(after) && Instant::now() < spawned {
+            while !started(after) && waiting.elapsed() < budget(after) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 after = manager.state(service).unwrap_or(after);
             }
@@ -811,26 +811,27 @@ async fn reconcile_with(
     };
     let mut report = converge(manager, &service, folders, off, asked, &daemon).await;
     drop(lock);
-    if report.state != State::Running || folders == 0 {
+    let stopped = report.state == State::Stopped && report.problem.is_none();
+    if folders == 0 || !(report.state == State::Running || stopped) {
         return report;
     }
-    if !answers(paths, ipc::STARTING).await {
-        if let Some(exit) = manager.crashed(&service) {
-            report.state = State::Stopped;
-            report.problem = Some(format!(
-                "its daemon keeps exiting ({exit}); its log: {}",
-                report.log
-            ));
-            return report;
-        }
+    if report.state == State::Running && answers(paths, ipc::STARTING).await {
+        report.blocked = blocked(paths).await;
+        return report;
+    }
+    if let Some(exit) = manager.crashed(&service) {
+        report.state = State::Stopped;
+        report.problem = Some(format!(
+            "its daemon keeps exiting ({exit}); its log: {}",
+            report.log
+        ));
+    } else if !stopped {
         report.problem = Some(format!(
             "it started, but its daemon did not answer within {} seconds; its log: {}",
             ipc::STARTING.as_secs(),
             report.log
         ));
-        return report;
     }
-    report.blocked = blocked(paths).await;
     report
 }
 
@@ -1216,6 +1217,7 @@ fn launchd_disabled(disabled: &str, label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
 
     use super::*;
 
@@ -1486,7 +1488,7 @@ mod tests {
         service_lock: Option<PathBuf>,
         locked_at_start: Cell<Option<bool>>,
         crashed: Option<&'static str>,
-        starting: Cell<u32>,
+        script: RefCell<VecDeque<State>>,
     }
 
     impl Manager for Fake {
@@ -1499,10 +1501,8 @@ mod tests {
         }
 
         fn state(&self, _: &Service) -> Result<State, String> {
-            let starting = self.starting.get();
-            if starting > 0 {
-                self.starting.set(starting - 1);
-                return Ok(State::Starting);
+            if let Some(state) = self.script.borrow_mut().pop_front() {
+                return Ok(state);
             }
             if self.unavailable {
                 return Err("no user bus".to_owned());
@@ -2719,7 +2719,7 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
     async fn a_service_that_never_leaves_starting_is_a_retryable_problem() {
         let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
         let fake = Fake {
-            starting: Cell::new(u32::MAX),
+            script: RefCell::new(VecDeque::from(vec![State::Starting; 1000])),
             ..Fake::default()
         };
         let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
@@ -2739,7 +2739,7 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         let fake = Fake {
             unit: RefCell::new(Some("an older definition".to_owned())),
             running: Cell::new(true),
-            starting: Cell::new(3),
+            script: RefCell::new(VecDeque::from(vec![State::Starting; 3])),
             ..Fake::default()
         };
         let older = Daemon::Running(Some(version("0.0.0-0")));
@@ -2747,9 +2747,43 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         assert_eq!(report.state, State::Running);
         assert_eq!(*fake.unit.borrow(), Some(service.unit()));
         assert_eq!(fake.restarts.get(), 1);
-        fake.starting.set(3);
+        fake.script
+            .replace(VecDeque::from(vec![State::Starting; 3]));
         converge(&fake, &service, 1, false, false, &older).await;
         assert_eq!(fake.restarts.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_service_that_starts_after_a_late_spawn_gets_the_startup_wait() {
+        let service = service(&[]);
+        let script = [State::NotInstalled; 1]
+            .into_iter()
+            .chain([State::Stopped; 10])
+            .chain([State::Starting; 60]);
+        let fake = Fake {
+            script: RefCell::new(script.collect()),
+            ..Fake::default()
+        };
+        let report = converge(&fake, &service, 1, false, false, &Daemon::Absent).await;
+        assert_eq!((report.state, report.started), (State::Running, true));
+        assert_eq!(report.problem, None);
+    }
+
+    #[tokio::test]
+    async fn a_service_that_stops_after_starting_names_its_daemon_exit() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let fake = Fake {
+            script: RefCell::new(VecDeque::from(vec![State::Stopped; 1000])),
+            crashed: Some("exit code 1"),
+            ..Fake::default()
+        };
+        let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
+        assert_eq!(report.state, State::Stopped);
+        let problem = report.problem.clone().unwrap();
+        assert!(
+            problem.starts_with("its daemon keeps exiting (exit code 1); its log: "),
+            "{problem}"
+        );
     }
 
     #[test]
