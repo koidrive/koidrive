@@ -30,6 +30,16 @@ pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
     history
 }
 
+/// What the space held when the device first read the server's tree on a first link. A node another device commits
+/// after that is a change like any other, never a sign that the space already held files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Listing {
+    /// Nothing live besides the root.
+    Empty,
+    /// At least one live file or folder.
+    Live,
+}
+
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
 /// exactly its name and kind, and for a file the same content. A folder also matches a folder R

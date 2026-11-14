@@ -1735,6 +1735,7 @@ impl Folder {
             return Ok(());
         }
         let head = Some(staging.last_seq());
+        let listing = staging.listing();
         let Stream::Replaying(mut staging) =
             std::mem::replace(&mut self.stream, Stream::Following { head })
         else {
@@ -1762,7 +1763,7 @@ impl Folder {
                     now_ms,
                 );
             } else if first_link {
-                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms);
+                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms, listing);
                 engine.recovery_cause = Some(crate::RecoveryCause {
                     trigger: crate::RecoveryTrigger::NoSyncState,
                     restore_point_ms: None,

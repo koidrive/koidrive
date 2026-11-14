@@ -307,3 +307,48 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
     assert_eq!(a.state(), FolderState::UpToDate);
     assert_eq!(b.state(), FolderState::UpToDate);
 }
+
+fn linking_while_another_device_commits(remote: &mut Remote) -> (Site, Device, Site, Device) {
+    let (site_a, mut a) = linked(remote, "a");
+    let site = Site::new(remote, "b");
+    fs::write(site.root.join("Budget.xlsx"), b"written here").unwrap();
+    let mut b = site.start();
+    b.connect(remote);
+    let mut subscribed = None;
+    while let Some(work) = b.work.pop_front() {
+        if let Work::Subscribe(since) = &work {
+            subscribed = Some(since.clone());
+        }
+        b.perform(work, remote).unwrap();
+    }
+    assert!(!b.folder.scanned, "the first scan has not ended");
+    a.create(remote, &site_a.root.join("Slides.pptx"), b"written on another device");
+    let records = (remote.space.resume(&subscribed.expect("b follows the log"))).unwrap();
+    b.event(Event::Changes(records)).unwrap();
+    b.caught_up(remote).unwrap();
+    b.scan_until(|b| b.folder.scanned);
+    (site_a, a, site, b)
+}
+
+#[test]
+fn a_file_another_device_commits_while_a_first_link_scans_asks_nothing() {
+    let mut remote = Remote::new();
+    let (site_a, mut a, site, mut b) = linking_while_another_device_commits(&mut remote);
+    b.rest(&mut remote);
+    let asked: Vec<_> = (shown(&site).into_iter())
+        .map(|question| (question.kind, question.items.into_iter().map(|item| item.path).collect::<Vec<_>>()))
+        .collect();
+    assert_eq!(asked, [], "two files with different names ask nothing");
+    a.pull(&remote);
+    a.rest(&mut remote);
+    let both = [
+        ("Budget.xlsx", "written here"),
+        ("Slides.pptx", "written on another device"),
+    ]
+    .map(|(path, text)| (path.to_owned(), text.to_owned()));
+    assert_eq!(files(&site.root), both);
+    assert_eq!(files(&site_a.root), both);
+    assert_eq!(b.state(), FolderState::UpToDate);
+    assert_eq!(a.state(), FolderState::UpToDate);
+}
+

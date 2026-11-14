@@ -3,7 +3,7 @@
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::{History, Listing};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup};
@@ -1007,7 +1007,7 @@ fn a_discard_answer_does_not_send_another_discarded_file_the_user_changed() {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let first = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f", "g"]);
     assert!(commits.decide(&first.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -1035,7 +1035,7 @@ fn an_answer_to_a_later_first_link_question_is_taken_while_an_earlier_one_waits(
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let first = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f", "g"]);
     assert!(commits.decide(&first.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);

@@ -6,7 +6,7 @@
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Failure, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
-use koidrive_engine::first_link::{History, adopt};
+use koidrive_engine::first_link::{History, Listing, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
@@ -196,7 +196,7 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
     trees.set_remote("r-a".into(), trashed);
     trees.settle();
     let mut commits = Commits::default();
-    commits.first_link(&mut trees, &mut IdGen::new(7), NOW);
+    commits.first_link(&mut trees, &mut IdGen::new(7), NOW, Listing::Live);
     let held: Vec<&String> = (commits.questions().iter())
         .flat_map(|question| question.holds())
         .collect();
@@ -396,7 +396,7 @@ fn linked() -> (Commits, Trees, IdGen) {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     (commits, trees, ids)
 }
@@ -441,12 +441,36 @@ fn a_first_link_to_a_space_with_nothing_live_holds_nothing() {
     let mut trees = trees(&[("l-mine", file(ROOT, "mine", 1))], &[]);
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Empty);
     trees.settle();
     assert!(commits.questions().is_empty());
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create file", "l-mine".to_owned())]
+    );
+}
+
+#[test]
+fn a_first_link_to_a_space_listed_empty_holds_nothing_another_device_added_since() {
+    let mut trees = trees(
+        &[
+            ("l-budget", file(ROOT, "Budget.xlsx", 1)),
+            ("l-slides", file(ROOT, "Slides.pptx", 2)),
+        ],
+        &[("r-slides", file(ROOT, "Slides.pptx", 2))],
+    );
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Empty);
+    trees.settle();
+    assert!(commits.questions().is_empty());
+    assert!(
+        trees.local().get("r-slides").is_some(),
+        "the same Slides.pptx is adopted as the space's node"
+    );
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create file", "l-budget".to_owned())]
     );
 }
 
@@ -630,7 +654,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         &[("r-notes", file(ROOT, "notes", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     assert!(commits.decide(&question(&commits).id, Answer::Publish));
     let created = [("create file", "l-notes".to_owned())];
@@ -860,7 +884,7 @@ fn a_discarded_folder_that_already_holds_a_synced_entry_is_kept_and_sent() {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let mut moved = trees.local().get("r-notes").unwrap().clone();
     moved.shape.parent = "l-new".into();
@@ -890,7 +914,7 @@ fn a_discarded_folder_the_user_moves_a_synced_entry_into_through_a_new_folder_is
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -932,7 +956,7 @@ fn a_discarded_folder_the_user_moves_a_synced_entry_into_is_kept_after_another_d
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -966,7 +990,7 @@ fn a_discarded_folder_holding_an_entry_the_server_trashed_and_s_forgot_is_sent_i
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -1000,7 +1024,7 @@ fn a_discarded_folder_whose_subfolder_the_user_puts_an_entry_in_is_asked_about_a
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -1069,7 +1093,7 @@ fn a_discarded_file_the_user_edits_is_asked_about_again_with_its_folder() {
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -1140,7 +1164,7 @@ fn an_adopted_folder_keeps_its_rules_unknown() {
     trees.set_rules_unknown("l-docs");
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     assert!(
         trees.local().get("r-docs").is_some(),
@@ -1166,7 +1190,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         &[("r-a", file(ROOT, "a", 1))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert_eq!(asked.shown.keys().collect::<Vec<_>>(), ["l-A"]);
@@ -1497,7 +1521,7 @@ fn a_discarded_folder_that_holds_an_entry_the_rules_leave_out_keeps_its_name_and
     );
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -1547,7 +1571,7 @@ fn a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder() {
     let mut trees = trees(&entries, &[("r-notes", file(ROOT, "notes", 9))]);
     let mut commits = Commits::default();
     let mut ids_gen = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids_gen, NOW);
+    commits.first_link(&mut trees, &mut ids_gen, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));

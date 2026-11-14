@@ -19,7 +19,7 @@ Names compare without regard to case or Unicode normalization. Two names in one 
 
 ## The first link compares the folder with the space
 
-If the space holds no live files or folders, the folder's files upload as they are. Otherwise the first sync compares the folder with the space, path by path. Here names must match exactly, including case and Unicode normalization, so `Report.txt` doesn't match `report.txt`:
+If the space holds no live files or folders when sync first reads it, the folder's files upload as they are, and files another device adds after that sync as usual. Otherwise the first sync compares the folder with the space, path by path. Here names must match exactly, including case and Unicode normalization, so `Report.txt` doesn't match `report.txt`:
 
 - A folder that the space also holds at the same path stays, and its contents are compared one by one.
 - A file that the space holds at the same path, with the same content and the same executable bit, stays as it is.

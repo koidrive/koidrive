@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::{History, Listing};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question as engine;
 use koidrive_engine::tree::{
@@ -1345,6 +1345,7 @@ pub(crate) struct Staging {
     highest_page_seq: u64,
     /// The head of the last `CaughtUp`.
     caught_up: Option<u64>,
+    listing: Listing,
     nodes: BTreeMap<String, NodeState>,
     history: Option<(u64, History)>,
 }
@@ -1373,6 +1374,12 @@ impl Staging {
             highest_page_seq: pages.iter().map(|page| page.head_seq).max().unwrap_or(0),
             caught_up: None,
             history: None,
+            listing: match (pages.iter().flat_map(|page| &page.nodes))
+                .any(|node| !node.parent_id.is_empty())
+            {
+                true => Listing::Live,
+                false => Listing::Empty,
+            },
             nodes: pages
                 .into_iter()
                 .flat_map(|page| page.nodes)
@@ -1406,6 +1413,10 @@ impl Staging {
 
     pub fn last_seq(&self) -> u64 {
         self.last.seq
+    }
+
+    pub fn listing(&self) -> Listing {
+        self.listing
     }
 
     /// The last commit replayed, with its commit token, to resume the log from (RFC 0013).
