@@ -843,6 +843,7 @@ fn a_rewind_releases_a_finish_held_at_the_old_history_head() {
         &mut trees,
         0,
         &RecoveryCause::of(RecoveryTrigger::SpaceRewound),
+        &History::new(),
         &mut ids,
         NOW,
     );
@@ -2083,6 +2084,7 @@ fn a_finish_kept_through_a_rewind_takes_the_name_the_rewound_server_marks() {
         &mut trees,
         0,
         &RecoveryCause::of(RecoveryTrigger::SpaceRewound),
+        &History::new(),
         &mut ids,
         NOW,
     );

@@ -9,11 +9,12 @@ use std::fmt::Debug;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
+use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::{CommitsChanges, EffectsChanges, TreesChanges};
 use koidrive_engine::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{
-    ChangeRecord, CommitRecord, CommitResult, Error, NodeState, change_record,
+    ChangeRecord, CommitRecord, CommitResult, Error, NodeState, Resume, change_record,
 };
 
 use super::disk::{Disk, Place, identity};
@@ -203,7 +204,11 @@ pub enum Message {
     },
     /// The server's tree and trash at `head`, with the commit token there, listed for a device
     /// whose R the server is behind.
-    Listing { nodes: Vec<NodeState>, head: Base },
+    Listing {
+        nodes: Vec<NodeState>,
+        head: Base,
+        history: History,
+    },
 }
 
 /// A connection. Breaking it loses every message still on its way.
@@ -229,6 +234,7 @@ pub struct Device {
     pub link: Option<Link>,
     /// Why the device last started a recovery (section 6.4).
     pub recovery: Option<String>,
+    pub recovery_from: Resume,
     pub store_copy: Option<Engine>,
     pub rolled_back: bool,
     pub left: bool,

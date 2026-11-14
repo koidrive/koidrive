@@ -337,7 +337,6 @@ fn rewinds_converge_from_seed_122() {
 }
 
 #[test]
-#[ignore = "a store rollback republishes a download at a name the server has since moved it from (GUN-557)"]
 fn rewinds_converge_from_seed_605() {
     converges_from(test_name!(rewinds_converge_from_seed_605), 605, 4096);
 }

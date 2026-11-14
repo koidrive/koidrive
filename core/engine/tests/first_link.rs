@@ -6,12 +6,12 @@
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Failure, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
-use koidrive_engine::first_link::adopt;
+use koidrive_engine::first_link::{History, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
 
 const ROOT: &str = "root";
@@ -101,6 +101,57 @@ fn local(trees: &Trees) -> Vec<(String, String, String)> {
 }
 
 #[test]
+fn an_entry_a_store_lost_track_of_is_adopted_by_a_place_the_log_shows_its_node_left() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "b", 1))],
+    );
+    let history = History::from([("r-a".into(), vec![file(ROOT, "a", 1)])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), Vec::<String>::new());
+    assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+    assert_eq!(trees.synced().live("r-a"), Some(&file(ROOT, "a", 1)));
+}
+
+#[test]
+fn a_place_the_log_shows_two_nodes_left_with_the_same_bytes_adopts_neither() {
+    for remote in [
+        &[("r-b", file(ROOT, "c", 2))][..],
+        &[("r-a", file(ROOT, "b", 1)), ("r-b", file(ROOT, "c", 2))],
+    ] {
+        let mut trees = trees(&[("l-a", file(ROOT, "a", 1))], remote);
+        let history = History::from([
+            ("r-a".into(), vec![file(ROOT, "a", 1)]),
+            ("r-b".into(), vec![file(ROOT, "a", 1)]),
+        ]);
+        assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"], "{remote:?}");
+    }
+}
+
+#[test]
+fn an_entry_with_bytes_the_server_has_since_replaced_at_its_place_is_held() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "a", 2))],
+    );
+    let history = History::from([("r-a".into(), vec![file(ROOT, "a", 1), file(ROOT, "a", 2)])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"]);
+}
+
+#[test]
+fn a_place_the_log_shows_is_not_adopted_when_s_would_hold_a_cycle() {
+    let mut trees = trees(
+        &[("p", dir(ROOT, "p")), ("l-d", dir("p", "n"))],
+        &[("x", dir(ROOT, "x")), ("p", dir("x", "p"))],
+    );
+    trees.set_synced("x".into(), Some(dir(ROOT, "x")));
+    trees.set_synced("p".into(), Some(dir("x", "p")));
+    trees.settle();
+    let history = History::from([("x".into(), vec![dir("p", "n")])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), ["l-d"]);
+    assert_eq!(trees.synced().check(Names::ByKey), Ok(()));
+}
+
+#[test]
 fn an_entry_the_server_holds_with_the_same_name_and_bytes_is_adopted() {
     let mut trees = trees(
         &[
@@ -112,7 +163,7 @@ fn an_entry_the_server_holds_with_the_same_name_and_bytes_is_adopted() {
             ("r-a", file("r-docs", "a", 1)),
         ],
     );
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert_eq!(
         local(&trees),
         [
@@ -163,7 +214,7 @@ fn a_folder_is_adopted_under_its_pending_name_when_a_file_holds_its_name() {
         ],
     );
     mark(&mut trees, "r-docs", "docs");
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert_eq!(
         local(&trees),
         [("r-docs".into(), ROOT.into(), "docs".into())]
@@ -180,7 +231,7 @@ fn a_folder_is_not_adopted_under_a_name_the_engine_never_gives_as_pending() {
                 ("r-docs", dir(ROOT, name)),
             ],
         );
-        assert_eq!(adopt(&mut trees, false), ["l-docs"], "{name}");
+        assert_eq!(adopt(&mut trees, None), ["l-docs"], "{name}");
     }
 }
 
@@ -193,7 +244,7 @@ fn a_folder_is_not_adopted_under_a_name_a_user_gave_that_looks_pending() {
             ("r-docs", dir(ROOT, "docs (pending)")),
         ],
     );
-    assert_eq!(adopt(&mut trees, false), ["l-docs"]);
+    assert_eq!(adopt(&mut trees, None), ["l-docs"]);
     assert_eq!(
         local(&trees),
         [("l-docs".into(), ROOT.into(), "docs".into())]
@@ -211,7 +262,7 @@ fn a_folder_two_pending_names_could_belong_to_is_held() {
     );
     mark(&mut trees, "r-one", "docs");
     mark(&mut trees, "r-two", "docs");
-    assert_eq!(adopt(&mut trees, false), ["l-docs"]);
+    assert_eq!(adopt(&mut trees, None), ["l-docs"]);
     assert_eq!(
         local(&trees),
         [("l-docs".into(), ROOT.into(), "docs".into())]
@@ -237,7 +288,7 @@ fn a_shared_folder_is_adopted_and_its_children_are_matched_one_by_one() {
             ("r-theirs", file("r-docs", "theirs", 4)),
         ],
     );
-    let mut held = adopt(&mut trees, false);
+    let mut held = adopt(&mut trees, None);
     held.sort();
     assert_eq!(held, ["l-edited", "l-mine"]);
     assert!(trees.local().get("r-docs").is_some());
@@ -265,7 +316,7 @@ fn a_new_folder_a_name_that_only_folds_alike_and_another_kind_are_held() {
             ("r-notes", dir(ROOT, "notes")),
         ],
     );
-    let mut held = adopt(&mut trees, false);
+    let mut held = adopt(&mut trees, None);
     held.sort();
     assert_eq!(held, ["l-new", "l-notes", "l-report"]);
     assert!(trees.synced().iter().next().is_none());
@@ -284,7 +335,7 @@ fn an_excluded_entry_is_neither_adopted_nor_held() {
         &[("r-logs", dir(ROOT, "logs"))],
     );
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.log\n")));
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert!(trees.local().get("r-logs").is_some());
     assert!(trees.local().get("l-cache").is_some());
     assert!(trees.synced().get("l-cache").is_none());

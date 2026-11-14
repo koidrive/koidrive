@@ -67,12 +67,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
+use koidrive_engine::first_link::{self, History};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Error, ListVersions, Move, NodeKind, NodeState, NodeStatus,
-    PrepareUpload, Resume, UploadReceipt, chunk_plan, error, op, op_result, resync_required,
+    PrepareUpload, Resume, UploadReceipt, change_record, chunk_plan, error, op, op_result,
+    resync_required,
 };
 use sha2::{Digest, Sha256};
 
@@ -433,6 +435,10 @@ fn trashed_under(space: &SpaceDo, write: i64, folders: &BTreeSet<&str>) -> bool 
 /// The listing a device whose R the server is behind reads in place of the log: every node of the
 /// server's tree and trash at its head (section 4.4).
 fn listing(space: &SpaceDo) -> Message {
+    listing_with(space, History::new())
+}
+
+fn listing_with(space: &SpaceDo, history: History) -> Message {
     let (commit_id, committed_at_ms) = space.token_at(space.head_seq()).unwrap_or_default();
     Message::Listing {
         nodes: space.nodes(),
@@ -441,7 +447,25 @@ fn listing(space: &SpaceDo) -> Message {
             commit_id,
             committed_at_ms,
         },
+        history,
     }
+}
+
+fn history_since(space: &SpaceDo, from: &Resume, trees: &Trees) -> History {
+    let Ok(records) = space.resume(from) else {
+        return History::new();
+    };
+    let mut log = History::new();
+    for record in records {
+        for change in &record.changes {
+            if let Some(change_record::Change::Node(state)) = &change.change
+                && let Ok((id, node)) = RemoteNode::from_state(state)
+            {
+                log.entry(id).or_default().push(node.shape);
+            }
+        }
+    }
+    first_link::since(trees.remote(), log)
 }
 
 /// The files a write a restore took from the server may end in, until the devices are quiet
@@ -641,6 +665,7 @@ impl World {
                     down: false,
                     link: Some(Link::default()),
                     recovery: None,
+                    recovery_from: Resume::default(),
                     store_copy: None,
                     rolled_back: false,
                     left: false,
@@ -1036,16 +1061,25 @@ impl World {
                 false => "recovery starts after a rewind",
             },
         );
+        let engine = &self.devices[d].engine;
+        let from = Resume {
+            history_id: engine.history.clone(),
+            since_seq: engine.cursor.seq,
+            since_commit_id: engine.cursor.commit_id.clone(),
+            since_committed_at_ms: engine.cursor.committed_at_ms,
+        };
+        let since = history_since(&self.space, &from, &engine.trees);
         let history = self.space.history_id().to_owned();
         let device = &mut self.devices[d];
         device.recovery = Some(why);
+        device.recovery_from = from;
         device
             .engine
             .commits
             .enter_recovery(RecoveryCause::of(trigger));
         device.engine.history = history;
         device.engine.behind = true;
-        let listed = listing(&self.space);
+        let listed = listing_with(&self.space, since);
         if let Some(link) = &mut device.link {
             link.inbox.push(listed);
         }
@@ -1684,10 +1718,15 @@ impl World {
 
     /// The backlog after R's last seq, or the listing when the server is behind R.
     fn resume(&mut self, d: usize) -> Result<Message, Failure> {
-        let engine = &mut self.devices[d].engine;
-        if engine.behind {
-            return Ok(listing(&self.space));
+        let device = &mut self.devices[d];
+        if device.engine.behind {
+            let history = match device.recovering() {
+                true => history_since(&self.space, &device.recovery_from, &device.engine.trees),
+                false => History::new(),
+            };
+            return Ok(listing_with(&self.space, history));
         }
+        let engine = &mut device.engine;
         let resume = Resume {
             history_id: engine.history.clone(),
             since_seq: engine.cursor.seq,
@@ -1797,7 +1836,11 @@ impl World {
             Message::Listing { .. } if !waits => {
                 note(&mut self.seen, "listing arrives twice");
             }
-            Message::Listing { nodes, head } => {
+            Message::Listing {
+                nodes,
+                head,
+                history,
+            } => {
                 note(&mut self.seen, "listing replaces R");
                 let Engine {
                     trees,
@@ -1870,7 +1913,7 @@ impl World {
                         ids,
                         ..
                     } = &mut device.engine;
-                    commits.recover(trees, device_seq, &cause, ids, NOW as u64);
+                    commits.recover(trees, device_seq, &cause, &history, ids, NOW as u64);
                     for (id, node) in trees.local().iter() {
                         let (Some(here), Some(there)) = (
                             node.shape.content.as_ref(),
@@ -3660,7 +3703,14 @@ mod tests {
     fn a_reload_keeps_an_effect_planned_after_a_recovery_applicable() {
         let mut engine = Engine::new("root", "history", 1);
         let cause = RecoveryCause::rewind(4, NOW);
-        (engine.commits).recover(&mut engine.trees, 0, &cause, &mut engine.ids, NOW as u64);
+        (engine.commits).recover(
+            &mut engine.trees,
+            0,
+            &cause,
+            &History::new(),
+            &mut engine.ids,
+            NOW as u64,
+        );
         engine.trees.rules_scanned();
         let folder = RemoteNode {
             shape: Shape {
