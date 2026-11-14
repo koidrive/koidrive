@@ -1908,3 +1908,34 @@ fn a_file_another_device_trashed_with_its_folder_while_the_rules_excluded_it_is_
     run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 200);
     assert!(trees.local().get("x").is_none(), "{:?}", local(&trees));
 }
+
+#[test]
+fn an_unchanged_excluded_subtree_another_device_deleted_is_not_brought_back() {
+    let entries = [("f", dir(ROOT, "folder")), ("c", file("f", "child", 9))];
+    let mut trees = trees(&entries, &entries);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    assert!(commits.questions().is_empty());
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"folder/\n")));
+    for id in ["c", "f"] {
+        let mut node = trees.remote().get(id).unwrap().clone();
+        node.trashed = true;
+        node.meta_rev = 2;
+        trees.set_remote(id.into(), node);
+    }
+    trees.settle();
+    assert!(trees.check().is_ok());
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(
+        sent.is_empty(),
+        "nothing changed locally, but a remote delete is undone: {sent:?}"
+    );
+    let mut effects = Effects::default();
+    let done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    assert!(
+        trees.local().get("c").is_none() && trees.local().get("f").is_none(),
+        "remote deletion did not reach disk: {done:?}"
+    );
+}
