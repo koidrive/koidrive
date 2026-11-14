@@ -739,6 +739,49 @@ fn a_cask_install_hands_the_app_to_homebrew_after_its_login_item_is_gone() {
     assert!(removed(&envelope).contains(&homebrew), "{envelope:#}");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn a_service_started_through_a_cask_link_hands_the_app_to_homebrew() {
+    let machine = Machine::new();
+    machine.profile();
+    let app = machine.path("Applications/Koidrive.app");
+    let helper = machine.copy_koi("Applications/Koidrive.app/Contents/Helpers/koi");
+    machine.script(
+        "Applications/Koidrive.app/Contents/MacOS/Koidrive",
+        "exit 0\n",
+    );
+    let owned = machine.path("custom/Caskroom/koidrive/0.1.0/Koidrive.app");
+    fs::create_dir_all(owned.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&app, &owned).unwrap();
+    let alias = machine.path("custom/bin/koi");
+    fs::create_dir_all(alias.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&helper, &alias).unwrap();
+    machine.script(
+        "custom/bin/brew",
+        &format!(
+            "printf '%s\\n' \"$*\" >> \"$HOME/brew.calls\"\nrm -rf '{}'\n",
+            app.display()
+        ),
+    );
+    let label = format!("dev.koidrive.koi.{}", machine.paths().state_key());
+    machine.write(
+        &format!("Library/LaunchAgents/{label}.plist"),
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array></dict></plist>\n",
+            alias.display()
+        ),
+    );
+
+    let (output, envelope) = machine.uninstall(&helper);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(
+        fs::read_to_string(machine.path("brew.calls")).unwrap_or_default(),
+        "uninstall --cask koidrive\n",
+        "{envelope:#}"
+    );
+}
+
 #[test]
 fn a_failed_homebrew_handoff_names_the_command_that_finishes_it() {
     let machine = Machine::new();

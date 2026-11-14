@@ -170,9 +170,6 @@ impl Install {
             let Ok(resolved) = fs::canonicalize(binary) else {
                 continue;
             };
-            if found.iter().any(|install| install.binary == resolved) {
-                continue;
-            }
             let development = Some(binary) == running.as_ref()
                 && update::is_development_version(env!("CARGO_PKG_VERSION"))
                 && !known
@@ -188,7 +185,18 @@ impl Install {
                     Err(_) => continue,
                 },
             };
-            found.push(install);
+            let homebrew =
+                |method: &Method| matches!(method, Method::Cask { .. } | Method::Formula { .. });
+            match found
+                .iter()
+                .position(|known| known.binary == install.binary)
+            {
+                Some(index) if homebrew(&install.method) && !homebrew(&found[index].method) => {
+                    found[index] = install;
+                }
+                Some(_) => {}
+                None => found.push(install),
+            }
         }
         found
     }
