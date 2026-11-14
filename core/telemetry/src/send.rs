@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::consent::Mode;
 use crate::schema::{EventUuid, HourlyReport, InstallId, SCHEMA};
-use crate::store::{Batch, Store};
+use crate::store::{Batch, OldBatch, Store};
 use crate::system::Environment;
 
 pub const ENDPOINT: &str = "https://tel.koidrive.com";
@@ -98,7 +98,30 @@ pub async fn send(
     mode: Mode,
     hour: u32,
 ) -> io::Result<Sent> {
+    if mode == Mode::Off {
+        return Ok(Sent::Nothing);
+    }
     let mut sent = Sent::Nothing;
+    let token = uploader.map_or("", Uploader::token);
+    for _ in 0..2 {
+        let Some(sending) = store.take_old()? else {
+            break;
+        };
+        let body = old_batch(
+            token,
+            &sending.id,
+            environment,
+            &sending.batch,
+            &sending.uuids,
+        );
+        match deliver(uploader, mode, &body).await {
+            Sent::Later => return Ok(Sent::Later),
+            done => {
+                store.sent_old(sending)?;
+                sent = done;
+            }
+        }
+    }
     for _ in 0..2 {
         match send_one(store, uploader, environment, mode, hour).await? {
             Sent::Nothing => break,
@@ -116,9 +139,6 @@ async fn send_one(
     mode: Mode,
     hour: u32,
 ) -> io::Result<Sent> {
-    if mode == Mode::Off {
-        return Ok(Sent::Nothing);
-    }
     let Some(sending) = store.take(hour)? else {
         return Ok(Sent::Nothing);
     };
@@ -133,22 +153,30 @@ async fn send_one(
         &sending.batch,
         &sending.uuids,
     );
+    let sent = deliver(uploader, mode, &body).await;
+    if sent == Sent::Later {
+        store.give_back(sending)?;
+    } else {
+        store.sent(sending)?;
+    }
+    Ok(sent)
+}
+
+async fn deliver(uploader: Option<&Uploader>, mode: Mode, body: &Value) -> Sent {
     if mode == Mode::Debug {
         eprintln!(
             "[telemetry] {}",
-            serde_json::to_string_pretty(&body).unwrap_or_default()
+            serde_json::to_string_pretty(body).unwrap_or_default()
         );
-        store.sent(sending)?;
-        return Ok(Sent::Printed);
+        return Sent::Printed;
     }
     let Some(uploader) = uploader else {
-        store.give_back(sending)?;
-        return Ok(Sent::Later);
+        return Sent::Later;
     };
-    let sent = match uploader
+    match uploader
         .http
         .post(uploader.url.clone())
-        .json(&body)
+        .json(body)
         .send()
         .await
     {
@@ -164,13 +192,7 @@ async fn send_one(
             tracing::debug!(%error, "telemetry was not sent; trying again later");
             Sent::Later
         }
-    };
-    if sent == Sent::Later {
-        store.give_back(sending)?;
-    } else {
-        store.sent(sending)?;
     }
-    Ok(sent)
 }
 
 /// The body of a PostHog batch request: one `hourly_report` event per hour, timed at the start of its UTC hour, and
@@ -206,6 +228,46 @@ pub fn batch(
         for (event, uuid) in events.iter_mut().zip(uuids) {
             event["uuid"] = json!(uuid.as_str());
         }
+    }
+    json!({ "api_key": token, "historical_migration": false, "batch": events })
+}
+
+fn old_batch(
+    token: &str,
+    id: &InstallId,
+    environment: &Environment,
+    batch: &OldBatch,
+    uuids: &[EventUuid],
+) -> Value {
+    let properties = || {
+        let mut properties = common(id, environment);
+        properties.insert("schema".into(), json!(1));
+        properties.remove("koi_version");
+        properties
+    };
+    let mut events = Vec::new();
+    for report in &batch.days {
+        let mut properties = properties();
+        for (prefix, sums) in [
+            ("c", &report.counters),
+            ("l", &report.levels),
+            ("h", &report.histograms),
+        ] {
+            for (metric, labels) in sums {
+                for (label, value) in labels.as_object().into_iter().flatten() {
+                    properties.insert(format!("{prefix}.{metric}.{label}"), value.clone());
+                }
+            }
+        }
+        events.push(json!({ "event": "daily_report", "properties": properties, "timestamp": time(u64::from(report.day) * 86_400) }));
+    }
+    for event in &batch.events {
+        let mut properties = properties();
+        properties.extend(event.fields.clone());
+        events.push(json!({ "event": event.name, "properties": properties, "timestamp": time(u64::from(event.day) * 86_400) }));
+    }
+    for (event, uuid) in events.iter_mut().zip(uuids) {
+        event["uuid"] = json!(uuid.as_str());
     }
     json!({ "api_key": token, "historical_migration": false, "batch": events })
 }
@@ -480,7 +542,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
         queued(&store, HOUR);
-        let path = dir.path().join("telemetry/queue.json");
+        let path = dir.path().join("telemetry/queue-v2.json");
         let mut queue: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let report = &mut queue["hours"]["489696"];
         report["counters"]["/home/fixture/private"] = json!({ "confidential.txt": 1 });
