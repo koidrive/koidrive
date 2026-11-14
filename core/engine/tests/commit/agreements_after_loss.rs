@@ -910,3 +910,27 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(created_at(&commit), [("x".to_owned(), 1)]);
 }
+
+#[test]
+fn a_resend_into_a_lost_folder_the_server_refused_waits_for_that_folder() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("f", file(ROOT, "a", 1)),
+    ]);
+    trees.set_remote("f".into(), remote_at(file("p", "b", 1), 2));
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.remove_remote("p");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+    let rejected = |reason: &str| OpResult { reject_reason: reason.into(), ..outcome(op_result::Code::Rejected) };
+    acknowledge(&mut commits, &mut trees, vec![rejected("INVALID_NAME"), rejected("NOT_FOUND")]);
+    assert!(commits.clear_problem("f"));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(commits.clear_problem("p"));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+}
