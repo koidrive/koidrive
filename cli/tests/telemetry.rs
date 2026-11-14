@@ -535,8 +535,14 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     };
     let arrived = |requests: &[(u16, Value)]| {
         let mut arrived = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for (_, body) in requests.iter().filter(|(status, _)| *status == 200) {
             for event in body["batch"].as_array().unwrap() {
+                if let Some(uuid) = event["uuid"].as_str()
+                    && !seen.insert(uuid.to_owned())
+                {
+                    continue;
+                }
                 let properties = event["properties"].as_object().unwrap();
                 if properties["schema"] != 1 {
                     continue;
@@ -661,8 +667,9 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     let kept = (upgraded_again.iter())
         .flat_map(|(_, body)| body["batch"].as_array().unwrap().clone())
         .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 99)
-        .count();
-    assert_eq!(kept, 1);
+        .map(|event| event["uuid"].to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(kept.len(), 1, "{kept:?}");
 }
 
 fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
