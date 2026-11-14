@@ -92,7 +92,10 @@ struct Server {
     restored: Vec<Tok>,
     overruled: Vec<Tok>,
     authors: Vec<Option<Dev>>,
+    before_loss: Option<Backup>,
 }
+
+type Backup = (Vec<Record>, Vec<(Tok, Seq)>);
 
 impl Server {
     fn head(&self) -> Seq {
@@ -225,6 +228,7 @@ struct Device {
     r: Node,
     seen: Vec<u8>,
     history: [Vec<(Tok, Seq)>; 2],
+    earlier: Vec<u8>,
     unsent: Unsent,
     by_user: [bool; 2],
     flight: Option<Flight>,
@@ -274,6 +278,7 @@ pub enum Action {
     Answer(Dev),
     Record(Dev),
     Lose(Seq),
+    Unlose,
     Bootstrap(Dev),
 }
 
@@ -306,6 +311,7 @@ pub enum Rules {
     BoundOnly,
     ListedRemovalsInRecovery,
     RemovalTakesListedShape,
+    HighestHeld,
 }
 
 impl Rules {
@@ -367,6 +373,7 @@ impl World {
             r: node,
             seen: vec![0],
             history: [Vec::new(), Vec::new()],
+            earlier: Vec::new(),
             unsent: Unsent::default(),
             by_user: [false; 2],
             flight: None,
@@ -386,6 +393,7 @@ impl World {
                 restored: Vec::new(),
                 overruled: Vec::new(),
                 authors: vec![None],
+                before_loss: None,
             },
             devices: [device.clone(), device],
             budget,
@@ -481,6 +489,9 @@ impl World {
         if budget.losses > 0 {
             for held in 1..self.server.head() {
                 out.push(Action::Lose(held));
+            }
+            if self.server.before_loss.is_some() {
+                out.push(Action::Unlose);
             }
         }
         out
@@ -712,8 +723,17 @@ impl World {
             }
             Action::Lose(held) => {
                 w.budget.losses -= 1;
+                w.server.before_loss =
+                    (w.budget.losses > 0).then(|| (w.server.log.clone(), w.server.copies.clone()));
                 w.server.log.truncate(held as usize);
                 w.server.copies.retain(|(_, seq)| *seq <= held);
+            }
+            Action::Unlose => {
+                w.budget.losses -= 1;
+                (w.server.log, w.server.copies) = w.server.before_loss.take().unwrap();
+                for d in 0..2 {
+                    w.settle(d, rules)?;
+                }
             }
             Action::Bootstrap(d) => w.bootstrap(d, rules)?,
         }
@@ -1303,18 +1323,31 @@ impl World {
         let trash_saw = listing.trashed.and_then(|trash| self.saw(trash, rules));
         let dev = &self.devices[d];
         let own = |token: u8| self.server.authors[token as usize] == Some(d);
-        let common = (dev.seen.iter().zip(&log))
-            .take_while(|(seen, kept)| seen == kept)
-            .count();
-        let bound = (0..common)
-            .rev()
-            .find(|&at| own(log[at]))
-            .map_or(0, |at| at as Seq + 1);
-        let held = if rules.bound_only() {
-            bound
-        } else {
-            common as Seq
+        let pairs = |seen: &[u8]| -> Vec<bool> {
+            (0..log.len())
+                .map(|at| seen.get(at) == Some(&log[at]))
+                .collect()
         };
+        let held_pairs = pairs(&dev.seen);
+        let bound = (0..log.len())
+            .rev()
+            .find(|&at| held_pairs[at] && own(log[at]))
+            .map_or(0, |at| at + 1);
+        let earlier_pairs = pairs(&dev.earlier);
+        let highest = (0..log.len())
+            .rev()
+            .find(|&at| held_pairs[at] || earlier_pairs[at])
+            .map_or(0, |at| at + 1);
+        let kept_at: Vec<bool> = (0..log.len())
+            .map(|at| match rules {
+                _ if rules.bound_only() => at < bound,
+                Rules::HighestHeld => at < highest,
+                _ => held_pairs[at],
+            })
+            .collect();
+        let kept = |seq: Seq| seq == 0 || kept_at.get(seq as usize - 1) == Some(&true);
+        let below = |seq: Seq| (0..=seq).rev().find(|&at| kept(at)).unwrap_or(0);
+        let bound = bound as Seq;
         let placed_here =
             (dev.seen.get(listing.meta_rev as usize - 1)).is_some_and(|&token| own(token));
         let removed_at = (!dev.s.live && dev.s.deleted_here).then_some(dev.s.exist_seq);
@@ -1328,7 +1361,7 @@ impl World {
                 .flatten()
         };
         let listed = |field: Field| at(field, Some(listing.rev(field)), listing.get(field));
-        let known = FIELDS.map(|field| listing.rev(field) <= held || listed(field).is_some());
+        let known = FIELDS.map(|field| kept(listing.rev(field)) || listed(field).is_some());
         let earlier = FIELDS.map(|field| {
             listed(field).is_some_and(|listed| {
                 at(field, None, dev.s.get(field).val).is_none_or(|synced| listed < synced)
@@ -1337,10 +1370,13 @@ impl World {
         let known = |field: Field| known[slot(field)];
         let dev = &mut self.devices[d];
         dev.r = listing;
+        if rules == Rules::HighestHeld {
+            dev.earlier = std::mem::take(&mut dev.seen);
+        }
         dev.seen = log;
         dev.flight = None;
         for copy in &mut dev.copies {
-            if copy.1.is_some_and(|seq| seq > held) {
+            if copy.1.is_some_and(|seq| !kept(seq)) {
                 copy.1 = None;
             }
         }
@@ -1353,17 +1389,17 @@ impl World {
                     field,
                     Agreed {
                         seq: if earlier[slot(field)] {
-                            old.seq.min(held).max(listing.rev(field))
+                            below(old.seq).max(listing.rev(field))
                         } else {
-                            old.seq.min(held)
+                            below(old.seq)
                         },
                         ..old
                     },
                 );
                 let resend = dev.unsent.existence == Some(Author::Own)
-                    && old.seq > held
+                    && !kept(old.seq)
                     && listing.get(field) != old.val
-                    && (!rules.bound_only() || listing.rev(field) <= held || earlier[slot(field)]);
+                    && (!rules.bound_only() || kept(listing.rev(field)) || earlier[slot(field)]);
                 if resend && rules != Rules::DeleteDropsResends {
                     dev.unsent.set(
                         field,
@@ -1372,7 +1408,7 @@ impl World {
                 }
                 continue;
             }
-            if old.seq <= held {
+            if kept(old.seq) {
                 continue;
             }
             if listing.get(field) == old.val && (!old.own || held_as_own) {
@@ -1418,7 +1454,7 @@ impl World {
         let listed = listing.trashed.is_none();
         let view = [dev.s.pos.val, dev.s.content.val];
         let covered = rules == Rules::TrashSettlesDelete || trash_saw == Some(view);
-        let lost_delete = !dev.s.live && (listed || !covered) && dev.s.exist_seq > held;
+        let lost_delete = !dev.s.live && (listed || !covered) && !kept(dev.s.exist_seq);
         if lost_delete && matches!(dev.l, Local::Gone(_)) && dev.unsent.existence.is_none() {
             dev.unsent.existence = Some(if dev.s.deleted_here {
                 Author::Own
@@ -1565,13 +1601,49 @@ impl World {
                     Tok(index as u8)
                 )
             });
-        lost.or_else(|| {
-            if rules == Rules::OldServer {
-                None
-            } else {
-                self.undone_delete(rules)
+        static COPIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let copies = *COPIES.get_or_init(|| std::env::var("MODEL_COPIES").is_ok());
+        lost.or_else(|| copies.then(|| self.spurious_copy()).flatten())
+            .or_else(|| {
+                if rules == Rules::OldServer {
+                    None
+                } else {
+                    self.undone_delete(rules)
+                }
+            })
+    }
+
+    fn spurious_copy(&self) -> Option<Broken> {
+        let follows = |later: Tok, earlier: Tok| {
+            let mut at = later;
+            for _ in 0..self.values.len() {
+                let value = self.values[at.0 as usize];
+                if value.author.is_none() {
+                    return false;
+                }
+                at = value.content;
+                if at == earlier {
+                    return true;
+                }
             }
-        })
+            false
+        };
+        let (copy, _) = self.server.copies.iter().find(|&&(copy, _)| {
+            let author = self.values[copy.0 as usize].author;
+            !(0..self.values.len()).any(|index| {
+                let other = Tok(index as u8);
+                let value = self.values[index];
+                value.field == Field::Content
+                    && value.author.is_some()
+                    && value.author != author
+                    && value.renamed_from.is_none()
+                    && !follows(other, copy)
+                    && !follows(copy, other)
+            })
+        })?;
+        Some(format!(
+            "the conflict copy of {copy:?} has no concurrent change by another user"
+        ))
     }
 
     fn undone_delete(&self, rules: Rules) -> Option<Broken> {

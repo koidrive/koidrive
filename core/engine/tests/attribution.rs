@@ -83,6 +83,7 @@ fn rules(name: &str) -> Rules {
         "RevivalMarksPosition" => Rules::RevivalMarksPosition,
         "BoundOnly" => Rules::BoundOnly,
         "RemovalTakesListedShape" => Rules::RemovalTakesListedShape,
+        "HighestHeld" => Rules::HighestHeld,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         other => panic!("no rules {other}"),
     }
@@ -174,7 +175,7 @@ fn refuted(rules: Rules, budgets: &[[u8; 10]]) -> Option<Counterexample> {
             deep.broken.is_some()
         );
         let broken = deep.broken?;
-        let shortest = if deep.states < 20_000_000 {
+        let shortest = if deep.states < 2_000_000 {
             check(budget(n), rules).broken
         } else {
             None
@@ -339,6 +340,12 @@ fn refute_listed_removals_in_recovery() {
 #[ignore]
 fn refute_removal_takes_listed_shape() {
     refute(Rules::RemovalTakesListedShape);
+}
+
+#[test]
+#[ignore]
+fn refute_highest_held() {
+    refute(Rules::HighestHeld);
 }
 
 fn exhaustive(n: [u8; 10], rules: Rules) {
