@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Restores a person asks for (docs/design/sync-engine.md sections 2.6, 2.7, 4.2 and 6.3), on
-//! hand-built trees and results: the `Restore` op a commit carries for each, what its result does
-//! to the trees, and how a restore ends or waits when the commit is refused, lost or halted.
-
 use koidrive_engine::classify::{Class, Trees};
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects};
@@ -17,7 +13,6 @@ use koidrive_proto::v1::{self as proto, CommitResult, OpResult, Welcome, error, 
 const NOW: u64 = 1_794_268_740_000;
 const HISTORY: &str = "history";
 
-/// A node, version or restore ID.
 fn id(n: u128) -> String {
     uuid_v7(1, n)
 }
@@ -75,10 +70,8 @@ fn trashed(shape: Shape) -> RemoteNode {
     }
 }
 
-/// A node's L, S and R.
 type Row = (String, Option<Shape>, Option<Shape>, Option<RemoteNode>);
 
-/// Trees from (node, L, S, R) rows.
 fn trees(nodes: &[Row]) -> Trees {
     let mut trees = Trees::new(root());
     for (ino, (id, l, s, r)) in nodes.iter().enumerate() {
@@ -104,18 +97,15 @@ fn trees(nodes: &[Row]) -> Trees {
     trees
 }
 
-/// The same shape in L, S and R.
 fn synced(id: String, shape: Shape) -> Row {
     let remote = remote(shape.clone());
     (id, Some(shape.clone()), Some(shape), Some(remote))
 }
 
-/// A node only R holds, in the trash.
 fn in_trash(id: String, shape: Shape) -> Row {
     (id, None, None, Some(trashed(shape)))
 }
 
-/// A file only L holds: created here and not sent yet.
 fn created(id: String, name: &str) -> Row {
     (id, Some(file(&root(), name, 9)), None, None)
 }
@@ -162,7 +152,6 @@ fn rejected(reason: &str) -> OpResult {
     }
 }
 
-/// Receives `results` for the commit in flight and acknowledges it with R at its seq.
 fn acknowledge(commits: &mut Commits, trees: &mut Trees, results: Vec<OpResult>) {
     let result = CommitResult {
         seq: 1,
@@ -199,7 +188,6 @@ fn ended(id: &str, intent: &RestoreIntent, outcome: Outcome) -> Resolved {
     }
 }
 
-/// The store's round trip: the state as it is saved, loaded again.
 fn reload(commits: &Commits) -> Commits {
     let loaded = Commits::from_state(commits.state()).unwrap();
     assert_eq!(&loaded, commits);
@@ -427,8 +415,6 @@ fn a_restore_follows_the_edit_of_its_own_file() {
     let commit = build(&mut commits, &mut together, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update(&n, 3), restore_op(&intent)]);
 
-    // The commit did not fit, so the next ones hold one op: the edit goes first, and the
-    // restore waits for the commit after it.
     assert_eq!(
         refuse(&mut commits, &mut together, error::Code::LimitExceeded),
         Failure::Split
@@ -481,9 +467,6 @@ fn a_restore_waits_while_its_node_is_left_out_of_planning() {
 
 #[test]
 fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
-    // The file was renamed to g and rewritten on the server, and the disk has both. S cannot
-    // take the name yet, because it still has the folder that held g, which is parked on disk
-    // and on its way to k.
     let (n, m, v) = (id(1), id(2), id(50));
     let downloaded = file(&root(), "g", 1);
     let rows = [
@@ -788,7 +771,6 @@ fn a_lost_response_resends_the_same_restore_once() {
     commits.restore(request.clone(), intent.clone());
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
 
-    // The process stops before the response arrives. The server counts the commit (w = a + 1).
     let mut commits = reload(&commits);
     assert_eq!(commits.connected(&welcome(1)), Reconnect::Resend);
     assert_eq!(
@@ -813,8 +795,7 @@ fn a_lost_response_resends_the_same_restore_once() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
-/// The named scenario of section 7.5, as far as the engine goes before recovery itself exists: a
-/// commit with a `Restore` op has an unknown outcome when the history changes. The commit and the
+/// A commit with a `Restore` op has an unknown outcome when the history changes. The commit and the
 /// restore are kept as the evidence recovery needs, and nothing sends the restore again.
 #[test]
 fn restore_intent_in_flight() {
@@ -879,7 +860,6 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
     let refused = Outcome::Rejected(Rejection::ReadOnly);
     let (first, second) = (from_trash(&id(1)), from_trash(&id(2)));
 
-    // Queued, then the Welcome says read-only. A later request ends at once.
     let mut commits = Commits::default();
     commits.restore(id(100), first.clone());
     assert_eq!(commits.connected(&read_only), Reconnect::Idle);
@@ -894,7 +874,6 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
         ended(&id(101), &second, refused.clone())
     );
 
-    // The server refuses the commit as read-only: nothing of it was applied.
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let mut trees = trees(&[]);
     commits.restore(id(100), first.clone());
@@ -966,7 +945,6 @@ fn two_requests_for_the_same_restore_are_sent_and_resolved_one_each() {
     commits.restore(id(101), intent.clone());
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(first.ops.len(), 1);
-    // An equal request with an earlier ID arrives while the first is in flight.
     commits.restore(id(100), intent.clone());
     let mut commits = reload(&commits);
     acknowledge(

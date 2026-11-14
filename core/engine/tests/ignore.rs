@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Excluded nodes (docs/design/sync-engine.md section 5.10), on hand-built trees: the rules of
-//! `.koiignore` files, the built-in exclusions and the device-local list decide which nodes this
-//! device leaves alone, and becoming excluded never plans a delete or a removal.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::{Origin, Trees, Waiting};
@@ -76,7 +72,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
     }
 }
 
-/// A node's L, S and R.
 type Row = (&'static str, Option<Shape>, Option<Shape>, Option<Shape>);
 
 fn trees(nodes: &[Row]) -> Trees {
@@ -94,12 +89,10 @@ fn trees(nodes: &[Row]) -> Trees {
     trees
 }
 
-/// The same shape in L, S and R.
 fn synced(id: &'static str, shape: Shape) -> Row {
     (id, Some(shape.clone()), Some(shape.clone()), Some(shape))
 }
 
-/// A node only R holds.
 fn incoming(id: &'static str, shape: Shape) -> Row {
     (id, None, None, Some(shape))
 }
@@ -117,7 +110,6 @@ fn ops(trees: &mut Trees) -> Vec<op::Op> {
     ops.into_iter().map(|op| op.op.unwrap()).collect()
 }
 
-/// Runs the effects until none is left and returns each with its node, in order.
 fn effects(trees: &mut Trees) -> Vec<(String, Effect)> {
     let (mut effects, mut ids, mut done) = (Effects::default(), IdGen::new(2), Vec::new());
     loop {
@@ -341,9 +333,6 @@ fn a_file_renamed_to_an_ignored_name_stays_on_the_server_as_it_was() {
     assert_eq!(effects(&mut trees), [], "its local copy is left as it is");
 }
 
-/// Another entry takes the name of a folder L keeps for its copy in an ignored folder. The folder and the file in it
-/// leave L and stay excluded, also after a restart. Each takes part in sync again once an entry with its identity is
-/// placed, or once R holds it trashed.
 #[test]
 fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_trashed() {
     let mut trees = trees(&[
@@ -394,7 +383,6 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
     );
 }
 
-/// A node that R does not hold live has nothing to keep on the server, so it leaves L without a record.
 #[test]
 fn a_displaced_node_r_does_not_hold_live_is_not_recorded() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
@@ -696,8 +684,6 @@ fn a_parked_node_whose_old_name_another_node_took_follows_r_into_the_folder_the_
     assert!(trees.excluded("old"));
 }
 
-/// A parked folder whose old name "docs" another node took, and whose R position the rules now exclude, with an
-/// excluded file in it.
 fn parked_excluded_folder() -> (Trees, LocalNode) {
     let mut trees = trees(&[
         (
@@ -740,9 +726,6 @@ fn a_parked_folder_the_rules_now_exclude_frees_its_name_in_s_with_what_it_holds(
     );
 }
 
-/// The child sorts before its folder, so settling classifies it before it drops the folder from S with the child: in
-/// sync, which takes it out of the dirty set, or edited. The child's S entry is gone, so it is classified again, once,
-/// and the state loads.
 #[test]
 fn a_child_settled_before_its_folder_leaves_s_is_classified_again() {
     for digest in [1, 2] {
@@ -945,8 +928,6 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
     assert_eq!(effects(&mut trees), []);
 }
 
-/// A case-sensitive volume holds folders whose names differ only in case, and L holds them as two
-/// nodes. The rules of one being unknown holds nothing below the other.
 #[test]
 fn a_folder_whose_rules_are_unknown_holds_nothing_below_its_namesake_in_another_case() {
     let mut trees = trees(&[
@@ -961,8 +942,6 @@ fn a_folder_whose_rules_are_unknown_holds_nothing_below_its_namesake_in_another_
     assert!(!trees.held("readable"));
 }
 
-/// Reading the rules of one of two folders whose names differ only in case says nothing about the
-/// rules of the other, which stay unknown.
 #[test]
 fn reading_a_folder_keeps_the_hold_of_its_namesake_in_another_case() {
     let mut trees = trees(&[
@@ -977,8 +956,6 @@ fn reading_a_folder_keeps_the_hold_of_its_namesake_in_another_case() {
     assert!(trees.held("unknown"));
 }
 
-/// A folder L no longer holds has no rules on this disk, so the nodes S and R still place below it
-/// are planned again, and the deletion of the folder can be sent.
 #[test]
 fn the_hold_of_a_folder_ends_when_it_leaves_l() {
     let mut trees = trees(&[
