@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
@@ -31,30 +31,31 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     }
     recorder.count(Counter::CpuMilliseconds, 4567);
     let pending = recorder.take();
-    let expected = serde_json::to_value(&pending.days[&koidrive_telemetry::today()]).unwrap();
+    let hour = *pending.hours.keys().next().unwrap();
+    let expected = serde_json::to_value(&pending.hours[&hour]).unwrap();
     let store = Store::new(&home.path().join("state/koidrive"));
     store.absorb(pending).unwrap();
-    let queue = home.path().join("state/koidrive/telemetry/queue.json");
+    let queue = home.path().join("state/koidrive/telemetry/queue-v2.json");
     let mut value: Value = serde_json::from_slice(&std::fs::read(&queue).unwrap()).unwrap();
-    let day = &mut value["days"][koidrive_telemetry::today().to_string()];
+    let report = &mut value["hours"][hour.to_string()];
     let secrets = [
         home.path().display().to_string(),
         "private-name.txt".into(),
         "private-space-id".into(),
         "1794527123456".into(),
     ];
-    day["path"] = json!(secrets[0]);
-    day["name"] = json!(secrets[1]);
-    day["id"] = json!(secrets[2]);
-    day["committed_at_ms"] = json!(1794527123456u64);
-    day["counters"]["private-space-id"] = json!({ "private-name.txt": 1794527123456u64 });
-    day["counters"]["sync"]["unfinished"] = json!(2);
-    day["histograms"]["first_sync_ms"]["private-space-id"] =
+    report["path"] = json!(secrets[0]);
+    report["name"] = json!(secrets[1]);
+    report["id"] = json!(secrets[2]);
+    report["committed_at_ms"] = json!(1794527123456u64);
+    report["counters"]["private-space-id"] = json!({ "private-name.txt": 1794527123456u64 });
+    report["counters"]["sync"]["unfinished"] = json!(2);
+    report["histograms"]["first_sync_ms"]["private-space-id"] =
         json!({"shift": 10, "buckets": vec![0;16], "count": 1, "sum": 1794527123456u64});
-    day["histograms"]["syncing_ms"]["active_age"] =
+    report["histograms"]["syncing_ms"]["active_age"] =
         json!({"shift": 10, "buckets": vec![0;16], "count": 1, "sum": 1794527123456u64});
     for metric in ["first_sync_ms", "remote_apply_ms", "syncing_ms"] {
-        for histogram in day["histograms"][metric]
+        for histogram in report["histograms"][metric]
             .as_object_mut()
             .unwrap()
             .values_mut()
@@ -183,7 +184,7 @@ fn a_command_run_with_reports_on_is_counted_by_name_only() {
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
     let report = &body["batch"][0];
-    assert_eq!(report["event"], "daily_report");
+    assert_eq!(report["event"], "hourly_report");
     assert_eq!(report["properties"]["c.command.telemetry"], 1);
     assert!(
         !preview.contains(&home.path().display().to_string()),
@@ -228,7 +229,7 @@ fn off_deletes_the_id_and_what_waits_and_stays_off() {
     assert!(
         !home
             .path()
-            .join("state/koidrive/telemetry/queue.json")
+            .join("state/koidrive/telemetry/queue-v2.json")
             .exists()
     );
 }
@@ -305,21 +306,21 @@ fn reset_draws_a_new_id() {
 }
 
 #[test]
-fn every_daemon_start_sends_the_reports_of_past_days() {
+fn every_daemon_start_sends_the_reports_of_past_hours() {
     use koidrive_telemetry::schema::{Command as Name, Counter};
     use koidrive_telemetry::{Recorder, Store};
 
     let home = tempfile::tempdir().unwrap();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let store = Store::new(&home.path().join("state/koidrive"));
-    let (url, bodies) = posthog();
-    let today = koidrive_telemetry::today();
-    for (day, name, property) in [
-        (today - 1, Name::Folder, "c.command.folder"),
-        (today - 2, Name::Space, "c.command.space"),
+    let (url, bodies) = posthog(0);
+    let hour = koidrive_telemetry::this_hour();
+    for (hour, name, property) in [
+        (hour - 1, Name::Folder, "c.command.folder"),
+        (hour - 2, Name::Space, "c.command.space"),
     ] {
         let recorder = Recorder::on();
-        recorder.count_on(day, Counter::Command(name), 1);
+        recorder.count_on(hour, Counter::Command(name), 1);
         store.absorb(recorder.take()).unwrap();
         let vars = [
             ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
@@ -331,7 +332,7 @@ fn every_daemon_start_sends_the_reports_of_past_days() {
             .spawn()
             .expect("run koi");
         let body = bodies.recv_timeout(Duration::from_secs(30));
-        let queue = home.path().join("state/koidrive/telemetry/queue.json");
+        let queue = home.path().join("state/koidrive/telemetry/queue-v2.json");
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while std::fs::read_to_string(&queue).is_ok_and(|queue| queue.contains("\"out\""))
             && std::time::Instant::now() < deadline
@@ -346,37 +347,334 @@ fn every_daemon_start_sends_the_reports_of_past_days() {
         let body = body.expect("the daemon sent nothing as it started");
         let events = body["batch"].as_array().unwrap();
         assert_eq!(events.len(), 1, "{body}");
-        assert_eq!(events[0]["event"], "daily_report", "{body}");
+        assert_eq!(events[0]["event"], "hourly_report", "{body}");
         assert_eq!(events[0]["properties"][property], 1, "{body}");
         assert_eq!(events[0]["properties"]["client"], "cli_daemon", "{body}");
     }
 }
 
-fn posthog() -> (String, mpsc::Receiver<serde_json::Value>) {
+#[test]
+fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops() {
+    use koidrive_telemetry::schema::{Event, SourceFile};
+    use koidrive_telemetry::{Pending, Store};
+
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let store = Store::new(&home.path().join("state/koidrive"));
+    let today = koidrive_telemetry::now() / 86_400 * 86_400;
+    let happen = |at: u64, line: u32| {
+        let event = Event::Panic {
+            at,
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line,
+        };
+        let pending = Pending {
+            events: vec![event],
+            ..Pending::default()
+        };
+        store.absorb(pending).unwrap();
+    };
+    let queue = home.path().join("state/koidrive/telemetry/queue-v2.json");
+    let settled = || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while std::fs::read_to_string(&queue).is_ok_and(|queue| queue.contains("\"out\""))
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let (url, bodies) = posthog(1);
+    happen(today + 3_725, 1);
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+    ];
+    let mut daemon = command(home.path(), &["_daemon"], &vars)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run koi");
+    let started = Instant::now();
+    let body = bodies.recv_timeout(Duration::from_secs(90));
+    let waited = started.elapsed();
+    settled();
+    happen(today + 3_726, 2);
+    Command::new("kill")
+        .args(["-TERM", &daemon.id().to_string()])
+        .status()
+        .unwrap();
+    let stopping = bodies.recv_timeout(Duration::from_secs(30));
+    daemon.wait().unwrap();
+
+    let body = body.expect("the daemon did not send again after its first send failed");
+    assert!(waited <= Duration::from_secs(75), "it waited {waited:?}");
+    let panics = |body: &serde_json::Value| {
+        (body["batch"].as_array().unwrap().iter())
+            .filter(|event| event["event"] == "panic")
+            .map(|event| {
+                let line = event["properties"]["line"].as_u64().unwrap();
+                let at = event["timestamp"].as_str().unwrap();
+                (line, at[at.len() - 10..].to_owned())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(panics(&body), [(1, "T01:02:05Z".to_owned())], "{body}");
+    let stopping = stopping.expect("the daemon did not send as it stopped");
+    assert_eq!(
+        panics(&stopping),
+        [(2, "T01:02:06Z".to_owned())],
+        "{stopping}"
+    );
+}
+
+#[test]
+fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade() {
+    use koidrive_telemetry::schema::{Event, SourceFile};
+    use koidrive_telemetry::{Pending, Store};
+    use serde_json::{Value, json};
+
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let dir = home.path().join("state/koidrive/telemetry");
+    let settings: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+    let id = settings["install_id"].clone();
+    let uuid = |release: u64, n: u64| format!("00000000-0000-4000-8000-{release:06x}{n:06x}");
+    let alpha5 = |release: u64| {
+        json!({
+            "days": {
+                "20770": {
+                    "day": 20770,
+                    "counters": {
+                        "command": { "status": release, "Alice Notes": 1 },
+                        "/home/alice/private": { "confidential.txt": 1 },
+                    },
+                    "levels": { "/home/alice/private": { "confidential.txt": 1 } },
+                },
+                "20771": { "day": 20771, "counters": { "command": { "folder": release } } },
+            },
+            "events": [{
+                "type": "panic", "day": 20771, "file": "cli/src/main.rs", "line": release,
+                "message": "secret error text from /home/alice/private",
+            }],
+            "out": {
+                "id": id,
+                "batch": {
+                    "days": [{ "day": 20769, "counters": { "command": { "space": release } } }],
+                    "events": [{
+                        "type": "setup_step", "day": 20769, "flow": "cloudflare", "step": "r2_checkout",
+                        "outcome": "failed", "seconds_magnitude": release,
+                    }],
+                },
+                "uuids": [uuid(release, 1), uuid(release, 2)],
+            },
+        })
+    };
+    let records = |release: u64| {
+        let mut records = [
+            (
+                "daily_report",
+                "c.command.space",
+                "2026-11-12",
+                Some(uuid(release, 1)),
+            ),
+            (
+                "setup_step",
+                "seconds_magnitude",
+                "2026-11-12",
+                Some(uuid(release, 2)),
+            ),
+            ("daily_report", "c.command.status", "2026-11-13", None),
+            ("daily_report", "c.command.folder", "2026-11-14", None),
+            ("panic", "line", "2026-11-14", None),
+        ]
+        .map(|(event, property, day, uuid)| {
+            let at = format!("{day}T00:00:00Z");
+            (event.to_owned(), property.to_owned(), release, at, uuid)
+        })
+        .to_vec();
+        records.sort();
+        records
+    };
+    let arrived = |requests: &[(u16, Value)]| {
+        let mut arrived = Vec::new();
+        for (_, body) in requests.iter().filter(|(status, _)| *status == 200) {
+            for event in body["batch"].as_array().unwrap() {
+                let properties = event["properties"].as_object().unwrap();
+                if properties["schema"] != 1 {
+                    continue;
+                }
+                assert!(!properties.contains_key("koi_version"), "{event}");
+                let (property, release) = [
+                    "c.command.space",
+                    "c.command.status",
+                    "c.command.folder",
+                    "seconds_magnitude",
+                    "line",
+                ]
+                .into_iter()
+                .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
+                .unwrap();
+                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
+                arrived.push((
+                    event["event"].as_str().unwrap().to_owned(),
+                    property,
+                    release,
+                    event["timestamp"].as_str().unwrap().to_owned(),
+                    uuid.starts_with("00000000-").then_some(uuid),
+                ));
+            }
+        }
+        arrived.sort();
+        arrived
+    };
+    let old_queue = dir.join("queue.json");
+    let run = |failures: usize| {
+        let (url, requests) = posthog_answering(failures);
+        let vars = [
+            ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+            ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+        ];
+        let mut daemon = command(home.path(), &["_daemon"], &vars)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("run koi");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while old_queue.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Command::new("kill")
+            .args(["-TERM", &daemon.id().to_string()])
+            .status()
+            .unwrap();
+        daemon.wait().unwrap();
+        assert!(
+            !old_queue.exists(),
+            "the earlier release's queue is still there"
+        );
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        for (_, body) in &requests {
+            let text = body.to_string().to_lowercase();
+            assert!(
+                !text.contains("alice") && !text.contains("confidential"),
+                "{body}"
+            );
+        }
+        requests
+    };
+    let uuids = |body: &Value| {
+        (body["batch"].as_array().unwrap().iter())
+            .map(|event| event["uuid"].clone())
+            .collect::<Vec<_>>()
+    };
+
+    std::fs::write(&old_queue, serde_json::to_vec(&alpha5(1)).unwrap()).unwrap();
+    let status: Value = serde_json::from_str(&stdout(&koi(
+        home.path(),
+        &["--json", "telemetry", "status"],
+        &[],
+    )))
+    .unwrap();
+    assert_eq!(
+        (
+            &status["data"]["waiting_days"],
+            &status["data"]["waiting_events"]
+        ),
+        (&json!(3), &json!(2)),
+        "{status}"
+    );
+    let preview: Value =
+        serde_json::from_str(&stdout(&koi(home.path(), &["telemetry", "preview"], &[]))).unwrap();
+    let mut previewed = arrived(&[(200, preview.clone())]);
+    for record in &mut previewed {
+        assert_eq!(record.4, None, "{preview}");
+    }
+    let mut expected = records(1);
+    for record in &mut expected {
+        record.4 = None;
+    }
+    expected.sort();
+    previewed.sort();
+    assert_eq!(previewed, expected);
+    assert!(
+        !preview.to_string().to_lowercase().contains("alice"),
+        "{preview}"
+    );
+    let upgraded = run(1);
+    assert_eq!(upgraded[0].0, 503);
+    assert_eq!(uuids(&upgraded[0].1), uuids(&upgraded[1].1));
+    assert_eq!(arrived(&upgraded), records(1));
+
+    let pending = Pending {
+        events: vec![Event::Panic {
+            at: koidrive_telemetry::now(),
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 99,
+        }],
+        ..Pending::default()
+    };
+    Store::new(&home.path().join("state/koidrive"))
+        .absorb(pending)
+        .unwrap();
+    std::fs::write(&old_queue, serde_json::to_vec(&alpha5(2)).unwrap()).unwrap();
+    let upgraded_again = run(0);
+    assert_eq!(arrived(&upgraded_again), records(2));
+    let kept = (upgraded_again.iter())
+        .flat_map(|(_, body)| body["batch"].as_array().unwrap().clone())
+        .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 99)
+        .count();
+    assert_eq!(kept, 1);
+}
+
+fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (sender, bodies) = mpsc::channel();
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
+        for stream in listener.incoming().skip(dropped) {
             let mut stream = stream.unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line.trim().is_empty() {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let _ = sender.send(serde_json::from_slice(&body).unwrap());
+            let _ = sender.send(request_body(&stream));
             let response = "HTTP/1.1 200 OK\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{\"status\":\"Ok\"}";
             stream.write_all(response.as_bytes()).unwrap();
         }
     });
     (url, bodies)
+}
+
+fn posthog_answering(failures: usize) -> (String, mpsc::Receiver<(u16, serde_json::Value)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, requests) = mpsc::channel();
+    std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().enumerate() {
+            let mut stream = stream.unwrap();
+            let body = request_body(&stream);
+            let status = if index < failures { 503 } else { 200 };
+            let _ = sender.send((status, body));
+            let response = format!(
+                "HTTP/1.1 {status} X\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{{\"status\":\"Ok\"}}"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    (url, requests)
+}
+
+fn request_body(stream: &std::net::TcpStream) -> serde_json::Value {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    serde_json::from_slice(&body).unwrap()
 }

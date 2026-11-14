@@ -678,7 +678,7 @@ fn complete(home: &Home, text: &str) {
     let rendered = rendered(&fs::read(home.path().join("terminal.ansi")).unwrap());
     for visible in [
         "Preview: koi telemetry preview. Turn off: koi telemetry off.",
-        "Reports include usage counts, crash locations, daily sync totals, OS, and Koidrive version.",
+        "Reports include usage counts, crash locations, hourly sync totals, OS, and Koidrive version.",
         "No file names, paths, contents, error messages, server address, or account.",
         "This device is connected",
         "~/Koidrive is linked",

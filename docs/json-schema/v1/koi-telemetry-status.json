@@ -777,12 +777,18 @@
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "waiting_hours": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
         "mode",
         "source",
         "install_id",
+        "waiting_hours",
         "waiting_days",
         "waiting_events",
         "sends"

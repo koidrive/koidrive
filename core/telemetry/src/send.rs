@@ -8,8 +8,8 @@ use serde_json::{Map, Value, json};
 use url::Url;
 
 use crate::consent::Mode;
-use crate::schema::{DailyReport, EventUuid, InstallId, SCHEMA};
-use crate::store::{Batch, Store};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId, SCHEMA};
+use crate::store::{Batch, OldBatch, Store};
 use crate::system::Environment;
 
 pub const ENDPOINT: &str = "https://tel.koidrive.com";
@@ -88,19 +88,58 @@ impl Uploader {
     }
 }
 
-/// Sends what the queue holds for days before `today`, with every event. A failure to send leaves it in the queue,
-/// and so does cancelling the send before an answer; only a failure to read or write the queue is an error.
+/// Sends what the queue holds for hours before `hour`, with every event. A failure to send leaves it in the queue,
+/// and so does cancelling the send before an answer; only a failure to read or write the queue is an error. A batch
+/// that went again after a failure is followed by one with what was queued meanwhile.
 pub async fn send(
     store: &Store,
     uploader: Option<&Uploader>,
     environment: &Environment,
     mode: Mode,
-    today: u32,
+    hour: u32,
 ) -> io::Result<Sent> {
     if mode == Mode::Off {
         return Ok(Sent::Nothing);
     }
-    let Some(sending) = store.take(today)? else {
+    let mut sent = Sent::Nothing;
+    let token = uploader.map_or("", Uploader::token);
+    for _ in 0..2 {
+        let Some(sending) = store.take_old()? else {
+            break;
+        };
+        let body = old_batch(
+            token,
+            &sending.id,
+            environment,
+            &sending.batch,
+            &sending.uuids,
+        );
+        match deliver(uploader, mode, &body).await {
+            Sent::Later => return Ok(Sent::Later),
+            done => {
+                store.sent_old(sending)?;
+                sent = done;
+            }
+        }
+    }
+    for _ in 0..2 {
+        match send_one(store, uploader, environment, mode, hour).await? {
+            Sent::Nothing => break,
+            next @ (Sent::Accepted | Sent::Printed) => sent = next,
+            failed => return Ok(failed),
+        }
+    }
+    Ok(sent)
+}
+
+async fn send_one(
+    store: &Store,
+    uploader: Option<&Uploader>,
+    environment: &Environment,
+    mode: Mode,
+    hour: u32,
+) -> io::Result<Sent> {
+    let Some(sending) = store.take(hour)? else {
         return Ok(Sent::Nothing);
     };
     if sending.batch.is_empty() {
@@ -114,22 +153,30 @@ pub async fn send(
         &sending.batch,
         &sending.uuids,
     );
+    let sent = deliver(uploader, mode, &body).await;
+    if sent == Sent::Later {
+        store.give_back(sending)?;
+    } else {
+        store.sent(sending)?;
+    }
+    Ok(sent)
+}
+
+async fn deliver(uploader: Option<&Uploader>, mode: Mode, body: &Value) -> Sent {
     if mode == Mode::Debug {
         eprintln!(
             "[telemetry] {}",
-            serde_json::to_string_pretty(&body).unwrap_or_default()
+            serde_json::to_string_pretty(body).unwrap_or_default()
         );
-        store.sent(sending)?;
-        return Ok(Sent::Printed);
+        return Sent::Printed;
     }
     let Some(uploader) = uploader else {
-        store.give_back(sending)?;
-        return Ok(Sent::Later);
+        return Sent::Later;
     };
-    let sent = match uploader
+    match uploader
         .http
         .post(uploader.url.clone())
-        .json(&body)
+        .json(body)
         .send()
         .await
     {
@@ -145,18 +192,12 @@ pub async fn send(
             tracing::debug!(%error, "telemetry was not sent; trying again later");
             Sent::Later
         }
-    };
-    if sent == Sent::Later {
-        store.give_back(sending)?;
-    } else {
-        store.sent(sending)?;
     }
-    Ok(sent)
 }
 
-/// The body of a PostHog batch request: one `daily_report` event per day and one event per [`Event`], each with
-/// the install id as its `distinct_id`, the environment as properties and the start of its UTC day as its time.
-/// `uuids` holds one per day and then one per event, as [`Sending`](crate::Sending) does; without them, as in a
+/// The body of a PostHog batch request: one `hourly_report` event per hour, timed at the start of its UTC hour, and
+/// one event per [`Event`], timed when it happened, each with the install id as its `distinct_id` and the
+/// environment as properties. `uuids` holds one per hour and then one per event, as [`Sending`](crate::Sending) does; without them, as in a
 /// preview, the events have no uuid.
 pub fn batch(
     token: &str,
@@ -166,26 +207,79 @@ pub fn batch(
     uuids: &[EventUuid],
 ) -> Value {
     let mut events = Vec::new();
-    for report in &batch.days {
+    for report in &batch.hours {
         let mut properties = common(id, environment);
-        properties.extend(daily(report));
-        events.push(json!({ "event": "daily_report", "properties": properties, "timestamp": midnight(report.day) }));
+        properties.extend(sums(report));
+        events.push(json!({ "event": "hourly_report", "properties": properties, "timestamp": time(u64::from(report.hour) * 3600) }));
     }
     for event in &batch.events {
         let Value::Object(mut fields) = serde_json::to_value(event).unwrap_or_default() else {
             continue;
         };
         let name = fields.remove("type").unwrap_or_default();
-        fields.remove("day");
+        fields.remove("at");
         let mut properties = common(id, environment);
         properties.extend(fields);
         events.push(
-            json!({ "event": name, "properties": properties, "timestamp": midnight(event.day()) }),
+            json!({ "event": name, "properties": properties, "timestamp": time(event.at()) }),
         );
     }
     if uuids.len() == events.len() {
         for (event, uuid) in events.iter_mut().zip(uuids) {
             event["uuid"] = json!(uuid.as_str());
+        }
+    }
+    json!({ "api_key": token, "historical_migration": false, "batch": events })
+}
+
+/// The body an earlier release would send for `batch`, with only the reports and events its schema allows.
+pub fn old_batch(
+    token: &str,
+    id: &InstallId,
+    environment: &Environment,
+    batch: &OldBatch,
+    uuids: &[EventUuid],
+) -> Value {
+    let properties = || {
+        let mut properties = common(id, environment);
+        properties.insert("schema".into(), json!(1));
+        properties.remove("koi_version");
+        properties
+    };
+    let mut uuids = uuids.iter().map(|uuid| json!(uuid.as_str()));
+    let mut events = Vec::new();
+    for report in &batch.days {
+        let uuid = uuids.next();
+        let stored = json!({ "hour": 0, "counters": report.counters, "levels": report.levels, "histograms": report.histograms });
+        let Ok(sums) =
+            serde_json::from_value::<HourlyReport>(stored).map(|report| self::sums(&report))
+        else {
+            continue;
+        };
+        let mut properties = properties();
+        properties.extend(sums);
+        events.push(json!({ "event": "daily_report", "properties": properties, "timestamp": time(u64::from(report.day) * 86_400) }));
+        if let Some(uuid) = uuid {
+            events.last_mut().unwrap()["uuid"] = uuid;
+        }
+    }
+    for event in &batch.events {
+        let uuid = uuids.next();
+        let mut stored = event.fields.clone();
+        stored.insert("type".into(), json!(event.name));
+        stored.insert("at".into(), json!(u64::from(event.day) * 86_400));
+        let Ok(Value::Object(mut fields)) =
+            serde_json::from_value::<Event>(Value::Object(stored)).map(|event| json!(event))
+        else {
+            continue;
+        };
+        fields.remove("type");
+        fields.remove("at");
+        let mut properties = properties();
+        properties.extend(fields);
+        events.push(json!({ "event": event.name, "properties": properties, "timestamp": time(u64::from(event.day) * 86_400) }));
+        if let Some(uuid) = uuid {
+            events.last_mut().unwrap()["uuid"] = uuid;
         }
     }
     json!({ "api_key": token, "historical_migration": false, "batch": events })
@@ -212,7 +306,7 @@ fn common(id: &InstallId, environment: &Environment) -> Map<String, Value> {
     properties
 }
 
-fn daily(report: &DailyReport) -> Map<String, Value> {
+fn sums(report: &HourlyReport) -> Map<String, Value> {
     let mut properties = Map::new();
     for (metric, labels) in &report.counters {
         for (label, count) in labels {
@@ -232,10 +326,11 @@ fn daily(report: &DailyReport) -> Map<String, Value> {
     properties
 }
 
-/// The start of a day as ISO 8601, from days since 1970-01-01 (the civil-from-days algorithm of
+/// Seconds since 1970-01-01T00:00Z as ISO 8601 (the civil-from-days algorithm of
 /// https://howardhinnant.github.io/date_algorithms.html).
-fn midnight(day: u32) -> String {
-    let z = i64::from(day) + 719_468;
+fn time(seconds: u64) -> String {
+    let (day, second) = (seconds / 86_400, seconds % 86_400);
+    let z = i64::try_from(day).unwrap_or(i64::MAX - 719_468) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -244,7 +339,12 @@ fn midnight(day: u32) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T00:00:00Z")
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        second / 3600,
+        second / 60 % 60,
+        second % 60
+    )
 }
 
 #[cfg(test)]
@@ -275,7 +375,7 @@ mod tests {
         }
         for cloudflare_code in [Some(10042), None] {
             recorder.event(Event::SetupStep {
-                day: 0,
+                at: 3_725,
                 flow: SetupFlow::Cloudflare,
                 step: SetupStep::R2Checkout,
                 outcome: Outcome::Failed,
@@ -284,13 +384,13 @@ mod tests {
             });
         }
         recorder.event(Event::Panic {
-            day: 0,
+            at: 3_725,
             file: SourceFile::from_location("core/driver/src/folder.rs"),
             line: 42,
         });
         let pending = recorder.take();
         let reports = Batch {
-            days: pending.days.into_values().collect(),
+            hours: pending.hours.into_values().collect(),
             events: pending.events,
         };
         let environment = Environment {
@@ -303,7 +403,7 @@ mod tests {
             arch: Arch::Arm64,
         };
         let id = InstallId::try_from("00000000000000000000000000000000".to_owned()).unwrap();
-        let uuids: Vec<_> = (0..reports.days.len() + reports.events.len())
+        let uuids: Vec<_> = (0..reports.hours.len() + reports.events.len())
             .map(|index| {
                 EventUuid::try_from(format!("00000000-0000-4000-8000-{index:012x}")).unwrap()
             })
@@ -315,14 +415,14 @@ mod tests {
                 &id,
                 &Environment { os_version: None, distro: None, ..environment },
                 &Batch {
-                    days: vec![DailyReport { day: 1, ..DailyReport::default() }],
+                    hours: vec![HourlyReport { hour: 25, ..HourlyReport::default() }],
                     events: vec![],
                 },
                 &[],
             ),
         });
         let fixture = match SCHEMA {
-            1 => include_str!("../tests/fixtures/report-schema-v1.json"),
+            2 => include_str!("../tests/fixtures/report-schema-v2.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
         let expected: Value = serde_json::from_str(fixture).unwrap();
@@ -336,25 +436,27 @@ mod tests {
         Environment::detect(Client::CliDaemon, "0.1.0")
     }
 
-    fn queued(store: &Store, day: u32) {
+    const HOUR: u32 = 20_404 * 24;
+
+    fn queued(store: &Store, hour: u32) {
         store.set(true).unwrap();
         let recorder = Recorder::on();
-        recorder.count_on(day, Counter::Command(Command::Setup), 2);
-        recorder.count_on(day, Counter::Sync(Synced::BytesUploaded), 5_000_000);
+        recorder.count_on(hour, Counter::Command(Command::Setup), 2);
+        recorder.count_on(hour, Counter::Sync(Synced::BytesUploaded), 5_000_000);
         recorder.count_on(
-            day,
+            hour,
             Counter::Failure(Failure::Halted(Halted::StoreBehind)),
             1,
         );
         recorder.count_on(
-            day,
+            hour,
             Counter::Failure(Failure::Refused(Refusal::QuotaExceeded)),
             3,
         );
-        recorder.level_on(day, Level::Nodes, 1_500);
-        recorder.level_on(day, Level::Nodes, 900);
+        recorder.level_on(hour, Level::Nodes, 1_500);
+        recorder.level_on(hour, Level::Nodes, 900);
         recorder.event(Event::SetupStep {
-            day,
+            at: u64::from(hour) * 3600 + 125,
             flow: SetupFlow::Cloudflare,
             step: SetupStep::R2Checkout,
             outcome: Outcome::Failed,
@@ -362,25 +464,26 @@ mod tests {
             seconds_magnitude: 7,
         });
         recorder.event(Event::Panic {
-            day,
+            at: u64::from(hour) * 3600 + 125,
             file: SourceFile::from_location("/Users/alice/.cargo/registry/x.rs"),
             line: 3,
         });
-        store.absorb_at(recorder.take(), day + 1, true).unwrap();
+        store.absorb_at(recorder.take(), hour + 1, true).unwrap();
     }
 
     #[test]
-    fn days_since_the_epoch_become_dates() {
-        assert_eq!(midnight(0), "1970-01-01T00:00:00Z");
-        assert_eq!(midnight(20_404), "2025-11-12T00:00:00Z");
-        assert_eq!(midnight(11_016), "2000-02-29T00:00:00Z");
+    fn seconds_since_the_epoch_become_times() {
+        assert_eq!(time(0), "1970-01-01T00:00:00Z");
+        assert_eq!(time(20_404 * 86_400), "2025-11-12T00:00:00Z");
+        assert_eq!(time(11_016 * 86_400 + 86_399), "2000-02-29T23:59:59Z");
+        assert_eq!(time(20_404 * 86_400 + 3_725), "2025-11-12T01:02:05Z");
     }
 
     #[test]
     fn a_batch_is_anonymous_posthog_events() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let id = store.install_id().unwrap();
         let body = batch("phc_test", &id, &environment(), &store.peek().unwrap(), &[]);
         assert_eq!(body["api_key"], "phc_test");
@@ -390,15 +493,17 @@ mod tests {
                 .iter()
                 .map(|event| event["event"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["daily_report", "setup_step", "panic"]
+            ["hourly_report", "setup_step", "panic"]
         );
         for event in events {
             assert_eq!(event["properties"]["distinct_id"], id.as_str());
             assert_eq!(event["properties"]["$process_person_profile"], false);
             assert_eq!(event["properties"]["$geoip_disable"], true);
-            assert_eq!(event["timestamp"], "2025-11-12T00:00:00Z");
-            assert!(event["properties"].get("day").is_none());
+            assert!(event["properties"].get("at").is_none());
         }
+        assert_eq!(events[0]["timestamp"], "2025-11-12T00:00:00Z");
+        assert_eq!(events[1]["timestamp"], "2025-11-12T00:02:05Z");
+        assert_eq!(events[2]["timestamp"], "2025-11-12T00:02:05Z");
         assert_eq!(events[0]["properties"]["c.command.setup"], 2);
         assert_eq!(events[0]["properties"]["c.sync.bytes_uploaded"], 5_000_000);
         assert_eq!(events[0]["properties"]["l.sync.nodes"], 1_500);
@@ -412,9 +517,9 @@ mod tests {
     fn a_batch_holds_no_free_text() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let id = store.install_id().unwrap();
-        let sending = store.take(20_405).unwrap().unwrap();
+        let sending = store.take(HOUR + 1).unwrap().unwrap();
         let body = batch(
             "phc_test",
             &id,
@@ -435,6 +540,7 @@ mod tests {
                 || sending.uuids.iter().any(|uuid| uuid.as_str() == string)
                 || string == "phc_test"
                 || string == "2025-11-12T00:00:00Z"
+                || string == "2025-11-12T00:02:05Z"
                 || string == "0.1.0"
                 || closed(&string)
                 || (string.starts_with("cli/") || string.starts_with("core/"))
@@ -448,10 +554,10 @@ mod tests {
         let (address, bodies) = server(200).await;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
-        let path = dir.path().join("telemetry/queue.json");
+        queued(&store, HOUR);
+        let path = dir.path().join("telemetry/queue-v2.json");
         let mut queue: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let report = &mut queue["days"]["20404"];
+        let report = &mut queue["hours"]["489696"];
         report["counters"]["/home/fixture/private"] = json!({ "confidential.txt": 1 });
         report["counters"]["command"]["Alice Notes"] = json!(1);
         report["counters"]["sync"]["Alice Notes"] = json!(1);
@@ -469,7 +575,7 @@ mod tests {
             Some(&uploader(&address)),
             &environment(),
             Mode::On,
-            20_405,
+            HOUR + 1,
         )
         .await
         .unwrap();
@@ -488,7 +594,7 @@ mod tests {
     async fn a_retry_sends_the_same_uuids() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let mut uuids = Vec::new();
         for status in [503, 200] {
             let (address, bodies) = server(status).await;
@@ -497,7 +603,7 @@ mod tests {
                 Some(&uploader(&address)),
                 &environment(),
                 Mode::On,
-                20_405,
+                HOUR + 1,
             )
             .await
             .unwrap();
@@ -519,7 +625,7 @@ mod tests {
         let address = format!("http://{}", silent.local_addr().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let waited = tokio::time::timeout(
             Duration::from_millis(300),
             send(
@@ -527,7 +633,7 @@ mod tests {
                 Some(&uploader(&address)),
                 &environment(),
                 Mode::On,
-                20_405,
+                HOUR + 1,
             ),
         )
         .await;
@@ -540,7 +646,7 @@ mod tests {
             Some(&uploader(&address)),
             &environment(),
             Mode::On,
-            20_405,
+            HOUR + 1,
         )
         .await
         .unwrap();
@@ -562,6 +668,44 @@ mod tests {
             }),
             _ => {}
         }
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_goes_through_also_sends_what_was_queued_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        queued(&store, HOUR);
+        let (down, tried) = server(503).await;
+        let down = uploader(&down);
+        let sent = send(&store, Some(&down), &environment(), Mode::On, HOUR + 1).await;
+        assert_eq!(sent.unwrap(), Sent::Later);
+        let recorder = Recorder::on();
+        recorder.count_on(HOUR, Counter::Sync(Synced::BytesUploaded), 7);
+        recorder.event(Event::Panic {
+            at: u64::from(HOUR) * 3600 + 126,
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 9,
+        });
+        store.absorb_at(recorder.take(), HOUR + 1, true).unwrap();
+
+        let (up, bodies) = server(200).await;
+        let up = uploader(&up);
+        let sent = send(&store, Some(&up), &environment(), Mode::On, HOUR + 1).await;
+        assert_eq!(sent.unwrap(), Sent::Accepted);
+        assert!(store.peek().unwrap().is_empty());
+        let uuids = |body: &Value| {
+            (body["batch"].as_array().unwrap().iter())
+                .map(|event| event["uuid"].clone())
+                .collect::<Vec<_>>()
+        };
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(uuids(&bodies[0]), uuids(&tried.lock().unwrap()[0]));
+        assert_eq!(
+            bodies[1]["batch"][0]["properties"]["c.sync.bytes_uploaded"],
+            7
+        );
+        assert_eq!(bodies[1]["batch"][1]["properties"]["line"], 9);
     }
 
     async fn server(status: u16) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -621,13 +765,13 @@ mod tests {
         let (address, bodies) = server(200).await;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let sent = send(
             &store,
             Some(&uploader(&address)),
             &environment(),
             Mode::On,
-            20_405,
+            HOUR + 1,
         )
         .await
         .unwrap();
@@ -650,13 +794,13 @@ mod tests {
             let (address, _) = server(status).await;
             let dir = tempfile::tempdir().unwrap();
             let store = Store::new(dir.path());
-            queued(&store, 20_404);
+            queued(&store, HOUR);
             let sent = send(
                 &store,
                 Some(&uploader(&address)),
                 &environment(),
                 Mode::On,
-                20_405,
+                HOUR + 1,
             )
             .await
             .unwrap();
@@ -672,18 +816,18 @@ mod tests {
         drop(listener);
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         let sent = send(
             &store,
             Some(&uploader(&address)),
             &environment(),
             Mode::On,
-            20_405,
+            HOUR + 1,
         )
         .await
         .unwrap();
         assert_eq!(sent, Sent::Later);
-        assert_eq!(store.peek().unwrap().days.len(), 1);
+        assert_eq!(store.peek().unwrap().hours.len(), 1);
     }
 
     #[tokio::test]
@@ -693,15 +837,15 @@ mod tests {
         assert_eq!(built_in.url.as_str(), "https://tel.koidrive.com/batch/");
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        queued(&store, 20_404);
+        queued(&store, HOUR);
         assert_eq!(
-            send(&store, None, &environment(), Mode::On, 20_405)
+            send(&store, None, &environment(), Mode::On, HOUR + 1)
                 .await
                 .unwrap(),
             Sent::Later
         );
         assert_eq!(
-            send(&store, None, &environment(), Mode::Off, 20_405)
+            send(&store, None, &environment(), Mode::Off, HOUR + 1)
                 .await
                 .unwrap(),
             Sent::Nothing

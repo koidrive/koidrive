@@ -24,8 +24,7 @@ use crate::report::Done;
 use crate::terminal::{PromptFailure, Terminal};
 
 /// How often the daemon moves its sums to disk and sends what is due.
-const TICK: Duration = Duration::from_secs(10 * 60);
-/// How long a setup command waits at exit to send its events; the daemon sends them later otherwise.
+const TICK: Duration = Duration::from_secs(60);
 const EXIT_SEND: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -157,14 +156,14 @@ fn flow() -> Option<SetupFlow> {
 async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     let question = if terminal.setup_guided() {
         terminal.separator();
-        terminal.message("Reports include usage counts, crash locations, daily sync totals, OS, and Koidrive version.");
+        terminal.message("Reports include usage counts, crash locations, hourly sync totals, OS, and Koidrive version.");
         terminal
             .message("No file names, paths, contents, error messages, server address, or account.");
         terminal.message("Preview: koi telemetry preview. Turn off: koi telemetry off.");
         "Send anonymous usage reports?"
     } else {
         terminal.message("Send anonymous usage reports to the Koidrive project?");
-        terminal.message("Reports hold command and error counts, crash locations, daily sync totals, and your OS and Koidrive version.");
+        terminal.message("Reports hold command and error counts, crash locations, hourly sync totals, and your OS and Koidrive version.");
         terminal.message("They never hold file names, paths, contents, error messages, your server address or your account.");
         terminal.message("Preview: koi telemetry preview. Turn off: koi telemetry off.");
         "Send reports?"
@@ -206,7 +205,7 @@ impl Drop for Running {
             && let Some(flow) = flow()
         {
             run.recorder.event(Event::SetupStep {
-                day: koidrive_telemetry::today(),
+                at: koidrive_telemetry::now(),
                 flow,
                 step: self.step,
                 outcome: self.outcome,
@@ -217,39 +216,44 @@ impl Drop for Running {
     }
 }
 
-/// Moves what this run recorded to disk. A setup command also tries to send it, for at most two seconds.
 pub async fn finish() {
     let Some(run) = RUN.get() else { return };
-    flush();
-    if flow().is_some() && run.recorder.is_on() {
+    let events_written = run.flush(run.mode());
+    if events_written > 0 {
         let _ = tokio::time::timeout(EXIT_SEND, send(&run.store, Client::CliCommand)).await;
     }
 }
 
 pub fn flush() {
-    let Some(run) = RUN.get() else { return };
-    run.flush(
-        run.store
-            .status(var)
-            .map_or(Mode::Off, |status| status.mode),
-    );
+    if let Some(run) = RUN.get() {
+        run.flush(run.mode());
+    }
 }
 
 impl Run {
-    fn flush(&self, mode: Mode) {
+    fn mode(&self) -> Mode {
+        (self.store.status(var)).map_or(Mode::Off, |status| status.mode)
+    }
+
+    fn flush(&self, mode: Mode) -> usize {
         let on = matches!(mode, Mode::On | Mode::Debug);
         let pending = self.recorder.take();
-        let Ok(mut id) = self.id.lock() else { return };
-        if on
-            && let Some(recorded) = id.as_ref()
-            && let Err(error) = self.store.absorb_as(pending, recorded)
-        {
-            tracing::debug!(%error, "telemetry could not be written");
+        let Ok(mut id) = self.id.lock() else {
+            return 0;
+        };
+        let mut events_written = 0;
+        if on && let Some(recorded) = id.as_ref() {
+            let events = pending.events.len();
+            match self.store.absorb_as(pending, recorded) {
+                Ok(()) => events_written = events,
+                Err(error) => tracing::debug!(%error, "telemetry could not be written"),
+            }
         }
         if let Ok(settings) = self.store.settings() {
             *id = settings.install_id;
         }
         self.recorder.record_for(id.as_ref().filter(|_| on));
+        events_written
     }
 }
 
@@ -264,7 +268,7 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
         uploader.as_ref(),
         &environment,
         mode,
-        koidrive_telemetry::today(),
+        koidrive_telemetry::this_hour(),
     )
     .await
     .inspect_err(|error| tracing::debug!(%error, "telemetry could not be read or written"))
@@ -289,9 +293,9 @@ pub async fn run_daemon(stop: tokio::sync::oneshot::Receiver<()>, driver: Driver
         flush();
     };
     every(TICK, stop, tick, || send(&run.store, Client::CliDaemon)).await;
+    let _ = tokio::time::timeout(EXIT_SEND, send(&run.store, Client::CliDaemon)).await;
 }
 
-/// Adds what was synced between `last` and `now`, and keeps the linked spaces and their nodes as readings of the day.
 fn record_sync(recorder: &Recorder, last: &mut Volume, now: Volume, status: &Status) {
     let totals = [
         (Synced::CommitsSent, now.commits_sent, last.commits_sent),
@@ -356,14 +360,16 @@ async fn every<W: Future>(
     mut tick: impl FnMut(),
     mut work: impl FnMut() -> W,
 ) {
+    let mut ticks = tokio::time::interval(period);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = &mut stop => break,
+        }
         tick();
         tokio::select! {
             _ = work() => {}
-            _ = &mut stop => break,
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(period) => {}
             _ = &mut stop => break,
         }
     }
@@ -395,6 +401,7 @@ pub(crate) struct TelemetryStatusData {
     source: TelemetrySource,
     #[schemars(with = "Option<String>")]
     install_id: Option<InstallId>,
+    waiting_hours: usize,
     waiting_days: usize,
     waiting_events: usize,
     /// Whether this build can send: it has a project token.
@@ -447,16 +454,20 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 ),
             };
             let queued = store.peek().map_err(failed)?;
+            let old = store.peek_old().map_err(failed)?;
             let sends = Uploader::from_env(var).ok().flatten().is_some();
             let mut text = format!("Usage reports: {shown} ({why})\n");
             if let Some(id) = &settings.install_id {
                 text.push_str(&format!("Install id: {id}\n"));
             }
-            text.push_str(&format!(
-                "Waiting to send: {} days, {} events\n",
-                queued.days.len(),
-                queued.events.len()
-            ));
+            let events = queued.events.len() + old.events.len();
+            text.push_str(&match old.days.len() {
+                0 => format!("Waiting to send: {} hours, {events} events\n", queued.hours.len()),
+                days => format!(
+                    "Waiting to send: {} hours, {days} days from an earlier version, {events} events\n",
+                    queued.hours.len()
+                ),
+            });
             if status.mode == Mode::On && !sends {
                 text.push_str(
                     "This build has no project token, so reports wait on this machine and are not sent.\n",
@@ -471,8 +482,9 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 mode,
                 source,
                 install_id: settings.install_id,
-                waiting_days: queued.days.len(),
-                waiting_events: queued.events.len(),
+                waiting_hours: queued.hours.len(),
+                waiting_days: old.days.len(),
+                waiting_events: events,
                 sends,
             };
             Ok(Done::ok(data, text))
@@ -503,8 +515,9 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
         }
         TelemetryAction::Preview => {
             let queued = store.peek().map_err(failed)?;
+            let old = store.peek_old().map_err(failed)?;
             let id = store.settings().map_err(failed)?.install_id;
-            let (Some(id), false) = (id, queued.is_empty()) else {
+            let (Some(id), false) = (id, queued.is_empty() && old.is_empty()) else {
                 return Ok(Done::ok(
                     serde_json::Value::Null,
                     "Nothing waits to be sent.\n",
@@ -516,7 +529,13 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 .map(|uploader| uploader.token().to_owned())
                 .unwrap_or_default();
             let environment = Environment::detect(Client::CliDaemon, env!("CARGO_PKG_VERSION"));
-            let body = koidrive_telemetry::batch(&token, &id, &environment, &queued, &[]);
+            let mut body = koidrive_telemetry::old_batch(&token, &id, &environment, &old, &[]);
+            let new = koidrive_telemetry::batch(&token, &id, &environment, &queued, &[]);
+            if let (Some(events), Some(new)) =
+                (body["batch"].as_array_mut(), new["batch"].as_array())
+            {
+                events.extend(new.iter().cloned());
+            }
             let text = format!(
                 "{}\n",
                 serde_json::to_string_pretty(&body).map_err(|error| error.to_string())?
@@ -565,7 +584,7 @@ mod tests {
         record_failures(&recorder, &mut last, now.clone());
         record_failures(&recorder, &mut last, now.clone());
         assert_eq!(last, now);
-        let day = recorder.take().days.into_values().next().unwrap();
+        let day = recorder.take().hours.into_values().next().unwrap();
         let report = serde_json::to_value(day).unwrap();
         assert_eq!(
             report["counters"],
@@ -621,7 +640,7 @@ mod tests {
             },
         );
         assert_eq!(last, now);
-        let day = recorder.take().days.into_values().next().unwrap();
+        let day = recorder.take().hours.into_values().next().unwrap();
         let report = serde_json::to_value(day).unwrap();
         assert_eq!(
             report["counters"]["sync"],
@@ -653,7 +672,7 @@ mod tests {
         run.flush(Mode::On);
         run.recorder.count(Counter::Sync(Synced::CommitsSent), 2);
         run.flush(Mode::On);
-        let days = serde_json::to_value(store.peek().unwrap().days).unwrap();
+        let days = serde_json::to_value(store.peek().unwrap().hours).unwrap();
         assert_eq!(
             days[0]["counters"],
             serde_json::json!({ "sync": { "commits_sent": 2 } })
@@ -703,29 +722,43 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn reports_go_as_the_daemon_starts_and_one_tick_after_their_day_ends() {
+    async fn events_go_one_tick_after_they_happen_and_reports_one_tick_after_their_hour() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
         store.set(true).unwrap();
         let environment = Environment::detect(Client::CliDaemon, "0.1.0");
-        let day = koidrive_telemetry::today();
-        let today = Cell::new(day);
-        let queue = |day: u32| {
+        let hour = koidrive_telemetry::this_hour();
+        let now = Cell::new(hour);
+        let queue = |hour: u32| {
             let recorder = Recorder::on();
-            recorder.count_on(day, Counter::Command(schema::Command::Status), 1);
+            recorder.count_on(hour, Counter::Command(schema::Command::Status), 1);
             store.absorb(recorder.take()).unwrap();
         };
+        let happen = || {
+            let event = Event::Panic {
+                at: koidrive_telemetry::now(),
+                file: schema::SourceFile::from_location("cli/src/main.rs"),
+                line: 1,
+            };
+            let pending = koidrive_telemetry::Pending {
+                events: vec![event],
+                ..Default::default()
+            };
+            store.absorb(pending).unwrap();
+        };
         let waiting = || {
-            (store.peek().unwrap().days.iter())
-                .map(|report| report.day)
-                .collect::<Vec<_>>()
+            let queued = store.peek().unwrap();
+            let hours = (queued.hours.iter())
+                .map(|report| report.hour)
+                .collect::<Vec<_>>();
+            (hours, queued.events.len())
         };
         let daemon = |stop| {
             every(
                 TICK,
                 stop,
                 || {},
-                || koidrive_telemetry::send(&store, None, &environment, Mode::Debug, today.get()),
+                || koidrive_telemetry::send(&store, None, &environment, Mode::Debug, now.get()),
             )
         };
         let settle = || async {
@@ -734,29 +767,60 @@ mod tests {
             }
         };
 
-        queue(day - 1);
-        queue(day);
+        queue(hour - 1);
+        queue(hour);
         let (stop_first, stop) = tokio::sync::oneshot::channel();
         tokio::join!(daemon(stop), async {
             settle().await;
-            assert_eq!(waiting(), [day], "a past day waited for a tick");
-            today.set(day + 1);
+            assert_eq!(waiting(), (vec![hour], 0), "a past hour waited for a tick");
+            happen();
             tokio::time::advance(TICK - Duration::from_secs(1)).await;
             settle().await;
-            assert_eq!(waiting(), [day]);
+            assert_eq!(waiting(), (vec![hour], 1));
+            now.set(hour + 1);
             tokio::time::advance(Duration::from_secs(1)).await;
             settle().await;
-            assert_eq!(waiting(), Vec::<u32>::new(), "the day ended a tick ago");
+            assert_eq!(
+                waiting(),
+                (vec![], 0),
+                "the event or the hour waited past a tick"
+            );
             stop_first.send(()).unwrap();
         });
 
-        queue(day);
+        queue(hour + 1);
+        now.set(hour + 2);
         let (stop_second, stop) = tokio::sync::oneshot::channel();
         tokio::join!(daemon(stop), async {
             settle().await;
-            assert_eq!(waiting(), Vec::<u32>::new(), "a restart waited for a tick");
+            assert_eq!(waiting(), (vec![], 0), "a restart waited for a tick");
             stop_second.send(()).unwrap();
         });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ticks_start_a_tick_apart_however_long_a_send_takes() {
+        let (stop_daemon, stop) = tokio::sync::oneshot::channel();
+        let ticks = Cell::new(0);
+        let looping = every(
+            TICK,
+            stop,
+            || ticks.set(ticks.get() + 1),
+            || tokio::time::sleep(Duration::from_secs(10)),
+        );
+        let settle = || async {
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        };
+        let observer = async {
+            settle().await;
+            tokio::time::advance(TICK).await;
+            settle().await;
+            assert_eq!(ticks.get(), 2, "the second tick waited for the send");
+            stop_daemon.send(()).unwrap();
+        };
+        tokio::join!(looping, observer);
     }
 
     #[tokio::test]

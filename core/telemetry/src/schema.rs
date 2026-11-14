@@ -8,15 +8,15 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA: u16 = 1;
+pub const SCHEMA: u16 = 2;
 
-/// What one install recorded on one UTC day. Its keys are always those of a [`Counter`], a [`Level`] or a [`Measure`]: only a
+/// What one install recorded in one UTC hour. Its keys are always those of a [`Counter`], a [`Level`] or a [`Measure`]: only a
 /// [`Recorder`](crate::Recorder) fills it, and reading one from JSON keeps only the keys of the closed set.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "StoredReport")]
-pub struct DailyReport {
-    /// Days since 1970-01-01.
-    pub day: u32,
+pub struct HourlyReport {
+    /// Hours since 1970-01-01T00:00Z.
+    pub hour: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) counters: BTreeMap<String, BTreeMap<String, u64>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -27,7 +27,7 @@ pub struct DailyReport {
 
 #[derive(Deserialize)]
 struct StoredReport {
-    day: u32,
+    hour: u32,
     #[serde(default)]
     counters: BTreeMap<String, BTreeMap<String, u64>>,
     #[serde(default)]
@@ -36,11 +36,11 @@ struct StoredReport {
     histograms: BTreeMap<String, BTreeMap<String, Histogram>>,
 }
 
-impl From<StoredReport> for DailyReport {
+impl From<StoredReport> for HourlyReport {
     fn from(stored: StoredReport) -> Self {
-        let mut report = DailyReport {
-            day: stored.day,
-            ..DailyReport::default()
+        let mut report = HourlyReport {
+            hour: stored.hour,
+            ..HourlyReport::default()
         };
         for (metric, label) in Counter::all().map(Counter::key) {
             if let Some(&count) = stored
@@ -78,8 +78,8 @@ impl From<StoredReport> for DailyReport {
     }
 }
 
-impl DailyReport {
-    pub fn merge(&mut self, other: DailyReport) {
+impl HourlyReport {
+    pub fn merge(&mut self, other: HourlyReport) {
         for (metric, labels) in other.counters {
             let into = self.counters.entry(metric).or_default();
             for (label, count) in labels {
@@ -157,13 +157,13 @@ pub fn magnitude(value: u64) -> u8 {
     (64 - value.leading_zeros()) as u8
 }
 
-/// Something that happened once, sent on its own rather than summed into the day.
+/// Something that happened once, sent on its own rather than summed into the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     /// A step of `koi setup` or `koi server ...` ended.
     SetupStep {
-        day: u32,
+        at: u64,
         flow: SetupFlow,
         step: SetupStep,
         outcome: Outcome,
@@ -175,17 +175,25 @@ pub enum Event {
     },
     /// The process panicked here. The panic's message is never kept, since it can hold a path.
     Panic {
-        day: u32,
+        at: u64,
         file: SourceFile,
         line: u32,
     },
 }
 
 impl Event {
-    pub fn day(&self) -> u32 {
+    pub fn at(&self) -> u64 {
         match self {
-            Event::SetupStep { day, .. } | Event::Panic { day, .. } => *day,
+            Event::SetupStep { at, .. } | Event::Panic { at, .. } => *at,
         }
+    }
+
+    pub fn hour(&self) -> u32 {
+        u32::try_from(self.at() / 3600).unwrap_or(u32::MAX)
+    }
+
+    pub fn day(&self) -> u32 {
+        u32::try_from(self.at() / 86_400).unwrap_or(u32::MAX)
     }
 
     /// The events of one kind an install keeps per day; later ones are dropped, so a loop cannot fill the queue.
@@ -237,7 +245,7 @@ pub enum Outcome {
     Aborted,
 }
 
-/// A daily sum: a metric and the label it is counted under.
+/// An hourly sum: a metric and the label it is counted under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counter {
     CpuMilliseconds,
@@ -476,7 +484,7 @@ labels! {
     }
 }
 
-/// The sync totals of a day, summed over every linked folder.
+/// The sync totals of an hour, summed over every linked folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Synced {
     /// Commits of this device the server accepted.
@@ -507,7 +515,7 @@ impl Synced {
     }
 }
 
-/// A reading kept as the day's highest: a metric and its label.
+/// A reading kept as the hour's highest: a metric and its label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     /// Folders linked to a space.
@@ -531,7 +539,7 @@ impl Level {
     }
 }
 
-/// A daily distribution of durations or sizes.
+/// An hourly distribution of durations or sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Measure {
     FirstSync(FileCount),
@@ -948,7 +956,7 @@ mod tests {
     #[test]
     fn a_stored_report_keeps_only_known_keys() {
         let stored = serde_json::json!({
-            "day": 100,
+            "hour": 100,
             "counters": {
                 "command": { "status": 3, "/home/alice/private": 1 },
                 "/home/alice/private": { "confidential.txt": 1 },
@@ -957,28 +965,28 @@ mod tests {
                 "/home/alice": { "notes.txt": { "shift": 0, "buckets": vec![0u64; 16], "count": 1, "sum": 1 } },
             },
         });
-        let report: DailyReport = serde_json::from_value(stored).unwrap();
+        let report: HourlyReport = serde_json::from_value(stored).unwrap();
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
-            serde_json::json!({ "day": 100, "counters": { "command": { "status": 3 } } })
+            serde_json::json!({ "hour": 100, "counters": { "command": { "status": 3 } } })
         );
     }
 
     #[test]
     fn a_stored_report_keeps_only_known_sync_counters_and_levels() {
         let stored = serde_json::json!({
-            "day": 100,
+            "hour": 100,
             "counters": { "sync": { "bytes_uploaded": 4096, "Alice Notes": 1 } },
             "levels": {
                 "sync": { "spaces": 2, "nodes": 1500, "/home/alice": 1 },
                 "Alice Notes": { "spaces": 1 },
             },
         });
-        let report: DailyReport = serde_json::from_value(stored).unwrap();
+        let report: HourlyReport = serde_json::from_value(stored).unwrap();
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "day": 100,
+                "hour": 100,
                 "counters": { "sync": { "bytes_uploaded": 4096 } },
                 "levels": { "sync": { "nodes": 1500, "spaces": 2 } },
             })
@@ -988,7 +996,7 @@ mod tests {
     #[test]
     fn a_stored_report_keeps_only_known_failure_counters() {
         let stored = serde_json::json!({
-            "day": 100,
+            "hour": 100,
             "counters": {
                 "halted": { "store_behind": 1, "the server refused it: Alice Notes": 1 },
                 "refused": { "quota_exceeded": 2, "418": 1 },
@@ -996,11 +1004,11 @@ mod tests {
                 "/home/alice": { "conflict": 1 },
             },
         });
-        let report: DailyReport = serde_json::from_value(stored).unwrap();
+        let report: HourlyReport = serde_json::from_value(stored).unwrap();
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "day": 100,
+                "hour": 100,
                 "counters": {
                     "asked": { "conflict": 3 },
                     "halted": { "store_behind": 1 },
@@ -1012,18 +1020,18 @@ mod tests {
 
     #[test]
     fn levels_merge_as_the_highest_and_counters_as_the_sum() {
-        let report = |bytes: u64, nodes: u64| -> DailyReport {
+        let report = |bytes: u64, nodes: u64| -> HourlyReport {
             serde_json::from_value(serde_json::json!({
-                "day": 100,
+                "hour": 100,
                 "counters": { "sync": { "bytes_downloaded": bytes } },
                 "levels": { "sync": { "nodes": nodes } },
             }))
             .unwrap()
         };
-        let mut day = report(100, 70);
-        day.merge(report(20, 30));
-        assert_eq!(day.counters["sync"]["bytes_downloaded"], 120);
-        assert_eq!(day.levels["sync"]["nodes"], 70);
+        let mut hour = report(100, 70);
+        hour.merge(report(20, 30));
+        assert_eq!(hour.counters["sync"]["bytes_downloaded"], 120);
+        assert_eq!(hour.levels["sync"]["nodes"], 70);
     }
 
     #[test]
@@ -1052,7 +1060,7 @@ mod tests {
             recorder.measure_on(1, measure, 90_000);
             recorder.measure_on(1, measure, 600_000);
         }
-        let report = recorder.take().days.remove(&1).unwrap();
+        let report = recorder.take().hours.remove(&1).unwrap();
         let original = serde_json::to_value(&report).unwrap();
         let mut stored = original.clone();
         for measure in Measure::all() {
@@ -1071,11 +1079,11 @@ mod tests {
                 assert_eq!(histogram["sum"], 690_000);
             }
         }
-        let restored: DailyReport = serde_json::from_value(stored).unwrap();
+        let restored: HourlyReport = serde_json::from_value(stored).unwrap();
         assert_eq!(serde_json::to_value(&restored).unwrap(), original);
-        let mut merged = DailyReport {
-            day: 1,
-            ..DailyReport::default()
+        let mut merged = HourlyReport {
+            hour: 1,
+            ..HourlyReport::default()
         };
         merged.merge(report);
         merged.merge(restored);
@@ -1121,7 +1129,7 @@ mod tests {
             for millis in [1023, 60_000, 600_000, 5_280_000, 16_777_215, 16_777_216] {
                 recorder.measure_on(1, measure, millis);
             }
-            let mut report = recorder.take().days.remove(&1).unwrap();
+            let mut report = recorder.take().hours.remove(&1).unwrap();
             let histogram = &report.histograms[metric][label];
             assert_eq!(histogram.buckets[0], 1);
             assert_eq!(histogram.buckets[6], 1);
@@ -1132,7 +1140,7 @@ mod tests {
             assert_eq!(histogram.count, 6);
             let stored = serde_json::to_value(&report).unwrap();
             assert_eq!(
-                serde_json::from_value::<DailyReport>(stored).unwrap(),
+                serde_json::from_value::<HourlyReport>(stored).unwrap(),
                 report
             );
             report
@@ -1143,7 +1151,7 @@ mod tests {
                 .unwrap()
                 .shift = 0;
             let rejected =
-                serde_json::from_value::<DailyReport>(serde_json::to_value(report).unwrap())
+                serde_json::from_value::<HourlyReport>(serde_json::to_value(report).unwrap())
                     .unwrap();
             assert!(rejected.is_empty());
         }
@@ -1159,7 +1167,7 @@ mod tests {
             for rate in [1 << 20, 10 << 20, 100 << 20] {
                 recorder.measure_on(1, measure, rate);
             }
-            let report = recorder.take().days.remove(&1).unwrap();
+            let report = recorder.take().hours.remove(&1).unwrap();
             let (metric, label, _) = measure.key();
             let histogram = &report.histograms[metric][label];
             for bucket in [6, 9, 12] {
@@ -1172,8 +1180,8 @@ mod tests {
     #[test]
     fn stored_unfinished_span_counters_and_active_ages_are_dropped() {
         for shift in [0, 10] {
-            let report: DailyReport = serde_json::from_value(serde_json::json!({
-                "day": 1,
+            let report: HourlyReport = serde_json::from_value(serde_json::json!({
+                "hour": 1,
                 "counters": { "sync": { "unfinished": 2 } },
                 "histograms": { "syncing_ms": { "active_age": {
                     "shift": shift,
@@ -1186,7 +1194,7 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(report).unwrap(),
                 serde_json::json!({
-                    "day": 1,
+                    "hour": 1,
                 })
             );
         }

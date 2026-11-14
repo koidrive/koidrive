@@ -55,8 +55,8 @@ impl Time {
         }
     }
 
-    fn day(self) -> u32 {
-        u32::try_from(self.unix_ms.max(0) / 86_400_000).unwrap_or(u32::MAX)
+    fn hour(self) -> u32 {
+        u32::try_from(self.unix_ms.max(0) / 3_600_000).unwrap_or(u32::MAX)
     }
 }
 
@@ -233,7 +233,7 @@ impl Timing {
             return;
         }
         self.recorder.measure_on(
-            at.day(),
+            at.hour(),
             Measure::FirstSync(FileCount::bucket(files)),
             duration,
         );
@@ -251,7 +251,7 @@ impl Timing {
             && status == FolderState::UpToDate
         {
             self.recorder.measure_on(
-                at.day(),
+                at.hour(),
                 Measure::SyncingMilliseconds,
                 millis(at.mono.saturating_duration_since(start)).min(MAX_DURATION_MS),
             );
@@ -424,7 +424,7 @@ impl Timing {
             let duration = before.saturating_add(millis(elapsed));
             if duration <= MAX_DURATION_MS {
                 self.recorder
-                    .measure_on(at.day(), Measure::RemoteApplyMilliseconds, duration);
+                    .measure_on(at.hour(), Measure::RemoteApplyMilliseconds, duration);
             }
             if planned.final_target {
                 state.origins.remove(&planned.node);
@@ -495,8 +495,8 @@ impl Burst {
             let elapsed = at.mono.saturating_duration_since(start).as_nanos();
             let transferred = self.bytes.swap(0, Ordering::Relaxed);
             if !self.files.is_empty() && elapsed > 0 {
-                recorder.measure_on(at.day(), files, rate(self.files.len() as u64, elapsed));
-                recorder.measure_on(at.day(), bytes, rate(transferred, elapsed));
+                recorder.measure_on(at.hour(), files, rate(self.files.len() as u64, elapsed));
+                recorder.measure_on(at.hour(), bytes, rate(transferred, elapsed));
             }
             self.files.clear();
         }
@@ -529,7 +529,7 @@ mod tests {
     fn time() -> Time {
         Time {
             mono: Instant::now(),
-            unix_ms: 2 * 86_400_000 - 30_000,
+            unix_ms: 2 * 3_600_000 - 30_000,
         }
     }
 
@@ -572,7 +572,7 @@ mod tests {
         let first_sync = |timing: &mut Timing, recorder: &Recorder| {
             timing.enable(recorder.clone());
             timing.first_sync(1, later(at, Duration::from_secs(5)));
-            recorder.take().days.is_empty()
+            recorder.take().hours.is_empty()
         };
 
         let off = Recorder::off();
@@ -619,7 +619,7 @@ mod tests {
         recorder.switch(false);
         recorder.switch(true);
         timing.status(FolderState::UpToDate, later(at, Duration::from_secs(10)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
     }
 
     #[test]
@@ -643,11 +643,11 @@ mod tests {
         );
         recorder.switch(true);
         timing.drained(later(at, Duration::from_secs(10)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
     }
 
     fn reports(recorder: &Recorder) -> Value {
-        serde_json::to_value(recorder.take().days).unwrap()
+        serde_json::to_value(recorder.take().hours).unwrap()
     }
 
     fn assert_duration_bucket(histogram: &Value, bucket: usize) {
@@ -734,7 +734,7 @@ mod tests {
         let mut legacy = Timing::open_at(&store, 1, at);
         legacy.enable(recorder.clone());
         legacy.first_sync(100_000, at);
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         Timing::initialize(&store, at.unix_ms - 5000, &recorder);
         drop(Timing::open_at(&store, at.unix_ms - 5000, at));
         let mut timing = Timing::open_at(&store, at.unix_ms - 5000, at);
@@ -780,7 +780,7 @@ mod tests {
         fs::remove_file(store.with_file_name("first-sync")).unwrap();
         fs::create_dir(store.with_file_name("first-sync")).unwrap();
         timing.first_sync(1, at);
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         fs::remove_dir(store.with_file_name("first-sync")).unwrap();
         Timing::initialize(&store, at.unix_ms, &recorder);
         let mut off = Timing::open_at(&store, at.unix_ms, at);
@@ -798,7 +798,7 @@ mod tests {
         timing.status(FolderState::Bootstrapping, at);
         timing.status(FolderState::CatchingUp, later(at, Duration::from_secs(10)));
         timing.status(FolderState::CatchingUp, later(at, Duration::from_secs(60)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.status(FolderState::UpToDate, later(at, Duration::from_secs(90)));
         timing.status(FolderState::UpToDate, later(at, Duration::from_secs(100)));
         timing.status(FolderState::Stopped, later(at, Duration::from_secs(110)));
@@ -812,7 +812,7 @@ mod tests {
         timing.status(FolderState::CatchingUp, later(at, Duration::from_secs(600)));
         timing.status(FolderState::UpToDate, later(at, Duration::from_secs(900)));
         assert!(timing.state.0.is_none());
-        assert!(off.take().days.is_empty());
+        assert!(off.take().hours.is_empty());
     }
 
     #[test]
@@ -829,9 +829,9 @@ mod tests {
                 let at = time();
                 timing.status(syncing, at);
                 timing.status(interrupted, later(at, Duration::from_secs(90)));
-                assert!(recorder.take().days.is_empty());
+                assert!(recorder.take().hours.is_empty());
                 timing.status(FolderState::UpToDate, later(at, Duration::from_secs(120)));
-                assert!(recorder.take().days.is_empty());
+                assert!(recorder.take().hours.is_empty());
                 timing.status(
                     FolderState::Bootstrapping,
                     later(at, Duration::from_secs(130)),
@@ -848,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_report_histories_do_not_reveal_a_midnight_crossing() {
+    fn complete_report_histories_do_not_reveal_an_hour_crossing() {
         for (seconds, bucket) in [(90, 7), (3600, 12)] {
             let mut histories = Vec::new();
             for linked_ms in [
@@ -883,10 +883,18 @@ mod tests {
                     ("first_sync_ms", "65536_131071"),
                     ("syncing_ms", "completed"),
                 ] {
-                    let histogram = &value["20001"]["histograms"][metric][label];
+                    let histogram =
+                        &value[finished.hour().to_string()]["histograms"][metric][label];
                     assert_duration_bucket(histogram, bucket);
                 }
-                history.push(value);
+                let sums = (value.as_object().unwrap().values())
+                    .map(|report| {
+                        let mut report = report.clone();
+                        report.as_object_mut().unwrap().remove("hour");
+                        report
+                    })
+                    .collect::<Vec<_>>();
+                history.push(json!(sums));
                 histories.push(history);
             }
             assert_eq!(histories[0], histories[1]);
@@ -924,7 +932,7 @@ mod tests {
             let mut timing = Timing::open_at(&store, linked_ms, opened);
             timing.enable(recorder.clone());
             timing.first_sync(1, finished);
-            assert!(recorder.take().days.is_empty());
+            assert!(recorder.take().hours.is_empty());
             assert!(!Timing::open_at(&store, linked_ms, finished).has_first());
         }
         let dir = tempfile::tempdir().unwrap();
@@ -941,7 +949,7 @@ mod tests {
         first.first_sync(1, jumped);
         let value = reports(&recorder);
         assert_duration_bucket(
-            &value[jumped.day().to_string()]["histograms"]["first_sync_ms"]["1"],
+            &value[jumped.hour().to_string()]["histograms"]["first_sync_ms"]["1"],
             0,
         );
         let recorder = Recorder::on();
@@ -950,7 +958,7 @@ mod tests {
         let effect = effect("clock");
         timing.planned(&effect, Some(&node(1)), now);
         timing.applied(&effect.effect_id, true, later(now, Duration::from_secs(1)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.records(&[record(2, now.unix_ms - 1000, 1)], 1, 2, "me", now);
         timing.planned(&effect, Some(&node(1)), now);
         let corrected = Time {
@@ -960,7 +968,7 @@ mod tests {
         timing.applied(&effect.effect_id, true, corrected);
         let value = reports(&recorder);
         let histogram =
-            &value[corrected.day().to_string()]["histograms"]["remote_apply_ms"]["effect"];
+            &value[corrected.hour().to_string()]["histograms"]["remote_apply_ms"]["effect"];
         assert_duration_bucket(histogram, 1);
     }
 
@@ -1058,12 +1066,12 @@ mod tests {
         );
         timing.status(FolderState::UpToDate, later(at, Duration::from_secs(1)));
         timing.drained(later(at, Duration::from_secs(1)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.planned(&record, Some(&node(1)), at);
         timing.applied(&record.effect_id, true, at);
         timing.status(FolderState::UpToDate, at);
         timing.drained(at);
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
     }
 
     #[test]
@@ -1081,7 +1089,7 @@ mod tests {
         };
         timing.uploaded(&upload, &accepted);
         timing.drained(at);
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         upload.commit_id = "later-upload".into();
         add_bytes(&timing.uploading(&upload, at), 1000);
         timing.uploaded(&upload, &accepted);
@@ -1106,15 +1114,15 @@ mod tests {
         let record = effect("one");
         timing.records(&[self::record(1, at.unix_ms - 1000, 1)], 0, 1, "me", at);
         timing.planned(&record, Some(&remote), at);
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.applied(&record.effect_id, false, later(at, Duration::from_secs(1)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.planned(&record, Some(&remote), at);
         timing.applied(&record.effect_id, true, later(at, Duration::from_secs(2)));
         let value = reports(&recorder);
         assert_duration_bucket(&value["1"]["histograms"]["remote_apply_ms"]["effect"], 2);
         timing.applied(&record.effect_id, true, later(at, Duration::from_secs(3)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         timing.planned(&record, Some(&remote), at);
         timing.records(&[self::record(2, at.unix_ms - 500, 2)], 1, 2, "me", at);
         timing.applied(&record.effect_id, true, at);
@@ -1140,7 +1148,7 @@ mod tests {
             timing.planned(&effect, Some(&node(revision)), at);
             timing.applied(&effect.effect_id, true, at);
         }
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         let mut timing = tracker(&recorder);
         timing.records(
             &[
@@ -1275,7 +1283,7 @@ mod tests {
             later(at, Duration::from_millis(200)),
         );
         timing.status(FolderState::UpToDate, later(at, Duration::from_millis(400)));
-        assert!(recorder.take().days.is_empty());
+        assert!(recorder.take().hours.is_empty());
         add_bytes(
             &timing.planned(
                 &write,

@@ -8,13 +8,16 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::consent::{self, Status};
 use crate::recorder::Pending;
-use crate::schema::{DailyReport, Event, EventUuid, InstallId};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId};
 
-pub const KEEP_DAYS: u32 = 14;
+pub const KEEP_HOURS: u32 = 14 * 24;
 pub const MAX_EVENTS: usize = 500;
+const QUEUE: &str = "queue-v2.json";
+const OLD_QUEUE: &str = "queue.json";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,14 +33,14 @@ pub struct Settings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Batch {
     #[serde(default)]
-    pub days: Vec<DailyReport>,
+    pub hours: Vec<HourlyReport>,
     #[serde(default)]
     pub events: Vec<Event>,
 }
 
 impl Batch {
     pub fn is_empty(&self) -> bool {
-        self.days.is_empty() && self.events.is_empty()
+        self.hours.is_empty() && self.events.is_empty()
     }
 }
 
@@ -48,7 +51,6 @@ impl Batch {
 pub struct Sending {
     pub id: InstallId,
     pub batch: Batch,
-    /// One per day of `batch`, then one per event.
     pub uuids: Vec<EventUuid>,
     _lock: File,
 }
@@ -57,7 +59,7 @@ pub struct Sending {
 #[serde(deny_unknown_fields)]
 struct Queue {
     #[serde(default)]
-    days: BTreeMap<u32, DailyReport>,
+    hours: BTreeMap<u32, HourlyReport>,
     #[serde(default)]
     events: Vec<Event>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,31 +76,31 @@ struct Out {
 
 impl Out {
     fn new(id: InstallId, batch: Batch) -> io::Result<Self> {
-        let uuids = (0..batch.days.len() + batch.events.len())
+        let uuids = (0..batch.hours.len() + batch.events.len())
             .map(|_| EventUuid::generate().map_err(io::Error::other))
             .collect::<io::Result<_>>()?;
         Ok(Out { id, batch, uuids })
     }
 
-    fn trimmed(self, today: u32) -> Option<Self> {
-        if self.uuids.len() != self.batch.days.len() + self.batch.events.len() {
+    fn trimmed(self, hour: u32) -> Option<Self> {
+        if self.uuids.len() != self.batch.hours.len() + self.batch.events.len() {
             return None;
         }
-        let oldest = today.saturating_sub(KEEP_DAYS);
+        let oldest = hour.saturating_sub(KEEP_HOURS);
         let mut uuids = self.uuids.into_iter();
         let mut out = Out {
             id: self.id,
             batch: Batch::default(),
             uuids: Vec::new(),
         };
-        for (report, uuid) in self.batch.days.into_iter().zip(uuids.by_ref()) {
-            if report.day >= oldest {
-                out.batch.days.push(report);
+        for (report, uuid) in self.batch.hours.into_iter().zip(uuids.by_ref()) {
+            if report.hour >= oldest {
+                out.batch.hours.push(report);
                 out.uuids.push(uuid);
             }
         }
         for (event, uuid) in self.batch.events.into_iter().zip(uuids) {
-            if event.day() >= oldest {
+            if event.hour() >= oldest {
                 out.batch.events.push(event);
                 out.uuids.push(uuid);
             }
@@ -108,14 +110,14 @@ impl Out {
 }
 
 impl Queue {
-    fn put(&mut self, days: impl IntoIterator<Item = DailyReport>, events: Vec<Event>) {
-        for report in days {
-            let day = report.day;
-            self.days
-                .entry(day)
-                .or_insert_with(|| DailyReport {
-                    day,
-                    ..DailyReport::default()
+    fn put(&mut self, hours: impl IntoIterator<Item = HourlyReport>, events: Vec<Event>) {
+        for report in hours {
+            let hour = report.hour;
+            self.hours
+                .entry(hour)
+                .or_insert_with(|| HourlyReport {
+                    hour,
+                    ..HourlyReport::default()
                 })
                 .merge(report);
         }
@@ -133,15 +135,75 @@ impl Queue {
         self.out.iter().flat_map(|out| &out.batch.events)
     }
 
-    fn trim(&mut self, today: u32) {
-        self.out = self.out.take().and_then(|out| out.trimmed(today));
-        let oldest = today.saturating_sub(KEEP_DAYS);
-        self.days
-            .retain(|day, report| *day >= oldest && !report.is_empty());
-        self.events.retain(|event| event.day() >= oldest);
+    fn trim(&mut self, hour: u32) {
+        self.out = self.out.take().and_then(|out| out.trimmed(hour));
+        let oldest = hour.saturating_sub(KEEP_HOURS);
+        self.hours
+            .retain(|hour, report| *hour >= oldest && !report.is_empty());
+        self.events.retain(|event| event.hour() >= oldest);
         let over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
         self.events.drain(..over.min(self.events.len()));
     }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct OldQueue {
+    #[serde(default)]
+    days: BTreeMap<u32, OldReport>,
+    #[serde(default)]
+    events: Vec<OldEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    out: Option<OldOut>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct OldOut {
+    id: InstallId,
+    batch: OldBatch,
+    uuids: Vec<EventUuid>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OldBatch {
+    #[serde(default)]
+    pub days: Vec<OldReport>,
+    #[serde(default)]
+    pub events: Vec<OldEvent>,
+}
+
+impl OldBatch {
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty() && self.events.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OldReport {
+    pub day: u32,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub counters: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub levels: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub histograms: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OldEvent {
+    #[serde(rename = "type")]
+    pub name: String,
+    pub day: u32,
+    #[serde(flatten)]
+    pub fields: Map<String, Value>,
+}
+
+/// A batch an earlier release queued, as [`Store::take_old`] hands it out.
+#[derive(Debug)]
+pub struct SendingOld {
+    pub id: InstallId,
+    pub batch: OldBatch,
+    pub uuids: Vec<EventUuid>,
+    _lock: File,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,7 +254,7 @@ impl Store {
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
         if settings.install_id.is_none() {
-            remove(&self.dir.join("queue.json"))?;
+            self.remove_queues()?;
         }
         if on {
             settings.install_id.get_or_insert_with(InstallId::generate);
@@ -206,7 +268,7 @@ impl Store {
     /// Without an id there is nothing to reset.
     pub fn reset(&self) -> io::Result<Option<InstallId>> {
         let _lock = self.lock(true)?;
-        remove(&self.dir.join("queue.json"))?;
+        self.remove_queues()?;
         let mut settings = self.settings()?;
         if settings.install_id.is_none() {
             return Ok(None);
@@ -224,7 +286,7 @@ impl Store {
         if let Some(id) = &settings.install_id {
             return Ok(id.clone());
         }
-        remove(&self.dir.join("queue.json"))?;
+        self.remove_queues()?;
         let id = InstallId::generate();
         settings.install_id = Some(id.clone());
         write(&self.dir.join("settings.json"), &settings)?;
@@ -232,30 +294,30 @@ impl Store {
     }
 
     pub fn absorb(&self, pending: Pending) -> io::Result<()> {
-        self.absorb_at(pending, crate::today(), true)
+        self.absorb_at(pending, crate::this_hour(), true)
     }
 
     pub fn try_absorb(&self, pending: Pending) -> io::Result<()> {
-        self.absorb_at(pending, crate::today(), false)
+        self.absorb_at(pending, crate::this_hour(), false)
     }
 
     /// Like [`Store::absorb`], but only while the profile's install id is still `id`.
     pub fn absorb_as(&self, pending: Pending, id: &InstallId) -> io::Result<()> {
-        self.absorb_for(pending, crate::today(), true, Some(id))
+        self.absorb_for(pending, crate::this_hour(), true, Some(id))
     }
 
-    pub(crate) fn absorb_at(&self, pending: Pending, today: u32, wait: bool) -> io::Result<()> {
-        self.absorb_for(pending, today, wait, None)
+    pub(crate) fn absorb_at(&self, pending: Pending, hour: u32, wait: bool) -> io::Result<()> {
+        self.absorb_for(pending, hour, wait, None)
     }
 
     fn absorb_for(
         &self,
         pending: Pending,
-        today: u32,
+        hour: u32,
         wait: bool,
         expected: Option<&InstallId>,
     ) -> io::Result<()> {
-        if pending.days.values().all(DailyReport::is_empty) && pending.events.is_empty() {
+        if pending.hours.values().all(HourlyReport::is_empty) && pending.events.is_empty() {
             return Ok(());
         }
         let _lock = self.lock(wait)?;
@@ -265,12 +327,12 @@ impl Store {
             _ => {}
         }
         let mut queue = self.queue()?;
-        queue.put(pending.days.into_values(), pending.events);
-        queue.trim(today);
-        write(&self.dir.join("queue.json"), &queue)
+        queue.put(pending.hours.into_values(), pending.events);
+        queue.trim(hour);
+        write(&self.dir.join(QUEUE), &queue)
     }
 
-    pub fn take(&self, today: u32) -> io::Result<Option<Sending>> {
+    pub fn take(&self, hour: u32) -> io::Result<Option<Sending>> {
         let sending = match self.send_lock() {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
@@ -281,16 +343,16 @@ impl Store {
             return Ok(None);
         };
         let mut queue = self.queue()?;
-        let held = (queue.days.len(), queue.events.len(), queue.out.is_some());
-        queue.trim(today);
-        let trimmed = held != (queue.days.len(), queue.events.len(), queue.out.is_some());
+        let held = (queue.hours.len(), queue.events.len(), queue.out.is_some());
+        queue.trim(hour);
+        let trimmed = held != (queue.hours.len(), queue.events.len(), queue.out.is_some());
         let left = queue.out.take().filter(|out| out.id == id);
         let out = match left {
             Some(out) => out,
             None => {
-                let later = queue.days.split_off(&today);
+                let later = queue.hours.split_off(&hour);
                 let batch = Batch {
-                    days: std::mem::replace(&mut queue.days, later)
+                    hours: std::mem::replace(&mut queue.hours, later)
                         .into_values()
                         .collect(),
                     events: std::mem::take(&mut queue.events),
@@ -302,7 +364,7 @@ impl Store {
             queue.out = Some(out.clone());
         }
         if trimmed || held.2 || queue.out.is_some() {
-            write(&self.dir.join("queue.json"), &queue)?;
+            write(&self.dir.join(QUEUE), &queue)?;
         }
         Ok(Some(Sending {
             id,
@@ -331,23 +393,109 @@ impl Store {
             return Ok(());
         }
         queue.out = None;
-        write(&self.dir.join("queue.json"), &queue)
+        write(&self.dir.join(QUEUE), &queue)
     }
 
-    /// Everything in the queue, today and a batch that is out included, without taking it.
+    /// Everything in the queue, this hour and a batch that is out included, without taking it.
     pub fn peek(&self) -> io::Result<Batch> {
         let mut queue = self.queue()?;
         if let Some(out) = queue.out.take() {
-            queue.put(out.batch.days, out.batch.events);
+            queue.put(out.batch.hours, out.batch.events);
         }
         Ok(Batch {
-            days: queue.days.into_values().collect(),
+            hours: queue.hours.into_values().collect(),
             events: queue.events,
         })
     }
 
+    /// Hands out what an earlier release left in `queue.json`: first the batch it had out, with the uuids it drew, then
+    /// everything else it queued. The file keeps the batch, in that release's layout, until [`Store::sent_old`].
+    pub fn take_old(&self) -> io::Result<Option<SendingOld>> {
+        let sending = match self.send_lock() {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let _lock = self.lock(true)?;
+        let Some(id) = self.settings()?.install_id else {
+            return Ok(None);
+        };
+        let path = self.dir.join(OLD_QUEUE);
+        let mut queue: OldQueue = match read(&path) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                tracing::debug!(%error, "dropping an earlier release's telemetry queue that cannot be parsed");
+                OldQueue::default()
+            }
+            read => read?,
+        };
+        let left = (queue.out.take()).filter(|out| {
+            out.id == id && out.uuids.len() == out.batch.days.len() + out.batch.events.len()
+        });
+        let out = match left {
+            Some(out) => out,
+            None => {
+                let batch = OldBatch {
+                    days: std::mem::take(&mut queue.days).into_values().collect(),
+                    events: std::mem::take(&mut queue.events),
+                };
+                let uuids = (0..batch.days.len() + batch.events.len())
+                    .map(|_| EventUuid::generate().map_err(io::Error::other))
+                    .collect::<io::Result<_>>()?;
+                OldOut {
+                    id: id.clone(),
+                    batch,
+                    uuids,
+                }
+            }
+        };
+        if out.batch.is_empty() {
+            remove(&path)?;
+            return Ok(None);
+        }
+        queue.out = Some(out.clone());
+        write(&path, &queue)?;
+        Ok(Some(SendingOld {
+            id,
+            batch: out.batch,
+            uuids: out.uuids,
+            _lock: sending,
+        }))
+    }
+
+    /// Removes a batch [`Store::take_old`] handed out, and deletes `queue.json` once nothing else is left in it.
+    pub fn sent_old(&self, sending: SendingOld) -> io::Result<()> {
+        let _lock = self.lock(true)?;
+        let path = self.dir.join(OLD_QUEUE);
+        let mut queue: OldQueue = read(&path)?;
+        if (queue.out.as_ref()).is_some_and(|out| out.uuids == sending.uuids) {
+            queue.out = None;
+        }
+        if queue.days.is_empty() && queue.events.is_empty() && queue.out.is_none() {
+            remove(&path)
+        } else {
+            write(&path, &queue)
+        }
+    }
+
+    /// What an earlier release left in `queue.json`, its batch out included, without taking it.
+    pub fn peek_old(&self) -> io::Result<OldBatch> {
+        let queue: OldQueue = match read(&self.dir.join(OLD_QUEUE)) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => OldQueue::default(),
+            read => read?,
+        };
+        let mut batch = queue.out.map(|out| out.batch).unwrap_or_default();
+        batch.days.extend(queue.days.into_values());
+        batch.events.extend(queue.events);
+        Ok(batch)
+    }
+
+    fn remove_queues(&self) -> io::Result<()> {
+        remove(&self.dir.join(QUEUE))?;
+        remove(&self.dir.join(OLD_QUEUE))
+    }
+
     fn queue(&self) -> io::Result<Queue> {
-        match read(&self.dir.join("queue.json")) {
+        match read(&self.dir.join(QUEUE)) {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 tracing::debug!(%error, "dropping a telemetry queue that cannot be parsed");
                 Ok(Queue::default())
@@ -413,6 +561,39 @@ mod tests {
     use crate::schema::{Command, Counter, SourceFile};
 
     #[test]
+    fn an_earlier_release_queue_stays_when_it_cannot_be_read_after_its_batch_went() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let old = store.dir.join(OLD_QUEUE);
+        fs::write(&old, br#"{"days":{"1":{"day":1}},"events":[{"type":"panic","day":2,"file":"cli/src/main.rs","line":1}]}"#).unwrap();
+        let sending = store.take_old().unwrap().unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(store.sent_old(sending).is_err());
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(store.peek_old().unwrap().events.len(), 1);
+    }
+
+    #[test]
+    fn an_earlier_release_queue_goes_when_reports_turn_off_and_is_dropped_when_unreadable() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let old = store.dir.join(OLD_QUEUE);
+        fs::write(
+            &old,
+            br#"{"days":{"1":{"day":1,"counters":{"command":{"status":1}}}}}"#,
+        )
+        .unwrap();
+        store.set(false).unwrap();
+        assert!(!old.exists());
+        store.set(true).unwrap();
+        fs::write(&old, b"{").unwrap();
+        assert!(store.take_old().unwrap().is_none());
+        assert!(!old.exists());
+    }
+
+    #[test]
     fn unanswered_prompts_persist_without_consent_or_an_identity() {
         for on in [false, true] {
             let (dir, store) = store();
@@ -425,7 +606,7 @@ mod tests {
                 crate::Mode::Off
             ));
             assert!(!dir.path().join("telemetry/settings.json").exists());
-            assert!(!dir.path().join("telemetry/queue.json").exists());
+            assert!(!dir.path().join("telemetry/queue-v2.json").exists());
             store.set(on).unwrap();
             assert!(!store.prompt_pending().unwrap());
             assert!(!store.begin_prompt().unwrap());
@@ -439,18 +620,18 @@ mod tests {
         (dir, store)
     }
 
-    fn panic_on(day: u32) -> Event {
+    fn panic_on(hour: u32) -> Event {
         Event::Panic {
-            day,
+            at: u64::from(hour) * 3600,
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 7,
         }
     }
 
-    fn pending(day: u32, status: u64) -> Pending {
+    fn pending(hour: u32, status: u64) -> Pending {
         let recorder = Recorder::on();
-        recorder.count_on(day, Counter::Command(Command::Status), status);
-        recorder.event(panic_on(day));
+        recorder.count_on(hour, Counter::Command(Command::Status), status);
+        recorder.event(panic_on(hour));
         recorder.take()
     }
 
@@ -548,7 +729,7 @@ mod tests {
             let (_dir, store) = store();
             store.set(on).unwrap();
             let before = store.settings().unwrap().install_id;
-            fs::create_dir(store.dir.join("queue.json")).unwrap();
+            fs::create_dir(store.dir.join(QUEUE)).unwrap();
             assert!(draw(&store).is_err());
             assert_eq!(store.settings().unwrap().install_id, before);
         }
@@ -561,34 +742,34 @@ mod tests {
         store.absorb_at(pending(100, 1), 100, true).unwrap();
         store.absorb_at(pending(100, 2), 100, true).unwrap();
         let queued = store.peek().unwrap();
-        assert_eq!(queued.days.len(), 1);
-        assert_eq!(queued.days[0].counters["command"]["status"], 3);
+        assert_eq!(queued.hours.len(), 1);
+        assert_eq!(queued.hours[0].counters["command"]["status"], 3);
         assert_eq!(queued.events.len(), 2);
     }
 
-    fn days(queue: &Queue) -> Vec<u32> {
-        queue.days.keys().copied().collect()
+    fn hours(queue: &Queue) -> Vec<u32> {
+        queue.hours.keys().copied().collect()
     }
 
     #[test]
-    fn take_leaves_today_and_give_back_restores_the_rest() {
+    fn take_leaves_this_hour_and_give_back_restores_the_rest() {
         let (_dir, store) = store();
         store.set(true).unwrap();
         store.absorb_at(pending(99, 1), 100, true).unwrap();
         store.absorb_at(pending(100, 5), 100, true).unwrap();
         let sending = store.take(100).unwrap().unwrap();
         assert_eq!(
-            (sending.batch.days.iter())
-                .map(|report| report.day)
+            (sending.batch.hours.iter())
+                .map(|report| report.hour)
                 .collect::<Vec<_>>(),
             [99]
         );
         assert_eq!(sending.batch.events.len(), 2);
         let left = store.queue().unwrap();
-        assert_eq!(days(&left), [100]);
+        assert_eq!(hours(&left), [100]);
         assert!(left.events.is_empty());
         assert_eq!(left.out.unwrap().batch, sending.batch);
-        assert_eq!(store.peek().unwrap().days.len(), 2);
+        assert_eq!(store.peek().unwrap().hours.len(), 2);
 
         let (batch, uuids) = (sending.batch.clone(), sending.uuids.clone());
         assert_eq!(uuids.len(), 3);
@@ -605,7 +786,7 @@ mod tests {
         store.absorb_at(pending(99, 1), 100, true).unwrap();
         assert!(
             store
-                .take(99 + KEEP_DAYS + 1)
+                .take(99 + KEEP_HOURS + 1)
                 .unwrap()
                 .unwrap()
                 .batch
@@ -616,7 +797,7 @@ mod tests {
         store.give_back(sending).unwrap();
         assert!(
             store
-                .take(99 + KEEP_DAYS + 1)
+                .take(99 + KEEP_HOURS + 1)
                 .unwrap()
                 .unwrap()
                 .batch
@@ -630,9 +811,9 @@ mod tests {
         let (_dir, store) = store();
         store.set(true).unwrap();
         store.absorb_at(pending(99, 1), 100, true).unwrap();
-        let late = 99 + KEEP_DAYS + 1;
+        let late = 99 + KEEP_HOURS + 1;
         drop(store.take(late).unwrap());
-        assert!(store.queue().unwrap().days.is_empty());
+        assert!(store.queue().unwrap().hours.is_empty());
         assert!(store.queue().unwrap().events.is_empty());
     }
 
@@ -643,7 +824,7 @@ mod tests {
         store.absorb_at(pending(99, 1), 100, true).unwrap();
         let sending = store.take(100).unwrap().unwrap();
         store.give_back(sending).unwrap();
-        let late = 99 + KEEP_DAYS + 1;
+        let late = 99 + KEEP_HOURS + 1;
         store.absorb_at(pending(late, 1), late, true).unwrap();
         let queue = store.queue().unwrap();
         assert!(queue.out.is_none());
@@ -655,7 +836,7 @@ mod tests {
         let (_dir, store) = store();
         store.set(true).unwrap();
         let panics = |n| Pending {
-            days: BTreeMap::new(),
+            hours: BTreeMap::new(),
             events: vec![panic_on(99); n],
         };
         store
@@ -674,11 +855,11 @@ mod tests {
         store.absorb_at(pending(98, 1), 100, true).unwrap();
         store.absorb_at(pending(99, 1), 100, true).unwrap();
         let sending = store.take(100).unwrap().unwrap();
-        assert_eq!(sending.batch.days.len(), 2);
+        assert_eq!(sending.batch.hours.len(), 2);
         store
-            .absorb_at(pending(100, 1), 98 + KEEP_DAYS + 1, true)
+            .absorb_at(pending(100, 1), 98 + KEEP_HOURS + 1, true)
             .unwrap();
-        assert_eq!(store.queue().unwrap().out.unwrap().batch.days.len(), 1);
+        assert_eq!(store.queue().unwrap().out.unwrap().batch.hours.len(), 1);
         store.sent(sending).unwrap();
         assert!(store.queue().unwrap().out.is_none());
     }
@@ -722,7 +903,7 @@ mod tests {
         assert_eq!((&again.batch, &again.uuids), (&batch, &uuids));
         store.sent(again).unwrap();
         let next = store.take(100).unwrap().unwrap();
-        assert_eq!(next.batch.days[0].counters["command"]["status"], 2);
+        assert_eq!(next.batch.hours[0].counters["command"]["status"], 2);
         assert_ne!(next.uuids, uuids);
     }
 
@@ -771,18 +952,18 @@ mod tests {
     fn an_unreadable_queue_is_dropped_instead_of_stopping_later_writes() {
         let (_dir, store) = store();
         store.set(true).unwrap();
-        fs::write(store.dir.join("queue.json"), b"").unwrap();
+        fs::write(store.dir.join(QUEUE), b"").unwrap();
         store.absorb_at(pending(100, 1), 100, true).unwrap();
-        assert_eq!(store.peek().unwrap().days.len(), 1);
+        assert_eq!(store.peek().unwrap().hours.len(), 1);
     }
 
     #[test]
     fn a_queue_that_cannot_be_read_is_left_alone() {
         let (_dir, store) = store();
         store.set(true).unwrap();
-        fs::create_dir(store.dir.join("queue.json")).unwrap();
+        fs::create_dir(store.dir.join(QUEUE)).unwrap();
         assert!(store.absorb_at(pending(100, 1), 100, true).is_err());
-        assert!(store.dir.join("queue.json").is_dir());
+        assert!(store.dir.join(QUEUE).is_dir());
     }
 
     #[test]
@@ -795,21 +976,23 @@ mod tests {
     }
 
     #[test]
-    fn old_days_and_events_are_dropped() {
+    fn old_hours_and_events_are_dropped() {
         let (_dir, store) = store();
         store.set(true).unwrap();
-        store.absorb_at(pending(80, 1), 80, true).unwrap();
-        store.absorb_at(pending(100, 1), 100, true).unwrap();
+        store
+            .absorb_at(pending(400 - KEEP_HOURS - 1, 1), 400 - KEEP_HOURS - 1, true)
+            .unwrap();
+        store.absorb_at(pending(400, 1), 400, true).unwrap();
         let queued = store.peek().unwrap();
         assert_eq!(
             queued
-                .days
+                .hours
                 .iter()
-                .map(|report| report.day)
+                .map(|report| report.hour)
                 .collect::<Vec<_>>(),
-            [100]
+            [400]
         );
-        assert!(queued.events.iter().all(|event| event.day() == 100));
+        assert!(queued.events.iter().all(|event| event.hour() == 400));
     }
 
     #[test]
@@ -820,7 +1003,7 @@ mod tests {
             store
                 .absorb_at(
                     Pending {
-                        days: BTreeMap::new(),
+                        hours: BTreeMap::new(),
                         events: vec![panic_on(100)],
                     },
                     100,

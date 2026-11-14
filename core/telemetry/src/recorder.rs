@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::schema::{Counter, DailyReport, Event, InstallId, Level, Measure};
+use crate::schema::{Counter, Event, HourlyReport, InstallId, Level, Measure};
 
 /// A cheap handle that code passes around to record. Clones share one switch and one set of sums. While it is off it
 /// records nothing and costs one branch per call. Recording takes a short lock on the sums and does no I/O.
@@ -21,7 +21,7 @@ struct Shared {
 /// What a recorder holds and [`Recorder::take`] hands over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pending {
-    pub days: BTreeMap<u32, DailyReport>,
+    pub hours: BTreeMap<u32, HourlyReport>,
     pub events: Vec<Event>,
 }
 
@@ -83,16 +83,16 @@ impl Recorder {
     }
 
     pub fn count(&self, counter: Counter, by: u64) {
-        self.count_on(crate::today(), counter, by);
+        self.count_on(crate::this_hour(), counter, by);
     }
 
     pub fn measure(&self, measure: Measure, value: u64) {
-        self.measure_on(crate::today(), measure, value);
+        self.measure_on(crate::this_hour(), measure, value);
     }
 
-    /// Keeps `value` when it is the highest reading of `level` today.
+    /// Keeps `value` when it is the highest reading of `level` this hour.
     pub fn level(&self, level: Level, value: u64) {
-        self.level_on(crate::today(), level, value);
+        self.level_on(crate::this_hour(), level, value);
     }
 
     /// Keeps an event, unless [`Event::PER_KIND_PER_DAY`] of its kind are already held for its day.
@@ -116,13 +116,13 @@ impl Recorder {
 
     pub fn restore(&self, taken: Pending) {
         self.with(|pending| {
-            for (day, report) in taken.days {
+            for (hour, report) in taken.hours {
                 pending
-                    .days
-                    .entry(day)
-                    .or_insert_with(|| DailyReport {
-                        day,
-                        ..DailyReport::default()
+                    .hours
+                    .entry(hour)
+                    .or_insert_with(|| HourlyReport {
+                        hour,
+                        ..HourlyReport::default()
                     })
                     .merge(report);
             }
@@ -139,12 +139,12 @@ impl Recorder {
         });
     }
 
-    pub fn count_on(&self, day: u32, counter: Counter, by: u64) {
+    pub fn count_on(&self, hour: u32, counter: Counter, by: u64) {
         let (metric, label) = counter.key();
         self.with(|pending| {
-            let report = pending.days.entry(day).or_insert_with(|| DailyReport {
-                day,
-                ..DailyReport::default()
+            let report = pending.hours.entry(hour).or_insert_with(|| HourlyReport {
+                hour,
+                ..HourlyReport::default()
             });
             let sum = report
                 .counters
@@ -156,12 +156,12 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn level_on(&self, day: u32, level: Level, value: u64) {
+    pub(crate) fn level_on(&self, hour: u32, level: Level, value: u64) {
         let (metric, label) = level.key();
         self.with(|pending| {
-            let report = pending.days.entry(day).or_insert_with(|| DailyReport {
-                day,
-                ..DailyReport::default()
+            let report = pending.hours.entry(hour).or_insert_with(|| HourlyReport {
+                hour,
+                ..HourlyReport::default()
             });
             let highest = report
                 .levels
@@ -173,12 +173,12 @@ impl Recorder {
         });
     }
 
-    pub fn measure_on(&self, day: u32, measure: Measure, value: u64) {
+    pub fn measure_on(&self, hour: u32, measure: Measure, value: u64) {
         let (metric, label, _) = measure.key();
         self.with(|pending| {
-            let report = pending.days.entry(day).or_insert_with(|| DailyReport {
-                day,
-                ..DailyReport::default()
+            let report = pending.hours.entry(hour).or_insert_with(|| HourlyReport {
+                hour,
+                ..HourlyReport::default()
             });
             let labels = report.histograms.entry(metric.to_owned()).or_default();
             labels
@@ -205,7 +205,7 @@ mod tests {
 
     fn panic_on(day: u32) -> Event {
         Event::Panic {
-            day,
+            at: u64::from(day) * 86_400,
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 1,
         }
@@ -228,7 +228,7 @@ mod tests {
         assert!(clone.is_on());
         clone.count_on(1, Counter::Command(Command::Folder), 1);
         assert_eq!(
-            recorder.take().days[&1].counters["command"],
+            recorder.take().hours[&1].counters["command"],
             BTreeMap::from([("folder".to_owned(), 1)])
         );
         clone.event(panic_on(1));
@@ -261,14 +261,14 @@ mod tests {
     }
 
     #[test]
-    fn counts_sum_per_day_and_label() {
+    fn counts_sum_per_hour_and_label() {
         let recorder = Recorder::on();
         recorder.count_on(10, Counter::Command(Command::Status), 1);
         recorder.count_on(10, Counter::Command(Command::Status), 2);
         recorder.count_on(11, Counter::Command(Command::Folder), 1);
         let taken = recorder.take();
-        assert_eq!(taken.days[&10].counters["command"]["status"], 3);
-        assert_eq!(taken.days[&11].counters["command"]["folder"], 1);
+        assert_eq!(taken.hours[&10].counters["command"]["status"], 3);
+        assert_eq!(taken.hours[&11].counters["command"]["folder"], 1);
         assert_eq!(recorder.take(), Pending::default());
     }
 
@@ -294,7 +294,7 @@ mod tests {
         let taken = recorder.take();
         recorder.count_on(3, Counter::Command(Command::Status), 4);
         recorder.restore(taken);
-        assert_eq!(recorder.take().days[&3].counters["command"]["status"], 5);
+        assert_eq!(recorder.take().hours[&3].counters["command"]["status"], 5);
     }
 
     #[test]

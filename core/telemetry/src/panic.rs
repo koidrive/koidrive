@@ -20,7 +20,7 @@ pub fn install_panic_hook(store: Store) {
         );
         if on && let Some(location) = info.location() {
             let event = Event::Panic {
-                day: crate::today(),
+                at: crate::now(),
                 file: SourceFile::from_location(location.file()),
                 line: location.line(),
             };

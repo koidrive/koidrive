@@ -12,20 +12,20 @@ impl Cpu {
         let Some(session) = recorder.session() else {
             return;
         };
-        self.record(recorder, session, crate::today(), process_nanoseconds());
+        self.record(recorder, session, crate::this_hour(), process_nanoseconds());
     }
 
-    fn record(&mut self, recorder: &Recorder, session: u64, day: u32, nanos: Option<u64>) {
+    fn record(&mut self, recorder: &Recorder, session: u64, hour: u32, nanos: Option<u64>) {
         let previous = self.previous.take();
         let Some(nanos) = nanos else { return };
-        self.previous = Some((session, day, nanos));
-        if let Some((before_session, before_day, before)) = previous
+        self.previous = Some((session, hour, nanos));
+        if let Some((before_session, before_hour, before)) = previous
             && before_session == session
-            && before_day == day
+            && (before_hour..=before_hour.saturating_add(1)).contains(&hour)
             && nanos >= before
         {
             recorder.count_on(
-                day,
+                hour,
                 Counter::CpuMilliseconds,
                 nanos / 1_000_000 - before / 1_000_000,
             );
@@ -54,10 +54,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpu_totals_omit_cross_day_intervals_errors_and_rewound_clocks() {
+    fn cpu_time_goes_to_the_hour_a_sample_ends_in_without_errors_or_rewound_clocks() {
         let recorder = Recorder::on();
         let mut cpu = Cpu::default();
-        for (day, nanos) in [
+        for (hour, nanos) in [
             (1, Some(0)),
             (1, Some(5_000_000)),
             (2, Some(100_000_000)),
@@ -67,11 +67,11 @@ mod tests {
             (2, Some(903_000_000)),
             (2, Some(1)),
         ] {
-            cpu.record(&recorder, 1, day, nanos);
+            cpu.record(&recorder, 1, hour, nanos);
         }
-        let value = serde_json::to_value(recorder.take().days).unwrap();
+        let value = serde_json::to_value(recorder.take().hours).unwrap();
         assert_eq!(value["1"]["counters"]["process"]["cpu_ms"], 5);
-        assert_eq!(value["2"]["counters"]["process"]["cpu_ms"], 10);
+        assert_eq!(value["2"]["counters"]["process"]["cpu_ms"], 105);
     }
 
     #[test]
@@ -81,7 +81,7 @@ mod tests {
         for (session, nanos) in [(1, 0), (1, 4_000_000), (2, 90_000_000), (2, 93_000_000)] {
             cpu.record(&recorder, session, 1, Some(nanos));
         }
-        let value = serde_json::to_value(recorder.take().days).unwrap();
+        let value = serde_json::to_value(recorder.take().hours).unwrap();
         assert_eq!(value["1"]["counters"]["process"]["cpu_ms"], 7);
     }
 
@@ -93,19 +93,19 @@ mod tests {
     }
 
     #[test]
-    fn submillisecond_samples_accumulate_and_multiday_gaps_are_not_attributed() {
+    fn submillisecond_samples_accumulate_and_gaps_of_hours_are_not_attributed() {
         let recorder = Recorder::on();
         let mut cpu = Cpu::default();
-        for (day, nanos) in [
+        for (hour, nanos) in [
             (1, 1),
             (1, 500_000),
             (1, 1_000_001),
             (4, 900_000_000),
             (4, 902_000_000),
         ] {
-            cpu.record(&recorder, 1, day, Some(nanos));
+            cpu.record(&recorder, 1, hour, Some(nanos));
         }
-        let value = serde_json::to_value(recorder.take().days).unwrap();
+        let value = serde_json::to_value(recorder.take().hours).unwrap();
         assert_eq!(value["1"]["counters"]["process"]["cpu_ms"], 1);
         assert_eq!(value["4"]["counters"]["process"]["cpu_ms"], 2);
         assert!(value.get("2").is_none());

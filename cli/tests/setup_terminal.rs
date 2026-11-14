@@ -1280,7 +1280,7 @@ fn opting_in_after_setup_enables_future_reports_without_recording_the_setup() {
     assert!(
         !home
             .path()
-            .join("state/koidrive/telemetry/queue.json")
+            .join("state/koidrive/telemetry/queue-v2.json")
             .exists()
     );
 }

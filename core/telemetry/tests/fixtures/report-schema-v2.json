@@ -3,7 +3,7 @@
     "api_key": "schema-test-token",
     "batch": [
       {
-        "event": "daily_report",
+        "event": "hourly_report",
         "properties": {
           "$geoip_disable": true,
           "$process_person_profile": false,
@@ -13,9 +13,9 @@
           "distinct_id": "00000000000000000000000000000000",
           "koi_version": "0.1.0",
           "os": "linux",
-          "schema": 1
+          "schema": 2
         },
-        "timestamp": "1970-01-02T00:00:00Z"
+        "timestamp": "1970-01-02T01:00:00Z"
       }
     ],
     "historical_migration": false
@@ -24,7 +24,7 @@
     "api_key": "schema-test-token",
     "batch": [
       {
-        "event": "daily_report",
+        "event": "hourly_report",
         "properties": {
           "$geoip_disable": true,
           "$process_person_profile": false,
@@ -290,7 +290,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 1
+          "schema": 2
         },
         "timestamp": "1970-01-01T00:00:00Z",
         "uuid": "00000000-0000-4000-8000-000000000000"
@@ -312,11 +312,11 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 1,
+          "schema": 2,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
-        "timestamp": "1970-01-01T00:00:00Z",
+        "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000001"
       },
       {
@@ -335,11 +335,11 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 1,
+          "schema": 2,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
-        "timestamp": "1970-01-01T00:00:00Z",
+        "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000002"
       },
       {
@@ -358,9 +358,9 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 1
+          "schema": 2
         },
-        "timestamp": "1970-01-01T00:00:00Z",
+        "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000003"
       }
     ],

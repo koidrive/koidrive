@@ -4,9 +4,11 @@ use super::*;
 use koidrive_telemetry::Recorder;
 
 fn histograms(recorder: &Recorder) -> serde_json::Value {
-    let day = koidrive_telemetry::today();
-    let histograms =
-        serde_json::to_value(recorder.take().days.get(&day)).unwrap()["histograms"].clone();
+    let mut all = koidrive_telemetry::HourlyReport::default();
+    for report in recorder.take().hours.into_values() {
+        all.merge(report);
+    }
+    let histograms = serde_json::to_value(all).unwrap()["histograms"].clone();
     for metric in ["first_sync_ms", "remote_apply_ms", "syncing_ms"] {
         if let Some(labels) = histograms[metric].as_object() {
             for histogram in labels.values() {
