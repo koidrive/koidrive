@@ -66,7 +66,7 @@ pub(crate) fn app_crash(report: &Value) -> Option<Event> {
             12 => CrashSignal::Sys,
             _ => CrashSignal::Other,
         });
-    let at = seconds(&report["report"]["timestamp"]).unwrap_or_else(crate::now);
+    let at = micros(&report["report"]["timestamp"])? / 1_000_000;
     Some(Event::AppCrash {
         at,
         kind,
@@ -77,24 +77,25 @@ pub(crate) fn app_crash(report: &Value) -> Option<Event> {
     })
 }
 
-fn seconds(timestamp: &Value) -> Option<u64> {
+pub(crate) fn micros(timestamp: &Value) -> Option<u64> {
     if let Some(micros) = timestamp.as_u64() {
-        return Some(micros / 1_000_000);
+        return Some(micros);
     }
     let (date, time) = timestamp.as_str()?.strip_suffix('Z')?.split_once('T')?;
     let mut date = date.splitn(3, '-').map(|part| part.parse::<i64>().ok());
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);
-    let mut time = time
-        .splitn(3, ':')
-        .map(|part| part.split('.').next()?.parse::<u64>().ok());
+    let (time, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let mut time = time.splitn(3, ':').map(|part| part.parse::<u64>().ok());
     let (hour, minute, second) = (time.next()??, time.next()??, time.next()??);
+    let fraction = format!("{fraction:0<6}");
+    let fraction = fraction.get(..6)?.parse::<u64>().ok()?;
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let yoe = year - era * 400;
     let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
     let days =
         u64::try_from(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468).ok()?;
-    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second) * 1_000_000 + fraction)
 }
 
 #[cfg(test)]
@@ -169,7 +170,6 @@ mod tests {
         let mut report = report();
         report["binary_images"] = json!([]);
         report["crash"]["error"] = json!({ "type": "something_new" });
-        report["report"] = json!({});
         let Some(Event::AppCrash {
             kind,
             exception,
@@ -186,6 +186,8 @@ mod tests {
             (CrashKind::Other, None, None, None, vec![])
         );
         assert!(app_crash(&json!({ "report": {} })).is_none());
+        report["report"]["timestamp"] = json!("yesterday");
+        assert!(app_crash(&report).is_none());
     }
 
     #[test]
@@ -201,6 +203,23 @@ mod tests {
                 matches!(app_crash(&report), Some(Event::AppCrash { at, .. }) if at == seconds)
             );
         }
+    }
+
+    #[test]
+    fn the_crash_time_keeps_its_microseconds() {
+        assert_eq!(
+            micros(&json!("2026-11-14T16:27:11.577071Z")),
+            Some(1_794_673_631_577_071)
+        );
+        assert_eq!(
+            micros(&json!("2026-11-14T16:27:11.5Z")),
+            Some(1_794_673_631_500_000)
+        );
+        assert_eq!(
+            micros(&json!("2026-11-14T16:27:11Z")),
+            Some(1_794_673_631_000_000)
+        );
+        assert_eq!(micros(&json!("2026-11-14T16:27:11.5x7Z")), None);
     }
 
     #[test]

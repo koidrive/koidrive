@@ -3,19 +3,24 @@
 import Foundation
 import KSCrashRecording
 import KoidriveFFI
+import KoidriveModel
 
 enum CrashReports {
     static func install() {
         let configuration = KSCrashConfiguration()
-        configuration.monitors = [.signal, .cppException, .nsException]
+        configuration.monitors = [.machException, .signal, .cppException, .nsException]
         configuration.enableMemoryIntrospection = false
         configuration.enableQueueNameSearch = false
         configuration.addConsoleLogToReport = false
-        configuration.userInfoJSON = ["koidrive_version": KoidriveFFI.version()]
         try? KSCrash.shared.install(with: configuration)
+        KSCrash.shared.setUserInfo(KoidriveFFI.version(), forKey: "koidrive_version")
+        KSCrash.shared.setUserInfo(false, forKey: "reports_on")
     }
 
-    static func forward(to session: SyncSession) {
+    @MainActor static func forward(from model: AppModel) {
+        model.telemetryChanged = { KSCrash.shared.setUserInfo($0.enabled, forKey: "reports_on") }
+        KSCrash.shared.setUserInfo(model.telemetry.enabled, forKey: "reports_on")
+        let session = model.session
         Task.detached(priority: .utility) {
             guard let store = KSCrash.shared.reportStore else { return }
             for id in store.reportIDs.map(\.int64Value) {

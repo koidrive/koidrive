@@ -1531,6 +1531,7 @@ fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
                 "error": { "type": "signal", "signal": { "signal": 11 }, "reason": "/Users/alice/Notes" },
                 "threads": [{ "crashed": true, "backtrace": { "contents": [{ "object_addr": 4096, "instruction_addr": 5096 }] } }],
             },
+            "user": { "reports_on": id != "off" },
         })
         .to_string()
     };
@@ -1539,6 +1540,8 @@ fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
     store.set(true).unwrap();
     assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
     assert_eq!(koi.core.record_app_crash("not a report"), Ok(()));
+    let stamped_off = report("off", json!("2099-01-01T00:00:00Z"));
+    assert_eq!(koi.core.record_app_crash(&stamped_off), Ok(()));
     assert!(store.peek().unwrap().events.is_empty());
 
     let queue = koi.core.paths.state_dir.join("telemetry/queue-v2.json");

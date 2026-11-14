@@ -19,6 +19,43 @@ use crate::types::{
     SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash,
 };
 
+#[cfg(target_os = "macos")]
+fn without_crash_handler(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    const KSCRASH_EXCEPTIONS: u32 = 0x6E;
+    const EXCEPTION_DEFAULT: i32 = 1;
+    #[cfg(target_arch = "aarch64")]
+    const THREAD_STATE_NONE: i32 = 5;
+    #[cfg(target_arch = "x86_64")]
+    const THREAD_STATE_NONE: i32 = 13;
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn task_set_exception_ports(
+            task: u32,
+            mask: u32,
+            port: u32,
+            behavior: i32,
+            flavor: i32,
+        ) -> i32;
+    }
+    // The app's crash reporter catches Mach exceptions through the task's exception ports, which a child inherits
+    // across fork and exec, so a crash in `koi` would otherwise be written as the app's.
+    // SAFETY: the closure runs in the forked child before exec and makes one Mach call, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            task_set_exception_ports(
+                mach_task_self_,
+                KSCRASH_EXCEPTIONS,
+                0,
+                EXCEPTION_DEFAULT,
+                THREAD_STATE_NONE,
+            );
+            Ok(())
+        });
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Helper {
     pub(crate) path: PathBuf,
@@ -133,6 +170,8 @@ impl Helper {
         input: Option<&str>,
     ) -> Result<Done, Refusal> {
         let mut command = Command::new(&self.path);
+        #[cfg(target_os = "macos")]
+        without_crash_handler(&mut command);
         command
             .arg("--json")
             .args(args)

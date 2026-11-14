@@ -39,7 +39,7 @@ struct KoidriveApp: App {
             let helper = Bundle.main.bundleURL.appending(path: "Contents/Helpers/koi")
             do {
                 model = try AppModel.open(helper: helper)
-                CrashReports.forward(to: model.session)
+                CrashReports.forward(from: model)
             } catch {
                 Self.quit(after: error)
             }

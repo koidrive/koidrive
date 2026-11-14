@@ -28,7 +28,7 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
-    /// When reports were last turned on, in seconds since the Unix epoch.
+    /// When reports were last turned on, in microseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_since: Option<u64>,
 }
@@ -354,7 +354,7 @@ impl Store {
             settings => settings?,
         };
         if settings.enabled != Some(on) {
-            settings.on_since = on.then(crate::now);
+            settings.on_since = on.then(now_micros);
         }
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
@@ -394,7 +394,7 @@ impl Store {
         self.remove_queues()?;
         let id = InstallId::generate();
         settings.install_id = Some(id.clone());
-        settings.on_since.get_or_insert_with(crate::now);
+        settings.on_since.get_or_insert_with(now_micros);
         write(&self.dir.join("settings.json"), &settings)?;
         Ok(id)
     }
@@ -447,17 +447,22 @@ impl Store {
     /// Queues the crash in `report`, a crash report KSCrash 2.6 wrote. Only the crash's kind, Mach exception, signal and
     /// time are read, with the build UUID of the executable that crashed, the offsets of the crashed thread's frames in it
     /// and the version the app wrote into `user.koidrive_version`, which the event goes under; paths, names, messages,
-    /// memory and everything else in the report are never read. A report the queue
-    /// already took by its id, one without a crash and one from before reports were last turned on add nothing.
+    /// memory and everything else in the report are never read. Only a report whose `user.reports_on` says reports were on
+    /// as the app crashed, from after they were last turned on, is queued, and only once by its id.
     pub fn absorb_app_crash(&self, report: &Value) -> io::Result<()> {
-        let Some(event) = crate::app_crash::app_crash(report) else {
+        let crashed_at = crate::app_crash::micros(&report["report"]["timestamp"]);
+        let Some(event) =
+            crate::app_crash::app_crash(report).filter(|_| report["user"]["reports_on"] == true)
+        else {
             return Ok(());
         };
         let id = report["report"]["id"].as_str().map(str::to_owned);
         let _lock = self.lock(true)?;
         let settings = self.settings()?;
         if settings.install_id.is_none()
-            || settings.on_since.is_some_and(|since| event.at() < since)
+            || settings
+                .on_since
+                .is_some_and(|since| crashed_at < Some(since))
         {
             return Ok(());
         }
@@ -687,6 +692,14 @@ impl Store {
         flock(&file, operation)?;
         Ok(file)
     }
+}
+
+fn now_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
+        })
 }
 
 fn read<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
@@ -1337,10 +1350,11 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
 
-    fn crash_report(id: &str, at: u64) -> Value {
+    fn crash_report(id: &str, micros: u64) -> Value {
         serde_json::json!({
-            "report": { "id": id, "timestamp": at * 1_000_000 },
+            "report": { "id": id, "timestamp": micros },
             "crash": { "error": { "type": "signal", "signal": { "signal": 11 } } },
+            "user": { "reports_on": true },
         })
     }
 
@@ -1354,7 +1368,7 @@ mod tests {
     fn an_app_crash_report_handed_over_again_is_queued_once_even_after_its_send() {
         let (_dir, store) = store();
         store.set(true).unwrap();
-        let first = crash_report("4D2B0160-69B6-4DC1-BFED-08A0554A67C9", crate::now());
+        let first = crash_report("4D2B0160-69B6-4DC1-BFED-08A0554A67C9", now_micros());
         store.absorb_app_crash(&first).unwrap();
         store.absorb_app_crash(&first).unwrap();
         assert_eq!(app_crashes(&store), 1);
@@ -1364,7 +1378,7 @@ mod tests {
         store.absorb_app_crash(&first).unwrap();
         assert_eq!(app_crashes(&store), 0);
 
-        let second = crash_report("0F3C2E7A-1B4D-4E5F-8A9B-0C1D2E3F4A5B", crate::now());
+        let second = crash_report("0F3C2E7A-1B4D-4E5F-8A9B-0C1D2E3F4A5B", now_micros());
         store.absorb_app_crash(&second).unwrap();
         assert_eq!(app_crashes(&store), 1);
         let queue = fs::read_to_string(store.dir.join(QUEUE)).unwrap();
@@ -1379,11 +1393,11 @@ mod tests {
             client: crate::schema::Client::MacosApp,
         });
         store.set(true).unwrap();
-        let mut report = crash_report("A", crate::now());
-        report["user"] = serde_json::json!({ "koidrive_version": "0.1.0-rc.1", "name": "alice" });
+        let mut report = crash_report("A", now_micros());
+        report["user"] = serde_json::json!({ "koidrive_version": "0.1.0-rc.1", "reports_on": true, "name": "alice" });
         store.absorb_app_crash(&report).unwrap();
         store
-            .absorb_app_crash(&crash_report("B", crate::now()))
+            .absorb_app_crash(&crash_report("B", now_micros()))
             .unwrap();
         let versions: Vec<_> = (store.peek().unwrap().events.into_iter())
             .map(|queued| String::from(queued.origin.unwrap().koi_version))
@@ -1392,10 +1406,10 @@ mod tests {
     }
 
     #[test]
-    fn an_app_crash_from_before_reports_were_last_turned_on_is_not_queued() {
+    fn an_app_crash_is_queued_only_when_reports_were_on_as_it_crashed_and_since() {
         let (_dir, store) = store();
         store.set(false).unwrap();
-        let before = crate::now() - 60;
+        let before = now_micros();
         assert!(store.absorb_app_crash(&crash_report("A", before)).is_ok());
         store.set(true).unwrap();
         store.absorb_app_crash(&crash_report("A", before)).unwrap();
@@ -1404,7 +1418,14 @@ mod tests {
         let since = store.settings().unwrap().on_since.unwrap();
         store.set(true).unwrap();
         assert_eq!(store.settings().unwrap().on_since, Some(since));
-        store.absorb_app_crash(&crash_report("B", since)).unwrap();
+        let mut off = crash_report("B", since + 1);
+        off["user"]["reports_on"] = false.into();
+        store.absorb_app_crash(&off).unwrap();
+        let mut unstamped = crash_report("C", since + 1);
+        unstamped["user"] = Value::Null;
+        store.absorb_app_crash(&unstamped).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+        store.absorb_app_crash(&crash_report("D", since)).unwrap();
         assert_eq!(app_crashes(&store), 1);
     }
 
@@ -1413,7 +1434,7 @@ mod tests {
         let (_dir, store) = store();
         store.set(true).unwrap();
         fs::create_dir(store.dir.join(QUEUE)).unwrap();
-        let report = crash_report("A", crate::now());
+        let report = crash_report("A", now_micros());
         assert!(store.absorb_app_crash(&report).is_err());
         fs::remove_dir(store.dir.join(QUEUE)).unwrap();
         store.absorb_app_crash(&report).unwrap();
