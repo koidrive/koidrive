@@ -1265,6 +1265,7 @@ impl<'a> View<'a> {
         in_flight.is_some_and(|flight| flight.positions(id))
             || (!local.parked
                 && !trees.reverted().contains(id)
+                && !trees.is_discarded(id)
                 && (trees.acknowledged(id)).is_some_and(|base| !local.shape.same_position(base)))
     }
 
