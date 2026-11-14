@@ -40,8 +40,6 @@ fn a_restore_asked_for_while_the_folder_was_stopped_is_sent_after_the_next_start
     assert_eq!(ended(&site), [(id, Outcome::Restored)]);
 }
 
-/// The folder stops at each point between the request and its result (design §2.8). After the next start the
-/// space has applied the restore once and the folder holds the file.
 #[test]
 fn a_restore_is_applied_once_wherever_the_folder_stops() {
     for cut in ["asked", "taken", "applied", "answered"] {
@@ -72,7 +70,6 @@ fn a_restore_is_applied_once_wherever_the_folder_stops() {
         assert!(a.work.is_empty(), "{cut}");
         assert_eq!(files(&site.root), notes(), "{cut}");
         assert_eq!(ended(&site), [(id, Outcome::Restored)], "{cut}");
-        // The create, the delete and one restore.
         assert_eq!(remote.space.head_seq(), 3, "{cut}");
         assert_eq!(a.state(), FolderState::UpToDate, "{cut}");
     }

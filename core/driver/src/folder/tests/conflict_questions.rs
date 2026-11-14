@@ -59,7 +59,6 @@ fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
     );
 }
 
-/// Keep both closes the question and changes no file.
 #[test]
 fn keeping_both_files_of_a_conflict_changes_nothing() {
     let mut remote = Remote::new();
@@ -78,7 +77,6 @@ fn keeping_both_files_of_a_conflict_changes_nothing() {
     assert_eq!(remote.names(), [COPY, "main.go"]);
 }
 
-/// Keep the original moves the conflict copy to the server's trash, and every device removes it.
 #[test]
 fn keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash() {
     let mut remote = Remote::new();
@@ -101,8 +99,6 @@ fn keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash() {
     assert_eq!(shown(&site_b), []);
 }
 
-/// Keep the copy gives the original the copy's content, so the original's own content stays in its version history,
-/// and then moves the copy to the server's trash. Each step is a commit of one op.
 #[test]
 fn keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash() {
     let mut remote = Remote::new();
@@ -159,8 +155,6 @@ fn a_kept_copy_the_server_lost_gives_the_original_its_content_again() {
     assert_eq!(shown(&site), []);
 }
 
-/// Another device edits the copy before the server takes the answer to delete it. The server keeps the copy, and
-/// the conflict is asked again.
 #[test]
 fn a_conflict_whose_file_changes_before_the_answer_reaches_the_server_is_asked_again() {
     let mut remote = Remote::new();
@@ -219,8 +213,6 @@ fn a_kept_original_renamed_before_the_answer_reaches_the_server_keeps_the_copy()
     assert_eq!(files(&site_b.root), both);
 }
 
-/// The server rejects the op that carries out keep the original, and neither file changed. The engine drops the
-/// answer, so the folder shows the conflict again under the same ID with no answer and marks the questions changed.
 #[test]
 fn a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id() {
     let mut remote = Remote::new();
@@ -259,7 +251,6 @@ fn a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id() {
     assert_eq!(again.id, first.id);
 }
 
-/// A conflict in a folder that another device renames shows both files at their new paths, under the same id.
 #[test]
 fn a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed() {
     let mut remote = Remote::new();
@@ -303,8 +294,6 @@ fn a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed()
     );
 }
 
-/// Device `a` edits the original, and its observer has not seen the edit when `b`'s answer to keep the copy
-/// reaches it. The edit is kept in a file the person sees, on both devices, and both come to rest.
 #[test]
 fn an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept() {
     let mut remote = Remote::new();
@@ -327,7 +316,6 @@ fn an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept() {
     }
 }
 
-/// Renaming the copy by hand, here on the other device, ends the conflict.
 #[test]
 fn a_conflict_ends_when_someone_renames_a_file_by_hand() {
     let mut remote = Remote::new();
@@ -339,7 +327,6 @@ fn a_conflict_ends_when_someone_renames_a_file_by_hand() {
     assert_eq!(remote.names(), ["main.go", "other.go"]);
 }
 
-/// Deleting the copy by hand on the device that asks ends the conflict.
 #[test]
 fn a_conflict_ends_when_the_person_deletes_a_file_by_hand() {
     let mut remote = Remote::new();
@@ -351,8 +338,6 @@ fn a_conflict_ends_when_the_person_deletes_a_file_by_hand() {
     assert_eq!(remote.names(), ["main.go"]);
 }
 
-/// An edit of either file asks the question again under a new ID. The answer to the new question applies to the
-/// files as they are now.
 #[test]
 fn a_conflict_whose_file_changes_is_asked_again() {
     use crate::question::QuestionKind;
@@ -384,7 +369,6 @@ fn a_conflict_whose_file_changes_is_asked_again() {
     );
 }
 
-/// The question outlives the process, and its answer is carried out by the next one.
 #[test]
 fn a_conflict_is_asked_again_after_a_restart_and_answered_then() {
     let mut remote = Remote::new();
@@ -406,8 +390,6 @@ fn a_conflict_is_asked_again_after_a_restart_and_answered_then() {
     );
 }
 
-/// Two devices create a file of one name. The second commit gets a conflict name from the server, and its device
-/// asks about the pair.
 #[test]
 fn a_file_created_under_a_name_another_device_took_is_asked_about() {
     use crate::question::QuestionKind;
@@ -438,8 +420,6 @@ fn a_file_created_under_a_name_another_device_took_is_asked_about() {
     assert_eq!(shown(&site_a), []);
 }
 
-/// The person edits the copy on `b`, and the observer has not seen it when the answer to delete the copy is
-/// carried out. The edit is kept on both devices.
 #[test]
 fn an_edit_of_the_copy_the_answer_would_delete_is_kept() {
     let mut remote = Remote::new();
@@ -464,8 +444,6 @@ fn an_edit_of_the_copy_the_answer_would_delete_is_kept() {
     }
 }
 
-/// The person edits the original, and the upload of that edit is under way when they answer keep the copy. The
-/// edit is not taken for the answer: it stays, and the conflict is asked again about the new content.
 #[test]
 fn an_edit_of_the_original_sent_before_the_answer_asks_again() {
     let mut remote = Remote::new();
@@ -492,8 +470,6 @@ fn an_edit_of_the_original_sent_before_the_answer_asks_again() {
     assert_ne!(second.id, first.id);
 }
 
-/// Two conflict copies share one original. Keeping the first copy changes the original, so the other conflict is
-/// asked again under a new ID instead of taking an answer meant for the original as it was.
 #[test]
 fn keeping_one_of_two_copies_of_an_original_asks_about_the_other_again() {
     use crate::question::QuestionKind;
@@ -539,9 +515,6 @@ fn keeping_one_of_two_copies_of_an_original_asks_about_the_other_again() {
     assert!(!is_first(remaining));
 }
 
-/// Another device edits the copy while the commit that gives the original the copy's content is in flight. The
-/// applied answer stays applied: the original keeps the content it was given, the edited copy stays, and the
-/// conflict is asked again.
 #[test]
 fn an_edit_of_the_copy_while_the_original_takes_its_content_is_asked_about_again() {
     let mut remote = Remote::new();

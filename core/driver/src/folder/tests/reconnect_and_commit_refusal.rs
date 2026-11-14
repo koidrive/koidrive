@@ -191,8 +191,6 @@ fn a_commit_that_waits_for_the_owners_confirmation_is_not_lifted() {
     assert_eq!(flight.commit.commit_id, refused.commit_id);
 }
 
-/// GUN-349. Device `b` is moving `old.txt` to `remote.txt` after `a` renamed it, when `a` renames it back and the
-/// user edits it on `b`. Only the edit was the user's, so the file ends as `old.txt` with the edit on both sides.
 #[test]
 fn a_file_edited_while_a_move_the_server_undid_was_in_flight_keeps_its_name() {
     let mut remote = Remote::new();

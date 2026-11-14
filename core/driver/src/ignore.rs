@@ -18,13 +18,10 @@ use koidrive_ignore::{Kind, LocalRulesError, Reason, Status};
 
 use crate::config::SyncRules;
 
-/// Decides whether a path of a linked folder is excluded on this device, before any `.koiignore` file is read.
 pub trait Matcher: Send + Sync {
-    /// `path` is relative to the folder's root; `dir` says whether it names a folder.
     fn is_excluded(&self, path: &Path, dir: bool) -> bool;
 }
 
-/// Excludes nothing of its own. The built-in exclusions and the `.koiignore` files still apply to a scan.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unfiltered;
 
@@ -34,8 +31,6 @@ impl Matcher for Unfiltered {
     }
 }
 
-/// The names of a relative path. A name that is not UTF-8 is no name the server can hold, so how it is spelled here
-/// does not matter.
 fn names(path: &Path) -> Vec<String> {
     path.iter()
         .map(|name| name.to_string_lossy().into_owned())
@@ -47,7 +42,6 @@ fn status(rules: &Rules, path: &Path, dir: bool) -> Status {
     rules.status(&names(path), kind)
 }
 
-/// The built-in exclusions and this device's list.
 struct Device(Rules);
 
 impl Matcher for Device {
@@ -56,8 +50,6 @@ impl Matcher for Device {
     }
 }
 
-/// This device's `[sync]` list in the form the matcher takes, for the engine's trees as well. An include path is
-/// read as [`SyncRules::lines`] reads it, with any number of slashes around it.
 pub fn local_rules(sync: &SyncRules) -> Result<LocalRules, LocalRulesError> {
     let include: Vec<String> = sync
         .include
@@ -70,7 +62,6 @@ pub fn local_rules(sync: &SyncRules) -> Result<LocalRules, LocalRulesError> {
     LocalRules::new(&include, &sync.exclude)
 }
 
-/// The matcher of this device's `[sync]` list and the built-in exclusions.
 pub fn matcher(sync: &SyncRules) -> Result<Arc<dyn Matcher>, LocalRulesError> {
     Ok(Arc::new(Device(Rules::new(local_rules(sync)?))))
 }
@@ -85,7 +76,6 @@ pub fn has_sync_entries(root: &Path) -> std::io::Result<bool> {
     })
 }
 
-/// What `core/fs` asks while it scans: the device's matcher, and the `.koiignore` files the scan has read so far.
 struct Scanned {
     device: Arc<dyn Matcher>,
     files: Rules,
@@ -112,8 +102,6 @@ impl Ignore for Scanned {
     }
 }
 
-/// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the `.koiignore` files, of
-/// which it has read none yet. Its first scan reads and reports every one.
 pub(crate) fn scan_rules(device: &Arc<dyn Matcher>) -> koidrive_fs::Rules {
     koidrive_fs::Rules::new(Box::new(Scanned {
         device: device.clone(),
