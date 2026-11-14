@@ -27,7 +27,7 @@ use koidrive_engine::classify::Class;
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::ignore::LocalRules;
-use koidrive_engine::tree::{Content, Kind, RemoteNode, Shape, Tree, same_content};
+use koidrive_engine::tree::{Content, Kind, LocalNode, RemoteNode, Shape, Tree, same_content};
 use koidrive_fs::{Snapshot, Unresolved, check_root};
 use koidrive_net::{
     Auth, Backoff, CallError, ChunkError, Event, NotResent, ServerError, Session, SessionConfig,
@@ -259,10 +259,11 @@ enum Call {
 /// Calls of one kind that keep failing: since when, the latest failure and when the call is sent again.
 #[derive(Debug)]
 struct Unreadable {
-    path: Option<PathBuf>,
     failures: u32,
     why: String,
     at: SystemTime,
+    due: Instant,
+    seen: Option<LocalNode>,
 }
 
 struct Retrying {
@@ -508,6 +509,25 @@ impl Folder {
         self.local_entries = Some(entries);
         self.disk
             .observed(batch, &mut self.engine, &mut self.store)?;
+        let problems = self.engine.commits.problems();
+        let changed: Vec<String> = (self.unreadable.iter())
+            .filter(|(node, unreadable)| {
+                problems.contains(*node)
+                    && self.engine.trees.local().get(node.as_str()) != unreadable.seen.as_ref()
+            })
+            .map(|(node, _)| node.clone())
+            .collect();
+        if !changed.is_empty() {
+            self.step(|engine, _| {
+                for node in &changed {
+                    engine.commits.clear_problem(node);
+                }
+                Ok(())
+            })?;
+            for node in &changed {
+                self.unreadable.remove(node);
+            }
+        }
         let mut work = Vec::new();
         self.drive(&mut work)?;
         Ok(work)
@@ -638,10 +658,11 @@ impl Folder {
             .filter(|node| !self.stuck_effects.contains(*node))
             .cloned()
             .collect();
+        let now = Instant::now();
         let problems = self.engine.commits.problems();
-        let due: Vec<String> = (self.unreadable.keys())
-            .filter(|node| problems.contains(*node))
-            .cloned()
+        let due: Vec<String> = (self.unreadable.iter())
+            .filter(|(node, unreadable)| problems.contains(*node) && unreadable.due <= now)
+            .map(|(node, _)| node.clone())
             .collect();
         if !timed.is_empty() || !due.is_empty() {
             self.step(|engine, _| {
@@ -655,6 +676,15 @@ impl Folder {
             })?;
         }
         let mut work = Vec::new();
+        let problems = self.engine.commits.problems();
+        let next = (self.unreadable.iter())
+            .filter(|(node, _)| problems.contains(*node))
+            .map(|(_, unreadable)| unreadable.due)
+            .min();
+        if let Some(next) = next {
+            self.retry_at = Some(next);
+            work.push(Work::RetryAfter(next.saturating_duration_since(now)));
+        }
         self.drive(&mut work)?;
         Ok(work)
     }
@@ -797,10 +827,11 @@ impl Folder {
             self.unreadable.insert(
                 node,
                 Unreadable {
-                    path,
                     failures,
                     why,
                     at: SystemTime::now(),
+                    due: Instant::now(),
+                    seen: None,
                 },
             );
             self.flight = Flight::Waiting(Next::Build);
@@ -809,16 +840,18 @@ impl Folder {
         }
         let wait = UNREADABLE_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
         self.step(|engine, _| Ok(engine.commits.leave_out(&node)))?;
+        let at = Instant::now() + wait;
+        let seen = self.engine.trees.local().get(&node).cloned();
         self.unreadable.insert(
             node,
             Unreadable {
-                path,
                 failures,
                 why,
                 at: SystemTime::now() + wait,
+                due: at,
+                seen,
             },
         );
-        let at = Instant::now() + wait;
         if self.retry_at.is_none_or(|out| at < out) {
             self.retry_at = Some(at);
             work.push(Work::RetryAfter(wait));
@@ -957,22 +990,19 @@ impl Folder {
             let why = format!("the server's change could not be made here: {why}");
             reasons.entry(id).or_default().push(why);
         }
-        let problems = self.engine.commits.problems();
-        for id in problems
-            .iter()
-            .filter(|id| !self.unreadable.contains_key(*id))
-        {
-            let why =
-                (self.refused_nodes.get(id)).map_or("the server did not take it", String::as_str);
-            reasons.entry(id).or_default().push(why.to_owned());
+        for id in self.engine.commits.problems() {
+            let why = match self.unreadable.get(id) {
+                Some(unreadable) => format!(
+                    "it could not be read: {}; trying again at {}",
+                    unreadable.why,
+                    utc(unreadable.at)
+                ),
+                None => (self.refused_nodes.get(id))
+                    .map_or("the server did not take it", String::as_str)
+                    .to_owned(),
+            };
+            reasons.entry(id).or_default().push(why);
         }
-        let skipped: Vec<(&Unreadable, PathBuf)> = (self.unreadable.iter())
-            .filter(|(id, _)| problems.contains(*id))
-            .map(|(id, unreadable)| {
-                let path = (unreadable.path.clone()).or_else(|| self.item_path(id));
-                (unreadable, path.unwrap_or_default())
-            })
-            .collect();
         let kept_in = |id: &str| {
             (trees.local().get(id))
                 .is_some_and(|node| node.parked)
@@ -1025,39 +1055,9 @@ impl Folder {
             });
         let retrying =
             shown.map(|retrying| format!("{}; trying again at {}", retrying.why, utc(retrying.at)));
-        let skipped = match skipped.as_slice() {
-            [] => None,
-            [(unreadable, path)] => Some(format!(
-                "{} could not be read: {}; trying again at {}",
-                koidrive_fs::quoted(path),
-                unreadable.why,
-                utc(unreadable.at)
-            )),
-            many => {
-                let mut listed: Vec<String> = (many.iter())
-                    .map(|(unreadable, path)| {
-                        format!("{} ({})", koidrive_fs::quoted(path), unreadable.why)
-                    })
-                    .collect();
-                let more = listed.len().saturating_sub(STUCK_SHOWN);
-                listed.truncate(STUCK_SHOWN);
-                let more = match more {
-                    0 => String::new(),
-                    more => format!(", and {more} more"),
-                };
-                let next = many.iter().map(|(unreadable, _)| unreadable.at).min();
-                Some(format!(
-                    "{} files could not be read: {}{more}; trying again at {}",
-                    many.len(),
-                    listed.join(", "),
-                    utc(next.unwrap_or(UNIX_EPOCH))
-                ))
-            }
-        };
         let problem = match self.engine.commits.halted() {
             _ if self.note.is_some() => self.note.clone(),
             _ if retrying.is_some() => retrying,
-            _ if skipped.is_some() => skipped,
             Some(CommitHalt::ReadOnly) => {
                 Some("the server takes no changes from this device".into())
             }
