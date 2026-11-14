@@ -18,20 +18,20 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     let home = tempfile::tempdir().unwrap();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let recorder = Recorder::on();
+    let hour = koidrive_telemetry::this_hour();
     for measure in Measure::all() {
-        recorder.measure(measure, 1234);
+        recorder.measure_on(hour, measure, 1234);
         if matches!(
             measure,
             Measure::FirstSync(_) | Measure::RemoteApplyMilliseconds | Measure::SyncingMilliseconds
         ) {
             for millis in [60_000, 600_000, 5_280_000] {
-                recorder.measure(measure, millis);
+                recorder.measure_on(hour, measure, millis);
             }
         }
     }
-    recorder.count(Counter::CpuMilliseconds, 4567);
+    recorder.count_on(hour, Counter::CpuMilliseconds, 4567);
     let pending = recorder.take();
-    let hour = *pending.hours.keys().next().unwrap();
     let expected = serde_json::to_value(&pending.hours[&hour]).unwrap();
     let store = Store::new(&home.path().join("state/koidrive"));
     store.absorb(pending).unwrap();
@@ -66,7 +66,7 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     std::fs::write(&queue, serde_json::to_vec(&value).unwrap()).unwrap();
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: Value = serde_json::from_str(&preview).unwrap();
-    let properties = &body["batch"][0]["properties"];
+    let properties = &hourly_report_with(&body, "c.process.cpu_ms")["properties"];
     assert_eq!(properties["c.process.cpu_ms"], 4567);
     for rejected in ["c.sync.unfinished", "h.syncing_ms.active_age"] {
         assert!(!properties.as_object().unwrap().contains_key(rejected));
@@ -183,8 +183,7 @@ fn a_command_run_with_reports_on_is_counted_by_name_only() {
     stdout(&koi(home.path(), &["telemetry", "status"], &[]));
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
-    let report = &body["batch"][0];
-    assert_eq!(report["event"], "hourly_report");
+    let report = hourly_report_with(&body, "c.command.telemetry");
     assert_eq!(report["properties"]["c.command.telemetry"], 1);
     assert!(
         !preview.contains(&home.path().display().to_string()),
@@ -224,7 +223,7 @@ fn a_daemon_that_cannot_start_is_counted_by_why() {
     assert!(!daemon.status.success());
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
-    let report = &body["batch"][0]["properties"];
+    let report = &hourly_report_with(&body, "c.daemon_start_failed.socket")["properties"];
     assert_eq!(report["c.daemon_start_failed.socket"], 1, "{preview}");
     assert!(!preview.contains("run/koidrive"), "{preview}");
 }
@@ -533,40 +532,59 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
         records.sort();
         records
     };
-    let arrived = |requests: &[(u16, Value)]| {
-        let mut arrived = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+    let distinct = |requests: &[(u16, Value)]| {
+        let mut copies = std::collections::HashMap::new();
+        let mut events = Vec::new();
         for (_, body) in requests.iter().filter(|(status, _)| *status == 200) {
             for event in body["batch"].as_array().unwrap() {
-                if let Some(uuid) = event["uuid"].as_str()
-                    && !seen.insert(uuid.to_owned())
-                {
+                let Some(uuid) = event["uuid"].as_str() else {
+                    events.push(event.clone());
                     continue;
+                };
+                let key = [
+                    event["event"].clone(),
+                    event["timestamp"].clone(),
+                    event["properties"]["distinct_id"].clone(),
+                ];
+                match copies.entry(uuid.to_owned()) {
+                    std::collections::hash_map::Entry::Occupied(first) => {
+                        assert_eq!(first.get(), &key, "two copies of {uuid} differ");
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(key);
+                        events.push(event.clone());
+                    }
                 }
-                let properties = event["properties"].as_object().unwrap();
-                if properties["schema"] != 1 {
-                    continue;
-                }
-                assert!(!properties.contains_key("koi_version"), "{event}");
-                let (property, release) = [
-                    "c.command.space",
-                    "c.command.status",
-                    "c.command.folder",
-                    "seconds_magnitude",
-                    "line",
-                ]
-                .into_iter()
-                .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
-                .unwrap();
-                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
-                arrived.push((
-                    event["event"].as_str().unwrap().to_owned(),
-                    property,
-                    release,
-                    event["timestamp"].as_str().unwrap().to_owned(),
-                    uuid.starts_with("00000000-").then_some(uuid),
-                ));
             }
+        }
+        events
+    };
+    let arrived = |requests: &[(u16, Value)]| {
+        let mut arrived = Vec::new();
+        for event in &distinct(requests) {
+            let properties = event["properties"].as_object().unwrap();
+            if properties["schema"] != 1 {
+                continue;
+            }
+            assert!(!properties.contains_key("koi_version"), "{event}");
+            let (property, release) = [
+                "c.command.space",
+                "c.command.status",
+                "c.command.folder",
+                "seconds_magnitude",
+                "line",
+            ]
+            .into_iter()
+            .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
+            .unwrap();
+            let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
+            arrived.push((
+                event["event"].as_str().unwrap().to_owned(),
+                property,
+                release,
+                event["timestamp"].as_str().unwrap().to_owned(),
+                uuid.starts_with("00000000-").then_some(uuid),
+            ));
         }
         arrived.sort();
         arrived
@@ -664,17 +682,18 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     std::fs::write(&old_queue, serde_json::to_vec(&alpha5(2)).unwrap()).unwrap();
     let upgraded_again = run(0);
     assert_eq!(arrived(&upgraded_again), records(2));
-    let kept = (upgraded_again.iter())
-        .flat_map(|(_, body)| body["batch"].as_array().unwrap().clone())
+    let kept = (distinct(&upgraded_again).iter())
         .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 99)
-        .map(|event| {
-            event["uuid"]
-                .as_str()
-                .expect("a sent panic has a uuid")
-                .to_owned()
+        .count();
+    assert_eq!(kept, 1);
+}
+
+fn hourly_report_with<'a>(body: &'a serde_json::Value, property: &str) -> &'a serde_json::Value {
+    (body["batch"].as_array().unwrap().iter())
+        .find(|event| {
+            event["event"] == "hourly_report" && event["properties"].get(property).is_some()
         })
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(kept.len(), 1, "{kept:?}");
+        .unwrap_or_else(|| panic!("no hourly report carries {property}: {body}"))
 }
 
 fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
