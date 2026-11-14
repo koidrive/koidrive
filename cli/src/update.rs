@@ -419,6 +419,20 @@ impl Echo {
         }
     }
 
+    fn finish(&mut self, step: Option<Progress<'_>>, message: &str) {
+        self.held.clear();
+        if let Some(step) = step {
+            step.finish(message);
+        }
+    }
+
+    fn fail(&mut self, step: Option<Progress<'_>>) {
+        if let Some(step) = step {
+            step.fail();
+        }
+        self.replay();
+    }
+
     async fn run(
         &mut self,
         mut command: Command,
@@ -498,11 +512,11 @@ impl Steps {
     fn start(&self, message: &str) -> Option<Progress<'_>> {
         self.0.as_ref().map(|terminal| terminal.progress(message))
     }
-}
 
-fn finish(step: Option<Progress<'_>>, message: &str) {
-    if let Some(step) = step {
-        step.finish(message);
+    fn still(&self, message: &str) -> Option<Progress<'_>> {
+        self.0
+            .as_ref()
+            .map(|terminal| terminal.still_progress(message))
     }
 }
 
@@ -810,7 +824,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
                     }
                 }
                 prepared_app = Some(prepared);
-                finish(step, &format!("Downloaded and checked Koidrive {to}"));
+                echo.finish(step, &format!("Downloaded and checked Koidrive {to}"));
             }
             #[cfg(not(target_os = "macos"))]
             return Err(app_not_updated(paths, &from, &to, &url, prepared, app_deadline).await);
@@ -819,12 +833,14 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
             let dir = install.binary.parent().ok_or_else(download)?;
             let source = script_url()?;
             let step = steps.start(&format!("Downloading Koidrive {to}"));
-            if let Err(error) = installer(source, dir, &to, &mut echo).await {
-                drop(step);
-                echo.replay();
+            let installed = installer(source, dir, &to, &mut echo)
+                .await
+                .and_then(|()| reached(&install.binary, service::version_of(&install.binary), &to));
+            if let Err(error) = installed {
+                echo.fail(step);
                 return Err(error);
             }
-            finish(
+            echo.finish(
                 step,
                 &format!("Downloaded, checked and installed Koidrive {to}"),
             );
@@ -912,7 +928,7 @@ async fn homebrew(
                 brew.display()
             )));
         }
-        let step = steps.start("Updating Koidrive with Homebrew");
+        let step = steps.still("Updating Koidrive with Homebrew");
         if let Err(why) = refresh_tap(brew, &mut echo).await {
             echo.line(&why, true);
             refresh = Some(why);
@@ -937,12 +953,9 @@ async fn homebrew(
         }
         match (&failure, service::version_of(&koi)) {
             (None, Some(now)) if now.cmp_precedence(&to).is_ge() => {
-                finish(step, &format!("Homebrew installed Koidrive {now}"));
+                echo.finish(step, &format!("Homebrew installed Koidrive {now}"));
             }
-            _ => {
-                drop(step);
-                echo.replay();
-            }
+            _ => echo.fail(step),
         }
     }
     if let Some(failure) = &failure
@@ -1237,6 +1250,22 @@ async fn app_not_updated(
 
 const SERVICE_CHECK: &str = "Checking the background service";
 
+fn reached(koi: &Path, actual: Option<Version>, target: &Version) -> Result<Version, CliError> {
+    let actual = actual.ok_or_else(|| {
+        failed(format!(
+            "{} is missing or did not report a Koidrive version after the update",
+            koi.display()
+        ))
+    })?;
+    if actual.cmp_precedence(target).is_lt() {
+        return Err(failed(format!(
+            "{} is still Koidrive {actual}; the requested release is {target}. Try koi update again when the install source has that release.",
+            koi.display()
+        )));
+    }
+    Ok(actual)
+}
+
 fn checked(
     step: Option<Progress<'_>>,
     reconciled: &Result<(Version, service::Report, Option<crate::app::Report>), ReconcileError>,
@@ -1244,12 +1273,9 @@ fn checked(
 ) {
     match reconciled {
         Ok((_, report, _)) if update_problem(report, None).is_none() => {
-            finish(step, "Checked the background service");
+            echo.finish(step, "Checked the background service");
         }
-        _ => {
-            drop(step);
-            echo.replay();
-        }
+        _ => echo.fail(step),
     }
 }
 
@@ -1265,18 +1291,7 @@ async fn reconcile_updated(
     let koi = binary.path();
     let actual = service::version_of(koi);
     binary.check(deadline).await?;
-    let actual = actual.ok_or_else(|| {
-        failed(format!(
-            "{} is missing or did not report a Koidrive version after the update",
-            koi.display()
-        ))
-    })?;
-    if actual.cmp_precedence(target).is_lt() {
-        return Err(failed(format!(
-            "{} is still Koidrive {actual}; the requested release is {target}. Try koi update again when the install source has that release.",
-            koi.display()
-        )).into());
-    }
+    let actual = reached(koi, actual, target)?;
     let service = service.map_err(failed)?;
     binary.check(deadline).await?;
     let within = deadline.saturating_duration_since(tokio::time::Instant::now());
