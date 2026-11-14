@@ -262,6 +262,36 @@ private func report(in app: AppModel) throws -> URL {
         #expect(links.activeLinks.first?.link.state == .active)
     }
 
+    @Test func anOpenListShowsALinkMadeWhileItIsOpen() async throws {
+        let app = AppModel.fake(scenario: .upToDate)
+        try fakeCore(app).setShareLinks(links: [])
+        let links = SharedLinksModel(app: app, clock: fixedClock)
+        await links.load()
+        let status = app.state.status
+
+        let share = ShareLinkModel(app: app, item: try report(in: app))
+        await share.create()
+        let made = try #require(share.link)
+
+        #expect(app.state.status == status)
+        #expect(links.activeLinks.map(\.id) == [made.link.id])
+        #expect(links.activeLinks.first?.item == .present(path: "Documents/Reports/Annual Report.docx", kind: .file))
+    }
+
+    @Test func aLinkMadeForAnotherAppDoesNotReachThisList() async throws {
+        let app = AppModel.fake(scenario: .upToDate)
+        try fakeCore(app).setShareLinks(links: [])
+        let links = SharedLinksModel(app: app, clock: fixedClock)
+        await links.load()
+
+        let other = AppModel.fake(scenario: .upToDate)
+        let share = ShareLinkModel(app: other, item: try report(in: other))
+        await share.create()
+
+        #expect(share.link != nil)
+        #expect(links.activeLinks.isEmpty)
+    }
+
     @Test func noLinksIsAnEmptyList() async throws {
         let app = AppModel.fake(scenario: .upToDate)
         try fakeCore(app).setShareLinks(links: [])

@@ -23,6 +23,10 @@ public final class ShareLinkModel {
         case tooLong
     }
 
+    /// Posted with the `AppModel` as its object when a link is made, with the new `ShareLink` under `linkKey`.
+    public static let linkCreated = Notification.Name("ShareLinkModel.linkCreated")
+    public static let linkKey = "link"
+
     /// The password lengths the server takes, in Unicode scalars.
     public static let passwordLengths = 8...256
 
@@ -89,7 +93,9 @@ public final class ShareLinkModel {
         }
         step = .checking
         do {
-            step = .created(try await app.createShareLink(for: item, expiry: expiry, password: password))
+            let made = try await app.createShareLink(for: item, expiry: expiry, password: password)
+            step = .created(made)
+            NotificationCenter.default.post(name: Self.linkCreated, object: app, userInfo: [Self.linkKey: made.link])
         } catch {
             let error = sessionError(error)
             step = error == .NotOnServer ? .notSyncedYet : .failed(error)
