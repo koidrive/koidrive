@@ -181,7 +181,9 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     };
     match terminal.confirm(question, true).await {
         Ok(answer) => Ok(Some(answer)),
-        Err(PromptFailure::Cancelled) => Err(PromptFailure::Cancelled.into()),
+        Err(error @ (PromptFailure::Cancelled | PromptFailure::CancelledPresented)) => {
+            Err(error.into())
+        }
         Err(_) => Ok(None),
     }
 }
@@ -467,10 +469,18 @@ pub(crate) struct ChoiceData {
 pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError> {
     let store = Store::new(&paths.state_dir);
     let failed = |error: std::io::Error| {
-        CliError::from(format!(
-            "the telemetry files in {}: {error}",
-            paths.state_dir.display()
-        ))
+        let human = if error.kind() == std::io::ErrorKind::InvalidData {
+            Some("Koidrive could not read saved usage-report data. Run koi diagnose to collect details before changing reporting settings.".to_owned())
+        } else {
+            crate::error::local_io_human(&error).map(|cause| format!("Koidrive could not read or update usage-report data. {cause} Run koi diagnose to collect details."))
+        };
+        CliError {
+            human,
+            ..CliError::from(format!(
+                "the telemetry files in {}: {error}",
+                paths.state_dir.display()
+            ))
+        }
     };
     let overridden = |choice: bool| -> Result<&'static str, CliError> {
         let status = store.status(var).map_err(failed)?;

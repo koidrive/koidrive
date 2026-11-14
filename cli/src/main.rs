@@ -9,6 +9,7 @@
 mod app;
 mod app_install;
 mod diagnose;
+mod diagnostics;
 mod error;
 mod history;
 mod ipc;
@@ -452,7 +453,7 @@ fn main() -> ExitCode {
                 &command,
                 json,
                 verbose,
-                Err(error.to_string().into()),
+                Err(CliError::from(DriverError::from(error))),
                 Vec::new(),
             );
         }
@@ -465,6 +466,7 @@ fn main() -> ExitCode {
         log_format,
         json || !console::colors_enabled_stderr(),
         agent_log,
+        (!json && !verbose && output::concise(&command)).then_some(command.as_str()),
     );
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -511,7 +513,7 @@ fn main() -> ExitCode {
                 if let Some((name, flow, switch)) = telemetry {
                     telemetry::start(&paths, switch, name, flow).await;
                 }
-                let mut outcome = run(paths, command_args, json, work_terminal.clone()).await;
+                let mut outcome = run(paths, command_args, json, verbose, work_terminal.clone()).await;
                 if let Err(error) = &outcome {
                     telemetry::command_failed(error.code);
                 }
@@ -547,7 +549,7 @@ fn main() -> ExitCode {
                 let error = CliError::new(
                     Code::Interrupted,
                     if status == 143 { "stopped by SIGTERM; what the command already did stays done" } else { "interrupted by Ctrl-C; what the command already did stays done" },
-                );
+                ).human(format!("{}. Changes already made were kept. Run koi status to check this device before continuing.", if status == 143 { "Stopped" } else { "Interrupted" }));
                 telemetry::flush();
                 let _ = finish(&command, json, verbose, Err(error), Vec::new());
                 let _ = io::Write::flush(&mut io::stdout());
@@ -609,6 +611,7 @@ async fn run(
     paths: Paths,
     command: Command,
     json: bool,
+    verbose: bool,
     terminal: Arc<terminal::Terminal>,
 ) -> Result<Done, CliError> {
     let lifecycle_deadline = matches!(command, Command::Reconcile { .. })
@@ -649,7 +652,7 @@ async fn run(
                         | setup::ServerAction::AddDevice { .. }
                 }
         );
-    let done = execute(paths.clone(), command, json, terminal.clone()).await?;
+    let done = execute(paths.clone(), command, json, verbose, terminal.clone()).await?;
     let service = if reconciles {
         let _progress = terminal
             .setup_guided()
@@ -917,6 +920,7 @@ async fn execute(
     paths: Paths,
     command: Command,
     json: bool,
+    verbose: bool,
     terminal: Arc<terminal::Terminal>,
 ) -> Result<Done, CliError> {
     match command {
@@ -942,7 +946,18 @@ async fn execute(
             login,
             script,
             ..
-        } => setup::setup(&paths, &device.name(), &login, &script, json, terminal).await,
+        } => {
+            setup::setup(
+                &paths,
+                &device.name(),
+                &login,
+                &script,
+                json,
+                verbose,
+                terminal,
+            )
+            .await
+        }
         Command::Join {
             code,
             code_stdin,
@@ -952,7 +967,9 @@ async fn execute(
             let join = async {
                 let code = setup::read_code(code, code_stdin).await?;
                 let invitation =
-                    pairing::parse(&code, server.as_deref()).map_err(CliError::usage)?;
+                    pairing::parse(&code, server.as_deref()).map_err(|message| {
+                        CliError::usage(message).human("The pairing code is incomplete or its server address is invalid. Copy the full code, including @server, or provide the server with --server.")
+                    })?;
                 let request = Request::Pair {
                     server: invitation.server,
                     code: invitation.code,
@@ -982,7 +999,7 @@ async fn execute(
             let claim = async { paired(&paths, ipc::run(&paths, request).await?) };
             telemetry::step(SetupStep::Claim, claim).await
         }
-        Command::Server { action } => setup::server(&paths, action, json, terminal).await,
+        Command::Server { action } => setup::server(&paths, action, json, verbose, terminal).await,
         Command::Space { action } => space(paths, action).await,
         Command::Folder { action } => folder(&paths, action).await,
         Command::Service {
@@ -1032,7 +1049,16 @@ fn finish(
             let presentation = partial
                 .as_ref()
                 .map_or(output::Presentation::Text, |done| done.presentation);
-            let message = format!("{}\n", printable(&error.message));
+            let shown = concise
+                .then_some(error.human.as_deref())
+                .flatten()
+                .filter(|human| !human.is_empty())
+                .unwrap_or(&error.message);
+            let message = if error.presented {
+                String::new()
+            } else {
+                format!("{}\n", printable(shown))
+            };
             let exit = error.code.exit();
             (
                 exit,
@@ -1254,10 +1280,12 @@ fn shows_and_exits(command: &clap::Command, arg: &str) -> bool {
     false
 }
 
-/// Logs go to stderr: structured key-value text by default, one JSON object per line with `--log-format json`. The
-/// level comes from `KOIDRIVE_LOG` (`info` for the daemon, `warn` for other commands). No log line carries a
-/// credential, an access token or a pairing code.
-fn init_logging(daemon: Option<LogFormat>, json: bool, agent_log: Option<logfile::CappedLog>) {
+fn init_logging(
+    daemon: Option<LogFormat>,
+    json: bool,
+    agent_log: Option<logfile::CappedLog>,
+    human: Option<&str>,
+) {
     let default = if daemon.is_some() { "info" } else { "warn" };
     let filter =
         EnvFilter::try_from_env("KOIDRIVE_LOG").unwrap_or_else(|_| EnvFilter::new(default));
@@ -1269,6 +1297,14 @@ fn init_logging(daemon: Option<LogFormat>, json: bool, agent_log: Option<logfile
         .with_env_filter(filter)
         .with_ansi(log_ansi(std::io::stderr().is_terminal(), json))
         .with_writer(writer);
+    if let Some(command) = human.filter(|_| std::env::var_os("KOIDRIVE_LOG").is_none()) {
+        builder
+            .event_format(diagnostics::Human {
+                command: command.to_owned(),
+            })
+            .init();
+        return;
+    }
     match daemon {
         Some(LogFormat::Json) => builder.json().with_current_span(false).init(),
         _ => builder.init(),
@@ -1402,6 +1438,7 @@ async fn folder_states(
 /// An answer of the daemon that does not fit the request.
 fn unexpected(response: Response) -> CliError {
     CliError::from(format!("the daemon answered {response:?}"))
+        .human("Background sync returned an unexpected response. The command's result is unknown. Run koi status to check sync, and check the affected item before repeating a command that changes it. Run koi diagnose to collect a report.")
 }
 
 fn paired(paths: &Paths, response: Response) -> Result<Done, CliError> {
@@ -1736,16 +1773,16 @@ fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
 /// they run the same whether or not the daemon holds it.
 fn signed_in(paths: &Paths) -> Result<Auth, CliError> {
     let credential = Credential::load(&paths.credential())
-        .map_err(|error| error.to_string())?
+        .map_err(DriverError::from)?
         .ok_or(DriverError::NotPaired)?;
-    Ok(reading(paths, &credential)?)
+    reading(paths, &credential)
 }
 
 /// An [`Auth`] for a command that only reads the profile's credential. The process that holds the profile may rotate
 /// the credential meanwhile, so when the server refuses it, it reads both credential files again, once, and presents
 /// what they hold (RFC 0011 section 2). A reload that finds a credential for another server fails, so that no
 /// credential reaches a server it was not issued by.
-fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, String> {
+fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, CliError> {
     let path = paths.credential();
     let server = credential.server.clone();
     let reload: Reload = Arc::new(move || {
@@ -1762,7 +1799,7 @@ fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, String> {
         Ok(stored.net())
     });
     Ok(Auth::reloading(
-        credential.api().map_err(|error| error.to_string())?,
+        credential.api().map_err(CliError::from)?,
         credential.net(),
         reload,
     ))
@@ -1903,7 +1940,11 @@ async fn devices(auth: &Auth) -> Result<Vec<DeviceInfo>, CliError> {
     let mut cursor = String::new();
     let mut seen = std::collections::HashSet::new();
     loop {
-        let page = auth.api().list_devices(auth, &cursor).await?;
+        let page = auth
+            .api()
+            .list_devices(auth, &cursor)
+            .await
+            .map_err(CliError::api_retry_safe)?;
         devices.extend(page.devices);
         if page.next_cursor.is_empty() {
             return Ok(devices);
@@ -1958,7 +1999,12 @@ fn replayed(id: &RequestId, invitation: &Invitation, now_ms: i64) -> Result<Done
 /// same time, since koi folder link names a space by its name and the server keeps names unique.
 async fn space(paths: Paths, action: SpaceAction) -> Result<Done, CliError> {
     let auth = signed_in(&paths)?;
-    let spaces = auth.api().list_spaces(&auth).await?.spaces;
+    let spaces = auth
+        .api()
+        .list_spaces(&auth)
+        .await
+        .map_err(CliError::api_retry_safe)?
+        .spaces;
     match action {
         SpaceAction::List => {
             let data = SpacesData {
@@ -2026,7 +2072,11 @@ async fn named_space(auth: &Auth, spaces: &[SpaceInfo], name: &str) -> Result<Na
     match create_space(auth, name).await {
         Ok(created) => Ok(Named::Created(created)),
         Err(error) if error.status() == Some(409) => {
-            let now = auth.api().list_spaces(auth).await?;
+            let now = auth
+                .api()
+                .list_spaces(auth)
+                .await
+                .map_err(CliError::api_retry_safe)?;
             match existing_space(&now.spaces, name)? {
                 Some(space) => Ok(Named::Existing(space)),
                 None => Err(error.into()),
@@ -2086,13 +2136,13 @@ async fn usage(auth: &Auth, spaces: Vec<SpaceInfo>) -> Result<Done, CliError> {
         match auth.api().space_usage(auth, &space.space_id).await {
             Ok(usage) => usages.push((space, usage)),
             Err(error) if error.is_unauthenticated() => {
-                let mut error = CliError::from(error);
+                let mut error = CliError::api_retry_safe(error);
                 if !(usages.is_empty() && refused.is_empty()) {
                     error.partial = Some(Box::new(usage_read(&usages, &refused)));
                 }
                 return Err(error);
             }
-            Err(error) => refused.push((space, CliError::from(error))),
+            Err(error) => refused.push((space, CliError::api_retry_safe(error))),
         }
     }
     usage_done(&usages, &refused)
@@ -3522,6 +3572,7 @@ mod tests {
                     code: Code::Failed,
                     message: "cleanup pending".into(),
                     reason: None,
+                    human: None,
                     next: Vec::new(),
                 },
             )
@@ -3553,6 +3604,7 @@ mod tests {
                 paths.clone(),
                 Command::Resume,
                 true,
+                false,
                 Arc::new(terminal::Terminal::new(true, false)),
             )
             .await
@@ -4661,6 +4713,7 @@ mod tests {
                 setup::server(
                     &paths,
                     action,
+                    false,
                     false,
                     Arc::new(terminal::Terminal::new(true, false)),
                 ),

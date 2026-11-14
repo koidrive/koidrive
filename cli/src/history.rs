@@ -34,6 +34,10 @@ use crate::{ago, now_ms, printable, signed_in, size, unexpected};
 const PAGE: u32 = 1000;
 const UNEXPECTED: &str = "the server answered with another kind of result";
 
+fn unexpected_result() -> CliError {
+    CliError::from(UNEXPECTED).human("The server returned a different history result than requested. Run this command with --verbose for details, or koi diagnose to collect a report.")
+}
+
 #[derive(clap::Subcommand)]
 pub enum HistoryAction {
     /// List what was deleted in a linked folder and is still in its space's trash.
@@ -625,10 +629,11 @@ fn starts_with(names: &[String], prefix: &[String]) -> bool {
 }
 
 async fn call(auth: &Auth, space: &str, call: Call) -> Result<rpc_response::Result, CliError> {
-    match auth.api().rpc(auth, space, call).await?.result {
+    match auth.api().rpc(auth, space, call).await.map_err(CliError::api_retry_safe)?.result {
         Some(rpc_response::Result::Error(error)) => Err(CliError::rpc_refusal(error)),
         Some(result) => Ok(result),
-        None => Err("the server sent an empty answer".into()),
+        None => Err(CliError::from("the server sent an empty answer")
+            .human("The server returned no history result. Run this command with --verbose for details, or koi diagnose to collect a report.")),
     }
 }
 
@@ -647,7 +652,8 @@ async fn every_page<T>(
             return Ok(all);
         }
         if !seen.insert(next.clone()) {
-            return Err("the server sent the same page cursor twice".into());
+            return Err(CliError::from("the server sent the same page cursor twice")
+                .human("The server repeated its history page marker, so Koidrive stopped reading the history. The results are incomplete. Run koi diagnose to collect a report."));
         }
         cursor = next;
     }
@@ -666,7 +672,7 @@ async fn tree(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliError> {
         .await?
         {
             rpc_response::Result::Tree(page) => Ok((page.nodes, page.next_cursor)),
-            _ => Err(UNEXPECTED.into()),
+            _ => Err(unexpected_result()),
         }
     })
     .await
@@ -706,7 +712,7 @@ async fn trash_nodes(
             rpc_response::Result::Trash(page) => {
                 Ok((vec![(page.nodes, page.trashed)], page.next_cursor))
             }
-            _ => Err(UNEXPECTED.into()),
+            _ => Err(unexpected_result()),
         }
     })
     .await?;
@@ -761,7 +767,7 @@ async fn versions_of(
         };
         match call(auth, space, Call::ListVersions(request)).await? {
             rpc_response::Result::Versions(list) => Ok((list.versions, list.next_cursor)),
-            _ => Err(UNEXPECTED.into()),
+            _ => Err(unexpected_result()),
         }
     })
     .await

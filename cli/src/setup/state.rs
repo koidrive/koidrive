@@ -9,6 +9,8 @@ use koidrive_cloudflare::Jurisdiction;
 use koidrive_driver::Paths;
 use serde::{Deserialize, Serialize};
 
+use crate::error::CliError;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
@@ -52,20 +54,21 @@ impl StateFile {
         &self.path
     }
 
-    pub fn load(&self) -> Result<Option<SetupState>, String> {
+    pub fn load(&self) -> Result<Option<SetupState>, CliError> {
         match fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
-                format!(
+                CliError::from(format!(
                     "{} is not a valid setup state ({error}); delete it to start over",
                     self.path.display()
-                )
+                )).human("Koidrive's saved setup progress cannot be read. Do not delete it or repeat cloud changes until you have checked what was created. Run koi diagnose to collect a report.")
             }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("cannot read {}: {error}", self.path.display())),
+            Err(error) => Err(CliError::from(format!("cannot read {}: {error}", self.path.display()))
+                .human(format!("Could not read saved setup progress: {error}. Check local file permissions and available storage. Do not delete the saved progress. Run koi diagnose to collect a report."))),
         }
     }
 
-    pub fn save(&self, state: &SetupState) -> Result<(), String> {
+    pub fn save(&self, state: &SetupState) -> Result<(), CliError> {
         let write = || -> io::Result<()> {
             let dir = self.path.parent().expect("the state file has a directory");
             DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
@@ -81,14 +84,16 @@ impl StateFile {
             fs::rename(&temporary, &self.path)?;
             fs::File::open(dir)?.sync_all()
         };
-        write().map_err(|error| format!("cannot write {}: {error}", self.path.display()))
+        write().map_err(|error| CliError::from(format!("cannot write {}: {error}", self.path.display()))
+            .human(format!("Could not save setup progress: {error}. Check local file permissions and available storage. Cloud changes may already have happened. Check the affected server in your account before repeating them. Run koi diagnose to collect a report.")))
     }
 
-    pub fn remove(&self) -> Result<(), String> {
+    pub fn remove(&self) -> Result<(), CliError> {
         match fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("cannot delete {}: {error}", self.path.display())),
+            Err(error) => Err(CliError::from(format!("cannot delete {}: {error}", self.path.display()))
+                .human(format!("Could not clear saved setup progress: {error}. Check local file permissions. Cloud changes may already be complete. Check the affected server in your account before repeating them. Run koi diagnose to collect a report."))),
         }
     }
 }
@@ -96,6 +101,21 @@ impl StateFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_setup_progress_keeps_raw_details_without_advising_terminal_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::new(&Paths::under(dir.path()));
+        fs::create_dir_all(file.path().parent().unwrap()).unwrap();
+        fs::write(file.path(), "{broken fixture}").unwrap();
+        let error = file.load().unwrap_err();
+        assert!(error.message.contains(&file.path().display().to_string()));
+        assert!(error.message.contains("delete it to start over"));
+        let human = error.human.unwrap();
+        assert!(human.contains("Do not delete"));
+        assert!(!human.contains(&file.path().display().to_string()));
+        assert_eq!(error.code, koidrive_ipc::Code::Failed);
+    }
 
     #[test]
     fn saves_loads_and_removes_the_state_owner_only() {

@@ -40,10 +40,17 @@ pub async fn plan(
                 "there is no R2 bucket {bucket} in the {} jurisdiction",
                 jurisdiction.as_str()
             )),
-            _ => CliError::caused(
-                format!("cannot read the bucket {bucket}: {error}; deleted nothing"),
-                error,
-            ),
+            _ => {
+                let error = CliError::caused(
+                    format!("cannot read the bucket {bucket}: {error}; deleted nothing"),
+                    error,
+                );
+                let human = format!(
+                    "{} Nothing was deleted.",
+                    error.human.as_deref().unwrap_or(&error.message)
+                );
+                error.human(human)
+            }
         })?;
     if found.creation_date.is_empty()
         || found
@@ -94,7 +101,7 @@ pub async fn finish(
         Ok(found) => found,
         Err(error) if error.status() == Some(404) => return gone(file, &bucket),
         Err(error) => {
-            return Err(CliError::caused(
+            return Err(CliError::known_outcome(
                 format!("cannot read the bucket {bucket}: {error}; run the command again"),
                 error,
             ));
@@ -137,7 +144,7 @@ pub async fn finish(
             Ok(page) => page,
             Err(error) if error.status() == Some(404) => return gone(file, &bucket),
             Err(error) => {
-                return Err(CliError::caused(
+                return Err(CliError::known_outcome(
                     format!("cannot list the bucket {bucket}: {error}; run the command again"),
                     error,
                 ));
@@ -155,7 +162,7 @@ pub async fn finish(
             api.delete_object(&account, &bucket, jurisdiction, key)
                 .await
                 .map_err(|error| {
-                    CliError::caused(
+                    CliError::known_outcome(
                         format!(
                             "cannot delete {key} from {bucket}: {error}; run the command again"
                         ),
@@ -170,7 +177,7 @@ pub async fn finish(
         .delete_bucket(&account, &bucket, jurisdiction)
         .await
         .map_err(|error| {
-            CliError::caused(
+            CliError::known_outcome(
                 format!("cannot delete the bucket {bucket}: {error}; run the command again"),
                 error,
             )
@@ -190,7 +197,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
     let account = cloud.account().to_owned();
     let api = cloud.fresh().await?;
     let scripts = api.scripts(&account).await.map_err(|error| {
-        CliError::caused(
+        CliError::known_outcome(
             format!("cannot list the account's Workers: {error}; run the command again"),
             error,
         )
@@ -205,7 +212,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
             api.delete_script(&account, &state.script)
                 .await
                 .map_err(|error| {
-                    CliError::caused(format!(
+                    CliError::known_outcome(format!(
                         "cannot delete the Worker {}: {error}; run the command again",
                         state.script
                     ), error)
@@ -233,7 +240,7 @@ async fn binder(
     let account = cloud.account().to_owned();
     let api = cloud.fresh().await?;
     let scripts = api.scripts(&account).await.map_err(|error| {
-        CliError::caused(
+        CliError::known_outcome(
             format!("cannot list the account's Workers: {error}; run the command again"),
             error,
         )
@@ -243,7 +250,7 @@ async fn binder(
             .script_settings(&account, &script.id)
             .await
             .map_err(|error| {
-                CliError::caused(
+                CliError::known_outcome(
                     format!(
                         "cannot read the settings of {}: {error}; run the command again",
                         script.id
@@ -284,10 +291,15 @@ async fn scan(
             Ok(page) => page,
             Err(error) if error.status() == Some(404) => return Ok(None),
             Err(error) => {
-                return Err(CliError::caused(
+                let error = CliError::caused(
                     format!("cannot list the bucket {bucket}: {error}; deleted nothing"),
                     error,
-                ));
+                );
+                let human = format!(
+                    "{} This scan did not delete any bucket objects.",
+                    error.human.as_deref().unwrap_or(&error.message)
+                );
+                return Err(error.human(human));
             }
         };
         contents.objects += page.keys.len();
@@ -580,6 +592,53 @@ mod tests {
 
         assert!(!fake.sent(&["DELETE"]));
         assert_eq!(file.load().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_scan_does_not_deny_the_worker_was_already_deleted() {
+        let (fake, mut cloud) = start(vec![
+            cf(
+                "GET",
+                "/workers/scripts",
+                json!([{ "id": "koidrive", "created_on": CREATED }]),
+            ),
+            cf("DELETE", "/workers/scripts/koidrive?force=true", Value::Null),
+            bucket(BUCKET_CREATED),
+            cf("GET", "/workers/scripts", json!([])),
+            cf_status(
+                "GET",
+                "/r2/buckets/koidrive/objects?per_page=1000",
+                503,
+                json!({ "success": false, "errors": [{ "code": 10000, "message": "Listing unavailable" }], "result": null }),
+            ),
+        ])
+        .await;
+        let (_dir, file) = state_file();
+        file.save(&recorded("koidrive")).unwrap();
+        let error = finish(&mut cloud, &file, recorded("koidrive"))
+            .await
+            .unwrap_err();
+        let deletes: Vec<String> = fake
+            .seen()
+            .into_iter()
+            .filter(|seen| seen.method == "DELETE")
+            .map(|seen| seen.path)
+            .collect();
+        assert_eq!(
+            deletes,
+            [format!(
+                "/client/v4/accounts/{ACCOUNT}/workers/scripts/koidrive?force=true"
+            )]
+        );
+        assert_eq!(file.load().unwrap(), Some(recorded("")));
+        assert!(error.message.ends_with("; deleted nothing"), "{error:?}");
+        let human = error.human.unwrap();
+        assert!(human.contains("Listing unavailable"), "{human}");
+        assert!(
+            human.ends_with("This scan did not delete any bucket objects."),
+            "{human}"
+        );
+        assert!(!human.contains("Nothing was deleted."), "{human}");
     }
 
     #[tokio::test]

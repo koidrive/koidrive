@@ -270,6 +270,7 @@ pub async fn setup(
     login: &LoginArgs,
     script: &ScriptArgs,
     json: bool,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<Done, CliError> {
     if let (Some(folder), Some(space)) = (&script.folder, &script.space) {
@@ -324,7 +325,7 @@ pub async fn setup(
             });
         }
     } else {
-        connect(paths, device_name, login, terminal.clone()).await?;
+        connect(paths, device_name, login, verbose, terminal.clone()).await?;
     }
     onboard(paths, &terminal).await
 }
@@ -333,6 +334,7 @@ async fn connect(
     paths: &Paths,
     device_name: &str,
     login: &LoginArgs,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<(), CliError> {
     let route = terminal
@@ -348,7 +350,7 @@ async fn connect(
         0 => {
             crate::telemetry::set_flow(SetupFlow::Cloudflare);
             bundled()?;
-            with_session(login, terminal.clone(), async |session| {
+            with_session(login, terminal.clone(), verbose, async |session| {
                 session.setup(paths, device_name).await
             })
             .await?;
@@ -382,11 +384,16 @@ async fn connect(
 
 async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
     let credential = Credential::load(&paths.credential())
-        .map_err(|error| error.to_string())?
+        .map_err(DriverError::from)?
         .ok_or(DriverError::NotPaired)?;
     let auth = crate::reading(paths, &credential)?;
     let mut progress = Some(terminal.progress("Preparing ~/Koidrive..."));
-    let spaces = auth.api().list_spaces(&auth).await?.spaces;
+    let spaces = auth
+        .api()
+        .list_spaces(&auth)
+        .await
+        .map_err(CliError::api_retry_safe)?
+        .spaces;
     let mut target = if spaces.is_empty() {
         Target::Default
     } else {
@@ -406,7 +413,11 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                     terminal.message(&format!(
                         "A shared folder named {DEFAULT_FOLDER} is available. Choose which folder to sync."
                     ));
-                    let now = auth.api().list_spaces(&auth).await?;
+                    let now = auth
+                        .api()
+                        .list_spaces(&auth)
+                        .await
+                        .map_err(CliError::api_retry_safe)?;
                     target = shared_folder(terminal, &now.spaces).await?;
                 }
             },
@@ -414,7 +425,11 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                 Ok(space) => break crate::Named::Created(space),
                 Err(error) if error.status() != Some(409) => return Err(error.into()),
                 Err(error) => {
-                    let now = auth.api().list_spaces(&auth).await?;
+                    let now = auth
+                        .api()
+                        .list_spaces(&auth)
+                        .await
+                        .map_err(CliError::api_retry_safe)?;
                     if !now.spaces.iter().any(|space| space.name == name) {
                         return Err(error.into());
                     }
@@ -761,7 +776,7 @@ async fn scripted(
     let directory = (local != Local::Missing)
         .then(|| directory_identity(&folder))
         .transpose()?;
-    let credential = Credential::load(&paths.credential()).map_err(|error| error.to_string())?;
+    let credential = Credential::load(&paths.credential()).map_err(DriverError::from)?;
     if local == Local::Files && !script.accept_existing_files {
         let linked = if credential.is_some() {
             let root = std::fs::canonicalize(&folder).map_err(|error| {
@@ -960,6 +975,7 @@ pub async fn server(
     paths: &Paths,
     action: ServerAction,
     json: bool,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<Done, CliError> {
     let login = action.login().expect("main sends a claim to the driver");
@@ -981,7 +997,7 @@ pub async fn server(
             not_set_up(paths)?;
             bundled()?;
             let name = device.name();
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 session.server_deploy(paths, &name).await
             })
             .await?;
@@ -994,7 +1010,7 @@ pub async fn server(
             not_set_up(paths)?;
             bundled()?;
             let name = device.name();
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 session
                     .server_add_device(paths, worker.as_deref(), &name)
                     .await
@@ -1004,7 +1020,7 @@ pub async fn server(
         ServerAction::Claim { .. } => unreachable!("main sends a claim to the driver"),
         ServerAction::Upgrade { worker, yes, login } => {
             bundled()?;
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 let found = session.pick(worker.as_deref()).await?;
                 crate::telemetry::step(SetupStep::Upgrade, session.upgrade(&found, yes)).await
             })
@@ -1023,7 +1039,7 @@ pub async fn server(
             if bucket.is_none() && !resuming {
                 bundled()?;
             }
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 let uninstall = session.uninstall(
                     paths,
                     worker.as_deref(),
@@ -1088,7 +1104,17 @@ fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliError {
             state.script
         )
     };
-    format!("{run}, or delete {} to forget it", file.display()).into()
+    let human = if state.account != account {
+        format!(
+            "Setup of {} in another Cloudflare account has not finished. Run koi setup and sign in to the account that created that server to finish it",
+            state.script
+        )
+    } else {
+        run.clone()
+    };
+    CliError::from(format!("{run}, or delete {} to forget it", file.display())).human(format!(
+        "{human}. Keep the saved setup progress until the operation is complete."
+    ))
 }
 
 fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Result<(), CliError> {
@@ -1106,7 +1132,7 @@ fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Resu
             );
             Ok(())
         }
-        other => Err(format!("the daemon answered {other:?}").into()),
+        other => Err(crate::unexpected(other)),
     }
 }
 
@@ -1115,6 +1141,7 @@ fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Resu
 async fn with_session(
     args: &LoginArgs,
     terminal: Arc<Terminal>,
+    verbose: bool,
     work: impl AsyncFnOnce(&mut Session) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
     let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
@@ -1135,7 +1162,19 @@ async fn with_session(
     SESSION.store(false, Ordering::Relaxed);
     if let (Err(error), Some(code)) = (&outcome, status) {
         crate::telemetry::flush();
-        eprintln!("koi: {}", printable(&error.message));
+        let message = if !verbose && crate::output::concise("setup") {
+            error.human.as_deref().unwrap_or(&error.message)
+        } else {
+            &error.message
+        };
+        crate::output::print(
+            "setup",
+            crate::output::Presentation::Text,
+            crate::output::Tone::Attention,
+            "",
+            crate::output::Note::Error(&format!("{}\n", printable(message))),
+            None,
+        );
         std::process::exit(code);
     }
     outcome
@@ -1150,14 +1189,16 @@ async fn guarded(
 ) -> Result<(), CliError> {
     let mut session = tokio::select! {
         session = login => session?,
-        how = stopped() => return Err(format!("{how} before the login finished").into()),
+        how = stopped() => return Err(CliError::from(format!("{how} before the login finished"))
+            .human("Stopped before sign-in finished. Run this command again when you are ready.")),
     };
     let outcome = tokio::select! {
         outcome = async {
             session.pick_account().await?;
             work(&mut session).await
         } => outcome,
-        how = stopped() => Err(format!("{how}; run the same command again to continue").into()),
+        how = stopped() => Err(CliError::from(format!("{how}; run the same command again to continue"))
+            .human("Stopped. Run the same command again to continue.")),
     };
     let terminal = session.terminal.clone();
     let _progress = terminal
@@ -2223,7 +2264,7 @@ async fn create_bucket(
         }
     }
     state.step = Step::BucketCreated;
-    Ok(file.save(state)?)
+    file.save(state)
 }
 
 /// A bucket name only this deploy produces: `base`, a hyphen and 16 random hex digits (64 bits). Another
@@ -2365,6 +2406,22 @@ mod tests {
     use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
     use super::*;
 
+    #[tokio::test]
+    async fn interrupted_login_preserves_raw_text_and_offers_a_human_next_step() {
+        let error = guarded(
+            std::future::pending::<Result<Session, CliError>>(),
+            async || "stopped",
+            async |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "stopped before the login finished");
+        assert_eq!(
+            error.human.as_deref(),
+            Some("Stopped before sign-in finished. Run this command again when you are ready.")
+        );
+    }
+
     #[test]
     fn a_closed_input_is_not_an_empty_answer() {
         let closed = read_line(&b""[..]).unwrap_err();
@@ -2438,6 +2495,7 @@ mod tests {
             &paths,
             parse(&["koi", "server", "deploy"]),
             true,
+            false,
             Arc::new(Terminal::new(true, false)),
         )
         .await
@@ -2449,9 +2507,15 @@ mod tests {
         );
 
         let action = parse(&["koi", "server", "upgrade", "--worker", "fb", "--no-browser"]);
-        let error = server(&paths, action, false, Arc::new(Terminal::new(true, false)))
-            .await
-            .unwrap_err();
+        let error = server(
+            &paths,
+            action,
+            false,
+            false,
+            Arc::new(Terminal::new(true, false)),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.code, Code::AuthRequired);
         assert_eq!(
             error.next,
@@ -2494,6 +2558,7 @@ mod tests {
             let error = server(
                 &paths,
                 parse(&argv),
+                false,
                 false,
                 Arc::new(Terminal::new(true, false)),
             )
