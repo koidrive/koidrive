@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/property-battery.yml"
+HEAVY_WORKFLOW = ROOT / ".github/workflows/heavy-tests.yml"
 
 
 def commands(workflow):
@@ -29,6 +30,23 @@ def commands(workflow):
         if text not in workflow:
             raise ValueError("Input and summary must distinguish stress budgets, bounded properties and unit tests")
     return execution, repro
+
+
+def heavy_commands(workflow):
+    if re.search(r"(?:export |\s)PROPTEST_CASES=\"?\$", workflow):
+        raise ValueError("Heavy tests must not export a global case override")
+    lines = [line.strip() for line in workflow.splitlines()]
+    clear = next(line for line in lines if line.startswith("unset PROPTEST_CASES"))
+    budget = next(line for line in lines if '|| export KOIDRIVE_BATTERY_CASES=' in line)
+    execution = next(line for line in lines if line.startswith("PROPTEST_RNG_SEED=$seed cargo test"))
+    repro = next(line for line in lines if line.startswith('repro="git checkout'))
+    if clear != "unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES":
+        raise ValueError("Heavy tests must clear both inherited budgets")
+    if "env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES" not in repro:
+        raise ValueError("Heavy-test repro must clear both inherited budgets")
+    if "${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES}" not in repro:
+        raise ValueError("Heavy-test repro must preserve the optional stress budget")
+    return clear + "\n" + budget, execution, repro
 
 
 class PropertyBattery(unittest.TestCase):
@@ -97,6 +115,44 @@ class PropertyBattery(unittest.TestCase):
                 self.assertIn("ordinary=unset stress=2 seed=17", output)
                 self.assertIn("arg=a filter", output)
             self.assertIn("arg=--test\narg=engine_sync", output)
+
+
+class HeavyTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = HEAVY_WORKFLOW.read_text()
+
+    def test_global_override_is_rejected(self):
+        changed = self.workflow.replace("export KOIDRIVE_BATTERY_CASES=", "export PROPTEST_CASES=")
+        with self.assertRaisesRegex(ValueError, "global case override"):
+            heavy_commands(changed)
+
+    def test_inherited_budgets_must_be_cleared_in_execution_and_repro(self):
+        for original in ("unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES",
+                         "env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES"):
+            changed = self.workflow.replace(original, original.replace(" KOIDRIVE_BATTERY_CASES", ""))
+            with self.assertRaisesRegex(ValueError, "clear both"):
+                heavy_commands(changed)
+
+    def test_execution_and_repro_use_only_the_optional_stress_budget(self):
+        budget, execution, repro = heavy_commands(self.workflow)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            probe = '#!/bin/sh\nprintf "ordinary=%s stress=%s seed=%s\\n" "${PROPTEST_CASES-unset}" "${KOIDRIVE_BATTERY_CASES-unset}" "$PROPTEST_RNG_SEED"\nprintf "arg=%s\\n" "$@"\n'
+            for name, content in (("cargo", probe), ("git", "#!/bin/sh\nexit 0\n")):
+                path = root / name
+                path.write_text(content)
+                path.chmod(0o755)
+            environment = dict(os.environ, PROPTEST_CASES="8192", KOIDRIVE_BATTERY_CASES="999",
+                               PATH=str(root) + os.pathsep + os.environ["PATH"])
+            for cases, expected in (("", "unset"), ("2", "2"), ("0", "0")):
+                setup = f'CASES="{cases}"; SHA=abc; seed=17; cargo_args=(--locked -p koidrive-sim); test_args=("a filter"); log="{root}/log"; repro_args=" --locked -p koidrive-sim -- a\\ filter"\n'
+                for command in (budget + "\n" + execution,
+                                repro + '\neval "${repro/<seed>/$seed}"'):
+                    output = subprocess.check_output(["bash", "-euo", "pipefail", "-c", setup + command],
+                                                     env=environment, text=True)
+                    self.assertIn(f"ordinary=unset stress={expected} seed=17", output)
+                    self.assertIn("arg=a filter", output)
+                    self.assertIn("arg=koidrive-sim", output)
 
 
 if __name__ == "__main__":

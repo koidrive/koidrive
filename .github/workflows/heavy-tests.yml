@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       cases:
-        description: PROPTEST_CASES (empty keeps each property's own case count)
+        description: Cases per opted-in stress property; deadline-bound properties keep their own budgets (empty keeps each property's own count)
         type: string
         default: ''
       repeat:
@@ -146,14 +146,15 @@ jobs:
           test_args=()
           [ -z "$FILTER" ] || test_args+=("$FILTER")
           [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
-          [ -z "$CASES" ] || export PROPTEST_CASES="$CASES"
+          unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
+          [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
           [ "${#test_args[@]}" -eq 0 ] || repro_args+=" --$(printf ' %q' "${test_args[@]}")"
-          repro="git checkout $SHA && PROPTEST_RNG_SEED=<seed>${CASES:+ PROPTEST_CASES=$CASES} cargo test$repro_args"
+          repro="git checkout $SHA && env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES PROPTEST_RNG_SEED=<seed>${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES} cargo test$repro_args"
           {
             echo "### $RUNNER_OS: cargo test$repro_args"
             echo
-            echo "Commit $SHA, PROPTEST_CASES=${CASES:-unset, so each property runs its own count}."
+            echo "Commit $SHA, stress budget KOIDRIVE_BATTERY_CASES=${CASES:-unset, so each property runs its own count}. Deadline-bound properties keep their own budgets; unit tests run once per repetition."
             echo
             echo "| Run | Seed | Result | Passed | Failed | Ignored | Minutes |"
             echo "|---|---|---|---|---|---|---|"

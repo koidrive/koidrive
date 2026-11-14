@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use proc_macro2::{Span, TokenStream, TokenTree};
@@ -11,7 +11,21 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Expr, PathArguments};
 
-const CONFIG_HELP: &str = "use exactly one leading #![proptest_config(koidrive_test_support::regression_config(\"path/to/regressions.txt\", cases))], or opt in to stress budgets with battery_config; struct updates must use that base without setting failure_persistence";
+const CONFIG_HELP: &str = "use exactly one leading #![proptest_config(koidrive_test_support::battery_config(\"path/to/regressions.txt\", cases))]; only allowlisted deadline properties and the bounded runtime probe use regression_config; struct updates must not set cases or failure_persistence";
+const DEADLINE_PATH: &str = "core/driver/src/folder/tests/unreadable_files.rs";
+const DEADLINE_PROPERTIES: &[&str] = &[
+    "files_that_cannot_be_read_hold_back_no_other_change",
+    "files_that_cannot_be_written_hold_back_no_other_download",
+];
+const PROBE_PATH: &str = "core/test-support/tests/budgets.rs";
+
+fn bounded_properties(path: &Path) -> Option<(&'static [&'static str], u32)> {
+    match path.to_str()? {
+        DEADLINE_PATH => Some((DEADLINE_PROPERTIES, 8)),
+        PROBE_PATH => Some((&["bounded"], 4)),
+        _ => None,
+    }
+}
 
 struct Diagnostic {
     span: Span,
@@ -22,9 +36,13 @@ struct Diagnostic {
 struct Inspection {
     blocks: usize,
     diagnostics: Vec<Diagnostic>,
+    properties: Vec<String>,
 }
 
-struct Properties;
+struct Properties {
+    config: Expr,
+    names: Vec<String>,
+}
 
 impl Parse for Properties {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
@@ -40,10 +58,26 @@ impl Parse for Properties {
             )));
         }
         let config = configs[0].parse_args::<Expr>()?;
-        let base = match &config {
+        let tokens: Vec<_> = input.parse::<TokenStream>()?.into_iter().collect();
+        let names = tokens
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [TokenTree::Ident(keyword), TokenTree::Ident(name)] if keyword == "fn" => {
+                    Some(name.unraw().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(Self { config, names })
+    }
+}
+
+impl Properties {
+    fn validate(&self, path: &Path) -> syn::Result<()> {
+        let base = match &self.config {
             Expr::Struct(config) => {
                 if config.fields.iter().any(|field| {
-                    matches!(&field.member, syn::Member::Named(name) if name.unraw() == "failure_persistence")
+                    matches!(&field.member, syn::Member::Named(name) if name.unraw() == "failure_persistence" || name.unraw() == "cases")
                 }) {
                     None
                 } else {
@@ -52,11 +86,11 @@ impl Parse for Properties {
             }
             other => Some(other),
         };
-        let valid = match base {
+        let call = match base {
             Some(Expr::Call(call)) => match call.func.as_ref() {
                 Expr::Path(function) if function.qself.is_none() => {
                     let segments = &function.path.segments;
-                    segments.len() == 2
+                    (segments.len() == 2
                         && segments[0].ident.unraw() == "koidrive_test_support"
                         && matches!(
                             segments[1].ident.unraw().to_string().as_str(),
@@ -64,24 +98,64 @@ impl Parse for Properties {
                         )
                         && segments
                             .iter()
-                            .all(|segment| matches!(segment.arguments, PathArguments::None))
+                            .all(|segment| matches!(segment.arguments, PathArguments::None)))
+                    .then_some(call)
                 }
-                _ => false,
+                _ => None,
             },
-            _ => false,
+            _ => None,
         };
-        if !valid {
+        let call = call.ok_or_else(|| syn::Error::new_spanned(
+            &self.config,
+            "config must directly call koidrive_test_support::battery_config or allowlisted regression_config, or use that call as a struct update base without setting cases or failure_persistence",
+        ))?;
+        let Expr::Path(function) = call.func.as_ref() else {
+            unreachable!()
+        };
+        let bounded = function.path.segments[1].ident.unraw() == "regression_config";
+        let exception = bounded_properties(path);
+        if !bounded {
+            if exception.is_some_and(|(names, _)| {
+                self.names.iter().any(|name| names.contains(&name.as_str()))
+            }) {
+                return Err(syn::Error::new_spanned(
+                    &self.config,
+                    "allowlisted bounded properties must retain regression_config and their literal case budget",
+                ));
+            }
+            return Ok(());
+        }
+        let cases = match exception {
+            Some((names, cases))
+                if self.names.len() == 1 && names.contains(&self.names[0].as_str()) =>
+            {
+                cases
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &self.config,
+                    "regression_config requires exactly one allowlisted property at its exact source path; use battery_config for stress properties",
+                ));
+            }
+        };
+        let literal = match call.args.iter().nth(1) {
+            Some(Expr::Lit(value)) => match &value.lit {
+                syn::Lit::Int(value) => value.base10_parse::<u32>().ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        if call.args.len() != 2 || literal != Some(cases) {
             return Err(syn::Error::new_spanned(
-                config,
-                "config must directly call koidrive_test_support::regression_config or koidrive_test_support::battery_config, or use that call as a struct update base without setting failure_persistence",
+                &self.config,
+                format!("allowlisted bounded property must use the literal case budget {cases}"),
             ));
         }
-        input.parse::<TokenStream>()?;
-        Ok(Self)
+        Ok(())
     }
 }
 
-fn inspect_tokens(tokens: TokenStream, inspection: &mut Inspection) {
+fn inspect_tokens(path: &Path, tokens: TokenStream, inspection: &mut Inspection) {
     let tokens: Vec<_> = tokens.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
         if let TokenTree::Ident(ident) = token
@@ -91,7 +165,14 @@ fn inspect_tokens(tokens: TokenStream, inspection: &mut Inspection) {
             inspection.blocks += 1;
             match tokens.get(index + 2) {
                 Some(TokenTree::Group(group)) => {
-                    if let Err(error) = syn::parse2::<Properties>(group.stream()) {
+                    let validation =
+                        syn::parse2::<Properties>(group.stream()).and_then(|properties| {
+                            inspection
+                                .properties
+                                .extend(properties.names.iter().cloned());
+                            properties.validate(path)
+                        });
+                    if let Err(error) = validation {
                         inspection.diagnostics.push(Diagnostic {
                             span: ident.span().join(group.span()).unwrap_or(ident.span()),
                             message: format!("invalid proptest!: {error}; {CONFIG_HELP}"),
@@ -105,16 +186,16 @@ fn inspect_tokens(tokens: TokenStream, inspection: &mut Inspection) {
             }
         }
         if let TokenTree::Group(group) = token {
-            inspect_tokens(group.stream(), inspection);
+            inspect_tokens(path, group.stream(), inspection);
         }
     }
 }
 
-fn inspect_source(source: &str) -> Inspection {
+fn inspect_source(path: &Path, source: &str) -> Inspection {
     let mut inspection = Inspection::default();
     match syn::parse_file(source) {
         Ok(file) => {
-            inspect_tokens(file.into_token_stream(), &mut inspection);
+            inspect_tokens(path, file.into_token_stream(), &mut inspection);
         }
         Err(error) => inspection.diagnostics.push(Diagnostic {
             span: error.span(),
@@ -122,6 +203,23 @@ fn inspect_source(source: &str) -> Inspection {
                 "cannot parse Rust source: {error}; fix the syntax before checking persistence"
             ),
         }),
+    }
+    if let Some((names, _)) = bounded_properties(path) {
+        for name in names {
+            let count = inspection
+                .properties
+                .iter()
+                .filter(|property| property.as_str() == *name)
+                .count();
+            if count != 1 {
+                inspection.diagnostics.push(Diagnostic {
+                    span: Span::call_site(),
+                    message: format!(
+                        "expected exactly one allowlisted bounded property {name}, found {count}"
+                    ),
+                });
+            }
+        }
     }
     inspection
 }
@@ -169,6 +267,13 @@ fn run() -> Result<bool, String> {
     if default_scan {
         files = tracked_files()?;
     }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve repository root: {error}"))?;
     files.sort();
     files.dedup();
     let mut valid = true;
@@ -182,7 +287,11 @@ fn run() -> Result<bool, String> {
                 continue;
             }
         };
-        let inspection = inspect_source(&source);
+        let canonical = file
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve {}: {error}", file.display()))?;
+        let inspection =
+            inspect_source(canonical.strip_prefix(&root).unwrap_or(&canonical), &source);
         blocks += inspection.blocks;
         for diagnostic in inspection.diagnostics {
             let start = diagnostic.span.start();
@@ -226,12 +335,12 @@ mod tests {
     use super::*;
 
     const CONFIG: &str =
-        r##"#![proptest_config(koidrive_test_support::regression_config("regressions.txt", 32))]"##;
+        r##"#![proptest_config(koidrive_test_support::battery_config("regressions.txt", 32))]"##;
     const PROPERTY: &str =
         "#[test] fn identity(value in any::<u32>()) { prop_assert_eq!(value, value); }";
 
     fn errors(source: &str) -> Vec<Diagnostic> {
-        inspect_source(source).diagnostics
+        inspect_source(Path::new("core/sim/tests/new.rs"), source).diagnostics
     }
 
     fn property(config: &str) -> String {
@@ -245,13 +354,13 @@ mod tests {
             "#![proptest_config(Config::default())]",
             "#![proptest_config(Config::with_cases(32))]",
             "#![proptest_config(helper())]",
-            "#![proptest_config(regression_config(\"regressions.txt\", 32))]",
-            "#![proptest_config({ koidrive_test_support::regression_config(\"regressions.txt\", 32) })]",
-            "#![proptest_config(koidrive_test_support::regression_config(\"regressions.txt\", 32).clone())]",
+            "#![proptest_config(battery_config(\"regressions.txt\", 32))]",
+            "#![proptest_config({ koidrive_test_support::battery_config(\"regressions.txt\", 32) })]",
+            "#![proptest_config(koidrive_test_support::battery_config(\"regressions.txt\", 32).clone())]",
         ] {
             let diagnostics = errors(&property(config));
             assert_eq!(diagnostics.len(), 1, "{config}");
-            assert!(diagnostics[0].message.contains("regression_config"));
+            assert!(diagnostics[0].message.contains("battery_config"));
         }
     }
 
@@ -271,9 +380,8 @@ mod tests {
     fn battery_opt_in_preserves_persistence_guarantees() {
         for config in [
             CONFIG.to_owned(),
-            r##"#![proptest_config(Config { rng_seed: RngSeed::Fixed(42), ..koidrive_test_support::regression_config("regressions.txt", 32) })]"##.to_owned(),
+            r##"#![proptest_config(Config { rng_seed: RngSeed::Fixed(42), ..koidrive_test_support::battery_config("regressions.txt", 32) })]"##.to_owned(),
         ] {
-            let config = config.replace("regression_config", "battery_config");
             assert!(errors(&property(&config)).is_empty());
             assert!(errors(&property(&config.replace("koidrive_test_support::", "::koidrive_test_support::"))).is_empty());
             for invalid in [
@@ -294,7 +402,7 @@ mod tests {
     fn struct_update_preserves_explicit_persistence() {
         let config = r##"#![proptest_config(ProptestConfig {
             rng_seed: RngSeed::Fixed(42),
-            ..koidrive_test_support::regression_config("regressions.txt", 32)
+            ..koidrive_test_support::battery_config("regressions.txt", 32)
         })]"##;
         assert!(errors(&property(config)).is_empty());
         for config in [
@@ -305,16 +413,16 @@ mod tests {
                 "r#failure_persistence: None",
             ),
             config.replace(
-                "koidrive_test_support::regression_config(\"regressions.txt\", 32)",
+                "koidrive_test_support::battery_config(\"regressions.txt\", 32)",
                 "ProptestConfig::default()",
             ),
             config.replace(
-                "koidrive_test_support::regression_config(\"regressions.txt\", 32)",
+                "koidrive_test_support::battery_config(\"regressions.txt\", 32)",
                 "helper()",
             ),
             config.replace(
-                "koidrive_test_support::regression_config(\"regressions.txt\", 32)",
-                "{ koidrive_test_support::regression_config(\"regressions.txt\", 32) }",
+                "koidrive_test_support::battery_config(\"regressions.txt\", 32)",
+                "{ koidrive_test_support::battery_config(\"regressions.txt\", 32) }",
             ),
             "#![proptest_config(ProptestConfig { rng_seed: RngSeed::Fixed(42) })]".into(),
         ] {
@@ -361,7 +469,7 @@ mod tests {
             /// proptest! { invalid }
             fn ordinary() {}
         "####;
-        let inspection = inspect_source(source);
+        let inspection = inspect_source(Path::new("core/sim/tests/new.rs"), source);
         assert!(inspection.diagnostics.is_empty());
         assert_eq!(inspection.blocks, 0);
     }
@@ -371,10 +479,13 @@ mod tests {
         let source = format!(
             "proptest::proptest! {{ {CONFIG} fn outer(x in 0..1) {{ proptest! {{ {CONFIG} {PROPERTY} }} }} }}"
         );
-        let inspection = inspect_source(&source);
+        let inspection = inspect_source(Path::new("core/sim/tests/new.rs"), &source);
         assert!(inspection.diagnostics.is_empty());
         assert_eq!(inspection.blocks, 2);
-        assert_eq!(inspect_source(&property("")).blocks, 1);
+        assert_eq!(
+            inspect_source(Path::new("core/sim/tests/new.rs"), &property("")).blocks,
+            1
+        );
     }
 
     #[test]
@@ -383,7 +494,7 @@ mod tests {
             format!("{CONFIG} {CONFIG}"),
             "#![proptest_config]".into(),
             "#![proptest_config()]".into(),
-            "#![proptest_config(koidrive_test_support::regression_config(,))]".into(),
+            "#![proptest_config(koidrive_test_support::battery_config(,))]".into(),
         ] {
             assert_eq!(errors(&property(&config)).len(), 1, "{config}");
         }
@@ -410,5 +521,170 @@ mod tests {
         let diagnostics = errors(&source);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].span.start().line, 3);
+    }
+
+    fn bounded_block(name: &str, cases: &str) -> String {
+        property(
+            &CONFIG
+                .replace("battery_config", "regression_config")
+                .replace("32", cases),
+        )
+        .replace("identity", name)
+    }
+
+    fn deadlines() -> String {
+        DEADLINE_PROPERTIES
+            .iter()
+            .map(|name| bounded_block(name, "8"))
+            .collect()
+    }
+
+    #[test]
+    fn new_sim_properties_require_stress_budgets() {
+        assert!(errors(&property(CONFIG)).is_empty());
+        let diagnostics = errors(&bounded_block("new_property", "32"));
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("use battery_config"));
+        assert!(errors("fn replay() { let runner = regression_config(file, 0); }").is_empty());
+    }
+
+    #[test]
+    fn deadline_exceptions_require_the_exact_source_path() {
+        let source = deadlines();
+        assert!(
+            inspect_source(Path::new(DEADLINE_PATH), &source)
+                .diagnostics
+                .is_empty()
+        );
+        for path in [
+            "core/sim/tests/new.rs",
+            "core/driver/src/folder/tests/renamed.rs",
+            "other/core/driver/src/folder/tests/unreadable_files.rs",
+        ] {
+            let diagnostics = inspect_source(Path::new(path), &source).diagnostics;
+            assert_eq!(diagnostics.len(), 2, "{path}");
+        }
+        let stress = source.replace("regression_config", "battery_config");
+        assert!(errors(&stress).is_empty());
+    }
+
+    #[test]
+    fn deadline_exceptions_require_a_literal_eight_case_budget() {
+        for budget in ["0", "4", "9", "CASES", "8 + 0", "{ 8 }"] {
+            let source = deadlines().replace(
+                "regression_config(\"regressions.txt\", 8)",
+                &format!("regression_config(\"regressions.txt\", {budget})"),
+            );
+            let diagnostics = inspect_source(Path::new(DEADLINE_PATH), &source).diagnostics;
+            assert_eq!(diagnostics.len(), 2, "{budget}");
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|error| error.message.contains("literal case budget 8"))
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_blocks_cannot_admit_missing_renamed_or_extra_properties() {
+        let source = deadlines();
+        for changed in [
+            source.replace(&PROPERTY.replace("identity", DEADLINE_PROPERTIES[0]), ""),
+            source.replace(DEADLINE_PROPERTIES[0], "renamed"),
+            source.replace("#[test] fn", "#[test] fn extra(x in 0..1) {} #[test] fn"),
+            source.replace(DEADLINE_PROPERTIES[0], DEADLINE_PROPERTIES[1]),
+            bounded_block(DEADLINE_PROPERTIES[0], "8"),
+        ] {
+            assert!(
+                !inspect_source(Path::new(DEADLINE_PATH), &changed)
+                    .diagnostics
+                    .is_empty(),
+                "{changed}"
+            );
+        }
+        let extra_stress = format!("{source} {}", property(CONFIG));
+        assert!(
+            inspect_source(Path::new(DEADLINE_PATH), &extra_stress)
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn deadline_properties_cannot_switch_to_battery_budgets() {
+        let source = deadlines().replace("regression_config", "battery_config");
+        let diagnostics = inspect_source(Path::new(DEADLINE_PATH), &source).diagnostics;
+        assert_eq!(diagnostics.len(), 2);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|error| error.message.contains("must retain regression_config"))
+        );
+    }
+
+    #[test]
+    fn bounded_probe_is_separate_from_production_deadlines() {
+        let source = bounded_block("bounded", "4");
+        assert!(
+            inspect_source(Path::new(PROBE_PATH), &source)
+                .diagnostics
+                .is_empty()
+        );
+        assert!(
+            !inspect_source(Path::new(DEADLINE_PATH), &source)
+                .diagnostics
+                .is_empty()
+        );
+        assert!(
+            !inspect_source(
+                Path::new("other/core/test-support/tests/budgets.rs"),
+                &source
+            )
+            .diagnostics
+            .is_empty()
+        );
+        for changed in [
+            source.replace("bounded", "other"),
+            source.replace(
+                "regression_config(\"regressions.txt\", 4)",
+                "regression_config(\"regressions.txt\", 8)",
+            ),
+            source.replace("regression_config", "battery_config"),
+            source.replace(&PROPERTY.replace("identity", "bounded"), ""),
+            format!("{source}\n{source}"),
+        ] {
+            assert!(
+                !inspect_source(Path::new(PROBE_PATH), &changed)
+                    .diagnostics
+                    .is_empty(),
+                "{changed}"
+            );
+        }
+        assert!(
+            !inspect_source(Path::new(PROBE_PATH), &deadlines())
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn struct_updates_cannot_bypass_case_budgets() {
+        for field in ["cases: 0", "cases", "r#cases: 8"] {
+            let config = format!(
+                "#![proptest_config(Config {{ {field}, ..koidrive_test_support::battery_config(\"regressions.txt\", 32) }})]"
+            );
+            assert_eq!(errors(&property(&config)).len(), 1, "{field}");
+            let source = deadlines().replace(
+                "koidrive_test_support::regression_config(\"regressions.txt\", 8)",
+                &format!("Config {{ {field}, ..koidrive_test_support::regression_config(\"regressions.txt\", 8) }}"),
+            );
+            assert_eq!(
+                inspect_source(Path::new(DEADLINE_PATH), &source)
+                    .diagnostics
+                    .len(),
+                2,
+                "{field}"
+            );
+        }
     }
 }
