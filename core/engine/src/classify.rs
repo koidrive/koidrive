@@ -123,6 +123,79 @@ pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a 
     None
 }
 
+#[derive(Clone, Debug, Default)]
+struct Discards {
+    shapes: TrackedMap<NodeId, Shape>,
+    below: BTreeMap<NodeId, BTreeSet<NodeId>>,
+}
+
+impl Discards {
+    fn children(&self, id: &str) -> impl Iterator<Item = &NodeId> {
+        self.below.get(id).into_iter().flatten()
+    }
+
+    fn insert(&mut self, id: NodeId, shape: Shape) {
+        self.unlink(&id);
+        self.below
+            .entry(shape.parent.clone())
+            .or_default()
+            .insert(id.clone());
+        self.shapes.insert(id, shape);
+    }
+
+    fn remove(&mut self, id: &str) -> Option<Shape> {
+        self.unlink(id);
+        self.shapes.remove(id)
+    }
+
+    fn unlink(&mut self, id: &str) {
+        let Some(parent) = self.shapes.get(id).map(|shape| shape.parent.clone()) else {
+            return;
+        };
+        if let Some(children) = self.below.get_mut(&parent) {
+            children.remove(id);
+            if children.is_empty() {
+                self.below.remove(&parent);
+            }
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&NodeId) -> bool) {
+        let gone: Vec<NodeId> = self.shapes.keys().filter(|id| !keep(id)).cloned().collect();
+        for id in gone {
+            self.remove(&id);
+        }
+    }
+
+    fn take_changes(&mut self) -> Vec<(NodeId, Option<Shape>)> {
+        self.shapes.take_changes()
+    }
+}
+
+impl std::ops::Deref for Discards {
+    type Target = BTreeMap<NodeId, Shape>;
+
+    fn deref(&self) -> &BTreeMap<NodeId, Shape> {
+        &self.shapes
+    }
+}
+
+impl From<BTreeMap<NodeId, Shape>> for Discards {
+    fn from(shapes: BTreeMap<NodeId, Shape>) -> Self {
+        let mut below: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
+        for (id, shape) in &shapes {
+            below
+                .entry(shape.parent.clone())
+                .or_default()
+                .insert(id.clone());
+        }
+        Self {
+            shapes: shapes.into(),
+            below,
+        }
+    }
+}
+
 /// The nodes of a tree by parent and the `name_key` of their name.
 #[derive(Clone, Debug, Default)]
 struct ByName(BTreeMap<(NodeId, String), BTreeSet<NodeId>>);
@@ -215,7 +288,7 @@ pub struct Trees {
     trashed_here: TrackedMap<NodeId, u64>,
     removed_here: TrackedMap<NodeId, u64>,
     /// See [`TreesState::discarded`].
-    discarded: TrackedMap<NodeId, Shape>,
+    discarded: Discards,
     adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
@@ -309,7 +382,7 @@ impl Trees {
             watched_positions: TrackedMap::default(),
             trashed_here: TrackedMap::default(),
             removed_here: TrackedMap::default(),
-            discarded: TrackedMap::default(),
+            discarded: Discards::default(),
             adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
@@ -1566,24 +1639,30 @@ impl Trees {
         let unchanged = (self.l.get(id)).is_some_and(|local| {
             (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
         });
-        let gone = |child: &NodeId| self.l.get(child).is_none() && self.r.live(child).is_none();
         unchanged
-            && (self.discarded.iter())
-                .filter(|(_, shape)| shape.parent == id)
-                .all(|(child, _)| self.left_as_discarded(child) || gone(child))
-            && (self.local_children(id))
-                .all(|child| (self.discarded.get(child)).is_some_and(|shape| shape.parent == id))
+            && (self.discarded.children(id))
+                .all(|child| self.is_discarded(child) || self.as_the_server_holds(child))
+            && (self.local_children(id)).all(|child| {
+                (self.discarded.get(child)).is_some_and(|shape| shape.parent == id)
+                    || self.as_the_server_holds(child)
+            })
+    }
+
+    fn as_the_server_holds(&self, id: &str) -> bool {
+        match (self.l.get(id), self.r.live(id)) {
+            (Some(local), Some(remote)) => {
+                local.shape.same(remote)
+                    && (self.local_children(id)).all(|child| self.as_the_server_holds(child))
+            }
+            (local, remote) => local.is_none() && remote.is_none(),
+        }
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {
         let mut below = vec![id.to_owned()];
         while let Some(id) = below.pop() {
+            below.extend(self.discarded.children(&id).cloned());
             self.discarded.remove(&id);
-            below.extend(
-                (self.discarded.iter())
-                    .filter(|(_, shape)| shape.parent == id)
-                    .map(|(child, _)| child.clone()),
-            );
         }
     }
 
@@ -1592,13 +1671,14 @@ impl Trees {
             self.unsort(to);
             self.discarded.insert(to.to_owned(), shape);
         }
-        let children: Vec<NodeId> = (self.discarded.iter())
-            .filter(|(_, shape)| shape.parent == from)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let children: Vec<NodeId> = self.discarded.children(from).cloned().collect();
         for id in children {
-            if let Some(shape) = self.discarded.get_mut(&id) {
-                shape.parent = to.to_owned();
+            if let Some(shape) = self.discarded.get(&id) {
+                let shape = Shape {
+                    parent: to.to_owned(),
+                    ..shape.clone()
+                };
+                self.discarded.insert(id, shape);
             }
         }
     }
@@ -1712,8 +1792,10 @@ impl Trees {
                 for _ in 0..=self.discarded.len() {
                     match parent {
                         Some(dir) if released(dir) => return true,
-                        Some(dir) => parent = self.discarded.get(dir).map(|shape| &shape.parent),
-                        None => return false,
+                        Some(dir) if self.r.get(dir).is_some() => {
+                            parent = self.discarded.get(dir).map(|shape| &shape.parent)
+                        }
+                        _ => return false,
                     }
                 }
                 false
@@ -1728,7 +1810,7 @@ impl Trees {
         }
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);
         (self.discarded)
-            .retain(|id, _| l.get(id).is_some() || s.get(id).is_some() || waiting.contains_key(id));
+            .retain(|id| l.get(id).is_some() || s.get(id).is_some() || waiting.contains_key(id));
         dropped
     }
 

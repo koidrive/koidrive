@@ -140,4 +140,80 @@ proptest! {
     ) {
         run_ignoring(&seed, &local, &[], fits, false, &during, cut, &rulings, answer, true)?;
     }
+
+    #[test]
+    fn a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone(
+        seed in prop::collection::vec(action(2), 2..12),
+        local in prop::collection::vec(action(2), 1..8),
+        fits in prop_oneof![Just(MAX_OPS), 1usize..4],
+        during in prop::collection::vec(
+            (any::<bool>(), prop::collection::vec(action(10).prop_map(|action| Action {
+                kind: if matches!(action.kind, 5 | 6) { 7 } else { action.kind },
+                ..action
+            }), 1..4)),
+            0..10,
+        ),
+        rulings in prop::collection::vec(ruling(), 1..8),
+        answer_after in 0usize..12,
+        cut in prop::sample::select(CUTS.to_vec()),
+    ) {
+        run_ignoring_answering_after(
+            &seed,
+            &local,
+            &[],
+            fits,
+            false,
+            &during,
+            cut,
+            &rulings,
+            Answer::Discard,
+            true,
+            answer_after,
+        )?;
+    }
+}
+
+proptest! {
+    #![proptest_config(koidrive_test_support::regression_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/engine_sync.proptest-regressions"),
+        0,
+    ))]
+
+    #[test]
+    fn a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it(
+        seed in prop::collection::vec(action(2), 2..8),
+        local in prop::collection::vec(action(2), 1..6),
+        before in prop::collection::vec((any::<bool>(), prop::collection::vec(action(5), 1..3)), 0..3),
+        moved in action(1).prop_map(|action| Action { kind: 8, ..action }),
+        gap in prop::collection::vec((any::<bool>(), prop::collection::vec(action(5), 1..3)), 0..3),
+        purged in action(1).prop_map(|action| Action { kind: 7, ..action }),
+        changed in action(1).prop_map(|action| Action { kind: 9, ..action }),
+        excluded in prop::collection::vec(prop::sample::select(PATTERNS), 1..3),
+        answer_after in 0usize..12,
+        cut in prop::sample::select(CUTS.to_vec()),
+    ) {
+        let during: Vec<(bool, Vec<Action>)> = (before.into_iter())
+            .chain([(true, vec![moved])])
+            .chain(gap)
+            .chain([(false, vec![purged]), (true, vec![changed])])
+            .collect();
+        let rulings: Vec<Ruling> = [Ruling::File(vec![])]
+            .into_iter()
+            .chain((2..during.len()).map(|_| Ruling::Exclude(excluded.clone())))
+            .chain([Ruling::Exclude(vec![])])
+            .collect();
+        run_ignoring_answering_after(
+            &seed,
+            &local,
+            &[],
+            MAX_OPS,
+            false,
+            &during,
+            cut,
+            &rulings,
+            Answer::Discard,
+            true,
+            answer_after,
+        )?;
+    }
 }

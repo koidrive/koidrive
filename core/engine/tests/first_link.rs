@@ -2255,6 +2255,69 @@ fn a_server_file_moved_into_a_folder_before_the_folder_is_discarded_goes_back_wh
 }
 
 #[test]
+fn a_server_folder_moved_into_a_discarded_folder_goes_back_with_what_the_server_added_to_it() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("z", dir(ROOT, "server")),
+            ("a", file("z", "A", 3)),
+        ],
+        &[
+            ("z", dir(ROOT, "server")),
+            ("a", file("z", "A", 3)),
+            ("y", dir("z", "k.txt")),
+        ],
+    );
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.txt\n")));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.txt\nignored\n")));
+    let mut moved = trees.local().get("z").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("z".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(commits.questions().is_empty());
+    trees.set_rules(&[] as &[&str], None);
+    let mut effects = Effects::default();
+    for ino in 100..150 {
+        trees.settle();
+        if let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        {
+            effects
+                .done(
+                    &mut trees,
+                    commits.in_flight(),
+                    &record.effect_id,
+                    Some(FileIdentity {
+                        dev: 1,
+                        ino,
+                        birth_ns: Some(0),
+                    }),
+                )
+                .unwrap();
+            continue;
+        }
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        assert!(
+            sent.is_empty(),
+            "no local change followed Discard, but its folder is sent: {sent:?}"
+        );
+        break;
+    }
+    assert!(trees.local().get("f").is_none());
+    assert_eq!(trees.local().get("z").unwrap().shape, dir(ROOT, "server"));
+    assert_eq!(trees.local().get("y").unwrap().shape, dir("z", "k.txt"));
+}
+
+#[test]
 fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_server_drops_it() {
     let mut trees = trees(
         &[("f", dir(ROOT, "new")), ("x", file(ROOT, "server", 9))],
@@ -2463,4 +2526,65 @@ fn a_file_edited_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_t
     });
     assert!(sent.contains(&("update", "c".into())), "{sent:?}");
     assert_eq!(trees.local().get("c").unwrap().shape, file("x", "child", 4));
+}
+
+#[test]
+fn a_file_the_server_dropped_and_edited_here_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+ {
+    let (_, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        trees.remove_remote("c");
+        let mut edited = trees.local().get("c").unwrap().clone();
+        edited.shape.content = Some(content(4));
+        trees.set_local_changed("c".into(), edited);
+    });
+    assert_eq!(trees.local().get("c").unwrap().shape, file("x", "child", 4));
+}
+
+#[test]
+fn an_edit_after_a_child_of_a_server_folder_in_a_discarded_folder_is_purged_keeps_its_path() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("c", file("x", "child", 9)),
+        ],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(commits.questions().is_empty());
+    let mut trashed = trees.remote().get("c").unwrap().clone();
+    trashed.trashed = true;
+    trees.set_remote("c".into(), trashed);
+    trees.remove_remote("c");
+    let mut edited = trees.local().get("c").unwrap().clone();
+    edited.shape.content = Some(content(8));
+    trees.set_local_changed("c".into(), edited);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(trees.check().is_ok());
+    let mut effects = Effects::default();
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        planned.iter().all(|record| record.node != "x"
+            || record
+                .after
+                .as_ref()
+                .is_none_or(|shape| shape.parent != ROOT)),
+        "a post-Discard edit is relocated after its child was purged: {planned:?}"
+    );
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(
+        sent.contains(&("create dir", "f".into())),
+        "the changed subtree's folder was not reclaimed: {sent:?}"
+    );
 }

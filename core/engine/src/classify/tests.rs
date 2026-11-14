@@ -105,3 +105,78 @@ fn a_reclaim_that_cannot_keep_s_valid_changes_nothing() {
     assert_eq!(trees.reclaim(|_| true), Vec::<NodeId>::new());
     assert_eq!(trees.state(), before);
 }
+
+fn a_server_folder_in_a_discarded_folder(folders: usize) -> (Trees, Vec<NodeId>) {
+    let mut trees = Trees::new("root");
+    let mut ino = 0;
+    let mut add = |trees: &mut Trees, id: String, shape: Shape, server: bool| {
+        ino += 1;
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        if server {
+            trees.set_remote(id.clone(), remote(shape.clone()));
+            trees.set_synced(id.clone(), Some(shape.clone()));
+        }
+        let local = LocalNode {
+            shape,
+            identity,
+            parked: false,
+        };
+        trees.set_local(id, local);
+    };
+    add(&mut trees, "f".into(), dir("root", "new"), false);
+    add(&mut trees, "x".into(), dir("f", "ignored"), true);
+    let mut ids = vec!["x".to_string()];
+    for i in 0..folders {
+        let folder = format!("d{i}");
+        add(&mut trees, folder.clone(), dir("x", &folder), true);
+        ids.push(folder.clone());
+        for j in 0..500 {
+            let content = Content {
+                size: 1,
+                mtime_ns: 0,
+                executable: false,
+                chunks: Vec::new(),
+                chunk_count: 0,
+                manifest_digest: vec![1; 32],
+                chunker: String::new(),
+            };
+            let shape = Shape {
+                parent: folder.clone(),
+                name: format!("f{j}"),
+                kind: Kind::File,
+                content: Some(content),
+            };
+            let id = format!("c{i}-{j}");
+            add(&mut trees, id.clone(), shape, true);
+            ids.push(id);
+        }
+    }
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    trees.discard_server_entries_below(&BTreeMap::from([("f".into(), dir("root", "new"))]));
+    trees.discard(
+        ["f".to_string()],
+        &BTreeMap::from([("f".into(), dir("root", "new"))]),
+    );
+    assert_eq!(trees.discarded.len(), ids.len() + 1);
+    (trees, ids)
+}
+
+#[test]
+fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time() {
+    let took = |folders| {
+        let (trees, ids) = a_server_folder_in_a_discarded_folder(folders);
+        let started = std::time::Instant::now();
+        assert!(ids.iter().all(|id| trees.is_discarded(id)));
+        assert!(trees.discard_state("f") == Some(Discard::Kept));
+        started.elapsed()
+    };
+    let (five_thousand, fifty_thousand) = (took(10), took(100));
+    assert!(
+        fifty_thousand < five_thousand * 30,
+        "checking 50,000 discarded server copies took {fifty_thousand:?}, and 5,000 took {five_thousand:?}"
+    );
+}
