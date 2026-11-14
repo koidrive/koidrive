@@ -10,7 +10,7 @@ use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Kind, NodeId, RemoteNode, Shape, Tree, pending_stem, same_content};
+use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, Tree, pending_stem, same_content};
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
 /// a place it left, where a download made before the store lost track of it may still hold it on
@@ -43,8 +43,8 @@ pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
 /// entry whose name S gives another node is returned, since S keeps its shapes during a recovery.
 /// With `history`, as in a recovery, the disk may hold what the server sent before the store lost
 /// track of it: an entry at a place no live node of R holds also matches the one node R holds in the
-/// trash there that it matches, and then the one node of R that `history` shows at that place,
-/// which S then holds there. An entry whose match S cannot hold there, as when it would make S a
+/// trash there that it matches, and then the one node of R that `history` shows at that place
+/// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
@@ -105,10 +105,7 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
                     && shape.kind == local.kind
-                    && match (&shape.content, &local.content) {
-                        (Some(remote), Some(local)) => same_content(remote, local),
-                        (remote, local) => remote.is_none() && local.is_none(),
-                    }
+                    && same_bytes(&shape.content, &local.content)
             };
             let pending_match = match pending_dirs.get(&key).map(Vec::as_slice) {
                 Some([only]) if local.kind == Kind::Dir && holds_no_more(trees, only, &id) => {
@@ -136,7 +133,9 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                     (left.get(&key)?.iter()).filter(|(remote_id, shape)| matches(remote_id, shape));
                 let first = matching.next()?;
                 let unique = matching.all(|(other, _)| *other == first.0);
-                (unique && trees.remote().get(&first.0).is_some()).then(|| first.clone())
+                let held_now = (trees.remote().get(&first.0))
+                    .is_some_and(|node| same_bytes(&node.shape.content, &first.1.content));
+                (unique && held_now).then(|| first.clone())
             };
             let Some((remote_id, shape)) = found.or_else(earlier) else {
                 held.push(id);
@@ -159,6 +158,13 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
         }
     }
     held
+}
+
+fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => same_content(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
 }
 
 fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {

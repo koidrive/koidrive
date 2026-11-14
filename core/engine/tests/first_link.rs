@@ -119,6 +119,16 @@ fn a_place_the_log_shows_two_nodes_left_with_the_same_bytes_adopts_neither() {
 }
 
 #[test]
+fn an_entry_with_bytes_the_server_has_since_replaced_at_its_place_is_held() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "a", 2))],
+    );
+    let history = History::from([("r-a".into(), vec![file(ROOT, "a", 1), file(ROOT, "a", 2)])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"]);
+}
+
+#[test]
 fn a_place_the_log_shows_is_not_adopted_when_s_would_hold_a_cycle() {
     let mut trees = trees(
         &[("p", dir(ROOT, "p")), ("l-d", dir("p", "n"))],
