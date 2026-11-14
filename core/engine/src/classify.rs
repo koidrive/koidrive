@@ -2732,11 +2732,6 @@ impl Trees {
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self) {
         self.check_finishes();
-        self.reverted
-            .retain(|id| match (self.l.get(id), self.r.live(id)) {
-                (Some(local), Some(remote)) => !local.shape.same_position(remote),
-                (local, remote) => local.is_some() || remote.is_some(),
-            });
         let mut pending = std::mem::take(&mut self.same);
         let mut unsettled = std::mem::take(&mut self.unsettled);
         unsettled.extend(
@@ -2841,6 +2836,14 @@ impl Trees {
             }
         }
         self.same = pending;
+        self.reverted
+            .retain(|id| match (self.l.get(id), self.r.live(id)) {
+                (Some(local), Some(remote)) => {
+                    !local.shape.same_position(remote)
+                        || !(self.s.live(id)).is_some_and(|synced| synced.same_position(remote))
+                }
+                (local, remote) => local.is_some() || remote.is_some(),
+            });
     }
 
     /// Every dirty node with its class, in `node_id` order. This reads the whole dirty set.
@@ -2860,7 +2863,7 @@ impl Trees {
     /// nodes created in it, and folders L deleted on the way from such a node to the root. The
     /// commit planner sends no position change for them but still sends their content edits and deletes; the
     /// effects put each at its R position without replacing its content, and [`Trees::settle`]
-    /// forgets it once L has it there. A node the user moves anywhere else stops being reverted
+    /// forgets it once L and S both have it there. A node the user moves anywhere else stops being reverted
     /// ([`Trees::set_local`]), and so does a create or move the server renamed when L has left the
     /// position the commit sent before the result arrives.
     pub fn reverted(&self) -> &BTreeSet<NodeId> {

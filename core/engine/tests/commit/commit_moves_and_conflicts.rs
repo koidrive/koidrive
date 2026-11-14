@@ -510,6 +510,55 @@ fn a_renamed_result_reverts_the_local_name_to_the_server_one() {
     moves_back(&mut trees, &mut ids, "a");
 }
 
+/// The server gave f another name than the one this device sent. Another device deletes the
+/// folder that held that name, moves f to it while S cannot take it yet, and then deletes f. f
+/// follows the delete: the name L holds is the move the server already answered, not a new one.
+#[test]
+fn a_renamed_result_another_device_moves_to_the_sent_name_and_deletes_stays_deleted() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "A")),
+        (
+            "f",
+            Some(file(ROOT, "a", 1)),
+            Some(file(ROOT, "x", 1)),
+            Some(remote(file(ROOT, "x", 1))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("f", ROOT, "a")]);
+    let renamed = OpResult {
+        name: "a (conflict)".into(),
+        ..outcome(op_result::Code::AppliedRenamed)
+    };
+    acknowledge(&mut commits, &mut trees, vec![renamed]);
+    trees.set_remote("f".into(), remote_at(file(ROOT, "a (conflict)", 1), 2));
+    trees.set_remote(
+        "d".into(),
+        RemoteNode {
+            trashed: true,
+            trash_group: "3:0".into(),
+            ..remote_at(dir(ROOT, "A"), 3)
+        },
+    );
+    trees.set_remote("f".into(), remote_at(file(ROOT, "a", 1), 3));
+    trees.settle();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            trashed: true,
+            trash_group: "4:0".into(),
+            ..remote_at(file(ROOT, "a", 1), 4)
+        },
+    );
+    trees.settle();
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(
+        (effects_for(&mut trees, &mut ids, "f").iter())
+            .any(|effect| matches!(effect, Effect::RemoveFile { .. }))
+    );
+}
+
 /// Another device created a file at x first, so the server gives this device's new file another
 /// name, and the two are a conflict. A build before the local file takes the server's name, as
 /// while its move waits for a retry, keeps the question: the name L holds is not the person's move.
