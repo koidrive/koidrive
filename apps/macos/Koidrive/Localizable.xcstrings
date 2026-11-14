@@ -497,6 +497,7 @@
     "Restore requested. It goes out with %@ next sync." : {},
     "Restore version from %@" : {},
     "Restored" : {},
+    "Restored as %@. The %@ version is current on every device." : {},
     "Restored as %@. The name was taken." : {},
     "Restored as a copy, %@. Another device changed the file." : {},
     "Restored as a copy. Another device changed it." : {},

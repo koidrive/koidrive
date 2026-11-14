@@ -98,13 +98,16 @@ private func report(in app: AppModel) throws -> URL {
     }
 
     @Test func theWindowChecksTheFilesThenKeepsTheURLInItsOwnModelOnly() async throws {
-        let app = AppModel.fake(scenario: .upToDate)
+        let (app, session) = scripted()
         let file = try report(in: app)
         let share = ShareLinkModel(app: app, item: file)
+        session.holdNext(.createShareLink)
         let creating = Task { await share.create() }
-        await Task.yield()
+        defer { session.release.signal() }
+        try await untilHeld(session)
         #expect(share.step == .checking)
         #expect(!share.canCreate)
+        session.release.signal()
         await creating.value
 
         let made = try #require(share.link)
@@ -322,5 +325,81 @@ private func report(in app: AppModel) throws -> URL {
         #expect(links.canShare(try report(in: app)))
         #expect(links.canShare(try folder(app, "Photos").url))
         #expect(!links.canShare(FileManager.default.temporaryDirectory.appending(path: "Elsewhere/a.docx")))
+    }
+}
+
+private final class Moment: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date) { self.date = date }
+
+    var now: Date {
+        get { lock.withLock { date } }
+        set { lock.withLock { date = newValue } }
+    }
+}
+
+@MainActor
+@Suite struct SharedLinksOverTimeTests {
+    private func activeLink(_ app: AppModel, _ id: String, expires: Int64?) throws -> ShareLink {
+        ShareLink(id: id, folder: try folder(app, "Documents").path, path: "Notes.md", kind: .file,
+                  createdAtMs: nowMs - hourMs, expiresAtMs: expires.map { nowMs + $0 }, hasPassword: false, state: .active)
+    }
+
+    @Test func aLinkWhoseExpiryPassesWhileTheListIsOpenEnds() async throws {
+        let app = AppModel.fake(scenario: .upToDate)
+        try fakeCore(app).setShareLinks(links: [try activeLink(app, "link-soon", expires: hourMs)])
+        let moment = Moment(now)
+        let links = SharedLinksModel(app: app, clock: HistoryClock(now: { moment.now }, calendar: utc))
+        await links.load()
+        #expect(links.activeLinks.map(\.state) == [.active])
+        #expect(links.activeLinks.first?.end == .remaining(.hours(1)))
+
+        moment.now = now.addingTimeInterval(2 * 3_600)
+        links.showsEndedLinks = true
+        #expect(links.activeLinks.isEmpty)
+        #expect(links.endedLinks.map(\.state) == [.expired])
+        #expect(links.endedLinks.first?.end == .on(now.addingTimeInterval(3_600)))
+    }
+
+    @Test func aLinkMadeOrRevokedWhileTheListLoadsSurvivesTheLoad() async throws {
+        let (app, session) = scripted()
+        try fakeCore(app).setShareLinks(links: [try activeLink(app, "link-old", expires: nil)])
+        let links = SharedLinksModel(app: app, clock: fixedClock)
+        await links.load()
+        let old = try #require(links.activeLinks.first)
+
+        session.holdNext(.shareLinks)
+        let loading = Task { await links.sessionStatusChanged() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        await links.revoke(old.link)
+        let share = ShareLinkModel(app: app, item: try report(in: app))
+        await share.create()
+        let made = try #require(share.link)
+        session.release.signal()
+        await loading.value
+
+        #expect(links.activeLinks.map(\.id) == [made.link.id, old.id])
+        #expect(links.activeLinks.map(\.state) == [.active, .revoked])
+    }
+
+    @Test func aLinkMadeBeforeTheFirstLoadEndsIsListed() async throws {
+        let (app, session) = scripted()
+        try fakeCore(app).setShareLinks(links: [])
+        let links = SharedLinksModel(app: app, clock: fixedClock)
+
+        session.holdNext(.shareLinks)
+        let loading = Task { await links.load() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        let share = ShareLinkModel(app: app, item: try report(in: app))
+        await share.create()
+        let made = try #require(share.link)
+        session.release.signal()
+        await loading.value
+
+        #expect(links.activeLinks.map(\.id) == [made.link.id])
     }
 }

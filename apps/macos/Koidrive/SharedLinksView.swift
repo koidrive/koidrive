@@ -26,7 +26,7 @@ struct SharedLinksView: View {
     var body: some View {
         VStack(spacing: 0) {
             bar
-            content
+            TimelineView(.everyMinute) { _ in content }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             footer
         }
@@ -39,6 +39,7 @@ struct SharedLinksView: View {
         }
         .onDrop(of: [.fileURL], delegate: ShareDrop(
             hover: { drop = $0 },
+            name: { drag, name in if drop?.drag == drag { drop?.name = name } },
             share: { url in
                 if links.canShare(url) { openWindow.showShareLink(for: url) }
             }
@@ -120,7 +121,7 @@ struct SharedLinksView: View {
 
     private func rows(_ entries: [SharedLink]) -> some View {
         ForEach(entries) { entry in
-            SharedLinkRow(entry: entry, revoking: links.revoking == entry.id) { confirming = entry }
+            SharedLinkRow(entry: entry, revoking: links.revoking == entry.id, canRevoke: links.revoking == nil) { confirming = entry }
         }
     }
 
@@ -151,11 +152,13 @@ struct SharedLinksView: View {
 }
 
 struct DropHover: Equatable {
+    var drag = UUID()
     var name: String?
 }
 
 private struct ShareDrop: DropDelegate {
     let hover: @MainActor (DropHover?) -> Void
+    let name: @MainActor (UUID, String) -> Void
     let share: @MainActor (URL) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
@@ -163,11 +166,12 @@ private struct ShareDrop: DropDelegate {
     }
 
     func dropEntered(info: DropInfo) {
-        hover(DropHover())
-        let hover = hover
+        let entered = DropHover()
+        hover(entered)
+        let named = name
         _ = info.itemProviders(for: [.fileURL]).first?.loadObject(ofClass: URL.self) { url, _ in
             guard let name = url?.lastPathComponent else { return }
-            Task { @MainActor in hover(DropHover(name: name)) }
+            Task { @MainActor in named(entered.drag, name) }
         }
     }
 
@@ -237,9 +241,10 @@ private struct ColumnTitles: View {
 private struct SharedLinkRow: View {
     let entry: SharedLink
     let revoking: Bool
+    let canRevoke: Bool
     let revoke: () -> Void
 
-    private var isActive: Bool { entry.link.state == .active }
+    private var isActive: Bool { entry.state == .active }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -272,7 +277,7 @@ private struct SharedLinkRow: View {
                 if isActive {
                     Button("Revoke…", role: .destructive, action: revoke)
                         .controlSize(.small)
-                        .disabled(revoking)
+                        .disabled(revoking || !canRevoke)
                 }
             }
             .frame(width: 84, alignment: .trailing)
@@ -320,7 +325,7 @@ private struct SharedLinkRow: View {
 
     @ViewBuilder
     private var state: some View {
-        switch entry.link.state {
+        switch entry.state {
         case .active:
             StatusPill(title: String(localized: "Active"), mark: .dot(.statusGreen))
         case .expired:

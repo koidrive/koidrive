@@ -12,7 +12,9 @@ public final class SharedLinksModel {
     public var showsEndedLinks = false
     public private(set) var revoking: ShareLink.ID?
     public private(set) var revokeError: SessionError?
-    private var revokedHere: Set<ShareLink.ID> = []
+    private var revokedHere: [ShareLink.ID: ShareLink] = [:]
+    private var madeHere: [ShareLink] = []
+    private var loads = 0
     private let app: AppModel
     private let clock: HistoryClock
     @ObservationIgnored nonisolated(unsafe) private var creations: (any NSObjectProtocol)?
@@ -40,13 +42,13 @@ public final class SharedLinksModel {
 
     /// The links that still open, newest first. A link revoked in this window stays here, revoked.
     public var activeLinks: [SharedLink] {
-        links.filter { $0.state == .active || revokedHere.contains($0.id) }.map(entry)
+        links.filter { state(of: $0) == .active || revokedHere[$0.id] != nil }.map(entry)
     }
 
     /// The links that expired or were revoked before, newest first, while they're shown.
     public var endedLinks: [SharedLink] {
         guard showsEndedLinks else { return [] }
-        return links.filter { $0.state != .active && !revokedHere.contains($0.id) }.map(entry)
+        return links.filter { state(of: $0) != .active && revokedHere[$0.id] == nil }.map(entry)
     }
 
     /// True when `url` is in a linked folder, or is one, so it can be shared.
@@ -57,11 +59,15 @@ public final class SharedLinksModel {
     /// Reads every link. A load over loaded links keeps showing them until the answer.
     public func load() async {
         if case .loaded = content {} else { content = .loading }
+        loads += 1
+        let load = loads
+        let answer: LoadState<[ShareLink]>
         do {
-            content = .loaded(try await app.shareLinks())
+            answer = .loaded(reconciled(try await app.shareLinks()))
         } catch {
-            content = .failed(sessionError(error))
+            answer = .failed(sessionError(error))
         }
+        if load == loads { content = answer }
     }
 
     /// Catches up after the session's status changed: the links load again, keeping what's shown until the answer.
@@ -77,9 +83,9 @@ public final class SharedLinksModel {
         defer { revoking = nil }
         do {
             let revoked = try await app.revoke(link)
-            revokedHere.insert(revoked.id)
+            revokedHere[revoked.id] = revoked
             if case .loaded(let links) = content {
-                content = .loaded(links.map { $0.id == revoked.id ? revoked : $0 })
+                content = .loaded(reconciled(links))
             }
         } catch {
             revokeError = sessionError(error)
@@ -87,8 +93,21 @@ public final class SharedLinksModel {
     }
 
     private func add(_ link: ShareLink) {
-        guard case .loaded(let links) = content, !links.contains(where: { $0.id == link.id }) else { return }
-        content = .loaded([link] + links)
+        madeHere.insert(link, at: 0)
+        if case .loaded(let links) = content {
+            content = .loaded(reconciled(links))
+        }
+    }
+
+    private func reconciled(_ links: [ShareLink]) -> [ShareLink] {
+        let listed = Set(links.map(\.id))
+        return madeHere.filter { !listed.contains($0.id) } + links.map { revokedHere[$0.id] ?? $0 }
+    }
+
+    private func state(of link: ShareLink) -> ShareState {
+        guard link.state == .active, let expiresAtMs = link.expiresAtMs,
+              Date(milliseconds: expiresAtMs) <= clock.now() else { return link.state }
+        return .expired
     }
 
     private var links: [ShareLink] {
@@ -97,7 +116,9 @@ public final class SharedLinksModel {
 
     private func entry(for link: ShareLink) -> SharedLink {
         let created = Date(milliseconds: link.createdAtMs)
-        return SharedLink(link: link, item: item(of: link), created: created, createdDay: clock.day(of: created), end: end(of: link))
+        return SharedLink(
+            link: link, state: state(of: link), item: item(of: link), created: created, createdDay: clock.day(of: created), end: end(of: link)
+        )
     }
 
     private func item(of link: ShareLink) -> SharedItem {
@@ -113,7 +134,7 @@ public final class SharedLinksModel {
     private func end(of link: ShareLink) -> LinkEnd {
         guard let expiresAtMs = link.expiresAtMs else { return .never }
         let expires = Date(milliseconds: expiresAtMs)
-        guard link.state == .active else { return .on(expires) }
+        guard state(of: link) == .active else { return .on(expires) }
         let seconds = max(expires.timeIntervalSince(clock.now()), 0)
         let days = Int(seconds / 86_400)
         let hours = Int(seconds / 3_600)
@@ -126,6 +147,8 @@ public final class SharedLinksModel {
 /// A share link as the Shared Links list shows it.
 public struct SharedLink: Identifiable, Equatable, Sendable {
     public let link: ShareLink
+    /// The link's state as of now: an active link whose expiry has passed is expired.
+    public let state: ShareState
     public let item: SharedItem
     public let created: Date
     public let createdDay: Day
