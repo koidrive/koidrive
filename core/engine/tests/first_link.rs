@@ -1656,12 +1656,18 @@ fn local_node(shape: Shape, ino: u128) -> LocalNode {
     }
 }
 
+struct LetIn {
+    trees: Trees,
+    sent: Vec<(&'static str, String)>,
+    done: Vec<(String, Effect)>,
+}
+
 fn discarded_twice_around_a_server_node(
     local: &[(&str, Shape)],
     remote: &[(&str, Shape)],
     moved: &str,
     change: impl FnOnce(&mut Trees),
-) -> (Trees, Vec<(&'static str, String)>, Vec<(String, Effect)>) {
+) -> LetIn {
     let held = [("l-new", dir(ROOT, "new")), ("l-e", file("l-new", "e", 1))];
     let mut trees = trees(&[&held[..], local].concat(), remote);
     let mut commits = Commits::default();
@@ -1721,14 +1727,14 @@ fn discarded_twice_around_a_server_node(
             .unwrap();
         done.push((record.node, record.effect));
     }
-    (trees, sent, done)
+    LetIn { trees, sent, done }
 }
 
 #[test]
 fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_let_in_a_server_file_moved_into_it()
  {
     let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
-    let (trees, sent, _) = discarded_twice_around_a_server_node(
+    let LetIn { trees, sent, .. } = discarded_twice_around_a_server_node(
         &[("l-c", file(ROOT, "c.txt", 9))],
         &remote,
         "r-c",
@@ -1750,11 +1756,12 @@ fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_
 fn a_server_file_that_s_still_places_in_a_discarded_folder_gives_that_place_up() {
     let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
     let local = [("l-c", file(ROOT, "c.txt", 9))];
-    let (trees, sent, _) = discarded_twice_around_a_server_node(&local, &remote, "r-c", |trees| {
-        assert!(trees.set_synced_if_valid("r-c".into(), Some(file("l-new", "c.txt", 9))));
-        trees.settle();
-        assert_eq!(trees.synced().live("r-c"), None);
-    });
+    let LetIn { trees, sent, .. } =
+        discarded_twice_around_a_server_node(&local, &remote, "r-c", |trees| {
+            assert!(trees.set_synced_if_valid("r-c".into(), Some(file("l-new", "c.txt", 9))));
+            trees.settle();
+            assert_eq!(trees.synced().live("r-c"), None);
+        });
     assert_eq!(sent, []);
     assert_eq!(
         trees.local().get("r-c").map(|node| &node.shape),
@@ -1765,7 +1772,7 @@ fn a_server_file_that_s_still_places_in_a_discarded_folder_gives_that_place_up()
 #[test]
 fn a_server_file_edited_while_excluded_before_its_folder_is_discarded_keeps_the_edit() {
     let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
-    let (trees, sent, done) = discarded_twice_around_a_server_node(
+    let LetIn { trees, sent, done } = discarded_twice_around_a_server_node(
         &[("l-c", file(ROOT, "c.txt", 9))],
         &remote,
         "r-c",
@@ -1794,7 +1801,7 @@ fn a_server_folder_holding_a_new_local_file_stays_when_its_discarded_folder_is_l
         ("r-f", file("r-d", "f", 3)),
         ("r-ss", dir(ROOT, "ss")),
     ];
-    let (trees, sent, done) = discarded_twice_around_a_server_node(
+    let LetIn { sent, done, .. } = discarded_twice_around_a_server_node(
         &[("l-d", dir(ROOT, "d")), ("l-f", file("l-d", "f", 3))],
         &remote,
         "r-d",
