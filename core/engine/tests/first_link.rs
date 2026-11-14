@@ -1878,3 +1878,33 @@ fn an_edit_to_an_excluded_server_file_after_its_folder_is_discarded_is_not_remov
     let effects = planner.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
     assert!(effects.iter().all(|record| record.node != "x" || !matches!(record.effect, Effect::RemoveFile { .. })), "a post-Discard edit is removed: {effects:?}");
 }
+
+#[test]
+fn a_file_another_device_trashed_with_its_folder_while_the_rules_excluded_it_is_not_sent_again() {
+    let entries = [
+        ("f", dir(ROOT, "docs")),
+        ("x", file("f", "x.txt", 1)),
+        ("y", file("f", "y", 2)),
+    ];
+    let mut trees = trees(&entries, &entries);
+    for (id, shape) in &entries {
+        trees.set_synced((*id).into(), Some(shape.clone()));
+    }
+    let root: [&str; 0] = [];
+    trees.set_rules(&root, Some(RuleFile::parse(b"*.txt\n")));
+    trees.settle();
+    for id in ["f", "x", "y"] {
+        let mut node = trees.remote().get(id).unwrap().clone();
+        node.trashed = true;
+        node.meta_rev = 2;
+        node.trash_group = "g".into();
+        trees.set_remote(id.into(), node);
+    }
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    trees.set_rules(&root, None);
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 200);
+    assert!(trees.local().get("x").is_none(), "{:?}", local(&trees));
+}

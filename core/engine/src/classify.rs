@@ -1375,7 +1375,7 @@ impl Trees {
             if *parent == self.s.root {
                 return true;
             }
-            let (Some(_), Some(synced)) = (self.r.live(parent), self.s.live(parent)) else {
+            let (Some(_), Some(synced)) = (self.r.get(parent), self.s.live(parent)) else {
                 return false;
             };
             parent = &synced.parent;
