@@ -1535,6 +1535,7 @@ fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
         })
         .to_string()
     };
+    store.set(false).unwrap();
     let while_off = report("A", json!((koidrive_telemetry::now() - 5) * 1_000_000));
     assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
     store.set(true).unwrap();

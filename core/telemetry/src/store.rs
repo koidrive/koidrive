@@ -28,7 +28,7 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
-    /// When reports were last turned on, in microseconds since the Unix epoch.
+    /// When the stored choice last went from off to on, in microseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_since: Option<u64>,
 }
@@ -353,9 +353,11 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Settings::default(),
             settings => settings?,
         };
-        if settings.enabled != Some(on) {
-            settings.on_since = on.then(now_micros);
-        }
+        settings.on_since = match (settings.enabled, on) {
+            (Some(false), true) => Some(now_micros()),
+            (_, true) => settings.on_since,
+            (_, false) => None,
+        };
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
         if settings.install_id.is_none() {
@@ -394,7 +396,6 @@ impl Store {
         self.remove_queues()?;
         let id = InstallId::generate();
         settings.install_id = Some(id.clone());
-        settings.on_since.get_or_insert_with(now_micros);
         write(&self.dir.join("settings.json"), &settings)?;
         Ok(id)
     }
@@ -1426,6 +1427,23 @@ mod tests {
         store.absorb_app_crash(&unstamped).unwrap();
         assert_eq!(app_crashes(&store), 0);
         store.absorb_app_crash(&crash_report("D", since)).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+    }
+
+    #[test]
+    fn an_app_crash_stamped_on_before_the_first_choice_or_the_id_is_queued() {
+        let (_dir, store) = store();
+        let crashed = now_micros();
+        store.install_id().unwrap();
+        assert_eq!(store.settings().unwrap().on_since, None);
+        store.absorb_app_crash(&crash_report("A", crashed)).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+
+        let (_dir, store) = self::store();
+        let crashed = now_micros();
+        store.set(true).unwrap();
+        assert_eq!(store.settings().unwrap().on_since, None);
+        store.absorb_app_crash(&crash_report("A", crashed)).unwrap();
         assert_eq!(app_crashes(&store), 1);
     }
 
