@@ -138,9 +138,8 @@ pub enum Reason {
     /// The folder a removal acts on holds entries other than platform files,
     /// named here in order. The folder went back as it was.
     Holds(Vec<OsString>),
-    /// The system did not allow the effect's first change, as for a folder
-    /// without write permission, a locked file or a read-only volume. Nothing
-    /// changed.
+    /// The system did not allow the effect, as for a folder without write
+    /// permission, a locked file or a read-only volume. Nothing changed.
     Denied,
 }
 
