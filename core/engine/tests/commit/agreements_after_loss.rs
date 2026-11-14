@@ -713,3 +713,80 @@ fn a_resend_another_device_renames_before_its_acknowledgement_takes_that_name() 
     assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
     assert!(trees.state().lost_positions.is_empty());
 }
+
+fn acknowledged_resend_at_its_lost_position(peer_name: Option<&str>) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
+    let old = RemoteNode { version_id: "old".into(), ..remote_at(file(ROOT, "b", 1), 2) };
+    trees.set_remote("f".into(), old);
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, 0).cloned().unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(create)] if create.name == "b"));
+    let own = RemoteNode { version_id: "resent".into(), ..remote(file(ROOT, "b", 1)) };
+    trees.set_remote_made_here("f".into(), own);
+    if let Some(name) = peer_name {
+        let peer = RemoteNode { version_id: "resent".into(), ..remote_at(file(ROOT, name, 1), 2) };
+        trees.set_remote("f".into(), peer);
+    }
+    commits.received(result(1, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, if peer_name.is_some() { 2 } else { 1 }));
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "a", 1)));
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_second_loss_after_another_device_renamed_a_resend_creates_it_at_that_name() {
+    let (mut trees, mut commits, mut ids) = acknowledged_resend_at_its_lost_position(Some("c"));
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    assert!(commits.lost_here(1));
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    assert!(synced.is_empty());
+    let moved = trees.moved_here();
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records();
+    assert_eq!(records.get("f").map(|node| node.shape.name.as_str()), Some("c"));
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, 0).cloned().unwrap();
+    let planned = ops(&commit);
+    assert!(matches!(&planned[..], [op::Op::CreateFile(create)] if create.node_id == "f" && create.name == "c"), "a later loss must not revive the older saved destination: {planned:?}; saved positions: {:?}", trees.state().lost_positions);
+}
+
+#[test]
+fn a_rename_another_device_makes_during_a_second_resend_is_not_undone() {
+    let (mut trees, mut commits, mut ids) = acknowledged_resend_at_its_lost_position(None);
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let moved = trees.moved_here();
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, 0).cloned().unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(create)] if create.name == "b"));
+    assert!(trees.state().lost_positions.contains_key("f"));
+    assert!(!trees.state().resends.contains("f"));
+    let own = RemoteNode { version_id: "resent-again".into(), ..remote(file(ROOT, "b", 1)) };
+    trees.set_remote_made_here("f".into(), own);
+    let peer = RemoteNode { version_id: "resent-again".into(), ..remote_at(file(ROOT, "c", 1), 2) };
+    trees.set_remote("f".into(), peer);
+    commits.received(result(1, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle();
+    let class = trees.class("f");
+    let next = commits.build(&mut trees, &mut ids, NOW, HISTORY, 2).cloned().map(|commit| ops(&commit));
+    assert_eq!(next, None, "a peer rename during repeated recovery must remain remote, not be undone: {class:?}");
+    effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
+    assert!(trees.state().lost_positions.is_empty());
+}
