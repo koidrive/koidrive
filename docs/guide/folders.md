@@ -8,7 +8,7 @@ koi folder link ~/Koidrive --space Koidrive
 
 `--space` takes the space's name or its ID. If two spaces have the same name, use the ID. The folder must exist, and it may already hold files. The folder then syncs in the [background](install.md#background-sync), and `koi status` shows its state.
 
-If the space holds no live files or folders when sync first reads it, the folder's files upload as they are, and files another device adds after that sync as usual. Otherwise the first sync compares the folder with the space, path by path, and holds the files and folders that the space doesn't have or that differ from it. Sync asks one question about the held files and uploads none of them until you answer it with `koi resolve`:
+If the space holds no live files or folders when sync first reads it, the folder's files upload as they are, and files another device adds after that sync as usual. Only a file or folder at a name the space's trash holds is held, since another device deleted it. A restart or a new read of the space before the first sync ends keeps that first answer. Otherwise the first sync compares the folder with the space, path by path, and holds the files and folders that the space doesn't have or that differ from it. Sync asks one question about the held files and uploads none of them until you answer it with `koi resolve`:
 
 - `publish` uploads the held files. If the space already has a file with the same name, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name).
 - `discard` moves the held files to the [local trash](sync-rules.md#the-local-trash) and downloads the space's files at their paths.

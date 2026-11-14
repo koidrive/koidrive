@@ -308,47 +308,137 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
-fn linking_while_another_device_commits(remote: &mut Remote) -> (Site, Device, Site, Device) {
-    let (site_a, mut a) = linked(remote, "a");
-    let site = Site::new(remote, "b");
-    fs::write(site.root.join("Budget.xlsx"), b"written here").unwrap();
+
+enum Before {
+    Replay,
+    Relist,
+    Restart,
+}
+
+fn after_the_first_listing(remote: &mut Remote, site: &Site, mut b: Device, before: Before) -> Device {
+    let Stream::Replaying(staging) = &b.folder.stream else {
+        panic!("b replays the log onto its listing");
+    };
+    let since = resume(staging.history_id(), staging.last());
+    match before {
+        Before::Replay => b.resume(remote, since).unwrap(),
+        Before::Relist => {
+            remote.space.truncate_log(remote.space.head_seq());
+            b.resume(remote, since).unwrap();
+            assert!(matches!(b.work.front(), Some(Work::List)));
+            b.run(remote);
+        }
+        Before::Restart => {
+            drop(b);
+            b = site.start();
+            b.connect(remote);
+            b.run(remote);
+        }
+    }
+    b.scan_until(|b| b.folder.scanned);
+    b.rest(remote);
+    b
+}
+
+fn listed(remote: &mut Remote, site: &Site) -> Device {
     let mut b = site.start();
     b.connect(remote);
-    let mut subscribed = None;
-    while let Some(work) = b.work.pop_front() {
-        if let Work::Subscribe(since) = &work {
-            subscribed = Some(since.clone());
-        }
-        b.perform(work, remote).unwrap();
-    }
+    b.run(remote);
     assert!(!b.folder.scanned, "the first scan has not ended");
-    a.create(remote, &site_a.root.join("Slides.pptx"), b"written on another device");
-    let records = (remote.space.resume(&subscribed.expect("b follows the log"))).unwrap();
-    b.event(Event::Changes(records)).unwrap();
-    b.caught_up(remote).unwrap();
-    b.scan_until(|b| b.folder.scanned);
-    (site_a, a, site, b)
+    b
+}
+
+fn kept_listing(site: &Site, history_id: &str, otherwise: koidrive_engine::first_link::Listing) -> koidrive_engine::first_link::Listing {
+    let mut store = Store::open(&site.db).unwrap();
+    store
+        .transaction(|tx| tx.keep_first_listing(history_id, otherwise))
+        .unwrap()
 }
 
 #[test]
-fn a_file_another_device_commits_while_a_first_link_scans_asks_nothing() {
+fn a_file_another_device_adds_after_an_empty_listing_asks_nothing_after_a_relist_or_a_restart() {
+    for before in [Before::Replay, Before::Relist, Before::Restart] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        let site = Site::new(&remote, "b");
+        fs::write(site.root.join("Budget.xlsx"), b"written here").unwrap();
+        let b = listed(&mut remote, &site);
+        a.create(&mut remote, &site_a.root.join("Slides.pptx"), b"written on another device");
+        let b = after_the_first_listing(&mut remote, &site, b, before);
+        assert_eq!(shown(&site), [], "the first listing was empty");
+        assert_eq!(remote.names(), ["Budget.xlsx", "Slides.pptx"]);
+        assert_eq!(b.state(), FolderState::UpToDate);
+    }
+}
+
+fn lost_its_store(remote: &mut Remote) -> (Site, Device, Site) {
+    let (site_a, mut a) = linked(remote, "a");
+    let (site, mut b) = linked(remote, "b");
+    b.create(remote, &site.root.join("Budget.xlsx"), b"written on b");
+    drop(b);
+    fs::remove_file(&site.db).unwrap();
+    let mut store = Store::open(&site.db).unwrap();
+    store.transaction(|tx| tx.set_link(&site.link)).unwrap();
+    a.pull(remote);
+    a.rest(remote);
+    (site_a, a, site)
+}
+
+fn delete_on(a: &mut Device, remote: &mut Remote, path: &Path) {
+    fs::remove_file(path).unwrap();
+    a.rescan();
+    a.rest(remote);
+}
+
+#[test]
+fn a_file_another_device_deletes_after_a_live_listing_stays_held_after_a_relist_or_a_restart() {
+    for before in [Before::Replay, Before::Relist, Before::Restart] {
+        let mut remote = Remote::new();
+        let (site_a, mut a, site) = lost_its_store(&mut remote);
+        let b = listed(&mut remote, &site);
+        delete_on(&mut a, &mut remote, &site_a.root.join("Budget.xlsx"));
+        let b = after_the_first_listing(&mut remote, &site, b, before);
+        assert_eq!(remote.names(), Vec::<String>::new(), "the deleted file is not sent again");
+        assert_eq!(b.folder.view().questions, 1);
+        assert_eq!(names(&site.root), ["Budget.xlsx"]);
+    }
+}
+
+#[test]
+fn a_file_another_device_deleted_before_an_empty_listing_is_held() {
+    for added_after in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a, site) = lost_its_store(&mut remote);
+        delete_on(&mut a, &mut remote, &site_a.root.join("Budget.xlsx"));
+        let b = listed(&mut remote, &site);
+        if added_after {
+            a.create(&mut remote, &site_a.root.join("Slides.pptx"), b"written on another device");
+        }
+        let b = after_the_first_listing(&mut remote, &site, b, Before::Replay);
+        let held: Vec<_> = (shown(&site).into_iter())
+            .flat_map(|question| question.items.into_iter().map(|item| item.path))
+            .collect();
+        assert_eq!(held, ["Budget.xlsx"], "added after: {added_after}");
+        assert!(!remote.names().contains(&"Budget.xlsx".to_owned()));
+        assert_eq!(b.folder.view().questions, 1);
+    }
+}
+
+#[test]
+fn the_first_listing_is_kept_until_the_first_link_classifies() {
     let mut remote = Remote::new();
-    let (site_a, mut a, site, mut b) = linking_while_another_device_commits(&mut remote);
-    b.rest(&mut remote);
-    let asked: Vec<_> = (shown(&site).into_iter())
-        .map(|question| (question.kind, question.items.into_iter().map(|item| item.path).collect::<Vec<_>>()))
-        .collect();
-    assert_eq!(asked, [], "two files with different names ask nothing");
-    a.pull(&remote);
-    a.rest(&mut remote);
-    let both = [
-        ("Budget.xlsx", "written here"),
-        ("Slides.pptx", "written on another device"),
-    ]
-    .map(|(path, text)| (path.to_owned(), text.to_owned()));
-    assert_eq!(files(&site.root), both);
-    assert_eq!(files(&site_a.root), both);
-    assert_eq!(b.state(), FolderState::UpToDate);
-    assert_eq!(a.state(), FolderState::UpToDate);
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let site = Site::new(&remote, "b");
+    fs::write(site.root.join("Budget.xlsx"), b"written here").unwrap();
+    let b = listed(&mut remote, &site);
+    let history_id = b.folder.history_id.clone();
+    drop(b);
+    a.create(&mut remote, &site_a.root.join("Slides.pptx"), b"written on another device");
+    assert_eq!(kept_listing(&site, &history_id, koidrive_engine::first_link::Listing::Live), koidrive_engine::first_link::Listing::Empty);
+
+    let b = listed(&mut remote, &site);
+    let b = after_the_first_listing(&mut remote, &site, b, Before::Replay);
+    assert!(b.folder.engine.cursor.is_some());
+    assert_eq!(kept_listing(&site, &history_id, koidrive_engine::first_link::Listing::Live), koidrive_engine::first_link::Listing::Live);
 }
 

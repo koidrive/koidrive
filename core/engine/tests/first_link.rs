@@ -451,6 +451,42 @@ fn a_first_link_to_a_space_with_nothing_live_holds_nothing() {
 }
 
 #[test]
+fn a_first_link_to_a_space_listed_empty_holds_only_what_the_trash_names() {
+    let mut trees = trees(
+        &[
+            ("l-budget", file(ROOT, "Budget.xlsx", 1)),
+            ("l-slides", file(ROOT, "slides.pptx", 3)),
+        ],
+        &[],
+    );
+    let trashed = RemoteNode {
+        shape: file(ROOT, "Slides.pptx", 2),
+        trashed: true,
+        content_rev: 1,
+        edit_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("r-slides".into(), trashed);
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Empty);
+    trees.settle();
+    let held: Vec<&String> = (commits.questions().iter())
+        .flat_map(|question| question.holds())
+        .collect();
+    assert_eq!(held, ["l-slides"]);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create file", "l-budget".to_owned())]
+    );
+}
+
+#[test]
 fn a_first_link_to_a_space_listed_empty_holds_nothing_another_device_added_since() {
     let mut trees = trees(
         &[

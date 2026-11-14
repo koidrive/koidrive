@@ -178,7 +178,7 @@ fn a_delete_replayed_below_a_folder_the_server_lost_still_deletes_the_file() {
     remote = restored;
     b.pull(&remote);
     let list = b.work.pop_front().unwrap();
-    assert!(matches!(list, Work::List { .. }));
+    assert!(matches!(list, Work::List));
     b.perform(list, &mut remote).unwrap();
     assert!(matches!(b.folder.stream, Stream::Replaying(_)));
     let (site_c, mut c) = linked(&mut remote, "c");
@@ -856,7 +856,7 @@ fn a_listing_out_when_the_server_lost_this_devices_commits_is_read_again() {
         ..ResyncRequired::default()
     }))
     .unwrap();
-    let Some(Work::List { .. }) = a.work.pop_front() else {
+    let Some(Work::List) = a.work.pop_front() else {
         panic!("list");
     };
     let old = remote.pages(TREE_PAGE);
@@ -901,7 +901,7 @@ fn a_welcome_queued_before_a_finished_send_is_taken_first() {
     let step = sent_in_order(&mut a.folder, [Event::Connected(queued)], Ok(result));
     a.take(step).unwrap();
     assert_eq!(a.folder.engine.commits.accepted(), 2);
-    assert!(!a.work.iter().any(|work| matches!(work, Work::List { .. })));
+    assert!(!a.work.iter().any(|work| matches!(work, Work::List)));
     a.pull(&remote);
     a.run(&mut remote);
     a.settle();

@@ -90,7 +90,7 @@ fn a_store_that_took_the_servers_count_does_not_take_another() {
         Some(CommitHalt::Recovery(_))
     ));
     assert_eq!(a.folder.engine.commits.accepted(), 1);
-    assert!(matches!(a.work.front(), Some(Work::List { .. })));
+    assert!(matches!(a.work.front(), Some(Work::List)));
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn a_synced_store_recovers_when_the_server_counts_a_commit_it_does_not_hold() {
     assert_eq!(stale.folder.engine.commits.accepted(), 0);
     assert!(matches!(
         stale.work.iter().collect::<Vec<_>>()[..],
-        [Work::List { .. }]
+        [Work::List]
     ));
     stale.scan_until(|a| a.folder.scanned);
     stale.run(&mut remote);
@@ -575,7 +575,7 @@ fn a_file_a_store_copied_before_its_download_forgot_follows_a_rename_made_while_
     a.connect(&remote);
     a.scan_until(|a| a.folder.scanned);
     while let Some(work) = a.work.pop_front() {
-        let listing = matches!(work, Work::List { .. });
+        let listing = matches!(work, Work::List);
         a.perform(work, &mut remote).unwrap();
         if listing {
             break;

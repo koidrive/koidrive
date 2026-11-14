@@ -11,7 +11,7 @@ fn a_restart_during_a_bootstrap_reads_the_tree_again() {
         let mut b = site.start();
         b.connect(&remote);
         b.scan_until(|b| b.folder.scanned);
-        assert!(matches!(b.work.pop_front(), Some(Work::List { .. })));
+        assert!(matches!(b.work.pop_front(), Some(Work::List)));
         if listed {
             let step = b.folder.listed(Ok(Listed::Done {
                 pages: remote.pages(TREE_PAGE),

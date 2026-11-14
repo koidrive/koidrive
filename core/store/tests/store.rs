@@ -102,6 +102,7 @@ fn migrations_apply_from_empty() {
             "effects_in_flight",
             "engine_state",
             "failed_effects",
+            "first_listing",
             "guard_confirmed",
             "guard_confirmed_limits",
             "guard_confirmed_members",

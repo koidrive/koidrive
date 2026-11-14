@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
+use crate::names::name_key;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, Tree, same_content};
 
@@ -180,6 +181,19 @@ fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
 fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
     let mut items = items.into_iter();
     items.next().filter(|_| items.next().is_none())
+}
+
+pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
+    let trashed: BTreeSet<(&str, String)> = (trees.remote().iter())
+        .filter(|(_, node)| node.trashed)
+        .map(|(_, node)| (node.shape.parent.as_str(), name_key(&node.shape.name)))
+        .collect();
+    (tops.into_iter())
+        .filter(|id| {
+            let shape = &trees.local().get(id).expect("a local entry").shape;
+            trashed.contains(&(shape.parent.as_str(), name_key(&shape.name)))
+        })
+        .collect()
 }
 
 /// Whether the question holds what a first link found on this device and nothing on the server.

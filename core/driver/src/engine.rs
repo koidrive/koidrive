@@ -1419,6 +1419,10 @@ impl Staging {
         self.listing
     }
 
+    pub fn decide(&mut self, listing: Listing) {
+        self.listing = listing;
+    }
+
     /// The last commit replayed, with its commit token, to resume the log from (RFC 0013).
     pub fn last(&self) -> &Base {
         &self.last

@@ -505,7 +505,8 @@ impl Commits {
     /// Matches L against R on the first link of the folder, once R holds the server's tree and L
     /// the first scan's (section 6.4): every local entry R holds at the same path with the same
     /// kind and content is adopted. When `listing` held live nodes, the others are held under one
-    /// question about what was created on this device; otherwise they sync as they are.
+    /// question about what was created on this device. Otherwise only those at a name R's trash
+    /// holds are held, and the rest sync as they are.
     pub fn first_link(
         &mut self,
         trees: &mut Trees,
@@ -513,9 +514,9 @@ impl Commits {
         now_ms: u64,
         listing: Listing,
     ) {
-        let tops = first_link::adopt(trees, None);
+        let mut tops = first_link::adopt(trees, None);
         if listing == Listing::Empty {
-            return;
+            tops = first_link::trashed_there(trees, tops);
         }
         if let Some(question) = first_link::ask(trees, tops, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
