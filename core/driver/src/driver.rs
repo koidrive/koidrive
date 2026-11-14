@@ -180,6 +180,8 @@ pub enum DriverError {
     NotAShareLink,
     #[error("no share link of this account matches that ID or URL")]
     ShareLinkNotFound,
+    #[error("the space has as many active share links as the server allows; revoke one first")]
+    ShareLinkLimit,
     #[error("several share links have the ID {0}; name the one to revoke by its URL")]
     ShareLinkAmbiguous(String),
     #[error("the folder changed while its server tree was being read; try again")]

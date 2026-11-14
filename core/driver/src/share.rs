@@ -11,7 +11,7 @@ use koidrive_fs::{EntryKind, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
     CreateShareLinkRequest, ListTree, NodeKind, NodeState, NodeStatus, ShareLink, SpaceInfo,
-    rpc_request::Call, rpc_response,
+    error::Code as ServerCode, rpc_request::Call, rpc_response,
 };
 use koidrive_store::Store;
 use serde::{Deserialize, Serialize};
@@ -168,7 +168,12 @@ impl Driver {
         let link = koidrive_net::resend_lost(|| {
             (auth.api()).create_share_link(&auth, &folder.space_id, &request)
         })
-        .await?;
+        .await
+        .map_err(|error| match error.server().map(ServerError::code) {
+            Some(ServerCode::LimitExceeded) => DriverError::ShareLinkLimit,
+            Some(ServerCode::NotFound) => DriverError::NotOnServer(path.to_owned()),
+            _ => DriverError::Api(error),
+        })?;
         Ok(described(
             link,
             &folder.space_name,

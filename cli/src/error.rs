@@ -218,6 +218,9 @@ impl From<DriverError> for CliError {
             DriverError::NotAShareLink | DriverError::ShareLinkNotFound => {
                 CliError::usage(message).because(Reason::NoSuchLink)
             }
+            DriverError::ShareLinkLimit => CliError::new(Code::Failed, message)
+                .because(Reason::ShareLinkLimit)
+                .then(&["koi", "share", "list"]),
             DriverError::UnlinkUnfinished(folder) => CliError::usage(message).then(&[
                 "koi",
                 "folder",
@@ -509,6 +512,11 @@ mod tests {
                 (Code::Usage, Some(reason), message)
             );
         }
+        let full = CliError::from(DriverError::ShareLinkLimit);
+        assert_eq!(
+            (full.code, full.reason),
+            (Code::Failed, Some(Reason::ShareLinkLimit))
+        );
         let ambiguous = CliError::from(DriverError::ShareLinkAmbiguous("0123456789".into()));
         assert_eq!((ambiguous.code, ambiguous.reason), (Code::Usage, None));
     }

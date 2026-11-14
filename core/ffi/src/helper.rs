@@ -106,6 +106,7 @@ impl From<Refusal> for SessionError {
             Some(Reason::NotOnServer) => return SessionError::NotOnServer,
             Some(Reason::PasswordLength) => return SessionError::PasswordLength,
             Some(Reason::NoSuchLink) => return SessionError::ShareLinkNotFound,
+            Some(Reason::ShareLinkLimit) => return SessionError::ShareLinkLimit,
             Some(Reason::NotInLinkedFolder | Reason::SeveralDeletions) | None => {}
         }
         match refusal.code {

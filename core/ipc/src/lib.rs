@@ -309,6 +309,8 @@ pub enum Reason {
     PasswordLength,
     /// No share link of the account matches the ID or URL.
     NoSuchLink,
+    /// The space has as many active share links as the server allows.
+    ShareLinkLimit,
 }
 
 impl Reason {

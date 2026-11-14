@@ -349,6 +349,7 @@
     "This question was answered or changed." : {},
     "This server has an owner. Sign in with a pairing code." : {},
     "This server has no owner yet. Claim it with its claim code." : {},
+    "This space has as many active links as it can hold. Revoke one to make a new link." : {},
     "This space is already linked on this Mac." : {},
     "This space isn't linked on this Mac." : {},
     "This space needs a newer Koidrive" : {},

@@ -805,6 +805,8 @@ pub enum SessionError {
     PasswordLength,
     #[error("the account has no such share link")]
     ShareLinkNotFound,
+    #[error("the space has as many active share links as the server allows")]
+    ShareLinkLimit,
     #[error("{reason}")]
     Failed { reason: String },
 }

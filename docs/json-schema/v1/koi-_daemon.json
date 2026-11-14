@@ -768,6 +768,11 @@
           "const": "no_such_link",
           "description": "No share link of the account matches the ID or URL.",
           "type": "string"
+        },
+        {
+          "const": "share_link_limit",
+          "description": "The space has as many active share links as the server allows.",
+          "type": "string"
         }
       ]
     },

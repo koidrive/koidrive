@@ -1420,6 +1420,7 @@ fn each_reason_koi_gives_for_a_share_refusal_names_its_error() {
         ("not_found", SessionError::NothingAtPath),
         ("not_on_server", SessionError::NotOnServer),
         ("password_length", SessionError::PasswordLength),
+        ("share_link_limit", SessionError::ShareLinkLimit),
     ];
     for (reason, expected) in cases {
         let envelope = refused_because("share create", reason);
