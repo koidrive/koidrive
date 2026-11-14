@@ -571,7 +571,7 @@ pub struct World {
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
-    actions: Vec<BTreeMap<u64, u128>>,
+    actions: Vec<BTreeMap<u64, (u128, Change)>>,
     scanned: Vec<u64>,
     built: Vec<u64>,
     built_copies: Vec<u64>,
@@ -585,6 +585,19 @@ pub struct World {
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Change {
+    Made,
+    Edited,
+    Moved,
+}
+
+impl Change {
+    fn carries(self, action: Change) -> bool {
+        self == Change::Made || self == action
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -929,7 +942,12 @@ impl World {
         }
         let local = self.devices[d].engine.trees.local();
         if let Some(own) = touched.first() {
-            self.actions[d].insert(self.clock, *own);
+            let change = match action.kind % 5 {
+                2 => Change::Edited,
+                3 => Change::Moved,
+                _ => Change::Made,
+            };
+            self.actions[d].insert(self.clock, (*own, change));
         }
         for ino in touched {
             self.touches[d].entry(ino).or_default().insert(self.clock);
@@ -2260,7 +2278,7 @@ impl World {
                                     node.node_id, node.name, sent.ops
                                 )));
                             }
-                            let inos: Vec<u128> = (sent.ops.iter())
+                            let changes: Vec<(u128, Change)> = (sent.ops.iter())
                                 .zip(&committed.result.results)
                                 .filter(|(_, outcome)| {
                                     outcome.code != op_result::Code::Rejected as i32
@@ -2269,31 +2287,40 @@ impl World {
                                     Some(op::Op::CreateDir(_))
                                         if outcome.code == op_result::Code::MergedInto as i32 =>
                                     {
-                                        Some(&outcome.node_id)
+                                        Some((&outcome.node_id, Change::Made))
                                     }
-                                    Some(op::Op::CreateDir(op)) => Some(&op.node_id),
-                                    Some(op::Op::CreateFile(op)) => Some(&op.node_id),
-                                    Some(op::Op::UpdateContent(op)) => Some(&op.node_id),
-                                    Some(op::Op::Move(op)) => Some(&op.node_id),
+                                    Some(op::Op::CreateDir(op)) => {
+                                        Some((&op.node_id, Change::Made))
+                                    }
+                                    Some(op::Op::CreateFile(op)) => {
+                                        Some((&op.node_id, Change::Made))
+                                    }
+                                    Some(op::Op::UpdateContent(op)) => {
+                                        Some((&op.node_id, Change::Edited))
+                                    }
+                                    Some(op::Op::Move(op)) => Some((&op.node_id, Change::Moved)),
                                     _ => None,
                                 })
-                                .filter(|node| {
+                                .filter(|(node, _)| {
                                     (nodes.iter()).any(|live| {
                                         live.node_id == **node
                                             && live.status == NodeStatus::Live as i32
                                     })
                                 })
-                                .filter_map(|node| ino(node))
-                                .chain(merges.iter().map(|(_, ino)| *ino))
+                                .filter_map(|(node, change)| Some((ino(node)?, change)))
+                                .chain(merges.iter().map(|(_, ino)| (*ino, Change::Made)))
                                 .collect();
                             for (into, ino) in merges {
                                 self.merged[d].entry(into).or_default().insert(ino);
                             }
-                            for ino in &inos {
+                            for (ino, _) in &changes {
                                 self.approved[d].remove(ino);
                             }
                             let carried: BTreeSet<u64> = (self.actions[d].range(..=built))
-                                .filter(|(_, own)| inos.contains(own))
+                                .filter(|(_, (own, action))| {
+                                    (changes.iter())
+                                        .any(|(ino, change)| ino == own && change.carries(*action))
+                                })
                                 .map(|(at, _)| *at)
                                 .collect();
                             for (ino, times) in &mut self.touches[d] {
@@ -3949,5 +3976,43 @@ mod tests {
             matches!(&stale, Err(Failure::Diverged(why)) if why.contains("took write")),
             "{stale:?}"
         );
+    }
+
+    #[test]
+    fn an_edit_a_split_commit_sends_after_its_move_brings_back_a_file_another_device_deleted() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        let steps = [
+            (0, user(3, 2)),
+            (0, user(2, 0)),
+            (0, Step::Scan),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Refused(error::Code::LimitExceeded))),
+            (0, Step::Deliver(0)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Deliver(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, user(4, 0)),
+            (1, Step::Scan),
+            (1, Step::Commit(Reply::Served)),
+            (1, Step::Commit(Reply::Served)),
+            (1, Step::Deliver(0)),
+        ];
+        world.phase(1, &steps).unwrap();
+        assert!(live_writes(&world.space).contains_key(&2));
     }
 }

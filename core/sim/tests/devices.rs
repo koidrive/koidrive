@@ -9218,3 +9218,49 @@ fn a_file_put_in_a_folder_merged_into_one_another_device_deletes_brings_that_fol
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn an_edit_sent_after_the_move_back_brings_back_a_file_whose_folder_another_device_deleted() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1, 0, 0, 0, 0))],
+        vec![
+            (0, u(0, 0, 0, 1, 0)),
+            (0, u(3, 0, 1, 0, 0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (0, Work(5501297460757203600)),
+            (0, Work(13456407222023670529)),
+            (0, u(1, 13234269594221012509, 11811429752968198562, 0, 0)),
+            (0, u(3, 14503195493586387792, 3210176984236330758, 4, 3)),
+            (0, Work(15458377715386668092)),
+            (0, u(3, 5416385685456745281, 4874413750876238113, 0, 3)),
+            (2, Commit(Refused(error::Code::LimitExceeded))),
+            (0, Deliver(13329982409150652347)),
+            (0, Work(3837857739773623156)),
+            (2, Work(3831604514908915456)),
+            (0, u(2, 8906315043778750647, 2535679494781188095, 6, 3)),
+            (2, u(0, 8645307940270361151, 4964572381763966888, 2, 3)),
+            (2, Deliver(22649063891877471)),
+            (1, u(4, 7777114428922847293, 12187467900463682001, 6, 1)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
