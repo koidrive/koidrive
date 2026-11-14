@@ -494,6 +494,7 @@
     "Put the folder back or unlink it." : {},
     "Puts this content in %@. Its old content stays in Version History." : {},
     "Quick Look" : {},
+    "Quick Look %@" : {},
     "Quit Koidrive" : {},
     "Read-only. They can’t change anything." : {},
     "Recent changes" : {},
