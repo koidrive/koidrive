@@ -589,9 +589,19 @@ async fn tree(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliError> {
 }
 
 async fn device_names(auth: &Auth) -> Result<HashMap<String, String>, CliError> {
-    Ok((crate::devices(auth).await?.into_iter())
-        .map(|device| (device.device_id, device.name))
-        .collect())
+    match crate::devices(auth).await {
+        Ok(devices) => Ok((devices.into_iter())
+            .map(|device| (device.device_id, device.name))
+            .collect()),
+        Err(error) if error.code == koidrive_ipc::Code::AuthRequired => Err(error),
+        Err(error) => {
+            tracing::warn!(
+                error = error.message,
+                "listing the account's devices failed; history names none"
+            );
+            Ok(HashMap::new())
+        }
+    }
 }
 
 async fn trash_nodes(
@@ -1362,6 +1372,41 @@ mod tests {
                 "{path:?}: {error:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn versions_without_the_device_list_name_no_device() {
+        let rpc = format!("/v1/spaces/{SPACE}/rpc");
+        let tree = TreePage {
+            nodes: vec![node("a", SPACE, "a.txt", NodeKind::File, 3, "")],
+            ..TreePage::default()
+        };
+        let kept = VersionList {
+            versions: vec![version("a-1", 3, 2), version("a-0", 3, 1)],
+            next_cursor: String::new(),
+        };
+        let unavailable = crate::setup::fake::Reply {
+            method: "GET",
+            path: "/v1/devices".into(),
+            status: 500,
+            content_type: "text/plain",
+            body: b"the device list is unavailable".to_vec(),
+        };
+        let fake = Fake::start(vec![
+            token(),
+            proto("POST", &rpc, answer(rpc_response::Result::Tree(tree))),
+            proto("POST", &rpc, answer(rpc_response::Result::Versions(kept))),
+            unavailable,
+        ])
+        .await;
+        let (_dir, paths, root) = linked_on(fake.base.as_str());
+
+        let done = versions(&paths, &root.join("a.txt")).await.unwrap();
+
+        let names: Vec<serde_json::Value> = (done.data["versions"].as_array().unwrap().iter())
+            .map(|version| version["device_name"].clone())
+            .collect();
+        assert_eq!(names, [serde_json::Value::Null, serde_json::Value::Null]);
     }
 
     #[tokio::test]
