@@ -8776,3 +8776,205 @@ fn a_file_in_a_folder_a_restore_lost_takes_another_devices_later_edit_without_a_
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_resent_edit_a_capped_commit_left_out_gives_way_to_a_later_delete() {
+    use koidrive_sim::world::Step::*;
+    run_capped(
+        3,
+        Some(2),
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 1926456040721834653,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 14505732820309866377,
+                        parent: 4307336541148550249,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 4,
+                        target: 2365326964599490286,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+        |_| true,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_resend_below_a_folder_merged_into_a_deleted_one_gives_way_to_the_delete() {
+    use koidrive_sim::world::Step::*;
+    run_capped(
+        2,
+        Some(1),
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 7,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (0, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 3348114042928997474,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 12918136255115151026,
+                        parent: 7658582213636166059,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 1268923223820169166,
+                        parent: 11554785229506462742,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 7927332611154008071,
+                        parent: 13344600840331228532,
+                        name: 7,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 8637361657968268107,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+                (1, Connect),
+                (1, Deliver(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 1320313353633433015,
+                        parent: 1460850316943069568,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 6218577777637989417,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(1221376448815528037)),
+            ],
+        ],
+        |_| true,
+    )
+    .unwrap();
+}

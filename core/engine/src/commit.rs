@@ -1032,7 +1032,7 @@ impl Commits {
             return None;
         }
         if self.halted.is_none() {
-            trees.resend_folders_of_changes();
+            trees.resend_folders_of_changes(&self.aliases);
         }
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
         if self.halted.is_some() || !trees.rules_known() {
@@ -1163,7 +1163,9 @@ impl Commits {
             .filter(|id| trees.resends().contains(*id))
             .map(ToOwned::to_owned)
             .collect();
-        let require_head = !released.is_empty() || !resent.is_empty();
+        let resends_content = (ops.iter().filter_map(|op| op.op.as_ref()))
+            .any(|op| matches!(op, op::Op::UpdateContent(update) if update.resend));
+        let require_head = !released.is_empty() || !resent.is_empty() || resends_content;
         let restores = (ops.iter().enumerate())
             .filter_map(|(index, op)| match &op.op {
                 Some(op::Op::Restore(restore)) => Some((index, restore)),
@@ -1760,7 +1762,9 @@ impl Commits {
                 _ => continue,
             };
             if applied && sent.is_some() {
-                if flight.resent.contains(node) {
+                if flight.resent.contains(node) && matches!(&op.op, Some(op::Op::Move(_))) {
+                    trees.end_position_resend(node);
+                } else if flight.resent.contains(node) {
                     trees.end_resend(node);
                 } else {
                     trees.record_moved(node, result.seq);

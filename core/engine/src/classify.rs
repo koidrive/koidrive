@@ -680,7 +680,7 @@ impl Trees {
             self.take_local(id.clone());
         }
         if trashed {
-            self.yield_resends();
+            self.yield_resends(&BTreeMap::new());
         }
         if sent_by_another {
             self.take_local(id);
@@ -701,6 +701,20 @@ impl Trees {
 
     pub(crate) fn end_resend(&mut self, id: &str) {
         self.resends.remove(id);
+    }
+
+    pub(crate) fn end_position_resend(&mut self, id: &str) {
+        self.resends.remove(id);
+        if self
+            .l
+            .live(id)
+            .is_some_and(|local| local.kind == Kind::File)
+            && self.local_content_differs(id)
+        {
+            self.mark(id);
+            self.unsent_edits.insert(id.to_owned());
+            self.resent_edits.insert(id.to_owned());
+        }
     }
 
     fn local_chain<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a str> + 'a {
@@ -755,16 +769,25 @@ impl Trees {
             && (self.local_changes.contains(id) || self.unsent_edits.contains(id))
     }
 
-    pub(crate) fn yield_resends(&mut self) {
-        if self.resends.is_empty() {
+    pub(crate) fn yield_resends(&mut self, aliases: &BTreeMap<NodeId, NodeId>) {
+        let resent_content = (self.resent_edits.iter()).filter(|id| {
+            (self.l.live(id).zip(self.s.live(id)))
+                .is_some_and(|(local, synced)| local.same_position(synced))
+        });
+        let resent: BTreeSet<&NodeId> = self.resends.iter().chain(resent_content).collect();
+        if resent.is_empty() {
             return;
         }
         let holding_changes = self.holding_changes();
-        let mut yielded: Vec<NodeId> = (self.resends.iter())
+        let mut yielded: Vec<NodeId> = (resent.into_iter())
             .filter(|id| !holding_changes.contains(*id))
             .filter(|id| {
-                self.local_chain(id)
-                    .any(|id| self.r.get(id).is_some_and(|remote| remote.trashed))
+                std::iter::successors(Some(id.as_str()), |id| {
+                    let parent = self.l.get(id).map(|node| node.shape.parent.as_str())?;
+                    Some(aliases.get(parent).map_or(parent, String::as_str))
+                })
+                .take(self.l.len() + 1)
+                .any(|id| self.r.get(id).is_some_and(|remote| remote.trashed))
             })
             .cloned()
             .collect();
@@ -774,7 +797,7 @@ impl Trees {
         }
     }
 
-    pub(crate) fn resend_folders_of_changes(&mut self) {
+    pub(crate) fn resend_folders_of_changes(&mut self, aliases: &BTreeMap<NodeId, NodeId>) {
         let emptied = |id: &str| {
             self.r.get(id).is_none()
                 && (self.waiting.get(id)).is_some_and(|waiting| waiting.shape.is_none())
@@ -823,7 +846,7 @@ impl Trees {
             }
         }
         self.resends.extend(folders);
-        self.yield_resends();
+        self.yield_resends(aliases);
     }
 
     pub(crate) fn take_local(&mut self, id: NodeId) {
@@ -2405,7 +2428,7 @@ impl Trees {
                 self.wait(id, Some(kept), Origin::Other);
             }
         }
-        self.yield_resends();
+        self.yield_resends(&BTreeMap::new());
         let unproven: Vec<NodeId> = (self.watched_positions.iter())
             .filter(|(id, agreed)| {
                 agreed.as_ref().is_some_and(|agreed| {
