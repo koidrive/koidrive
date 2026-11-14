@@ -121,7 +121,7 @@ pub fn print(
         Note::Information(text) => (text, false, ""),
         Note::Error(text) => (text, true, "koi: "),
         Note::Usage(text) => (
-            if rich {
+            if rich && command != "update" {
                 text.strip_prefix("error: ").unwrap_or(text)
             } else {
                 text

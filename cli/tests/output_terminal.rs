@@ -37,6 +37,24 @@ struct Capture {
 }
 
 #[test]
+fn update_usage_keeps_main_rendering_without_changing_its_error_prefix() {
+    let output = Profile::new().run(
+        &["update", "--unknown-fixture-flag"],
+        true,
+        false,
+        &[("NO_COLOR", "1")],
+    );
+    assert_eq!(output.exit, 2);
+    assert!(
+        output
+            .terminal
+            .contains("error: unexpected argument '--unknown-fixture-flag' found"),
+        "{}",
+        output.terminal
+    );
+}
+
+#[test]
 fn ipc_error_presentations_only_replace_terminal_messages() {
     for (args, tty, pipe_stdout, vars, width, concise) in [
         (vec!["status"], true, false, vec![], 100, true),
