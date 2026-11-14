@@ -800,29 +800,10 @@ async fn reconcile_with(
 }
 
 async fn daemon_status(paths: &Paths) -> Result<Status, String> {
-    let silent = |within: Duration| {
-        format!(
-            "the daemon did not answer within {} seconds",
-            within.as_secs()
-        )
-    };
-    let answer = tokio::time::timeout(PROBE, koidrive_ipc::ask(paths, &Request::Status))
-        .await
-        .map_err(|_| silent(PROBE))??;
-    let response = match answer {
-        Some(response) => response,
-        None => {
-            let starting = PROBE + ipc::STARTING;
-            tokio::time::timeout(starting, ipc::run(paths, Request::Status))
-                .await
-                .map_err(|_| silent(starting))?
-                .map_err(|error| error.message)?
-        }
-    };
-    match response {
-        Response::Status { status } => Ok(status),
-        Response::Error { message, .. } => Err(message),
-        _ => Err("the daemon sent no status".into()),
+    match ipc::run_replying_within(paths, Request::Status, Some(PROBE)).await {
+        Ok(Response::Status { status }) => Ok(status),
+        Ok(_) => Err("the daemon sent no status".into()),
+        Err(error) => Err(error.message),
     }
 }
 
@@ -2638,6 +2619,28 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         assert_ne!(report.state, State::Unavailable);
         assert!(!report.text().contains("Log in"), "{}", report.text());
         daemon.abort();
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let _held = koidrive_driver::Driver::open(paths.clone()).unwrap();
+        let socket = paths.socket();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let listener = koidrive_ipc::bind(&socket).unwrap();
+            let _accepted = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let started = Instant::now();
+        let result = daemon_status(&paths).await;
+        daemon.abort();
+        assert!(started.elapsed() < Duration::from_secs(1) + PROBE + Duration::from_secs(2));
+        assert_eq!(
+            result.unwrap_err(),
+            "the daemon did not answer within 5 seconds"
+        );
     }
 
     #[test]

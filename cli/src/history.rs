@@ -455,7 +455,7 @@ async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
     let reached = match koidrive_ipc::ask(paths, &Request::Status).await? {
         Some(response) => ipc::Reached::Daemon(Box::new(response)),
         None => {
-            ipc::reach(paths, &Request::Status, ipc::STARTING, || {
+            ipc::reach(paths, &Request::Status, ipc::STARTING, None, || {
                 Driver::linked_folders(paths)
             })
             .await?
@@ -980,6 +980,20 @@ mod tests {
     use super::*;
     use crate::report::RequestedData;
     use crate::setup::fake::{Fake, proto};
+
+    #[tokio::test]
+    async fn history_waits_for_a_daemon_that_holds_the_profile_before_its_socket_answers() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let socket = paths.socket();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            ipc::serve(koidrive_ipc::bind(&socket).unwrap(), driver).await;
+        });
+        let folders = linked_folders(&paths).await.unwrap();
+        daemon.abort();
+        assert_eq!(folders.len(), 1);
+    }
 
     const SPACE: &str = "0194f8a2-0000-7000-8000-00000000000a";
 

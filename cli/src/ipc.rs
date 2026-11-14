@@ -328,10 +328,29 @@ pub enum Reached<T> {
     Profile(T),
 }
 
+async fn ask(
+    paths: &Paths,
+    request: &Request,
+    reply: Option<Duration>,
+) -> Result<Option<Response>, CliError> {
+    let asked = koidrive_ipc::ask(paths, request);
+    let Some(reply) = reply else {
+        return Ok(asked.await?);
+    };
+    match tokio::time::timeout(reply, asked).await {
+        Ok(answer) => Ok(answer?),
+        Err(_) => Err(CliError::from(format!(
+            "the daemon did not answer within {} seconds",
+            reply.as_secs()
+        ))),
+    }
+}
+
 pub async fn reach<T>(
     paths: &Paths,
     request: &Request,
     within: Duration,
+    reply: Option<Duration>,
     open: impl Fn() -> Result<T, DriverError>,
 ) -> Result<Reached<T>, CliError> {
     let deadline = tokio::time::Instant::now() + within;
@@ -353,14 +372,22 @@ pub async fn reach<T>(
             }
             Err(other) => return Err(CliError::from(other)),
         }
-        if let Some(response) = koidrive_ipc::ask(paths, request).await? {
+        if let Some(response) = ask(paths, request, reply).await? {
             return Ok(Reached::Daemon(Box::new(response)));
         }
     }
 }
 
 pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> {
-    let response = match koidrive_ipc::ask(paths, &request).await? {
+    run_replying_within(paths, request, None).await
+}
+
+pub async fn run_replying_within(
+    paths: &Paths,
+    request: Request,
+    reply: Option<Duration>,
+) -> Result<Response, CliError> {
+    let response = match ask(paths, &request, reply).await? {
         Some(response) => response,
         None if matches!(request, Request::Status) && !paths.state_dir.exists() => {
             let update = match koidrive_driver::update::is_on(paths) {
@@ -387,7 +414,7 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
         None if matches!(request, Request::Resume) && !paths.state_dir.exists() => {
             Response::NotPaused
         }
-        None => match reach(paths, &request, STARTING, || {
+        None => match reach(paths, &request, STARTING, reply, || {
             Driver::open_with_telemetry(paths.clone(), crate::telemetry::recorder())
         })
         .await?
@@ -564,9 +591,13 @@ pub(crate) mod tests {
         let paths = Paths::under(dir.path());
         let _held = Driver::open(paths.clone()).unwrap();
         let started = tokio::time::Instant::now();
-        let Err(error) = reach(&paths, &Request::Status, Duration::from_secs(1), || {
-            Driver::open(paths.clone())
-        })
+        let Err(error) = reach(
+            &paths,
+            &Request::Status,
+            Duration::from_secs(1),
+            None,
+            || Driver::open(paths.clone()),
+        )
         .await
         else {
             panic!("a held profile was opened");
