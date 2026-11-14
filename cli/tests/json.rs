@@ -136,6 +136,7 @@ async fn pair_and_claim_read_codes_from_stdin_or_positional_arguments() {
                             code: Code::WrongCode,
                             message: "the code is wrong or has expired".into(),
                             reason: None,
+                            human: None,
                             next: Vec::new(),
                         },
                     };

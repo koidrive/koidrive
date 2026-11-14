@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -38,6 +38,26 @@ enum Browser {
     Fails,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    OauthRefused,
+    OauthProtocol,
+    CloudflareRefused,
+    CloudflareProtocol,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ErrorMode {
+    Concise,
+    Plain,
+    Verbose,
+    Redirected,
+}
+
+impl ErrorMode {
+    const ALL: [Self; 4] = [Self::Concise, Self::Plain, Self::Verbose, Self::Redirected];
+}
+
 #[derive(Default)]
 struct State {
     scripts: Vec<String>,
@@ -53,6 +73,7 @@ struct State {
     r2_disabled: usize,
     base: String,
     collide_create: bool,
+    failure: Option<Failure>,
 }
 
 struct Home {
@@ -306,6 +327,55 @@ esac
         }
         text
     }
+
+    fn failed_deploy(&self, mode: ErrorMode, exit: i32) -> String {
+        executable(
+            &self.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = self.command();
+        command.args(["server", "deploy", "--interactive", "--name", "Laptop"]);
+        match mode {
+            ErrorMode::Plain => {
+                command.arg("--plain");
+            }
+            ErrorMode::Verbose => {
+                command.arg("--verbose");
+            }
+            ErrorMode::Concise | ErrorMode::Redirected => {}
+        }
+        let output = terminal_with_stdout(
+            command,
+            &[],
+            Some(self.path()),
+            matches!(mode, ErrorMode::Redirected),
+        );
+        let raw = String::from_utf8(output.stdout).unwrap();
+        let text = console::strip_ansi_codes(&raw).into_owned();
+        assert_eq!(output.status.code(), Some(exit), "{mode:?}: {text}");
+        for hidden in [
+            "synthetic-private-response",
+            "synthetic-access",
+            "synthetic-refresh",
+            "Setup complete",
+        ] {
+            assert!(!text.contains(hidden), "{mode:?}: {text}");
+        }
+        assert!(!self.paths().credential().exists(), "{mode:?}: {text}");
+        assert!(
+            !self.path().join("service-calls").exists(),
+            "{mode:?}: {text}"
+        );
+        assert!(
+            self.state.lock().unwrap().links.is_empty(),
+            "{mode:?}: {text}"
+        );
+        text
+    }
 }
 
 impl Drop for Home {
@@ -393,6 +463,16 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
     let server_path = path.find("/v1/").map(|start| &path[start..]);
     let mut status = "200 OK";
     let (kind, answer) = match (method, path, server_path) {
+        ("POST", "/oauth2/token", _) if state.failure == Some(Failure::OauthRefused) => {
+            status = "400 Bad Request";
+            ("application/json", json!({
+                "error":"invalid_grant", "error_description":"The login code expired",
+                "access_token":"synthetic-private-response"
+            }).to_string().into_bytes())
+        },
+        ("POST", "/oauth2/token", _) if state.failure == Some(Failure::OauthProtocol) => {
+            ("application/json", json!({"access_token":"synthetic-private-response"}).to_string().into_bytes())
+        },
         ("POST", "/oauth2/token", _) => ("application/json", json!({
             "access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600, "scope":SCOPES.join(" ")
         }).to_string().into_bytes()),
@@ -424,6 +504,13 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                 proto(created.encode_to_vec())
             }
         },
+        ("GET", "/client/v4/accounts", _) if state.failure == Some(Failure::CloudflareRefused) => {
+            status = "403 Forbidden";
+            ("application/json", json!({
+                "success":false, "errors":[{"code":9109,"message":"Account access denied"}],
+                "result":null, "debug":"synthetic-private-response"
+            }).to_string().into_bytes())
+        },
         ("GET", "/client/v4/accounts", _) => cf(json!([{"id":ACCOUNT,"name":"Personal"}])),
         _ => {
             let suffix = path.strip_prefix(&format!("/client/v4/accounts/{ACCOUNT}")).unwrap_or("");
@@ -437,7 +524,11 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                 ("POST", "/r2/buckets") => {
                     let request: Value = serde_json::from_slice(&body).unwrap();
                     state.buckets.push(request["name"].as_str().unwrap().into());
-                    cf(json!({}))
+                    if state.failure == Some(Failure::CloudflareProtocol) {
+                        ("text/html", b"<html>synthetic-private-response</html>".to_vec())
+                    } else {
+                        cf(json!({}))
+                    }
                 }
                 ("GET", "/workers/scripts") => cf(json!(state.scripts.iter().map(|name| json!({"id":name,"tags":["koidrive-server"],"has_assets":true})).collect::<Vec<_>>())),
                 ("GET", "/workers/subdomain") => cf(json!({"subdomain":"synthetic"})),
@@ -571,7 +662,16 @@ fn callback(page: &str) {
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 }
 
-fn terminal(mut command: Command, steps: &[(&str, String)], home: Option<&Path>) -> Output {
+fn terminal(command: Command, steps: &[(&str, String)], home: Option<&Path>) -> Output {
+    terminal_with_stdout(command, steps, home, false)
+}
+
+fn terminal_with_stdout(
+    mut command: Command,
+    steps: &[(&str, String)],
+    home: Option<&Path>,
+    redirected: bool,
+) -> Output {
     let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
     rustix::pty::grantpt(&master).unwrap();
     rustix::pty::unlockpt(&master).unwrap();
@@ -594,9 +694,13 @@ fn terminal(mut command: Command, steps: &[(&str, String)], home: Option<&Path>)
     let flags = rustix::fs::fcntl_getfl(&master).unwrap();
     rustix::fs::fcntl_setfl(&master, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
     let mut master = File::from(master);
+    let mut stdout = redirected.then(|| tempfile::tempfile().unwrap());
     command
         .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap())
+        .stdout(match &stdout {
+            Some(file) => file.try_clone().unwrap(),
+            None => slave.try_clone().unwrap(),
+        })
         .stderr(slave);
     let mut child = Running(command.process_group(0).spawn().unwrap());
     let mut raw = Vec::new();
@@ -649,10 +753,169 @@ fn terminal(mut command: Command, steps: &[(&str, String)], home: Option<&Path>)
     }
     let status = child.0.wait().unwrap();
     assert_eq!(answered, steps.len(), "{}", String::from_utf8_lossy(&raw));
+    if let Some(stdout) = &mut stdout {
+        stdout.rewind().unwrap();
+        stdout.read_to_end(&mut raw).unwrap();
+    }
     Output {
         status,
         stdout: raw,
         stderr: Vec::new(),
+    }
+}
+
+#[test]
+fn oauth_token_refusal_is_concise_on_terminals_and_raw_in_other_modes() {
+    for mode in ErrorMode::ALL {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().failure = Some(Failure::OauthRefused);
+        let text = home.failed_deploy(mode, 4);
+        let raw = "Cloudflare refused the token request with HTTP 400: invalid_grant (The login code expired)";
+        if matches!(mode, ErrorMode::Concise | ErrorMode::Plain) {
+            assert!(
+                text.contains("Cloudflare refused the login exchange."),
+                "{text}"
+            );
+            assert!(
+                text.contains("The login code expired (HTTP 400). Start the login again."),
+                "{text}"
+            );
+            assert!(!text.contains("invalid_grant"), "{text}");
+            assert!(!text.contains(raw), "{text}");
+        } else {
+            assert!(text.contains(raw), "{mode:?}: {text}");
+            assert!(
+                !text.contains("Cloudflare refused the login exchange."),
+                "{text}"
+            );
+        }
+        assert_eq!(home.state.lock().unwrap().requests, ["POST /oauth2/token"]);
+    }
+}
+
+#[test]
+fn oauth_protocol_failure_requires_a_fresh_login_without_dumping_the_response() {
+    for mode in ErrorMode::ALL {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().failure = Some(Failure::OauthProtocol);
+        let text = home.failed_deploy(mode, 1);
+        let raw = "Cloudflare's token response could not be read";
+        if matches!(mode, ErrorMode::Concise | ErrorMode::Plain) {
+            assert!(
+                text.contains("Koidrive could not read Cloudflare's login response."),
+                "{text}"
+            );
+            assert!(
+                text.contains("Start a new login rather than reusing the browser result."),
+                "{text}"
+            );
+            assert!(!text.contains(raw), "{text}");
+        } else {
+            assert!(text.contains(raw), "{mode:?}: {text}");
+            assert!(
+                !text.contains("Start a new login rather than reusing the browser result."),
+                "{text}"
+            );
+        }
+        assert_eq!(home.state.lock().unwrap().requests, ["POST /oauth2/token"]);
+    }
+}
+
+#[test]
+fn cloudflare_refusal_names_the_cause_without_internal_codes_on_terminals() {
+    for mode in ErrorMode::ALL {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().failure = Some(Failure::CloudflareRefused);
+        let text = home.failed_deploy(mode, 4);
+        let raw = "cannot list the account: could not list accounts: Cloudflare answered HTTP 403, Account access denied [code: 9109]";
+        if matches!(mode, ErrorMode::Concise | ErrorMode::Plain) {
+            assert!(
+                text.contains("Cloudflare could not list accounts. Account access denied."),
+                "{text}"
+            );
+            assert!(
+                text.contains(
+                    "Check the Cloudflare account and permissions used for this command."
+                ),
+                "{text}"
+            );
+            assert!(!text.contains("[code:"), "{text}");
+            assert!(!text.contains(raw), "{text}");
+        } else {
+            assert!(text.contains(raw), "{mode:?}: {text}");
+            assert!(
+                !text.contains(
+                    "Check the Cloudflare account and permissions used for this command."
+                ),
+                "{text}"
+            );
+        }
+        let state = home.state.lock().unwrap();
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .filter(|request| request.as_str() == "GET /client/v4/accounts")
+                .count(),
+            1
+        );
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .filter(|request| request.as_str() == "POST /oauth2/revoke")
+                .count(),
+            2
+        );
+        assert!(state.buckets.is_empty());
+    }
+}
+
+#[test]
+fn cloudflare_protocol_failure_warns_before_repeating_a_completed_mutation() {
+    for mode in ErrorMode::ALL {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().failure = Some(Failure::CloudflareProtocol);
+        let text = home.failed_deploy(mode, 1);
+        let state = home.state.lock().unwrap();
+        assert_eq!(state.buckets.len(), 1);
+        let raw = format!(
+            "cannot create the bucket {}: could not create an R2 bucket: Cloudflare's answer is not an API envelope; a newer koi release may read Cloudflare's answer",
+            state.buckets[0]
+        );
+        let create = format!("POST /client/v4/accounts/{ACCOUNT}/r2/buckets");
+        if matches!(mode, ErrorMode::Concise | ErrorMode::Plain) {
+            assert!(text.contains("Koidrive could not read Cloudflare's answer while trying to create an R2 bucket."), "{text}");
+            assert!(text.contains("Inspect your server or storage in the Cloudflare dashboard before repeating a change."), "{text}");
+            assert!(!text.contains("not an API envelope"), "{text}");
+            assert!(!text.contains("a newer koi release"), "{text}");
+            assert!(!text.contains(&raw), "{text}");
+        } else {
+            assert!(text.contains(&raw), "{mode:?}: {text}");
+            assert!(!text.contains("Inspect your server or storage in the Cloudflare dashboard before repeating a change."), "{text}");
+        }
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .filter(|request| request.as_str() == create)
+                .count(),
+            1
+        );
+        assert!(
+            !state
+                .requests
+                .iter()
+                .any(|request| request.starts_with("PUT "))
+        );
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .filter(|request| request.as_str() == "POST /oauth2/revoke")
+                .count(),
+            2
+        );
     }
 }
 

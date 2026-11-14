@@ -82,6 +82,7 @@ enum Answer {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PromptFailure {
     Cancelled,
+    CancelledPresented,
     Closed,
     Io(String),
 }
@@ -102,7 +103,12 @@ impl From<PromptFailure> for CliError {
             PromptFailure::Cancelled => {
                 CliError::new(Code::Interrupted, "cancelled on the terminal")
             }
-            PromptFailure::Closed => CliError::from("stdin closed before an answer"),
+            PromptFailure::CancelledPresented => {
+                CliError::new(Code::Interrupted, "cancelled on the terminal").human("")
+            }
+            PromptFailure::Closed => CliError::from("stdin closed before an answer").human(
+                "No answer was received. Run the command again in a terminal when you are ready.",
+            ),
             PromptFailure::Io(message) => CliError::from(message),
         }
     }
@@ -928,7 +934,10 @@ pub fn helper(args: &[OsString]) -> Option<ExitCode> {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
             let _terminate =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            interact(request, rich)
+            match interact(request, rich) {
+                Err(PromptFailure::Cancelled) if rich => Err(PromptFailure::CancelledPresented),
+                result => result,
+            }
         }),
         Err(error) => Err(error.into()),
     };
@@ -943,6 +952,17 @@ pub fn helper(args: &[OsString]) -> Option<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_is_silent_only_when_the_prompt_presented_it() {
+        let unpresented = CliError::from(PromptFailure::Cancelled);
+        let presented = CliError::from(PromptFailure::CancelledPresented);
+        assert_eq!(unpresented.message, presented.message);
+        assert_eq!(unpresented.code, presented.code);
+        assert_eq!(presented.code.exit(), 130);
+        assert_eq!(unpresented.human, None);
+        assert_eq!(presented.human.as_deref(), Some(""));
+    }
 
     fn open_bridge(raw: bool) -> (OwnedFd, OwnedFd, InputBridge, std::fs::File) {
         use rustix::fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open};

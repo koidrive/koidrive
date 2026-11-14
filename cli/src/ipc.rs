@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,6 +27,7 @@ impl From<CliError> for Response {
     fn from(error: CliError) -> Self {
         Response::Error {
             message: error.message,
+            human: error.human,
             code: error.code,
             reason: error.reason,
             next: error.next,
@@ -331,16 +333,27 @@ pub enum Reached<T> {
 pub const REPLY: Duration = Duration::from_secs(5);
 
 pub async fn ask(paths: &Paths, request: &Request) -> Result<Option<Response>, CliError> {
-    let asked = koidrive_ipc::ask(paths, request);
+    let socket = paths.socket();
+    let asked = async {
+        match koidrive_ipc::send(&socket, request, rustix::process::getuid().as_raw()).await {
+            Err(error)
+                if error.kind() == io::ErrorKind::UnexpectedEof
+                    && matches!(request, Request::Status) =>
+            {
+                Ok(None)
+            }
+            answer => answer.map_err(|error| socket_error(&socket, error)),
+        }
+    };
     if !matches!(request, Request::Status) {
-        return Ok(asked.await?);
+        return asked.await;
     }
     match tokio::time::timeout(REPLY, asked).await {
-        Ok(answer) => Ok(answer?),
+        Ok(answer) => answer,
         Err(_) => Err(CliError::from(format!(
             "the daemon did not answer within {} seconds",
             REPLY.as_secs()
-        ))),
+        )).human(format!("Background sync did not answer within {} seconds. If it stays unresponsive, run koi diagnose to collect details.", REPLY.as_secs()))),
     }
 }
 
@@ -365,7 +378,7 @@ pub async fn reach<T>(
                         paths.socket().display(),
                         within.as_secs()
                     ),
-                ));
+                ).human("Another Koidrive process holds this profile, but background sync did not answer. Run koi diagnose before changing local sync data or starting another process."));
             }
             Err(other) => return Err(CliError::from(other)),
         }
@@ -373,6 +386,20 @@ pub async fn reach<T>(
             return Ok(Reached::Daemon(Box::new(response)));
         }
     }
+}
+
+pub(crate) fn socket_error(socket: &Path, error: io::Error) -> CliError {
+    let human = match error.kind() {
+        io::ErrorKind::PermissionDenied => {
+            "Koidrive could not access background sync. Check local file permissions and run koi status."
+        }
+        io::ErrorKind::InvalidData => {
+            "Background sync returned a response Koidrive could not read. Run koi diagnose to collect a report."
+        }
+        _ => "The connection to background sync failed. Run koi status to check it.",
+    };
+    CliError::from(format!("the daemon's socket {} failed: {error}", socket.display()))
+        .human(format!("{human} The command's result is unknown. Check the affected item before repeating a command that changes it."))
 }
 
 pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> {
@@ -415,11 +442,13 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
     match response {
         Response::Error {
             message,
+            human,
             code,
             reason,
             next,
         } => Err(CliError {
             reason,
+            human,
             next,
             ..CliError::new(code, message)
         }),

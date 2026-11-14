@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::error::CliError;
+use crate::error::{CliError, local_io_human};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Record {
@@ -25,7 +25,10 @@ pub fn recorded(paths: &Paths, id: &RequestId, key: &Key) -> Result<Option<Value
     let record = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Record>(&bytes).ok(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("{}: {error}", path.display()).into()),
+        Err(error) => return Err(CliError {
+            human: local_io_human(&error).map(|cause| format!("Could not read the saved request. {cause} Check the affected item before repeating a command that changes it. Run koi diagnose to collect a report.")),
+            ..CliError::from(format!("{}: {error}", path.display()))
+        }),
     };
     match record {
         Some(record) if record.key != *key => Err(CliError::new(
@@ -65,7 +68,12 @@ pub fn begin(paths: &Paths, id: &RequestId, key: &Key) -> Result<Begun, CliError
         outcome: None,
     };
     loop {
-        if write(&path, &record, false).map_err(|error| format!("{}: {error}", path.display()))? {
+        if write(&path, &record, false).map_err(|error| {
+            CliError {
+                human: local_io_human(&error).map(|cause| format!("Could not save the request before running it. {cause} Run koi diagnose to collect a report.")),
+                ..CliError::from(format!("{}: {error}", path.display()))
+            }
+        })? {
             return Ok(Begun::Claimed(Claim { path, record }));
         }
         if let Some(outcome) = recorded(paths, id, key)? {
@@ -84,7 +92,10 @@ impl Claim {
         self.record.outcome = Some(serde_json::to_value(outcome).expect("an outcome serializes"));
         write(&self.path, &self.record, true)
             .map(drop)
-            .map_err(|error| format!("{}: {error}", self.path.display()).into())
+            .map_err(|error| CliError {
+                human: local_io_human(&error).map(|cause| format!("Could not save the command's result. {cause} The change may already have happened. Check the affected item before repeating the command. Run koi diagnose to collect a report.")),
+                ..CliError::from(format!("{}: {error}", self.path.display()))
+            })
     }
 
     pub fn abandon(self) {
@@ -138,6 +149,48 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn request_file_failures_keep_raw_paths_and_safe_human_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let request = id("fixture-request");
+        let key = restart("/Documents");
+        let file = request_file(&paths, &request);
+        std::fs::create_dir_all(&file).unwrap();
+        let error = recorded(&paths, &request, &key).unwrap_err();
+        assert!(error.message.contains(&file.display().to_string()));
+        let human = error.human.unwrap();
+        assert!(human.contains("Could not read the saved request"));
+        assert!(human.contains("before repeating"));
+        assert!(!human.contains(&dir.path().display().to_string()));
+
+        std::fs::remove_dir(&file).unwrap();
+        let Begun::Claimed(claim) = begin(&paths, &request, &key).unwrap() else {
+            panic!("the fixture request was not claimed");
+        };
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(paths.requests()).unwrap();
+        std::fs::write(paths.requests(), "fixture blocks request folder").unwrap();
+        let error = claim.finish(&json!({"done":true})).unwrap_err();
+        assert!(error.message.contains(&file.display().to_string()));
+        assert_eq!(error.code, Code::Failed);
+        let human = error.human.unwrap();
+        assert!(human.contains("change may already have happened"));
+        assert!(human.contains("before repeating"));
+        assert!(!human.contains(&dir.path().display().to_string()));
+
+        let error = match begin(&paths, &id("another-request"), &key) {
+            Err(error) => error,
+            Ok(_) => panic!("a request was saved through a file"),
+        };
+        assert!(
+            error
+                .message
+                .contains(&paths.requests().display().to_string())
+        );
+        assert!(error.human.unwrap().contains("before running it"));
     }
 
     #[test]

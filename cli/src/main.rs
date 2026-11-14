@@ -9,6 +9,7 @@
 mod app;
 mod app_install;
 mod diagnose;
+mod diagnostics;
 mod error;
 mod history;
 mod ipc;
@@ -452,7 +453,7 @@ fn main() -> ExitCode {
                 &command,
                 json,
                 verbose,
-                Err(error.to_string().into()),
+                Err(CliError::from(DriverError::from(error))),
                 Vec::new(),
             );
         }
@@ -465,6 +466,7 @@ fn main() -> ExitCode {
         log_format,
         json || !console::colors_enabled_stderr(),
         agent_log,
+        (!json && !verbose && output::concise(&command)).then_some(command.as_str()),
     );
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -952,7 +954,9 @@ async fn execute(
             let join = async {
                 let code = setup::read_code(code, code_stdin).await?;
                 let invitation =
-                    pairing::parse(&code, server.as_deref()).map_err(CliError::usage)?;
+                    pairing::parse(&code, server.as_deref()).map_err(|message| {
+                        CliError::usage(message).human("The pairing code is incomplete or its server address is invalid. Copy the full code, including @server, or provide the server with --server.")
+                    })?;
                 let request = Request::Pair {
                     server: invitation.server,
                     code: invitation.code,
@@ -1032,7 +1036,11 @@ fn finish(
             let presentation = partial
                 .as_ref()
                 .map_or(output::Presentation::Text, |done| done.presentation);
-            let message = format!("{}\n", printable(&error.message));
+            let message = match concise.then_some(error.human.as_deref()).flatten() {
+                Some("") => String::new(),
+                Some(human) => format!("{}\n", printable(human)),
+                None => format!("{}\n", printable(&error.message)),
+            };
             let exit = error.code.exit();
             (
                 exit,
@@ -1254,10 +1262,12 @@ fn shows_and_exits(command: &clap::Command, arg: &str) -> bool {
     false
 }
 
-/// Logs go to stderr: structured key-value text by default, one JSON object per line with `--log-format json`. The
-/// level comes from `KOIDRIVE_LOG` (`info` for the daemon, `warn` for other commands). No log line carries a
-/// credential, an access token or a pairing code.
-fn init_logging(daemon: Option<LogFormat>, json: bool, agent_log: Option<logfile::CappedLog>) {
+fn init_logging(
+    daemon: Option<LogFormat>,
+    json: bool,
+    agent_log: Option<logfile::CappedLog>,
+    human: Option<&str>,
+) {
     let default = if daemon.is_some() { "info" } else { "warn" };
     let filter =
         EnvFilter::try_from_env("KOIDRIVE_LOG").unwrap_or_else(|_| EnvFilter::new(default));
@@ -1269,6 +1279,14 @@ fn init_logging(daemon: Option<LogFormat>, json: bool, agent_log: Option<logfile
         .with_env_filter(filter)
         .with_ansi(log_ansi(std::io::stderr().is_terminal(), json))
         .with_writer(writer);
+    if let Some(command) = human.filter(|_| std::env::var_os("KOIDRIVE_LOG").is_none()) {
+        builder
+            .event_format(diagnostics::Human {
+                command: command.to_owned(),
+            })
+            .init();
+        return;
+    }
     match daemon {
         Some(LogFormat::Json) => builder.json().with_current_span(false).init(),
         _ => builder.init(),
@@ -1402,6 +1420,7 @@ async fn folder_states(
 /// An answer of the daemon that does not fit the request.
 fn unexpected(response: Response) -> CliError {
     CliError::from(format!("the daemon answered {response:?}"))
+        .human("Background sync returned an unexpected response. The command's result is unknown. Run koi status to check sync, and check the affected item before repeating a command that changes it. Run koi diagnose to collect a report.")
 }
 
 fn paired(paths: &Paths, response: Response) -> Result<Done, CliError> {
@@ -1736,16 +1755,16 @@ fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
 /// they run the same whether or not the daemon holds it.
 fn signed_in(paths: &Paths) -> Result<Auth, CliError> {
     let credential = Credential::load(&paths.credential())
-        .map_err(|error| error.to_string())?
+        .map_err(DriverError::from)?
         .ok_or(DriverError::NotPaired)?;
-    Ok(reading(paths, &credential)?)
+    reading(paths, &credential)
 }
 
 /// An [`Auth`] for a command that only reads the profile's credential. The process that holds the profile may rotate
 /// the credential meanwhile, so when the server refuses it, it reads both credential files again, once, and presents
 /// what they hold (RFC 0011 section 2). A reload that finds a credential for another server fails, so that no
 /// credential reaches a server it was not issued by.
-fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, String> {
+fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, CliError> {
     let path = paths.credential();
     let server = credential.server.clone();
     let reload: Reload = Arc::new(move || {
@@ -1762,7 +1781,7 @@ fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, String> {
         Ok(stored.net())
     });
     Ok(Auth::reloading(
-        credential.api().map_err(|error| error.to_string())?,
+        credential.api().map_err(CliError::from)?,
         credential.net(),
         reload,
     ))
@@ -3522,6 +3541,7 @@ mod tests {
                     code: Code::Failed,
                     message: "cleanup pending".into(),
                     reason: None,
+                    human: None,
                     next: Vec::new(),
                 },
             )

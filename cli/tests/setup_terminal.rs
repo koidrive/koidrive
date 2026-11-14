@@ -317,6 +317,7 @@ impl Home {
                             }
                             None => Response::Error {
                                 message: format!("no space is named {wanted}"),
+                                human: None,
                                 code: Code::Usage,
                                 reason: None,
                                 next: Vec::new(),
@@ -986,6 +987,9 @@ fn raw_ctrl_c_cancels_rich_selection() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert!(!home.path().join("state/koidrive/telemetry").exists());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
+    assert!(!text.contains("cancelled on the terminal"), "{text}");
 }
 
 #[test]
@@ -1059,6 +1063,9 @@ fn raw_ctrl_c_cancels_rich_pairing_and_telemetry() {
                 .join("state/koidrive/telemetry/settings.json")
                 .exists()
         );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
+        assert!(!text.contains("cancelled on the terminal"), "{text}");
     }
 }
 

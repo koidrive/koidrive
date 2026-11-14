@@ -88,7 +88,7 @@ impl<'a> Claim<'a> {
             if self.state.secret_set {
                 self.delete_key().await?;
             }
-            return Ok(file.remove()?);
+            return file.remove();
         }
         let mut key = match self.key.take() {
             Some(key) => key,
@@ -112,7 +112,7 @@ impl<'a> Claim<'a> {
         self.state.setup_attempt = None;
         file.save(&self.state)?;
         self.delete_key().await?;
-        Ok(file.remove()?)
+        file.remove()
     }
 
     /// Sets a new one-time key on the Worker. Before the first one it checks that the owner has not set a key of
@@ -234,18 +234,17 @@ impl<'a> Claim<'a> {
 /// as unknown or revoked is removed, so the claim can go on. Any other answer stops the run and changes nothing.
 pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError> {
     let Some(credential) =
-        Credential::load(&paths.credential()).map_err(|error| error.to_string())?
+        Credential::load(&paths.credential()).map_err(koidrive_driver::DriverError::from)?
     else {
         return Ok(false);
     };
-    let api = credential.api().map_err(|error| error.to_string())?;
+    let api = credential.api().map_err(CliError::from)?;
     if api.base().as_str().trim_end_matches('/') != server.as_str().trim_end_matches('/') {
-        return Err(format!(
+        return Err(CliError::from(format!(
             "this device is already set up with {}; its credential is {}",
             credential.server,
             paths.credential().display()
-        )
-        .into());
+        )).human(format!("This device is already set up with {}. Run koi status to inspect its account before changing its setup.", credential.server)));
     }
     match crate::reading(paths, &credential)?.access_token().await {
         Ok(_) => Ok(true),
@@ -276,7 +275,7 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                     );
                     Ok(false)
                 }
-                other => Err(format!("the daemon answered {other:?}").into()),
+                other => Err(crate::unexpected(other)),
             }
         }
         Err(error) => Err(CliError::caused(
@@ -368,6 +367,7 @@ mod tests {
                 .unwrap();
             let refusal = Response::Error {
                 message: "the disk is full".into(),
+                human: None,
                 code: koidrive_ipc::Code::Failed,
                 reason: None,
                 next: Vec::new(),

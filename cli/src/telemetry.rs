@@ -181,7 +181,9 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     };
     match terminal.confirm(question, true).await {
         Ok(answer) => Ok(Some(answer)),
-        Err(PromptFailure::Cancelled) => Err(PromptFailure::Cancelled.into()),
+        Err(error @ (PromptFailure::Cancelled | PromptFailure::CancelledPresented)) => {
+            Err(error.into())
+        }
         Err(_) => Ok(None),
     }
 }

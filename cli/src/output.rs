@@ -116,12 +116,21 @@ pub fn print(
     note: Note<'_>,
     pending: Option<&str>,
 ) {
+    let rich = rich(command);
     let (note, error, prefix) = match note {
         Note::Information(text) => (text, false, ""),
         Note::Error(text) => (text, true, "koi: "),
-        Note::Usage(text) => (text, true, ""),
+        Note::Usage(text) => (
+            if rich {
+                text.strip_prefix("error: ").unwrap_or(text)
+            } else {
+                text
+            },
+            true,
+            "",
+        ),
     };
-    if !rich(command) {
+    if !rich {
         print!("{text}");
         if !note.is_empty() {
             eprint!("{prefix}{note}");

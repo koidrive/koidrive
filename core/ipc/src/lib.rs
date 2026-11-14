@@ -220,6 +220,8 @@ pub enum Response {
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        human: Option<String>,
         #[serde(default)]
         code: Code,
         #[serde(
@@ -650,6 +652,7 @@ mod tests {
             response,
             Response::Error {
                 message: "it failed".into(),
+                human: None,
                 code: Code::Failed,
                 reason: None,
                 next: Vec::new(),
@@ -664,10 +667,53 @@ mod tests {
             Response::Error {
                 message: "it failed".into(),
                 code: Code::Usage,
+                human: None,
                 reason: None,
                 next: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn error_presentations_are_optional_and_ignored_by_older_clients() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(tag = "response", rename_all = "snake_case")]
+        enum OlderResponse {
+            Error {
+                message: String,
+                #[serde(default)]
+                code: Code,
+                #[serde(default)]
+                next: Vec<Next>,
+            },
+        }
+
+        for human in [
+            None,
+            Some("Choose one of the decisions shown by koi resolve.".into()),
+        ] {
+            let response = Response::Error {
+                message: "no unanswered question has the id \"q1\"".into(),
+                human: human.clone(),
+                code: Code::StaleDecision,
+                reason: None,
+                next: vec![Next::of(&["koi", "resolve", "--json"])],
+            };
+            let json = serde_json::to_value(&response).unwrap();
+            assert_eq!(json.get("human").is_some(), human.is_some());
+            assert_eq!(
+                serde_json::from_value::<Response>(json.clone()).unwrap(),
+                response
+            );
+            assert_eq!(
+                serde_json::from_value::<OlderResponse>(json).unwrap(),
+                OlderResponse::Error {
+                    message: "no unanswered question has the id \"q1\"".into(),
+                    code: Code::StaleDecision,
+                    next: vec![Next::of(&["koi", "resolve", "--json"])],
+                }
+            );
+        }
     }
 
     #[test]
@@ -978,6 +1024,7 @@ mod tests {
         pinned(
             Response::Error {
                 message: "no unanswered question has the id \"q1\"".into(),
+                human: None,
                 code: Code::StaleDecision,
                 reason: None,
                 next: vec![Next::of(&["koi", "resolve", "--json"])],
@@ -987,6 +1034,7 @@ mod tests {
         pinned(
             Response::Error {
                 message: "it failed".into(),
+                human: None,
                 code: Code::Failed,
                 reason: None,
                 next: Vec::new(),
@@ -997,6 +1045,7 @@ mod tests {
             Response::Error {
                 message: "a link's password has 8 to 256 characters".into(),
                 code: Code::Usage,
+                human: None,
                 reason: Some(Reason::PasswordLength),
                 next: Vec::new(),
             },

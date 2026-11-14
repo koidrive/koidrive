@@ -382,7 +382,7 @@ async fn connect(
 
 async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
     let credential = Credential::load(&paths.credential())
-        .map_err(|error| error.to_string())?
+        .map_err(DriverError::from)?
         .ok_or(DriverError::NotPaired)?;
     let auth = crate::reading(paths, &credential)?;
     let mut progress = Some(terminal.progress("Preparing ~/Koidrive..."));
@@ -761,7 +761,7 @@ async fn scripted(
     let directory = (local != Local::Missing)
         .then(|| directory_identity(&folder))
         .transpose()?;
-    let credential = Credential::load(&paths.credential()).map_err(|error| error.to_string())?;
+    let credential = Credential::load(&paths.credential()).map_err(DriverError::from)?;
     if local == Local::Files && !script.accept_existing_files {
         let linked = if credential.is_some() {
             let root = std::fs::canonicalize(&folder).map_err(|error| {
@@ -1088,7 +1088,17 @@ fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliError {
             state.script
         )
     };
-    format!("{run}, or delete {} to forget it", file.display()).into()
+    let human = if state.account != account {
+        format!(
+            "Setup of {} in another Cloudflare account has not finished. Run koi setup and sign in to the account that created that server to finish it",
+            state.script
+        )
+    } else {
+        run.clone()
+    };
+    CliError::from(format!("{run}, or delete {} to forget it", file.display())).human(format!(
+        "{human}. Keep the saved setup progress until the operation is complete."
+    ))
 }
 
 fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Result<(), CliError> {
@@ -1106,7 +1116,7 @@ fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Resu
             );
             Ok(())
         }
-        other => Err(format!("the daemon answered {other:?}").into()),
+        other => Err(crate::unexpected(other)),
     }
 }
 
@@ -2223,7 +2233,7 @@ async fn create_bucket(
         }
     }
     state.step = Step::BucketCreated;
-    Ok(file.save(state)?)
+    file.save(state)
 }
 
 /// A bucket name only this deploy produces: `base`, a hyphen and 16 random hex digits (64 bits). Another

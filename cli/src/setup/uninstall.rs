@@ -40,10 +40,17 @@ pub async fn plan(
                 "there is no R2 bucket {bucket} in the {} jurisdiction",
                 jurisdiction.as_str()
             )),
-            _ => CliError::caused(
-                format!("cannot read the bucket {bucket}: {error}; deleted nothing"),
-                error,
-            ),
+            _ => {
+                let error = CliError::caused(
+                    format!("cannot read the bucket {bucket}: {error}; deleted nothing"),
+                    error,
+                );
+                let human = format!(
+                    "{} Nothing was deleted.",
+                    error.human.as_deref().unwrap_or(&error.message)
+                );
+                error.human(human)
+            }
         })?;
     if found.creation_date.is_empty()
         || found
@@ -284,10 +291,15 @@ async fn scan(
             Ok(page) => page,
             Err(error) if error.status() == Some(404) => return Ok(None),
             Err(error) => {
-                return Err(CliError::caused(
+                let error = CliError::caused(
                     format!("cannot list the bucket {bucket}: {error}; deleted nothing"),
                     error,
-                ));
+                );
+                let human = format!(
+                    "{} Nothing was deleted.",
+                    error.human.as_deref().unwrap_or(&error.message)
+                );
+                return Err(error.human(human));
             }
         };
         contents.objects += page.keys.len();
