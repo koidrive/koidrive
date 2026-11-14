@@ -45,6 +45,7 @@ enum Failure {
     CloudflareRefused,
     CloudflareProtocol,
     UninstallScan,
+    UninstallBucketGone,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -136,7 +137,7 @@ case "$2" in
   show-environment|enable|daemon-reload) ;;
   is-active) [ -f "$marker" ] || exit 1 ;;
   start|restart) : > "$marker" ;;
-  cat) exit 1 ;;
+  cat) [ -f "$marker" ] ;;
   disable) /bin/rm -f "$marker" ;;
   *) exit 88 ;;
 esac
@@ -239,6 +240,16 @@ esac
             .to_string(),
         )
         .unwrap();
+    }
+
+    fn service_for(&self, server: &str) {
+        let credential: Credential = serde_json::from_value(json!({
+            "server": server, "user_id": "owner", "device_id": DEVICE,
+            "device_name": "Laptop", "refresh_credential": "synthetic-refresh"
+        }))
+        .unwrap();
+        credential.save_new(&self.paths().credential()).unwrap();
+        fs::write(self.paths().state_dir.join("service-running"), "").unwrap();
     }
 
     fn command(&self) -> Command {
@@ -551,6 +562,10 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                 ("DELETE", "/workers/scripts/koidrive") if state.failure == Some(Failure::UninstallScan) => {
                     state.scripts.retain(|name| name != "koidrive");
                     cf(Value::Null)
+                },
+                ("GET", "/r2/buckets/synthetic-bucket") if state.failure == Some(Failure::UninstallBucketGone) => {
+                    status = "404 Not Found";
+                    ("application/json", json!({"success":false,"errors":[],"result":null}).to_string().into_bytes())
                 },
                 ("GET", "/r2/buckets/synthetic-bucket") if state.failure == Some(Failure::UninstallScan) => {
                     cf(json!({"name":"synthetic-bucket","creation_date":"2026-11-10T01:02:00.000Z","jurisdiction":"eu"}))
@@ -870,7 +885,7 @@ fn stopped_login_messages_follow_effective_output_detail() {
 
 #[test]
 fn failed_uninstall_scans_report_partial_progress_in_raw_output() {
-    for mode in [ErrorMode::Verbose, ErrorMode::Redirected] {
+    for mode in ErrorMode::ALL {
         let home = Home::new(&["koidrive"], &[]);
         home.save_uninstall();
         executable(
@@ -886,6 +901,9 @@ fn failed_uninstall_scans_report_partial_progress_in_raw_output() {
         if matches!(mode, ErrorMode::Verbose) {
             command.arg("--verbose");
         }
+        if matches!(mode, ErrorMode::Plain) {
+            command.arg("--plain");
+        }
         let output = terminal_with_stdout(
             command,
             &[],
@@ -897,9 +915,20 @@ fn failed_uninstall_scans_report_partial_progress_in_raw_output() {
         let text = console::strip_ansi_codes(&raw);
         assert_eq!(output.status.code(), Some(6), "{mode:?}: {text}");
         assert!(text.contains("Deleting the Worker koidrive"), "{text}");
+        assert!(text.contains("Deleted the Worker koidrive."), "{text}");
+        assert!(
+            text.to_ascii_lowercase().contains(
+                "run the command again with koi server delete --interactive to finish the uninstall"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("; this scan did not delete any bucket objects"),
             "{mode:?}: {text}"
+        );
+        assert!(
+            !text.contains("inspect it in the Cloudflare dashboard"),
+            "{text}"
         );
         assert!(!text.contains("; deleted nothing"), "{text}");
         let state = home.state.lock().unwrap();
@@ -925,33 +954,276 @@ fn failed_uninstall_scans_report_partial_progress_in_raw_output() {
 }
 
 #[test]
-fn json_delete_stops_before_saved_uninstall_progress_can_change() {
-    let home = Home::new(&["koidrive"], &[]);
-    home.save_uninstall();
-    let path = home.paths().state_dir.join("setup-state.json");
-    let before = fs::read(&path).unwrap();
-    let output = home
-        .command()
-        .args(["server", "delete", "--interactive", "--json", "--yes"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(envelope["error"]["code"], "usage");
+fn uninstall_service_cleanup_resumes_after_cloud_and_service_failures() {
+    let run = |home: &Home| {
+        executable(
+            &home.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = home.command();
+        command.args(["server", "delete", "--interactive", "--yes"]);
+        terminal_with_stdout(command, &[], Some(home.path()), false, None)
+    };
+    let first = Home::new(&["koidrive"], &[]);
+    first.save_uninstall();
+    let server = first.base.join("workers/koidrive/").unwrap().to_string();
+    first.service_for(&server);
+    let output = run(&first);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(6), "{text}");
+    assert!(text.contains("Deleted the Worker koidrive."), "{text}");
+    assert!(!text.contains("The uninstall is complete."), "{text}");
+    let path = first.paths().state_dir.join("setup-state.json");
+    let progress = fs::read(path).unwrap();
+    let saved: Value = serde_json::from_slice(&progress).unwrap();
+    assert_eq!(saved["script"], "");
     assert_eq!(
-        envelope["error"]["message"],
-        "--interactive cannot be used with --json"
+        saved["uninstall"],
+        json!({"phase":"cloud", "server":server})
     );
-    assert_eq!(fs::read(path).unwrap(), before);
-    assert_eq!(home.state.lock().unwrap().scripts, ["koidrive"]);
+    assert!(first.paths().state_dir.join("service-running").exists());
+
+    let second = Home::new(&[], &[]);
+    second.state.lock().unwrap().failure = Some(Failure::UninstallBucketGone);
+    second.service_for(&server);
+    fs::write(second.paths().state_dir.join("setup-state.json"), progress).unwrap();
+    let manager = if cfg!(target_os = "macos") {
+        "launchctl"
+    } else {
+        "systemctl"
+    };
+    let manager_path = second.path().join("bin").join(manager);
+    let script = fs::read_to_string(&manager_path).unwrap();
+    executable(
+        &manager_path,
+        &script
+            .replace(
+                "bootout:*) /bin/rm -f \"$marker\" ;;",
+                "bootout:*) exit 1 ;;",
+            )
+            .replace("disable) /bin/rm -f \"$marker\" ;;", "disable) exit 1 ;;"),
+    );
+    let output = run(&second);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{text}");
+    assert!(!text.contains("The uninstall is complete."), "{text}");
+    assert!(
+        text.contains("run koi server delete --interactive"),
+        "{text}"
+    );
+    let progress = fs::read(second.paths().state_dir.join("setup-state.json")).unwrap();
+    let saved: Value = serde_json::from_slice(&progress).unwrap();
+    assert_eq!(
+        saved["uninstall"],
+        json!({"phase":"service", "server":server})
+    );
+    assert!(second.paths().state_dir.join("service-running").exists());
+    assert!(
+        fs::read_to_string(second.path().join("service-calls"))
+            .unwrap()
+            .contains(if cfg!(target_os = "macos") {
+                "bootout"
+            } else {
+                "disable --now"
+            })
+    );
+
+    let third = Home::new(&[], &[]);
+    third.service_for(&server);
+    fs::write(third.paths().state_dir.join("setup-state.json"), progress).unwrap();
+    fs::write(third.paths().config_file, "[service]\nbackground = false\n").unwrap();
+    let output = run(&third);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("The uninstall is complete."), "{text}");
+    assert!(!third.paths().state_dir.join("service-running").exists());
+    assert!(!third.paths().state_dir.join("setup-state.json").exists());
+    let calls = fs::read_to_string(third.path().join("service-calls")).unwrap();
+    assert_eq!(
+        calls
+            .matches(if cfg!(target_os = "macos") {
+                "bootout"
+            } else {
+                "disable --now"
+            })
+            .count(),
+        1,
+        "{calls}"
+    );
+    assert!(
+        third
+            .state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .all(|request| !request.contains("/client/v4/") && !request.contains("/oauth2/"))
+    );
+    assert!(!third.path().join("browser-url").exists());
+}
+
+#[test]
+fn uninstall_does_not_stop_a_service_for_another_server() {
+    for phase in [
+        json!({"phase":"service","server":"https://deleted.example.com/"}),
+        json!({"phase":"complete"}),
+    ] {
+        let home = Home::new(&[], &[]);
+        home.save_uninstall();
+        home.service_for("https://another.example.com/");
+        let path = home.paths().state_dir.join("setup-state.json");
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["script"] = json!("");
+        saved["uninstall"] = phase;
+        fs::write(&path, saved.to_string()).unwrap();
+        executable(
+            &home.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = home.command();
+        command.args(["server", "delete", "--interactive", "--yes"]);
+        let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{text}");
+        assert!(home.paths().state_dir.join("service-running").exists());
+        assert!(!home.path().join("service-calls").exists());
+        assert!(!path.exists());
+        assert!(
+            home.state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|request| !request.contains("/client/v4/") && !request.contains("/oauth2/"))
+        );
+    }
+}
+
+#[test]
+fn legacy_uninstall_without_worker_identity_keeps_the_service_and_progress() {
+    let home = Home::new(&[], &[]);
+    home.save_uninstall();
+    home.service_for("https://another.example.com/");
+    let path = home.paths().state_dir.join("setup-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["script"] = json!("");
+    let before = saved.to_string();
+    fs::write(&path, &before).unwrap();
+    executable(
+        &home.path().join(if cfg!(target_os = "macos") {
+            "bin/open"
+        } else {
+            "bin/xdg-open"
+        }),
+        "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+    );
+    let mut command = home.command();
+    command.args(["server", "delete", "--interactive", "--yes"]);
+    let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("no longer identifies the deleted server"),
+        "{text}"
+    );
+    assert!(!text.contains("The uninstall is complete."), "{text}");
+    assert_eq!(fs::read_to_string(path).unwrap(), before);
+    assert!(home.paths().state_dir.join("service-running").exists());
+    assert!(!home.path().join("service-calls").exists());
+}
+
+#[test]
+fn a_legacy_uninstall_can_resume_when_the_deleted_worker_is_named() {
+    let home = Home::new(&[], &[]);
+    home.save_uninstall();
+    home.state.lock().unwrap().failure = Some(Failure::UninstallBucketGone);
+    home.service_for(home.base.join("workers/koidrive/").unwrap().as_str());
+    let path = home.paths().state_dir.join("setup-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["script"] = json!("");
+    saved["script_created_on"] = Value::Null;
+    fs::write(&path, saved.to_string()).unwrap();
+    executable(
+        &home.path().join(if cfg!(target_os = "macos") {
+            "bin/open"
+        } else {
+            "bin/xdg-open"
+        }),
+        "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+    );
+    let mut command = home.command();
+    command.args([
+        "server",
+        "delete",
+        "--interactive",
+        "--yes",
+        "--worker",
+        "koidrive",
+    ]);
+    let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("The uninstall is complete."), "{text}");
+    assert!(!home.paths().state_dir.join("service-running").exists());
+    assert!(!path.exists());
     assert!(
         home.state
             .lock()
             .unwrap()
             .requests
             .iter()
-            .all(|request| !request.contains("/client/v4/"))
+            .all(|request| !request.starts_with("DELETE "))
     );
+}
+
+#[test]
+fn json_delete_stops_before_saved_uninstall_progress_can_change() {
+    for phase in [
+        Value::Null,
+        json!({"phase":"cloud","server":"https://deleted.example.com/"}),
+        json!({"phase":"service","server":"https://deleted.example.com/"}),
+        json!({"phase":"complete"}),
+    ] {
+        let home = Home::new(&["koidrive"], &[]);
+        home.save_uninstall();
+        let path = home.paths().state_dir.join("setup-state.json");
+        if !phase.is_null() {
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved["uninstall"] = phase;
+            fs::write(&path, saved.to_string()).unwrap();
+        }
+        let before = fs::read(&path).unwrap();
+        let output = home
+            .command()
+            .args(["server", "delete", "--interactive", "--json", "--yes"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["error"]["code"], "usage");
+        assert_eq!(
+            envelope["error"]["message"],
+            "--interactive cannot be used with --json"
+        );
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert_eq!(home.state.lock().unwrap().scripts, ["koidrive"]);
+        assert!(
+            home.state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|request| !request.contains("/client/v4/"))
+        );
+    }
 }
 
 #[test]

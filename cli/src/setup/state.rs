@@ -37,6 +37,16 @@ pub struct SetupState {
     pub jurisdiction: Jurisdiction,
     #[serde(default)]
     pub bucket_created_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uninstall: Option<UninstallProgress>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UninstallProgress {
+    Cloud { server: Option<String> },
+    Service { server: Option<String> },
+    Complete,
 }
 
 pub struct StateFile {
@@ -118,6 +128,41 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_phases_round_trip_and_older_progress_has_no_phase() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::new(&Paths::under(dir.path()));
+        for phase in [
+            UninstallProgress::Cloud {
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+            },
+            UninstallProgress::Service {
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+            },
+            UninstallProgress::Complete,
+        ] {
+            let state = SetupState {
+                account: "account".into(),
+                bucket: "remaining-bucket".into(),
+                step: Step::Uninstalling,
+                uninstall: Some(phase),
+                ..SetupState::default()
+            };
+            file.save(&state).unwrap();
+            assert_eq!(file.load().unwrap(), Some(state.clone()));
+            let mut older = serde_json::to_value(&state).unwrap();
+            older.as_object_mut().unwrap().remove("uninstall");
+            fs::write(file.path(), older.to_string()).unwrap();
+            assert_eq!(
+                file.load().unwrap(),
+                Some(SetupState {
+                    uninstall: None,
+                    ..state
+                })
+            );
+        }
+    }
+
+    #[test]
     fn saves_loads_and_removes_the_state_owner_only() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
@@ -133,6 +178,7 @@ mod tests {
             script_created_on: Some("2026-11-10T01:02:03.456Z".into()),
             jurisdiction: Jurisdiction::Eu,
             bucket_created_on: Some("2026-11-10T01:02:00.000Z".into()),
+            uninstall: None,
         };
         file.save(&state).unwrap();
         assert_eq!(file.load().unwrap(), Some(state));

@@ -1115,25 +1115,27 @@ async fn blocked(paths: &Paths) -> Vec<Blocked> {
     }
 }
 
-pub async fn forget(paths: &Paths, deleted: &url::Url) -> Option<Report> {
-    let credential = koidrive_driver::Credential::load(&paths.credential()).ok()??;
-    let server = url::Url::parse(&credential.server).ok()?;
+pub async fn forget(paths: &Paths, deleted: &url::Url) -> Result<Option<Report>, String> {
+    let Some(credential) = koidrive_driver::Credential::load(&paths.credential())
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let server = url::Url::parse(&credential.server)
+        .map_err(|_| "the saved device server address is invalid".to_owned())?;
     if server.origin() != deleted.origin() {
-        return None;
+        return Ok(None);
     }
     let manager = system();
-    let service = this_service(paths).ok()?;
-    Some(
-        converge(
-            manager.as_ref(),
-            &service,
-            0,
-            background_off(paths).unwrap_or(false),
-            false,
-            &Daemon::Absent,
-        )
-        .await,
-    )
+    let service = this_service(paths)?;
+    let report = converge(manager.as_ref(), &service, 0, false, false, &Daemon::Absent).await;
+    if report.problem.is_some() || report.state != State::NotInstalled {
+        return Err(format!(
+            "could not remove this device's background service: {}",
+            report.text().trim()
+        ));
+    }
+    Ok(Some(report))
 }
 
 fn write(path: &Path, text: &str) -> Result<bool, String> {

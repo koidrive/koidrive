@@ -3,7 +3,7 @@
 use koidrive_cloudflare::{Jurisdiction, Script};
 
 use super::Cloud;
-use super::state::{SetupState, StateFile, Step};
+use super::state::{SetupState, StateFile, Step, UninstallProgress};
 use crate::error::CliError;
 
 const SERVER_PREFIX: &str = "spaces/";
@@ -63,7 +63,21 @@ pub async fn plan(
         ).into());
     }
     let contents = scan(cloud, bucket, jurisdiction)
-        .await?
+        .await
+        .map_err(|error| {
+            let human = format!(
+                "{} Nothing was deleted.",
+                error.human.as_deref().unwrap_or(&error.message)
+            );
+            CliError::caused(
+                format!(
+                    "cannot list the bucket {bucket}: {}; deleted nothing",
+                    error.message
+                ),
+                error,
+            )
+            .human(human)
+        })?
         .ok_or_else(|| format!("the bucket {bucket} was deleted meanwhile; deleted nothing"))?;
     let state = SetupState {
         account,
@@ -82,11 +96,13 @@ pub async fn finish(
     cloud: &mut impl Cloud,
     file: &StateFile,
     mut state: SetupState,
-) -> Result<(), CliError> {
+) -> Result<SetupState, CliError> {
     let account = cloud.account().to_owned();
     let jurisdiction = state.jurisdiction;
     if !state.script.is_empty() {
-        delete_worker(cloud, &state).await?;
+        if !delete_worker(cloud, &state).await? {
+            state.uninstall = Some(UninstallProgress::Cloud { server: None });
+        }
         state.script.clear();
         state.script_created_on = None;
         file.save(&state)?;
@@ -99,7 +115,7 @@ pub async fn finish(
         .await
     {
         Ok(found) => found,
-        Err(error) if error.status() == Some(404) => return gone(file, &bucket),
+        Err(error) if error.status() == Some(404) => return gone(file, state),
         Err(error) => {
             return Err(CliError::known_outcome(
                 format!("cannot read the bucket {bucket}: {error}; run the command again"),
@@ -112,37 +128,42 @@ pub async fn finish(
             .jurisdiction
             .is_some_and(|other| other != jurisdiction)
     {
-        file.remove()?;
         println!(
             "The bucket {bucket} was created again after this uninstall began, so it is another bucket. Deleted nothing in it."
         );
-        return Ok(());
+        return cloud_done(file, state);
     }
     if let Some(other) = binder(cloud, &bucket, jurisdiction).await? {
-        file.remove()?;
         println!(
             "Kept the bucket {bucket} and its files, because the Worker {} also uses it.",
             crate::printable(&other)
         );
-        return Ok(());
+        return cloud_done(file, state);
     }
-    let Some(contents) = scan(cloud, &bucket, jurisdiction).await? else {
-        return gone(file, &bucket);
+    let Some(contents) = scan(cloud, &bucket, jurisdiction)
+        .await
+        .map_err(|error| {
+            CliError::known_outcome(
+                format!("cannot list the bucket {bucket}: {}; this scan did not delete any bucket objects; run the command again with koi server delete --interactive to finish the uninstall", error.message),
+                error,
+            )
+        })?
+    else {
+        return gone(file, state);
     };
     if let Some(key) = contents.foreign {
-        file.remove()?;
         println!(
             "Kept the bucket {bucket} and its files, because it holds {}, which Koidrive does not write: another application stores data there.",
             crate::printable(&key)
         );
-        return Ok(());
+        return cloud_done(file, state);
     }
     println!("Emptying the bucket {bucket}...");
     loop {
         let api = cloud.fresh().await?;
         let page = match api.objects(&account, &bucket, jurisdiction, None).await {
             Ok(page) => page,
-            Err(error) if error.status() == Some(404) => return gone(file, &bucket),
+            Err(error) if error.status() == Some(404) => return gone(file, state),
             Err(error) => {
                 return Err(CliError::known_outcome(
                     format!("cannot list the bucket {bucket}: {error}; run the command again"),
@@ -182,18 +203,28 @@ pub async fn finish(
                 error,
             )
         })?;
-    file.remove()?;
-    println!("Deleted the bucket {bucket}. The uninstall is complete.");
-    Ok(())
+    println!("Deleted the bucket {bucket}.");
+    cloud_done(file, state)
 }
 
-fn gone(file: &StateFile, bucket: &str) -> Result<(), CliError> {
-    file.remove()?;
-    println!("The bucket {bucket} is already gone. The uninstall is complete.");
-    Ok(())
+fn gone(file: &StateFile, state: SetupState) -> Result<SetupState, CliError> {
+    println!("The bucket {} is already gone.", state.bucket);
+    cloud_done(file, state)
 }
 
-async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(), CliError> {
+fn cloud_done(file: &StateFile, mut state: SetupState) -> Result<SetupState, CliError> {
+    let Some(UninstallProgress::Cloud { server }) = state.uninstall.take() else {
+        return Err(
+            "the uninstall has no saved cloud phase; keep its saved progress and run koi diagnose"
+                .into(),
+        );
+    };
+    state.uninstall = Some(UninstallProgress::Service { server });
+    file.save(&state)?;
+    Ok(state)
+}
+
+async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<bool, CliError> {
     let account = cloud.account().to_owned();
     let api = cloud.fresh().await?;
     let scripts = api.scripts(&account).await.map_err(|error| {
@@ -204,7 +235,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
     })?;
     let Some(script) = scripts.iter().find(|script| script.id == state.script) else {
         println!("The Worker {} is already gone.", state.script);
-        return Ok(());
+        return Ok(true);
     };
     match (&script.created_on, &state.script_created_on) {
         (Some(now), Some(recorded)) if now == recorded => {
@@ -216,14 +247,16 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
                         "cannot delete the Worker {}: {error}; run the command again",
                         state.script
                     ), error)
-                })
+                })?;
+            println!("Deleted the Worker {}.", state.script);
+            Ok(true)
         }
         (Some(_), Some(_)) => {
             println!(
                 "Left the Worker {} alone: it was created after this uninstall began, so it is a new Worker with that name.",
                 state.script
             );
-            Ok(())
+            Ok(false)
         }
         _ => Err(format!(
             "Cloudflare did not say when the Worker {} was created, so it cannot be told apart from a new Worker with that name; did not delete this Worker",
@@ -290,19 +323,7 @@ async fn scan(
         {
             Ok(page) => page,
             Err(error) if error.status() == Some(404) => return Ok(None),
-            Err(error) => {
-                let error = CliError::caused(
-                    format!(
-                        "cannot list the bucket {bucket}: {error}; this scan did not delete any bucket objects"
-                    ),
-                    error,
-                );
-                let human = format!(
-                    "{} This scan did not delete any bucket objects.",
-                    error.human.as_deref().unwrap_or(&error.message)
-                );
-                return Err(error.human(human));
-            }
+            Err(error) => return Err(error.into()),
         };
         contents.objects += page.keys.len();
         if contents.foreign.is_none() {
@@ -425,6 +446,9 @@ mod tests {
             script_created_on: (!script.is_empty()).then(|| CREATED.to_owned()),
             jurisdiction: Jurisdiction::Eu,
             bucket_created_on: Some(BUCKET_CREATED.into()),
+            uninstall: Some(UninstallProgress::Cloud {
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+            }),
             ..SetupState::default()
         }
     }
@@ -520,7 +544,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(state, recorded("koidrive"));
+        let mut expected = recorded("koidrive");
+        expected.uninstall = None;
+        assert_eq!(state, expected);
         assert_eq!(
             contents,
             Contents {
@@ -571,7 +597,12 @@ mod tests {
         assert_eq!(deletes.len(), 4, "{deletes:?}");
         assert!(deletes.last().unwrap().ends_with("/r2/buckets/koidrive"));
         assert_r2_in(&fake, "eu");
-        assert_eq!(file.load().unwrap(), None);
+        assert_eq!(
+            file.load().unwrap().unwrap().uninstall,
+            Some(UninstallProgress::Service {
+                server: Some("https://koidrive.synthetic.workers.dev/".into())
+            })
+        );
     }
 
     #[tokio::test]
@@ -593,7 +624,37 @@ mod tests {
             .unwrap();
 
         assert!(!fake.sent(&["DELETE"]));
-        assert_eq!(file.load().unwrap(), None);
+        assert_eq!(
+            file.load().unwrap().unwrap().uninstall,
+            Some(UninstallProgress::Service { server: None })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_planning_scan_reports_that_nothing_was_deleted() {
+        let (fake, mut cloud) = start(vec![
+            bucket(BUCKET_CREATED),
+            cf_status("GET", "/r2/buckets/koidrive/objects?per_page=1000", 503,
+                json!({"success":false,"errors":[{"code":10000,"message":"Listing unavailable"}],"result":null})),
+        ]).await;
+        let error = plan(
+            &mut cloud,
+            Some(&script(Some(CREATED))),
+            "koidrive",
+            Jurisdiction::Eu,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.ends_with("; deleted nothing"), "{error:?}");
+        assert!(
+            error
+                .human
+                .as_ref()
+                .unwrap()
+                .ends_with("Nothing was deleted."),
+            "{error:?}"
+        );
+        assert!(!fake.sent(&["DELETE", "PUT", "POST"]));
     }
 
     #[tokio::test]
@@ -636,17 +697,27 @@ mod tests {
         assert!(
             error
                 .message
-                .ends_with("; this scan did not delete any bucket objects"),
+                .contains("; this scan did not delete any bucket objects; run the command again with koi server delete --interactive to finish the uninstall"),
             "{error:?}"
         );
         assert!(!error.message.contains("; deleted nothing"), "{error:?}");
         let human = error.human.as_ref().unwrap();
         assert!(human.contains("Listing unavailable"), "{human}");
         assert!(
-            human.ends_with("This scan did not delete any bucket objects."),
+            human.contains("this scan did not delete any bucket objects"),
+            "{human}"
+        );
+        assert!(
+            human.ends_with(
+                "run the command again with koi server delete --interactive to finish the uninstall"
+            ),
             "{human}"
         );
         assert!(!human.contains("Nothing was deleted."), "{human}");
+        assert!(
+            !human.contains("inspect it in the Cloudflare dashboard"),
+            "{human}"
+        );
         let raw = error.message.clone();
         let envelope = serde_json::to_value(crate::report::Envelope::failed(
             "server delete",
@@ -697,7 +768,12 @@ mod tests {
         finish(&mut cloud, &file, recorded("")).await.unwrap();
 
         assert!(!fake.sent(&["DELETE"]));
-        assert_eq!(file.load().unwrap(), None);
+        assert_eq!(
+            file.load().unwrap().unwrap().uninstall,
+            Some(UninstallProgress::Service {
+                server: Some("https://koidrive.synthetic.workers.dev/".into())
+            })
+        );
     }
 
     #[tokio::test]
@@ -736,7 +812,12 @@ mod tests {
         finish(&mut cloud, &file, recorded("")).await.unwrap();
 
         assert!(!fake.sent(&["DELETE"]));
-        assert_eq!(file.load().unwrap(), None);
+        assert_eq!(
+            file.load().unwrap().unwrap().uninstall,
+            Some(UninstallProgress::Service {
+                server: Some("https://koidrive.synthetic.workers.dev/".into())
+            })
+        );
     }
 
     #[tokio::test]
@@ -784,7 +865,12 @@ mod tests {
         finish(&mut cloud, &file, recorded("")).await.unwrap();
 
         assert!(!fake.sent(&["DELETE"]));
-        assert_eq!(file.load().unwrap(), None);
+        assert_eq!(
+            file.load().unwrap().unwrap().uninstall,
+            Some(UninstallProgress::Service {
+                server: Some("https://koidrive.synthetic.workers.dev/".into())
+            })
+        );
     }
 
     #[tokio::test]
