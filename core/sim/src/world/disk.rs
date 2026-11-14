@@ -518,7 +518,9 @@ impl Disk {
         };
         let folder = Place::In(dir.identity.ino);
         match self.entries.get(&dir.identity.ino) {
-            Some(entry) if entry.content.is_none() => Ok(self.child(&folder, name)),
+            Some(entry) if entry.content.is_none() && self.path(dir.identity.ino).is_some() => {
+                Ok(self.child(&folder, name))
+            }
             _ => Err(Refused::Moved),
         }
     }
