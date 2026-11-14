@@ -523,8 +523,9 @@ pub struct World {
     recovery_copies: BTreeMap<NodeId, RecoveryCopy>,
     restored_names: Vec<BTreeMap<NodeId, BTreeSet<String>>>,
     placements: Vec<BTreeSet<Placement>>,
-    /// The files whose content a restore rolled back, each with the digest of the content the
-    /// restored server holds, until the devices are quiet again.
+    /// The files whose content a restore rolled back, also to an earlier write of the same bytes,
+    /// each with the digest of the content the restored server holds, until the devices are quiet
+    /// again.
     rolled_back: BTreeMap<NodeId, Vec<u8>>,
     rewound: BTreeMap<i64, BTreeSet<usize>>,
     clock: u64,
@@ -1133,10 +1134,13 @@ impl World {
         let after = shapes(&self.space);
         let held_after = writes(&self.space);
         for (id, (.., digest)) in &after {
+            let rewritten =
+                (held_after.iter()).any(|held| held.0 == *id && !held_before.contains(held));
             if let Some(digest) = digest
-                && before
-                    .get(id)
-                    .is_none_or(|(.., held)| held.as_ref() != Some(digest))
+                && (rewritten
+                    || before
+                        .get(id)
+                        .is_none_or(|(.., held)| held.as_ref() != Some(digest)))
             {
                 self.rolled_back.insert(id.clone(), digest.clone());
             }
