@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use koidrive_driver::{Driver, Paths, Status, Volume};
 use koidrive_telemetry::schema::{
-    self, Client, Counter, Failure, Level, Outcome, SetupFlow, SetupStep, Synced, magnitude,
+    self, Client, Counter, ErrorCode, Failure, Level, Outcome, SetupFlow, SetupStep, Synced,
+    magnitude,
 };
 use koidrive_telemetry::{
     Environment, Event, InstallId, Mode, Recorder, Sent, Source, Store, Uploader,
@@ -55,6 +56,7 @@ struct Run {
     id: Mutex<Option<InstallId>>,
     /// The setup flow this run is in, once it is known: `koi setup` learns it from the person's choice.
     flow: Mutex<Option<SetupFlow>>,
+    command: schema::Command,
 }
 
 static RUN: OnceLock<Run> = OnceLock::new();
@@ -102,6 +104,7 @@ pub async fn start(
         recorder,
         id: Mutex::new(id),
         flow: Mutex::new(flow),
+        command,
     });
 }
 
@@ -343,6 +346,11 @@ fn record_failures(
         let added = count.saturating_sub(last.get(&failure).copied().unwrap_or(0));
         if added > 0 {
             recorder.count(Counter::Failure(failure), added);
+            recorder.event(Event::Problem {
+                at: koidrive_telemetry::now(),
+                problem: failure,
+                count: added,
+            });
         }
     }
     *last = now;
@@ -351,6 +359,33 @@ fn record_failures(
 pub fn failed(failure: Failure) {
     if let Some(run) = RUN.get() {
         run.recorder.count(Counter::Failure(failure), 1);
+        run.recorder.event(Event::Problem {
+            at: koidrive_telemetry::now(),
+            problem: failure,
+            count: 1,
+        });
+    }
+}
+
+pub fn command_failed(code: koidrive_ipc::Code) {
+    use koidrive_ipc::Code;
+    let code = match code {
+        Code::Failed => ErrorCode::Failed,
+        Code::Usage => ErrorCode::Usage,
+        Code::DecisionRequired => ErrorCode::DecisionRequired,
+        Code::AuthRequired => ErrorCode::AuthRequired,
+        Code::Halted => ErrorCode::Halted,
+        Code::Unavailable => ErrorCode::Unavailable,
+        Code::StaleDecision => ErrorCode::StaleDecision,
+        Code::WrongCode => ErrorCode::WrongCode,
+        Code::Interrupted => ErrorCode::Interrupted,
+    };
+    if let Some(run) = RUN.get() {
+        run.recorder.event(Event::CommandFailed {
+            at: koidrive_telemetry::now(),
+            command: run.command,
+            code,
+        });
     }
 }
 
@@ -573,7 +608,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_daemon_records_the_failures_counted_since_its_last_tick() {
+    fn the_daemon_records_the_failures_seen_since_its_last_tick_as_sums_and_problem_events() {
         use koidrive_telemetry::schema::{Asked, Halted};
 
         let recorder = Recorder::on();
@@ -584,14 +619,31 @@ mod tests {
         record_failures(&recorder, &mut last, now.clone());
         record_failures(&recorder, &mut last, now.clone());
         assert_eq!(last, now);
-        let day = recorder.take().hours.into_values().next().unwrap();
-        let report = serde_json::to_value(day).unwrap();
+        let taken = recorder.take();
+        let hour = taken.hours.into_values().next().unwrap();
+        let report = serde_json::to_value(hour).unwrap();
         assert_eq!(
             report["counters"],
             serde_json::json!({
                 "asked": { "conflict": 4 },
                 "halted": { "store_behind": 1 },
             })
+        );
+        let problems: Vec<_> = (taken.events.iter())
+            .map(|event| {
+                let value = serde_json::to_value(event).unwrap();
+                (value["problem"].clone(), value["count"].clone())
+            })
+            .collect();
+        assert_eq!(
+            problems,
+            [
+                (
+                    serde_json::json!("halted.store_behind"),
+                    serde_json::json!(1)
+                ),
+                (serde_json::json!("asked.conflict"), serde_json::json!(4)),
+            ]
         );
     }
 
@@ -665,6 +717,7 @@ mod tests {
             recorder: Recorder::off(),
             id: Mutex::new(None),
             flow: Mutex::new(None),
+            command: schema::Command::Daemon,
         };
         run.recorder
             .count(Counter::Command(schema::Command::Daemon), 1);
@@ -697,6 +750,7 @@ mod tests {
             recorder: Recorder::off(),
             id: Mutex::new(id),
             flow: Mutex::new(None),
+            command: schema::Command::Daemon,
         };
         run.flush(Mode::On);
         let changes: [fn(&Store); 2] = [
@@ -739,6 +793,7 @@ mod tests {
                 at: koidrive_telemetry::now(),
                 file: schema::SourceFile::from_location("cli/src/main.rs"),
                 line: 1,
+                frames: Vec::new(),
             };
             let pending = koidrive_telemetry::Pending {
                 events: vec![event],

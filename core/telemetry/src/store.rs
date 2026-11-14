@@ -625,6 +625,7 @@ mod tests {
             at: u64::from(hour) * 3600,
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 7,
+            frames: Vec::new(),
         }
     }
 

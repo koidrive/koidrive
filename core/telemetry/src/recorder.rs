@@ -208,6 +208,7 @@ mod tests {
             at: u64::from(day) * 86_400,
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 1,
+            frames: Vec::new(),
         }
     }
 

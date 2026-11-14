@@ -357,8 +357,9 @@ mod tests {
     use super::*;
     use crate::recorder::Recorder;
     use crate::schema::{
-        Arch, Build, Client, Command, Counter, Distro, Event, Failure, Halted, Level, Measure, Os,
-        OsVersion, Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Synced, Version,
+        Arch, Build, Client, Command, Counter, Distro, ErrorCode, Event, Failure, Halted, Level,
+        Measure, Os, OsVersion, Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Symbol, Synced,
+        Version,
     };
 
     #[test]
@@ -387,7 +388,24 @@ mod tests {
             at: 3_725,
             file: SourceFile::from_location("core/driver/src/folder.rs"),
             line: 42,
+            frames: ["koidrive_driver::folder::Folder::run", "koi::main"]
+                .map(|name| Symbol::ours(name).unwrap())
+                .to_vec(),
         });
+        for code in ErrorCode::ALL {
+            recorder.event(Event::CommandFailed {
+                at: 3_726,
+                command: Command::Folder,
+                code: *code,
+            });
+        }
+        for problem in Failure::all() {
+            recorder.event(Event::Problem {
+                at: 3_727,
+                problem,
+                count: 2,
+            });
+        }
         let pending = recorder.take();
         let reports = Batch {
             hours: pending.hours.into_values().collect(),
@@ -425,6 +443,11 @@ mod tests {
             2 => include_str!("../tests/fixtures/report-schema-v2.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
+        std::fs::write(
+            "/tmp/koi619-v2.json",
+            serde_json::to_string_pretty(&actual).unwrap(),
+        )
+        .unwrap();
         let expected: Value = serde_json::from_str(fixture).unwrap();
         assert_eq!(
             actual, expected,
@@ -467,6 +490,9 @@ mod tests {
             at: u64::from(hour) * 3600 + 125,
             file: SourceFile::from_location("/Users/alice/.cargo/registry/x.rs"),
             line: 3,
+            frames: vec![
+                Symbol::ours("koidrive_driver::folder::Folder::run::{{closure}}").unwrap(),
+            ],
         });
         store.absorb_at(recorder.take(), hour + 1, true).unwrap();
     }
@@ -544,7 +570,8 @@ mod tests {
                 || string == "0.1.0"
                 || closed(&string)
                 || (string.starts_with("cli/") || string.starts_with("core/"))
-                    && closed(&string.replace('/', "."));
+                    && closed(&string.replace('/', "."))
+                || string == "koidrive_driver::folder::Folder::run::{{closure}}";
             assert!(allowed, "free text in a batch: {string:?}");
         }
     }
@@ -685,6 +712,7 @@ mod tests {
             at: u64::from(HOUR) * 3600 + 126,
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 9,
+            frames: Vec::new(),
         });
         store.absorb_at(recorder.take(), HOUR + 1, true).unwrap();
 
