@@ -127,6 +127,7 @@ struct Upload {
     per_dir: usize,
     ids: Ids,
     nested: bool,
+    ignored: bool,
     cap: Option<usize>,
 }
 
@@ -136,6 +137,7 @@ fn first_upload(upload: Upload) -> u64 {
         per_dir,
         ids: order,
         nested,
+        ignored,
         cap,
     } = upload;
     let mut trees = Trees::new(ROOT);
@@ -162,6 +164,20 @@ fn first_upload(upload: Upload) -> u64 {
                 ino,
             ),
         );
+    }
+    if ignored {
+        trees.set_local(
+            "!d".into(),
+            local(ROOT.into(), "ignored".into(), Kind::Dir, 0),
+        );
+        for f in 0..files {
+            let ino = (dirs + files + f) as u128 + 1;
+            trees.set_local(
+                format!("!f{f:06}"),
+                local("!d".into(), format!("file {f}"), Kind::File, ino),
+            );
+        }
+        trees.ignore_local("!d");
     }
     trees.settle();
     let state = CommitsState {
@@ -208,7 +224,11 @@ fn first_upload(upload: Upload) -> u64 {
         trees.settle();
     }
     let work = allocated() - before;
-    assert!(trees.dirty().is_empty(), "{:?}", trees.work());
+    assert!(
+        trees.dirty().iter().all(|id| trees.excluded(id)),
+        "{:?}",
+        trees.work()
+    );
     assert_eq!(sent, files + dirs);
     assert_eq!(trees.synced().len(), files + dirs);
     work
@@ -216,23 +236,28 @@ fn first_upload(upload: Upload) -> u64 {
 
 #[test]
 fn a_first_upload_takes_work_in_proportion_to_its_files() {
-    for ids in [Ids::FoldersFirst, Ids::FilesFirst] {
-        for per_dir in [1, 100, 5000] {
-            let upload = |files| Upload {
-                files,
-                per_dir,
-                ids,
-                nested: false,
-                cap: None,
-            };
-            let small = first_upload(upload(2000));
-            let large = first_upload(upload(20_000));
-            let bytes = large as f64 / small as f64;
-            assert!(
-                bytes < 12.0,
-                "{ids:?}, {per_dir} per folder: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
-            );
-        }
+    let ordered = [Ids::FoldersFirst, Ids::FilesFirst]
+        .map(|ids| [1, 100, 5000].map(|per_dir| (ids, per_dir, false)));
+    let cases = ordered
+        .into_iter()
+        .flatten()
+        .chain([(Ids::FoldersFirst, 100, true)]);
+    for (ids, per_dir, ignored) in cases {
+        let upload = |files| Upload {
+            files,
+            per_dir,
+            ids,
+            nested: false,
+            ignored,
+            cap: None,
+        };
+        let small = first_upload(upload(2000));
+        let large = first_upload(upload(20_000));
+        let bytes = large as f64 / small as f64;
+        assert!(
+            bytes < 12.0,
+            "{ids:?}, {per_dir} per folder, ignored folder {ignored}: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
+        );
     }
 }
 
@@ -246,6 +271,7 @@ fn a_first_upload_in_small_commits_sends_every_file_whatever_order_its_ids_take(
                     per_dir,
                     ids,
                     nested,
+                    ignored: false,
                     cap: Some(5),
                 });
             }

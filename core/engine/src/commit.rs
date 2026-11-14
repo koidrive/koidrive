@@ -1146,6 +1146,9 @@ impl Commits {
                 let Some((pass, id)) = popped else {
                     break;
                 };
+                if trees.excluded(id) || trees.held(id) {
+                    continue;
+                }
                 if picked.len() == window {
                     bound = Some((pass, id.as_str()));
                     break;
@@ -1159,7 +1162,6 @@ impl Commits {
                     );
                 }
             }
-            debug_assert!(bound.is_some() || picked.len() == creates.len());
             let planned_from = |picked: Vec<&NodeId>, bound| {
                 let mut candidates: Vec<&NodeId> = (picked.into_iter())
                     .filter(|id| !trees.excluded(id) && !trees.held(id))

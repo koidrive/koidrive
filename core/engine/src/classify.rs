@@ -1040,6 +1040,9 @@ impl Trees {
             Some(old) if old.trashed => {
                 if let Some(trashed) = self.r_trashed.get_mut(&old.shape.parent) {
                     trashed.remove(id);
+                    if trashed.is_empty() {
+                        self.r_trashed.remove(&old.shape.parent);
+                    }
                 }
             }
             Some(old) => self.r_names.remove(id, &old.shape),
