@@ -96,7 +96,8 @@ PY
     if [ "$build" -eq 101 ]; then
         brew install --cask --appdir="$tmp/Applications" "$token"
     else
-        if brew outdated --cask "$token" | grep -q koidrive; then
+        plain=$(brew outdated --cask "$token") || true
+        if grep -q koidrive <<< "$plain"; then
             echo "FAIL Homebrew upgrades the self-updating app without being asked" >&2
             exit 1
         fi
