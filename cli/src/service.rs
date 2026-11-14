@@ -344,7 +344,11 @@ impl Report {
     }
 
     pub fn retryable(&self) -> bool {
-        self.state == State::Running && self.problem.is_some()
+        match self.state {
+            State::Starting => true,
+            State::Running => self.problem.is_some(),
+            _ => false,
+        }
     }
 
     pub fn text(&self) -> String {
@@ -717,6 +721,13 @@ pub async fn converge(
     };
     report.folders = Some(folders);
     report.log = service.log(manager.kind());
+    if report.state == State::Starting && report.problem.is_none() {
+        report.problem = Some(format!(
+            "it was still starting after {} seconds; its log: {}",
+            STARTUP.as_secs(),
+            report.log
+        ));
+    }
     report
 }
 
@@ -1467,6 +1478,7 @@ mod tests {
         service_lock: Option<PathBuf>,
         locked_at_start: Cell<Option<bool>>,
         crashed: Option<&'static str>,
+        permanently_starting: bool,
     }
 
     impl Manager for Fake {
@@ -1479,6 +1491,9 @@ mod tests {
         }
 
         fn state(&self, _: &Service) -> Result<State, String> {
+            if self.permanently_starting {
+                return Ok(State::Starting);
+            }
             if self.unavailable {
                 return Err("no user bus".to_owned());
             }
@@ -2688,6 +2703,24 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             result.unwrap_err(),
             "the daemon did not answer within 5 seconds"
         );
+    }
+
+    #[tokio::test]
+    async fn a_service_that_never_leaves_starting_is_a_retryable_problem() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let fake = Fake {
+            permanently_starting: true,
+            ..Fake::default()
+        };
+        let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
+        assert_eq!(report.state, State::Starting);
+        let problem = report.problem.clone().unwrap();
+        assert!(
+            problem.starts_with("it was still starting after 10 seconds; its log: "),
+            "{problem}"
+        );
+        assert!(report.failed());
+        assert!(report.retryable());
     }
 
     #[test]
