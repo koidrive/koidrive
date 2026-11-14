@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! What the driver reports about itself: the signed-in device and each linked folder. The CLI prints it and the
-//! macOS app will map it onto its `SessionState`.
+//! What the driver reports about itself: the signed-in device and each linked folder.
 
 use std::time::{Duration, UNIX_EPOCH};
 

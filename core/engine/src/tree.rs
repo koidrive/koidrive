@@ -115,8 +115,7 @@ pub enum StateError {
 }
 
 impl RemoteNode {
-    /// Reads a `NodeState` record. Kinds other than directory and file are refused, since this
-    /// version syncs neither symbolic links nor special files.
+    /// Kinds other than directory and file are refused, since this version syncs neither symbolic links nor special files.
     pub fn from_state(state: &proto::NodeState) -> Result<(NodeId, RemoteNode), StateError> {
         let kind = match NodeKind::try_from(state.kind) {
             Ok(NodeKind::Dir) => Kind::Dir,
