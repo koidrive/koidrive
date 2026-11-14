@@ -2760,9 +2760,17 @@ fn wedged(
             _ => None,
         })
         .collect();
+    let under_reverted_merge = |id: &NodeId| {
+        (trees.local().get(id)).is_some_and(|local| {
+            local.shape.parent != *targets[id].0 && trees.reverted().contains(&local.shape.parent)
+        })
+    };
     let end = |id: &NodeId| {
         let mut seen = BTreeSet::from([id]);
         let mut at = targets[id].0;
+        if under_reverted_merge(id) {
+            return None;
+        }
         loop {
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
             if (problems.contains(at) || pending) && !trees.excluded(at) {
@@ -2773,6 +2781,7 @@ fn wedged(
             }
             match targets.get(at) {
                 Some((_, fit)) if *fit != Fit::Wait => return None,
+                Some(_) if under_reverted_merge(at) => return None,
                 Some((parent, _)) => at = parent,
                 None => return Some(at.clone()),
             }
