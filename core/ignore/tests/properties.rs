@@ -199,7 +199,7 @@ fn spelled_statuses<K: NameKey>(rules: &str, paths: &[(Vec<String>, Kind)]) -> V
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/properties.proptest-regressions"),
         ProptestConfig::default().cases,
     ))]

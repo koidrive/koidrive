@@ -263,7 +263,7 @@ fn converges_with(config: ProptestConfig) {
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices.proptest-regressions"),
         256,
     ))]
@@ -313,7 +313,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig {
         rng_seed: RngSeed::Fixed(REWIND_SEED),
-        ..koidrive_test_support::regression_config(
+        ..koidrive_test_support::battery_config(
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices.proptest-regressions"),
             256,
         )

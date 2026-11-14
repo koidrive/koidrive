@@ -24,6 +24,19 @@ pub fn regression_config(legacy: &'static str, cases: u32) -> Config {
     }
 }
 
+/// Uses `KOIDRIVE_BATTERY_CASES` for stress properties, retaining regression persistence and seeds.
+/// Without that variable, uses the property's own case budget.
+pub fn battery_config(legacy: &'static str, cases: u32) -> Config {
+    let cases = match env::var("KOIDRIVE_BATTERY_CASES") {
+        Err(VarError::NotPresent) => cases,
+        Ok(value) => value
+            .parse::<u32>()
+            .expect("KOIDRIVE_BATTERY_CASES must be an unsigned 32-bit integer"),
+        Err(error) => panic!("KOIDRIVE_BATTERY_CASES must be an unsigned 32-bit integer: {error}"),
+    };
+    regression_config(legacy, cases)
+}
+
 fn rng_seed(deterministic: Result<String, VarError>, default: RngSeed) -> RngSeed {
     match deterministic.as_deref() {
         Err(VarError::NotPresent) | Ok("false") => default,

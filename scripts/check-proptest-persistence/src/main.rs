@@ -11,7 +11,7 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Expr, PathArguments};
 
-const CONFIG_HELP: &str = "use exactly one leading #![proptest_config(koidrive_test_support::regression_config(\"path/to/regressions.txt\", cases))], or a struct update with that base and no failure_persistence field";
+const CONFIG_HELP: &str = "use exactly one leading #![proptest_config(koidrive_test_support::regression_config(\"path/to/regressions.txt\", cases))], or opt in to stress budgets with battery_config; struct updates must use that base without setting failure_persistence";
 
 struct Diagnostic {
     span: Span,
@@ -58,7 +58,10 @@ impl Parse for Properties {
                     let segments = &function.path.segments;
                     segments.len() == 2
                         && segments[0].ident.unraw() == "koidrive_test_support"
-                        && segments[1].ident.unraw() == "regression_config"
+                        && matches!(
+                            segments[1].ident.unraw().to_string().as_str(),
+                            "regression_config" | "battery_config"
+                        )
                         && segments
                             .iter()
                             .all(|segment| matches!(segment.arguments, PathArguments::None))
@@ -70,7 +73,7 @@ impl Parse for Properties {
         if !valid {
             return Err(syn::Error::new_spanned(
                 config,
-                "config must directly call koidrive_test_support::regression_config, or use that call as a struct update base without setting failure_persistence",
+                "config must directly call koidrive_test_support::regression_config or koidrive_test_support::battery_config, or use that call as a struct update base without setting failure_persistence",
             ));
         }
         input.parse::<TokenStream>()?;
@@ -262,6 +265,29 @@ mod tests {
             )))
             .is_empty()
         );
+    }
+
+    #[test]
+    fn battery_opt_in_preserves_persistence_guarantees() {
+        for config in [
+            CONFIG.to_owned(),
+            r##"#![proptest_config(Config { rng_seed: RngSeed::Fixed(42), ..koidrive_test_support::regression_config("regressions.txt", 32) })]"##.to_owned(),
+        ] {
+            let config = config.replace("regression_config", "battery_config");
+            assert!(errors(&property(&config)).is_empty());
+            assert!(errors(&property(&config.replace("koidrive_test_support::", "::koidrive_test_support::"))).is_empty());
+            for invalid in [
+                config.replace("koidrive_test_support::", ""),
+                config.replace("battery_config", "other_config"),
+                format!("{config} {config}"),
+                config.replace("rng_seed: RngSeed::Fixed(42)", "failure_persistence: None"),
+                config.replace("rng_seed: RngSeed::Fixed(42)", "r#failure_persistence"),
+            ] {
+                if invalid != config {
+                    assert_eq!(errors(&property(&invalid)).len(), 1, "{invalid}");
+                }
+            }
+        }
     }
 
     #[test]

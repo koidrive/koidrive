@@ -836,7 +836,7 @@ fn spaces() -> impl Strategy<Value = Vec<(bool, Change, Change)>> {
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trees.proptest-regressions"),
         ProptestConfig::default().cases,
     ))]
@@ -1050,7 +1050,7 @@ fn searches() -> impl Strategy<Value = Vec<(Draw, Draw, u8)>> {
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trees.proptest-regressions"),
         4096,
     ))]
