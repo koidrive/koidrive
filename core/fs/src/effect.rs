@@ -138,6 +138,9 @@ pub enum Reason {
     /// The folder a removal acts on holds entries other than platform files,
     /// named here in order. The folder went back as it was.
     Holds(Vec<OsString>),
+    /// The system did not allow the effect, as for a folder without write
+    /// permission, a locked file or a read-only volume. Nothing changed.
+    Denied,
 }
 
 /// Effects whose steps become durable together (design §5.2), begun by
@@ -212,6 +215,30 @@ fn overtaken(placed: Outcome) -> Outcome {
     }
 }
 
+fn is_denied(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Failed {
+            reason: Reason::Denied,
+            ..
+        }
+    )
+}
+
+fn refused(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn denied(err: io::Error) -> io::Result<Outcome> {
+    match refused(&err) {
+        true => Ok(failed(Reason::Denied)),
+        false => Err(err),
+    }
+}
+
 fn unresolved(err: Unresolved) -> io::Result<Outcome> {
     match err {
         Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. } => {
@@ -225,6 +252,7 @@ macro_rules! resolve {
     ($resolved:expr) => {
         match $resolved {
             Ok(resolved) => resolved,
+            Err(Unresolved::Io { err, .. }) if refused(&err) => return Ok(failed(Reason::Denied)),
             Err(err) => return unresolved(err),
         }
     };
@@ -356,7 +384,7 @@ impl Space {
                 match rustix::fs::mkdirat(parent.fd(), name, Mode::from_raw_mode(0o755)) {
                     Ok(()) => self.flush_folder(&parent, Flush::Plain)?,
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
-                    Err(err) => return Err(err.into()),
+                    Err(err) => return denied(err.into()),
                 }
                 let identity = stat_at(parent.fd(), name)?.id;
                 hook(Step::Placed);
@@ -387,10 +415,11 @@ impl Space {
             Action::Move { from, id, to } => {
                 let (source, name) = resolve!(self.parent(from));
                 let (target, new_name) = resolve!(self.parent(to));
-                match lookup(source.fd(), name)? {
-                    None => return Ok(failed(Reason::Missing)),
-                    Some(found) if found.id != *id => return Ok(failed(Reason::Changed)),
-                    Some(_) => {}
+                match lookup(source.fd(), name) {
+                    Err(err) => return denied(err),
+                    Ok(None) => return Ok(failed(Reason::Missing)),
+                    Ok(Some(found)) if found.id != *id => return Ok(failed(Reason::Changed)),
+                    Ok(Some(_)) => {}
                 }
                 hook(Step::Checked);
                 resolve!(self.recheck(&source));
@@ -403,7 +432,7 @@ impl Space {
                     Err(err) if err.kind() == io::ErrorKind::NotFound => {
                         return Ok(failed(Reason::Missing));
                     }
-                    Err(err) => return Err(err),
+                    Err(err) => return denied(err),
                 }
                 self.flush_folder(&source, Flush::Plain)?;
                 self.flush_folder(&target, Flush::Plain)?;
@@ -442,12 +471,13 @@ impl Space {
             None => None,
         };
         let quarantine = self.private(&[QUARANTINE_DIR])?;
-        match lookup(parent.fd(), name)? {
-            None => return Ok(failed(Reason::Missing)),
-            Some(found) if found.entry() != Some(displaced.entry) => {
+        match lookup(parent.fd(), name) {
+            Err(err) => return denied(err),
+            Ok(None) => return Ok(failed(Reason::Missing)),
+            Ok(Some(found)) if found.entry() != Some(displaced.entry) => {
                 return Ok(failed(Reason::Changed));
             }
-            Some(_) => {}
+            Ok(Some(_)) => {}
         }
         hook(Step::Checked);
 
@@ -459,7 +489,7 @@ impl Space {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Ok(failed(Reason::Missing));
             }
-            Err(err) => return Err(err),
+            Err(err) => return denied(err),
         }
         self.flush_folder(&parent, Flush::Plain)?;
         self.flush_folder(&quarantine, Flush::Barrier)?;
@@ -474,7 +504,19 @@ impl Space {
         }
         let outcome = match target {
             Some((staging, (target, new_name))) => {
-                overtaken(self.place(&staging, &effect.id, &target, new_name, hook)?)
+                match self.place(&staging, &effect.id, &target, new_name, hook)? {
+                    placed if is_denied(&placed) => {
+                        return self.returned(
+                            &quarantine,
+                            effect,
+                            displaced,
+                            Reason::Denied,
+                            now,
+                            hook,
+                        );
+                    }
+                    placed => overtaken(placed),
+                }
             }
             None => Outcome::Done { identity: None },
         };
@@ -506,7 +548,7 @@ impl Space {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 return Ok(failed(Reason::Taken));
             }
-            Err(err) => return Err(err),
+            Err(err) => return denied(err),
         }
         self.flush_folder(staging, Flush::Plain)?;
         self.flush_folder(target, Flush::Plain)?;
@@ -514,6 +556,22 @@ impl Space {
         Ok(Outcome::Done {
             identity: Some(identity),
         })
+    }
+
+    fn returned(
+        &self,
+        quarantine: &Folder,
+        effect: &Effect,
+        displaced: &Displaced,
+        reason: Reason,
+        now: SystemTime,
+        hook: &mut dyn FnMut(Step),
+    ) -> io::Result<Outcome> {
+        let id = OsStr::new(&effect.id);
+        let recovered = self.put_back(quarantine, id, &displaced.at, now)?;
+        hook(Step::Returned);
+        self.drop_staged(&effect.id)?;
+        Ok(Outcome::Failed { reason, recovered })
     }
 
     fn put_back(
@@ -590,16 +648,29 @@ impl Space {
             let differs = differs(quarantine.fd(), id, &displaced.entry, contents)?;
             hook(Step::Compared);
             if let Some(reason) = differs {
-                let recovered = self.put_back(&quarantine, id, &displaced.at, now)?;
-                hook(Step::Returned);
-                self.drop_staged(&effect.id)?;
-                return Ok(Outcome::Failed { reason, recovered });
+                return self.returned(&quarantine, effect, &displaced, reason, now, hook);
             }
             let outcome = match place {
-                Some(at) if staged => overtaken(match self.parent(at) {
-                    Ok((target, name)) => self.place(&staging, &effect.id, &target, name, hook)?,
-                    Err(err) => unresolved(err)?,
-                }),
+                Some(at) if staged => {
+                    let placed = match self.parent(at) {
+                        Ok((target, name)) => {
+                            self.place(&staging, &effect.id, &target, name, hook)?
+                        }
+                        Err(Unresolved::Io { err, .. }) if refused(&err) => failed(Reason::Denied),
+                        Err(err) => unresolved(err)?,
+                    };
+                    if is_denied(&placed) {
+                        return self.returned(
+                            &quarantine,
+                            effect,
+                            &displaced,
+                            Reason::Denied,
+                            now,
+                            hook,
+                        );
+                    }
+                    overtaken(placed)
+                }
                 Some(at) => match self.written_at(at, contents)? {
                     Some(identity) => Outcome::Done {
                         identity: Some(identity),

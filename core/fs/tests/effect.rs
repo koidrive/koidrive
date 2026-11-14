@@ -8,8 +8,9 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use common::{
-    EDITED, ID, REMOTE, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents, entries,
-    marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same, stage, trashed,
+    EDITED, ID, REMOTE, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents, dir,
+    entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same, stage,
+    trashed,
 };
 use koidrive_fs::{
     Action, Base, Displaced, Effect, Location, Outcome, PARKED_DIR, PRIVATE_DIR, QUARANTINE_DIR,
@@ -762,4 +763,156 @@ fn recovery_of_a_replacement_whose_name_was_taken_before_a_crash_after_the_trash
     assert_eq!(fs::read(root.join("docs/report.txt")).unwrap(), EDITED);
     assert_eq!(trashed(root), [SYNCED]);
     assert_settled(root);
+}
+
+#[test]
+fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    for (scenario, mode) in SCENARIOS
+        .iter()
+        .flat_map(|scenario| [(scenario, 0o555), (scenario, 0o400), (scenario, 0o000)])
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(scenario, root);
+        let docs = root.join("docs");
+        let before = listing(&docs);
+        fs::set_permissions(&docs, fs::Permissions::from_mode(mode)).unwrap();
+        let outcome = apply(root, &effect, |_| {});
+        fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            outcome,
+            failed(Reason::Denied),
+            "{} {mode:o}",
+            scenario.name
+        );
+        assert_eq!(listing(&docs), before, "{} {mode:o}", scenario.name);
+        assert_eq!(private_names(root, QUARANTINE_DIR), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn a_permission_lost_after_the_first_change_fails_the_section_and_recovery_finishes_once_it_returns()
+ {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let mode = |mode| fs::Permissions::from_mode(mode);
+    for crashed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = replace(root);
+        let space = bind(root);
+        let docs = root.join("docs");
+        let result = if crashed {
+            let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                apply_one(&space, &effect, &mut |step| {
+                    assert_ne!(step, Step::Quarantined, "crash");
+                })
+            }));
+            assert!(crash.is_err());
+            fs::set_permissions(&docs, mode(0o000)).unwrap();
+            recover_one(&space, &effect, &mut |_| {})
+        } else {
+            apply_one(&space, &effect, &mut |step| {
+                if step == Step::Quarantined {
+                    fs::set_permissions(&docs, mode(0o000)).unwrap();
+                }
+            })
+        };
+        fs::set_permissions(&docs, mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "crashed: {crashed}"
+        );
+
+        assert!(matches!(
+            recover_one(&space, &effect, &mut |_| {}).unwrap(),
+            Outcome::Done { .. }
+        ));
+        assert_eq!(fs::read(docs.join("report.txt")).unwrap(), REMOTE);
+        assert_eq!(trashed(root), [SYNCED.to_vec()]);
+    }
+}
+
+#[test]
+fn a_permission_lost_after_the_check_and_before_a_new_file_is_placed_fails_only_the_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(&SCENARIOS[1], root);
+    let docs = root.join("docs");
+    let before = listing(&docs);
+    let outcome = apply(root, &effect, |step| {
+        if step == Step::Checked {
+            fs::set_permissions(&docs, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+    });
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(outcome, failed(Reason::Denied));
+    assert_eq!(listing(&docs), before);
+}
+
+#[test]
+fn a_file_moved_and_rewritten_into_a_folder_the_system_does_not_allow_is_put_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    for crashed in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("docs/report.txt"), SYNCED).unwrap();
+        let space = bind(root);
+        stage(&space, REMOTE);
+        let found = entries(root, &["docs", "docs/report.txt", "locked"]);
+        let effect = Effect {
+            id: ID.into(),
+            action: Action::WriteFile {
+                at: at(vec![dir("locked", &found[2])], "report.txt"),
+                replaces: Some(Displaced {
+                    at: at(vec![dir("docs", &found[0])], "report.txt"),
+                    entry: found[1],
+                }),
+            },
+        };
+        let locked = root.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = if crashed {
+            let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                apply_one(&space, &effect, &mut |step| {
+                    assert_ne!(step, Step::Quarantined, "crash");
+                })
+            }));
+            assert!(crash.is_err());
+            recover_one(&space, &effect, &mut |_| {})
+        } else {
+            apply_one(&space, &effect, &mut |_| {})
+        };
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            outcome.unwrap(),
+            failed(Reason::Denied),
+            "crashed: {crashed}"
+        );
+        assert_eq!(fs::read(root.join("docs/report.txt")).unwrap(), SYNCED);
+        assert!(!locked.join("report.txt").exists());
+        assert!(trashed(root).is_empty());
+        assert_settled(root);
+    }
 }
