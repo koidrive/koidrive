@@ -250,6 +250,7 @@ fn a_migration_recorded_after_the_open_read_the_table_is_not_applied_again() {
     let next = &MIGRATIONS[LEGACY_STEPS - 2];
     let last = &MIGRATIONS[LEGACY_STEPS - 1];
     let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(last.sql).unwrap();
     conn.execute_batch("CREATE TABLE migrations (name TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;")
         .unwrap();
     for m in &MIGRATIONS[..LEGACY_STEPS - 2] {
@@ -3665,6 +3666,26 @@ fn a_store_from_before_removals_here_were_recorded_opens_with_none_recorded() {
     drop(store);
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_resends_were_kept_with_their_commit_takes_them_from_resends() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "commit_in_flight_resends");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let flight = before.commits.in_flight.as_mut().unwrap();
+    assert!(flight.resent.is_empty());
+    flight.resent = before.trees.resends.clone();
+    assert!(!flight.resent.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
 }
 
 #[test]
