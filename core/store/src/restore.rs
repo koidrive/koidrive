@@ -27,7 +27,6 @@ pub struct AskedRestore {
     pub version_saved_at_ms: Option<i64>,
 }
 
-/// The four columns both tables keep an intent in.
 const INTENT: &str = "node_id, version_id, target_parent_id, name";
 
 impl Tx<'_> {
@@ -201,8 +200,6 @@ impl Tx<'_> {
     }
 }
 
-/// The intent in columns 1 to 4 of `row`. A row that is not a restore the server would take is
-/// refused, as any other state the engine could not have written.
 fn intent(row: &rusqlite::Row<'_>) -> Result<RestoreIntent> {
     let text = |column: usize| Ok::<_, Error>(row.get::<_, Option<String>>(column)?);
     let op = Restore {
