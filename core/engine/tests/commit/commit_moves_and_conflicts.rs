@@ -510,9 +510,6 @@ fn a_renamed_result_reverts_the_local_name_to_the_server_one() {
     moves_back(&mut trees, &mut ids, "a");
 }
 
-/// The server gave f another name than the one this device sent. Another device deletes the
-/// folder that held that name, moves f to it while S cannot take it yet, and then deletes f. f
-/// follows the delete: the name L holds is the move the server already answered, not a new one.
 #[test]
 fn a_renamed_result_another_device_moves_to_the_sent_name_and_deletes_stays_deleted() {
     let mut trees = trees(&[
