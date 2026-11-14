@@ -235,6 +235,50 @@ impl Space {
         Ok(folder)
     }
 
+    pub(crate) fn private_present(&self, parts: &[&str]) -> Result<Folder, Unresolved> {
+        let mut folder = self.root_folder()?;
+        for name in std::iter::once(PRIVATE_DIR).chain(parts.iter().copied()) {
+            let name = OsStr::new(name);
+            check_name(name)?;
+            let fd = open_dir(folder.fd(), name, &folder.route)?;
+            folder.id = identity(&fd, &folder.route, name)?;
+            folder.fd = fd;
+            folder.route.push(Dir {
+                name: name.to_owned(),
+                id: folder.id,
+            });
+        }
+        Ok(folder)
+    }
+
+    pub(crate) fn parent_present<'a>(
+        &self,
+        location: &'a Location,
+    ) -> Result<(Folder, &'a OsStr), Unresolved> {
+        let (base, dirs, name) = match location {
+            Location::Parked(name) => {
+                check_name(name)?;
+                return Ok((self.private_present(&[PARKED_DIR])?, name));
+            }
+            Location::At { base, dirs, name } => (base, dirs, name),
+        };
+        check_name(name)?;
+        let mut folder = match base {
+            Base::Root => self.root_folder()?,
+            Base::Parked { name, id } => descend(
+                self.private_present(&[PARKED_DIR])?,
+                &Dir {
+                    name: name.clone(),
+                    id: *id,
+                },
+            )?,
+        };
+        for dir in dirs {
+            folder = descend(folder, dir)?;
+        }
+        Ok((folder, name))
+    }
+
     /// Checks that the root is held, then follows `folder`'s route from the
     /// root again and checks that every folder on it keeps its identity. A
     /// descriptor follows its folder when the folder is moved, even out of the
