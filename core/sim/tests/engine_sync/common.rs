@@ -1157,7 +1157,7 @@ fn acted_below(
     let trees = &device.trees;
     let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
         let mut current = Some(entry.to_owned());
-        for _ in 0..=trees.local().len() + kept_with.len() {
+        for _ in 0..=trees.local().len() + kept_with.len() + device.removed_from.len() {
             match current {
                 Some(at) if at == id => return true,
                 Some(at) => current = parent(&at),

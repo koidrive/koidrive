@@ -557,3 +557,72 @@ fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_se
     )
     .unwrap();
 }
+
+#[test]
+fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_folder_above() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+    };
+    let remote = |shape: koidrive_engine::tree::Shape| RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+    };
+    let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let place = |device: &mut Device, id: &str, shape: koidrive_engine::tree::Shape| {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                shape,
+                identity,
+                parked: false,
+            },
+        );
+    };
+    place(&mut device, "k", folder("root", "k"));
+    device.trees.set_remote("k".into(), remote(folder("root", "k")));
+    let mut parent = "k".to_string();
+    for depth in 1..=8 {
+        let id = format!("a{depth}");
+        place(&mut device, &id, folder(&parent, &id));
+        parent = id;
+    }
+    let file = koidrive_engine::tree::Shape {
+        parent: parent.clone(),
+        name: "f".into(),
+        kind: Kind::File,
+        content: Some(content(1, 0)),
+    };
+    place(&mut device, "f", file);
+    let server = koidrive_engine::tree::Shape {
+        parent: "root".into(),
+        name: "f".into(),
+        kind: Kind::File,
+        content: Some(content(1, 0)),
+    };
+    device.trees.set_remote("f".into(), remote(server));
+    device.act(&act(4, 0, 0, 0, 0));
+    assert!(device.trees.local().get("f").is_none());
+    assert!(acted_below(&device, &BTreeMap::new(), "k"));
+}
+
