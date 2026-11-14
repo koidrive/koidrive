@@ -1104,8 +1104,7 @@ fn revive(
     device: &Device,
     discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
     kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    revived: &mut BTreeSet<String>,
-) {
+) -> BTreeSet<String> {
     // A discarded entry the user changed, or a discarded folder that holds an entry the answer
     // did not discard there, is the user's, and so is every discarded folder above it.
     let trees = &device.trees;
@@ -1123,6 +1122,7 @@ fn revive(
                         .is_none_or(|shown| &shown.parent != *id)
             })
     };
+    let mut revived = BTreeSet::new();
     for id in discarded.keys().filter(reclaimed) {
         let mut next = Some(id.clone());
         while let Some(id) = next.take_if(|id| discarded.contains_key(id)) {
@@ -1130,6 +1130,19 @@ fn revive(
             revived.insert(id);
         }
     }
+    revived
+}
+
+type Position = (String, String);
+
+fn position(shape: &koidrive_engine::tree::Shape) -> Position {
+    (shape.parent.clone(), shape.name.clone())
+}
+
+fn positions(trees: &Trees) -> BTreeMap<String, Position> {
+    (trees.local().iter())
+        .map(|(id, node)| (id.clone(), position(&node.shape)))
+        .collect()
 }
 
 fn acted_below(
@@ -1151,13 +1164,18 @@ fn acted_below(
     };
     let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
     let in_kept = |at: &str| kept_with.get(at).map(|shape| shape.parent.clone());
+    let on_server = |at: &str| {
+        in_local(at).or_else(|| (trees.remote().live(at)).map(|shape| shape.parent.clone()))
+    };
     let as_on_server = |entry: &str| match (trees.local().get(entry), trees.remote().live(entry)) {
         (Some(local), Some(remote)) => local.shape.same(remote),
         (local, remote) => local.is_none() && remote.is_none(),
     };
     (acted.iter())
         .filter(|entry| !as_on_server(entry))
-        .any(|entry| reaches(entry, &in_local) || reaches(entry, &in_kept))
+        .any(|entry| {
+            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &on_server)
+        })
 }
 
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
@@ -1298,7 +1316,7 @@ fn run_ignoring_answering_after(
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
     let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
-    let mut revived: BTreeSet<String> = BTreeSet::new();
+    let mut placed: BTreeMap<String, Position> = BTreeMap::new();
     let mut revived_once: BTreeSet<String> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
     let mut pending: Option<Question> = None;
@@ -1316,6 +1334,7 @@ fn run_ignoring_answering_after(
             }
             if *on_device {
                 let before = held(&device.trees);
+                let was = positions(&device.trees);
                 for action in actions {
                     match action.kind {
                         5 | 6 => {
@@ -1326,7 +1345,11 @@ fn run_ignoring_answering_after(
                         _ => device.act(action),
                     }
                 }
-                revived.clear();
+                for (id, at) in positions(&device.trees) {
+                    if was.get(&id) != Some(&at) {
+                        placed.insert(id, at);
+                    }
+                }
                 let after = held(&device.trees);
                 let writes = [&mut local_writes, &mut remote_writes];
                 let new = rewritten(&before, &after, &device.trees, writes);
@@ -1357,7 +1380,7 @@ fn run_ignoring_answering_after(
         prop_assert_eq!(device.trees.check(), Ok(()));
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
-        revive(&device, &discarded, &kept_with, &mut revived);
+        let revived = revive(&device, &discarded, &kept_with);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
@@ -1404,6 +1427,23 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
+            if let (Effect::Move { .. }, Some(after), Some(local)) = (
+                &record.effect,
+                &record.after,
+                device.trees.local().get(&record.node),
+            ) {
+                let taken_along = kept_with.contains_key(&record.node)
+                    && !acted_below(&device.trees, &kept_with, &device.acted, &record.node);
+                let left_where_put =
+                    !taken_along && placed.get(&record.node) == Some(&position(&local.shape));
+                prop_assert!(
+                    !(left_where_put
+                        && after.parent != local.shape.parent
+                        && revived.contains(&local.shape.parent)),
+                    "{} is where the user put it in a folder that is the user's again, but the effects move it out",
+                    record.node
+                );
+            }
             if let (
                 Effect::CreateDir {
                     at:
@@ -1477,7 +1517,7 @@ fn run_ignoring_answering_after(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
-                revived.remove(id);
+                placed.remove(id);
                 revived_once.remove(id);
                 sent_nodes.remove(id);
             }
@@ -1508,8 +1548,7 @@ fn run_ignoring_answering_after(
             device.acted.retain(|id| !kept_with.contains_key(id));
             discarded.extend(shown);
         }
-        revive(&device, &discarded, &kept_with, &mut revived);
-        revived_once.extend(revived.iter().cloned());
+        revived_once.extend(revive(&device, &discarded, &kept_with));
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
             .cloned();
@@ -1593,6 +1632,7 @@ fn run_ignoring_answering_after(
         let bringing = restorable(&space, &commit);
         let before = stored(&space);
         let mut committed = space.commit(&me, NOW, &request).map_err(failed)?;
+        placed.retain(|id, _| !sending.contains(id));
         sent_nodes.extend(sending);
         let after = stored(&space);
         if cut == Cut::Applied {
