@@ -931,8 +931,12 @@ impl Space {
     }
 
     fn drop_staged(&self, id: &str) -> io::Result<()> {
-        let staging = self.private(&[STAGING_DIR])?;
-        remove_if_present(staging.fd(), id)
+        let dropped = (self.private(&[STAGING_DIR]).map_err(io::Error::from))
+            .and_then(|staging| remove_if_present(staging.fd(), id));
+        match dropped {
+            Err(err) if refused(&err) => Ok(()),
+            dropped => dropped,
+        }
     }
 }
 

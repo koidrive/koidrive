@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{SCENARIOS, bind, entries, prepare};
+use common::{SCENARIOS, bind, prepare};
 use koidrive_fs::{PRIVATE_DIR, QUARANTINE_DIR, Refusal, STAGING_DIR};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -104,7 +104,7 @@ fn a_folder_that_denies_only_new_folders_still_takes_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let write = prepare(&SCENARIOS[1], root);
-    let create = (SCENARIOS[2].build)(&entries(root, SCENARIOS[2].paths));
+    let create = (SCENARIOS[2].build)(&common::entries(root, SCENARIOS[2].paths));
     let space = bind(root);
     let docs = root.join("docs");
     let acl = |args: &[&str]| {

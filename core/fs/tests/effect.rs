@@ -802,6 +802,37 @@ fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
 }
 
 #[test]
+fn a_staging_folder_the_system_refuses_fails_only_the_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let staged = ["replace", "write_new"];
+    for (scenario, mode) in (SCENARIOS.iter())
+        .filter(|scenario| staged.contains(&scenario.name))
+        .flat_map(|scenario| [(scenario, 0o555), (scenario, 0o000)])
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(scenario, root);
+        let docs = root.join("docs");
+        let before = listing(&docs);
+        let staging = root.join(PRIVATE_DIR).join(STAGING_DIR);
+        fs::set_permissions(&staging, fs::Permissions::from_mode(mode)).unwrap();
+        let outcome = apply_one(&bind(root), &effect, &mut |_| {});
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            outcome.unwrap(),
+            failed(Reason::Denied),
+            "{} {mode:o}",
+            scenario.name
+        );
+        assert_eq!(listing(&docs), before, "{} {mode:o}", scenario.name);
+    }
+}
+
+#[test]
 fn a_quarantine_that_cannot_be_opened_fails_only_the_effect() {
     use std::os::unix::fs::PermissionsExt;
 
