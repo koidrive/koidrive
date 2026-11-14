@@ -8788,3 +8788,20 @@ fn a_folder_another_user_deleted_stays_deleted_across_server_copies() {
     keep(2, &phases).unwrap();
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_resend_over_a_restore_that_brings_back_the_bytes_it_took_converges() {
+    let phases = vec![
+        vec![(1, act(1, 0, 0, "\u{c9}", 3)), (0, folder("a"))],
+        vec![(0, BACKUP), (0, act(2, 11880497039669584181, 0, "a", 0))],
+        vec![
+            (1, act(2, 2328636324909128839, 0, "a", 3)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, COMMIT),
+            (0, Step::Work(0)),
+            (0, RESTORE),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

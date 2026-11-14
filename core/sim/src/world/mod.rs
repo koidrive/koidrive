@@ -1178,9 +1178,12 @@ impl World {
         let held_after = writes(&self.space);
         for (id, (.., digest)) in &after {
             if let Some(digest) = digest
-                && before
+                && (before
                     .get(id)
                     .is_none_or(|(.., held)| held.as_ref() != Some(digest))
+                    || (held_after.iter()).any(|(node, write)| {
+                        node == id && !held_before.contains(&(id.clone(), *write))
+                    }))
             {
                 self.rolled_back.insert(id.clone(), digest.clone());
             }
