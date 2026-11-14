@@ -165,7 +165,7 @@ struct DeletedFilesView: View {
                             Text(verbatim: restoreCount(section.requests.count)).foregroundStyle(Color.text2)
                         }
                         ForEach(section.requests) { request in
-                            RestoreRow(request: request, folder: section.folder, kind: section.kind(of: request))
+                            RestoreRow(request: request, folder: section.folder, kind: section.kind(of: request), subject: files.subject(of: request))
                         }
                     }
                 }
@@ -281,6 +281,7 @@ private struct RestoreRow: View {
     let request: RestoreRequest
     let folder: LinkedFolder
     let kind: NodeKind?
+    let subject: RestoreSubject
 
     var body: some View {
         HStack(spacing: 10) {
@@ -289,7 +290,7 @@ private struct RestoreRow: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 0) {
                 PathText(path: folder.spaceName + "/" + (request.path ?? String(localized: "Unknown item")))
-                Text(verbatim: request.target.title)
+                Text(verbatim: subject.text)
                     .font(.callout)
                     .foregroundStyle(Color.text2)
             }

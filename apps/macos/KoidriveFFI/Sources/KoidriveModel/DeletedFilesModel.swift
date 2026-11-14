@@ -150,6 +150,19 @@ public final class DeletedFilesModel {
         }
     }
 
+    /// What a restore brings back, as its row in the Restores tab names it.
+    public func subject(of request: RestoreRequest) -> RestoreSubject {
+        switch request.target {
+        case .deleted:
+            return .deletedItem
+        case .version(_, _, let savedAtMs?):
+            let date = Date(milliseconds: savedAtMs)
+            return .version(savedAt: date, day: clock.day(of: date))
+        case .version:
+            return .earlierVersion
+        }
+    }
+
     private func remember(_ histories: [FolderHistory]) {
         for item in histories.flatMap(\.trash.items) {
             kinds[item.nodeId] = item.kind
@@ -190,6 +203,13 @@ public struct Deletion: Equatable, Sendable {
         self.day = day
         self.device = device
     }
+}
+
+/// What a restore brings back. An earlier version carries when it was saved, except for a request that doesn't say.
+public enum RestoreSubject: Equatable, Sendable {
+    case deletedItem
+    case version(savedAt: Date, day: Day)
+    case earlierVersion
 }
 
 /// A deleted item as the Deleted Files list shows it.

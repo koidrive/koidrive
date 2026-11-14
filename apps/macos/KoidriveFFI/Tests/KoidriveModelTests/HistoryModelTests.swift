@@ -249,6 +249,31 @@ private func twoFoldersWithDeletions() throws -> AppModel {
         #expect(files.restoreSections.flatMap(\.requests).count == 1)
     }
 
+    @Test func aVersionRestoreSaysWhenTheVersionWasSaved() async throws {
+        let app = try twoFoldersWithDeletions()
+        let documents = try folder(app, "Documents")
+        try fakeCore(app).setVersions(spaceId: documents.spaceId, versions: FileVersions(
+            path: "Reports/Launch plan.key", nodeId: "node-plan", versions: fourVersions
+        ))
+        let history = VersionHistoryModel(app: app, file: documents.url.appending(path: "Reports/Launch plan.key"), clock: halfPastMidnight)
+        await history.load()
+        history.selection = "v3"
+        await history.restoreSelected()
+
+        let files = DeletedFilesModel(app: app, clock: halfPastMidnight)
+        await files.load()
+        let asked = try #require(files.restoreSections.first?.requests.first)
+        #expect(files.subject(of: asked) == .version(savedAt: at("2026-11-12T23:55:00Z"), day: .yesterday))
+
+        func request(_ target: RestoreTarget) -> RestoreRequest {
+            RestoreRequest(id: "r", path: "Reports/Launch plan.key", askedAtMs: 0, target: target, state: .pending(heldByProblem: false))
+        }
+        let older = request(.version(nodeId: "node-plan", versionId: "v1", savedAtMs: ms("2026-11-11T09:06:00Z")))
+        #expect(files.subject(of: older) == .version(savedAt: at("2026-11-11T09:06:00Z"), day: .earlier))
+        #expect(files.subject(of: request(.version(nodeId: "node-plan", versionId: "v1", savedAtMs: nil))) == .earlierVersion)
+        #expect(files.subject(of: request(.deleted(nodeId: "node-budget"))) == .deletedItem)
+    }
+
     @Test func nothingDeletedLoadsAnEmptyList() async throws {
         let files = DeletedFilesModel(app: AppModel.fake(scenario: .syncing), clock: halfPastMidnight)
         await files.load()

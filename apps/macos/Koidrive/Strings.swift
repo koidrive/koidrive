@@ -418,11 +418,20 @@ extension Deletion {
     }
 }
 
-extension RestoreTarget {
-    var title: String {
+extension RestoreSubject {
+    var text: String {
         switch self {
-        case .deleted: String(localized: "Deleted item")
-        case .version: String(localized: "Earlier version")
+        case .deletedItem:
+            return String(localized: "Deleted item")
+        case .earlierVersion:
+            return String(localized: "Earlier version")
+        case .version(let date, let day):
+            let time = date.formatted(.dateTime.hour().minute())
+            switch day {
+            case .today: return String(localized: "Version from today at \(time)")
+            case .yesterday: return String(localized: "Version from yesterday at \(time)")
+            case .earlier: return String(localized: "Version from \(date.formatted(.dateTime.day().month(.abbreviated))) at \(time)")
+            }
         }
     }
 }
