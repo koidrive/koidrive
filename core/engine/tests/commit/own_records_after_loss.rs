@@ -271,3 +271,42 @@ fn an_edit_dropped_in_flight_and_undone_before_the_listing_is_not_sent_over_an_e
         "{built:?}"
     );
 }
+
+fn sent_after_two_losses(record_first: bool) -> Vec<op::Op> {
+    let shape = dir("f", "n");
+    let mut trees = trees(&[synced("f", dir(ROOT, "f")), synced("n", shape.clone())]);
+    let records = trees.remote_records();
+    trees.remove_remote("n");
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], records, 0, 0);
+    trees.settle();
+    assert!(trees.state().resends.contains("n"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(create)] if create.node_id == "n"));
+    assert!(commits.own_record(8, &commit.commit_id));
+    trees.set_remote_made_here("n".into(), RemoteNode { content_rev: 8, edit_rev: 8, ..remote_at(shape, 8) });
+    if record_first {
+        assert!(!commits.acknowledge(&mut trees, 8));
+        assert!(!commits.acknowledge(&mut trees, 8));
+    }
+    commits.received(result(8, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 8));
+    trees.settle();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let moved = trees.moved_here();
+    let taken = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records();
+    trees.remove_remote("n");
+    trees.set_listed_remote("f".into(), RemoteNode { meta_rev: 2, meta_edit_rev: 2, ..trashed(dir(ROOT, "f")) });
+    trees.forget_lost(vec![], vec![], taken, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit))
+}
+
+#[test]
+fn a_resend_whose_record_arrives_before_its_result_does_not_recreate_a_deleted_folder_after_a_second_restore() {
+    assert_eq!(sent_after_two_losses(false), []);
+    assert_eq!(sent_after_two_losses(true), []);
+}

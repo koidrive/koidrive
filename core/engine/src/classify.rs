@@ -1666,7 +1666,7 @@ impl Trees {
                 })
         };
         if (self.r.get(id)).is_some_and(|remote| !remote.trashed && held(remote))
-            && !self.resends.remove(id)
+            && !self.resends.contains(id)
         {
             let moved = MovedHere {
                 seq,
@@ -1733,9 +1733,11 @@ impl Trees {
     }
 
     /// The nodes whose content L and S hold as R holds it, live or in the trash, a folder's as any
-    /// folder's, where no commit of this device that the server lost set R's content and L holds no
-    /// unsent edit ([`Trees::unsent_edits`]): `lost_here` tells whether a seq is one of those
-    /// commits. For [`Trees::forget_lost`] once a bootstrap has replaced R.
+    /// folder's, where no commit of this device that the server lost set R's edit revision and L
+    /// holds no unsent edit ([`Trees::unsent_edits`]): `lost_here` tells whether a seq is one of
+    /// those commits. A resend moves only the content revision, so content this device sent again
+    /// for another device stays that device's. For [`Trees::forget_lost`] once a bootstrap has
+    /// replaced R.
     pub fn taken_from_others(&self, lost_here: impl Fn(u64) -> bool) -> Vec<NodeId> {
         (self.s.iter())
             .filter(|(id, _)| !self.unsent_edits.contains(*id))
@@ -1746,8 +1748,7 @@ impl Trees {
                         (held, synced) => held.is_none() && synced.is_none(),
                     })
                 };
-                let remote = (self.r.get(id))
-                    .filter(|remote| !lost_here(remote.content_rev.max(remote.edit_rev)));
+                let remote = (self.r.get(id)).filter(|remote| !lost_here(remote.edit_rev));
                 holds(remote.map(|remote| &remote.shape)) && holds(self.l.live(id))
             })
             .map(|(id, _)| id.clone())
@@ -1822,7 +1823,10 @@ impl Trees {
 
     /// Forgets what the server may have lost, after a bootstrap from a server that is behind what
     /// this device applied (design §4.4). S forgets every node that R does not hold at all or holds
-    /// live with another shape, and every node S holds below one. A node L still holds is then
+    /// live with another shape, and every node S holds below one, except one below that R holds
+    /// live, that L holds as S does, and that holds no change of this device's user or of another
+    /// device this device had not taken: it keeps S, so R's position is a remote move, and the
+    /// device that made the change sends it again. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
     /// position L holds: a node R does not hold at all is no longer reverted, since the server's
     /// rename or merge that reverted it was lost too. One whose content differs from
@@ -2266,9 +2270,10 @@ impl Trees {
             let unchanged = (self.l.get(&id))
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
             if unchanged
+                && !self.local_changes.contains(&id)
                 && (synced.contains(&id)
                     || taken_late.contains(&id)
-                    || !(self.local_changes.contains(&id) || self.unsent_edits.contains(&id)))
+                    || !self.unsent_edits.contains(&id))
             {
                 self.resends.insert(id.clone());
             }
