@@ -376,6 +376,7 @@ impl Tx<'_> {
             "commit_in_flight_deletes",
             "commit_in_flight_delete_members",
             "commit_in_flight_restore_members",
+            "commit_in_flight_resends",
             "watched_contents",
             "watched_positions",
             "trashed_here",
@@ -689,6 +690,7 @@ impl Tx<'_> {
                 "commit_in_flight_deletes",
                 "commit_in_flight_delete_members",
                 "commit_in_flight_restore_members",
+                "commit_in_flight_resends",
             ] {
                 self.0.execute(&format!("DELETE FROM {table}"), [])?;
             }
@@ -719,6 +721,12 @@ impl Tx<'_> {
                     for (position, node) in nodes.iter().enumerate() {
                         restored.execute(params![index, position, node])?;
                     }
+                }
+                let mut resent = self
+                    .0
+                    .prepare_cached("INSERT INTO commit_in_flight_resends (node_id) VALUES (?1)")?;
+                for node in &flight.resent {
+                    resent.execute([node])?;
                 }
             }
         }
@@ -905,10 +913,16 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             restores.entry(row.get(0)?).or_default().push(row.get(1)?);
         }
+        let resent = self
+            .0
+            .prepare_cached("SELECT node_id FROM commit_in_flight_resends")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(Some(InFlight {
             commit: Commit::decode(commit.as_slice())?,
             deletes,
             restores,
+            resent,
             result: decode(result)?,
         }))
     }

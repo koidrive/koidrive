@@ -89,6 +89,7 @@ fn migrations_apply_from_empty() {
             "commit_in_flight",
             "commit_in_flight_delete_members",
             "commit_in_flight_deletes",
+            "commit_in_flight_resends",
             "commit_in_flight_restore_members",
             "commit_slots",
             "commit_state",
@@ -1314,6 +1315,7 @@ fn engine_state() -> EngineState {
                     ("empty".into(), vec![]),
                 ]),
                 restores: BTreeMap::new(),
+                resent: Default::default(),
                 result: Some(CommitResult {
                     seq: 30,
                     results: vec![applied.clone(), applied.clone(), applied],
@@ -1504,7 +1506,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 36] = [
+const ENGINE_TABLES: [&str; 37] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1513,6 +1515,7 @@ const ENGINE_TABLES: [&str; 36] = [
     "commit_in_flight_deletes",
     "commit_in_flight_delete_members",
     "commit_in_flight_restore_members",
+    "commit_in_flight_resends",
     "watched_contents",
     "trashed_here",
     "recorded_nodes",
@@ -1776,6 +1779,7 @@ fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
                 },
                 deletes: BTreeMap::new(),
                 restores: BTreeMap::new(),
+                resent: Default::default(),
                 result: None,
             }),
             halted: Some(halt),

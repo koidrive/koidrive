@@ -272,7 +272,7 @@ fn an_edit_dropped_in_flight_and_undone_before_the_listing_is_not_sent_over_an_e
     );
 }
 
-fn sent_after_two_losses(record_first: bool) -> Vec<op::Op> {
+fn sent_after_two_losses(record_first: bool, deleted_and_restored: bool) -> Vec<op::Op> {
     let shape = dir("f", "n");
     let mut trees = trees(&[synced("f", dir(ROOT, "f")), synced("n", shape.clone())]);
     let records = trees.remote_records();
@@ -291,8 +291,19 @@ fn sent_after_two_losses(record_first: bool) -> Vec<op::Op> {
         assert!(!commits.acknowledge(&mut trees, 8));
         trees.settle();
     }
+    let mut last_seq = 8;
+    if deleted_and_restored {
+        let deleted = RemoteNode { content_rev: 8, edit_rev: 8, meta_rev: 9, meta_edit_rev: 9, ..trashed(dir("f", "n")) };
+        trees.set_remote("n".into(), deleted);
+        assert!(!commits.acknowledge(&mut trees, 9));
+        trees.settle();
+        trees.set_remote("n".into(), RemoteNode { content_rev: 8, edit_rev: 8, ..remote_at(dir("f", "n"), 10) });
+        assert!(!commits.acknowledge(&mut trees, 10));
+        trees.settle();
+        last_seq = 10;
+    }
     commits.received(result(8, vec![outcome(op_result::Code::Applied)])).unwrap();
-    assert!(commits.acknowledge(&mut trees, 8));
+    assert!(commits.acknowledge(&mut trees, last_seq));
     trees.settle();
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let moved = trees.moved_here();
@@ -309,6 +320,12 @@ fn sent_after_two_losses(record_first: bool) -> Vec<op::Op> {
 
 #[test]
 fn a_resend_whose_record_arrives_before_its_result_does_not_recreate_a_deleted_folder_after_a_second_restore() {
-    assert_eq!(sent_after_two_losses(false), []);
-    assert_eq!(sent_after_two_losses(true), []);
+    assert_eq!(sent_after_two_losses(false, false), []);
+    assert_eq!(sent_after_two_losses(true, false), []);
+}
+
+#[test]
+fn a_resend_another_device_deleted_and_restored_before_its_result_does_not_recreate_a_deleted_folder_after_a_second_restore() {
+    assert_eq!(sent_after_two_losses(true, true), []);
+    assert_eq!(sent_after_two_losses(false, true), []);
 }

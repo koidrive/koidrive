@@ -7288,3 +7288,138 @@ fn a_write_the_server_kept_as_a_conflict_copy_survives_a_restore_with_three_devi
     )
     .unwrap();
 }
+
+#[test]
+fn a_folder_another_device_moved_follows_its_delete_after_a_restore_when_a_file_moved_out_of_it() {
+    use koidrive_sim::world::Step::*;
+    keep(
+        2,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 1,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 2178339583268831768,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 8562563489493896556,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 158745160718821128,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 14936868272043736574,
+                        parent: 168770293824406421,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 4994303686635574257,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 1101415103360796392,
+                        parent: 5604301365614506185,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}

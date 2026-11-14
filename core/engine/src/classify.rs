@@ -722,16 +722,9 @@ impl Trees {
         };
         let mut below_emptied: Vec<NodeId> = Vec::new();
         for id in self.changes() {
-            let mut chain = vec![id.as_str()];
-            while let Some(parent) = (self.s.live(chain[chain.len() - 1]))
-                .map(|synced| synced.parent.as_str())
-                .filter(|parent| *parent != self.s.root)
-            {
-                if emptied(parent) {
-                    below_emptied.extend(chain.iter().map(|id| (*id).to_owned()));
-                    break;
-                }
-                chain.push(parent);
+            let chain: Vec<&str> = self.local_chain(id).collect();
+            if let Some(at) = chain.iter().skip(1).position(|parent| emptied(parent)) {
+                below_emptied.extend(chain[..=at].iter().map(|id| (*id).to_owned()));
             }
         }
         for id in below_emptied {
@@ -1665,9 +1658,7 @@ impl Trees {
                         && past.name == remote.shape.name
                 })
         };
-        if (self.r.get(id)).is_some_and(|remote| !remote.trashed && held(remote))
-            && !self.resends.contains(id)
-        {
+        if (self.r.get(id)).is_some_and(|remote| !remote.trashed && held(remote)) {
             let moved = MovedHere {
                 seq,
                 upgraded: false,
@@ -2828,9 +2819,7 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            if !self.watched_positions.contains_key(id) {
-                self.resends.remove(id);
-            }
+            self.resends.remove(id);
             self.local_changes.remove(id);
         }
         self.changed.insert(id.to_owned());

@@ -68,6 +68,9 @@ pub struct InFlight {
     /// For each `Restore` op, by its index in the commit, the nodes this device's user removed that
     /// it brings back. When the restore is applied, they are downloaded instead of deleted again.
     pub restores: BTreeMap<usize, Vec<NodeId>>,
+    /// The nodes whose ops send again what the server lost with no change of this device's user in
+    /// them, as [`Trees::resends`] held them when the commit was built.
+    pub resent: BTreeSet<NodeId>,
     /// The result once it has arrived, kept until R holds its records.
     pub result: Option<proto::CommitResult>,
 }
@@ -1143,9 +1146,12 @@ impl Commits {
             .map(ToOwned::to_owned),
         );
 
-        let require_head = !released.is_empty()
-            || (ops.iter().filter_map(|op| op.op.as_ref()))
-                .any(|op| trees.resends().contains(op_node(op)));
+        let resent: BTreeSet<NodeId> = (ops.iter().filter_map(|op| op.op.as_ref()))
+            .map(op_node)
+            .filter(|id| trees.resends().contains(*id))
+            .map(ToOwned::to_owned)
+            .collect();
+        let require_head = !released.is_empty() || !resent.is_empty();
         let restores = (ops.iter().enumerate())
             .filter_map(|(index, op)| match &op.op {
                 Some(op::Op::Restore(restore)) => Some((index, restore)),
@@ -1185,6 +1191,7 @@ impl Commits {
             },
             deletes,
             restores,
+            resent,
             result: None,
         }));
         self.in_flight.as_ref().map(|flight| &flight.commit)
@@ -1469,7 +1476,9 @@ impl Commits {
                     }
                 }
                 op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
-                    trees.record_moved(op_node(op), seq);
+                    if !flight.resent.contains(op_node(op)) {
+                        trees.record_moved(op_node(op), seq);
+                    }
                 }
                 op::Op::UpdateContent(_) | op::Op::Restore(_) => {}
             }
@@ -1738,9 +1747,8 @@ impl Commits {
                 }
                 _ => continue,
             };
-            if applied && sent.is_some() {
+            if applied && sent.is_some() && !flight.resent.contains(node) {
                 trees.record_moved(node, result.seq);
-                trees.end_resend(node);
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created
