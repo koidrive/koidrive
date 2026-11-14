@@ -91,7 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(inputs.skip_homebrew && '["installer"]' || '["formula-conflict", "cask", "installer"]') }}
+        scenario: ${{ fromJSON(inputs.skip_homebrew && '["installer"]' || '["formula-conflict", "cask", "installer", "homebrew-update"]') }}
     env:
       RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
       HOMEBREW_NO_AUTO_UPDATE: '1'
@@ -103,16 +103,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
-        if: matrix.scenario == 'installer'
+        if: matrix.scenario == 'installer' || matrix.scenario == 'homebrew-update'
         with:
           package_json_file: server/package.json
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        if: matrix.scenario == 'installer'
+        if: matrix.scenario == 'installer' || matrix.scenario == 'homebrew-update'
         with:
           node-version: 24
       - name: Prepare the real local Worker
-        if: matrix.scenario == 'installer'
+        if: matrix.scenario == 'installer' || matrix.scenario == 'homebrew-update'
         run: |
           nice -n 10 pnpm --dir server install --frozen-lockfile
           nice -n 10 pnpm --dir server build:web
