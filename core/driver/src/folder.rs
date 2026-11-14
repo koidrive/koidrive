@@ -1747,7 +1747,9 @@ impl Folder {
             _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
         };
         let device_seq = self.device_seq;
-        let history = staging.take_history();
+        let history = (staging.take_history())
+            .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
+            .unwrap_or_default();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
             if recovering {
