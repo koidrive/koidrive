@@ -8,6 +8,7 @@ import SwiftUI
 @main
 struct KoidriveApp: App {
     @State private var model: AppModel
+    private let launchWindow = AppModel.launchWindow(in: .standard)
 
     init() {
         if CommandLine.arguments.dropFirst().first == "--unregister-login-item" {
@@ -60,6 +61,7 @@ struct KoidriveApp: App {
                 .buttonStyle(.secondary)
         } label: {
             MenuBarLabel(model: model)
+                .modifier(MenuBarDrop(model: model))
         }
         .menuBarExtraStyle(.window)
 
@@ -77,17 +79,42 @@ struct KoidriveApp: App {
         }
         .defaultSize(width: 860, height: 560)
 
+        Window("Deleted Files", id: WindowID.deletedFiles) {
+            DeletedFilesView(app: model)
+                .environment(model)
+                .buttonStyle(.secondary)
+        }
+        .defaultSize(width: 880, height: 600)
+        .defaultLaunchBehavior(launchWindow == .deletedFiles ? .presented : .automatic)
+
+        WindowGroup("Version History", id: WindowID.versionHistory, for: URL.self) { $file in
+            if let file = file ?? launchFile {
+                VersionHistoryView(app: model, file: file)
+                    .environment(model)
+                    .buttonStyle(.secondary)
+            }
+        }
+        .defaultSize(width: 720, height: 480)
+        .defaultLaunchBehavior(launchFile == nil ? .automatic : .presented)
+
         Settings {
             SettingsView()
                 .environment(model)
                 .buttonStyle(.secondary)
         }
     }
+
+    private var launchFile: URL? {
+        guard case .versionHistory(let path) = launchWindow else { return nil }
+        return model.url(ofDisplayPath: path)
+    }
 }
 
 enum WindowID {
     static let setup = "setup"
     static let questions = "questions"
+    static let deletedFiles = "deleted-files"
+    static let versionHistory = "version-history"
 }
 
 extension OpenWindowAction {
@@ -95,6 +122,12 @@ extension OpenWindowAction {
     @MainActor
     func show(_ id: String) {
         self(id: id)
+        NSApp.activate()
+    }
+
+    @MainActor
+    func showVersionHistory(of file: URL) {
+        self(id: WindowID.versionHistory, value: file)
         NSApp.activate()
     }
 }
