@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/// The device whose edit became a conflict copy asks about it, with both files, their revisions, the devices that
-/// wrote them, and the size and modification time of each. The other device asks nothing.
 #[test]
 fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
     use crate::question::QuestionKind;
