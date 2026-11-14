@@ -937,7 +937,7 @@ impl World {
         }
     }
 
-    fn recover(&mut self, d: usize, trigger: RecoveryTrigger, why: String) -> Result<(), Failure> {
+    fn recover(&mut self, d: usize, cause: RecoveryCause, why: String) -> Result<(), Failure> {
         let device = &mut self.devices[d];
         if device.engine.history == self.space.history_id() && !device.rolled_back {
             return Err(Failure::Broken(format!(
@@ -954,10 +954,7 @@ impl World {
         let history = self.space.history_id().to_owned();
         let device = &mut self.devices[d];
         device.recovery = Some(why);
-        device
-            .engine
-            .commits
-            .enter_recovery(RecoveryCause::of(trigger));
+        device.engine.commits.enter_recovery(cause);
         device.engine.history = history;
         device.engine.behind = true;
         let listed = listing(&self.space);
@@ -1441,7 +1438,7 @@ impl World {
             device.engine.effects.catch_up(marker);
             self.recover(
                 d,
-                RecoveryTrigger::StoreOlderThanDisk,
+                RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk),
                 format!("the root marker counts {marker} effects, more than the store"),
             )?;
         }
@@ -1614,7 +1611,7 @@ impl World {
         if self.devices[d].engine.history != welcome.history_id {
             self.recover(
                 d,
-                RecoveryTrigger::SpaceRewound,
+                RecoveryCause::rewind(welcome.restore_seq, 0),
                 "the server's history changed".into(),
             )?;
         }
@@ -1628,7 +1625,7 @@ impl World {
             Reconnect::Recovery => {
                 self.recover(
                     d,
-                    RecoveryTrigger::StoreRolledBack,
+                    RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
                     format!(
                         "the server counts {} commits of this device, which the store cannot account for",
                         welcome.device_seq
@@ -1875,7 +1872,7 @@ impl World {
                             return self
                                 .recover(
                                     d,
-                                    cause.trigger,
+                                    cause,
                                     format!("the server refused a commit with {code:?}"),
                                 )
                                 .map(|()| true);
@@ -3319,7 +3316,7 @@ mod tests {
         assert!(matches!(
             world.recover(
                 0,
-                RecoveryTrigger::StoreRolledBack,
+                RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
                 "spurious recovery".into()
             ),
             Err(Failure::Broken(_))
