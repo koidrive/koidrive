@@ -6369,7 +6369,7 @@ fn a_file_edited_after_another_device_deleted_it_converges() {
     converge(3, &[vec![(0, file("a"))], steps]).unwrap();
 }
 
-fn a_rewind_after_a_restore_took_a_write_a_disk_held() -> Vec<(usize, Step)> {
+fn a_restore_took_a_write_a_disk_held() -> Vec<(usize, Step)> {
     use Step::*;
     let mut steps = vec![(0, act(0, 0, 0, "a", 0))];
     steps.extend([(0, Work(0)); 12]);
@@ -6382,24 +6382,46 @@ fn a_rewind_after_a_restore_took_a_write_a_disk_held() -> Vec<(usize, Step)> {
         (1, Connect),
         (1, Deliver(0)),
         (1, Effect(Outcome::Run)),
-        (0, Rewind),
     ]);
     steps
 }
 
 #[test]
 fn a_write_a_restore_took_may_be_discarded_once_a_rewind_follows() {
-    let mut steps = a_rewind_after_a_restore_took_a_write_a_disk_held();
+    let mut steps = a_restore_took_a_write_a_disk_held();
+    steps.push((0, Step::Rewind));
     steps.push((0, act(0, 0, 7662212994444525949, "a", 0)));
     converge(2, &[steps]).unwrap();
 }
 
 #[test]
+fn a_write_a_restore_took_and_a_disk_then_lost_stays_lost_once_a_rewind_follows() {
+    let mut world = World::new(2);
+    world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
+    for device in &mut world.devices {
+        let held: Vec<u128> = (device.disk.entries().iter())
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .map(|(ino, _)| *ino)
+            .collect();
+        for ino in held {
+            device.disk.delete(ino);
+        }
+        assert!(!device.disk.holds(1) && !device.disk.binned(1));
+    }
+    world.run(1, &[(0, Step::Rewind)]).unwrap();
+    let failure = world.phase(2, &[]).unwrap_err();
+    assert!(
+        failure.to_string().contains("a restore took write 1"),
+        "{failure}"
+    );
+}
+
+#[test]
 fn a_write_a_restore_took_is_not_sent_again_after_a_rewind_until_a_user_keeps_it() {
     let mut world = World::new(2);
-    world
-        .run(0, &a_rewind_after_a_restore_took_a_write_a_disk_held())
-        .unwrap();
+    let mut steps = a_restore_took_a_write_a_disk_held();
+    steps.push((0, Step::Rewind));
+    world.run(0, &steps).unwrap();
     world
         .run(1, &[(0, Step::Connect), (0, Step::Deliver(0))])
         .unwrap();

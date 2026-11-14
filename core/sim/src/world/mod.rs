@@ -937,10 +937,17 @@ impl World {
         let backed_up: BTreeSet<i64> = (backup.space.nodes().into_iter())
             .filter_map(|node| Some(node.current?.content?.mtime_ns))
             .collect();
+        let still_held = |write: i64| {
+            (self.devices.iter())
+                .any(|device| device.disk.holds(write) || device.disk.binned(write))
+                || self.removed.iter().any(|removed| removed.contains(&write))
+        };
         let taken: Vec<i64> = (self.writers.keys())
             .filter(|write| {
                 stored(&self.in_history, **write) && !stored(&backup.in_history, **write)
-                    || self.exposed.contains_key(write) && !backed_up.contains(write)
+                    || self.exposed.contains_key(write)
+                        && !backed_up.contains(write)
+                        && still_held(**write)
             })
             .copied()
             .collect();
