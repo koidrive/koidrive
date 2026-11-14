@@ -232,6 +232,7 @@ fn summary_regression_space_link_hints_are_copyable_and_terminal_safe() {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -275,12 +276,9 @@ fn summary_regression_space_link_hints_are_copyable_and_terminal_safe() {
             .output()
             .unwrap();
         assert!(parsed.status.success());
-        let expected = name
-            .replace('\u{1b}', "\\u{1b}")
-            .replace('\u{202e}', "\\u{202e}");
         assert_eq!(
             String::from_utf8(parsed.stdout).unwrap(),
-            expected,
+            "space-fixture",
             "{}",
             output.terminal
         );
@@ -319,13 +317,38 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
         } else if context == "unreadable" {
             fs::write(state.join("spaces"), "not a directory").unwrap();
         }
-        let server = profile.fixture(1, move |request| {
-            assert_eq!(request["request"], "questions");
-            json!({"response":"questions", "questions":ids.iter().enumerate().map(|(index, id)| json!({
+        let _held = (context == "linked").then(|| {
+            let lock = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(state.join("lock"))
+                .unwrap();
+            lock.lock().unwrap();
+            lock
+        });
+        let folders: Vec<_> = ids
+            .iter()
+            .zip(["Work Files", "Personal"])
+            .map(|(id, folder)| {
+                json!({
+                    "space_id":id, "space_name":folder, "path":profile.0.path().join(folder),
+                    "state":"up_to_date", "history_id":null, "last_seq":null, "head_seq":null,
+                    "remote_nodes":0, "local_entries":0, "questions":1, "problem":null
+                })
+            })
+            .collect();
+        let server = profile.fixture(if context == "linked" { 2 } else { 1 }, move |request| {
+            match request["request"].as_str().unwrap() {
+            "questions" => json!({"response":"questions", "questions":ids.iter().enumerate().map(|(index, id)| json!({
                 "id":format!("q{index}"), "space_id":id, "asked_at_ms":1000,
                 "kind":{"type":"ambiguous_disappearance"},
                 "items":[{"node_id":"n1", "path":"report.docx", "files":1}]
-            })).collect::<Vec<_>>()})
+            })).collect::<Vec<_>>() }),
+            "status" => json!({"response":"status", "status":{"account":null, "running":true, "folders":folders}}),
+            other => panic!("unexpected fixture request {other}"),
+            }
         });
         let output = profile.run(&["resolve"], true, false, &[("NO_COLOR", "1")]);
         server.join().unwrap();
@@ -354,7 +377,7 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
                 );
             }
             assert!(
-                output.terminal.contains("koi resolve --json"),
+                output.terminal.contains("koi status --verbose"),
                 "{}",
                 output.terminal
             );

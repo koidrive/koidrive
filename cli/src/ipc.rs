@@ -761,8 +761,9 @@ pub(crate) mod tests {
                 })
             })
             .unwrap();
-        let resolve =
-            |id: &str, word: &str| crate::resolve(&paths, Some(id.into()), Some(word.into()));
+        let resolve = |id: &str, word: &str| {
+            crate::resolve(&paths, Some(id.into()), Some(word.into()), false)
+        };
         let outcome = |done: Result<crate::report::Done, CliError>| match done {
             Ok(done) => Ok(done.outcome),
             Err(error) => Err(error.code),

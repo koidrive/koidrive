@@ -903,7 +903,7 @@ async fn execute(
         Command::Status { check } => status(&paths, check).await,
         Command::Diagnose => diagnose::run(&paths).await,
         Command::Update { verbose } => update::run(&paths, json, verbose).await,
-        Command::Resolve { id, answer } => resolve(&paths, id, answer).await,
+        Command::Resolve { id, answer } => resolve(&paths, id, answer, json).await,
         Command::Setup {
             device,
             login,
@@ -1489,17 +1489,26 @@ async fn resolve(
     paths: &Paths,
     id: Option<String>,
     word: Option<String>,
+    json: bool,
 ) -> Result<Done, CliError> {
     let questions = questions(paths).await?;
     let (Some(id), Some(word)) = (id, word) else {
-        let summary = if questions.is_empty() {
+        let summary = if questions.is_empty() || json || !output::concise("resolve") {
             questions_text(&questions)
         } else {
             let credential = Credential::load(&paths.credential()).ok().flatten();
-            let device = credential
+            let (folders, account) = match ipc::ask(paths, &Request::Status).await {
+                Ok(Some(Response::Status { status })) => (status.folders, status.account),
+                _ => (Driver::linked_folders(paths).unwrap_or_default(), None),
+            };
+            let device = account
                 .as_ref()
-                .map(|credential| credential.device_id.as_str());
-            let folders = Driver::linked_folders(paths).unwrap_or_default();
+                .map(|account| account.device_id.as_str())
+                .or_else(|| {
+                    credential
+                        .as_ref()
+                        .map(|credential| credential.device_id.as_str())
+                });
             questions
                 .iter()
                 .map(|question| {
@@ -1953,7 +1962,7 @@ async fn space(paths: Paths, action: SpaceAction) -> Result<Done, CliError> {
             };
             let summary = format!(
                 "{summary}Link a folder with:\n  koi folder link <folder> --space {}\n",
-                output::command_word(&space.name)
+                output::command_word(&space.space_id)
             );
             let done = done.human(format!("{id}\n"), summary);
             Ok(match named {
@@ -2792,7 +2801,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
             },
             Writers::RelativeTo(device),
             if folder.is_none() {
-                "  Inspect context: koi resolve --json\n"
+                "  Inspect context: koi status --verbose\n"
             } else {
                 ""
             },
