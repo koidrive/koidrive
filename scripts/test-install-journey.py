@@ -71,7 +71,8 @@ class InstallJourney(unittest.TestCase):
                 exit
             fi
             if [ "${1:-}" = status ]; then
-                printf 'status\\n' >> "$HOME/status.calls"
+                printf '%s\\n' "$*" >> "$HOME/status.calls"
+                [ "${2:-}" = --check ] || exit 0
                 exit "${TEST_STATUS_EXIT:-4}"
             fi
             printf '%s\\n' "$0" "$@" > "$HOME/setup.args"
@@ -216,7 +217,7 @@ class InstallJourney(unittest.TestCase):
     def test_a_set_up_device_gets_no_setup_instructions(self):
         output = self.successful_install("--no-setup", env={"TEST_STATUS_EXIT": "0"})
         self.assertNotIn("To set up Koidrive", output)
-        self.assertEqual((self.home / "status.calls").read_text(), "status\n")
+        self.assertEqual((self.home / "status.calls").read_text(), "status --check\n")
 
     def test_no_app_is_forwarded_to_setup(self):
         self.successful_install("--no-app")

@@ -319,7 +319,7 @@ main() {
         "$install_dir/koi" "$@" < /dev/tty
     else
         status=0
-        "$install_dir/koi" status >/dev/null 2>&1 || status=$?
+        "$install_dir/koi" status --check >/dev/null 2>&1 || status=$?
         if [ "$status" = 4 ]; then
             printf 'To set up Koidrive, run: %s/koi %s\n' "$(shell_quote "$install_dir")" "$*"
         fi
