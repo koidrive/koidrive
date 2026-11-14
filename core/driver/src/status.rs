@@ -68,6 +68,9 @@ pub struct FolderStatus {
     /// long or keeps failing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<Wait>,
+    /// Why the folder cannot reach the server and when it tries again, while its state is \`Offline\`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable: Option<Unreachable>,
     /// Why the folder is recovering (design §6.4), while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoveryCause>,
@@ -135,6 +138,14 @@ pub struct Totals {
     pub files_to_download: u64,
     pub bytes_done: u64,
     pub bytes_total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unreachable {
+    /// In plain words, such as "the server's address could not be found".
+    pub why: String,
+    /// When the connection is tried again, in Unix milliseconds.
+    pub retry_at_ms: i64,
 }
 
 /// A call a folder sends again later, after the server put it off or it kept failing.

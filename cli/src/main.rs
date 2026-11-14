@@ -2814,6 +2814,7 @@ mod tests {
             problem: Some("cannot read \u{1b}[31mred\u{9b}31m".into()),
             progress: None,
             wait: None,
+            unreachable: None,
         };
         let status = Status {
             account: Some(koidrive_driver::Account {
@@ -2861,6 +2862,7 @@ mod tests {
             questions: 1,
             problem: None,
             wait: None,
+            unreachable: None,
         };
         assert!(
             folder_text(&folder).ends_with(
@@ -2891,6 +2893,7 @@ mod tests {
             questions: 1,
             problem: Some(problem.into()),
             wait: None,
+            unreachable: None,
         };
         let text = folder_text(&folder("a.txt waits to be read again"));
         assert!(
@@ -2926,6 +2929,7 @@ mod tests {
             problem: problem.map(str::to_owned),
             progress: None,
             wait: None,
+            unreachable: None,
         };
         for state in [FolderState::Stopped, FolderState::CatchingUp] {
             let text = restarted(folder(state, None)).unwrap().text;

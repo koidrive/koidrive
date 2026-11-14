@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fmt;
 use std::time::Duration;
 
 use koidrive_proto::v1::{CaughtUp, CommitRecord, CommitResult, Notice, ResyncRequired, Welcome};
 
 use crate::error::StopReason;
+use crate::transport::{Cause, Transport};
 
 /// What a session reports, in the order the driver must handle it.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,7 +44,7 @@ pub struct Committed {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisconnectReason {
     /// The connection could not be made or broke.
-    Transport(String),
+    Transport(Transport),
     /// The server refused the WebSocket upgrade with this HTTP status.
     Refused { status: u16 },
     /// The server closed the connection, after a `Goodbye` when it sent one.
@@ -51,4 +53,68 @@ pub enum DisconnectReason {
     ProtocolViolation(String),
     /// The connection, its upgrade or its `Welcome` took too long, or nothing arrived for two ping intervals.
     Timeout,
+}
+
+impl DisconnectReason {
+    /// What failed, for logs: the step and the kind of failure, such as `connect: dns`, `upgrade: http 503` or
+    /// `closed: 1011`.
+    pub fn kind(&self) -> String {
+        match self {
+            DisconnectReason::Transport(transport) => {
+                format!("{}: {}", transport.step, transport.cause.name())
+            }
+            DisconnectReason::Refused { status } => format!("upgrade: http {status}"),
+            DisconnectReason::Closed {
+                code: Some(code), ..
+            } => format!("closed: {code}"),
+            DisconnectReason::Closed { code: None, .. } => "closed".into(),
+            DisconnectReason::ProtocolViolation(_) => "protocol".into(),
+            DisconnectReason::Timeout => "timeout".into(),
+        }
+    }
+
+    /// The underlying error with its sources, the server's close reason, or what broke the protocol. Empty when
+    /// there is none.
+    pub fn detail(&self) -> &str {
+        match self {
+            DisconnectReason::Transport(transport) => &transport.detail,
+            DisconnectReason::Closed { reason, .. } => reason,
+            DisconnectReason::ProtocolViolation(what) => what,
+            DisconnectReason::Refused { .. } | DisconnectReason::Timeout => "",
+        }
+    }
+
+    /// Whether the server could not be reached, rather than that it answered and closed or refused.
+    pub fn unreachable(&self) -> bool {
+        match self {
+            DisconnectReason::Transport(transport) => transport.cause.unreachable(),
+            DisconnectReason::Timeout => true,
+            _ => false,
+        }
+    }
+}
+
+/// The reason in plain words.
+impl fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DisconnectReason::Transport(Transport {
+                cause: Cause::Other,
+                detail,
+                ..
+            }) => f.write_str(detail),
+            DisconnectReason::Transport(transport) => transport.cause.fmt(f),
+            DisconnectReason::Refused { status } => write!(f, "the server answered HTTP {status}"),
+            DisconnectReason::Closed {
+                code: Some(code), ..
+            } => {
+                write!(f, "the server closed the connection (code {code})")
+            }
+            DisconnectReason::Closed { code: None, .. } => f.write_str("the connection was closed"),
+            DisconnectReason::ProtocolViolation(what) => {
+                write!(f, "the server broke the protocol: {what}")
+            }
+            DisconnectReason::Timeout => f.write_str("the server did not answer in time"),
+        }
+    }
 }

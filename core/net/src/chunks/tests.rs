@@ -304,6 +304,7 @@ fn errors_do_not_show_tickets() {
     let error = ChunkError::Unavailable {
         hash: vec![0xab; 2],
         message: "connection refused".into(),
+        cause: Some(Cause::Refused),
     };
     assert_eq!(
         error.to_string(),

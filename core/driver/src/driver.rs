@@ -2040,6 +2040,7 @@ fn folder_status(
         questions,
         problem: None,
         wait: None,
+        unreachable: None,
         progress: None,
     }
 }

@@ -25,6 +25,7 @@ use crate::api::Api;
 use crate::backoff::Backoff;
 use crate::error::{CallError, Resend, ServerError};
 use crate::session::Session;
+use crate::transport::Cause;
 
 pub const MAX_CHUNKS_PER_CALL: usize = 1000;
 /// How many chunks a [`Transfer`] uploads at once unless it is given another [`UploadGate`].
@@ -63,8 +64,13 @@ pub enum ChunkError {
         status: u16,
         error: Option<ServerError>,
     },
+    /// `cause` is what kind of failure it was, when the request reached no answer.
     #[error("the transfer of chunk {} kept failing: {message}", hex(.hash))]
-    Unavailable { hash: Vec<u8>, message: String },
+    Unavailable {
+        hash: Vec<u8>,
+        message: String,
+        cause: Option<Cause>,
+    },
     #[error("the server gave no usable plan or target for chunk {}", hex(.hash))]
     NoTarget { hash: Vec<u8> },
     #[error("reading or writing chunk {}", hex(.hash))]
@@ -266,6 +272,7 @@ impl Transfer {
                 return Err(ChunkError::Unavailable {
                     hash: todo[deferred[0]].hash.clone(),
                     message,
+                    cause: None,
                 });
             }
             tokio::time::sleep(if wait.is_zero() {
@@ -348,6 +355,7 @@ impl Transfer {
                     return Err(ChunkError::Unavailable {
                         hash: chunk.hash.clone(),
                         message,
+                        cause: None,
                     });
                 }
             }
@@ -466,6 +474,7 @@ impl Transfer {
             message = self.stalled(&progress) => Attempt::Retry(ChunkError::Unavailable {
                 hash: chunk.hash.clone(),
                 message,
+                cause: Some(Cause::TimedOut),
             }),
         }
     }
@@ -563,6 +572,7 @@ impl Transfer {
             Err(_) => Attempt::Retry(ChunkError::Unavailable {
                 hash: chunk.hash.clone(),
                 message: format!("no complete answer within {:?}", self.attempt_timeout),
+                cause: Some(Cause::TimedOut),
             }),
         }
     }
@@ -690,10 +700,11 @@ fn protobuf(response: &reqwest::Response) -> bool {
 }
 
 fn unavailable(chunk: &ChunkRef, error: reqwest::Error) -> ChunkError {
-    let message = error.without_url().to_string();
+    let (cause, message) = Cause::of(&error.without_url());
     ChunkError::Unavailable {
         hash: chunk.hash.clone(),
         message,
+        cause: Some(cause),
     }
 }
 

@@ -375,6 +375,9 @@ pub struct LinkedFolder {
 pub enum FolderState {
     /// Linked, waiting for its first sync or for the session to start.
     Waiting,
+    /// The server cannot be reached. A [`ProblemKind::ServerUnreachable`] for the space says why
+    /// and when the connection is tried again.
+    Offline,
     Syncing,
     UpToDate,
     /// Stopped by a failed check, such as a missing folder or marker (design §6.2) or a store
@@ -670,8 +673,11 @@ pub enum ProblemKind {
     UnsupportedFileSystem,
     /// The space uses a newer format than this app understands (design §4.2).
     SpaceFormatTooNew,
-    /// A file cannot be read, so it is not uploaded (design §5.7).
+    /// A file cannot be read, so it is not uploaded (design §5.7). The other changes go on.
     FileUnreadable { reason: String },
+    /// The server cannot be reached, in plain words, such as "the server's address could not be
+    /// found". The connection is tried again at `retry_at_ms`, in Unix milliseconds.
+    ServerUnreachable { reason: String, retry_at_ms: i64 },
     /// A file cannot be written, so a change to it cannot be applied (design §5.7).
     FileNotWritable { reason: String },
     /// A file keeps changing, such as a log or a database being written, so it is not uploaded.

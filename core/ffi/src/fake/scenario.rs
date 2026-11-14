@@ -490,7 +490,27 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
             }
         }
         FakeScenario::Paused => saved.paused = true,
-        FakeScenario::Offline => script.activity = FakeActivity::Offline,
+        FakeScenario::Offline => {
+            script.activity = FakeActivity::Offline;
+            for folder in &mut saved.folders {
+                folder.state = FolderState::Offline;
+            }
+            let space_ids: Vec<String> = (saved.folders.iter())
+                .map(|folder| folder.space_id.clone())
+                .collect();
+            for space_id in space_ids {
+                problem(
+                    saved,
+                    Some(&space_id),
+                    None,
+                    ProblemKind::ServerUnreachable {
+                        reason: "the server's address could not be found".to_owned(),
+                        retry_at_ms: now + 30_000,
+                    },
+                    now - 120_000,
+                );
+            }
+        }
         FakeScenario::MassDelete => mass_delete(saved, now),
         FakeScenario::AmbiguousDisappearance => disappearance(saved, now, 1, 4),
         FakeScenario::Recovery => recovery(saved, now, 6),

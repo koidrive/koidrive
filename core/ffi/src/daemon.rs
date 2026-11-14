@@ -20,7 +20,7 @@ use crate::helper::{
     SpacesData, TrashData, UsagesData, VersionsData,
 };
 use crate::profile::Profile;
-use crate::state::{self, Halted};
+use crate::state::{self, Seen};
 use crate::types::{
     Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
     RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink,
@@ -50,7 +50,7 @@ struct Inner {
     status: Status,
     questions: Vec<driver::Question>,
     conflicts: BTreeMap<String, driver::QuestionKind>,
-    halted: Halted,
+    seen: Seen,
     sent: SessionState,
 }
 
@@ -93,7 +93,7 @@ impl DaemonCore {
                 status: Status::default(),
                 questions: Vec::new(),
                 conflicts: BTreeMap::new(),
-                halted: Halted::new(),
+                seen: Seen::new(),
                 sent: SessionState {
                     status: SyncStatus::Stopped,
                     progress: None,
@@ -162,7 +162,7 @@ impl DaemonCore {
             &inner.status,
             &inner.questions,
             inner.started,
-            &mut inner.halted,
+            &mut inner.seen,
         );
         let sent = &inner.sent;
         let mut events = Vec::new();

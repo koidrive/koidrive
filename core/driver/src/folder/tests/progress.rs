@@ -226,6 +226,7 @@ fn an_upload_cut_off_part_way_and_sent_again_counts_no_byte_twice() {
     let cut = ChunkError::Unavailable {
         hash: upload.chunks[1].hash.clone(),
         message: "the connection was reset".into(),
+        cause: None,
     };
     let step = a.folder.uploaded(Err(cut));
     a.take(step).unwrap();

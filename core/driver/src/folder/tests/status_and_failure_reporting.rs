@@ -117,6 +117,7 @@ fn an_upload_that_fails_counts_how_it_failed() {
     let error = ChunkError::Unavailable {
         hash: upload.chunks[0].hash.clone(),
         message: "connection reset".into(),
+        cause: Some(koidrive_net::Cause::Reset),
     };
     let step = a.folder.uploaded(Err(error));
     a.take(step).unwrap();
@@ -447,4 +448,83 @@ fn the_reason_of_a_result_that_waits_for_the_log_outlasts_the_first_scan() {
              it is fixed"
         )
     );
+}
+
+
+fn unreachable_server() -> koidrive_net::DisconnectReason {
+    koidrive_net::DisconnectReason::Transport(koidrive_net::Transport {
+        step: koidrive_net::Step::Connect,
+        cause: koidrive_net::Cause::Dns,
+        detail: "failed to lookup address information".into(),
+    })
+}
+
+#[test]
+fn a_server_that_cannot_be_reached_shows_offline_with_the_cause_and_the_next_try() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    a.event(Event::Disconnected {
+        reason: unreachable_server(),
+        retry_in: Duration::from_secs(30),
+    })
+    .unwrap();
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Offline);
+    let unreachable = view.unreachable.expect("the status says why");
+    assert_eq!(unreachable.why, "the server's address could not be found");
+    let problem = view.problem.unwrap_or_default();
+    assert!(
+        problem.starts_with("can't connect to the server: the server's address could not be found; trying again at "),
+        "{problem}"
+    );
+    assert_eq!(view.wait.map(|wait| wait.until_ms), Some(unreachable.retry_at_ms));
+
+    a.connect(&remote);
+    let view = a.folder.view();
+    assert_ne!(view.state, FolderState::Offline);
+    assert_eq!(view.unreachable, None);
+    assert_eq!(view.problem, None);
+}
+
+#[test]
+fn a_quick_reconnect_shows_connecting_until_it_fails_again() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    let disconnected = || Event::Disconnected {
+        reason: unreachable_server(),
+        retry_in: Duration::from_secs(1),
+    };
+    a.event(disconnected()).unwrap();
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Connecting);
+    assert_eq!(view.unreachable, None);
+
+    a.event(disconnected()).unwrap();
+    assert_eq!(a.folder.view().state, FolderState::Offline);
+}
+
+#[test]
+fn a_transfer_that_cannot_reach_the_server_shows_offline() {
+    for (cause, offline) in [
+        (koidrive_net::Cause::Unreachable, true),
+        (koidrive_net::Cause::Status(500), false),
+    ] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        let Some(Work::Upload(upload)) = a.work.pop_front() else {
+            panic!("the new file is uploaded");
+        };
+        let error = ChunkError::Unavailable {
+            hash: upload.chunks[0].hash.clone(),
+            message: "error sending request".into(),
+            cause: Some(cause),
+        };
+        let step = a.folder.uploaded(Err(error));
+        a.take(step).unwrap();
+        let view = a.folder.view();
+        assert_eq!(view.state == FolderState::Offline, offline, "{cause:?}");
+        assert_eq!(view.unreachable.is_some(), offline, "{cause:?}");
+    }
 }

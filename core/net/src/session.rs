@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
@@ -23,7 +25,7 @@ use prost::Message as _;
 use rustls::pki_types::ServerName;
 use rustls_platform_verifier::BuilderVerifierExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::error::Elapsed;
@@ -43,6 +45,7 @@ use crate::backoff::Backoff;
 use crate::error::{ApiError, CallError, NotResent, Resend, ServerError, StopReason};
 use crate::event::{Committed, DisconnectReason, Event};
 use crate::stream::{Fed, Stream};
+use crate::transport::{Cause, Step, Transport};
 
 /// The protocol minor versions under `/v1/` this client speaks (spec v0 section 9.1).
 pub const PROTO_MIN: u32 = 1;
@@ -416,9 +419,9 @@ impl Exit {
         }
     }
 
-    fn transport(error: impl std::fmt::Display) -> Exit {
+    fn transport(transport: Transport) -> Exit {
         Exit::Reconnect {
-            reason: DisconnectReason::Transport(error.to_string()),
+            reason: DisconnectReason::Transport(transport),
             now: false,
         }
     }
@@ -559,7 +562,11 @@ impl Task {
                 {
                     return Err(exit);
                 }
-                return Err(Exit::transport(error));
+                let mut transport = Transport::of(Step::Token, &error);
+                if let Some(status) = error.status() {
+                    transport.cause = Cause::Status(status);
+                }
+                return Err(Exit::transport(transport));
             }
         };
         self.token = Some(token.token.clone());
@@ -570,15 +577,30 @@ impl Task {
             .trim_matches(['[', ']'])
             .to_owned();
         let port = self.url.port_or_known_default().unwrap_or(80);
-        let tcp = TcpStream::connect((host.as_str(), port))
+        let unresolved = |error: &io::Error| {
+            Exit::transport(Transport {
+                cause: Cause::Dns,
+                ..Transport::of(Step::Connect, error)
+            })
+        };
+        let addresses: Vec<SocketAddr> = lookup_host((host.as_str(), port))
             .await
-            .map_err(Exit::transport)?;
+            .map_err(|error| unresolved(&error))?
+            .collect();
+        if addresses.is_empty() {
+            let error = io::Error::new(io::ErrorKind::NotFound, "the name has no address");
+            return Err(unresolved(&error));
+        }
+        let tcp = TcpStream::connect(&addresses[..])
+            .await
+            .map_err(|error| Exit::transport(Transport::of(Step::Connect, &error)))?;
         let _ = tcp.set_nodelay(true);
         let io: Box<dyn Io> = if self.url.scheme() == "wss" {
             let name = ServerName::try_from(host.clone())
                 .map_err(|e| Exit::Stop(StopReason::BadUrl(e.to_string())))?;
             let tls = TlsConnector::from(self.tls_config()?);
-            Box::new(tls.connect(name, tcp).await.map_err(Exit::transport)?)
+            let tls = tls.connect(name, tcp).await;
+            Box::new(tls.map_err(|error| Exit::transport(Transport::of(Step::Tls, &error)))?)
         } else {
             Box::new(tcp)
         };
@@ -605,7 +627,7 @@ impl Task {
             {
                 Ok((socket, _)) => return Ok(socket),
                 Err(tungstenite::Error::Http(response)) => response,
-                Err(error) => return Err(Exit::transport(error)),
+                Err(error) => return Err(Exit::transport(Transport::of(Step::Upgrade, &error))),
             };
         let status = response.status().as_u16();
         let protobuf = response
@@ -931,7 +953,7 @@ impl Task {
             Some(Err(tungstenite::Error::Capacity(_))) => {
                 Err(Exit::violation("a message larger than 1 MiB"))
             }
-            Some(Err(error)) => Err(Exit::transport(error)),
+            Some(Err(error)) => Err(Exit::transport(Transport::of(Step::Stream, &error))),
             Some(Ok(WsMessage::Binary(bytes))) => match ServerMessage::decode(bytes) {
                 Ok(message) => Ok(message.msg),
                 Err(_) => Err(Exit::violation("a malformed ServerMessage")),
@@ -1031,7 +1053,7 @@ impl Task {
     async fn write(&self, socket: &mut Socket, message: WsMessage) -> Result<(), Exit> {
         match timeout(self.config.write_timeout, socket.send(message)).await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(Exit::transport(error)),
+            Ok(Err(error)) => Err(Exit::transport(Transport::of(Step::Stream, &error))),
             Err(_) => Err(Exit::timeout()),
         }
     }

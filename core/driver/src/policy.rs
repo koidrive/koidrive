@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use koidrive_net::{CallError, ServerError};
+use koidrive_net::{CallError, ChunkError, ServerError};
 use koidrive_proto::v1::error::Code;
 
 use crate::status::WaitKind;
@@ -32,6 +32,10 @@ pub fn wait_kind(refusal: Option<&ServerError>) -> WaitKind {
         Some(Ok(Code::QuotaExceeded)) => WaitKind::Quota,
         _ => WaitKind::Retry,
     }
+}
+
+pub fn unreachable(error: &ChunkError) -> bool {
+    matches!(error, ChunkError::Unavailable { cause: Some(cause), .. } if cause.unreachable())
 }
 
 pub fn after_call_error(error: &CallError) -> Disposition {
