@@ -28,9 +28,10 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
-    /// When the stored choice last went from off to on, in microseconds since the Unix epoch.
+    /// App crashes from before it are not sent: the last time the stored choice turned off, or from off back on, in
+    /// microseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_since: Option<u64>,
+    pub crashes_since: Option<u64>,
 }
 
 /// Reports and events taken from the queue to send.
@@ -353,11 +354,12 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Settings::default(),
             settings => settings?,
         };
-        settings.on_since = match (settings.enabled, on) {
-            (Some(false), true) => Some(now_micros()),
-            (_, true) => settings.on_since,
-            (_, false) => None,
-        };
+        if !matches!(
+            (settings.enabled, on),
+            (None, true) | (Some(true), true) | (Some(false), false)
+        ) {
+            settings.crashes_since = Some(now_micros());
+        }
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
         if settings.install_id.is_none() {
@@ -462,7 +464,7 @@ impl Store {
         let settings = self.settings()?;
         if settings.install_id.is_none()
             || settings
-                .on_since
+                .crashes_since
                 .is_some_and(|since| crashed_at < Some(since))
         {
             return Ok(());
@@ -828,7 +830,7 @@ mod tests {
             Settings {
                 enabled: Some(false),
                 install_id: None,
-                on_since: None,
+                crashes_since: off.crashes_since,
             }
         );
         assert!(store.peek().unwrap().is_empty());
@@ -1416,9 +1418,9 @@ mod tests {
         store.absorb_app_crash(&crash_report("A", before)).unwrap();
         assert_eq!(app_crashes(&store), 0);
 
-        let since = store.settings().unwrap().on_since.unwrap();
+        let since = store.settings().unwrap().crashes_since.unwrap();
         store.set(true).unwrap();
-        assert_eq!(store.settings().unwrap().on_since, Some(since));
+        assert_eq!(store.settings().unwrap().crashes_since, Some(since));
         let mut off = crash_report("B", since + 1);
         off["user"]["reports_on"] = false.into();
         store.absorb_app_crash(&off).unwrap();
@@ -1435,15 +1437,31 @@ mod tests {
         let (_dir, store) = store();
         let crashed = now_micros();
         store.install_id().unwrap();
-        assert_eq!(store.settings().unwrap().on_since, None);
+        assert_eq!(store.settings().unwrap().crashes_since, None);
         store.absorb_app_crash(&crash_report("A", crashed)).unwrap();
         assert_eq!(app_crashes(&store), 1);
 
         let (_dir, store) = self::store();
         let crashed = now_micros();
         store.set(true).unwrap();
-        assert_eq!(store.settings().unwrap().on_since, None);
+        assert_eq!(store.settings().unwrap().crashes_since, None);
         store.absorb_app_crash(&crash_report("A", crashed)).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+    }
+
+    #[test]
+    fn an_app_crash_from_before_reports_were_turned_off_stays_revoked_when_the_environment_turns_them_on()
+     {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let crashed = now_micros();
+        store.set(false).unwrap();
+        store.install_id().unwrap();
+        store.absorb_app_crash(&crash_report("A", crashed)).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+        store
+            .absorb_app_crash(&crash_report("B", now_micros()))
+            .unwrap();
         assert_eq!(app_crashes(&store), 1);
     }
 
