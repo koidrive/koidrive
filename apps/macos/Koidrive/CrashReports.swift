@@ -24,12 +24,11 @@ enum CrashReports {
         Task.detached(priority: .utility) {
             guard let store = KSCrash.shared.reportStore else { return }
             for id in store.reportIDs.map(\.int64Value) {
-                if let data = store.reportData(for: id)?.value {
-                    do {
-                        try session.recordAppCrash(report: String(decoding: data, as: UTF8.self))
-                    } catch {
-                        continue
-                    }
+                guard let data = store.reportData(for: id)?.value else { continue }
+                do {
+                    try session.recordAppCrash(report: String(decoding: data, as: UTF8.self))
+                } catch {
+                    continue
                 }
                 store.deleteReport(with: id)
             }

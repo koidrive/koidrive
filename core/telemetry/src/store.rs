@@ -477,18 +477,18 @@ impl Store {
         let (Some(event), Some(stamped)) = (crate::app_crash::app_crash(report), stamped) else {
             return Ok(());
         };
-        if self.status(&var)?.mode == consent::Mode::Off {
-            return Ok(());
-        }
-        self.install_id()?;
         let id = report["report"]["id"].as_str().map(str::to_owned);
         let _lock = self.lock(true)?;
-        let settings = self.settings()?;
+        let mut settings = self.settings()?;
         if consent::resolve(&var, settings.enabled).mode == consent::Mode::Off
-            || settings.install_id.is_none()
             || settings.generation.as_deref().unwrap_or_default() != stamped
         {
             return Ok(());
+        }
+        if settings.install_id.is_none() {
+            self.remove_queues()?;
+            settings.install_id = Some(InstallId::generate());
+            write(&self.dir.join("settings.json"), &settings)?;
         }
         let mut queue = self.queue()?;
         if id
