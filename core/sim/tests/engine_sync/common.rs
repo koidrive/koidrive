@@ -1110,7 +1110,9 @@ fn revive(
     // did not discard there, is the user's, and so is every discarded folder above it.
     let trees = &device.trees;
     let reclaimed = |id: &&String| {
-        let changed = device.touched.contains(*id) && trees.local().get(id).is_some();
+        let changed = device.touched.contains(*id)
+            && (trees.local().get(id))
+                .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
         changed
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
