@@ -148,12 +148,21 @@ fn copy_koi(path: &Path) -> PathBuf {
 }
 
 fn script_install(home: &Path, version: &str, report: &str) -> (PathBuf, GitHub) {
+    script_install_saying(home, version, report, "")
+}
+
+fn script_install_saying(
+    home: &Path,
+    version: &str,
+    report: &str,
+    said: &str,
+) -> (PathBuf, GitHub) {
     let binary = copy_koi(&home.join(".local/bin/koi"));
     let helper = format!(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\ncase \"$1\" in\n--version) echo 'koi {version}' ;;\n_reconcile) echo '{report}' ;;\nesac\n"
     );
     let installer = http(format!(
-        "printf '%s|%s\\n' \"$KOIDRIVE_INSTALL_DIR\" \"$KOIDRIVE_VERSION\" >> \"$KOIDRIVE_INSTALL_DIR/installer.calls\"\nprintf '%s' '{}' > \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nchmod +x \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nmv \"$KOIDRIVE_INSTALL_DIR/koi.new\" \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
+        "{said}printf '%s|%s\\n' \"$KOIDRIVE_INSTALL_DIR\" \"$KOIDRIVE_VERSION\" >> \"$KOIDRIVE_INSTALL_DIR/installer.calls\"\nprintf '%s' '{}' > \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nchmod +x \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nmv \"$KOIDRIVE_INSTALL_DIR/koi.new\" \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
         helper.replace('\'', "'\\''")
     ));
     (binary, installer)
@@ -544,6 +553,168 @@ fn koi_update_text_hides_the_reconcile_envelope_but_keeps_it_in_the_log() {
     assert!(!text.contains("schema_version"), "{text}");
     let log = update_log(home.path());
     assert!(std::fs::read_to_string(log).unwrap().contains(REPORT));
+}
+
+const CHECKS: &str =
+    "echo 'Signature verified for SHA256SUMS'\necho 'SHA256 verified for koidrive.tar.gz'\n";
+
+fn update_text(said: &str, args: &[&str]) -> Option<(Output, String)> {
+    let home = tempfile::tempdir().unwrap();
+    let github = github("v99.0.0");
+    let (binary, installer) = script_install_saying(home.path(), "99.0.0", REPORT, said);
+    let output = koi_at(&binary, home.path(), &github, args)
+        .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
+        .output()
+        .unwrap();
+    if development_version() {
+        assert!(output.status.success());
+        return None;
+    }
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    Some((output, log))
+}
+
+#[test]
+fn koi_update_shows_its_steps_and_keeps_the_installer_lines_in_the_log() {
+    let Some((output, log)) = update_text(CHECKS, &["update"]) else {
+        return;
+    };
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert_eq!(
+        stderr,
+        "Downloading Koidrive 99.0.0\nDownloaded, checked and installed Koidrive 99.0.0.\nChecking the background service\nChecked the background service.\n"
+    );
+    assert!(
+        stdout.starts_with(&format!(
+            "Updated Koidrive from {} to 99.0.0.\n",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("verified"), "{stdout}");
+    assert!(log.contains("Signature verified for SHA256SUMS"), "{log}");
+}
+
+#[test]
+fn koi_update_verbose_prints_the_installer_lines() {
+    let Some((output, _)) = update_text(CHECKS, &["update", "--verbose"]) else {
+        return;
+    };
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.starts_with(
+            "Signature verified for SHA256SUMS\nSHA256 verified for koidrive.tar.gz\n"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_failed_install_shows_what_the_installer_said() {
+    let said = "echo 'Downloaded koidrive.tar.gz'\necho 'SHA256 mismatch for koidrive.tar.gz' >&2\nexit 1\n";
+    let Some((output, _)) = update_text(said, &["update"]) else {
+        return;
+    };
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with("Downloading Koidrive 99.0.0\n"),
+        "{stderr}"
+    );
+    for said in [
+        "Downloaded koidrive.tar.gz\n",
+        "SHA256 mismatch for koidrive.tar.gz\n",
+    ] {
+        assert!(stderr.contains(said), "{stderr}");
+    }
+    assert!(
+        stderr.contains("install.sh failed (exit status 1)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Downloaded, checked"), "{stderr}");
+}
+
+#[test]
+fn koi_update_on_a_terminal_shows_setup_style_steps_without_the_checks() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let github = github("v99.0.0");
+    let (binary, installer) = script_install_saying(home.path(), "99.0.0", REPORT, CHECKS);
+    let mut command = koi_at(&binary, home.path(), &github, &["update"]);
+    command
+        .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm-256color")
+        .env_remove("KOI_PLAIN");
+    let terminal = on_a_terminal(command);
+    if development_version() {
+        assert!(terminal.contains("Development builds do not update to releases."));
+        return;
+    }
+    assert!(
+        terminal.contains("◇  Downloaded, checked and installed Koidrive 99.0.0\n"),
+        "{terminal}"
+    );
+    assert!(
+        terminal.contains("◇  Checked the background service\n"),
+        "{terminal}"
+    );
+    assert!(
+        terminal.contains(&format!(
+            "Updated Koidrive from {} to 99.0.0.",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{terminal}"
+    );
+    assert!(!terminal.contains("verified"), "{terminal}");
+}
+
+fn on_a_terminal(mut command: Command) -> String {
+    use std::io::Read;
+    let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
+    rustix::pty::grantpt(&master).unwrap();
+    rustix::pty::unlockpt(&master).unwrap();
+    let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(name.to_str().unwrap())
+        .unwrap();
+    let size = rustix::termios::Winsize {
+        ws_row: 32,
+        ws_col: 100,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    rustix::termios::tcsetwinsize(&slave, size).unwrap();
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave);
+    let mut child = command.spawn().unwrap();
+    drop(command);
+    let mut master = std::fs::File::from(master);
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            match master.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&bytes).replace("\r\n", "\n")
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "koi update did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    reader.join().unwrap()
 }
 
 #[test]
@@ -1019,6 +1190,48 @@ fn koi_update_through_homebrew_says_when_koidrive_is_already_the_newest() {
             "{text}"
         );
         assert!(!calls.exists());
+    }
+}
+
+#[test]
+fn koi_update_through_homebrew_shows_steps_and_brew_output_only_on_failure() {
+    for status in [0, 1] {
+        let home = tempfile::tempdir().unwrap();
+        let github = github("v99.0.0");
+        let link = homebrew_binary(home.path(), false);
+        let koi = std::fs::canonicalize(&link).unwrap();
+        let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+        upgrading_brew(&prefix, &koi, "99.0.0", status);
+        let output = koi_at(&link, home.path(), &github, &["update"])
+            .env("PATH", home.path().join("empty"))
+            .output()
+            .unwrap();
+        if development_version() {
+            assert!(output.status.success());
+            continue;
+        }
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        if status == 0 {
+            assert!(output.status.success(), "{stdout}{stderr}");
+            assert_eq!(
+                stderr,
+                "Updating Koidrive with Homebrew\nHomebrew installed Koidrive 99.0.0.\nChecking the background service\nChecked the background service.\n"
+            );
+            assert!(!stdout.contains("==>"), "{stdout}");
+        } else {
+            assert!(!output.status.success(), "{stdout}{stderr}");
+            assert!(
+                stderr.starts_with(
+                    "Updating Koidrive with Homebrew\n==> Upgrading koidrive\nError: koidrive did not download\n"
+                ),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("brew upgrade failed (exit status 1)"),
+                "{stderr}"
+            );
+        }
     }
 }
 

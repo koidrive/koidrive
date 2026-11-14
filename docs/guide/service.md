@@ -66,7 +66,7 @@ The daemon logs at the `info` level. Set `KOIDRIVE_LOG` to change it, for exampl
 - For a manually installed app in `/Applications` or `~/Applications`, it downloads and verifies the release's app, then replaces the older copy. Other app locations get the release's download link.
 - Development builds do not update to releases.
 
-After an upgrade, the new `koi` takes over the background service. When the `koi` already runs the newest release, `koi update` changes nothing and reports `unchanged`. It upgrades Koidrive for one user, so it refuses to run as root. Each run writes what it ran and printed to `update.log`, in `~/Library/Logs/Koidrive/` on macOS and in the state folder on Linux.
+After an upgrade, the new `koi` takes over the background service. When the `koi` already runs the newest release, `koi update` changes nothing and reports `unchanged`. It upgrades Koidrive for one user, so it refuses to run as root. It shows one line per step. The output of the installer and of Homebrew appears only when a step fails, or with `koi update --verbose`. Each run writes what it ran and printed to `update.log`, in `~/Library/Logs/Koidrive/` on macOS and in the state folder on Linux.
 
 On Apple silicon Macs, reconciliation also ensures that the installed app matches the invoking release, without prompting or downgrading a verified newer app. The app's own bundled helper skips that installation step. The installer keeps a replaced bundle until the new daemon confirms its version, and preserves it if the handoff cannot be verified. An app failure does not change reconciliation's service result or exit status. CI skips app installation for every caller.
 
