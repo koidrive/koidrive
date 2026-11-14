@@ -667,7 +667,12 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     let kept = (upgraded_again.iter())
         .flat_map(|(_, body)| body["batch"].as_array().unwrap().clone())
         .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 99)
-        .map(|event| event["uuid"].to_string())
+        .map(|event| {
+            event["uuid"]
+                .as_str()
+                .expect("a sent panic has a uuid")
+                .to_owned()
+        })
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(kept.len(), 1, "{kept:?}");
 }
