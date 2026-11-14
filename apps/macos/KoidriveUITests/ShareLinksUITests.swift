@@ -10,24 +10,20 @@ final class ShareLinksUITests: XCTestCase {
     @MainActor
     func testAFileSharedWhileTheListIsOpenAppearsThereAndIsRevoked() {
         let app = XCUIApplication()
-        app.launchArguments = ["-FakeScenario", "upToDate", "-OpenShareLink", "Documents/Reports/Annual Report.docx"]
+        app.launchArguments = ["-FakeScenario", "upToDate", "-OpenSharedLinks", "YES", "-OpenShareLink", "Documents/Reports/Annual Report.docx"]
         app.launch()
         addTeardownBlock { app.terminate() }
 
-        let share = app.windows["Share Link"]
-        XCTAssert(share.waitForExistence(timeout: 20))
-        XCTAssert(text("Anyone with the link can download this file.", in: share).waitForExistence(timeout: 10))
-
-        share.buttons["Shared Links…"].click()
         let list = app.windows["Shared Links"]
-        XCTAssert(list.waitForExistence(timeout: 10))
+        XCTAssert(list.waitForExistence(timeout: 20))
         let revokes = list.buttons.matching(identifier: "Revoke…")
         XCTAssert(revokes.firstMatch.waitForExistence(timeout: 20))
         let before = revokes.count
 
-        let titleBar = list.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: list.frame.width / 2, dy: 12))
-        titleBar.press(forDuration: 0.2, thenDragTo: titleBar.withOffset(CGVector(dx: share.frame.maxX - list.frame.minX + 24, dy: 0)))
-        XCTAssertFalse(list.frame.intersects(share.frame))
+        let share = app.windows["Share Link"]
+        XCTAssert(share.waitForExistence(timeout: 20))
+        XCTAssert(text("Anyone with the link can download this file.", in: share).waitForExistence(timeout: 10))
+        XCTAssert(share.buttons["Create Link"].isHittable)
         share.buttons["Create Link"].click()
 
         let url = share.staticTexts["share-url"]
