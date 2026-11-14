@@ -12,6 +12,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         case versions
         case shareLinks
         case createShareLink
+        case answer
     }
 
     let base: SyncSession
@@ -76,6 +77,10 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         try base.revokeShareLink(linkId: linkId)
     }
 
+    override func answer(questionId: String, answer: Answer) throws {
+        try run(.answer) { try base.answer(questionId: questionId, answer: answer) }
+    }
+
     private func run<T>(_ read: Read, _ call: () throws -> T) throws -> T {
         if lock.withLock({ failing.remove(read) != nil }) {
             throw SessionError.ServerUnreachable(reason: "scripted")
@@ -93,8 +98,8 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
 }
 
 @MainActor
-func scripted() -> (AppModel, ScriptedSession) {
-    let session = ScriptedSession(base: AppModel.fake(scenario: .upToDate).session)
+func scripted(_ scenario: FakeScenario = .upToDate) -> (AppModel, ScriptedSession) {
+    let session = ScriptedSession(base: AppModel.fake(scenario: scenario).session)
     return (AppModel(session: session, events: AsyncStream { $0.finish() }), session)
 }
 

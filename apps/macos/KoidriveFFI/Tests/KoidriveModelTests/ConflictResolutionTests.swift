@@ -84,12 +84,18 @@ private struct ConflictError: Error {}
     }
 
     @Test func aSecondAnswerWhileOneIsSentIsIgnored() async throws {
-        let (_, resolution) = try conflict()
-        async let first: Void = resolution.keep(.keepOriginal)
-        await Task.yield()
+        let (model, session) = scripted(.conflict)
+        let question = try #require(model.state.questions.first)
+        let resolution = try #require(ConflictResolution(question: question, model: model))
+        session.holdNext(.answer)
+        let first = Task { await resolution.keep(.keepOriginal) }
+        defer { session.release.signal() }
+        try await untilHeld(session)
         #expect(resolution.isKeeping)
         await resolution.keep(.keepCopy)
-        await first
+        #expect(resolution.phase == .keeping(.keepOriginal))
+        session.release.signal()
+        await first.value
         #expect(resolution.phase == .settled(.keepOriginal))
     }
 }
