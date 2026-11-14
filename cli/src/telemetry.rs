@@ -510,7 +510,10 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
             }
             let events = queued.events.len() + old.events.len();
             let waiting = match old.days.len() {
-                0 => format!("Waiting to send: {} hours, {events} events\n", queued.hours.len()),
+                0 => format!(
+                    "Waiting to send: {} hours, {events} events\n",
+                    queued.hours.len()
+                ),
                 days => format!(
                     "Waiting to send: {} hours, {days} days from an earlier version, {events} events\n",
                     queued.hours.len()

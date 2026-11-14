@@ -313,6 +313,7 @@ impl Report {
         let mut text = match self.state {
             State::Running if self.problem.is_some() => "Background sync needs attention.\n".to_owned(),
             State::Running => "Koidrive is running in the background.\n".to_owned(),
+            State::Starting => "Background sync is starting.\n".to_owned(),
             State::Stopped => "Background sync is stopped. Run koi service start.\n".to_owned(),
             State::SwitchedOff => SWITCHED_OFF.to_owned(),
             State::NotInstalled if self.removed => "Stopped and removed the background service.\n".to_owned(),
@@ -1245,6 +1246,12 @@ fn launchd_disabled(disabled: &str, label: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn concise_starting_service_does_not_claim_sync_is_running() {
+        let report = Report::new(&Fake::default(), "fixture".into(), State::Starting);
+        assert_eq!(report.summary(), "Background sync is starting.\n");
+    }
+
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
 
@@ -2914,6 +2921,12 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             problem.starts_with("its daemon keeps exiting (exit code 1); its log: "),
             "{problem}"
         );
+        let summary = report.summary();
+        assert!(
+            summary.contains("its daemon keeps exiting (exit code 1)"),
+            "{summary}"
+        );
+        assert!(!summary.contains("its log:"), "{summary}");
         assert!(report.failed());
         assert!(!report.retryable());
     }
