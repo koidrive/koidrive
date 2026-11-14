@@ -61,7 +61,7 @@ impl DisconnectReason {
     pub fn kind(&self) -> String {
         match self {
             DisconnectReason::Transport(transport) => {
-                format!("{}: {}", transport.step, transport.cause.name())
+                format!("{}: {}", transport.step, transport.cause.label())
             }
             DisconnectReason::Refused { status } => format!("upgrade: http {status}"),
             DisconnectReason::Closed {

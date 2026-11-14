@@ -116,11 +116,12 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
     let now = now_ms();
     let mut found: Vec<(String, String, Problem)> = Vec::new();
     for folder in &status.folders {
-        let space_id = Some(folder.space_id.clone());
+        let space = &folder.space_id;
+        let space_id = Some(space.clone());
         if folder.state == DriverFolderState::Halted {
             let reason = folder.problem.clone().unwrap_or_default();
             found.push((
-                format!("halted-{}", folder.space_id),
+                format!("halted-{space}"),
                 reason.clone(),
                 Problem {
                     id: String::new(),
@@ -133,7 +134,7 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
         }
         if let Some(unreachable) = &folder.unreachable {
             found.push((
-                format!("offline-{}", folder.space_id),
+                format!("offline-{space}"),
                 String::new(),
                 Problem {
                     id: String::new(),

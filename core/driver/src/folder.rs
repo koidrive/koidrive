@@ -30,8 +30,8 @@ use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{Content, Kind, LocalNode, Shape, same_content};
 use koidrive_fs::{Refusal, Snapshot, Unresolved, check_root};
 use koidrive_net::{
-    Auth, Backoff, CallError, ChunkError, DisconnectReason, Event, NotResent, ServerError, Session,
-    SessionConfig, StopReason, Transfer, UploadGate,
+    Auth, Backoff, CallError, Cause, ChunkError, DisconnectReason, Event, NotResent, ServerError,
+    Session, SessionConfig, StopReason, Transfer, UploadGate,
 };
 use koidrive_proto::v1::error::Code;
 use koidrive_proto::v1::resync_required::Reason;
@@ -283,12 +283,13 @@ struct Retrying {
     wait: Duration,
     at: SystemTime,
     kind: WaitKind,
-    unreachable: bool,
+    unreachable: Option<Cause>,
 }
 
 struct Offline {
     reason: DisconnectReason,
     retry_at: SystemTime,
+    since: Instant,
     shown: bool,
 }
 
@@ -476,9 +477,12 @@ impl Folder {
                 let shown = self.offline.is_some()
                     || matches!(self.stream, Stream::Connecting)
                     || retry_in >= QUICK_RECONNECT;
+                let since =
+                    (self.offline.as_ref()).map_or_else(Instant::now, |offline| offline.since);
                 self.offline = Some(Offline {
                     reason,
                     retry_at: SystemTime::now() + retry_in,
+                    since,
                     shown,
                 });
             }
@@ -514,7 +518,7 @@ impl Folder {
                 why,
                 kind,
             } => {
-                self.retry_after(Call::List, why, wait, kind, false);
+                self.retry_after(Call::List, why, wait, kind, None);
                 return Ok(vec![Work::ListAfter(wait, listing)]);
             }
         };
@@ -1048,7 +1052,7 @@ impl Folder {
         why: String,
         wait: Duration,
         kind: WaitKind,
-        unreachable: bool,
+        unreachable: Option<Cause>,
     ) {
         let since = (self.retrying.get(&call)).map_or_else(Instant::now, |retrying| retrying.since);
         let at = SystemTime::now() + wait;
@@ -1085,8 +1089,10 @@ impl Folder {
     pub fn view(&self) -> View {
         let trees = &self.engine.trees;
         let held = self.held();
-        let offline = self.offline.as_ref().filter(|offline| offline.shown);
-        let unreachable = (self.retrying.values()).find(|retrying| retrying.unreachable);
+        let offline = (self.offline.as_ref())
+            .filter(|offline| offline.shown || offline.since.elapsed() >= QUICK_RECONNECT);
+        let unreachable = (self.retrying.values())
+            .find_map(|retrying| (retrying.unreachable).map(|cause| (cause, retrying.at)));
         let state = match &self.stream {
             _ if offline.is_some() || unreachable.is_some() => FolderState::Offline,
             _ if self.offline.is_some() => FolderState::Connecting,
@@ -1168,10 +1174,8 @@ impl Folder {
             .map(|(id, whys)| format!("{} ({})", quoted_item(id), whys.join("; ")))
             .collect();
         stuck.sort();
-        let shown = unreachable.or_else(|| {
-            (self.retrying.values()).find(|retrying| {
-                retrying.wait >= RETRY_SHOWN || retrying.since.elapsed() >= RETRY_SHOWN
-            })
+        let shown = (self.retrying.values()).find(|retrying| {
+            retrying.wait >= RETRY_SHOWN || retrying.since.elapsed() >= RETRY_SHOWN
         });
         let unix_ms =
             |at: SystemTime| (at.duration_since(UNIX_EPOCH)).map_or(0, |at| at.as_millis() as i64);
@@ -1189,12 +1193,12 @@ impl Folder {
         };
         let cause = match offline {
             Some(offline) => Some((offline.reason.to_string(), offline.retry_at)),
-            None => unreachable.map(|retrying| (retrying.why.clone(), retrying.at)),
+            None => unreachable.map(|(cause, at)| (cause.to_string(), at)),
         };
         let retrying =
             shown.map(|retrying| format!("{}; trying again at {}", retrying.why, utc(retrying.at)));
         let problem = match self.engine.commits.halted() {
-            _ if offline.is_some() => (cause.as_ref()).map(|(why, at)| {
+            _ if state == FolderState::Offline => (cause.as_ref()).map(|(why, at)| {
                 format!(
                     "can't connect to the server: {why}; trying again at {}",
                     utc(*at)
@@ -1763,7 +1767,7 @@ impl Folder {
                     format!("the server did not take a commit: {described}"),
                     wait,
                     policy::wait_kind(Some(refusal)),
-                    false,
+                    None,
                 );
                 self.flight = Flight::Waiting(Next::Send(commit));
                 work.push(Work::ResendAfter(wait));

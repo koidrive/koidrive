@@ -146,7 +146,7 @@ impl Cause {
     }
 
     /// A short name for logs, such as `dns` or `http 503`.
-    pub fn name(self) -> String {
+    pub fn label(self) -> String {
         match self {
             Cause::Dns => "dns".into(),
             Cause::Refused => "refused".into(),

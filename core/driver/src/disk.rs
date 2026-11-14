@@ -133,7 +133,7 @@ pub(crate) enum Stall {
         wait: Duration,
         why: String,
         kind: WaitKind,
-        unreachable: bool,
+        unreachable: Option<koidrive_net::Cause>,
     },
     /// Staging cannot go on: the root was withdrawn, a staged file could not be written, or the session ended.
     Halt(Stop),

@@ -504,6 +504,25 @@ fn a_quick_reconnect_shows_connecting_until_it_fails_again() {
 }
 
 #[test]
+fn a_quick_reconnect_that_takes_longer_than_a_moment_shows_offline() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    a.event(Event::Disconnected {
+        reason: unreachable_server(),
+        retry_in: Duration::from_millis(1),
+    })
+    .unwrap();
+    assert_eq!(a.folder.view().state, FolderState::Connecting);
+    std::thread::sleep(QUICK_RECONNECT + Duration::from_millis(100));
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Offline);
+    assert_eq!(
+        view.unreachable.map(|unreachable| unreachable.why),
+        Some("the server's address could not be found".to_owned())
+    );
+}
+
+#[test]
 fn a_transfer_that_cannot_reach_the_server_shows_offline() {
     for (cause, offline) in [
         (koidrive_net::Cause::Unreachable, true),
@@ -525,6 +544,17 @@ fn a_transfer_that_cannot_reach_the_server_shows_offline() {
         a.take(step).unwrap();
         let view = a.folder.view();
         assert_eq!(view.state == FolderState::Offline, offline, "{cause:?}");
-        assert_eq!(view.unreachable.is_some(), offline, "{cause:?}");
+        assert_eq!(
+            view.unreachable.map(|unreachable| unreachable.why),
+            offline.then(|| "the network or the server is unreachable".to_owned()),
+            "{cause:?}"
+        );
+        if offline {
+            let problem = view.problem.unwrap_or_default();
+            assert!(
+                problem.starts_with("can't connect to the server: the network or the server is unreachable; trying again at "),
+                "{problem}"
+            );
+        }
     }
 }
