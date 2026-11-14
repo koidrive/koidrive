@@ -48,9 +48,10 @@ On top of that, reports hold:
 
 - How many times each `koi` command group, such as `koi folder`, ran in an hour. Only the group's name, never its action or arguments.
 - The steps of `koi setup` and `koi server ...` (log in, R2, bucket, Worker upload, serving, claim, pairing), `koi server upgrade` and `koi server delete`: whether each one succeeded and roughly how long it took.
-- Where Koidrive panicked: the source file and line in Koidrive's own code. Never the panic's message.
+- Where Koidrive panicked: the source file and line in Koidrive's own code, and the names of Koidrive's own functions on the panicking thread's stack, such as `koidrive_driver::folder::Folder::run`. Never the panic's message, the functions' arguments, file paths, or functions of other libraries.
+- Each `koi` command that fails: its group, such as `koi space`, and the error code its `--json` output carries, such as `auth_required`. Never the message.
 - Exact hourly totals from the daemon: commits sent and received, bytes of file content uploaded and downloaded, and the hour's highest number of linked spaces and of the files and folders they hold, trash included. Only totals over all your spaces, never a count per space or per file.
-- How many times each kind of error happened in an hour: why a folder stopped syncing, how an upload or download failed, the code of a server refusal and of each item a refused commit left out, each commit too large to send and each item it left out, which kind of question a folder asked, and why the daemon could not start. Never the error's message.
+- How many times each kind of error happened in an hour: why a folder stopped syncing, how an upload or download failed, the code of a server refusal and of each item a refused commit left out, each commit too large to send and each item it left out, which kind of question a folder asked, and why the daemon could not start. Never the error's message. Each kind also goes as its own event when the daemon sees it, with how many times it happened since the daemon's previous minute.
 - Hourly distributions of sync timings, described below. Each holds 16 power-of-two buckets and a sample count, without identifying a folder. Duration histograms omit exact sums; throughput histograms retain sums.
 - The daemon's user and system CPU time in milliseconds, summed between one-minute samples and at shutdown, each under the hour it ends in. Gaps longer than an hour and unavailable clock readings are omitted.
 
@@ -69,11 +70,11 @@ Completed durations and rates belong to the completion hour. Spans can cross an 
 - Space, device, user and node ids, and the names of spaces, devices and users.
 - Your server's address, Worker and bucket names, and your Cloudflare account id.
 - Pairing codes, claim codes, recovery keys, tokens or credentials.
-- Error messages, log lines, stack traces, `.koiignore` rules and configuration values.
+- Error messages, log lines, `.koiignore` rules and configuration values, and from a stack trace anything other than the names of Koidrive's own functions.
 - Your host name or user name.
 
 Your own Koidrive server sends nothing to the project. Its Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 
-Reports go to `https://tel.koidrive.com`, which forwards them to the project's [PostHog](https://posthog.com) project. Each report is an anonymous PostHog event: PostHog makes no person profile for it and doesn't look up a location from your address. The daemon sends as it starts, then every minute, and once more as it stops. Each send holds the events recorded so far and the sums of hours that have ended in UTC, so an event goes within a minute and an hour's sums within a minute after the hour ends. A send that fails goes again at the next minute. A command that recorded an event sends it as it exits, waiting at most two seconds. A report waits on your machine for up to 14 days while it can't be sent, and is then dropped.
+Reports go to `https://tel.koidrive.com`, which forwards them to the project's [PostHog](https://posthog.com) project. Each report is an anonymous PostHog event: PostHog makes no person profile for it and doesn't look up a location from your address. The daemon sends as it starts, then every minute, and once more as it stops. Each send holds the events recorded so far and the sums of hours that have ended in UTC, so an event goes within a minute and an hour's sums within a minute after the hour ends. A send that fails goes again at the next minute. A command that recorded an event sends it as it exits, waiting at most two seconds. A panic is written to disk as it happens and goes with the next send, from the running daemon or from the next start. A report waits on your machine for up to 14 days while it can't be sent, and is then dropped.

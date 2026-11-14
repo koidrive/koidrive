@@ -464,6 +464,9 @@ fn main() -> ExitCode {
             done = async move {
                 telemetry::start(&paths, switch, name, flow).await;
                 let mut outcome = run(paths, command_args, json, work_terminal.clone()).await;
+                if let Err(error) = &outcome {
+                    telemetry::command_failed(error.code);
+                }
                 telemetry::finish().await;
                 let pending = match reports_pending && (json || shows_banner) {
                     true => pending_questions(&pending_paths).await,

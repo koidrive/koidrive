@@ -193,6 +193,25 @@ fn a_command_run_with_reports_on_is_counted_by_name_only() {
 }
 
 #[test]
+fn a_failed_command_is_an_event_with_its_group_and_code_only() {
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let failed = koi(home.path(), &["--json", "space", "list"], &[]);
+    let envelope: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "auth_required", "{envelope}");
+    let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
+    let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
+    let failures: Vec<_> = (body["batch"].as_array().unwrap().iter())
+        .filter(|event| event["event"] == "command_failed")
+        .collect();
+    assert_eq!(failures.len(), 1, "{preview}");
+    assert_eq!(failures[0]["properties"]["command"], "space");
+    assert_eq!(failures[0]["properties"]["code"], "auth_required");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(!preview.contains(message), "{preview}");
+}
+
+#[test]
 fn a_daemon_that_cannot_start_is_counted_by_why() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -367,6 +386,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
             at,
             file: SourceFile::from_location("cli/src/main.rs"),
             line,
+            frames: Vec::new(),
         };
         let pending = Pending {
             events: vec![event],
@@ -611,6 +631,7 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
             at: koidrive_telemetry::now(),
             file: SourceFile::from_location("cli/src/main.rs"),
             line: 99,
+            frames: vec![],
         }],
         ..Pending::default()
     };
@@ -640,6 +661,42 @@ fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
         }
     });
     (url, bodies)
+}
+
+#[test]
+fn the_next_command_sends_a_crash_queued_before_it_but_preview_sends_nothing() {
+    use koidrive_telemetry::schema::{Event, SourceFile};
+    use koidrive_telemetry::{Pending, Store};
+
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let store = Store::new(&home.path().join("state/koidrive"));
+    let pending = Pending {
+        events: vec![Event::Panic {
+            at: koidrive_telemetry::now(),
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 41,
+            frames: vec![],
+        }],
+        ..Pending::default()
+    };
+    store.absorb(pending).unwrap();
+    let (url, bodies) = posthog(0);
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+    ];
+    stdout(&koi(home.path(), &["telemetry", "preview"], &vars));
+    assert!(bodies.recv_timeout(Duration::from_secs(3)).is_err());
+    stdout(&koi(home.path(), &["setup"], &vars));
+    let body = bodies
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the next command sent nothing");
+    let panics = (body["batch"].as_array().unwrap().iter())
+        .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 41)
+        .count();
+    assert_eq!(panics, 1, "{body}");
+    assert!(store.peek().unwrap().events.is_empty());
 }
 
 fn posthog_answering(failures: usize) -> (String, mpsc::Receiver<(u16, serde_json::Value)>) {

@@ -157,6 +157,13 @@ pub fn magnitude(value: u64) -> u8 {
     (64 - value.leading_zeros()) as u8
 }
 
+/// The release and process that recorded an event, which it is reported under whoever sends it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub koi_version: Version,
+    pub client: Client,
+}
+
 /// Something that happened once, sent on its own rather than summed into the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -178,13 +185,31 @@ pub enum Event {
         at: u64,
         file: SourceFile,
         line: u32,
+        /// Koidrive's own functions on the panicking thread's stack, innermost first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        frames: Vec<Symbol>,
+    },
+    /// A `koi` command ended with an error.
+    CommandFailed {
+        at: u64,
+        command: Command,
+        code: ErrorCode,
+    },
+    /// The daemon saw a failure, `count` times since its last tick.
+    Problem {
+        at: u64,
+        problem: Failure,
+        count: u64,
     },
 }
 
 impl Event {
     pub fn at(&self) -> u64 {
         match self {
-            Event::SetupStep { at, .. } | Event::Panic { at, .. } => *at,
+            Event::SetupStep { at, .. }
+            | Event::Panic { at, .. }
+            | Event::CommandFailed { at, .. }
+            | Event::Problem { at, .. } => *at,
         }
     }
 
@@ -199,10 +224,16 @@ impl Event {
     /// The events of one kind an install keeps per day; later ones are dropped, so a loop cannot fill the queue.
     pub const PER_KIND_PER_DAY: usize = 20;
 
-    pub fn kind(&self) -> &'static str {
+    /// The event's kind, which the per-day cap counts: its name, and for a failure or a problem what failed.
+    pub fn kind(&self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Event::SetupStep { .. } => "setup_step",
-            Event::Panic { .. } => "panic",
+            Event::SetupStep { .. } => ("setup_step", "", ""),
+            Event::Panic { .. } => ("panic", "", ""),
+            Event::CommandFailed { code, .. } => ("command_failed", code.name(), ""),
+            Event::Problem { problem, .. } => {
+                let (group, name) = problem.key();
+                ("problem", group, name)
+            }
         }
     }
 }
@@ -308,7 +339,7 @@ impl Failure {
             .chain(DaemonStart::ALL.iter().copied().map(Failure::DaemonStart))
     }
 
-    fn key(self) -> (&'static str, &'static str) {
+    pub fn key(self) -> (&'static str, &'static str) {
         match self {
             Failure::Halted(why) => ("halted", why.name()),
             Failure::Upload(why) => ("upload_failed", why.name()),
@@ -912,6 +943,136 @@ impl TryFrom<String> for SourceFile {
 impl From<SourceFile> for String {
     fn from(file: SourceFile) -> String {
         file.0
+    }
+}
+
+labels! {
+    /// How a failed `koi` command ended, as the `code` of its JSON error.
+    pub enum ErrorCode {
+        Failed => "failed",
+        Usage => "usage",
+        DecisionRequired => "decision_required",
+        AuthRequired => "auth_required",
+        Halted => "halted",
+        Unavailable => "unavailable",
+        StaleDecision => "stale_decision",
+        WrongCode => "wrong_code",
+        Interrupted => "interrupted",
+    }
+}
+
+macro_rules! named {
+    ($name:ident, $what:literal, $all:expr, $label:expr) => {
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&$label(*self))
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                ($all)
+                    .find(|value: &$name| $label(*value) == text)
+                    .ok_or_else(|| serde::de::Error::custom(Invalid($what)))
+            }
+        }
+    };
+}
+
+named!(
+    ErrorCode,
+    "error code",
+    ErrorCode::ALL.iter().copied(),
+    |code: ErrorCode| code.name().to_owned()
+);
+named!(
+    Command,
+    "command",
+    Command::ALL.into_iter(),
+    |command: Command| command.name().to_owned()
+);
+named!(Failure, "failure", Failure::all(), |failure: Failure| {
+    let (group, kind) = failure.key();
+    format!("{group}.{kind}")
+});
+
+/// A function of Koidrive's own code, such as `koidrive_driver::folder::Folder::run::{{closure}}`, without its generic
+/// arguments. Built from a demangled name only when that names one of Koidrive's crates, so a dependency's function,
+/// a path or a value cannot become one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Symbol(String);
+
+impl Symbol {
+    pub fn ours(demangled: &str) -> Option<Self> {
+        let mut name = demangled.trim();
+        let mut qualified = String::new();
+        if let Some(inner) = name.strip_prefix('<') {
+            let end = closing(inner)?;
+            let path = &inner[..end];
+            qualified.push_str(path.split(" as ").next()?);
+            name = &inner[end + 1..];
+        }
+        qualified.push_str(name);
+        let mut plain = String::new();
+        let mut depth = 0usize;
+        for char in qualified.chars() {
+            match char {
+                '<' => depth += 1,
+                '>' => depth = depth.checked_sub(1)?,
+                _ if depth == 0 => plain.push(char),
+                _ => {}
+            }
+        }
+        let plain = plain.replace("::::", "::");
+        let plain = plain.trim_end_matches("::");
+        let crate_name = plain.split("::").next()?;
+        let ours = (crate_name.starts_with("koidrive_") || crate_name == "koi")
+            && plain.len() <= 160
+            && plain.bytes().all(|byte| {
+                matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b':' | b'{' | b'}')
+            });
+        ours.then(|| Symbol(plain.to_owned()))
+    }
+}
+
+fn closing(text: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (index, char) in text.char_indices() {
+        match char {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+impl TryFrom<String> for Symbol {
+    type Error = Invalid;
+
+    fn try_from(value: String) -> Result<Self, Invalid> {
+        Symbol::ours(&value)
+            .filter(|symbol| symbol.0 == value)
+            .ok_or(Invalid("symbol"))
+    }
+}
+
+impl From<Symbol> for String {
+    fn from(symbol: Symbol) -> String {
+        symbol.0
+    }
+}
+
+impl Symbol {
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
