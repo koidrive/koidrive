@@ -143,10 +143,12 @@ private final class Fetches {
 
     @Test func aSecondUpdateWhileOneRunsWaitsForItInsteadOfStartingAnother() async throws {
         let model = AppModel.fake(scenario: .updateAvailable)
-        async let first = model.update()
-        async let second = model.update()
-        let results = try await [first, second]
-        #expect(results[0] == results[1])
+        let first = Task { try await model.update() }
+        while !model.updating {
+            await Task.yield()
+        }
+        let second = try await model.update()
+        #expect(try await first.value == second)
         #expect(!model.updating)
         await #expect(throws: SessionError.UpdateUnavailable) {
             try await model.update()
