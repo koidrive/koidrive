@@ -605,9 +605,7 @@ impl Trees {
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
-        if !made_here && node.trashed {
-            self.lost_positions.remove(&id);
-        } else if !made_here && self.lost_positions.contains_key(&id) {
+        if !made_here && !node.trashed && self.lost_positions.contains_key(&id) {
             let at = LostPosition {
                 parent: node.shape.parent.clone(),
                 name: node.shape.name.clone(),
@@ -767,7 +765,8 @@ impl Trees {
     }
 
     pub(crate) fn take_local(&mut self, id: NodeId) {
-        self.end_resend(&id);
+        self.lost_creates.remove(&id);
+        self.resends.remove(&id);
         self.unsent_edits.remove(&id);
         let Some(local) = self.l.get(&id).map(|node| node.shape.clone()) else {
             return;

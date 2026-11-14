@@ -790,3 +790,49 @@ fn a_rename_another_device_makes_during_a_second_resend_is_not_undone() {
     assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
     assert!(trees.state().lost_positions.is_empty());
 }
+
+#[test]
+fn a_resend_another_device_trashes_before_its_acknowledgement_is_not_revived() {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
+    trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 2));
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, 0).cloned().unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+    let own = RemoteNode { version_id: "resent".into(), ..remote(file(ROOT, "b", 1)) };
+    trees.set_remote_made_here("f".into(), own);
+    let deleted = RemoteNode { meta_rev: 2, meta_edit_rev: 1, version_id: "resent".into(), ..trashed(file(ROOT, "b", 1)) };
+    trees.set_remote("f".into(), deleted);
+    commits.received(result(1, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::Remote);
+    let planned = commits.build(&mut trees, &mut ids, NOW, HISTORY, 2).cloned().map(|commit| ops(&commit));
+    assert_eq!(planned, None);
+    effects_for(&mut trees, &mut ids, "f");
+    assert!(trees.local().get("f").is_none());
+    assert!(trees.state().lost_positions.is_empty());
+    assert!(trees.state().lost_creates.is_empty());
+    assert!(trees.state().resends.is_empty());
+}
+
+#[test]
+fn a_resend_another_device_trashes_and_restores_before_its_acknowledgement_takes_the_restored_name() {
+    let (mut trees, mut commits, mut ids) = renamed_elsewhere_then_lost();
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "b", 1), 3));
+    let deleted = RemoteNode { meta_rev: 4, meta_edit_rev: 4, trash_group: "4:0".into(), ..trashed(file(ROOT, "b", 1)) };
+    trees.set_remote("f".into(), deleted);
+    trees.set_remote("f".into(), remote_at(file(ROOT, "c", 1), 5));
+    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied)]);
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
+    assert!(trees.state().lost_positions.is_empty());
+}

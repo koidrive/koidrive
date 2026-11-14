@@ -128,9 +128,9 @@ pub struct TreesState {
     /// For a node S forgot as a resend while R lacked it, the position R held it at before the loss
     /// when that differs from the position L and S held: a move another device made that L had not
     /// taken yet. A create of the node is made there, also after L's content changed, and once the
-    /// server takes it S takes L's position with the content it sent, so L takes the move. The
-    /// record ends then, when L moves or removes the node, and when a record of the node that
-    /// another device made reaches R.
+    /// server takes it S takes L's position with the content it sent, so L takes the move. A live
+    /// record of the node that another device made moves the position to that record's. The record
+    /// ends when L moves or removes the node, or when L and R hold it live at the same position.
     pub lost_positions: BTreeMap<NodeId, LostPosition>,
     /// The nodes S forgot after a server loss that R lacks and L holds as S did, whose position no
     /// move of this device set: a create of this device, if any, set it, and the server lost that
