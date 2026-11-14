@@ -186,6 +186,8 @@ struct Found {
     app_files: Vec<PathBuf>,
     profiles: Vec<PathBuf>,
     kept: Vec<Kept>,
+    unlisted: Option<String>,
+    config_in_state: bool,
 }
 
 impl Found {
@@ -246,7 +248,7 @@ impl Run {
         }
     }
 
-    fn remove_dir(&mut self, dir: &Path, ours: fn(&str) -> bool) {
+    fn remove_dir(&mut self, dir: &Path, ours: impl Fn(&str) -> bool) {
         let shown = Removed::Files {
             path: dir.display().to_string(),
         };
@@ -273,7 +275,10 @@ impl Run {
                     .collect::<io::Result<Vec<_>>>()?;
                 names.sort_by_key(|name| name == RECORD);
                 for name in names {
-                    if name.to_str().is_some_and(ours) && remove_path(&real.join(&name))? {
+                    if name.to_str().is_some_and(&ours)
+                        && self.allowed(&real.join(&name))
+                        && remove_path(&real.join(&name))?
+                    {
                         gone.push(dir.join(name));
                     }
                 }
@@ -306,8 +311,11 @@ fn holds(outer: &Path, inner: &Path) -> bool {
     let Ok(outer) = fs::metadata(outer) else {
         return false;
     };
-    inner
-        .ancestors()
+    let parent = inner
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok());
+    (inner.ancestors())
+        .chain(parent.iter().flat_map(|parent| parent.ancestors()))
         .filter_map(|dir| fs::metadata(dir).ok())
         .any(|dir| dir.dev() == outer.dev() && dir.ino() == outer.ino())
 }
@@ -315,7 +323,9 @@ fn holds(outer: &Path, inner: &Path) -> bool {
 fn is_state_entry(name: &str) -> bool {
     let known = |name: &str| Paths::STATE_ENTRIES.contains(&name);
     known(name)
-        || name.starts_with(".tmp")
+        || name.strip_prefix(".tmp").is_some_and(|random| {
+            random.len() == 6 && random.chars().all(|c| c.is_ascii_alphanumeric())
+        })
         || name
             .strip_prefix('.')
             .and_then(|name| name.strip_suffix(".tmp"))
@@ -364,22 +374,32 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         return Ok(Done::ok(data, text).unchanged());
     }
     confirm(&found, &options, terminal).await?;
-    let shared = !found.others.is_empty();
+    let shared = !found.others.is_empty() || found.unlisted.is_some();
     let mut run = Run {
         kept: found.kept.clone(),
         folders: found.folders.clone(),
         ..Run::default()
     };
     record(paths, &found, &mut run);
+    if !run.problems.is_empty() {
+        let device = match found.paired {
+            true => listed(&found, None),
+            false => DeviceOutcome::NotPaired,
+        };
+        return finish(device, run);
+    }
     if !shared {
         quit_apps(&found.programs, &mut run).await;
     }
     let device = sign_out(paths, &found, &options, terminal).await;
     remove_service(&found, &mut run).await;
-    if let Err(problem) = released(paths).await {
-        run.problems.push(problem);
-        return finish(device, run);
-    }
+    let _lock = match released(paths).await {
+        Ok(lock) => lock,
+        Err(problem) => {
+            run.problems.push(problem);
+            return finish(device, run);
+        }
+    };
     for folder in &found.folders {
         clean_folder(folder, found.owner.as_ref(), &mut run);
     }
@@ -388,7 +408,9 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     }
     for file in &found.files {
         if *file == paths.state_dir {
-            run.remove_dir(file, is_state_entry);
+            run.remove_dir(file, |name| {
+                is_state_entry(name) || (found.config_in_state && name == "config.toml")
+            });
         } else if Some(file.as_path()) == paths.config_file.parent() {
             run.remove_dir(file, |name| name == "config.toml");
         } else {
@@ -403,6 +425,9 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     prune_runtime(paths);
     if shared {
         keep_shared(&found, &mut run);
+        run.problems.extend(found.unlisted.iter().map(|problem| {
+            format!("cannot list the background services of other profiles, so the shared koi stays: {problem}")
+        }));
         return finish(device, run);
     }
     for file in &found.app_files {
@@ -460,10 +485,15 @@ async fn find(paths: &Paths, home: &Path) -> Found {
     let manager = service::system();
     let this = service::this_service(paths).ok();
     let own = this.as_ref().map(|service| manager.name(service));
-    let others = service::installed_services(manager.kind(), home)
-        .into_iter()
-        .filter(|installed| Some(&installed.name) != own.as_ref())
-        .collect();
+    let (others, unlisted) = match service::installed_services(manager.kind(), home) {
+        Ok(installed) => (
+            (installed.into_iter())
+                .filter(|installed| Some(&installed.name) != own.as_ref())
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(problem) => (Vec::new(), Some(problem)),
+    };
     let mut files = Vec::new();
     if cfg!(target_os = "macos")
         && let Some(service) = &this
@@ -489,7 +519,19 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         }),
         false => {}
     }
-    files.extend(paths.config_file.parent().map(Path::to_path_buf));
+    let config = paths.config_file.parent().map(Path::to_path_buf);
+    let config_in_state = config.as_ref() == Some(&paths.state_dir);
+    match config {
+        Some(config) if others.iter().any(|other| uses_config(other, home, paths)) => {
+            if fs::symlink_metadata(&config).is_ok() {
+                kept.push(Kept::Shared {
+                    path: config.display().to_string(),
+                });
+            }
+        }
+        Some(config) if !config_in_state => files.push(config),
+        _ => {}
+    }
     if paths.runtime_dir != paths.state_dir {
         files.push(paths.socket());
     }
@@ -529,7 +571,20 @@ async fn find(paths: &Paths, home: &Path) -> Found {
             .filter(|path| has_path_line(path))
             .collect(),
         kept,
+        unlisted,
+        config_in_state,
     }
+}
+
+fn uses_config(other: &service::Installed, home: &Path, paths: &Paths) -> bool {
+    Paths::from_vars(|name| match name {
+        "HOME" => Some(home.into()),
+        _ => (other.env.iter())
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value.clone())
+            .map(Into::into),
+    })
+    .is_ok_and(|theirs| theirs.config_file == paths.config_file)
 }
 
 fn application_folders(home: &Path) -> impl Iterator<Item = PathBuf> {
@@ -695,7 +750,7 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
             manager.name(service)
         ));
     }
-    let shared = !found.others.is_empty();
+    let shared = !found.others.is_empty() || found.unlisted.is_some();
     for program in found.programs.iter().filter(|_| !shared) {
         match program {
             Program::Command(path) => lines.push(format!("  {}", shown_folder(path))),
@@ -772,17 +827,21 @@ fn record(paths: &Paths, found: &Found, run: &mut Run) {
     }
 }
 
+fn listed(found: &Found, problem: Option<String>) -> DeviceOutcome {
+    DeviceOutcome::StillListed {
+        server: found.owner.as_ref().map(|owner| owner.server.clone()),
+        device_id: found.owner.as_ref().map(|owner| owner.device_id.clone()),
+        problem,
+    }
+}
+
 async fn sign_out(
     paths: &Paths,
     found: &Found,
     options: &Options,
     terminal: &Terminal,
 ) -> DeviceOutcome {
-    let still_listed = |problem: Option<String>| DeviceOutcome::StillListed {
-        server: found.owner.as_ref().map(|owner| owner.server.clone()),
-        device_id: found.owner.as_ref().map(|owner| owner.device_id.clone()),
-        problem,
-    };
+    let still_listed = |problem| listed(found, problem);
     if !found.paired {
         return DeviceOutcome::NotPaired;
     }
@@ -864,7 +923,7 @@ async fn remove_service(found: &Found, run: &mut Run) {
     }
 }
 
-async fn released(paths: &Paths) -> Result<(), String> {
+async fn released(paths: &Paths) -> Result<Option<Flock>, String> {
     let lock = paths.lock();
     let deadline = Instant::now() + RELEASE;
     loop {
@@ -875,13 +934,13 @@ async fn released(paths: &Paths) -> Result<(), String> {
                     io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
                 ) =>
             {
-                return Ok(());
+                return Ok(None);
             }
             Err(error) => return Err(format!("cannot open {}: {error}", shown_folder(&lock))),
             Ok(file) => file,
         };
         match Flock::take(file) {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(lock)) => return Ok(Some(lock)),
             Ok(None) if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -1117,7 +1176,12 @@ async fn remove_programs(programs: &[Program], run: &mut Run) {
         unregister_login_item(bundle, run).await;
     }
     run.kept.extend(kept_programs(programs));
-    for program in programs {
+    let (commands, others): (Vec<_>, Vec<_>) =
+        (programs.iter()).partition(|program| matches!(program, Program::Command(_)));
+    for program in others.into_iter().chain(commands) {
+        if matches!(program, Program::Command(_)) && !run.problems.is_empty() {
+            return;
+        }
         match program {
             Program::Command(path) => {
                 let target = fs::symlink_metadata(path)

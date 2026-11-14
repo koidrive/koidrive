@@ -235,6 +235,9 @@ fn only_what_koidrive_writes_leaves_a_state_folder() {
         ".credential.next.tmp",
         ".notes.1.tmp",
         "credential.json.bak",
+        ".tmp-notes",
+        ".tmp-backup",
+        ".tmpA1b2C3d",
     ] {
         assert!(!is_state_entry(name), "{name}");
     }

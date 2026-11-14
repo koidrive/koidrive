@@ -300,6 +300,197 @@ fn a_folder_with_only_subfolders_of_the_same_names_is_kept_whole() {
 }
 
 #[test]
+fn a_state_folder_it_cannot_write_to_stops_before_anything_is_removed() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let state = machine.path("state/koidrive");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+    assert!(state.join("update-check.json").is_file(), "{envelope:#}");
+    assert!(
+        machine.path("config/koidrive/config.toml").is_file(),
+        "{envelope:#}"
+    );
+    assert_eq!(removed(&envelope), &Vec::<Value>::new(), "{envelope:#}");
+}
+
+#[test]
+fn a_config_folder_that_is_the_state_folder_loses_only_what_koidrive_wrote() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let plan = machine.write("shared/koidrive/spaces/plan.pdf", "pdf");
+    let notes = machine.write("shared/koidrive/telemetry/notes.txt", "notes");
+    let shared = |machine: &Machine, koi: &Path| {
+        let mut command = machine.command(koi, &["uninstall", "--yes", "--json"]);
+        command
+            .env("XDG_CONFIG_HOME", machine.path("shared"))
+            .env("XDG_STATE_HOME", machine.path("shared"));
+        machine.envelope(command)
+    };
+
+    let (output, envelope) = shared(&machine, &koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&plan).unwrap(), "pdf", "{envelope:#}");
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "notes", "{envelope:#}");
+
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    machine.write("shared/koidrive/update-check.json", "{}");
+    machine.write(
+        "shared/koidrive/config.toml",
+        "[service]\nbackground = false\n",
+    );
+
+    let (output, envelope) = shared(&machine, &koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!machine.path("shared/koidrive").exists(), "{envelope:#}");
+}
+
+#[test]
+fn a_synced_folder_inside_the_state_folder_keeps_its_files() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("state/koidrive/telemetry");
+    machine.write("state/koidrive/telemetry/.koidrive/space.json", "{}");
+    let document = machine.write("state/koidrive/telemetry/q3.docx", "q3");
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
+    let folder = folder.display().to_string();
+    assert!(
+        kept(&envelope).contains(&json!({ "kind": "in_folder", "path": folder, "folder": folder })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
+fn a_state_folder_reached_through_a_link_into_a_synced_folder_keeps_every_file() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("Sync");
+    machine.write("Sync/.koidrive/space.json", "{}");
+    let plan = machine.write("Sync/inner/koidrive/spaces/plan.pdf", "pdf");
+    machine.write("Sync/inner/koidrive/update-check.json", "{}");
+    machine.write(
+        "Sync/inner/koidrive/uninstall.json",
+        &json!({ "folders": [folder], "owner": null }).to_string(),
+    );
+    std::os::unix::fs::symlink(machine.path("Sync/inner"), machine.path("st")).unwrap();
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("XDG_STATE_HOME", machine.path("st"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&plan).unwrap(), "pdf", "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "in_folder",
+            "path": machine.path("st/koidrive").display().to_string(),
+            "folder": folder.display().to_string(),
+        })),
+        "{envelope:#}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unreadable_launch_agents_keep_the_shared_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let agents = machine.path("Library/LaunchAgents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::set_permissions(&agents, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    fs::set_permissions(&agents, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
+        "{envelope:#}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failed_app_removal_keeps_the_command_that_finishes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    machine.copy_koi("Applications/Koidrive.app/Contents/Helpers/koi");
+    machine.script(
+        "Applications/Koidrive.app/Contents/MacOS/Koidrive",
+        "exit 0\n",
+    );
+    let applications = machine.path("Applications");
+    fs::set_permissions(&applications, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    fs::set_permissions(&applications, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_config_another_profile_uses_stays() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let (config, state) = (machine.path("config"), machine.path("other/state"));
+    let other = koidrive_driver::Paths::from_vars(|name| match name {
+        "XDG_CONFIG_HOME" => Some(config.clone().into()),
+        "XDG_STATE_HOME" => Some(state.clone().into()),
+        _ => None,
+    })
+    .unwrap();
+    let label = format!("dev.koidrive.koi.{}", other.state_key());
+    machine.write("other/state/koidrive/credential.json", "");
+    machine.write(
+        &format!("Library/LaunchAgents/{label}.plist"),
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string></dict></dict></plist>\n",
+            koi.display(),
+            config.display(),
+            state.display()
+        ),
+    );
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(
+        machine.path("config/koidrive/config.toml").is_file(),
+        "{envelope:#}"
+    );
+    assert!(!machine.path("state/koidrive").exists(), "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "shared",
+            "path": machine.path("config/koidrive").display().to_string(),
+        })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
 fn a_linked_state_folder_goes_with_its_link() {
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");

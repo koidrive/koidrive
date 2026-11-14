@@ -55,7 +55,8 @@ REQUIRED["uninstall"] = REQUIRED["installer"] | {
     "uninstall finished", "uninstall signed out", "uninstall removes folder records", "uninstall keeps synced files",
     "uninstall leaves no Koidrive state", "uninstall unloads the service", "uninstall removes the PATH line",
     "fresh login shell has no koi", "peer sees the device signed out", "uninstall keeps what the peer profile uses",
-    "peer profile uninstall finished", "uninstall keeps the peer's files"}
+    "peer profile uninstall finished", "uninstall keeps the peer's files",
+    "uninstall keeps the peer's app and PATH entry", "peer profile uninstall unloads its service"}
 
 
 def tag_value(value):
@@ -1114,6 +1115,14 @@ def uninstalled(evidence, home, binary, peer_koi, folder, peer_folder, peer_env,
     evidence.check("uninstall keeps what the peer profile uses", binary.is_file() and peer is not None
                    and peer.get("XDG_STATE_HOME") == peer_env["XDG_STATE_HOME"]
                    and envelope.get("next_commands") == [{"argv": others[0]["argv"]}], json.dumps(others))
+    shared = [Path(item["path"]) for item in kept if item.get("kind") == "shared"]
+    _, shell, _ = evidence.run(["/bin/zsh", "-d", "-l", "-c", "command -v koi || true"],
+                               env={**evidence.env, "PATH": SYSTEM_PATH})
+    evidence.check("uninstall keeps the peer's app and PATH entry", bool(shared)
+                   and all(path.exists() for path in shared)
+                   and shell.strip() != "" and Path(shell.strip()).resolve() == binary.resolve(),
+                   json.dumps({"shared": list(map(str, shared)), "shell": shell}))
+    peer_label = others[0].get("service") if len(others) == 1 else None
     devices = koi_json(evidence, peer_koi, "device", "list", env=peer_env)["devices"]
     entry = next((item for item in devices if item.get("device_id") == device), None)
     evidence.check("peer sees the device signed out", entry is not None and (entry.get("revoked_at_ms") or 0) > 0, entry)
@@ -1126,6 +1135,9 @@ def uninstalled(evidence, home, binary, peer_koi, folder, peer_folder, peer_env,
     evidence.check("peer profile uninstall finished", status == 0 and envelope.get("outcome") == "ok"
                    and not [item for item in data.get("kept", []) if item.get("kind") == "other_profile"],
                    f"status={status}")
+    status, _, error = evidence.run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{peer_label}"], required=False)
+    evidence.check("peer profile uninstall unloads its service", peer_label is not None and unloaded(status, error),
+                   peer_label)
     evidence.check("uninstall keeps the peer's files", digests(peer_folder) == peer_files
                    and not (peer_folder / ".koidrive").exists() and digests(folder) == files, json.dumps(peer_files))
     left = [path for path in state_paths(home) if path.exists() or path.is_symlink()]

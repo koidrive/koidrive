@@ -1043,7 +1043,7 @@ class ReleaseJourneys(unittest.TestCase):
 
     @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
     def test_uninstall_journey_requires_unchanged_files_and_nothing_of_koidrive_left(self, _uid):
-        for change in (None, "edited file", "kept state", "no peer command"):
+        for change in (None, "edited file", "kept state", "no peer command", "no shared command", "peer still loaded"):
             with self.subTest(change=change):
                 home = self.root / str(change) / "home"
                 folder, peer_folder = home / "Sync", home / "PeerSync"
@@ -1068,6 +1068,8 @@ class ReleaseJourneys(unittest.TestCase):
                         if change == "edited file":
                             (folder / "outbound.bin").write_bytes(b"changed")
                         kept = [{"kind": "folder", "path": str(folder)}]
+                        if change != "no shared command":
+                            kept.append({"kind": "shared", "path": str(binary)})
                         if change != "no peer command":
                             kept.append({"kind": "other_profile", "service": "dev.koidrive.koi.0123abcd", "argv": argv})
                         return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": kept},
@@ -1080,8 +1082,12 @@ class ReleaseJourneys(unittest.TestCase):
                         if change == "kept state":
                             (home / ".local/state/koidrive").mkdir(parents=True)
                         return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": []}}), ""
+                    if argv_[0] == "/bin/launchctl" and change == "peer still loaded" and argv_[-1].endswith(".0123abcd"):
+                        return 0, "state = running", ""
                     if argv_[0] == "/bin/launchctl":
                         return 113, "", "Could not find service"
+                    if argv_[0] == "/bin/zsh" and binary.exists():
+                        return 0, str(binary) + "\n", ""
                     return 0, "", ""
 
                 def koi_json(_evidence, _binary, *args, env=None):
@@ -1100,7 +1106,9 @@ class ReleaseJourneys(unittest.TestCase):
                 failed = [a["name"] for a in evidence.report["assertions"] if not a["passed"]]
                 expected = {None: [], "edited file": ["uninstall keeps synced files"],
                             "kept state": ["uninstall leaves no Koidrive state"],
-                            "no peer command": ["uninstall keeps what the peer profile uses"]}[change]
+                            "no peer command": ["uninstall keeps what the peer profile uses"],
+                            "no shared command": ["uninstall keeps the peer's app and PATH entry"],
+                            "peer still loaded": ["peer profile uninstall unloads its service"]}[change]
                 self.assertEqual(failed, expected)
                 if change is None:
                     self.assertEqual(DRIVER.REQUIRED["uninstall"] - DRIVER.REQUIRED["installer"],

@@ -244,42 +244,85 @@ fn suffixed(name: &str, stem: &str, end: &str) -> bool {
         })
 }
 
-pub fn installed_services(manager: ServiceManager, home: &Path) -> Vec<Installed> {
-    let mut found: Vec<Installed> = match manager {
-        ServiceManager::Launchd => fs::read_dir(home.join("Library/LaunchAgents"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| {
-                let file = entry.file_name().into_string().ok()?;
-                suffixed(&file, "dev.koidrive.koi", ".plist").then_some(())?;
-                let text = fs::read_to_string(entry.path()).ok()?;
-                Some(Installed {
-                    name: file.strip_suffix(".plist")?.to_owned(),
+pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<Installed>, String> {
+    let read = |path: &Path| {
+        fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+    };
+    let mut found = Vec::new();
+    match manager {
+        ServiceManager::Launchd => {
+            let dir = home.join("Library/LaunchAgents");
+            for entry in entries_of(&dir)? {
+                let Some(name) = (entry.file_name().to_str())
+                    .filter(|file| suffixed(file, "dev.koidrive.koi", ".plist"))
+                    .and_then(|file| file.strip_suffix(".plist"))
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let text = read(&entry.path())?;
+                found.push(Installed {
+                    name,
                     binary: plist_binary(&text),
                     env: plist_env(&text),
-                })
-            })
-            .collect(),
-        ServiceManager::Systemd => {
-            systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"])
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| {
-                    let name = line.split_whitespace().next()?;
-                    suffixed(name, "koidrive", ".service").then_some(())?;
-                    let text = systemctl(&["cat", name]).ok()?;
-                    Some(Installed {
-                        name: name.to_owned(),
-                        binary: unit_binary(&text),
-                        env: unit_env(&text),
-                    })
-                })
-                .collect()
+                });
+            }
         }
-    };
+        ServiceManager::Systemd => {
+            match systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"]) {
+                Ok(units) => {
+                    for name in units
+                        .lines()
+                        .filter_map(|line| line.split_whitespace().next())
+                    {
+                        if !suffixed(name, "koidrive", ".service") {
+                            continue;
+                        }
+                        let text = systemctl(&["cat", name])?;
+                        found.push(Installed {
+                            name: name.to_owned(),
+                            binary: unit_binary(&text),
+                            env: unit_env(&text),
+                        });
+                    }
+                }
+                Err(_) => {
+                    for entry in entries_of(&home.join(".config/systemd/user"))? {
+                        let Some(name) = (entry.file_name().to_str())
+                            .filter(|file| suffixed(file, "koidrive", ".service"))
+                            .map(str::to_owned)
+                        else {
+                            continue;
+                        };
+                        let text = match fs::read_to_string(entry.path()) {
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                            text => text.map_err(|error| {
+                                format!("cannot read {}: {error}", entry.path().display())
+                            })?,
+                        };
+                        found.push(Installed {
+                            name,
+                            binary: unit_binary(&text),
+                            env: unit_env(&text),
+                        });
+                    }
+                }
+            }
+        }
+    }
     found.sort_by(|a, b| a.name.cmp(&b.name));
-    found
+    Ok(found)
+}
+
+fn entries_of(dir: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    let shown = |error: io::Error| format!("cannot list {}: {error}", dir.display());
+    match fs::read_dir(dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        entries => entries
+            .map_err(shown)?
+            .collect::<io::Result<_>>()
+            .map_err(shown),
+    }
 }
 
 fn plist_env(plist: &str) -> Vec<(&'static str, Option<String>)> {

@@ -1990,7 +1990,10 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
     left.retain(|name| name != "config");
     assert_eq!(left, [".local", "Koidrive", "state"], "{uninstalled:#}");
     for dir in ["config", "state", ".local/bin"] {
-        let entries = fs::read_dir(machine.path(dir)).map_or(0, Iterator::count);
+        let entries = match fs::read_dir(machine.path(dir)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            entries => entries.unwrap().map(Result::unwrap).count(),
+        };
         assert_eq!(entries, 0, "{dir}");
     }
     let mut files: Vec<String> = fs::read_dir(&folder)
