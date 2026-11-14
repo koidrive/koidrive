@@ -1131,7 +1131,8 @@ impl Commits {
             let owed = (trees.remote().get(&moved.node_id)).is_some_and(|remote| {
                 remote.pending_by.as_deref() == Some(device_id)
                     && remote.shape.parent == moved.new_parent_id
-                    && remote.pending_for.as_ref() == Some(&moved.new_name)
+                    && (remote.pending_for.as_deref())
+                        .is_some_and(|mark| nfc(mark) == nfc(&moved.new_name))
             });
             if owed {
                 trees.start_finish(&moved.node_id);
@@ -1140,16 +1141,25 @@ impl Commits {
         let finish = |trees: &Trees, op: &proto::Op| match &op.op {
             Some(op::Op::Move(moved)) => (trees.pending_finishes().get(&moved.node_id))
                 .filter(|finish| {
-                    finish.parent == moved.new_parent_id && finish.name == moved.new_name
+                    finish.parent == moved.new_parent_id
+                        && nfc(&finish.name) == nfc(&moved.new_name)
                 })
                 .map(|_| moved.node_id.clone()),
             _ => None,
         };
         let mut ops: Vec<proto::Op> = planned.into_iter().chain(answered).collect();
         if ops.is_empty() && released.is_empty() {
+            let mut bytes = 0;
             let first: Vec<(NodeId, NodeId, String)> = (finishes(trees, &skip, Some(device_id)))
                 .filter(|(id, .., free)| !free || disk_first(trees, id))
                 .take(cap)
+                .take_while(|(id, _, name, _)| {
+                    let shape = trees.remote().live(id).or(trees.synced().live(id));
+                    let cost = record_cost(shape) + name.len();
+                    let fits = bytes == 0 || bytes + cost <= MAX_COMMIT_BYTES;
+                    bytes += cost;
+                    fits
+                })
                 .map(|(id, parent, name, _)| (id.clone(), parent.clone(), name.to_owned()))
                 .collect();
             for (id, parent, name) in first {

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use koidrive_ignore::Status;
 
 use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
-use crate::names::name_key;
+use crate::names::{name_key, nfc};
 use crate::state::{
     Agreed, FinishOrigin, MovedHere, PendingFinish, StateError, TreesChanges, TreesState,
 };
@@ -974,8 +974,9 @@ impl Trees {
     }
 
     fn holds_at(&self, id: &str, parent: &str, name: &str) -> bool {
-        (self.l.get(id))
-            .is_some_and(|local| local.shape.parent == parent && local.shape.name == name)
+        (self.l.get(id)).is_some_and(|local| {
+            local.shape.parent == parent && nfc(&local.shape.name) == nfc(name)
+        })
     }
 
     pub(crate) fn end_finish(&mut self, id: &str) {
@@ -1001,8 +1002,9 @@ impl Trees {
         let ended: Vec<(NodeId, bool)> = (self.pending_finishes.iter())
             .filter(|(_, finish)| !finish.sending)
             .filter_map(|(id, finish)| {
-                let at =
-                    |shape: &Shape, name: &str| shape.parent == finish.parent && shape.name == name;
+                let at = |shape: &Shape, name: &str| {
+                    shape.parent == finish.parent && nfc(&shape.name) == nfc(name)
+                };
                 let local = self.l.get(id).map(|local| &local.shape);
                 let taken = local.is_some_and(|local| at(local, &finish.name));
                 let holds = (local.is_some_and(|local| taken || at(local, &finish.pending)))
@@ -1077,7 +1079,7 @@ impl Trees {
         self.kept_originals.remove(&id);
         if let Some(finish) = self.pending_finishes.get_mut(&id) {
             finish.disk_first |=
-                node.shape.parent == finish.parent && node.shape.name == finish.name;
+                node.shape.parent == finish.parent && nfc(&node.shape.name) == nfc(&finish.name);
         }
         (self.l_identities.entry(node.identity).or_default()).insert(id.clone());
         self.mark(&id);

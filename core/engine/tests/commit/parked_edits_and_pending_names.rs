@@ -1523,6 +1523,94 @@ fn a_file_another_device_deletes_while_this_device_edits_it_takes_its_owed_name_
 }
 
 #[test]
+fn a_finish_the_disk_holds_in_another_unicode_form_is_sent_at_its_name() {
+    let (name, decomposed, pending) = ("\u{e9}", "e\u{301}", "\u{e9} (pending)");
+    let mut trees = trees(&[(
+        "a",
+        Some(dir(ROOT, decomposed)),
+        Some(dir(ROOT, pending)),
+        Some(remote(dir(ROOT, pending))),
+    )]);
+    let marked = RemoteNode {
+        pending_for: Some(name.into()),
+        pending_by: Some("me".into()),
+        ..remote(dir(ROOT, pending))
+    };
+    trees.set_remote("a".into(), marked);
+    let mut state = trees.state();
+    state.pending_finishes.insert("a".into(), PendingFinish {
+        parent: ROOT.into(),
+        pending: pending.into(),
+        name: name.into(),
+        origin: FinishOrigin::Mark { meta_rev: 1 },
+        disk_first: true,
+        base: None,
+        sending: false,
+    });
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    assert!(trees.state().pending_finishes.contains_key("a"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("a", ROOT, decomposed)]);
+    assert!(trees.state().pending_finishes["a"].sending);
+}
+
+#[test]
+fn a_folder_the_disk_holds_at_its_owed_name_in_another_unicode_form_finishes_disk_first() {
+    let (name, decomposed, pending) = ("\u{e9}", "e\u{301}", "\u{e9} (pending)");
+    let mut trees = trees(&[(
+        "a",
+        Some(dir(ROOT, decomposed)),
+        Some(dir(ROOT, pending)),
+        Some(remote(dir(ROOT, pending))),
+    )]);
+    let marked = RemoteNode {
+        pending_for: Some(name.into()),
+        pending_by: Some("me".into()),
+        ..remote(dir(ROOT, pending))
+    };
+    trees.set_remote("a".into(), marked);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("a", ROOT, decomposed)]);
+    let finish = &trees.state().pending_finishes["a"];
+    assert!(finish.disk_first && finish.sending, "{finish:?}");
+}
+
+#[test]
+fn a_folder_the_user_moves_to_its_owed_name_in_another_unicode_form_finishes_disk_first() {
+    let (name, decomposed, pending) = ("\u{e9}", "e\u{301}", "\u{e9} (pending)");
+    let mut trees = trees(&[(
+        "a",
+        Some(dir(ROOT, pending)),
+        Some(dir(ROOT, pending)),
+        Some(remote(dir(ROOT, pending))),
+    )]);
+    let marked = RemoteNode {
+        pending_for: Some(name.into()),
+        pending_by: Some("me".into()),
+        ..remote(dir(ROOT, pending))
+    };
+    trees.set_remote("a".into(), marked);
+    let mut state = trees.state();
+    state.pending_finishes.insert("a".into(), PendingFinish {
+        parent: ROOT.into(),
+        pending: pending.into(),
+        name: name.into(),
+        origin: FinishOrigin::Mark { meta_rev: 1 },
+        disk_first: false,
+        base: None,
+        sending: false,
+    });
+    trees.restore(state).unwrap();
+    trees.set_local("a".into(), local(dir(ROOT, decomposed), 1));
+    assert!(trees.state().pending_finishes["a"].disk_first);
+}
+
+#[test]
 fn a_folder_this_device_puts_back_at_its_pending_name_takes_the_name_the_server_gives_its_finish() {
     let (mut commits, mut trees, mut ids) = owing_its_name(&[
         (
