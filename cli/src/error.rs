@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The one error every command path returns: what went wrong, the code an agent branches on, the exit status, and the
-//! next command when there is a real one. Errors are classified where their cause is known: a refusal from the
-//! server, an error of the driver, a parse error of the arguments.
-
 use koidrive_cloudflare::{ApiError as CloudflareError, OauthError};
 use koidrive_driver::{ConfigError, DriverError, PathsError, SET_UP_AGAIN};
 use koidrive_ipc::{Code, Next, Reason};
@@ -40,7 +36,6 @@ impl CliError {
         Self::new(Code::Usage, message)
     }
 
-    /// `message` with the code of `cause`, for a message that puts the cause in context.
     pub fn caused(message: impl Into<String>, cause: impl Into<CliError>) -> Self {
         CliError {
             message: message.into(),
@@ -48,13 +43,11 @@ impl CliError {
         }
     }
 
-    /// The same error, its message put in `context`: "context: message".
     pub fn context(mut self, context: impl std::fmt::Display) -> Self {
         self.message = format!("{context}: {}", self.message);
         self
     }
 
-    /// The same error, saying what it is about with `reason`.
     pub fn because(self, reason: Reason) -> Self {
         CliError {
             reason: Some(reason),
@@ -62,7 +55,6 @@ impl CliError {
         }
     }
 
-    /// The same error with `argv` as a next command.
     pub fn then(mut self, argv: &[&str]) -> Self {
         self.next.push(Next::of(argv));
         self
@@ -82,7 +74,6 @@ impl From<&str> for CliError {
 }
 
 impl CliError {
-    /// The server refused this device's credential.
     fn refused_credential() -> Self {
         CliError::new(
             Code::AuthRequired,
@@ -103,8 +94,6 @@ impl CliError {
         }
     }
 
-    /// The `Error` result of an RPC: a refused credential needs a person, and a refusal the server allows sending again
-    /// may pass.
     pub fn rpc_refusal(error: ProtoError) -> Self {
         let error = ServerError(error);
         if error.code() == ServerCode::Unauthenticated {
@@ -119,8 +108,6 @@ impl CliError {
 }
 
 impl From<ApiError> for CliError {
-    /// A refusal of the server: refused credentials need a person, a transport failure or a refusal the server allows
-    /// sending again may pass.
     fn from(error: ApiError) -> Self {
         if error.is_unauthenticated() {
             return CliError::refused_credential();
@@ -144,8 +131,6 @@ impl From<ApiError> for CliError {
 }
 
 impl From<CloudflareError> for CliError {
-    /// A failed Cloudflare API call: no answer, a rate limit or a server error may pass, and a refusal of the login's
-    /// access needs a person to log in again.
     fn from(error: CloudflareError) -> Self {
         let code = match &error {
             CloudflareError::Transport { .. } => Code::Unavailable,
@@ -161,8 +146,6 @@ impl From<CloudflareError> for CliError {
 }
 
 impl From<OauthError> for CliError {
-    /// A failed Cloudflare login: a pasted address that is not the callback is a usage error, a refused or incomplete
-    /// login needs a person, and an unreachable OAuth endpoint may pass.
     fn from(error: OauthError) -> Self {
         let code = match &error {
             OauthError::NotCallback | OauthError::StateMismatch | OauthError::MissingCode => {

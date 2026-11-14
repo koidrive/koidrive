@@ -20,7 +20,6 @@ use rusqlite::Connection;
 const NOW: u64 = 1_794_268_740_000;
 const HISTORY: &str = "history";
 
-/// The commit side as the store holds it.
 fn load(db: &Path) -> Commits {
     let state = Store::open(db)
         .unwrap()
@@ -64,7 +63,6 @@ fn take(db: &Path) {
         .unwrap();
 }
 
-/// A `Welcome` in which the server counts `device_seq` commits of this device.
 fn welcome(device_seq: u64) -> Welcome {
     Welcome {
         history_id: HISTORY.into(),
