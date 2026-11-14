@@ -240,6 +240,7 @@ fn a_state_folder_left_with_one_staged_file_is_removed() {
         "credential.next",
         ".credential.next.123.tmp",
         "leaving.next",
+        "uninstall.json",
     ] {
         let machine = Machine::new();
         let koi = machine.copy_koi(".local/bin/koi");
@@ -270,6 +271,35 @@ fn a_state_folder_left_with_one_staged_file_is_removed() {
 }
 
 #[test]
+fn a_folder_with_only_subfolders_of_the_same_names_is_kept_whole() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let plan = machine.write("state/koidrive/spaces/plan.pdf", "pdf");
+    let notes = machine.write("state/koidrive/telemetry/notes.txt", "notes");
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&plan).unwrap(), "pdf", "{envelope:#}");
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "notes", "{envelope:#}");
+    assert!(
+        !machine.path("state/koidrive/lock").exists(),
+        "{envelope:#}"
+    );
+    assert!(
+        !machine.path("state/koidrive/uninstall.json").exists(),
+        "{envelope:#}"
+    );
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "unrecognized",
+            "path": machine.path("state/koidrive"),
+        })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
 fn a_linked_state_folder_goes_with_its_link() {
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");
@@ -287,6 +317,30 @@ fn a_linked_state_folder_goes_with_its_link() {
         fs::symlink_metadata(machine.path("state/koidrive")).is_err(),
         "{envelope:#}"
     );
+}
+
+#[test]
+fn a_linked_folder_whose_target_is_gone_loses_its_link() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    for (link, target) in [
+        ("state/koidrive", "disk/state-gone"),
+        ("config/koidrive", "disk/config-gone"),
+    ] {
+        fs::create_dir_all(machine.path(link).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(machine.path(target), machine.path(link)).unwrap();
+    }
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    for link in ["state/koidrive", "config/koidrive"] {
+        assert!(
+            fs::symlink_metadata(machine.path(link)).is_err(),
+            "{link}: {envelope:#}"
+        );
+    }
+    assert!(!koi.exists(), "{envelope:#}");
 }
 
 #[test]
