@@ -2299,9 +2299,8 @@ impl World {
                                         update.node_id == *node
                                             && self.rolled_back.contains_key(node)
                                             && ((update.content.as_ref()).is_some_and(|content| {
-                                                held.is_some_and(|held| {
-                                                    held.contains_key(&content.mtime_ns)
-                                                })
+                                                (self.exposed.get(&content.mtime_ns))
+                                                    .is_some_and(|e| e.nodes.contains_key(node))
                                             }) || (self.exposed.iter()).any(
                                                 |(write, exposure)| {
                                                     exposure.nodes.contains_key(node)
@@ -3485,5 +3484,64 @@ mod tests {
         assert!(world.seen.contains_key("recovery classifies the trees"));
         assert!(world.spent.iter().any(|spent| spent.device == 1));
         assert!(world.touches[1].values().all(BTreeSet::is_empty));
+    }
+
+    #[test]
+    fn a_stale_upload_over_a_restore_to_an_earlier_write_of_the_same_bytes_is_unasked() {
+        fn user(kind: u8, text: u8) -> Step {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name: 0,
+                text,
+            })
+        }
+        fn work(world: &mut World, d: usize) {
+            let mut steps = vec![(d, Step::Connect)];
+            steps.extend([(d, Step::Deliver(0)); 8]);
+            steps.extend([(d, Step::Work(0)); 16]);
+            world.run(2, &steps).unwrap();
+        }
+        let mut world = World::new(3);
+        world.phase(0, &[(0, user(1, 1))]).unwrap();
+        world.phase(1, &[(1, user(2, 0))]).unwrap();
+        world.run(2, &[(0, user(2, 1))]).unwrap();
+        work(&mut world, 0);
+        world.run(2, &[(0, Step::Backup)]).unwrap();
+        work(&mut world, 1);
+        world.run(2, &[(1, user(2, 0))]).unwrap();
+        work(&mut world, 1);
+        work(&mut world, 0);
+        world.run(2, &[(0, user(2, 1))]).unwrap();
+        work(&mut world, 0);
+        world.run(2, &[(0, Step::Restore)]).unwrap();
+        connect(&mut world, 2);
+        let trees = &mut world.devices[2].engine.trees;
+        let (id, shape) = (trees.remote().iter())
+            .find(|(_, node)| !node.trashed)
+            .map(|(id, node)| (id.clone(), node.shape.clone()))
+            .unwrap();
+        assert_eq!(shape.content.as_ref().unwrap().mtime_ns, 3);
+        assert_eq!(
+            trees
+                .synced()
+                .live(&id)
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .mtime_ns,
+            2
+        );
+        trees.set_synced(id, Some(shape));
+        trees.settle();
+        world.devices[2].persist().unwrap();
+        send(&mut world, 2).unwrap();
+        let stale = world.quiesce();
+        assert!(
+            matches!(&stale, Err(Failure::Diverged(why)) if why.contains("took write 3")),
+            "{stale:?}"
+        );
     }
 }
