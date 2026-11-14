@@ -736,8 +736,7 @@ fn recovery_of_a_done_effect_whose_folder_the_user_renamed_and_moved_reports_it_
 }
 
 #[test]
-fn recovery_of_a_done_effect_whose_folder_moved_into_an_unlistable_folder_fails_until_it_can_look()
-{
+fn recovery_of_a_done_effect_whose_folder_moved_and_became_unreadable_fails_until_it_can_look() {
     use std::os::unix::fs::PermissionsExt;
     for (scenario, folder) in [
         ("replace", "docs"),
@@ -749,17 +748,17 @@ fn recovery_of_a_done_effect_whose_folder_moved_into_an_unlistable_folder_fails_
         let root = dir.path();
         let effect = prepare(common::scenario(scenario), root);
         let done = apply(root, &effect, |_| {});
-        let vault = root.join("vault");
-        fs::create_dir(&vault).unwrap();
-        fs::set_permissions(&vault, fs::Permissions::from_mode(0o311)).unwrap();
-        fs::rename(root.join(folder), vault.join("renamed")).unwrap();
-        if fs::read_dir(&vault).is_ok() {
-            fs::set_permissions(&vault, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir(root.join("C")).unwrap();
+        let moved = root.join("C/renamed");
+        fs::rename(root.join(folder), &moved).unwrap();
+        fs::set_permissions(&moved, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&moved).is_ok() {
+            fs::set_permissions(&moved, fs::Permissions::from_mode(0o755)).unwrap();
             eprintln!("SKIPPED {scenario}: running as root, so permissions do not block reads");
             continue;
         }
         let blocked = recover_one(&bind(root), &effect, &mut |_| {});
-        fs::set_permissions(&vault, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&moved, fs::Permissions::from_mode(0o755)).unwrap();
         let err = blocked.expect_err(scenario);
         assert_eq!(
             err.kind(),
@@ -768,6 +767,32 @@ fn recovery_of_a_done_effect_whose_folder_moved_into_an_unlistable_folder_fails_
         );
         let outcome = recover_one(&bind(root), &effect, &mut |_| {}).unwrap();
         assert_eq!(outcome, done, "{scenario}");
+    }
+}
+
+#[test]
+fn recovery_of_an_effect_whose_folder_was_deleted_beside_an_unlistable_folder_settles() {
+    use std::os::unix::fs::PermissionsExt;
+    for (scenario, folder) in [
+        ("replace", "docs"),
+        ("write_new", "docs"),
+        ("create_dir", "docs"),
+        ("move", "other"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(common::scenario(scenario), root);
+        apply(root, &effect, |_| {});
+        fs::remove_dir_all(root.join(folder)).unwrap();
+        let locked = root.join("Photos Library.photoslibrary");
+        fs::create_dir_all(locked.join("inner")).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let outcome = recover_one(&bind(root), &effect, &mut |_| {});
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            !matches!(outcome.unwrap(), Outcome::Done { .. }),
+            "{scenario}"
+        );
     }
 }
 

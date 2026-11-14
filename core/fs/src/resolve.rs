@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rustix::io::Errno;
 
 use crate::root::{PRIVATE_DIR, make_dir};
-use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_fd, stat_path};
+use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_at, stat_fd, stat_path};
 
 /// The folder inside the private folder that holds parked entries (design
 /// §2.5).
@@ -331,28 +331,32 @@ fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
 }
 
 fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
-    let names = crate::list(folder.fd()).map_err(|err| Unresolved::Io {
-        path: folder
-            .route
-            .iter()
-            .map(|dir| dir.name.as_os_str())
-            .collect(),
-        err,
-    })?;
-    let mut unread = None;
+    let names = match crate::list(folder.fd()) {
+        Ok(names) => names,
+        Err(_) if !folder.route.is_empty() => return Ok(None),
+        Err(err) => {
+            return Err(Unresolved::Io {
+                path: PathBuf::new(),
+                err,
+            });
+        }
+    };
     for name in names {
         if folder.route.is_empty() && name == PRIVATE_DIR {
             continue;
         }
-        let opened = open_dir(folder.fd(), &name, &folder.route)
-            .and_then(|fd| Ok((identity(&fd, &folder.route, &name)?, fd)));
-        let (found, fd) = match opened {
-            Ok(opened) => opened,
-            Err(Unresolved::Missing(_) | Unresolved::NotAFolder(_)) => continue,
-            Err(err) => {
-                unread.get_or_insert(err);
-                continue;
+        let fd = match open_beneath(folder.fd(), &name) {
+            Ok(fd) => fd,
+            Err(err) if stat_at(folder.fd(), &name).is_ok_and(|stat| stat.id == id) => {
+                return Err(Unresolved::Io {
+                    path: join(&folder.route, &name),
+                    err: err.into(),
+                });
             }
+            Err(_) => continue,
+        };
+        let Ok(found) = identity(&fd, &folder.route, &name) else {
+            continue;
         };
         let mut route = folder.route.clone();
         route.push(Dir { name, id: found });
@@ -364,15 +368,11 @@ fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
         if found == id {
             return Ok(Some(child));
         }
-        match search(child, id) {
-            Ok(None) => {}
-            Err(err) => {
-                unread.get_or_insert(err);
-            }
-            found => return found,
+        if let Some(found) = search(child, id)? {
+            return Ok(Some(found));
         }
     }
-    unread.map_or(Ok(None), Err)
+    Ok(None)
 }
 
 fn open_dir(parent: BorrowedFd<'_>, name: &OsStr, route: &[Dir]) -> Result<OwnedFd, Unresolved> {
