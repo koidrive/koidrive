@@ -719,7 +719,7 @@ fn acknowledged_resend_at_its_lost_position(peer_name: Option<&str>) -> (Trees, 
     let old = RemoteNode { version_id: "old".into(), ..remote_at(file(ROOT, "b", 1), 2) };
     trees.set_remote("f".into(), old);
     let synced = trees.taken_from_others(|_| false);
-    let records = trees.remote_records();
+    let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
     trees.settle();
@@ -749,8 +749,8 @@ fn a_second_loss_after_another_device_renamed_a_resend_creates_it_at_that_name()
     assert!(synced.is_empty());
     let moved = trees.moved_here();
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
-    assert_eq!(records.get("f").map(|node| node.shape.name.as_str()), Some("c"));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    assert_eq!(records.get("f").map(|record| record.node.shape.name.as_str()), Some("c"));
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
     commits.forget_lost_slots();
@@ -767,7 +767,7 @@ fn a_rename_another_device_makes_during_a_second_resend_is_not_undone() {
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let moved = trees.moved_here();
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
     commits.forget_lost_slots();
@@ -796,7 +796,7 @@ fn a_resend_another_device_trashes_before_its_acknowledgement_is_not_revived() {
     let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
     trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 2));
     let synced = trees.taken_from_others(|_| false);
-    let records = trees.remote_records();
+    let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
     trees.settle();
@@ -844,7 +844,7 @@ fn a_file_edited_here_before_a_loss_is_created_where_another_device_renamed_it()
     trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
     let synced = trees.taken_from_others(|_| false);
     let untaken = trees.untaken_changes(|_| false);
-    let records = trees.remote_records();
+    let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, 0, 0);
     trees.settle();
@@ -867,7 +867,7 @@ fn a_file_whose_lost_edit_another_device_renamed_is_created_at_that_name() {
     trees.set_remote("f".into(), renamed);
     let synced = trees.taken_from_others(|seq| seq == 5);
     let untaken = trees.untaken_changes(|seq| seq == 5);
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| seq == 5);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), vec![("f".into(), 5)], synced, Vec::new(), untaken, records, 0, 0);
     trees.settle();
@@ -901,7 +901,7 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let (trashed, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
     commits.forget_lost_slots();
@@ -933,4 +933,41 @@ fn a_resend_into_a_lost_folder_the_server_refused_waits_for_that_folder() {
     assert!(commits.clear_problem("p"));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+}
+
+fn undone_move_then_edit_then_loss(peer: Option<&str>) -> Vec<(String, u8)> {
+    let mut trees = trees(&[synced("f", file(ROOT, "x", 1))]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_local("f".into(), local(file(ROOT, "y", 1), 1));
+    trees.settle();
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
+    assert!(commits.own_record(2, &commit.commit_id));
+    commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
+    if let Some(name) = peer {
+        trees.set_remote("f".into(), remote_at(file(ROOT, name, 1), 3));
+    }
+    trees.set_local_changed("f".into(), local(file(ROOT, "x", 2), 1));
+    trees.settle();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (trashed, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    trees.remove_remote("f");
+    trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    created_at(&build(&mut commits, &mut trees, &mut ids).unwrap())
+}
+
+#[test]
+fn a_file_edited_after_this_device_undid_its_move_is_created_where_l_holds_it_after_a_loss() {
+    assert_eq!(undone_move_then_edit_then_loss(None), [("x".to_owned(), 2)]);
+}
+
+#[test]
+fn a_file_another_device_renamed_after_this_device_undid_its_move_is_created_at_that_name() {
+    assert_eq!(undone_move_then_edit_then_loss(Some("z")), [("z".to_owned(), 2)]);
 }
