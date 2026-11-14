@@ -314,17 +314,26 @@ fn given(asked: impl Fn(&str) -> bool, name: &str) -> bool {
 }
 
 fn retained(space: &SpaceDo, node: &str) -> Vec<Vec<u8>> {
-    let request = ListVersions {
-        node_id: node.into(),
-        limit: 1000,
-        ..Default::default()
-    };
-    let versions = space
-        .list_versions(&request)
-        .map_or_else(|_| Vec::new(), |list| list.versions);
-    (versions.into_iter())
-        .filter_map(|version| Some(version.content?.manifest_digest))
-        .collect()
+    let mut digests = Vec::new();
+    let mut cursor = String::new();
+    loop {
+        let request = ListVersions {
+            node_id: node.into(),
+            cursor,
+            limit: 1000,
+        };
+        let Ok(list) = space.list_versions(&request) else {
+            return digests;
+        };
+        digests.extend(
+            (list.versions.into_iter())
+                .filter_map(|version| Some(version.content?.manifest_digest)),
+        );
+        if list.next_cursor.is_empty() {
+            return digests;
+        }
+        cursor = list.next_cursor;
+    }
 }
 
 fn trashed_copy(
