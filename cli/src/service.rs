@@ -679,14 +679,15 @@ pub async fn converge(
     let mut report = match manager.state(service) {
         _ if off => Report::new(manager, name, State::Off),
         Err(problem) => Report::unavailable(manager, problem),
-        Ok(mut before) => {
+        Ok(found) => {
+            let mut before = found;
             let settled = Instant::now() + ipc::STARTING;
             while before == State::Starting && Instant::now() < settled {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 before = manager.state(service).unwrap_or(before);
             }
             let action = plan(folders, before, asked);
-            let daemon = match before {
+            let daemon = match found {
                 State::Running => daemon,
                 _ => &Daemon::Absent,
             };
@@ -2741,9 +2742,13 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             starting: Cell::new(3),
             ..Fake::default()
         };
-        let report = converge(&fake, &service, 1, false, false, &Daemon::Absent).await;
+        let older = Daemon::Running(Some(version("0.0.0-0")));
+        let report = converge(&fake, &service, 1, false, false, &older).await;
         assert_eq!(report.state, State::Running);
         assert_eq!(*fake.unit.borrow(), Some(service.unit()));
+        assert_eq!(fake.restarts.get(), 1);
+        fake.starting.set(3);
+        converge(&fake, &service, 1, false, false, &older).await;
         assert_eq!(fake.restarts.get(), 1);
     }
 
