@@ -584,14 +584,12 @@ async fn tree(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliError> {
     .await
 }
 
-/// The account's device names by device ID, revoked devices included.
 async fn device_names(auth: &Auth) -> Result<HashMap<String, String>, CliError> {
     Ok((crate::devices(auth).await?.into_iter())
         .map(|device| (device.device_id, device.name))
         .collect())
 }
 
-/// The trashed nodes, and the deletion of each that the server reports (RFC 0023) by node ID.
 async fn trash_nodes(
     auth: &Auth,
     space: &str,
