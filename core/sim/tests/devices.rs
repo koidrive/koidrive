@@ -7817,3 +7817,100 @@ fn a_resent_copy_built_again_after_the_head_moved_stays_a_recovery_copy() {
     )
     .unwrap();
 }
+
+#[test]
+fn a_lost_move_gives_way_to_a_delete_by_a_user_who_saw_it() {
+    use koidrive_sim::world::Step::*;
+    keep(
+        3,
+        &[
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (2, Work(0)),
+                (2, Work(0)),
+                (0, Backup),
+            ],
+            vec![
+                (0, Work(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 9147435507812817714,
+                        parent: 3624704759994967921,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 3308041641307549115,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 2351286885031503325,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Connect),
+                (2, Work(0)),
+                (2, Work(12987620630431271609)),
+                (2, Work(677365974987200861)),
+            ],
+        ],
+    )
+    .unwrap();
+}
