@@ -2266,6 +2266,27 @@ fn a_device_whose_only_commit_since_a_restore_landed_after_it_may_copy_a_write_t
 }
 
 #[test]
+fn a_write_a_restore_took_that_no_disk_keeps_is_still_reported_lost() {
+    let mut world = World::new(2);
+    world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
+    for device in &mut world.devices {
+        let held: Vec<u128> = (device.disk.entries().iter())
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .map(|(ino, _)| *ino)
+            .collect();
+        for ino in held {
+            device.disk.delete(ino);
+        }
+        assert!(!device.disk.holds(1) && !device.disk.binned(1));
+    }
+    let failure = world.phase(1, &[]).unwrap_err();
+    assert!(
+        failure.to_string().contains("a restore took write 1"),
+        "{failure}"
+    );
+}
+
+#[test]
 fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_beside_it() {
     let world = converge(
         2,
