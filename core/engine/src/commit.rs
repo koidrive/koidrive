@@ -3160,7 +3160,10 @@ fn plan(
                 let Some(&at) = parent else {
                     return false;
                 };
-                if *at == trees.local().root || trees.remote().live(at).is_some() {
+                if *at == trees.local().root
+                    || trees.remote().live(at).is_some()
+                    || (problems.contains(at) && !trees.excluded(at))
+                {
                     return true;
                 }
                 if at == id {
