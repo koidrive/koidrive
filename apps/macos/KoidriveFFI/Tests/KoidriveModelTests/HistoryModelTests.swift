@@ -586,7 +586,7 @@ private let fourVersions = [
             #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: path)), "\(path)")
         }
         try FileManager.default.createSymbolicLink(atPath: root.appending(path: "later").path(percentEncoded: false), withDestinationPath: "Docs/Later")
-        #expect(app.location(of: shortcut.appending(path: "later/Plan.key"))?.below == ["Docs", "Later", "Plan.key"])
+        #expect(VersionHistoryModel(app: app, file: shortcut.appending(path: "later/Plan.key"), clock: halfPastMidnight).parentPath == "Sync/Docs/Later/")
     }
 
     @Test func aFileReachedThroughALinkFromAnotherLinkedFolderUsesTheFolderThatHoldsIt() async throws {
