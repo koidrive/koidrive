@@ -1654,6 +1654,45 @@ fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
 }
 
 #[test]
+fn a_removal_planned_before_a_rewind_leaves_a_held_file_on_the_disk() {
+    let mut trees = trees(
+        &[("x", file(ROOT, "x", 1))],
+        &[("x", file(ROOT, "x", 1))],
+        &[Remote("x", file(ROOT, "x", 1), true, 2)],
+    );
+    let mut ids = IdGen::new(3);
+    let mut effects = Effects::default();
+    let record = (effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first())
+    .cloned()
+    .expect("a planned removal");
+    assert!(
+        matches!(record.effect, Effect::RemoveFile { .. }),
+        "{record:?}"
+    );
+    trees.remove_remote("x");
+    trees.settle();
+    let mut commits = Commits::default();
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    trees.settle();
+    asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["x"]);
+    assert!(!record.applies(&trees, None));
+    assert!(
+        effects
+            .done(&mut trees, None, &record.effect_id, None)
+            .is_err()
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["x"]);
+    assert_eq!(
+        trees.local().get("x").map(|node| &node.shape),
+        Some(&file(ROOT, "x", 1))
+    );
+}
+
+#[test]
 fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
     let mut trees = dropped_from_s();
     let node = RemoteNode {

@@ -1055,6 +1055,9 @@ impl<'a> View<'a> {
     /// [`View::step`] could place the node in and no other node holds its exact name. L tells
     /// names apart exactly, so a name another node holds in another case does not stop it.
     fn applies(&self, record: &EffectRecord, in_flight: Option<&InFlight>) -> bool {
+        if self.trees.held(&record.node) {
+            return false;
+        }
         let Some(after) = &record.after else {
             return self.trees.local_children(&record.node).next().is_none();
         };
