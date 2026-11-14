@@ -119,7 +119,7 @@ private struct UpdateActions: View {
     var body: some View {
         HStack(spacing: 6) {
             switch notice {
-            case .available(let version, let releaseURL, _):
+            case .available(let version, let releaseURL):
                 Button("What’s New") { openURL(releaseURL ?? notesURL(version)) }
                 Button("Update", action: install)
                     .buttonStyle(.primary)
@@ -137,7 +137,6 @@ private struct UpdateActions: View {
             }
         }
         .controlSize(.small)
-        .disabled(notice.waitsForServer)
     }
 
     private func install() {
@@ -175,17 +174,13 @@ private struct FallbackCommand: View {
 }
 
 private extension UpdateNotice {
-    var waitsForServer: Bool {
-        if case .available(_, _, reachable: false) = self { true } else { false }
-    }
-
     func title(popover: Bool) -> String {
         switch self {
         case .checking: String(localized: "Checking for updates…")
         case .offline: String(localized: "Can’t check for updates while offline.")
         case .off: String(localized: "Update checks are off.")
         case .upToDate: String(localized: "Koidrive is up to date.")
-        case .available(let version, _, _):
+        case .available(let version, _):
             popover ? String(localized: "Koidrive \(version) is available") : String(localized: "Koidrive \(version) is available.")
         case .updating(let version): String(localized: "Updating to \(version)…")
         case .updated(let version): String(localized: "Updated to \(version)")
@@ -202,7 +197,6 @@ private extension UpdateNotice {
         case .offline: String(localized: "Koidrive checks again when it reconnects.")
         case .off: String(localized: "They were turned off in Koidrive’s settings file.")
         case .upToDate(let checkedAtMs): checked(Date(timeIntervalSince1970: TimeInterval(checkedAtMs) / 1000))
-        case .available(_, _, reachable: false): String(localized: "You can update once Koidrive reconnects.")
         case .available: popover ? String(localized: "You have \(running).") : nil
         case .updating: String(localized: "Koidrive quits and reopens when it’s ready.")
         case .updated: String(localized: "Koidrive reopened after the update.")

@@ -16,7 +16,7 @@ public enum UpdateNotice: Equatable, Sendable {
     case offline
     case off
     case upToDate(checkedAtMs: Int64)
-    case available(version: String, releaseURL: URL?, reachable: Bool)
+    case available(version: String, releaseURL: URL?)
     case updating(version: String)
     case updated(version: String)
     case failed(UpdateFailure)
@@ -27,11 +27,10 @@ extension AppModel {
     public var updateNotice: UpdateNotice {
         if updating, case .available(let version, _, _) = state.update { return .updating(version: version) }
         if let updateFailure { return .failed(updateFailure) }
-        let offline = state.status == .offline
         switch state.update {
         case .available(let version, let releaseUrl, _):
-            return .available(version: version, releaseURL: URL(string: releaseUrl), reachable: !offline)
-        case _ where offline: return .offline
+            return .available(version: version, releaseURL: URL(string: releaseUrl))
+        case _ where state.status == .offline: return .offline
         case .off: return .off
         case .unknown: return .checking
         case .upToDate(let checkedAtMs): return .upToDate(checkedAtMs: checkedAtMs)

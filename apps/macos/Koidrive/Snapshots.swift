@@ -470,8 +470,6 @@ enum Snapshots {
             model.start()
             return model
         }
-        let offline = make(.updateAvailable)
-        offline.session.fakeCore()?.setActivity(activity: .offline)
         let failed = make(.updateFails)
         _ = await failed.installUpdate()
         let unsigned = make(.updateAvailable)
@@ -488,7 +486,7 @@ enum Snapshots {
         off.session.fakeCore()?.setUpdate(update: .off)
         try? await Task.sleep(for: .milliseconds(200))
         return [
-            ("1-available", make(.updateAvailable), nil), ("2-available-offline", offline, nil),
+            ("1-available", make(.updateAvailable), nil),
             ("3-updating", make(.updateAvailable), .updating(version: "0.1.1")), ("4-updated", updated, nil),
             ("5-failed", unsigned, nil), ("6-failed-homebrew", failed, nil), ("7-up-to-date", make(.upToDate), nil),
             ("8-checking", checking, nil), ("9-offline", checkingOffline, nil), ("10-off", off, nil),

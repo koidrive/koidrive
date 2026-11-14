@@ -27,18 +27,17 @@ import Testing
         #expect(offline.popoverUpdateNotice == nil)
     }
 
-    @Test func anAvailableUpdateShowsInBothPlacesAndWaitsForTheServerWhenOffline() throws {
+    @Test func anAvailableUpdateShowsInBothPlacesAndStaysInstallableWhenTheSyncServerIsOffline() async throws {
         let model = AppModel.fake(scenario: .updateAvailable)
         let available = UpdateNotice.available(
-            version: "0.1.1", releaseURL: URL(string: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1"), reachable: true)
+            version: "0.1.1", releaseURL: URL(string: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1"))
         #expect(model.updateNotice == available)
         #expect(model.popoverUpdateNotice == available)
 
         model.apply(.status(status: .offline))
-        guard case .available(_, _, reachable: false) = model.updateNotice else {
-            Issue.record("expected an unreachable update, got \(model.updateNotice)")
-            return
-        }
+        #expect(model.updateNotice == available)
+        #expect(model.popoverUpdateNotice == available)
+        #expect(await model.installUpdate() == UpdateResult(from: "0.1.0", to: "0.1.1"))
     }
 
     @Test func installingAnUpdateShowsUpdatingAndThenTheNewState() async throws {
