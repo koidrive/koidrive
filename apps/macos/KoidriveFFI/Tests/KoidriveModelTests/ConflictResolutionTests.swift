@@ -6,6 +6,8 @@ import Testing
 
 import KoidriveModel
 
+private struct ConflictError: Error {}
+
 @MainActor
 @Suite struct ConflictResolutionTests {
     private func conflict() throws -> (AppModel, ConflictResolution) {
@@ -34,6 +36,22 @@ import KoidriveModel
         let file = ConflictFile(role: .copy, side: side, url: nil)
         #expect(file.name == "Budget.xlsx")
         #expect(file.directory == "Finance/2027/")
+    }
+
+    @Test func aSameQuestionWithNewerFilesShowsThem() async throws {
+        let (model, resolution) = try conflict()
+        var question = resolution.question
+        guard case .conflict(let original, var copy) = question.kind else { throw ConflictError() }
+        copy.size = 123_456
+        copy.modifiedAtMs += 60_000
+        question.kind = .conflict(original: original, copy: copy)
+        model.apply(.questions(questions: [question]))
+        #expect(resolution.copy.side == copy)
+        #expect(resolution.original.side == original)
+
+        await resolution.keep(.keepBoth)
+        #expect(resolution.phase == .settled(.keepBoth))
+        #expect(resolution.copy.side == copy)
     }
 
     @Test func onlyAConflictMakesAResolution() throws {

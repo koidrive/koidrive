@@ -102,7 +102,7 @@ private struct ConflictCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            FileThumbnail(url: file.url, phase: $thumbnail, loads: loads)
+            FileThumbnail(url: file.url, revision: [file.side.modifiedAtMs, Int64(clamping: file.side.size)], phase: $thumbnail, loads: loads)
                 .frame(height: 112)
                 .frame(maxWidth: .infinity)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.group))
@@ -146,6 +146,7 @@ private struct ConflictCard: View {
             HStack(spacing: 8) {
                 Button("Quick Look") { previewURL = file.url }
                     .controlSize(.small)
+                    .accessibilityLabel(Text("Quick Look \(file.name)"))
                     .disabled(thumbnail != .ready)
                 Spacer(minLength: 0)
                 Button(file.role == .original ? "Keep Original" : "Keep Copy", action: keep)
@@ -167,6 +168,7 @@ struct FileThumbnail: View {
     }
 
     let url: URL?
+    let revision: [Int64]
     @Binding var phase: Phase
     var loads = true
     @Environment(\.displayScale) private var scale
@@ -197,7 +199,12 @@ struct FileThumbnail: View {
         }
         .font(.callout)
         .foregroundStyle(Color.text2)
-        .task(id: url) { if loads { await load() } }
+        .task(id: Revision(url: url, revision: revision)) { if loads { await load() } }
+    }
+
+    private struct Revision: Equatable {
+        let url: URL?
+        let revision: [Int64]
     }
 
     private func load() async {

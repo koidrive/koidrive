@@ -43,22 +43,33 @@ public final class ConflictResolution: Identifiable {
     }
 
     public nonisolated let id: String
-    public let question: Question
-    public let original: ConflictFile
-    public let copy: ConflictFile
     public private(set) var phase: Phase
+    @ObservationIgnored private var lastSeen: Question
     @ObservationIgnored private let model: AppModel
 
     /// Nil unless `question` is a conflict.
     public init?(question: Question, model: AppModel, phase: Phase = .choosing) {
-        guard case .conflict(let original, let copy) = question.kind else { return nil }
-        let folder = model.folder(spaceID: question.spaceId).map { URL(filePath: $0.path, directoryHint: .isDirectory) }
+        guard case .conflict = question.kind else { return nil }
         id = question.id
-        self.question = question
-        self.original = ConflictFile(role: .original, side: original, url: folder?.appending(path: original.path))
-        self.copy = ConflictFile(role: .copy, side: copy, url: folder?.appending(path: copy.path))
+        lastSeen = question
         self.model = model
         self.phase = phase
+    }
+
+    /// The question as the session reports it now, or as it was last seen once it is answered.
+    public var question: Question {
+        model.state.questions.first { $0.id == id && $0.isConflict } ?? lastSeen
+    }
+
+    public var original: ConflictFile { file(.original) }
+    public var copy: ConflictFile { file(.copy) }
+
+    private func file(_ role: ConflictFile.Role) -> ConflictFile {
+        let question = question
+        guard case .conflict(let original, let copy) = question.kind else { preconditionFailure("a conflict") }
+        let side = role == .original ? original : copy
+        let folder = model.folder(spaceID: question.spaceId).map { URL(filePath: $0.path, directoryHint: .isDirectory) }
+        return ConflictFile(role: role, side: side, url: folder?.appending(path: side.path))
     }
 
     public var isKeeping: Bool {
@@ -68,14 +79,21 @@ public final class ConflictResolution: Identifiable {
     public func keep(_ answer: Answer) async {
         guard !isKeeping else { return }
         phase = .keeping(answer)
+        lastSeen = question
         do {
-            try await model.answer(question, with: answer)
+            try await model.answer(lastSeen, with: answer)
             phase = .settled(answer)
         } catch let error as SessionError {
             phase = .failed(error)
         } catch {
             phase = .failed(.NotSaved(reason: error.localizedDescription))
         }
+    }
+}
+
+private extension Question {
+    var isConflict: Bool {
+        if case .conflict = kind { true } else { false }
     }
 }
 
