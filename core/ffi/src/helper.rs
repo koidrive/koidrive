@@ -39,8 +39,6 @@ fn without_crash_handler(command: &mut Command) {
             flavor: i32,
         ) -> i32;
     }
-    // The app's crash reporter catches Mach exceptions through the task's exception ports, which a child inherits
-    // across fork and exec, so a crash in `koi` would otherwise be written as the app's.
     // SAFETY: the closure runs in the forked child before exec and makes one Mach call, which is async-signal-safe.
     unsafe {
         command.pre_exec(|| {
