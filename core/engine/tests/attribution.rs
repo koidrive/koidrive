@@ -46,15 +46,6 @@ fn show_from_env() {
 const A: usize = 0;
 const B: usize = 1;
 
-const SMALL: Budget = Budget {
-    writes: [1, 1],
-    moves: [1, 0],
-    deletes: [0, 1],
-    trash_restores: [0, 0],
-    renames: 0,
-    losses: 1,
-};
-
 const ANY: Budget = Budget {
     writes: [2, 2],
     moves: [2, 2],
@@ -90,6 +81,9 @@ fn rules(name: &str) -> Rules {
         "OldDeleter" => Rules::OldDeleter,
         "DeletedAdoptsRecords" => Rules::DeletedAdoptsRecords,
         "RevivalMarksPosition" => Rules::RevivalMarksPosition,
+        "BoundOnly" => Rules::BoundOnly,
+        "RemovalTakesListedShape" => Rules::RemovalTakesListedShape,
+        "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         other => panic!("no rules {other}"),
     }
 }
@@ -118,11 +112,16 @@ fn explore_from_env() {
             check(budget, rules(name))
         };
         println!(
-            "{name}: {} states, {} converged, {:?} in {:?}",
+            "{name}: {} states, {} converged, {:?} in {:?}{}",
             report.states,
             report.converged,
             report.broken,
-            start.elapsed()
+            start.elapsed(),
+            if report.capped {
+                ", stopped at MODEL_MAX_STATES"
+            } else {
+                ""
+            }
         );
         if std::env::var("MODEL_CHART").is_ok() {
             for (field, before, label, after) in &report.steps {
@@ -132,125 +131,352 @@ fn explore_from_env() {
     }
 }
 
-#[test]
-#[ignore]
-fn refute_from_env() {
-    let budgets = [
-        [0, 0, 0, 1, 1, 0, 0, 0, 0, 1],
-        [0, 1, 0, 0, 1, 0, 0, 0, 0, 1],
-        [0, 0, 0, 1, 1, 0, 0, 1, 0, 2],
-        [0, 1, 0, 0, 1, 0, 0, 0, 0, 2],
-        [1, 1, 0, 0, 1, 1, 0, 0, 0, 1],
-        [0, 0, 1, 1, 1, 1, 0, 0, 0, 1],
-        [0, 1, 1, 0, 1, 0, 0, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 0, 0, 0, 1],
-    ];
-    for name in std::env::var("MODEL_RULES").unwrap().split(',') {
-        let found = budgets.iter().find_map(|n| {
-            let budget = Budget {
-                writes: [n[0], n[1]],
-                moves: [n[2], n[3]],
-                deletes: [n[4], n[5]],
-                trash_restores: [n[6], n[7]],
-                renames: n[8],
-                losses: n[9],
-            };
-            let deep = check_deep(budget, rules(name));
-            let broken = deep.broken?;
-            let shortest = if deep.states < 20_000_000 {
-                check(budget, rules(name)).broken
-            } else {
-                None
-            };
-            Some((n, shortest.unwrap_or(broken)))
-        });
-        println!("{name}: {found:?}");
-        use std::io::Write as _;
-        std::io::stdout().flush().unwrap();
+const SMALL: [[u8; 10]; 7] = [
+    [0, 0, 0, 1, 1, 0, 0, 0, 0, 1],
+    [0, 1, 0, 0, 1, 0, 0, 0, 0, 1],
+    [0, 0, 0, 1, 1, 0, 0, 1, 0, 2],
+    [0, 1, 0, 0, 1, 0, 0, 0, 0, 2],
+    [1, 1, 0, 0, 1, 1, 0, 0, 0, 1],
+    [0, 0, 1, 1, 1, 1, 0, 0, 0, 1],
+    [0, 1, 1, 0, 1, 0, 0, 1, 1, 1],
+];
+
+const LARGE: [[u8; 10]; 6] = [
+    [1, 1, 1, 1, 1, 1, 0, 0, 0, 1],
+    [1, 1, 1, 0, 0, 1, 0, 1, 0, 1],
+    [1, 0, 1, 1, 0, 1, 0, 0, 0, 2],
+    [0, 1, 1, 0, 1, 0, 0, 1, 1, 2],
+    [1, 1, 0, 0, 1, 1, 0, 0, 0, 2],
+    [0, 0, 1, 1, 1, 1, 0, 0, 0, 2],
+];
+
+fn budget(n: [u8; 10]) -> Budget {
+    Budget {
+        writes: [n[0], n[1]],
+        moves: [n[2], n[3]],
+        deletes: [n[4], n[5]],
+        trash_restores: [n[6], n[7]],
+        renames: n[8],
+        losses: n[9],
     }
 }
 
-fn exhaustive(budget: [u8; 10], rules: Rules) {
-    let budget = Budget {
-        writes: [budget[0], budget[1]],
-        moves: [budget[2], budget[3]],
-        deletes: [budget[4], budget[5]],
-        trash_restores: [budget[6], budget[7]],
-        renames: budget[8],
-        losses: budget[9],
-    };
+type Counterexample = ([u8; 10], (String, Vec<Action>));
+
+fn refuted(rules: Rules, budgets: &[[u8; 10]]) -> Option<Counterexample> {
+    budgets.iter().find_map(|&n| {
+        let start = std::time::Instant::now();
+        let deep = check_deep(budget(n), rules);
+        println!(
+            "{rules:?} {n:?}: {} states in {:?}, broken: {}",
+            deep.states,
+            start.elapsed(),
+            deep.broken.is_some()
+        );
+        let broken = deep.broken?;
+        let shortest = if deep.states < 20_000_000 {
+            check(budget(n), rules).broken
+        } else {
+            None
+        };
+        Some((n, shortest.unwrap_or(broken)))
+    })
+}
+
+#[test]
+#[ignore]
+fn refute_from_env() {
+    for name in std::env::var("MODEL_RULES").unwrap().split(',') {
+        println!("{name}: {:?}", refuted(rules(name), &SMALL));
+    }
+}
+
+fn refute(rules: Rules) {
+    let found = refuted(rules, &SMALL).or_else(|| refuted(rules, &LARGE));
+    println!("{rules:?} breaks: {found:?}");
+    assert!(found.is_some(), "no budget breaks {rules:?}");
+}
+
+#[test]
+#[ignore]
+fn refute_move_result_ends_content() {
+    refute(Rules::MoveResultEndsContent);
+}
+
+#[test]
+#[ignore]
+fn refute_move_result_marks_content_resent() {
+    refute(Rules::MoveResultMarksContentResent);
+}
+
+#[test]
+#[ignore]
+fn refute_landed_resend_is_own() {
+    refute(Rules::LandedResendIsOwn);
+}
+
+#[test]
+#[ignore]
+fn refute_resend_record_ends_own() {
+    refute(Rules::ResendRecordEndsOwn);
+}
+
+#[test]
+#[ignore]
+fn refute_node_author() {
+    refute(Rules::NodeAuthor);
+}
+
+#[test]
+#[ignore]
+fn refute_trashed_record_proves() {
+    refute(Rules::TrashedRecordProves);
+}
+
+#[test]
+#[ignore]
+fn refute_claim_at_seq() {
+    refute(Rules::ClaimAtSeq);
+}
+
+#[test]
+#[ignore]
+fn refute_loss_forgets_deleted_fields() {
+    refute(Rules::LossForgetsDeletedFields);
+}
+
+#[test]
+#[ignore]
+fn refute_superseded_delete_gives_up() {
+    refute(Rules::SupersededDeleteGivesUp);
+}
+
+#[test]
+#[ignore]
+fn refute_delete_sees_synced() {
+    refute(Rules::DeleteSeesSynced);
+}
+
+#[test]
+#[ignore]
+fn refute_resend_revives_seen_value() {
+    refute(Rules::ResendRevivesSeenValue);
+}
+
+#[test]
+#[ignore]
+fn refute_delete_drops_resends() {
+    refute(Rules::DeleteDropsResends);
+}
+
+#[test]
+#[ignore]
+fn refute_stale_trash_proves() {
+    refute(Rules::StaleTrashProves);
+}
+
+#[test]
+#[ignore]
+fn refute_delete_needs_synced_live() {
+    refute(Rules::DeleteNeedsSyncedLive);
+}
+
+#[test]
+#[ignore]
+fn refute_seq_delete() {
+    refute(Rules::SeqDelete);
+}
+
+#[test]
+#[ignore]
+fn refute_superseded_drops_own() {
+    refute(Rules::SupersededDropsOwn);
+}
+
+#[test]
+#[ignore]
+fn refute_trash_settles_delete() {
+    refute(Rules::TrashSettlesDelete);
+}
+
+#[test]
+#[ignore]
+fn refute_delete_sees_only_local() {
+    refute(Rules::DeleteSeesOnlyLocal);
+}
+
+#[test]
+#[ignore]
+fn refute_loss_keeps_stale_seq() {
+    refute(Rules::LossKeepsStaleSeq);
+}
+
+#[test]
+#[ignore]
+fn refute_deleted_adopts_records() {
+    refute(Rules::DeletedAdoptsRecords);
+}
+
+#[test]
+#[ignore]
+fn refute_revival_marks_position() {
+    refute(Rules::RevivalMarksPosition);
+}
+
+#[test]
+#[ignore]
+fn refute_bound_only() {
+    refute(Rules::BoundOnly);
+}
+
+#[test]
+#[ignore]
+fn refute_listed_removals_in_recovery() {
+    refute(Rules::ListedRemovalsInRecovery);
+}
+
+#[test]
+#[ignore]
+fn refute_removal_takes_listed_shape() {
+    refute(Rules::RemovalTakesListedShape);
+}
+
+fn exhaustive(n: [u8; 10], rules: Rules) {
     let start = std::time::Instant::now();
-    let report = check_deep(budget, rules);
+    let report = check_deep(budget(n), rules);
     println!(
-        "{rules:?} {budget:?}: {} states, {} converged in {:?}",
+        "{rules:?} {n:?}: {} states, {} converged in {:?}",
         report.states,
         report.converged,
         start.elapsed()
     );
     assert_eq!(report.broken, None);
+    assert!(!report.capped, "MODEL_MAX_STATES stopped the check");
 }
 
 #[test]
 #[ignore]
 fn exhaustive_every_user_event_one_restore() {
-    exhaustive([1, 1, 1, 1, 1, 1, 0, 0, 0, 1], Rules::Spec);
+    exhaustive(LARGE[0], Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn old_server_every_user_event_one_restore() {
+    exhaustive(LARGE[0], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
 fn exhaustive_trash_restore_one_restore() {
-    exhaustive([1, 1, 1, 0, 0, 1, 0, 1, 0, 1], Rules::Spec);
+    exhaustive(LARGE[1], Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn old_server_trash_restore_one_restore() {
+    exhaustive(LARGE[1], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
 fn exhaustive_moves_and_a_delete_two_restores() {
-    exhaustive([1, 0, 1, 1, 0, 1, 0, 0, 0, 2], Rules::Spec);
+    exhaustive(LARGE[2], Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn old_server_moves_and_a_delete_two_restores() {
+    exhaustive(LARGE[2], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
 fn exhaustive_renames_and_trash_restore_two_restores() {
-    exhaustive([0, 1, 1, 0, 1, 0, 0, 1, 1, 2], Rules::Spec);
+    exhaustive(LARGE[3], Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn old_server_renames_and_trash_restore_two_restores() {
+    exhaustive(LARGE[3], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
 fn exhaustive_writes_and_deletes_two_restores() {
-    exhaustive([1, 1, 0, 0, 1, 1, 0, 0, 0, 2], Rules::Spec);
+    exhaustive(LARGE[4], Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn old_server_writes_and_deletes_two_restores() {
+    exhaustive(LARGE[4], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
 fn exhaustive_moves_and_deletes_two_restores() {
-    exhaustive([0, 0, 1, 1, 1, 1, 0, 0, 0, 2], Rules::Spec);
+    exhaustive(LARGE[5], Rules::Spec);
 }
 
 #[test]
 #[ignore]
-fn exhaustive_old_server() {
-    exhaustive([1, 1, 0, 0, 1, 1, 0, 0, 0, 1], Rules::OldServer);
-    exhaustive([0, 1, 1, 0, 1, 0, 0, 1, 1, 1], Rules::OldServer);
+fn old_server_moves_and_deletes_two_restores() {
+    exhaustive(LARGE[5], Rules::OldServer);
 }
 
 #[test]
 #[ignore]
-fn exhaustive_old_deleter() {
+fn old_deleter_writes_and_deletes_one_restore() {
     exhaustive([1, 1, 0, 0, 1, 1, 0, 0, 0, 1], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_renames_and_trash_restore_one_restore() {
     exhaustive([0, 1, 1, 0, 1, 0, 0, 1, 1, 1], Rules::OldDeleter);
 }
 
 #[test]
-fn explore() {
-    let start = std::time::Instant::now();
-    let report = check(SMALL, Rules::Spec);
-    println!(
-        "{} states, {} converged, {:?} in {:?}",
-        report.states,
-        report.converged,
-        report.broken,
-        start.elapsed()
-    );
+#[ignore]
+fn old_deleter_every_user_event_one_restore() {
+    exhaustive(LARGE[0], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_trash_restore_one_restore() {
+    exhaustive(LARGE[1], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_moves_and_a_delete_two_restores() {
+    exhaustive(LARGE[2], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_renames_and_trash_restore_two_restores() {
+    exhaustive(LARGE[3], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_writes_and_deletes_two_restores() {
+    exhaustive(LARGE[4], Rules::OldDeleter);
+}
+
+#[test]
+#[ignore]
+fn old_deleter_moves_and_deletes_two_restores() {
+    exhaustive(LARGE[5], Rules::OldDeleter);
+}
+
+#[test]
+fn a_small_budget_breaks_no_rule() {
+    exhaustive([0, 1, 0, 1, 1, 0, 0, 0, 0, 1], Rules::Spec);
 }
 
 fn handled(trace: &[Action], broken_by: &[Rules]) {

@@ -91,6 +91,7 @@ struct Server {
     overwritten: Vec<Tok>,
     restored: Vec<Tok>,
     overruled: Vec<Tok>,
+    authors: Vec<Option<Dev>>,
 }
 
 impl Server {
@@ -223,6 +224,7 @@ struct Device {
     s: Synced,
     r: Node,
     seen: Vec<u8>,
+    history: [Vec<Tok>; 2],
     unsent: Unsent,
     by_user: [bool; 2],
     flight: Option<Flight>,
@@ -301,6 +303,15 @@ pub enum Rules {
     OldDeleter,
     DeletedAdoptsRecords,
     RevivalMarksPosition,
+    BoundOnly,
+    ListedRemovalsInRecovery,
+    RemovalTakesListedShape,
+}
+
+impl Rules {
+    fn bound_only(self) -> bool {
+        matches!(self, Rules::OldServer | Rules::BoundOnly)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -355,6 +366,7 @@ impl World {
             },
             r: node,
             seen: vec![0],
+            history: [Vec::new(), Vec::new()],
             unsent: Unsent::default(),
             by_user: [false; 2],
             flight: None,
@@ -373,6 +385,7 @@ impl World {
                 overwritten: Vec::new(),
                 restored: Vec::new(),
                 overruled: Vec::new(),
+                authors: vec![None],
             },
             devices: [device.clone(), device],
             budget,
@@ -637,7 +650,7 @@ impl World {
                     node.meta_edit_rev = seq;
                     node.meta_editor = Some(d);
                 }
-                w.append(node);
+                w.append(node, None);
             }
             Action::Build(d, k) => {
                 let ops: Vec<(Op, Author)> = w.plan(d).into_iter().take(k as usize).collect();
@@ -685,6 +698,13 @@ impl World {
             Action::Record(d) => {
                 let record = w.server.log[w.devices[d].seen.len()];
                 let dev = &mut w.devices[d];
+                for field in FIELDS.into_iter().filter(|_| rules.bound_only()) {
+                    let replaced = dev.r.get(field);
+                    let history = &mut dev.history[slot(field)];
+                    if replaced != record.node.get(field) && !history.contains(&replaced) {
+                        history.push(replaced);
+                    }
+                }
                 dev.r = record.node;
                 dev.seen.push(record.token);
                 w.prove(d, rules);
@@ -701,11 +721,12 @@ impl World {
         Ok(w)
     }
 
-    fn append(&mut self, node: Node) -> Seq {
+    fn append(&mut self, node: Node, by: Option<Dev>) -> Seq {
         let seq = self.server.head() + 1;
         let token = self.server.tokens;
         self.server.tokens += 1;
         self.server.log.push(Record { seq, token, node });
+        self.server.authors.push(by);
         seq
     }
 
@@ -890,7 +911,7 @@ impl World {
             codes.push(code);
         }
         let token = self.server.tokens;
-        self.append(node);
+        self.append(node, Some(d));
         Ok(Answer::Done { seq, token, codes })
     }
 
@@ -975,6 +996,19 @@ impl World {
         let Phase::Arrived(Answer::Done { seq, codes, .. }) = flight.phase else {
             unreachable!()
         };
+        for ((op, _), code) in (flight.ops.iter().zip(&codes)).filter(|_| rules.bound_only()) {
+            let (field, value) = match (*op, *code) {
+                (Op::Move { .. }, Code::Renamed(name)) => (Field::Position, name),
+                (Op::Move { to, .. }, Code::Applied) => (Field::Position, to),
+                (Op::Update { content, .. }, Code::Applied) => (Field::Content, content),
+                _ => continue,
+            };
+            let replaced = dev.r.get(field);
+            let history = &mut dev.history[slot(field)];
+            if replaced != value && !history.contains(&replaced) {
+                history.push(replaced);
+            }
+        }
         for ((op, author), code) in flight.ops.into_iter().zip(codes) {
             let own = author == Author::Own || rules == Rules::LandedResendIsOwn;
             match (op, code) {
@@ -1267,10 +1301,41 @@ impl World {
         let log: Vec<u8> = self.server.log.iter().map(|record| record.token).collect();
         let listing = self.server.node();
         let trash_saw = listing.trashed.and_then(|trash| self.saw(trash, rules));
-        let dev = &mut self.devices[d];
-        let held = (dev.seen.iter().zip(&log))
+        let dev = &self.devices[d];
+        let own = |token: u8| self.server.authors[token as usize] == Some(d);
+        let common = (dev.seen.iter().zip(&log))
             .take_while(|(seen, kept)| seen == kept)
-            .count() as Seq;
+            .count();
+        let bound = (0..common)
+            .rev()
+            .find(|&at| own(log[at]))
+            .map_or(0, |at| at as Seq + 1);
+        let held = if rules.bound_only() {
+            bound
+        } else {
+            common as Seq
+        };
+        let placed_here =
+            (dev.seen.get(listing.meta_rev as usize - 1)).is_some_and(|&token| own(token));
+        let removed_at = (!dev.s.live && dev.s.deleted_here).then_some(dev.s.exist_seq);
+        let at = |field: Field, value: Tok| {
+            (rules.bound_only())
+                .then(|| {
+                    dev.history[slot(field)]
+                        .iter()
+                        .position(|&held| held == value)
+                })
+                .flatten()
+        };
+        let known = FIELDS
+            .map(|field| listing.rev(field) <= held || at(field, listing.get(field)).is_some());
+        let earlier = FIELDS.map(|field| {
+            at(field, listing.get(field)).is_some_and(|listed| {
+                at(field, dev.s.get(field).val).is_none_or(|synced| listed < synced)
+            })
+        });
+        let known = |field: Field| known[slot(field)];
+        let dev = &mut self.devices[d];
         dev.r = listing;
         dev.seen = log;
         dev.flight = None;
@@ -1287,13 +1352,18 @@ impl World {
                 dev.s.set(
                     field,
                     Agreed {
-                        seq: old.seq.min(held),
+                        seq: if earlier[slot(field)] {
+                            old.seq.min(held).max(listing.rev(field))
+                        } else {
+                            old.seq.min(held)
+                        },
                         ..old
                     },
                 );
                 let resend = dev.unsent.existence == Some(Author::Own)
                     && old.seq > held
-                    && listing.get(field) != old.val;
+                    && listing.get(field) != old.val
+                    && (!rules.bound_only() || listing.rev(field) <= held || earlier[slot(field)]);
                 if resend && rules != Rules::DeleteDropsResends {
                     dev.unsent.set(
                         field,
@@ -1317,7 +1387,7 @@ impl World {
                 }
                 continue;
             }
-            let agreed = if listing.rev(field) <= held {
+            let agreed = if known(field) {
                 listing.get(field)
             } else {
                 UNKNOWN
@@ -1363,6 +1433,31 @@ impl World {
                 && covered
                 && dev.unsent.existence == Some(Author::Own)
                 && rules != Rules::TrashSettlesDelete;
+        }
+        if let Some(removed_at) = removed_at {
+            let edited_since = listing.content_rev.max(listing.edit_rev) > removed_at;
+            let credited = placed_here
+                && (listing.meta_rev <= bound || rules == Rules::ListedRemovalsInRecovery);
+            if listed && matches!(dev.l, Local::Gone(_)) && !edited_since && credited {
+                dev.s.live = true;
+                dev.s.exist_seq = listing.meta_rev;
+                dev.s.deleted_here = false;
+                dev.unsent.existence.get_or_insert(Author::Own);
+                let shape = matches!(
+                    rules,
+                    Rules::ListedRemovalsInRecovery | Rules::RemovalTakesListedShape
+                );
+                for field in FIELDS.into_iter().filter(|_| shape) {
+                    dev.s.set(
+                        field,
+                        Agreed {
+                            val: listing.get(field),
+                            seq: listing.rev(field),
+                            own: false,
+                        },
+                    );
+                }
+            }
         }
         self.classify(d, rules)
     }
@@ -1517,6 +1612,7 @@ pub struct Report {
     pub states: usize,
     pub converged: usize,
     pub broken: Option<(Broken, Vec<Action>)>,
+    pub capped: bool,
     pub steps: std::collections::BTreeSet<(Field, String, &'static str, String)>,
 }
 
@@ -1595,6 +1691,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
                     states: seen.len(),
                     converged,
                     broken: Some((broken, trace(&parents, index, None))),
+                    capped: false,
                     steps,
                 };
             }
@@ -1606,6 +1703,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
                         states: seen.len(),
                         converged,
                         broken: Some((broken, trace(&parents, index, Some(action)))),
+                        capped: false,
                         steps,
                     };
                 }
@@ -1649,6 +1747,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
         states: seen.len(),
         converged,
         broken: None,
+        capped: false,
         steps,
     }
 }
@@ -1661,10 +1760,13 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
     let mut stack: Vec<(World, Vec<Action>)> = vec![(start.clone(), start.actions())];
     let mut converged = 0;
     let steps = std::collections::BTreeSet::new();
+    let cap: usize =
+        std::env::var("MODEL_MAX_STATES").map_or(usize::MAX, |cap| cap.parse().unwrap());
     let report = |seen: &std::collections::HashSet<u64>, converged, broken, steps| Report {
         states: seen.len(),
         converged,
         broken,
+        capped: seen.len() >= cap,
         steps,
     };
     if start.converged() {
@@ -1685,6 +1787,9 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
         };
         if !seen.insert(fingerprint(&next)) {
             continue;
+        }
+        if seen.len() >= cap {
+            return report(&seen, converged, None, steps);
         }
         path.push(action);
         let actions = next.actions();
