@@ -2828,7 +2828,9 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            self.resends.remove(id);
+            if !self.watched_positions.contains_key(id) {
+                self.resends.remove(id);
+            }
             self.local_changes.remove(id);
         }
         self.changed.insert(id.to_owned());

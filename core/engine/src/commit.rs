@@ -1637,6 +1637,9 @@ impl Commits {
                         synced.set(id, None);
                         rekey(trees, id, &outcome.node_id);
                         trees.sent_edit(&outcome.node_id, update.content.as_ref());
+                        if !update.resend {
+                            trees.record_edited(&outcome.node_id, update.content.as_ref());
+                        }
                     }
                     if applied && !update.resend {
                         trees.record_edited(id, update.content.as_ref());
@@ -1737,6 +1740,7 @@ impl Commits {
             };
             if applied && sent.is_some() {
                 trees.record_moved(node, result.seq);
+                trees.end_resend(node);
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created

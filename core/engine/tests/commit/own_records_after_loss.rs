@@ -287,7 +287,9 @@ fn sent_after_two_losses(record_first: bool) -> Vec<op::Op> {
     trees.set_remote_made_here("n".into(), RemoteNode { content_rev: 8, edit_rev: 8, ..remote_at(shape, 8) });
     if record_first {
         assert!(!commits.acknowledge(&mut trees, 8));
+        trees.settle();
         assert!(!commits.acknowledge(&mut trees, 8));
+        trees.settle();
     }
     commits.received(result(8, vec![outcome(op_result::Code::Applied)])).unwrap();
     assert!(commits.acknowledge(&mut trees, 8));
