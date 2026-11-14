@@ -553,15 +553,8 @@ impl Folder {
     /// here on. Nothing else clears them.
     pub fn scanned(&mut self) -> Result<Vec<Work>, Stop> {
         self.scanned = true;
-        let cleared = self.engine.commits.problems().clone();
-        if !cleared.is_empty() {
-            self.step(|engine, _| {
-                for node in &cleared {
-                    engine.commits.clear_problem(node);
-                }
-                Ok(())
-            })?;
-        }
+        let cleared: Vec<String> = self.engine.commits.problems().iter().cloned().collect();
+        self.let_back_in(&cleared)?;
         self.refused_nodes.retain(|id, _| !cleared.contains(id));
         self.publish_remote()?;
         let mut work = Vec::new();
@@ -1628,6 +1621,9 @@ impl Folder {
             }
             Ok(tx.remote_node_count()?)
         })?;
+        if recovering {
+            self.unreadable.clear();
+        }
         Ok(())
     }
 

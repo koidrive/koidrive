@@ -405,6 +405,34 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
     assert!(problem.contains("INVALID_NAME"), "the next batch cleared the refusal: {problem}");
 }
 
+#[test]
+fn a_recovery_forgets_which_files_were_left_out() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let secret = site.root.join("secret.txt");
+    fs::write(&secret, b"first").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    let backup = remote.space.clone();
+
+    fs::write(&secret, b"second version").unwrap();
+    leave_out_until_the_upload_fails(&mut a, &mut remote, &secret);
+    a.work.clear();
+    remote.space.rewind(&backup, NOW);
+    a.event(Event::ResyncRequired(ResyncRequired {
+        reason: Reason::HistoryChanged as i32,
+        ..ResyncRequired::default()
+    }))
+    .unwrap();
+    while !a.folder.engine.commits.problems().is_empty() {
+        let work = a.work.pop_front().expect("the recovery ends");
+        a.perform(work, &mut remote).unwrap();
+    }
+    let left_out = (a.folder.unreadable.values()).any(|unreadable| unreadable.left_out.is_some());
+    fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    assert!(!left_out, "a file stays left out after the recovery let every node back in");
+}
+
 fn synced_on_both(files: &[&str]) -> (Remote, Site, Device, Site, Device) {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
