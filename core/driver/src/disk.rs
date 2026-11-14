@@ -754,6 +754,7 @@ impl Disk {
             let mut offset = 0;
             for chunk in &content.chunks {
                 upload.sources.entry(chunk.hash.clone()).or_insert(Source {
+                    node: node.clone(),
                     path: path.clone(),
                     at: at.clone(),
                     identity,
@@ -787,6 +788,8 @@ impl Disk {
     }
 }
 
+pub(crate) type Sources = BTreeMap<Vec<u8>, (String, Option<PathBuf>)>;
+
 /// The chunks a commit adds to the server and where the bytes of each are in the folder.
 pub(crate) struct Upload {
     pub timing_bytes: crate::timing::Bytes,
@@ -798,6 +801,7 @@ pub(crate) struct Upload {
 }
 
 struct Source {
+    node: String,
     /// `None` when L no longer holds the node under the root.
     path: Option<PathBuf>,
     at: Option<Location>,
@@ -824,19 +828,20 @@ impl Upload {
         let same =
             |id: FileId| meta.is_file() && meta.dev() == id.dev && u128::from(meta.ino()) == id.ino;
         if !source.identity.is_some_and(same) {
-            return Err(gone());
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "another file is at its path now",
+            ));
         }
         let mut bytes = vec![0; chunk.size as usize];
         file.read_exact_at(&mut bytes, source.offset)?;
         Ok(Bytes::from(bytes))
     }
 
-    /// The files the chunks are read from, relative to the root.
-    pub fn paths(&self) -> Vec<PathBuf> {
-        let paths: BTreeSet<&PathBuf> = (self.sources.values())
-            .filter_map(|source| source.path.as_ref())
-            .collect();
-        paths.into_iter().cloned().collect()
+    pub fn sources(&self) -> Sources {
+        (self.sources.iter())
+            .map(|(hash, source)| (hash.clone(), (source.node.clone(), source.path.clone())))
+            .collect()
     }
 }
 

@@ -19,6 +19,7 @@ include!("tests/rules_and_ignored_links.rs");
 include!("tests/server_loss_recovery.rs");
 include!("tests/status_and_failure_reporting.rs");
 include!("tests/swapped_folders.rs");
+include!("tests/unreadable_files.rs");
 include!("tests/sync_transfers_and_retries.rs");
 
 #[path = "../tests/folder_telemetry.rs"]
