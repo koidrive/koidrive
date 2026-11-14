@@ -28,7 +28,7 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
-    /// App crashes from before it are not sent: the last time the stored choice turned off, or from off back on, in
+    /// App crashes from before it are not sent: the last time reports were turned off, turned on from off or reset, in
     /// microseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crashes_since: Option<u64>,
@@ -354,10 +354,7 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Settings::default(),
             settings => settings?,
         };
-        if !matches!(
-            (settings.enabled, on),
-            (None, true) | (Some(true), true) | (Some(false), false)
-        ) {
+        if !on || settings.enabled == Some(false) {
             settings.crashes_since = Some(now_micros());
         }
         settings.enabled = Some(on);
@@ -384,6 +381,7 @@ impl Store {
         }
         let id = InstallId::generate();
         settings.install_id = Some(id.clone());
+        settings.crashes_since = Some(now_micros());
         write(&self.dir.join("settings.json"), &settings)?;
         Ok(Some(id))
     }
@@ -1450,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_crash_from_before_reports_were_turned_off_stays_revoked_when_the_environment_turns_them_on()
+    fn an_app_crash_from_before_any_off_or_reset_stays_revoked_when_the_environment_turns_reports_on()
      {
         let (_dir, store) = store();
         store.set(true).unwrap();
@@ -1461,6 +1459,21 @@ mod tests {
         assert_eq!(app_crashes(&store), 0);
         store
             .absorb_app_crash(&crash_report("B", now_micros()))
+            .unwrap();
+        assert_eq!(app_crashes(&store), 1);
+
+        let crashed = now_micros();
+        store.set(false).unwrap();
+        store.install_id().unwrap();
+        store.absorb_app_crash(&crash_report("C", crashed)).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+
+        let crashed = now_micros();
+        store.reset().unwrap();
+        store.absorb_app_crash(&crash_report("D", crashed)).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+        store
+            .absorb_app_crash(&crash_report("E", now_micros()))
             .unwrap();
         assert_eq!(app_crashes(&store), 1);
     }
