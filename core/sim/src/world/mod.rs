@@ -570,7 +570,8 @@ pub struct World {
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
-    actions: Vec<BTreeMap<u64, u128>>,
+    merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
+    actions: Vec<BTreeMap<u64, (u128, Change)>>,
     scanned: Vec<u64>,
     built: Vec<u64>,
     built_copies: Vec<u64>,
@@ -584,6 +585,31 @@ pub struct World {
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Change {
+    Made,
+    Edited,
+    Moved,
+}
+
+impl Change {
+    fn carries(self, action: Change) -> bool {
+        self == Change::Made || self == action
+    }
+
+    fn settled(self, here: &Shape, there: &Shape) -> bool {
+        match self {
+            Change::Made => here.same(there),
+            Change::Moved => here.same_position(there),
+            Change::Edited => match (&here.content, &there.content) {
+                (Some(here), Some(there)) => same_content(here, there),
+                (None, None) => true,
+                _ => false,
+            },
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -653,6 +679,7 @@ impl World {
             clock: 0,
             touches: vec![BTreeMap::new(); count],
             touched_nodes: vec![BTreeMap::new(); count],
+            merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
             scanned: vec![0; count],
             built: vec![0; count],
@@ -927,7 +954,12 @@ impl World {
         }
         let local = self.devices[d].engine.trees.local();
         if let Some(own) = touched.first() {
-            self.actions[d].insert(self.clock, *own);
+            let change = match action.kind % 5 {
+                2 => Change::Edited,
+                3 => Change::Moved,
+                _ => Change::Made,
+            };
+            self.actions[d].insert(self.clock, (*own, change));
         }
         for ino in touched {
             self.touches[d].entry(ino).or_default().insert(self.clock);
@@ -2184,6 +2216,7 @@ impl World {
                                 .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
                                 .collect();
                             let local = self.devices[d].engine.trees.local();
+                            let synced = self.devices[d].engine.trees.synced();
                             let ino = |node: &str| {
                                 (local.get(node).map(|node| node.identity.ino))
                                     .or_else(|| self.touched_nodes[d].get(node).copied())
@@ -2196,10 +2229,24 @@ impl World {
                                     _ => None,
                                 })
                                 .collect();
+                            let merges: Vec<(NodeId, u128)> = (sent.ops.iter())
+                                .zip(&committed.result.results)
+                                .filter(|(_, outcome)| {
+                                    outcome.code == op_result::Code::MergedInto as i32
+                                })
+                                .filter_map(|(op, outcome)| match &op.op {
+                                    Some(op::Op::CreateDir(create)) => {
+                                        Some((outcome.node_id.clone(), ino(&create.node_id)?))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
                             let touched = |node: &str| {
+                                let merged = self.merged[d].get(node).into_iter().flatten();
                                 restored.contains(node)
-                                    || (ino(node).and_then(|ino| self.touches[d].get(&ino)))
-                                        .is_some_and(|at| at.first().is_some_and(|at| *at <= built))
+                                    || (ino(node).into_iter().chain(merged.copied()))
+                                        .filter_map(|ino| self.touches[d].get(&ino))
+                                        .any(|at| at.first().is_some_and(|at| *at <= built))
                             };
                             let asked = |node: &str| {
                                 touched(node)
@@ -2244,7 +2291,7 @@ impl World {
                                     node.node_id, node.name, sent.ops
                                 )));
                             }
-                            let inos: Vec<u128> = (sent.ops.iter())
+                            let changes: Vec<(u128, Change)> = (sent.ops.iter())
                                 .zip(&committed.result.results)
                                 .filter(|(_, outcome)| {
                                     outcome.code != op_result::Code::Rejected as i32
@@ -2253,27 +2300,49 @@ impl World {
                                     Some(op::Op::CreateDir(_))
                                         if outcome.code == op_result::Code::MergedInto as i32 =>
                                     {
-                                        Some(&outcome.node_id)
+                                        Some((&outcome.node_id, Change::Made))
                                     }
-                                    Some(op::Op::CreateDir(op)) => Some(&op.node_id),
-                                    Some(op::Op::CreateFile(op)) => Some(&op.node_id),
-                                    Some(op::Op::UpdateContent(op)) => Some(&op.node_id),
-                                    Some(op::Op::Move(op)) => Some(&op.node_id),
+                                    Some(op::Op::CreateDir(op)) => {
+                                        Some((&op.node_id, Change::Made))
+                                    }
+                                    Some(op::Op::CreateFile(op)) => {
+                                        Some((&op.node_id, Change::Made))
+                                    }
+                                    Some(op::Op::UpdateContent(op)) => {
+                                        Some((&op.node_id, Change::Edited))
+                                    }
+                                    Some(op::Op::Move(op)) => Some((&op.node_id, Change::Moved)),
                                     _ => None,
                                 })
-                                .filter(|node| {
+                                .filter(|(node, _)| {
                                     (nodes.iter()).any(|live| {
                                         live.node_id == **node
                                             && live.status == NodeStatus::Live as i32
                                     })
                                 })
-                                .filter_map(|node| ino(node))
+                                .filter_map(|(node, change)| Some((ino(node)?, change)))
+                                .chain(merges.iter().map(|(_, ino)| (*ino, Change::Made)))
                                 .collect();
-                            for ino in &inos {
+                            for (into, ino) in merges {
+                                self.merged[d].entry(into).or_default().insert(ino);
+                            }
+                            for (ino, _) in &changes {
                                 self.approved[d].remove(ino);
                             }
                             let carried: BTreeSet<u64> = (self.actions[d].range(..=built))
-                                .filter(|(_, own)| inos.contains(own))
+                                .filter(|(_, (own, action))| {
+                                    let settled = || {
+                                        (local.iter()).any(|(id, here)| {
+                                            here.identity.ino == *own
+                                                && (synced.get(id)).is_some_and(|synced| {
+                                                    action.settled(&here.shape, synced)
+                                                })
+                                        })
+                                    };
+                                    (changes.iter()).any(|(ino, change)| {
+                                        ino == own && (change.carries(*action) || settled())
+                                    })
+                                })
                                 .map(|(at, _)| *at)
                                 .collect();
                             for (ino, times) in &mut self.touches[d] {
@@ -3928,6 +3997,145 @@ mod tests {
         assert!(
             matches!(&stale, Err(Failure::Diverged(why)) if why.contains("took write")),
             "{stale:?}"
+        );
+    }
+
+    #[test]
+    fn a_move_away_and_back_settled_while_another_device_moves_the_file_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        world.run(1, &[(1, user(3, 3))]).unwrap();
+        send(&mut world, 1).unwrap();
+        world
+            .run(1, &[(0, user(3, 2)), (0, user(3, 0)), (0, user(2, 0))])
+            .unwrap();
+        send(&mut world, 0).unwrap();
+        world.phase(1, &[]).unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
+        );
+    }
+
+    #[test]
+    fn a_move_away_and_back_whose_edit_another_device_already_wrote_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        let steps = [
+            (0, user(3, 2)),
+            (0, user(3, 0)),
+            (0, user(2, 0)),
+            (0, Step::Scan),
+            (0, Step::Commit(Reply::Served)),
+        ];
+        world.run(1, &steps).unwrap();
+        let device = &world.devices[0];
+        let ino = device.disk.visible()[0];
+        let wanted = device.disk.entries()[&ino].content.clone().unwrap();
+        let sent = device.engine.commits.in_flight().unwrap().commit.clone();
+        world.run(1, &[(1, user(2, 0))]).unwrap();
+        let other = &mut world.devices[1];
+        let other_ino = other.disk.visible()[0];
+        let mtime_ns = other.disk.entries()[&other_ino]
+            .content
+            .as_ref()
+            .unwrap()
+            .mtime_ns;
+        let same_bytes = Content {
+            mtime_ns,
+            ..wanted.clone()
+        };
+        other.disk.overwrite(other_ino, same_bytes).unwrap();
+        send(&mut world, 1).unwrap();
+        world.run(1, &[(0, Step::Commit(Reply::Served))]).unwrap();
+        let result = world.space.recorded_result(&sent.commit_id).unwrap();
+        assert!(result.changes.is_empty());
+        assert_eq!(result.results[0].code, op_result::Code::Applied as i32);
+        world.run(1, &[(0, Step::Deliver(0)); 8]).unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
+        );
+    }
+
+    #[test]
+    fn an_edit_a_split_commit_sends_after_its_move_brings_back_a_file_another_device_deleted() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        let steps = [
+            (0, user(3, 2)),
+            (0, user(2, 0)),
+            (0, Step::Scan),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Refused(error::Code::LimitExceeded))),
+            (0, Step::Deliver(0)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Deliver(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, user(4, 0)),
+            (1, Step::Scan),
+            (1, Step::Commit(Reply::Served)),
+            (1, Step::Commit(Reply::Served)),
+            (1, Step::Deliver(0)),
+        ];
+        world.phase(1, &steps).unwrap();
+        assert!(live_writes(&world.space).contains_key(&2));
+    }
+
+    #[test]
+    fn a_move_away_and_back_that_an_edit_commit_settles_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        world
+            .phase(1, &[(0, user(3, 2)), (0, user(3, 0)), (0, user(2, 0))])
+            .unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
         );
     }
 }
