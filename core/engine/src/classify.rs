@@ -8,8 +8,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use koidrive_ignore::Status;
 
 use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
-use crate::names::name_key;
-use crate::state::{Agreed, MovedHere, StateError, TreesChanges, TreesState};
+use crate::names::{name_key, nfc};
+use crate::state::{
+    Agreed, FinishOrigin, MovedHere, PendingFinish, StateError, TreesChanges, TreesState,
+};
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
@@ -104,7 +106,7 @@ fn below<N: Node>(tree: &Tree<N>, id: &str, folders: &BTreeSet<NodeId>) -> bool 
     false
 }
 
-fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a str>, Kind)> {
+pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a str>, Kind)> {
     let held = |id: &str| tree.get(id).filter(|node| node.is_live());
     let shape = held(id)?.shape();
     let mut names = vec![shape.name.as_str()];
@@ -228,6 +230,8 @@ pub struct Trees {
     resends: TrackedSet<NodeId>,
     local_changes: TrackedSet<NodeId>,
     kept_originals: TrackedMap<NodeId, NodeId>,
+    unsent_marks: TrackedMap<NodeId, String>,
+    pending_finishes: TrackedMap<NodeId, PendingFinish>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -255,11 +259,13 @@ pub struct Trees {
     l_identities: HashMap<FileIdentity, BTreeSet<NodeId>>,
     /// The nodes of S.
     s_names: ByName,
+    s_marks: BTreeMap<NodeId, String>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
     /// The live files of R that are rules files.
     remote_rules_files: BTreeSet<NodeId>,
+    marked: BTreeSet<NodeId>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -269,6 +275,7 @@ impl PartialEq for Trees {
         self.r == other.r
             && self.l == other.l
             && self.s == other.s
+            && self.s_marks == other.s_marks
             && self.state() == other.state()
             && self.ignore == other.ignore
             && self.outside == other.outside
@@ -307,6 +314,8 @@ impl Trees {
             resends: TrackedSet::default(),
             local_changes: TrackedSet::default(),
             kept_originals: TrackedMap::default(),
+            unsent_marks: TrackedMap::default(),
+            pending_finishes: TrackedMap::default(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -320,8 +329,10 @@ impl Trees {
             l_names: ByName::default(),
             l_identities: HashMap::new(),
             s_names: ByName::default(),
+            s_marks: BTreeMap::new(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
+            marked: BTreeSet::new(),
         }
     }
 
@@ -335,6 +346,30 @@ impl Trees {
 
     pub fn synced(&self) -> &Tree<Shape> {
         &self.s
+    }
+
+    /// The name S's node was pending for (RFC 0017), taken from R whenever S takes R's position.
+    pub fn synced_mark(&self, id: &str) -> Option<&str> {
+        self.s_marks.get(id).map(String::as_str)
+    }
+
+    pub(crate) fn create_mark(&self, id: &str) -> Option<&str> {
+        let local = self.l.get(id)?;
+        match self.s.get(id) {
+            Some(synced) => (synced.same_position(&local.shape))
+                .then(|| self.synced_mark(id))
+                .flatten(),
+            None => self.unsent_marks.get(id).map(String::as_str),
+        }
+    }
+
+    /// Sets the mark S keeps for a node it holds, as the store recorded it.
+    pub fn set_synced_mark(&mut self, id: NodeId, mark: Option<String>) {
+        self.changed.insert(id.clone());
+        match mark.filter(|_| self.s.get(&id).is_some()) {
+            Some(mark) => self.s_marks.insert(id, mark),
+            None => self.s_marks.remove(&id),
+        };
     }
 
     /// The number of files S holds, kept as S changes.
@@ -505,7 +540,13 @@ impl Trees {
                 old.content_rev == node.content_rev && old.meta_rev != node.meta_rev
             })
             && local.is_some_and(|local| {
-                !local.parked && synced.is_some_and(|synced| synced.same(&local.shape))
+                !local.parked
+                    && synced.is_some_and(|synced| synced.same(&local.shape))
+                    && !(self.pending_finishes.get(&id)).is_some_and(|finish| {
+                        finish.disk_first
+                            && local.shape.parent == finish.parent
+                            && nfc(&local.shape.name) == nfc(&finish.pending)
+                    })
             });
         let edited_over_delete = local_gone
             && synced.is_some()
@@ -612,6 +653,7 @@ impl Trees {
             });
         self.mark(&id);
         let trashed = node.trashed;
+        self.unsent_marks.remove(&id);
         if (self.trashed_here.get(&id)).is_some_and(|&seq| !(node.trashed && node.meta_rev == seq))
         {
             self.trashed_here.remove(&id);
@@ -657,6 +699,16 @@ impl Trees {
             self.remote_rules_files.insert(id.clone());
         } else {
             self.remote_rules_files.remove(&id);
+        }
+        if node.is_live() && node.pending_for.is_some() {
+            self.marked.insert(id.clone());
+        } else {
+            self.marked.remove(&id);
+        }
+        if (self.s.get(&id)).is_some_and(|synced| synced.same_position(&node.shape))
+            && self.s_marks.get(&id) != node.pending_for.as_ref()
+        {
+            self.set_synced_mark(id.clone(), node.pending_for.clone());
         }
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
@@ -789,6 +841,7 @@ impl Trees {
 
     pub fn remove_remote(&mut self, id: &str) {
         self.remote_rules_files.remove(id);
+        self.marked.remove(id);
         self.trashed_here.remove(id);
         self.removed_here.remove(id);
         self.kept_originals.remove(id);
@@ -810,6 +863,240 @@ impl Trees {
         &self.remote_rules_files
     }
 
+    pub(crate) fn marked(&self) -> &BTreeSet<NodeId> {
+        &self.marked
+    }
+
+    pub(crate) fn pending_finishes(&self) -> &BTreeMap<NodeId, PendingFinish> {
+        &self.pending_finishes
+    }
+
+    pub(crate) fn held_finishes(&self) -> impl Iterator<Item = &NodeId> {
+        (self.pending_finishes.iter())
+            .filter(|(_, finish)| finish.base.is_some())
+            .map(|(id, _)| id)
+    }
+
+    pub(crate) fn reviving(&self, id: &str) -> bool {
+        self.pending_finishes.contains_key(id)
+            && self.r.get(id).is_some_and(|remote| remote.trashed)
+    }
+
+    pub(crate) fn send_revivals(&mut self, nodes: &BTreeSet<NodeId>) {
+        let reviving: Vec<NodeId> = (self.pending_finishes.keys())
+            .filter(|id| self.reviving(id))
+            .filter(|id| !self.subtree(id).is_disjoint(nodes))
+            .cloned()
+            .collect();
+        for id in reviving {
+            self.send_finish(&id);
+        }
+    }
+
+    pub(crate) fn restart_finish(&mut self, id: &str, meta_rev: u64) {
+        if let Some(finish) = self.pending_finishes.get_mut(id) {
+            finish.sending = false;
+            if matches!(finish.origin, FinishOrigin::Mark { .. }) {
+                finish.origin = FinishOrigin::Mark { meta_rev };
+            }
+        }
+    }
+
+    fn revives(&self, id: &str) -> bool {
+        let edited = |id: &str| {
+            let local = self.l.live(id).and_then(|shape| shape.content.as_ref());
+            let synced = self.s.live(id).and_then(|shape| shape.content.as_ref());
+            self.unsent_edits.contains(id)
+                || (local.zip(synced)).is_some_and(|(local, synced)| !same_content(local, synced))
+        };
+        let changed = |node: &str| {
+            (self.l.get(node)).is_some_and(|local| {
+                !self.excluded(node)
+                    && (self.s.live(node)).is_none_or(|synced| !synced.same(&local.shape))
+            })
+        };
+        (self.subtree(id).iter()).any(|node| edited(node) || (node != id && changed(node)))
+    }
+
+    fn subtree(&self, id: &str) -> BTreeSet<NodeId> {
+        let mut parked: BTreeMap<&str, Vec<&NodeId>> = BTreeMap::new();
+        for (child, local) in self.l.iter().filter(|(_, local)| local.parked) {
+            parked
+                .entry(local.shape.parent.as_str())
+                .or_default()
+                .push(child);
+        }
+        let mut subtree = BTreeSet::new();
+        let mut below = vec![id.to_owned()];
+        while let Some(node) = below.pop() {
+            let children = self
+                .local_children(&node)
+                .chain(parked.get(node.as_str()).into_iter().flatten().copied());
+            below.extend(children.filter(|child| !subtree.contains(*child)).cloned());
+            subtree.insert(node);
+        }
+        subtree
+    }
+
+    pub(crate) fn start_finish(&mut self, id: &str) {
+        let Some(node) = self.r.get(id).filter(|node| !node.trashed) else {
+            return;
+        };
+        let Some(name) = node.pending_for.clone() else {
+            return;
+        };
+        if !(self.s.get(id)).is_some_and(|synced| synced.same_position(&node.shape)) {
+            return;
+        }
+        let parent = node.shape.parent.clone();
+        let finish = PendingFinish {
+            disk_first: self.holds_at(id, &parent, &name),
+            parent,
+            pending: node.shape.name.clone(),
+            name,
+            origin: FinishOrigin::Mark {
+                meta_rev: node.meta_rev,
+            },
+            base: None,
+            sending: false,
+        };
+        if !self.pending_finishes.contains_key(id) {
+            self.pending_finishes.insert(id.to_owned(), finish);
+        }
+    }
+
+    pub(crate) fn undo_disk_first(&mut self, id: &str) {
+        if let Some(finish) = self.pending_finishes.get_mut(id) {
+            finish.disk_first = false;
+        }
+    }
+
+    pub(crate) fn send_finish(&mut self, id: &str) {
+        if let Some(finish) = self.pending_finishes.get_mut(id) {
+            finish.sending = true;
+        }
+    }
+
+    pub(crate) fn owe_finish(
+        &mut self,
+        id: &str,
+        parent: NodeId,
+        pending: String,
+        name: &str,
+        meta_rev: u64,
+    ) {
+        let finish = PendingFinish {
+            disk_first: self.holds_at(id, &parent, name),
+            parent,
+            pending,
+            name: name.to_owned(),
+            origin: FinishOrigin::Mark { meta_rev },
+            base: None,
+            sending: false,
+        };
+        self.pending_finishes.insert(id.to_owned(), finish);
+    }
+
+    fn holds_at(&self, id: &str, parent: &str, name: &str) -> bool {
+        (self.l.get(id)).is_some_and(|local| {
+            local.shape.parent == parent && nfc(&local.shape.name) == nfc(name)
+        })
+    }
+
+    pub(crate) fn end_finish(&mut self, id: &str) {
+        self.pending_finishes.remove(id);
+    }
+
+    pub(crate) fn unsend_finishes(&mut self, head_moved: Option<u64>) {
+        for finish in self.pending_finishes.values_mut() {
+            if finish.sending {
+                finish.sending = false;
+                finish.base = head_moved;
+            }
+        }
+    }
+
+    pub(crate) fn applied_head(&mut self, last_seq: u64) {
+        for finish in self.pending_finishes.values_mut() {
+            finish.base = finish.base.filter(|base| *base >= last_seq);
+        }
+    }
+
+    pub(crate) fn check_finishes(&mut self) {
+        let ended: Vec<(NodeId, bool, Option<Shape>)> = (self.pending_finishes.iter())
+            .filter(|(_, finish)| !finish.sending)
+            .filter_map(|(id, finish)| {
+                let at = |shape: &Shape, name: &str| {
+                    shape.parent == finish.parent && nfc(&shape.name) == nfc(name)
+                };
+                let local = self.l.get(id).map(|local| &local.shape);
+                let taken = local.is_some_and(|local| at(local, &finish.name));
+                let moved_back = finish.disk_first
+                    && local.is_some_and(|local| at(local, &finish.pending))
+                    && (self.s.get(id)).is_some_and(|synced| at(synced, &finish.name));
+                if moved_back {
+                    let remote = self.r.get(id);
+                    let landed = remote.is_some_and(|remote| {
+                        !remote.trashed
+                            && at(&remote.shape, &finish.name)
+                            && match finish.origin {
+                                FinishOrigin::Mark { meta_rev } => remote.meta_rev == meta_rev,
+                                FinishOrigin::Legacy => true,
+                            }
+                    });
+                    let deleted = (remote.is_some_and(|remote| remote.trashed))
+                        .then(|| local.zip(self.s.get(id)))
+                        .flatten()
+                        .map(|(local, synced)| Shape {
+                            parent: local.parent.clone(),
+                            name: local.name.clone(),
+                            ..synced.clone()
+                        });
+                    return (!landed).then(|| (id.clone(), false, deleted));
+                }
+                let holds = (local.is_some_and(|local| taken || at(local, &finish.pending)))
+                    && self
+                        .s
+                        .get(id)
+                        .is_none_or(|synced| at(synced, &finish.pending))
+                    && self.r.get(id).is_none_or(|remote| {
+                        at(&remote.shape, &finish.pending)
+                            && match finish.origin {
+                                _ if remote.trashed => self.revives(id),
+                                FinishOrigin::Mark { meta_rev } => {
+                                    remote.meta_rev == meta_rev
+                                        && (remote.pending_for.as_ref())
+                                            .is_none_or(|mark| *mark == finish.name)
+                                }
+                                FinishOrigin::Legacy => true,
+                            }
+                    });
+                let synced = (self.s.get(id)).is_some_and(|synced| at(synced, &finish.name));
+                let remote = (self.r.live(id)).filter(|remote| at(remote, &finish.name));
+                let reached = synced || remote.is_some();
+                let agreed = (remote.filter(|_| taken && !synced))
+                    .zip(self.s.get(id))
+                    .map(|(remote, synced)| Shape {
+                        parent: remote.parent.clone(),
+                        name: remote.name.clone(),
+                        ..synced.clone()
+                    });
+                (!holds).then(|| (id.clone(), taken && !reached, agreed))
+            })
+            .collect();
+        for (id, revert, agreed) in ended {
+            self.pending_finishes.remove(&id);
+            if revert {
+                self.revert(id.clone());
+            }
+            if let Some(shape) = agreed
+                && !self.set_synced_if_valid(id.clone(), Some(shape.clone()))
+            {
+                self.wait(id, Some(shape), Origin::Other);
+            }
+        }
+    }
+
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, node: LocalNode) {
@@ -818,6 +1105,9 @@ impl Trees {
                 self.resends.remove(&id);
             }
             let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
+            if moved {
+                self.unsent_marks.remove(&id);
+            }
             let to_remote =
                 (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
             if moved && !to_remote {
@@ -840,6 +1130,10 @@ impl Trees {
         }
         self.displaced.remove(&id);
         self.kept_originals.remove(&id);
+        if let Some(finish) = self.pending_finishes.get_mut(&id) {
+            finish.disk_first |=
+                node.shape.parent == finish.parent && nfc(&node.shape.name) == nfc(&finish.name);
+        }
         (self.l_identities.entry(node.identity).or_default()).insert(id.clone());
         self.mark(&id);
         self.count_held_trash(&id, false);
@@ -857,6 +1151,11 @@ impl Trees {
     /// ([`TreesState::resends`]) is an edit the server does not have ([`Trees::unsent_edits`]), even
     /// when it ends at the bytes S holds.
     pub fn set_local_changed(&mut self, id: NodeId, node: LocalNode) {
+        if !node.parked
+            && (self.l.get(&id)).is_some_and(|old| !old.shape.same_position(&node.shape))
+        {
+            self.unsent_marks.remove(&id);
+        }
         if !(self.l.get(&id)).is_some_and(|old| old.shape.same(&node.shape)) {
             if node.shape.content.is_some() && self.resends.contains(&id) {
                 self.unsent_edits.insert(id.clone());
@@ -886,6 +1185,7 @@ impl Trees {
         self.resends.remove(id);
         self.local_changes.remove(id);
         self.reverted.remove(id);
+        self.unsent_marks.remove(id);
         if let Some(old) = self.l.remove(id) {
             if !old.parked {
                 self.l_names.remove(id, &old.shape);
@@ -1011,6 +1311,10 @@ impl Trees {
     }
 
     pub(crate) fn rewound(&mut self) {
+        for finish in self.pending_finishes.values_mut() {
+            finish.sending = false;
+            finish.base = None;
+        }
         self.adopted.clear();
         self.watched.clear();
         self.watched_positions.clear();
@@ -2420,6 +2724,7 @@ impl Trees {
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self) {
+        self.check_finishes();
         self.reverted
             .retain(|id| match (self.l.get(id), self.r.live(id)) {
                 (Some(local), Some(remote)) => !local.shape.same_position(remote),
@@ -2844,6 +3149,29 @@ impl Trees {
                 (before, after) => before.is_some() != after.is_some(),
             };
         }
+        let dropped = (old.as_ref())
+            .filter(|_| self.s.get(id).is_none() && self.r.get(id).is_none())
+            .filter(|old| (self.l.get(id)).is_some_and(|local| local.shape.same_position(old)))
+            .and_then(|_| self.s_marks.get(id).cloned());
+        if let Some(mark) = dropped {
+            self.unsent_marks.insert(id.to_owned(), mark);
+        }
+        let mark = self.s.get(id).and_then(|new| {
+            match self
+                .r
+                .get(id)
+                .filter(|remote| remote.shape.same_position(new))
+            {
+                Some(remote) => remote.pending_for.clone(),
+                None => (self.s_marks.get(id))
+                    .filter(|_| old.as_ref().is_some_and(|old| old.same_position(new)))
+                    .cloned(),
+            }
+        });
+        match mark {
+            Some(mark) => self.s_marks.insert(id.to_owned(), mark),
+            None => self.s_marks.remove(id),
+        };
         if let Some(old) = old {
             let kept = self.s.get(id).is_some_and(|new| {
                 new.parent == old.parent && name_key(&new.name) == name_key(&old.name)
@@ -2920,6 +3248,8 @@ impl Trees {
             resends: (*self.resends).clone(),
             local_changes: (*self.local_changes).clone(),
             kept_originals: (*self.kept_originals).clone(),
+            unsent_marks: (*self.unsent_marks).clone(),
+            pending_finishes: (*self.pending_finishes).clone(),
         }
     }
 
@@ -2952,6 +3282,8 @@ impl Trees {
             resends,
             local_changes,
             kept_originals,
+            unsent_marks,
+            pending_finishes,
             ignore: _,
             outside,
             lost,
@@ -2965,6 +3297,8 @@ impl Trees {
             l_names: _,
             l_identities: _,
             s_names: _,
+            s_marks: _,
+            marked: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;
@@ -2991,6 +3325,8 @@ impl Trees {
             resends: resends.take_changes(),
             local_changes: local_changes.take_changes(),
             kept_originals: kept_originals.take_changes(),
+            unsent_marks: unsent_marks.take_changes(),
+            pending_finishes: pending_finishes.take_changes(),
         }
     }
 
@@ -3101,6 +3437,8 @@ impl Trees {
             resends,
             local_changes,
             kept_originals,
+            unsent_marks,
+            pending_finishes,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -3127,6 +3465,8 @@ impl Trees {
         self.resends = resends.into();
         self.local_changes = local_changes.into();
         self.kept_originals = kept_originals.into();
+        self.unsent_marks = unsent_marks.into();
+        self.pending_finishes = pending_finishes.into();
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(())

@@ -10,12 +10,12 @@ use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Kind, NodeId, Shape, pending_stem, same_content};
+use crate::tree::{Kind, NodeId, Shape, same_content};
 
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
 /// exactly its name and kind, and for a file the same content. A folder also matches a folder R
-/// holds under its pending name, which a commit gave it while another node held its name. A matching entry is adopted: L's
+/// marks as pending for its name (RFC 0017), which a commit gave it while another node held it. A matching entry is adopted: L's
 /// node takes R's ID and S takes R's shape, and a matching folder's children are matched in turn,
 /// so a folder whose contents differ is still adopted. Every other entry is returned with its
 /// subtree, for the user to publish or discard: a name R does not hold, a name that only has the
@@ -41,8 +41,8 @@ pub fn adopt(trees: &mut Trees, from_trash: bool) -> Vec<NodeId> {
         if node.trashed || node.shape.kind != Kind::Dir {
             continue;
         }
-        if let Some(stem) = pending_stem(&node.shape.name) {
-            let key = (node.shape.parent.clone(), stem.to_owned());
+        if let Some(stem) = &node.pending_for {
+            let key = (node.shape.parent.clone(), stem.clone());
             pending_dirs.entry(key).or_default().push(id.clone());
         }
     }

@@ -94,6 +94,8 @@ pub struct RemoteNode {
     pub trash_group: String,
     pub version_id: String,
     pub edit_rev: u64,
+    pub pending_for: Option<String>,
+    pub pending_by: Option<String>,
 }
 
 impl Node for RemoteNode {
@@ -158,6 +160,8 @@ impl RemoteNode {
                 0 => state.content_rev,
                 edit_rev => edit_rev,
             },
+            pending_for: Some(state.pending_for.clone()).filter(|name| !name.is_empty()),
+            pending_by: Some(state.pending_by.clone()).filter(|device| !device.is_empty()),
         };
         Ok((state.node_id.clone(), node))
     }
@@ -330,12 +334,4 @@ impl<N: Node> Tree<N> {
         }
         false
     }
-}
-
-pub(crate) fn pending_stem(name: &str) -> Option<&str> {
-    let (stem, suffix) = name.rsplit_once(" (pending")?;
-    let suffix = suffix.strip_suffix(')')?;
-    let numbered = (suffix.strip_prefix(' '))
-        .is_some_and(|n| !n.starts_with(['+', '0']) && n.parse::<u32>().is_ok_and(|n| n > 1));
-    (suffix.is_empty() || numbered).then_some(stem)
 }

@@ -70,6 +70,8 @@ impl Engine {
         }
         for (id, shape) in self.trees.synced().iter() {
             trees.set_synced(id.clone(), Some(shape.clone()));
+            let mark = self.trees.synced_mark(id).map(str::to_owned);
+            trees.set_synced_mark(id.clone(), mark);
         }
         let refused = |error| Failure::Broken(format!("the stored state was refused: {error:?}"));
         trees.restore(self.trees.state()).map_err(refused)?;
@@ -229,6 +231,7 @@ pub struct Device {
     pub recovery: Option<String>,
     pub store_copy: Option<Engine>,
     pub rolled_back: bool,
+    pub left: bool,
 }
 
 impl Device {

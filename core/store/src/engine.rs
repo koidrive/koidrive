@@ -12,8 +12,8 @@ use koidrive_engine::commit::{Halt, InFlight};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::state::{
-    Agreed, CommitsChanges, CommitsState, EffectsChanges, EffectsState, MapChanges, MovedHere,
-    Pending, SetChanges, TreesChanges, TreesState,
+    Agreed, CommitsChanges, CommitsState, EffectsChanges, EffectsState, FinishOrigin, MapChanges,
+    MovedHere, PendingFinish, SetChanges, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -180,18 +180,6 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.published.insert(row.get(0)?);
         }
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT node_id, sent, name, landed FROM pending_names")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let pending = Pending {
-                sent: row.get(1)?,
-                name: row.get(2)?,
-                landed: row.get(3)?,
-            };
-            state.commits.pending.insert(row.get(0)?, pending);
-        }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, dev, ino, ino_high, birth_ns, lost FROM recorded_nodes",
         )?;
@@ -293,6 +281,32 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.trees.kept_originals.insert(row.get(0)?, row.get(1)?);
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.unsent_marks.insert(row.get(0)?, row.get(1)?);
+        }
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, parent_id, pending_name, name, meta_rev, disk_first, base, sending FROM pending_finishes",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let finish = PendingFinish {
+                parent: row.get(1)?,
+                pending: row.get(2)?,
+                name: row.get(3)?,
+                origin: match row.get(4)? {
+                    Some(meta_rev) => FinishOrigin::Mark { meta_rev },
+                    None => FinishOrigin::Legacy,
+                },
+                disk_first: row.get(5)?,
+                base: row.get(6)?,
+                sending: row.get(7)?,
+            };
+            state.trees.pending_finishes.insert(row.get(0)?, finish);
+        }
 
         if let Some((accepted, halt, cap)) = self
             .0
@@ -382,7 +396,6 @@ impl Tx<'_> {
             "removed_here",
             "discarded_nodes",
             "published_nodes",
-            "pending_names",
             "recorded_nodes",
             "edited_here",
             "moved_here",
@@ -393,6 +406,8 @@ impl Tx<'_> {
             "resends",
             "local_changes",
             "kept_originals",
+            "unsent_marks",
+            "pending_finishes",
             "effect_state",
             "effects_in_flight",
             "failed_effects",
@@ -452,6 +467,8 @@ impl Tx<'_> {
             resends,
             local_changes,
             kept_originals,
+            unsent_marks,
+            pending_finishes,
         } = trees;
         let CommitsChanges {
             accepted,
@@ -466,7 +483,6 @@ impl Tx<'_> {
             slots,
             questions,
             published,
-            pending,
             guard,
         } = commits;
         let EffectsChanges {
@@ -650,6 +666,34 @@ impl Tx<'_> {
             "INSERT OR REPLACE INTO kept_originals (node_id, kept) VALUES (?1, ?2)",
             |put, node, kept| put.execute(params![node, kept]),
         )?;
+        self.write_map(
+            unsent_marks,
+            "DELETE FROM unsent_marks WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO unsent_marks (node_id, pending_for) VALUES (?1, ?2)",
+            |put, node, name| put.execute(params![node, name]),
+        )?;
+        self.write_map(
+            pending_finishes,
+            "DELETE FROM pending_finishes WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO pending_finishes
+             (node_id, parent_id, pending_name, name, meta_rev, disk_first, base, sending)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            |put, node, finish| {
+                put.execute(params![
+                    node,
+                    finish.parent,
+                    finish.pending,
+                    finish.name,
+                    match finish.origin {
+                        FinishOrigin::Mark { meta_rev } => Some(meta_rev),
+                        FinishOrigin::Legacy => None,
+                    },
+                    finish.disk_first,
+                    finish.base,
+                    finish.sending,
+                ])
+            },
+        )?;
 
         if accepted.is_some() || halted.is_some() || cap.is_some() {
             self.0.execute(
@@ -747,14 +791,6 @@ impl Tx<'_> {
             published,
             "DELETE FROM published_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO published_nodes (node_id) VALUES (?1)",
-        )?;
-        self.write_map(
-            pending,
-            "DELETE FROM pending_names WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO pending_names (node_id, sent, name, landed) VALUES (?1, ?2, ?3, ?4)",
-            |put, node, pending| {
-                put.execute(params![node, pending.sent, pending.name, pending.landed])
-            },
         )?;
         self.write_guard(guard)?;
 

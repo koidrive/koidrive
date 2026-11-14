@@ -355,6 +355,10 @@ impl Device {
         Ok(unreadable)
     }
 
+    fn rescan(&mut self) {
+        self.observer.reset(self.folder.engine.resets([PathBuf::new()]));
+    }
+
     /// Observes until `done`.
     fn scan_until(&mut self, done: impl Fn(&Device) -> bool) {
         eventually("the observer brings the awaited state", || {
@@ -521,6 +525,7 @@ impl Device {
     /// Writes a file and syncs it to the space.
     fn create(&mut self, remote: &mut Remote, path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+        self.rescan();
         self.scan_until(|device| !device.work.is_empty());
         assert_eq!(self.run(remote), ["upload", "send"]);
     }

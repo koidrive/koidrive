@@ -83,7 +83,7 @@ fn a_store_rolled_back_past_a_sent_restore_starts_recovery_and_sends_nothing() {
     let backup = commits.state();
 
     let (history, head) = (space.history_id().to_owned(), space.head_seq());
-    let commit = commits.build(&mut trees, &mut ids, NOW as u64, &history, head);
+    let commit = commits.build(&mut trees, &mut ids, NOW as u64, &history, "me", head);
     let me = session("me");
     space.commit(&me, NOW, &commit.cloned().unwrap()).unwrap();
     let head = space.head_seq();
@@ -93,7 +93,7 @@ fn a_store_rolled_back_past_a_sent_restore_starts_recovery_and_sends_nothing() {
     for _ in 0..2 {
         assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
         assert_eq!(commits.restores().values().collect::<Vec<_>>(), [&intent]);
-        let built = commits.build(&mut trees, &mut ids, NOW as u64, &history, head);
+        let built = commits.build(&mut trees, &mut ids, NOW as u64, &history, "me", head);
         assert_eq!(built, None);
         commits = Commits::from_state(commits.state()).unwrap();
     }

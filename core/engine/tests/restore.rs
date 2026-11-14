@@ -62,6 +62,8 @@ fn remote(shape: Shape) -> RemoteNode {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 
@@ -127,7 +129,7 @@ fn version(node: &str, version_id: &str) -> RestoreIntent {
 }
 
 fn build(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Option<proto::Commit> {
-    commits.build(trees, ids, NOW, HISTORY, 7).cloned()
+    commits.build(trees, ids, NOW, HISTORY, "me", 7).cloned()
 }
 
 fn ops(commit: &proto::Commit) -> Vec<op::Op> {
@@ -173,12 +175,12 @@ fn acknowledge(commits: &mut Commits, trees: &mut Trees, results: Vec<OpResult>)
     trees.settle();
 }
 
-fn refuse(commits: &mut Commits, code: error::Code) -> Failure {
+fn refuse(commits: &mut Commits, trees: &mut Trees, code: error::Code) -> Failure {
     let error = proto::Error {
         code: code as i32,
         ..Default::default()
     };
-    commits.failed(&error).unwrap()
+    commits.failed(trees, &error).unwrap()
 }
 
 fn welcome(device_seq: u64) -> Welcome {
@@ -428,7 +430,7 @@ fn a_restore_follows_the_edit_of_its_own_file() {
     // The commit did not fit, so the next ones hold one op: the edit goes first, and the
     // restore waits for the commit after it.
     assert_eq!(
-        refuse(&mut commits, error::Code::LimitExceeded),
+        refuse(&mut commits, &mut together, error::Code::LimitExceeded),
         Failure::Split
     );
     let mut apart = trees(&[edited]);
@@ -562,7 +564,7 @@ fn a_restore_is_not_held_back_by_other_nodes() {
     assert_eq!(ops(&commit)[0], restore_op(&intent));
 
     assert_eq!(
-        refuse(&mut commits, error::Code::LimitExceeded),
+        refuse(&mut commits, &mut trees, error::Code::LimitExceeded),
         Failure::Split
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -713,7 +715,7 @@ fn a_restore_that_does_not_fit_alone_is_resolved() {
     commits.restore(request.clone(), intent.clone());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
-        refuse(&mut commits, error::Code::LimitExceeded),
+        refuse(&mut commits, &mut trees, error::Code::LimitExceeded),
         Failure::Split
     );
     assert_eq!(
@@ -741,7 +743,7 @@ fn a_restore_in_a_commit_that_does_not_fit_is_sent_again_in_a_smaller_one() {
         2
     );
     assert_eq!(
-        refuse(&mut commits, error::Code::LimitExceeded),
+        refuse(&mut commits, &mut trees, error::Code::LimitExceeded),
         Failure::Split
     );
     assert_eq!(commits.resolved(), []);
@@ -752,9 +754,13 @@ fn a_restore_in_a_commit_that_does_not_fit_is_sent_again_in_a_smaller_one() {
 #[test]
 fn an_abandoned_commit_sends_its_restores_again() {
     for abandon in [
-        |commits: &mut Commits| refuse(commits, error::Code::HeadMoved) == Failure::Abandoned,
-        |commits: &mut Commits| refuse(commits, error::Code::AheadOfServer) == Failure::Resync,
-        |commits: &mut Commits| commits.abandon(),
+        |commits: &mut Commits, trees: &mut Trees| {
+            refuse(commits, trees, error::Code::HeadMoved) == Failure::Abandoned
+        },
+        |commits: &mut Commits, trees: &mut Trees| {
+            refuse(commits, trees, error::Code::AheadOfServer) == Failure::Resync
+        },
+        |commits: &mut Commits, _: &mut Trees| commits.abandon(),
     ] {
         let n = id(1);
         let mut trees = trees(&[in_trash(n.clone(), file(&root(), "f", 1))]);
@@ -762,7 +768,7 @@ fn an_abandoned_commit_sends_its_restores_again() {
         let intent = from_trash(&n);
         commits.restore(id(100), intent.clone());
         let first = build(&mut commits, &mut trees, &mut ids).unwrap();
-        assert!(abandon(&mut commits));
+        assert!(abandon(&mut commits, &mut trees));
         assert_eq!(commits.in_flight(), None);
         assert_eq!(commits.restores().len(), 1);
         let second = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -853,7 +859,7 @@ fn a_policy_halt_keeps_queued_restores() {
     build(&mut commits, &mut trees, &mut ids).unwrap();
     let code = error::Code::InvalidArgument as i32;
     assert_eq!(
-        refuse(&mut commits, error::Code::InvalidArgument),
+        refuse(&mut commits, &mut trees, error::Code::InvalidArgument),
         Failure::Halted(Halt::Policy { code })
     );
     assert!(commits.restore(id(101), from_trash(&id(2))));
@@ -894,7 +900,7 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
     commits.restore(id(100), first.clone());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
-        refuse(&mut commits, error::Code::ReadOnly),
+        refuse(&mut commits, &mut trees, error::Code::ReadOnly),
         Failure::Halted(Halt::ReadOnly)
     );
     assert_eq!(
@@ -1057,6 +1063,7 @@ fn a_restore_into_a_trashed_folder_is_sent_after_the_folders_own_move() {
     commits.restore(id(100), intent.clone());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let moved = op::Op::Move(proto::Move {
+        pending_for: String::new(),
         node_id: a.clone(),
         new_parent_id: root(),
         new_name: "b".into(),
@@ -1115,8 +1122,9 @@ fn a_move_onto_the_name_of_a_folder_moving_into_a_folder_restored_into_it_goes_t
     let intent = RestoreIntent::from_trash(c.clone(), Some(a.clone()), None).unwrap();
     commits.restore(id(100), intent.clone());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    let mv = |node: &str, parent: &str, name: &str| {
+    let mv = |node: &str, parent: &str, name: &str, pending_for: &str| {
         op::Op::Move(proto::Move {
+            pending_for: pending_for.into(),
             node_id: node.into(),
             new_parent_id: parent.into(),
             new_name: name.into(),
@@ -1126,10 +1134,10 @@ fn a_move_onto_the_name_of_a_folder_moving_into_a_folder_restored_into_it_goes_t
     assert_eq!(
         ops(&commit),
         [
-            mv(&a, &root(), "n (pending)"),
+            mv(&a, &root(), "n (pending)", "n"),
             restore_op(&intent),
-            mv(&b, &c, "n"),
-            mv(&a, &root(), "n"),
+            mv(&b, &c, "n", ""),
+            mv(&a, &root(), "n", ""),
         ]
     );
 }
@@ -1161,6 +1169,7 @@ fn a_folder_renamed_onto_a_held_name_and_restored_into_a_folder_restored_into_it
     commits.restore(id(101), into_x.clone());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let moved = op::Op::Move(proto::Move {
+        pending_for: String::new(),
         node_id: x.clone(),
         new_parent_id: root(),
         new_name: "n".into(),
@@ -1306,6 +1315,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
         node_id: a.clone(),
         new_parent_id: root(),
         new_name: "A".into(),
+        pending_for: String::new(),
         from: None,
     });
     assert_eq!(ops(&commit), [moved]);
@@ -1355,6 +1365,7 @@ fn moved(node: &str, parent: &str, name: &str) -> op::Op {
         node_id: node.into(),
         new_parent_id: parent.into(),
         new_name: name.into(),
+        pending_for: String::new(),
         from: None,
     })
 }

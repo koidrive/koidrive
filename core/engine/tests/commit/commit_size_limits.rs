@@ -49,6 +49,33 @@ fn a_commit_holds_at_most_the_op_limit_with_parents_first() {
 }
 
 #[test]
+fn finishes_sent_on_their_own_stop_before_their_change_records_outgrow_one_message() {
+    let marked = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"];
+    let holders = ["y0", "y1", "y2", "y3", "y4", "y5", "y6", "y7"];
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, (id, holder)) in marked.into_iter().zip(holders).enumerate() {
+        let (pending, taken) = (format!("x{i} (pending)"), format!("x{i}"));
+        let held = large(ROOT, &pending);
+        rows.push((id, Some(held.clone()), Some(held.clone()), Some(remote(held))));
+        let other = file(ROOT, &taken, 2);
+        rows.push((holder, Some(other.clone()), Some(other.clone()), Some(remote(other))));
+    }
+    let mut trees = trees(&rows);
+    for (i, id) in marked.into_iter().enumerate() {
+        let node = RemoteNode {
+            pending_for: Some(format!("x{i}")),
+            pending_by: Some("me".into()),
+            ..remote(large(ROOT, &format!("x{i} (pending)")))
+        };
+        trees.set_remote(id.into(), node);
+    }
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(commit.ops.len(), 3, "{commit:?}");
+}
+
+#[test]
 fn a_commit_stops_before_its_change_records_outgrow_one_message() {
     let mut trees = Trees::new(ROOT);
     for i in 0..8 {
@@ -167,7 +194,7 @@ fn a_commit_that_does_not_fit_is_planned_again_in_halves_and_grows_back() {
     let mut sizes = vec![build(&mut commits, &mut trees, &mut ids).unwrap().ops.len()];
     for _ in 0..2 {
         assert_eq!(
-            commits.failed(&refusal(error::Code::LimitExceeded, 0)),
+            commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
             Ok(Failure::Split)
         );
         assert_eq!(commits.in_flight(), None);
@@ -210,7 +237,7 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [delete("d")]);
     assert_eq!(
-        commits.failed(&refusal(error::Code::LimitExceeded, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
         Ok(Failure::Split)
     );
     let mut second = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
@@ -254,7 +281,7 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
-        .failed(&refusal(error::Code::LimitExceeded, 0))
+        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
         .unwrap();
     for _ in 0..3 {
         let Some(commit) = build(&mut commits, &mut trees, &mut ids) else {
@@ -262,7 +289,7 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
         };
         assert_eq!(commit.ops.len(), 1);
         commits
-            .failed(&refusal(error::Code::LimitExceeded, 0))
+            .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
             .unwrap();
     }
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());

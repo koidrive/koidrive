@@ -15,6 +15,7 @@ fn local_changes_become_ops_with_parents_first() {
                 node_id: "z".into(),
                 parent_id: ROOT.into(),
                 name: "d".into(),
+                pending_for: String::new(),
             }),
             op::Op::CreateFile(proto::CreateFile {
                 node_id: "a".into(),
@@ -49,7 +50,13 @@ fn a_name_swap_goes_through_a_pending_name() {
     assert_eq!(
         ops(&commit),
         [
-            mv("x", ROOT, "b (pending)"),
+            op::Op::Move(proto::Move {
+                from: None,
+                node_id: "x".into(),
+                new_parent_id: ROOT.into(),
+                new_name: "b (pending)".into(),
+                pending_for: "b".into(),
+            }),
             mv("y", ROOT, "a"),
             mv("x", ROOT, "b")
         ]
@@ -416,6 +423,7 @@ fn a_folder_a_new_one_may_be_merged_into_is_not_deleted_in_the_same_commit() {
         node_id: "n".into(),
         parent_id: ROOT.into(),
         name: "a".into(),
+        pending_for: String::new(),
     });
     assert_eq!(ops(&commit), [create, mv("f", "n", "f")]);
 }
@@ -437,6 +445,7 @@ fn a_folder_created_where_a_moving_folder_still_is_takes_a_pending_name_first() 
         node_id: "n".into(),
         parent_id: ROOT.into(),
         name: "a (pending)".into(),
+        pending_for: "a".into(),
     });
     assert_eq!(ops(&first), [create, mv("h", "n", "a")]);
     acknowledge(
@@ -447,7 +456,7 @@ fn a_folder_created_where_a_moving_folder_still_is_takes_a_pending_name_first() 
     trees.set_remote("n".into(), remote(dir(ROOT, "a (pending)")));
     trees.set_remote("h".into(), remote(dir("n", "a")));
     let second = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&second), [mv("n", ROOT, "a")]);
+    assert_eq!(ops(&second), [owed_mv("n", ROOT, "a", "a (pending)")]);
 }
 
 #[test]
@@ -467,6 +476,7 @@ fn a_folder_created_where_a_moving_file_still_is_takes_a_pending_name_first() {
         node_id: "n".into(),
         parent_id: ROOT.into(),
         name: "a (pending)".into(),
+        pending_for: "a".into(),
     });
     assert_eq!(ops(&first), [create, mv("h", "n", "ß")]);
     acknowledge(
@@ -477,7 +487,7 @@ fn a_folder_created_where_a_moving_file_still_is_takes_a_pending_name_first() {
     trees.set_remote("n".into(), remote(dir(ROOT, "a (pending)")));
     trees.set_remote("h".into(), remote(file("n", "ß", 1)));
     let second = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&second), [mv("n", ROOT, "a")]);
+    assert_eq!(ops(&second), [owed_mv("n", ROOT, "a", "a (pending)")]);
 }
 
 #[test]
@@ -583,7 +593,7 @@ fn a_conflict_survives_an_effect_whose_s_update_waits() {
             break;
         };
         if record.node == "p" {
-            effects.failed(&record.effect_id).unwrap();
+            effects.failed(&mut trees, &record.effect_id).unwrap();
         } else {
             effects
                 .done(
@@ -928,6 +938,7 @@ fn a_trashed_folder_renamed_out_of_its_trashed_parent() -> Vec<Row> {
 
 fn create_dir(node: &str, parent: &str, name: &str) -> op::Op {
     op::Op::CreateDir(proto::CreateDir {
+        pending_for: String::new(),
         node_id: node.into(),
         parent_id: parent.into(),
         name: name.into(),
@@ -1019,7 +1030,13 @@ fn a_trashed_folder_moving_onto_the_name_of_a_folder_moving_into_it_goes_through
     assert_eq!(
         ops(&commit),
         [
-            mv("a", ROOT, "n (pending)"),
+            op::Op::Move(proto::Move {
+                from: None,
+                node_id: "a".into(),
+                new_parent_id: ROOT.into(),
+                new_name: "n (pending)".into(),
+                pending_for: "n".into(),
+            }),
             mv("n", "a", "n"),
             mv("a", ROOT, "n"),
         ]
@@ -1112,7 +1129,7 @@ fn a_delete_made_after_a_move_was_sent_goes_out_after_the_moves_own_record() {
     trees.set_local("n".into(), local(dir(ROOT, "a"), 1));
     trees.settle();
     let sent = commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, 1)
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 1)
         .unwrap();
     assert_eq!(ops(sent), [mv("n", ROOT, "a")]);
     trees.remove_local("n");
@@ -1139,7 +1156,7 @@ fn a_delete_made_after_a_move_was_sent_goes_out_after_the_moves_own_record() {
     assert!(commits.acknowledge(&mut trees, 3));
     trees.settle();
     let next = commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, 3)
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 3)
         .cloned();
     assert_eq!(next.as_ref().map(ops), Some(vec![delete("n")]));
 }
@@ -1160,7 +1177,7 @@ fn another_devices_resend_of_a_place_and_its_content_sends_nothing_back() {
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, 2)
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 2)
         .cloned();
     assert_eq!(sent.as_ref().map(ops), None);
 }

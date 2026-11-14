@@ -89,7 +89,7 @@ fn a_policy_refusal_keeps_the_commit_and_outlasts_any_welcome() {
         let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
         let halt = Halt::Policy { code: error.code };
         assert_eq!(
-            commits.failed(&error),
+            commits.failed(&mut trees, &error),
             Ok(Failure::Halted(halt)),
             "{error:?}"
         );
@@ -120,7 +120,11 @@ fn a_policy_refusal_keeps_the_commit_and_outlasts_any_welcome() {
         let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         build(&mut commits, &mut trees, &mut ids).unwrap();
-        assert_eq!(commits.failed(&error), Ok(Failure::Resend), "{error:?}");
+        assert_eq!(
+            commits.failed(&mut trees, &error),
+            Ok(Failure::Resend),
+            "{error:?}"
+        );
         assert_eq!(
             commits.connected(&welcome(0)),
             Reconnect::Resend,
@@ -154,7 +158,9 @@ fn a_policy_halt_takes_a_server_loss_once() {
     trees.set_local("b".into(), local(file(ROOT, "y", 2), 98));
     trees.settle();
     let refused = build(&mut commits, &mut trees, &mut ids).unwrap();
-    commits.failed(&refusal(error::Code::Forbidden, 0)).unwrap();
+    commits
+        .failed(&mut trees, &refusal(error::Code::Forbidden, 0))
+        .unwrap();
     let halt = Some(Halt::Policy {
         code: error::Code::Forbidden as i32,
     });
@@ -175,7 +181,9 @@ fn a_policy_halt_lifted_to_resend_sends_the_same_commit_again() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
-    commits.failed(&refusal(error::Code::Forbidden, 0)).unwrap();
+    commits
+        .failed(&mut trees, &refusal(error::Code::Forbidden, 0))
+        .unwrap();
     assert_eq!(commits.lift(Lift::Resend), Ok(()));
     assert_eq!(commits.halted(), None);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::Resend);
@@ -188,7 +196,7 @@ fn a_policy_halt_lifted_to_replan_plans_the_changes_into_a_new_commit_in_the_sam
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let refused = build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
-        .failed(&refusal(error::Code::InvalidArgument, 0))
+        .failed(&mut trees, &refusal(error::Code::InvalidArgument, 0))
         .unwrap();
     assert_eq!(commits.lift(Lift::Replan), Ok(()));
     assert_eq!((commits.halted(), commits.in_flight()), (None, None));
@@ -206,7 +214,7 @@ fn a_lift_needs_a_policy_halt_and_leaves_one_that_asks_for_confirmation() {
     assert_eq!(commits.lift(Lift::Resend), Err(LiftError::NotHalted));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
-        .failed(&refusal(error::Code::ConfirmationRequired, 0))
+        .failed(&mut trees, &refusal(error::Code::ConfirmationRequired, 0))
         .unwrap();
     let halt = commits.halted();
     for lift in [Lift::Resend, Lift::Replan] {
@@ -278,12 +286,12 @@ fn the_device_slot_is_kept_by_a_retry_and_reused_after_a_refusal() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
-        commits.failed(&refusal(error::Code::MissingChunks, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::MissingChunks, 0)),
         Ok(Failure::Resend)
     );
     assert_eq!(commits.in_flight().unwrap().commit, first);
     assert_eq!(
-        commits.failed(&refusal(error::Code::AheadOfServer, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::AheadOfServer, 0)),
         Ok(Failure::Resync)
     );
     assert_eq!(commits.in_flight(), None);
@@ -331,7 +339,11 @@ fn errors_forget_the_commit_only_when_nothing_was_applied() {
         let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         build(&mut commits, &mut trees, &mut ids).unwrap();
-        assert_eq!(commits.failed(&refusal(code, 0)), Ok(failure), "{code:?}");
+        assert_eq!(
+            commits.failed(&mut trees, &refusal(code, 0)),
+            Ok(failure),
+            "{code:?}"
+        );
         assert_eq!(commits.in_flight().is_some(), kept, "{code:?}");
         let halted = matches!(failure, Failure::Halted(_));
         assert_eq!(

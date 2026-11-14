@@ -190,6 +190,7 @@ fn mkdir(id: &str, parent: &str, name: &str) -> Op {
         node_id: id.into(),
         parent_id: parent.into(),
         name: name.into(),
+        pending_for: String::new(),
     }))
 }
 
@@ -216,6 +217,7 @@ fn mv(id: &str, parent: &str, name: &str) -> Op {
         new_parent_id: parent.into(),
         new_name: name.into(),
         from: None,
+        pending_for: String::new(),
     }))
 }
 

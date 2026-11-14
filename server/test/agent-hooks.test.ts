@@ -3,7 +3,7 @@
 import { create, fromBinary } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CommitResult, CommitSchema, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
+import { type CommitResult, CommitSchema, OpResult_Code, OpSchema, PlaceSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { ContentSchema } from "../src/gen/koidrive/v1/model_pb";
 import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { sha256 } from "../src/crypto";
@@ -85,6 +85,39 @@ describe("RFC 0006 section 8: digest v1", () => {
     expect(toHex(await commitDigest(resent, 2))).not.toBe(toHex(await commitDigest(plain, 2)));
   });
 
+  it("covers pending marks from digest v3 and leaves digest v2 as it was", async () => {
+    const marked = (pendingFor: string) =>
+      create(CommitSchema, {
+        baseSeq: 1n,
+        deviceSeq: 2n,
+        ops: [
+          create(OpSchema, { op: { case: "createDir", value: { nodeId: "d", parentId: "r", name: "a (pending)", pendingFor } } }),
+          create(OpSchema, { op: { case: "move", value: { nodeId: "m", newParentId: "r", newName: "b (pending)", pendingFor } } }),
+        ],
+      });
+    const [plain, pending] = [marked(""), marked("a")];
+    expect(toHex(await commitDigest(plain, 2))).toBe(toHex(await commitDigest(plain, 3)));
+    expect(toHex(await commitDigest(pending, 2))).toBe(toHex(await commitDigest(plain, 2)));
+    expect(toHex(await commitDigest(pending, 3))).not.toBe(toHex(await commitDigest(plain, 3)));
+    for (const at of [0, 1]) {
+      const one = create(CommitSchema, { ...plain, ops: plain.ops.map((each, index) => (index === at ? pending.ops[index]! : each)) });
+      expect(toHex(await commitDigest(one, 3))).not.toBe(toHex(await commitDigest(plain, 3)));
+    }
+  });
+
+  it("covers a move's from from digest v3 and leaves digest v2 as it was", async () => {
+    const moved = (from?: { parentId: string; name: string }) =>
+      create(CommitSchema, {
+        baseSeq: 1n,
+        deviceSeq: 2n,
+        ops: [create(OpSchema, { op: { case: "move", value: { nodeId: "m", newParentId: "r", newName: "b", from: from && create(PlaceSchema, from) } } })],
+      });
+    const [plain, guarded, elsewhere] = [moved(), moved({ parentId: "r", name: "b (pending)" }), moved({ parentId: "r", name: "c" })];
+    expect(toHex(await commitDigest(guarded, 2))).toBe(toHex(await commitDigest(plain, 2)));
+    expect(toHex(await commitDigest(guarded, 3))).not.toBe(toHex(await commitDigest(plain, 3)));
+    expect(toHex(await commitDigest(guarded, 3))).not.toBe(toHex(await commitDigest(elsewhere, 3)));
+  });
+
   it("changes with every covered field and keeps the request's order", async () => {
     const parts = await content("one", "two");
     const file = (init: Partial<typeof parts.content>) => op.create("f", "d", "f.txt", create(ContentSchema, { ...parts.content, ...init }));
@@ -128,6 +161,17 @@ describe("RFC 0006 section 8: stored results", () => {
     expect(code(await b.commitRaw(ops, { commitId }))).toBe(Error_Code.INVALID_ARGUMENT);
     expect(await head(a)).toBe(1);
     expect((await b.commit([op.mkdir(uuidv7(), root, "B")])).seq).toBe(2n);
+  });
+
+  it("refuses a reuse that differs only in a pending mark", async () => {
+    const { a, root } = await setup();
+    const [nodeId, commitId] = [uuidv7(), uuidv7()];
+    const mkdir = (pendingFor: string) =>
+      create(OpSchema, { op: { case: "createDir", value: { nodeId, parentId: root, name: "a (pending)", pendingFor } } });
+    const first = await a.commit([mkdir("a")], { commitId });
+    expect(await a.commit([mkdir("a")], { commitId })).toEqual(first);
+    expect(code(await a.commitRaw([mkdir("")], { commitId }))).toBe(Error_Code.INVALID_ARGUMENT);
+    expect(code(await a.commitRaw([mkdir("b")], { commitId }))).toBe(Error_Code.INVALID_ARGUMENT);
   });
 
   it("checks the device's latest commit once the log no longer holds it, and never returns a commit without a device", async () => {

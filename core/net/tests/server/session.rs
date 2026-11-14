@@ -20,6 +20,7 @@ fn mkdir(parent_id: &str, name: &str) -> (String, Op) {
             node_id: node_id.clone(),
             parent_id: parent_id.into(),
             name: name.into(),
+            pending_for: String::new(),
         })),
     };
     (node_id, op)
@@ -197,6 +198,7 @@ async fn a_commit_round_trips_to_another_device() {
             new_parent_id: space.space_id.clone(),
             new_name: "Papers".into(),
             from: None,
+            pending_for: String::new(),
         })),
     };
     let result = b

@@ -220,7 +220,7 @@ fn a_reused_revision_does_not_keep_an_agreement_the_server_lost() {
     trees.settle();
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     let next = (commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, 12)
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 12)
         .cloned())
     .unwrap();
     assert_eq!(ops(&next), [mv("n", ROOT, "c")]);

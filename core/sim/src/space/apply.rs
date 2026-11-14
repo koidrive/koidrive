@@ -359,6 +359,8 @@ impl<'a> Applier<'a> {
             parent_dev: parent_dev.into(),
             cur_version_id: version_id,
             trash_group: None,
+            pending_for: None,
+            pending_by: None,
             row,
         };
         self.st.nodes.insert(node_id.into(), node);
@@ -393,8 +395,22 @@ impl<'a> Applier<'a> {
         version_id
     }
 
+    fn mark(&mut self, node_id: &str, pending_for: Option<String>) {
+        let dev = self.dev().to_string();
+        let node = self
+            .st
+            .nodes
+            .get_mut(node_id)
+            .expect("a marked node exists");
+        node.pending_for = pending_for.filter(|stem| name_key(stem) != node.name_key);
+        node.pending_by = node.pending_for.as_ref().map(|_| dev);
+    }
+
     fn create_dir(&mut self, op: &CreateDir) -> Result<OpResult, Error> {
         let Some(name) = normalize_name(&op.name) else {
+            return Ok(rejected("INVALID_NAME"));
+        };
+        let Some(pending_for) = pending_for(&op.pending_for) else {
             return Ok(rejected("INVALID_NAME"));
         };
         if self.st.nodes.contains_key(&op.node_id) {
@@ -425,6 +441,7 @@ impl<'a> Applier<'a> {
             None,
             &dev,
         );
+        self.mark(&op.node_id, pending_for);
         Ok(applied(renamed, &name))
     }
 
@@ -547,6 +564,9 @@ impl<'a> Applier<'a> {
         let Some(name) = normalize_name(&op.new_name) else {
             return Ok(rejected("INVALID_NAME"));
         };
+        let Some(pending_for) = pending_for(&op.pending_for) else {
+            return Ok(rejected("INVALID_NAME"));
+        };
         let Some(target) = self.node(&op.new_parent_id) else {
             return Ok(rejected("NOT_FOUND"));
         };
@@ -601,6 +621,7 @@ impl<'a> Applier<'a> {
             let dev = self.dev().to_string();
             let (name, renamed) = self.revive_one(&found.node_id, &parent.node_id, &name, &dev);
             self.revive_group(&found.node_id, &group);
+            self.mark(&found.node_id, pending_for);
             return Ok(applied(renamed, &name));
         }
         let (name, renamed) = self.pick_name(&parent.node_id, &name, &found.node_id);
@@ -625,6 +646,7 @@ impl<'a> Applier<'a> {
             stored.meta_edit_dev = dev.clone();
         }
         stored.meta_dev = dev;
+        self.mark(&found.node_id, pending_for);
         self.touch(&found.node_id);
         Ok(applied(renamed, &name))
     }
@@ -769,6 +791,16 @@ impl<'a> Applier<'a> {
         let dev = self.dev().to_string();
         let (name, renamed) = self.revive_one(&node.node_id, &parent.node_id, &name, &dev);
         self.revive_group(&node.node_id, &group);
+        if !op.name.is_empty() || !op.target_parent_id.is_empty() {
+            self.mark(&node.node_id, None);
+        }
         Ok(applied(renamed, &name))
+    }
+}
+
+fn pending_for(name: &str) -> Option<Option<String>> {
+    match name {
+        "" => Some(None),
+        name => normalize_name(name).map(Some),
     }
 }

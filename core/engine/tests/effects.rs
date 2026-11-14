@@ -66,6 +66,8 @@ fn remote(shape: Shape) -> RemoteNode {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 
@@ -620,6 +622,45 @@ fn only_a_node_whose_only_change_is_remote_gets_an_effect_and_one_at_a_time() {
     assert_eq!(effects.in_flight().first(), Some(&first));
 }
 
+fn marked(shape: Shape, pending_for: &str) -> RemoteNode {
+    RemoteNode {
+        pending_for: Some(pending_for.into()),
+        ..remote(shape)
+    }
+}
+
+#[test]
+fn a_node_a_user_named_like_a_pending_name_is_never_renamed() {
+    let (mut trees, mut disk) = space(&[(
+        "d",
+        Some(dir(ROOT, "A (pending)")),
+        Some(dir(ROOT, "A (pending)")),
+    )]);
+    assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
+    assert_eq!(
+        trees.local().get("d").unwrap().shape,
+        dir(ROOT, "A (pending)")
+    );
+    assert_in_sync(&mut trees);
+}
+
+#[test]
+fn a_marked_node_that_l_holds_elsewhere_keeps_the_users_move() {
+    let (mut trees, mut disk) = space(&[("d", Some(dir(ROOT, "A (pending)")), None)]);
+    trees.set_remote("d".into(), marked(dir(ROOT, "A (pending)"), "A"));
+    let local = trees.local().get("d").unwrap().clone();
+    trees.set_local(
+        "d".into(),
+        LocalNode {
+            shape: dir(ROOT, "B"),
+            ..local
+        },
+    );
+    disk.entries.get_mut(&1).unwrap().name = "B".into();
+    assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
+    assert_eq!(trees.local().get("d").unwrap().shape, dir(ROOT, "B"));
+}
+
 #[test]
 fn a_failed_effect_is_not_emitted_again_unchanged() {
     let (mut trees, _) = space(&[("f", Some(file(ROOT, "f", 1)), Some(file(ROOT, "f", 2)))]);
@@ -631,7 +672,7 @@ fn a_failed_effect_is_not_emitted_again_unchanged() {
         .unwrap()
         .clone();
     let id = first.effect_id.clone();
-    assert_eq!(effects.failed(&id), Ok(()));
+    assert_eq!(effects.failed(&mut trees, &id), Ok(()));
     assert_eq!(effects.cleared(), 1);
     assert_eq!(
         effects
@@ -682,7 +723,7 @@ fn a_node_whose_park_failed_gets_no_effect_until_l_changes() {
         .first()
         .cloned()
     {
-        effects.failed(&record.effect_id).unwrap();
+        effects.failed(&mut trees, &record.effect_id).unwrap();
         planned.push(record.effect);
         if planned.len() == 6 {
             break;
@@ -728,7 +769,7 @@ fn a_blocked_node_can_be_unblocked_by_the_caller() {
         .first()
         .unwrap()
         .clone();
-    effects.failed(&first.effect_id).unwrap();
+    effects.failed(&mut trees, &first.effect_id).unwrap();
     assert_eq!(
         effects
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -760,7 +801,7 @@ fn a_failed_create_is_planned_again_once_its_parent_has_a_new_identity() {
         .first()
         .unwrap()
         .clone();
-    effects.failed(&first.effect_id).unwrap();
+    effects.failed(&mut trees, &first.effect_id).unwrap();
     let mut parent = trees.local().get("d").unwrap().clone();
     parent.identity = identity(7);
     trees.set_local("d".into(), parent);
@@ -1153,7 +1194,7 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
     assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "b", 1)));
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 1)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
         .unwrap();
     assert!(
         !(commit.ops.iter()).any(|op| matches!(&op.op, Some(koidrive_proto::v1::op::Op::Move(_)))),
@@ -1192,7 +1233,7 @@ fn a_reverted_move_keeps_an_edit_that_was_not_uploaded() {
     assert_eq!(trees.local().live("f").unwrap().content, Some(content(2)));
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 1)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
         .unwrap();
     assert!(commit.ops.iter().any(|op| matches!(&op.op,
         Some(koidrive_proto::v1::op::Op::UpdateContent(update)) if update.node_id == "f" && update.content == Some(content(2)))),
@@ -1261,7 +1302,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_trash() {
     assert!(trees.edited("f"));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 7)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 7)
         .unwrap();
     assert!(commit.ops.iter().any(|op| match &op.op {
         Some(koidrive_proto::v1::op::Op::UpdateContent(op)) => op.content == Some(content(2)),
@@ -1606,7 +1647,7 @@ fn a_reverted_parked_edit_whose_r_folder_the_rules_exclude_stays_at_its_local_po
     assert_eq!(f.shape, file(ROOT, "a", 2));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 7)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 7)
         .unwrap();
     assert!(commit.ops.iter().any(|op| match &op.op {
         Some(koidrive_proto::v1::op::Op::UpdateContent(op)) => op.content == Some(content(2)),
@@ -1640,7 +1681,7 @@ fn an_edit_whose_r_folder_the_rules_exclude_is_not_parked_to_free_its_name() {
     assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "a", 2));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 7)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 7)
         .unwrap();
     assert!(commit.ops.iter().any(|op| match &op.op {
         Some(koidrive_proto::v1::op::Op::UpdateContent(op)) => op.content == Some(content(2)),
@@ -1736,7 +1777,7 @@ fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
         .unwrap()
         .clone();
     assert_eq!(record.node, "g");
-    effects.failed(&record.effect_id).unwrap();
+    effects.failed(&mut trees, &record.effect_id).unwrap();
     assert!(
         effects
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -1970,7 +2011,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
     let done = converge(&mut trees, &mut disk, 8).unwrap();
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
-        .build(&mut trees, &mut ids, NOW, "history", 7)
+        .build(&mut trees, &mut ids, NOW, "history", "me", 7)
         .cloned();
     let sent = commit.as_ref().is_some_and(|commit| {
         commit.ops.iter().any(|op| match &op.op {

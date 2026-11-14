@@ -384,6 +384,12 @@ pub struct NodeState {
     pub trash_group: ::prost::alloc::string::String,
     #[prost(message, optional, tag="9")]
     pub current: ::core::option::Option<VersionInfo>,
+    /// The name the node waits to take, set by the CreateDir or Move that gave it a stand-in name (RFC 0017).
+    #[prost(string, tag="10")]
+    pub pending_for: ::prost::alloc::string::String,
+    /// The device whose commit set the mark (RFC 0017). Empty when the node has no mark.
+    #[prost(string, tag="11")]
+    pub pending_by: ::prost::alloc::string::String,
     /// The seq of the newest commit that created the node, changed its content other than by a resend, or carried a user's
     /// edit of content a resend brought (RFC 0018). 0 from a server before RFC 0018, read as content_rev.
     #[prost(uint64, tag="12")]
@@ -537,6 +543,9 @@ pub struct CreateDir {
     pub parent_id: ::prost::alloc::string::String,
     #[prost(string, tag="3")]
     pub name: ::prost::alloc::string::String,
+    /// The name this folder waits to take while `name` stands in for it (RFC 0017).
+    #[prost(string, tag="4")]
+    pub pending_for: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateFile {
@@ -569,6 +578,10 @@ pub struct Move {
     pub new_parent_id: ::prost::alloc::string::String,
     #[prost(string, tag="3")]
     pub new_name: ::prost::alloc::string::String,
+    /// The name this node waits to take while `new_name` stands in for it (RFC 0017). A Move without it clears
+    /// the node's mark.
+    #[prost(string, tag="4")]
+    pub pending_for: ::prost::alloc::string::String,
     /// When set, the move applies only while the node is live at this place and the new parent is live; otherwise it is
     /// answered with CODE_SUPERSEDED and changes nothing (RFC 0019).
     #[prost(message, optional, tag="5")]

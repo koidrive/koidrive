@@ -176,6 +176,7 @@ pub struct Shape {
 pub struct SyncedNode {
     pub node_id: String,
     pub shape: Shape,
+    pub pending_for: String,
 }
 
 /// A node of the local tree. `shape.name` is the exact name on disk. A parked
@@ -427,7 +428,7 @@ impl Tx<'_> {
     pub fn remote_nodes(&self) -> Result<Vec<NodeState>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                    edit_rev, meta_edit_rev
+                    edit_rev, meta_edit_rev, pending_for, pending_by
              FROM remote_nodes ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -444,6 +445,8 @@ impl Tx<'_> {
                     current: None,
                     edit_rev: row.get(9)?,
                     meta_edit_rev: row.get::<_, Option<u64>>(10)?.unwrap_or_default(),
+                    pending_for: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                    pending_by: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
                 },
                 row.get::<_, Option<Vec<u8>>>(8)?,
             ))
@@ -462,8 +465,8 @@ impl Tx<'_> {
             .prepare_cached(
                 "INSERT OR REPLACE INTO remote_nodes
                  (node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                  edit_rev, meta_edit_rev)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  edit_rev, meta_edit_rev, pending_for, pending_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?
             .execute(params![
                 node.node_id,
@@ -477,6 +480,8 @@ impl Tx<'_> {
                 node.current.as_ref().map(VersionInfo::encode_to_vec),
                 node.edit_rev,
                 node.meta_edit_rev,
+                non_empty(&node.pending_for),
+                non_empty(&node.pending_by),
             ])?;
         Ok(())
     }
@@ -517,16 +522,22 @@ impl Tx<'_> {
     /// Every node of the synced tree, ordered by `node_id`.
     pub fn synced_nodes(&self) -> Result<Vec<SyncedNode>> {
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content FROM synced_nodes ORDER BY node_id",
+            "SELECT node_id, parent_id, name, kind, content, pending_for FROM synced_nodes
+             ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, ShapeRow::read(row, 1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                ShapeRow::read(row, 1)?,
+                row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            ))
         })?;
         rows.map(|row| {
-            let (node_id, shape) = row?;
+            let (node_id, shape, pending_for) = row?;
             Ok(SyncedNode {
                 node_id,
                 shape: shape.into_shape()?,
+                pending_for,
             })
         })
         .collect()
@@ -536,8 +547,9 @@ impl Tx<'_> {
         let shape = &node.shape;
         self.0
             .prepare_cached(
-                "INSERT OR REPLACE INTO synced_nodes (node_id, parent_id, name, kind, content)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR REPLACE INTO synced_nodes (node_id, parent_id, name, kind, content,
+                 pending_for)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
             .execute(params![
                 node.node_id,
@@ -545,6 +557,7 @@ impl Tx<'_> {
                 shape.name,
                 shape.kind,
                 shape.content.as_ref().map(Content::encode_to_vec),
+                non_empty(&node.pending_for),
             ])?;
         Ok(())
     }

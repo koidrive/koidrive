@@ -117,18 +117,39 @@ pub struct TreesState {
     /// takes L's shape, a scan finds L back at the shape S holds, L, S and R hold the same shape,
     /// or L no longer holds it.
     pub local_changes: BTreeSet<NodeId>,
+    /// The folders L holds that neither R nor S holds, each with the name S marked it pending for
+    /// (RFC 0017) when S dropped it, so that the create that sends it again carries the mark.
+    pub unsent_marks: BTreeMap<NodeId, String>,
+    /// The pending renames this device is finishing, by node (RFC 0017 §3).
+    pub pending_finishes: BTreeMap<NodeId, PendingFinish>,
 }
 
-/// A node this device sent under a pending name (docs/design/sync-engine.md section 2.6).
+/// A pending rename this device is finishing (RFC 0017 §3): the node moves within `parent` from
+/// `pending` to `name`. It holds while S and R hold the node at `pending`, and L holds it at
+/// `pending` or `name`. When the finishing move lands after the user moved the node back to
+/// `pending`, it also holds while S and R hold the node at `name` and L at `pending`, until the
+/// user's move back is sent, and a delete R then holds of the node wins over that move.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pending {
-    /// The pending name the node was sent under.
-    pub sent: String,
-    /// The name L gave the node, which it takes once it leaves the pending name.
+pub struct PendingFinish {
+    pub parent: NodeId,
+    pub pending: String,
     pub name: String,
-    /// Whether R has held the node under `sent`. Until then the commit that sends it there may
-    /// still be in flight, and R need not hold it there.
-    pub landed: bool,
+    pub origin: FinishOrigin,
+    /// L has held the node at `name` since the finish started, so a move of the user's back to
+    /// `pending` is committed after the finish lands.
+    pub disk_first: bool,
+    /// The head of a commit carrying the finishing move that the server answered `HEAD_MOVED`, until
+    /// a newer head of the same history is applied.
+    pub base: Option<u64>,
+    pub sending: bool,
+}
+
+/// Why this device finishes a rename: R marks the node for it, at R's `meta_rev` when the finish
+/// started, or a store recorded it before pending marks existed (RFC 0017 §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishOrigin {
+    Mark { meta_rev: u64 },
+    Legacy,
 }
 
 /// What [`Commits`](crate::commit::Commits) holds.
@@ -164,9 +185,6 @@ pub struct CommitsState {
     /// The local entries a Publish answer to a first link's question released, until the server
     /// applies their create.
     pub published: BTreeSet<NodeId>,
-    /// The nodes this device sent under a pending name, while R holds each at that name, live or
-    /// in the trash, and until a move of this device that takes it off that name is acknowledged.
-    pub pending: BTreeMap<NodeId, Pending>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -216,6 +234,8 @@ pub struct TreesChanges {
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
     pub kept_originals: MapChanges<NodeId, NodeId>,
+    pub unsent_marks: MapChanges<NodeId, String>,
+    pub pending_finishes: MapChanges<NodeId, PendingFinish>,
 }
 
 impl TreesChanges {
@@ -244,6 +264,8 @@ impl TreesChanges {
             resends,
             local_changes,
             kept_originals,
+            unsent_marks,
+            pending_finishes,
         } = after;
         Self {
             dirty: set_changes(&before.dirty, dirty),
@@ -268,6 +290,8 @@ impl TreesChanges {
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
             kept_originals: map_changes(&before.kept_originals, kept_originals),
+            unsent_marks: map_changes(&before.unsent_marks, unsent_marks),
+            pending_finishes: map_changes(&before.pending_finishes, pending_finishes),
         }
     }
 }
@@ -289,7 +313,6 @@ pub struct CommitsChanges {
     pub slots: MapChanges<u64, u64>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
-    pub pending: MapChanges<NodeId, Pending>,
     pub guard: GuardChanges,
 }
 
@@ -309,7 +332,6 @@ impl CommitsChanges {
             slots,
             questions,
             published,
-            pending,
             guard,
         } = after;
         Self {
@@ -325,7 +347,6 @@ impl CommitsChanges {
             slots: map_changes(&before.slots, slots),
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
-            pending: map_changes(&before.pending, pending),
             guard: GuardChanges::between(&before.guard, guard),
         }
     }

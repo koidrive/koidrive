@@ -22,6 +22,8 @@ message CreateDir {
   string node_id = 1;
   string parent_id = 2;
   string name = 3;
+  // The name this folder waits to take while `name` stands in for it (RFC 0017).
+  string pending_for = 4;
 }
 
 message CreateFile {
@@ -44,6 +46,9 @@ message Move {
   string node_id = 1;
   string new_parent_id = 2;
   string new_name = 3;
+  // The name this node waits to take while `new_name` stands in for it (RFC 0017). A Move without it clears
+  // the node's mark.
+  string pending_for = 4;
   // When set, the move applies only while the node is live at this place and the new parent is live; otherwise it is
   // answered with CODE_SUPERSEDED and changes nothing (RFC 0019).
   Place from = 5;

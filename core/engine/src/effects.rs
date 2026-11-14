@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::{Class, Origin, Trees};
-use crate::commit::InFlight;
+use crate::commit::{InFlight, disk_first, finishes};
 use crate::guard::RemoteRemoval;
 use crate::ids::IdGen;
 use crate::ignore::is_rules_file;
@@ -297,8 +297,13 @@ impl Effects {
         if !self.in_flight.is_empty() || !trees.rules_known() || limit.effects == 0 {
             return &[];
         }
-        self.failed
-            .retain(|id, _| candidate(trees, id) || trees.waiting().contains_key(id));
+        let none = BTreeSet::new();
+        let finishing: BTreeSet<&NodeId> = (finishes(trees, &none, None))
+            .filter_map(|(id, .., free)| free.then_some(id))
+            .collect();
+        self.failed.retain(|id, _| {
+            candidate(trees, id) || trees.waiting().contains_key(id) || finishing.contains(id)
+        });
         let chosen = self.choose(trees, in_flight, limit);
         let counter = *self.cleared + chosen.len() as u64;
         for (node, effect, after) in chosen {
@@ -417,6 +422,28 @@ impl Effects {
         if !chosen.is_empty() {
             return chosen;
         }
+        let none = BTreeSet::new();
+        let finish = (finishes(trees, &none, None))
+            .filter(|(id, ..)| gates.is_empty() || !gated(id))
+            .find_map(|(id, parent, name, free)| {
+                let local = (trees.local().get(id)).filter(|_| free && !disk_first(trees, id))?;
+                let after = Shape {
+                    parent: parent.clone(),
+                    name: name.to_owned(),
+                    ..local.shape.clone()
+                };
+                let effect = Effect::Move {
+                    from: view.location(id)?,
+                    identity: local.identity,
+                    to: view.location_in(parent, name)?,
+                };
+                (self.failed.get(id) != Some(&effect)
+                    && !view.holds_position(id, &after, in_flight))
+                .then(|| (id.clone(), effect, Some(after)))
+            });
+        if let Some(finish) = finish {
+            return vec![finish];
+        }
         (blockers.into_iter())
             .find_map(|id| {
                 if !view.parkable(&id) {
@@ -492,7 +519,14 @@ impl Effects {
             }
             _ => same(local, base),
         };
-        if unchanged || record.after.is_none() {
+        let finished = finishing_move(trees, &record);
+        let to_pending = matches!(record.effect, Effect::Move { .. })
+            && (record.after.as_ref()).is_some_and(|after| {
+                (trees.pending_finishes().get(&record.node)).is_some_and(|finish| {
+                    finish.parent == after.parent && finish.pending == after.name
+                })
+            });
+        if (unchanged && !finished) || record.after.is_none() {
             let synced = match (&record.effect, &record.after, base) {
                 (Effect::Move { .. }, Some(after), Some(base)) => Some(Shape {
                     parent: after.parent.clone(),
@@ -522,6 +556,12 @@ impl Effects {
                 },
             ),
         }
+        if finished {
+            trees.start_finish(&record.node);
+        }
+        if to_pending {
+            trees.undo_disk_first(&record.node);
+        }
         self.failed.remove(&record.node);
         self.cleared.set(*self.cleared + 1);
         Ok(removal)
@@ -548,11 +588,20 @@ impl Effects {
     }
 
     /// The driver did not do the effect. Its observations of the disk go to L separately; the node
-    /// is blocked until the effect planned for it differs from this one.
-    pub fn failed(&mut self, effect_id: &str) -> Result<(), EffectError> {
+    /// is blocked until the effect planned for it differs from this one. A move that finishes a
+    /// pending rename, and that L already holds because the user made it, starts the finish as if
+    /// it were done.
+    pub fn failed(&mut self, trees: &mut Trees, effect_id: &str) -> Result<(), EffectError> {
         let record = self.take(effect_id)?;
-        self.failed.insert(record.node, record.effect);
         self.cleared.set(*self.cleared + 1);
+        let made = (record.after.as_ref()).is_some_and(|after| {
+            (trees.local().live(&record.node)).is_some_and(|local| local.same_position(after))
+        });
+        if made && finishing_move(trees, &record) {
+            trees.start_finish(&record.node);
+        } else {
+            self.failed.insert(record.node, record.effect);
+        }
         Ok(())
     }
 
@@ -597,6 +646,22 @@ fn batchable(trees: &Trees, id: &str, effect: &Effect) -> bool {
                 && (trees.local().get(id)).is_some_and(|node| node.shape.kind == Kind::File)
         }
     }
+}
+
+fn finishing_move(trees: &Trees, record: &EffectRecord) -> bool {
+    let base = trees.acknowledged(&record.node);
+    matches!(record.effect, Effect::Move { .. })
+        && (record.after.as_ref()).is_some_and(|after| {
+            match trees.pending_finishes().get(&record.node) {
+                Some(finish) => finish.parent == after.parent && finish.name == after.name,
+                None => (trees.remote().get(&record.node)).is_some_and(|remote| {
+                    !remote.trashed
+                        && remote.shape.parent == after.parent
+                        && remote.pending_for.as_ref() == Some(&after.name)
+                        && base.is_some_and(|base| base.same_position(&remote.shape))
+                }),
+            }
+        })
 }
 
 /// The deletions a removal of `node` can belong to: the node and each folder above it in L that R

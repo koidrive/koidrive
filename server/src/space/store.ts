@@ -39,6 +39,8 @@ export interface NodeRow {
   cur_version_id: string | null;
   trash_group: string | null;
   trashed_at_ms: number | null;
+  pending_for: string | null;
+  pending_by: string | null;
 }
 
 export interface VersionRow {
@@ -173,5 +175,7 @@ export function nodeState(sql: Sql, node: NodeRow, complete = false): NodeState 
     metaEditRev: BigInt(metaEditRev(node)),
     trashGroup: node.trash_group ?? "",
     current: version ? versionInfo(sql, version, complete) : undefined,
+    pendingFor: node.pending_for ?? "",
+    pendingBy: node.pending_by ?? "",
   });
 }

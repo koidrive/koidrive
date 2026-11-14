@@ -70,7 +70,9 @@ impl Engine {
             trees.set_remote(id, node);
         }
         for node in tx.synced_nodes()? {
-            trees.set_synced(node.node_id, Some(shape(node.shape)?));
+            trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
+            let mark = Some(node.pending_for).filter(|name| !name.is_empty());
+            trees.set_synced_mark(node.node_id, mark);
         }
         for node in tx.local_nodes()? {
             let local = LocalNode {
@@ -133,6 +135,7 @@ impl Engine {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
                     node_id: id.clone(),
                     shape: stored_shape(shape),
+                    pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
                 })?,
                 None => {
                     tx.remove_synced_node(id)?;
@@ -1936,6 +1939,8 @@ mod tests {
                     trash_group: String::new(),
                     version_id: String::new(),
                     edit_rev: 1,
+                    pending_for: None,
+                    pending_by: None,
                 };
                 trees.set_remote((*id).into(), node);
             }
@@ -2177,6 +2182,7 @@ mod tests {
                     new_parent_id: ROOT.into(),
                     new_name: "x".into(),
                     from: None,
+                    pending_for: String::new(),
                 }),
             ),
             sending(
@@ -2230,6 +2236,8 @@ mod tests {
                         trash_group: String::new(),
                         version_id: String::new(),
                         edit_rev: 1,
+                        pending_for: None,
+                        pending_by: None,
                     };
                     trees.set_remote("d".into(), node);
                 },
@@ -3535,6 +3543,7 @@ mod tests {
                 tx.put_synced_node(&SyncedNode {
                     node_id: "e".into(),
                     shape: shape.clone(),
+                    pending_for: String::new(),
                 })?;
                 tx.put_local_node(&koidrive_store::LocalNode {
                     node_id: "e".into(),

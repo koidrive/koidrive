@@ -788,7 +788,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
             break;
         };
         if record.node == "h" {
-            effects.failed(&record.effect_id).unwrap();
+            effects.failed(&mut trees, &record.effect_id).unwrap();
             continue;
         }
         effects

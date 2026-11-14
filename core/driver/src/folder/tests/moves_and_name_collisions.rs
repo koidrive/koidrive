@@ -691,3 +691,62 @@ fn a_bulk_delete_with_a_file_moved_over_another_keeps_the_file_at_its_path() {
         server_nodes(&remote)
     );
 }
+
+#[test]
+fn a_pending_name_finished_on_a_server_restored_to_before_the_rename_is_finished_again_after_a_restart()
+ {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("a"), b"the file");
+    let (site_b, mut b) = linked(&mut remote, "b");
+    b.settle();
+    fs::rename(site_b.root.join("a"), site_b.root.join("x")).unwrap();
+    fs::create_dir(site_b.root.join("a")).unwrap();
+    fs::rename(site_b.root.join("x"), site_b.root.join("a/f")).unwrap();
+    b.rescan();
+    b.scan_until(|b| !b.work.is_empty());
+    let Some(Work::Send(commit)) = b.work.pop_front() else {
+        panic!("the move goes out as a commit");
+    };
+    let result = remote.commit(&b.caller, &commit);
+    let step = b.folder.sent(result);
+    b.take(step).unwrap();
+    assert_eq!(remote.names(), ["a (pending)", "f"]);
+    let mut before_the_rename = None;
+    'drive: for _ in 0..200 {
+        for device in [&mut a, &mut b] {
+            let Some(work) = device.work.pop_front() else {
+                device.pull(&remote);
+                device.scan(Duration::from_millis(150));
+                continue;
+            };
+            let renames = matches!(&work, Work::Send(commit) if commit.ops.iter().any(|op| {
+                matches!(&op.op, Some(op::Op::Move(moved)) if moved.new_name == "a")
+            }));
+            if renames {
+                before_the_rename = Some(remote.space.clone());
+            }
+            device.perform(work, &mut remote).unwrap();
+            if renames {
+                break 'drive;
+            }
+        }
+    }
+    assert_eq!(remote.names(), ["a", "f"]);
+    remote.space = before_the_rename.expect("a device renames the folder to its name");
+    drop((a, b));
+    let (mut a, mut b) = (site_a.start(), site_b.start());
+    for device in [&mut a, &mut b] {
+        device.connect(&remote);
+        device.scan_until(|device| device.folder.scanned);
+    }
+    sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    assert_eq!(remote.names(), ["a", "f"]);
+    assert_eq!(
+        entries(&site_b.root),
+        [
+            ("a".to_owned(), None),
+            ("a/f".to_owned(), Some("the file".to_owned()))
+        ]
+    );
+}

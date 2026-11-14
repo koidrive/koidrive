@@ -670,7 +670,7 @@ fn a_file_whose_s_update_waits_is_removed_or_uploaded_anew_after_a_remote_delete
                 break;
             };
             if record.node == "h" {
-                effects.failed(&record.effect_id).unwrap();
+                effects.failed(&mut trees, &record.effect_id).unwrap();
                 continue;
             }
             assert_eq!(record.node, "n", "{record:?}");

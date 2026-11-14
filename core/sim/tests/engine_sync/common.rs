@@ -172,6 +172,7 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             node_id: ids.uuid_v7(NOW as u64),
             parent_id: parent,
             name,
+            pending_for: String::new(),
         }),
         1 => op::Op::CreateFile(CreateFile {
             node_id: ids.uuid_v7(NOW as u64),
@@ -193,6 +194,7 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
                 new_parent_id: parent,
                 new_name: name,
                 from: None,
+                pending_for: String::new(),
             }),
             None => return,
         },
@@ -803,6 +805,7 @@ fn reload(
     }
     for (id, shape) in trees.synced().iter() {
         loaded.set_synced(id.clone(), Some(shape.clone()));
+        loaded.set_synced_mark(id.clone(), trees.synced_mark(id).map(str::to_owned));
     }
     let refused = |error: StateError| TestCaseError::fail(format!("refused: {error:?}"));
     loaded.restore(trees.state()).map_err(refused)?;
@@ -1192,6 +1195,7 @@ fn run_ignoring(
             &mut device.ids,
             NOW as u64,
             &history,
+            "me",
             last_seq,
         );
         let built = built.cloned();
@@ -1281,10 +1285,13 @@ fn run_ignoring(
         deletes += commit.ops.iter().filter(delete).count();
         if commit.ops.len() > fits {
             prop_assert_eq!(
-                commits.failed(&Error {
-                    code: error::Code::LimitExceeded as i32,
-                    ..Default::default()
-                }),
+                commits.failed(
+                    &mut device.trees,
+                    &Error {
+                        code: error::Code::LimitExceeded as i32,
+                        ..Default::default()
+                    }
+                ),
                 Ok(Failure::Split)
             );
             continue;

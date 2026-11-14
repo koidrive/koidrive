@@ -10,7 +10,7 @@ R, L and S are keyed by `node_id` (spec §2) and share the root node (`node_id =
 
 - R, the remote tree, holds the `NodeState` records (spec §5.2) this device has applied, trashed nodes and their revs included, with `history_id` and `last_seq`, the highest seq up to which every record has been applied. A trashed node counts as absent when trees are compared.
 - L, the local tree, is the disk as last observed. Each node has a parent, its exact on-disk name, kind, `Content` for files, and the file identity from `core/fs` (`dev`, `ino`, birth time) that tells a rename from a delete and a create. A parked node (§2.5) keeps its S position for comparison.
-- S, the synced tree, holds per node the shape (parent, name, kind, content) on which L and R last agreed. S is the merge base: L ≠ S is a local change, R ≠ S a remote change.
+- S, the synced tree, holds per node the shape (parent, name, kind, content) on which L and R last agreed. S is the merge base: L ≠ S is a local change, R ≠ S a remote change. S also keeps the pending mark R carried at that position (RFC 0017).
 
 Names are compared after NFC normalization. Whether a name is taken is decided by `name_key = NFD(casefold(NFD(name)))` (RFC 0001 §1) on every platform, never by the local file system's case rules.
 
@@ -20,7 +20,7 @@ Besides the trees, the engine persists:
 - the effects in flight, at most one batch: an effect record of §5.2 for each;
 - the mass-delete state of §6.1;
 - the restores a person asked for (§2.6, §6.3): each one without an outcome under its request ID, and the outcomes of the last 1,000 that ended;
-- the pending names (§2.6): each node this device sent under a pending name, with that name and the name it takes later. A record lasts while R holds the node at the pending name, live or trashed, checked after the records of each commit, and until a move of this device that takes the node off that name is acknowledged.
+- the unsent marks (RFC 0017): each folder L holds where S held it marked when S dropped it, while R holds no such node, with its mark.
 
 Nodes the commit in flight touches are frozen: the planner neither changes them on disk nor rebases them until the result is applied.
 
@@ -119,7 +119,9 @@ A `Move` or `Restore` of a trashed folder also brings back the members of its tr
 - A move that waits for a name held by a node that does not move away is a real conflict. It is sent at the end for the server to resolve (R1).
 - A `CreateDir` may be merged into the folder that holds its name (R2), and that can be a folder another device renamed after R, under the same parent or under a folder the parent may itself be merged into. A delete of such a folder goes before the `CreateDir` when it can. Otherwise it waits for the next commit, and so does a create or move that waits for the deleted folder's name. Sent after the `CreateDir` in the same commit, the delete would trash what the merged folder brings: R7 keeps the renamed folder but not the nodes the commit put in it.
 - When the node holding a new folder's name, a folder or a file, is itself moving away, the new folder is created under a free pending name and renamed in a later commit. A pending name is `<name> (pending)`, or `<name> (pending 2)` and so on when that is taken, cut at a character boundary so that its NFC form fits in 255 bytes.
-- The commit layer records each node it leaves at a pending name, with the name L gave it, for as long as R holds the node at that name (§2.2). The rename is sent even after L has lost the name: when the keep rule (R7) brings back a folder the person deleted, the effects download it at the pending name, and once L, S and R all hold it there the commit renames it to its own name.
+- A `CreateDir` or `Move` that leaves a node at a pending name carries the name the node is pending for as a mark (RFC 0017), and the server keeps it on the node until a move clears it. The server also keeps the device whose commit set the mark. When nothing else is to be sent, a device whose L, S and R hold a marked node at the same position sends the move to that name itself, in a commit that requires the head it was built on, and the effects follow the result. Any device does so when no other node of L or R holds the name. The device that set the mark does so also when another node holds it, and the server then gives the node another name under R1; other devices wait, since that node may be about to move away in a commit of the device that set the mark.
+- So the rename never depends on the store of the device that owes it. It is finished after that store is rolled back, since the device finds itself in R, after a rewind to a copy taken between the two commits, when the keep rule (R7) brings back a folder the person deleted and the effects download it at the pending name, and by another device when that device never comes back and the name is free (GUN-514, GUN-547). When that device never comes back and another node holds the name for good, the node keeps its pending name.
+- A device whose finishing commit finds the head moved sends no other one until it has applied a newer head, and then plans again from the new R. A node no mark names keeps a name that only looks pending.
 
 ### Reverted nodes
 
