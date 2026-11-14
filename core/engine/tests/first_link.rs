@@ -1643,3 +1643,82 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
         [("create file", "l-b".into())]
     );
 }
+
+#[test]
+fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_let_in_a_server_file_moved_into_it()
+ {
+    let mut trees = trees(
+        &[
+            ("l-new", dir(ROOT, "new")),
+            ("l-e", file("l-new", "e", 1)),
+            ("l-c", file(ROOT, "c.txt", 9)),
+        ],
+        &[("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))],
+    );
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW);
+    trees.settle();
+    let asked = question(&commits);
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let root: [&str; 0] = [];
+    trees.set_rules(&root, Some(RuleFile::parse(b"e\n*.txt\nss/\n")));
+    let mut remote = trees.remote().get("r-c").unwrap().clone();
+    remote.shape.parent = "r-ss".into();
+    remote.meta_rev = 2;
+    trees.set_remote("r-c".into(), remote);
+    trees.settle();
+    let mut moved = trees.local().get("r-c").unwrap().clone();
+    moved.shape.parent = "l-new".into();
+    trees.set_local("r-c".into(), moved);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let later = LocalNode {
+        shape: file("l-new", "later", 6),
+        identity: FileIdentity {
+            dev: 1,
+            ino: 99,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("l-later".into(), later);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let again = question(&commits);
+    assert!(commits.decide(&again.id, Answer::Discard));
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    assert!(trees.local().get("l-later").is_none());
+
+    trees.set_rules(&root, None);
+    for ino in 200.. {
+        trees.settle();
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        assert!(
+            !sent.iter().any(|(_, id)| id == "l-new"),
+            "the folder discarded twice is created: {sent:?}"
+        );
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        effects
+            .done(
+                &mut trees,
+                commits.in_flight(),
+                &record.effect_id,
+                Some(identity),
+            )
+            .unwrap();
+    }
+}

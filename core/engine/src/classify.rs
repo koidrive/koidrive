@@ -1043,6 +1043,41 @@ impl Trees {
         }
     }
 
+    pub(crate) fn discard_excluded_below(
+        &mut self,
+        shown: &BTreeMap<NodeId, Shape>,
+    ) -> Vec<(NodeId, Option<Shape>)> {
+        let mut excluded = Vec::new();
+        let mut folders: Vec<&NodeId> = shown.keys().collect();
+        while let Some(folder) = folders.pop() {
+            for child in self.local_children(folder) {
+                if shown.contains_key(child) || !self.excluded(child) {
+                    continue;
+                }
+                let Some(local) = self.l.get(child) else {
+                    continue;
+                };
+                let base = (self.s.live(child).or(self.r.live(child))).unwrap_or(&local.shape);
+                excluded.push((
+                    child.clone(),
+                    Shape {
+                        parent: local.shape.parent.clone(),
+                        name: local.shape.name.clone(),
+                        ..base.clone()
+                    },
+                ));
+                folders.push(child);
+            }
+        }
+        for (id, shape) in &excluded {
+            self.discarded.insert(id.clone(), shape.clone());
+        }
+        excluded
+            .into_iter()
+            .map(|(id, shape)| (id, Some(shape)))
+            .collect()
+    }
+
     pub(crate) fn approve(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         for id in ids {
             if self.reverted.remove(&id) {

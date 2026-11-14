@@ -1211,8 +1211,21 @@ fn run_ignoring(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
+                revived.remove(id);
+            }
+            let trees = &device.trees;
+            let mut folders: Vec<&String> = shown.keys().collect();
+            let mut excluded = Vec::new();
+            while let Some(folder) = folders.pop() {
+                for child in trees.local_children(folder) {
+                    if !shown.contains_key(child) && trees.excluded(child) {
+                        excluded.push((child.clone(), trees.local().get(child).unwrap().shape.clone()));
+                        folders.push(child);
+                    }
+                }
             }
             discarded.extend(shown);
+            discarded.extend(excluded);
         }
         // A discarded entry the user changed, or a discarded folder that holds an entry the answer
         // did not discard there, is the user's, and so is every discarded folder above it.

@@ -745,8 +745,10 @@ impl Commits {
                     if question.answer == Some(Answer::Discard) {
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
+                        let excluded = trees.discard_excluded_below(&question.shown);
                         let updates = (question.shown.into_iter())
                             .map(|(id, shape)| (id, Some(shape)))
+                            .chain(excluded)
                             .collect();
                         for (id, shape) in update_synced(trees, updates) {
                             trees.wait(id, shape, Origin::Other);
