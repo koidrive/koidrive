@@ -6,13 +6,16 @@ use crate::schema::{BinaryId, CrashKind, CrashSignal, Event, MachException};
 
 const MAX_OFFSETS: usize = 24;
 
-/// The event for a crash report written by KSCrash 2.6, or none when it holds no crash. Only the crash's kind, Mach
-/// exception, signal and time are read, with the build UUID of `executable` and the offsets of the crashed thread's
-/// frames in it; everything else in the report, such as paths, names, messages and memory, is never read.
-pub fn app_crash(report: &Value, executable: &str) -> Option<Event> {
+pub(crate) fn app_crash(report: &Value) -> Option<Event> {
     let error = report.get("crash")?.get("error")?;
-    let image = (report["binary_images"].as_array().into_iter().flatten())
-        .find(|image| image["name"].as_str() == Some(executable));
+    let process = report["report"]["process_name"].as_str();
+    let image = (report["binary_images"].as_array().into_iter().flatten()).find(|image| {
+        process.is_some()
+            && image["name"]
+                .as_str()
+                .and_then(|path| path.rsplit('/').next())
+                == process
+    });
     let base = image.and_then(|image| image["image_addr"].as_u64());
     let binary = image
         .and_then(|image| image["uuid"].as_str())
@@ -63,8 +66,7 @@ pub fn app_crash(report: &Value, executable: &str) -> Option<Event> {
             12 => CrashSignal::Sys,
             _ => CrashSignal::Other,
         });
-    let at = (report["report"]["timestamp"].as_u64())
-        .map_or_else(crate::now, |micros| micros / 1_000_000);
+    let at = seconds(&report["report"]["timestamp"]).unwrap_or_else(crate::now);
     Some(Event::AppCrash {
         at,
         kind,
@@ -73,6 +75,26 @@ pub fn app_crash(report: &Value, executable: &str) -> Option<Event> {
         binary,
         offsets,
     })
+}
+
+fn seconds(timestamp: &Value) -> Option<u64> {
+    if let Some(micros) = timestamp.as_u64() {
+        return Some(micros / 1_000_000);
+    }
+    let (date, time) = timestamp.as_str()?.strip_suffix('Z')?.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let mut time = time
+        .splitn(3, ':')
+        .map(|part| part.split('.').next()?.parse::<u64>().ok());
+    let (hour, minute, second) = (time.next()??, time.next()??, time.next()??);
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days =
+        u64::try_from(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468).ok()?;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
 #[cfg(test)]
@@ -85,7 +107,7 @@ mod tests {
 
     fn report() -> Value {
         json!({
-            "report": { "id": "4D2B0160-69B6-4DC1-BFED-08A0554A67C9", "process_name": "Koidrive", "timestamp": 1_794_527_123_456_789u64, "type": "standard" },
+            "report": { "id": "4D2B0160-69B6-4DC1-BFED-08A0554A67C9", "process_name": "Koidrive", "timestamp": "2026-11-12T18:25:23.456789Z", "type": "standard" },
             "binary_images": [
                 { "name": "/usr/lib/libSystem.B.dylib", "image_addr": 4096, "uuid": "11111111-2222-3333-4444-555555555555" },
                 { "name": EXECUTABLE, "image_addr": 1_048_576, "uuid": "17d33ed4-005a-358b-ba17-36b819625055" },
@@ -107,18 +129,18 @@ mod tests {
                     ] } },
                 ],
             },
-            "system": { "CFBundleExecutablePath": EXECUTABLE, "device_app_hash": "abc" },
+            "system": { "CFBundleExecutablePath": "/Users/alice/Applications/Koidrive.app/Contents/MacOS", "device_app_hash": "abc" },
             "user": { "name": "alice" },
         })
     }
 
     #[test]
     fn a_crash_keeps_its_kind_exception_signal_time_build_and_the_app_frames_only() {
-        let event = app_crash(&report(), EXECUTABLE).unwrap();
+        let event = app_crash(&report()).unwrap();
         assert_eq!(
             event,
             Event::AppCrash {
-                at: 1_794_527_123,
+                at: 1_794_507_923,
                 kind: CrashKind::NsException,
                 exception: Some(MachException::Crash),
                 signal: Some(CrashSignal::Abort),
@@ -155,7 +177,7 @@ mod tests {
             binary,
             offsets,
             ..
-        }) = app_crash(&report, EXECUTABLE)
+        }) = app_crash(&report)
         else {
             panic!("no crash");
         };
@@ -163,7 +185,22 @@ mod tests {
             (kind, exception, signal, binary, offsets),
             (CrashKind::Other, None, None, None, vec![])
         );
-        assert!(app_crash(&json!({ "report": {} }), EXECUTABLE).is_none());
+        assert!(app_crash(&json!({ "report": {} })).is_none());
+    }
+
+    #[test]
+    fn the_crash_time_is_read_as_kscrash_stores_it_and_as_its_store_hands_it_out() {
+        for (timestamp, seconds) in [
+            (json!(1_794_673_631_577_071u64), 1_794_673_631),
+            (json!("2026-11-14T16:27:11.577071Z"), 1_794_673_631),
+            (json!("2024-02-29T00:00:00Z"), 1_709_164_800),
+        ] {
+            let mut report = report();
+            report["report"]["timestamp"] = timestamp;
+            assert!(
+                matches!(app_crash(&report), Some(Event::AppCrash { at, .. }) if at == seconds)
+            );
+        }
     }
 
     #[test]

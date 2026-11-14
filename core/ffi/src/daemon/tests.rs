@@ -1519,32 +1519,46 @@ fn a_relative_share_path_or_a_password_with_a_line_break_is_refused_without_runn
 }
 
 #[test]
-fn an_app_crash_is_queued_under_the_app_only_while_reports_are_on() {
+fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
     let koi = Koi::new(signed_in(true));
     let store = koidrive_telemetry::Store::new(&koi.core.paths.state_dir);
     let executable = "/Applications/Koidrive.app/Contents/MacOS/Koidrive";
-    let report = json!({
-        "report": { "timestamp": 1_794_527_123_000_000u64 },
-        "binary_images": [{ "name": executable, "image_addr": 4096, "uuid": "17D33ED4-005A-358B-BA17-36B819625055" }],
-        "crash": {
-            "error": { "type": "signal", "signal": { "signal": 11 }, "reason": "/Users/alice/Notes" },
-            "threads": [{ "crashed": true, "backtrace": { "contents": [{ "object_addr": 4096, "instruction_addr": 5096 }] } }],
-        },
-    })
-    .to_string();
-    koi.core.record_app_crash(&report, executable);
+    let report = |id: &str, timestamp: serde_json::Value| {
+        json!({
+            "report": { "id": id, "process_name": "Koidrive", "timestamp": timestamp },
+            "binary_images": [{ "name": executable, "image_addr": 4096, "uuid": "17D33ED4-005A-358B-BA17-36B819625055" }],
+            "crash": {
+                "error": { "type": "signal", "signal": { "signal": 11 }, "reason": "/Users/alice/Notes" },
+                "threads": [{ "crashed": true, "backtrace": { "contents": [{ "object_addr": 4096, "instruction_addr": 5096 }] } }],
+            },
+        })
+        .to_string()
+    };
+    let while_off = report("A", json!((koidrive_telemetry::now() - 5) * 1_000_000));
+    assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
+    store.set(true).unwrap();
+    assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
+    assert_eq!(koi.core.record_app_crash("not a report"), Ok(()));
     assert!(store.peek().unwrap().events.is_empty());
 
-    store.set(true).unwrap();
-    koi.core.record_app_crash("not a report", executable);
-    koi.core.record_app_crash(&report, executable);
+    let queue = koi.core.paths.state_dir.join("telemetry/queue-v2.json");
+    std::fs::create_dir(&queue).unwrap();
+    let on = report("B", json!("2099-01-01T00:00:00.123456Z"));
+    assert!(matches!(
+        koi.core.record_app_crash(&on),
+        Err(SessionError::NotSaved { .. })
+    ));
+    std::fs::remove_dir(&queue).unwrap();
+    assert_eq!(koi.core.record_app_crash(&on), Ok(()));
+    assert_eq!(koi.core.record_app_crash(&on), Ok(()));
     let queued = store.peek().unwrap();
     let [koidrive_telemetry::Queued { event, origin }] = queued.events.as_slice() else {
         panic!("{queued:?}");
     };
-    assert!(
-        matches!(event, koidrive_telemetry::Event::AppCrash { offsets, .. } if offsets == &[1000])
-    );
+    assert!(matches!(
+        event,
+        koidrive_telemetry::Event::AppCrash { at: 4_070_908_800, offsets, .. } if offsets == &[1000]
+    ));
     assert_eq!(
         origin.as_ref().map(|origin| origin.client),
         Some(koidrive_telemetry::schema::Client::MacosApp)

@@ -745,23 +745,21 @@ impl Core for DaemonCore {
         }
     }
 
-    fn record_app_crash(&self, report: &str, executable: &str) {
+    fn record_app_crash(&self, report: &str) -> Result<(), SessionError> {
         let store = self.telemetry_store();
-        let recording = (store.status(|name| std::env::var_os(name)))
-            .is_ok_and(|status| status.mode != koidrive_telemetry::Mode::Off);
-        let Some(event) = (serde_json::from_str(report).ok())
-            .and_then(|report| koidrive_telemetry::app_crash(&report, executable))
-            .filter(|_| recording)
-        else {
-            return;
+        let not_saved = |error: std::io::Error| SessionError::NotSaved {
+            reason: error.to_string(),
         };
-        let pending = koidrive_telemetry::Pending {
-            events: vec![event],
-            ..Default::default()
+        let status = store
+            .status(|name| std::env::var_os(name))
+            .map_err(not_saved)?;
+        let Ok(report) = serde_json::from_str(report) else {
+            return Ok(());
         };
-        if let Err(error) = store.absorb(pending) {
-            tracing::warn!(%error, "the app's crash could not be queued");
+        if status.mode == koidrive_telemetry::Mode::Off {
+            return Ok(());
         }
+        store.absorb_app_crash(&report).map_err(not_saved)
     }
 
     fn telemetry(&self) -> TelemetrySetting {

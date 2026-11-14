@@ -17,6 +17,7 @@ use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
 pub const KEEP_HOURS: u32 = 14 * 24;
 pub const MAX_EVENTS: usize = 500;
 const QUEUE: &str = "queue-v2.json";
+const MAX_APP_CRASH_REPORTS: usize = 64;
 const OLD_QUEUE: &str = "queue.json";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +28,9 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
+    /// When reports were last turned on, in seconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_since: Option<u64>,
 }
 
 /// Reports and events taken from the queue to send.
@@ -74,6 +78,8 @@ struct Queue {
     out: Option<Out>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     admitted: BTreeMap<u32, BTreeMap<String, usize>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    app_crash_reports: Vec<String>,
 }
 
 fn known_events<'de, D: serde::Deserializer<'de>>(
@@ -347,6 +353,9 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Settings::default(),
             settings => settings?,
         };
+        if settings.enabled != Some(on) {
+            settings.on_since = on.then(crate::now);
+        }
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
         if settings.install_id.is_none() {
@@ -385,6 +394,7 @@ impl Store {
         self.remove_queues()?;
         let id = InstallId::generate();
         settings.install_id = Some(id.clone());
+        settings.on_since.get_or_insert_with(crate::now);
         write(&self.dir.join("settings.json"), &settings)?;
         Ok(id)
     }
@@ -431,6 +441,41 @@ impl Store {
             .collect();
         queue.put(pending.hours.into_values(), events);
         queue.trim(hour);
+        write(&self.dir.join(QUEUE), &queue)
+    }
+
+    /// Queues the crash in `report`, a crash report KSCrash 2.6 wrote. Only the crash's kind, Mach exception, signal and
+    /// time are read, with the build UUID of the executable that crashed and the offsets of the crashed thread's frames
+    /// in it; paths, names, messages, memory and everything else in the report are never read. A report the queue
+    /// already took by its id, one without a crash and one from before reports were last turned on add nothing.
+    pub fn absorb_app_crash(&self, report: &Value) -> io::Result<()> {
+        let Some(event) = crate::app_crash::app_crash(report) else {
+            return Ok(());
+        };
+        let id = report["report"]["id"].as_str().map(str::to_owned);
+        let _lock = self.lock(true)?;
+        let settings = self.settings()?;
+        if settings.install_id.is_none()
+            || settings.on_since.is_some_and(|since| event.at() < since)
+        {
+            return Ok(());
+        }
+        let mut queue = self.queue()?;
+        if id
+            .as_ref()
+            .is_some_and(|id| queue.app_crash_reports.contains(id))
+        {
+            return Ok(());
+        }
+        let origin = self.origin.clone();
+        queue.put(std::iter::empty(), vec![Queued { event, origin }]);
+        queue.app_crash_reports.extend(id);
+        let over = queue
+            .app_crash_reports
+            .len()
+            .saturating_sub(MAX_APP_CRASH_REPORTS);
+        queue.app_crash_reports.drain(..over);
+        queue.trim(crate::this_hour());
         write(&self.dir.join(QUEUE), &queue)
     }
 
@@ -761,7 +806,8 @@ mod tests {
             off,
             Settings {
                 enabled: Some(false),
-                install_id: None
+                install_id: None,
+                on_since: None,
             }
         );
         assert!(store.peek().unwrap().is_empty());
@@ -1282,5 +1328,68 @@ mod tests {
         let _held = store.lock(true).unwrap();
         let error = store.absorb_at(pending(100, 1), 100, false).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    fn crash_report(id: &str, at: u64) -> Value {
+        serde_json::json!({
+            "report": { "id": id, "timestamp": at * 1_000_000 },
+            "crash": { "error": { "type": "signal", "signal": { "signal": 11 } } },
+        })
+    }
+
+    fn app_crashes(store: &Store) -> usize {
+        (store.peek().unwrap().events.iter())
+            .filter(|queued| matches!(queued.event, Event::AppCrash { .. }))
+            .count()
+    }
+
+    #[test]
+    fn an_app_crash_report_handed_over_again_is_queued_once_even_after_its_send() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let first = crash_report("4D2B0160-69B6-4DC1-BFED-08A0554A67C9", crate::now());
+        store.absorb_app_crash(&first).unwrap();
+        store.absorb_app_crash(&first).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+
+        let sending = store.take(crate::this_hour()).unwrap().unwrap();
+        store.sent(sending).unwrap();
+        store.absorb_app_crash(&first).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+
+        let second = crash_report("0F3C2E7A-1B4D-4E5F-8A9B-0C1D2E3F4A5B", crate::now());
+        store.absorb_app_crash(&second).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+        let queue = fs::read_to_string(store.dir.join(QUEUE)).unwrap();
+        assert_eq!(queue.matches("4D2B0160").count(), 1);
+    }
+
+    #[test]
+    fn an_app_crash_from_before_reports_were_last_turned_on_is_not_queued() {
+        let (_dir, store) = store();
+        store.set(false).unwrap();
+        let before = crate::now() - 60;
+        assert!(store.absorb_app_crash(&crash_report("A", before)).is_ok());
+        store.set(true).unwrap();
+        store.absorb_app_crash(&crash_report("A", before)).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+
+        let since = store.settings().unwrap().on_since.unwrap();
+        store.set(true).unwrap();
+        assert_eq!(store.settings().unwrap().on_since, Some(since));
+        store.absorb_app_crash(&crash_report("B", since)).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+    }
+
+    #[test]
+    fn an_app_crash_that_cannot_be_written_is_an_error_and_is_queued_once_the_queue_is_back() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        fs::create_dir(store.dir.join(QUEUE)).unwrap();
+        let report = crash_report("A", crate::now());
+        assert!(store.absorb_app_crash(&report).is_err());
+        fs::remove_dir(store.dir.join(QUEUE)).unwrap();
+        store.absorb_app_crash(&report).unwrap();
+        assert_eq!(app_crashes(&store), 1);
     }
 }

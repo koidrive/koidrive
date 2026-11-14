@@ -1181,7 +1181,9 @@ impl Core for FakeCore {
         self.lock().telemetry
     }
 
-    fn record_app_crash(&self, _report: &str, _executable: &str) {}
+    fn record_app_crash(&self, _report: &str) -> Result<(), SessionError> {
+        Ok(())
+    }
 
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
         let mut state = self.lock();

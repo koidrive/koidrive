@@ -16,7 +16,6 @@ mod send;
 mod store;
 mod system;
 
-pub use app_crash::app_crash;
 pub use consent::{Mode, Source, Status, VARIABLE, resolve, should_ask};
 pub use cpu::Cpu;
 pub use panic::install_panic_hook;

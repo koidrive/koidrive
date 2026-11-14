@@ -206,8 +206,8 @@ impl SyncSession {
     }
 
     /// Queues a crash of the app that KSCrash recorded, keeping only its kind, exception, signal, time, build and the
-    /// offsets of the app's own frames.
-    pub fn record_app_crash(&self, report: String, executable: String) {
-        self.core.record_app_crash(&report, &executable);
+    /// offsets of the app's own frames. Ok means the report can be deleted.
+    pub fn record_app_crash(&self, report: String) -> Result<(), SessionError> {
+        self.core.record_app_crash(&report)
     }
 }
