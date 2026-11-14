@@ -1869,6 +1869,7 @@ fn record(effect: EngineEffect) -> EffectRecord {
         counter: 1,
         effect,
         after: None,
+        recoveries: 0,
     }
 }
 

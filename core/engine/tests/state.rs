@@ -363,6 +363,7 @@ fn effects_state() -> EffectsState {
             counter: 4,
             effect: create.clone(),
             after: Some(dir(ROOT, "a")),
+            recoveries: 0,
         }],
         cleared: 3,
         failed: [("b".into(), create)].into(),
@@ -723,6 +724,7 @@ fn an_identity_without_a_birth_time_round_trips() {
                 to: Location::Parked("v".into()),
             },
             after: None,
+            recoveries: 0,
         }],
         cleared: 0,
         failed: [(

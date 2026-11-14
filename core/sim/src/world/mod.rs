@@ -3425,6 +3425,7 @@ mod tests {
                 kind: Kind::File,
                 content: Some(incoming),
             }),
+            recoveries: 0,
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(
@@ -3470,6 +3471,7 @@ mod tests {
                 replaces: None,
             },
             after: None,
+            recoveries: 0,
         };
         let applied = Applied {
             outcome: Ok(None),
@@ -3529,6 +3531,7 @@ mod tests {
                 },
             },
             after: None,
+            recoveries: 0,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -3641,6 +3644,7 @@ mod tests {
                 }),
             },
             after: Some(after),
+            recoveries: 0,
         };
         assert!(record.applies(&world.devices[0].engine.trees, None));
         let mut state = world.devices[0].engine.effects.state();

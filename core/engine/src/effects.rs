@@ -99,6 +99,8 @@ pub struct EffectRecord {
     pub effect: Effect,
     /// L's shape for the node once the effect is done, or ⊥ for a removal.
     pub after: Option<Shape>,
+    /// The recoveries [`Trees::recoveries`] counted when the effect was planned.
+    pub recoveries: u64,
 }
 
 impl EffectRecord {
@@ -120,9 +122,10 @@ impl EffectRecord {
     /// when a scan sees the user's move after the effect was planned. Once R no longer holds the
     /// node, as after a rewind that took it from the server, only a move back to the node's own
     /// place in L is taken. The planner plans none of these either, so an effect that fails for
-    /// one of them and is unblocked is planned again only once L or R has changed.
+    /// one of them and is unblocked is planned again only once L or R has changed. An effect
+    /// planned before a recovery replaced R is never taken.
     pub fn applies(&self, trees: &Trees, in_flight: Option<&InFlight>) -> bool {
-        View::new(trees).applies(self, in_flight)
+        self.recoveries == trees.recoveries() && View::new(trees).applies(self, in_flight)
     }
 
     fn parks(&self) -> bool {
@@ -328,6 +331,7 @@ impl Effects {
                 counter,
                 effect,
                 after,
+                recoveries: trees.recoveries(),
             });
         }
         self.in_flight.as_slice()

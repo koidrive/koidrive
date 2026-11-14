@@ -2,7 +2,7 @@
 
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
-use koidrive_engine::effects::{BatchLimit, Effect, Effects};
+use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup};
@@ -1653,8 +1653,15 @@ fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
     );
 }
 
-#[test]
-fn a_removal_planned_before_a_rewind_leaves_a_held_file_on_the_disk() {
+struct Stale {
+    trees: Trees,
+    ids: IdGen,
+    effects: Effects,
+    record: EffectRecord,
+    commits: Commits,
+}
+
+fn a_removal_planned_before_a_rewind() -> Stale {
     let mut trees = trees(
         &[("x", file(ROOT, "x", 1))],
         &[("x", file(ROOT, "x", 1))],
@@ -1677,19 +1684,127 @@ fn a_removal_planned_before_a_rewind_leaves_a_held_file_on_the_disk() {
     commits.enter_recovery(rewind());
     commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
     trees.settle();
-    asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["x"]);
-    assert!(!record.applies(&trees, None));
-    assert!(
-        effects
-            .done(&mut trees, None, &record.effect_id, None)
-            .is_err()
-    );
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["x"]);
+    Stale {
+        trees,
+        ids,
+        effects,
+        record,
+        commits,
+    }
+}
+
+fn refused(stale: &mut Stale) {
+    let Stale {
+        trees,
+        effects,
+        record,
+        commits,
+        ..
+    } = stale;
+    assert!(!record.applies(trees, commits.in_flight()));
+    let done = effects.done(trees, commits.in_flight(), &record.effect_id, None);
+    assert!(done.is_err(), "{done:?}");
+    trees.settle();
     assert_eq!(
         trees.local().get("x").map(|node| &node.shape),
         Some(&file(ROOT, "x", 1))
     );
+}
+
+#[test]
+fn a_removal_planned_before_a_rewind_leaves_a_held_file_on_the_disk() {
+    let mut stale = a_removal_planned_before_a_rewind();
+    asked(
+        &stale.commits,
+        RecoveryGroup::CreatedAfterRestorePoint,
+        &["x"],
+    );
+    refused(&mut stale);
+    let Stale {
+        trees,
+        ids,
+        commits,
+        ..
+    } = &mut stale;
+    assert_eq!(ops(commits, trees, ids), []);
+    asked(commits, RecoveryGroup::CreatedAfterRestorePoint, &["x"]);
+}
+
+#[test]
+fn a_removal_planned_before_a_rewind_leaves_a_kept_file_while_its_create_is_in_flight() {
+    let mut stale = a_removal_planned_before_a_rewind();
+    let question = asked(
+        &stale.commits,
+        RecoveryGroup::CreatedAfterRestorePoint,
+        &["x"],
+    );
+    assert!(stale.commits.decide(&question.id, Answer::Keep));
+    let Stale {
+        trees,
+        ids,
+        commits,
+        ..
+    } = &mut stale;
+    assert_eq!(ops(commits, trees, ids), [("create file", "x".into())]);
+    refused(&mut stale);
+}
+
+#[test]
+fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it() {
+    let mut stale = a_removal_planned_before_a_rewind();
+    let question = asked(
+        &stale.commits,
+        RecoveryGroup::CreatedAfterRestorePoint,
+        &["x"],
+    );
+    assert!(stale.commits.decide(&question.id, Answer::Keep));
+    let Stale {
+        trees,
+        ids,
+        commits,
+        ..
+    } = &mut stale;
+    assert_eq!(ops(commits, trees, ids), [("create file", "x".into())]);
+    let sent = RemoteNode {
+        shape: file(ROOT, "x", 1),
+        trashed: false,
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("x".into(), sent);
+    let applied = OpResult {
+        node_id: "x".into(),
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 2,
+        results: vec![applied],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(trees, 2));
+    trees.settle();
+    refused(&mut stale);
+}
+
+#[test]
+fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
+    let mut stale = a_removal_planned_before_a_rewind();
+    asked(
+        &stale.commits,
+        RecoveryGroup::CreatedAfterRestorePoint,
+        &["x"],
+    );
+    stale.commits.enter_recovery(rewind());
+    stale.trees.settle();
+    refused(&mut stale);
 }
 
 #[test]

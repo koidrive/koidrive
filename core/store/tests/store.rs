@@ -1450,6 +1450,7 @@ fn engine_state() -> EngineState {
                     replaces: Some(displaced.clone()),
                 },
                 after: Some(engine_shape("p", "inner.txt")),
+                recoveries: 0,
             }],
             cleared: 2,
             failed: BTreeMap::from([

@@ -217,6 +217,7 @@ pub struct Trees {
     /// See [`TreesState::discarded`].
     discarded: TrackedMap<NodeId, Shape>,
     adopted: BTreeSet<NodeId>,
+    recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
     /// R holds that content.
     edited_here: TrackedMap<NodeId, u64>,
@@ -305,6 +306,7 @@ impl Trees {
             removed_here: TrackedMap::default(),
             discarded: TrackedMap::default(),
             adopted: BTreeSet::new(),
+            recoveries: 0,
             edited_here: TrackedMap::default(),
             moved_here: TrackedMap::default(),
             past_positions: TrackedMap::default(),
@@ -1310,7 +1312,12 @@ impl Trees {
         self.adopted.contains(id)
     }
 
+    pub fn recoveries(&self) -> u64 {
+        self.recoveries
+    }
+
     pub(crate) fn rewound(&mut self) {
+        self.recoveries += 1;
         for finish in self.pending_finishes.values_mut() {
             finish.sending = false;
             finish.base = None;
@@ -3273,6 +3280,7 @@ impl Trees {
             removed_here,
             discarded,
             adopted: _,
+            recoveries: _,
             edited_here,
             moved_here,
             past_positions,

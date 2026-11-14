@@ -1212,6 +1212,7 @@ impl TryFrom<StoredRecord> for EffectRecord {
             counter: record.counter,
             effect: required(record.effect, "the effect")?.try_into()?,
             after,
+            recoveries: 0,
         })
     }
 }
