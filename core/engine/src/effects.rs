@@ -89,7 +89,7 @@ pub enum Effect {
 }
 
 /// An effect as it is persisted before the driver receives it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct EffectRecord {
     pub effect_id: String,
     pub node: NodeId,
@@ -99,6 +99,29 @@ pub struct EffectRecord {
     pub effect: Effect,
     /// L's shape for the node once the effect is done, or ⊥ for a removal.
     pub after: Option<Shape>,
+    /// The recoveries [`Trees::recoveries`] counted when the effect was planned.
+    pub recoveries: u64,
+}
+
+impl PartialEq for EffectRecord {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            effect_id,
+            node,
+            counter,
+            effect,
+            after,
+            recoveries: _,
+        } = self;
+        (effect_id, node, counter, effect, after)
+            == (
+                &other.effect_id,
+                &other.node,
+                &other.counter,
+                &other.effect,
+                &other.after,
+            )
+    }
 }
 
 impl EffectRecord {
@@ -120,9 +143,10 @@ impl EffectRecord {
     /// when a scan sees the user's move after the effect was planned. Once R no longer holds the
     /// node, as after a rewind that took it from the server, only a move back to the node's own
     /// place in L is taken. The planner plans none of these either, so an effect that fails for
-    /// one of them and is unblocked is planned again only once L or R has changed.
+    /// one of them and is unblocked is planned again only once L or R has changed. An effect
+    /// planned before a recovery replaced R is never taken.
     pub fn applies(&self, trees: &Trees, in_flight: Option<&InFlight>) -> bool {
-        View::new(trees).applies(self, in_flight)
+        self.recoveries == trees.recoveries() && View::new(trees).applies(self, in_flight)
     }
 
     fn parks(&self) -> bool {
@@ -197,7 +221,7 @@ impl Effects {
     }
 
     /// The disk side the store kept. Refuses an effect in flight whose counter is not the effects cleared plus the
-    /// effects in flight.
+    /// effects in flight. Each effect's recovery count starts over at 0, as [`Trees::recoveries`] does.
     pub fn from_state(state: EffectsState) -> Result<Self, StateError> {
         let upper = state.cleared.checked_add(state.in_flight.len() as u64);
         if let Some(record) = (state.in_flight.iter()).find(|record| Some(record.counter) != upper)
@@ -212,6 +236,12 @@ impl Effects {
             cleared,
             failed,
         } = state;
+        let in_flight: Vec<EffectRecord> = (in_flight.into_iter())
+            .map(|record| EffectRecord {
+                recoveries: 0,
+                ..record
+            })
+            .collect();
         Ok(Self {
             in_flight: in_flight.into(),
             cleared: cleared.into(),
@@ -328,6 +358,7 @@ impl Effects {
                 counter,
                 effect,
                 after,
+                recoveries: trees.recoveries(),
             });
         }
         self.in_flight.as_slice()
@@ -1055,6 +1086,9 @@ impl<'a> View<'a> {
     /// [`View::step`] could place the node in and no other node holds its exact name. L tells
     /// names apart exactly, so a name another node holds in another case does not stop it.
     fn applies(&self, record: &EffectRecord, in_flight: Option<&InFlight>) -> bool {
+        if self.trees.held(&record.node) {
+            return false;
+        }
         let Some(after) = &record.after else {
             return self.trees.local_children(&record.node).next().is_none();
         };

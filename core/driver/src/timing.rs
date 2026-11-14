@@ -690,6 +690,7 @@ mod tests {
                 replaces: None,
             },
             after: Some(remote.shape),
+            recoveries: 0,
         }
     }
 

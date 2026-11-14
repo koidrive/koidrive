@@ -3425,6 +3425,7 @@ mod tests {
                 kind: Kind::File,
                 content: Some(incoming),
             }),
+            recoveries: 0,
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(
@@ -3470,6 +3471,7 @@ mod tests {
                 replaces: None,
             },
             after: None,
+            recoveries: 0,
         };
         let applied = Applied {
             outcome: Ok(None),
@@ -3529,6 +3531,7 @@ mod tests {
                 },
             },
             after: None,
+            recoveries: 0,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -3546,6 +3549,46 @@ mod tests {
         world.binned_copies.insert(5);
         world.kept().unwrap();
         world.converged().unwrap();
+    }
+
+    #[test]
+    fn a_reload_keeps_an_effect_planned_after_a_recovery_applicable() {
+        let mut engine = Engine::new("root", "history", 1);
+        let cause = RecoveryCause::rewind(4, NOW);
+        (engine.commits).recover(&mut engine.trees, 0, &cause, &mut engine.ids, NOW as u64);
+        engine.trees.rules_scanned();
+        let folder = RemoteNode {
+            shape: Shape {
+                parent: "root".into(),
+                name: "d".into(),
+                kind: Kind::Dir,
+                content: None,
+            },
+            trashed: false,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        };
+        engine.trees.set_remote("d".into(), folder);
+        engine.trees.settle();
+        let planned = engine
+            .effects
+            .plan(
+                &engine.trees,
+                None,
+                &mut engine.ids,
+                NOW as u64,
+                BatchLimit::ONE,
+            )
+            .to_vec();
+        assert!(planned[0].applies(&engine.trees, None), "{planned:?}");
+        let loaded = engine.reload().unwrap();
+        assert!(loaded.effects.in_flight()[0].applies(&loaded.trees, None));
     }
 
     fn send(world: &mut World, d: usize) -> Result<(), Failure> {
@@ -3641,6 +3684,7 @@ mod tests {
                 }),
             },
             after: Some(after),
+            recoveries: 0,
         };
         assert!(record.applies(&world.devices[0].engine.trees, None));
         let mut state = world.devices[0].engine.effects.state();
