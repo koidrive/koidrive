@@ -1067,7 +1067,7 @@ impl Trees {
             }
             false
         };
-        let excluded_below: Vec<NodeId> = (self.discarded.keys())
+        let excluded_below: Vec<NodeId> = (self.s.iter().map(|(id, _)| id))
             .filter(|id| self.excluded(id) && below_reclaimed(id))
             .cloned()
             .collect();
