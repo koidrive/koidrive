@@ -310,7 +310,7 @@ impl Effects {
     ///
     /// An excluded node ([`Trees::excluded`]) gets no effect and is never parked, and neither is a
     /// node whose own place an excluded node holds. A parked node that the rules now leave out is
-    /// only moved back to the position L keeps for it, and nothing is planned while the rules are
+    /// moved back to the position L keeps for it, or to its R position when it cannot take that one, and nothing is planned while the rules are
     /// unknown ([`Trees::rules_known`]), or for a node below a folder whose rules are unknown
     /// ([`Trees::held`]). A `.koiignore` file that R
     /// holds and the disk does not yet is written before any other effect below its folder
@@ -1137,13 +1137,9 @@ impl<'a> View<'a> {
     }
 
     fn way_out(&self, id: &str, local: &'a LocalNode) -> &'a Shape {
-        let lost = match self.blocked(id, &local.shape) {
-            Some(Step::Blocked(Some(holder))) if self.trees.excluded(&holder) => true,
-            Some(_) => self.trees.reverted().contains(id),
-            None => false,
-        };
         let away = self.trees.remote().live(id).filter(|remote| {
-            lost && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
+            self.blocked(id, &local.shape).is_some()
+                && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
                 && self.blocked(id, remote).is_none()
         });
         away.unwrap_or(&local.shape)

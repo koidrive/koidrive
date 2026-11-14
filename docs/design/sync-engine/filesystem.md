@@ -171,7 +171,7 @@ A node is excluded on this device when any of these matches the rules: its posit
 
 - An excluded node is never parked. Parking never changes whether a node is excluded: the position L keeps for a parked node counts as its position in L, for it and every node below it.
 - A parked node leaves the parked directory for its position in R. It goes back to the position L keeps for it instead when R no longer holds it and it has a change of its own (a parked node whose only change is that R deleted it is removed), when the rules exclude it, when the local copy of an excluded node holds its name in R, or when it holds an edit and the rules exclude its R position.
-- A parked node the rules exclude, whose local name the local copy of an excluded node holds, goes to its R position instead, unless it holds an edit and the rules exclude that position too. So does a reverted one (§2.6) that cannot reach its local position for any reason: the server refused that position to it, so whatever holds it there stays.
+- A parked node the rules exclude that cannot take the position L keeps for it, because another node holds that name or L no longer holds its folder, goes to its R position instead, unless it holds an edit and the rules exclude that position too.
 - An edited node is never parked to make room for another node while the rules exclude its R position.
 - A parked node holds no name on disk, so its S entry gives up its position as above even when another node has taken the old name.
 - A parked node that can reach neither position stays parked and is reported as a problem once the effects have nothing left to do.
