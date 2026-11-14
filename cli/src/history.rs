@@ -520,38 +520,72 @@ async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
     }
 }
 
-/// The linked folder that holds `path`, and the names below it as typed. `path` need not exist here, since a file
-/// deleted on this device may still be on the server. Symbolic links are followed only up to the linked folder: below
-/// it a link is a node of the space like any other, so the names stay as typed and never select the node a local link
-/// points to.
 async fn locate(paths: &Paths, path: &Path) -> Result<(FolderStatus, Vec<String>), CliError> {
     let folders = linked_folders(paths).await?;
     let typed = lexical(&crate::absolute(path)?);
-    let components: Vec<Component> = typed.components().collect();
-    let mut prefix = PathBuf::new();
-    for (index, component) in components.iter().enumerate() {
-        prefix.push(component);
-        let Ok(real) = std::fs::canonicalize(&prefix) else {
-            break;
+    real_path(&typed)
+        .and_then(|real| {
+            folders
+                .iter()
+                .flat_map(|folder| {
+                    let stored = PathBuf::from(&folder.path);
+                    let resolved = real_path(&stored);
+                    [Some(stored), resolved]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|root| {
+                            Some((folder, root.as_os_str().len(), below(&root, &real)?))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .max_by_key(|(_, length, _)| *length)
+                .map(|(folder, _, names)| (folder.clone(), names))
+        })
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "{} is not in a linked folder; koi status lists them",
+                printable(&typed.display().to_string())
+            ))
+            .because(Reason::NotInLinkedFolder)
+        })
+}
+
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let mut path = path.to_path_buf();
+    for _ in 0..32 {
+        let (existing, rest) = deepest_existing(&path);
+        let Some((name, rest)) = rest.split_first() else {
+            return Some(existing);
         };
-        let inside = folders
-            .iter()
-            .filter_map(|folder| Some((folder, below(Path::new(&folder.path), &real)?)))
-            .max_by_key(|(folder, _)| folder.path.len());
-        if let Some((folder, mut names)) = inside {
-            names.extend(
-                components[index + 1..]
-                    .iter()
-                    .map(|name| name.as_os_str().to_string_lossy().into_owned()),
-            );
-            return Ok((folder.clone(), names));
-        }
+        let next = match std::fs::read_link(existing.join(name)) {
+            Ok(destination) => existing.join(destination),
+            Err(_) => {
+                return Some(
+                    rest.iter()
+                        .fold(existing.join(name), |path, name| path.join(name)),
+                );
+            }
+        };
+        path = rest.iter().fold(next, |path, name| path.join(name));
     }
-    Err(CliError::usage(format!(
-        "{} is not in a linked folder; koi status lists them",
-        printable(&typed.display().to_string())
-    ))
-    .because(Reason::NotInLinkedFolder))
+    None
+}
+
+fn deepest_existing(path: &Path) -> (PathBuf, Vec<std::ffi::OsString>) {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(existing) {
+            rest.reverse();
+            return (real, rest);
+        }
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+            rest.reverse();
+            return (existing.to_path_buf(), rest);
+        };
+        rest.push(name.to_os_string());
+        existing = parent;
+    }
 }
 
 /// `path` without `.` names, and with each `..` removing the name before it, worked out without reading the disk.
@@ -1105,6 +1139,7 @@ mod tests {
     }
 
     const SPACE: &str = "0194f8a2-0000-7000-8000-00000000000a";
+    const PHOTOS: &str = "0194f8a2-0000-7000-8000-00000000000b";
 
     #[test]
     fn concise_restore_replay_does_not_assume_a_linked_folder() {
@@ -1405,6 +1440,103 @@ mod tests {
             })
             .unwrap();
         (dir, paths, root)
+    }
+
+    fn link(paths: &Paths, space_id: &str, space_name: &str, root: &Path) {
+        let store = paths.store(space_id).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        koidrive_store::Store::open(&store)
+            .unwrap()
+            .transaction(|tx| {
+                tx.set_link(&koidrive_store::Link {
+                    space_id: space_id.into(),
+                    space_name: space_name.into(),
+                    root: root.to_path_buf(),
+                    root_dev: 1,
+                    server_url: "http://127.0.0.1:9/".into(),
+                    device_id: "d1".into(),
+                    linked_at_ms: 1,
+                })
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_path_is_placed_by_the_real_file_it_leads_to() {
+        let (dir, paths, root) = linked_on("http://127.0.0.1:9/");
+        let base = root.parent().unwrap().to_path_buf();
+        let photos = base.join("Photos");
+        let outside = base.join("Outside");
+        for folder in [root.join("Docs"), photos.clone(), outside.clone()] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        link(&paths, PHOTOS, "Photos", &dir.path().join("Photos"));
+        let symlink = |link: &Path, destination: &Path| {
+            std::os::unix::fs::symlink(destination, link).unwrap()
+        };
+        symlink(&root.join("bridge"), &photos);
+        symlink(&root.join("away"), &outside);
+        symlink(&root.join("gone"), &outside.join("Missing"));
+        symlink(&root.join("up"), Path::new("../Outside/Missing"));
+        symlink(&root.join("later"), Path::new("Docs/Later"));
+        symlink(&base.join("Shortcut"), &root);
+        for hop in 0..40 {
+            let destination = match hop {
+                39 => outside.join("Missing"),
+                _ => PathBuf::from(format!("chain{}", hop + 1)),
+            };
+            symlink(&root.join(format!("chain{hop}")), &destination);
+        }
+        let placed = |path: PathBuf| {
+            let paths = paths.clone();
+            async move {
+                locate(&paths, &path)
+                    .await
+                    .map(|(folder, names)| (folder.space_id, names.join("/")))
+                    .map_err(|error| error.reason)
+            }
+        };
+        let refused = Err(Some(Reason::NotInLinkedFolder));
+
+        assert_eq!(
+            placed(root.join("Docs/Plan.key")).await,
+            Ok((SPACE.into(), "Docs/Plan.key".into()))
+        );
+        assert_eq!(
+            placed(dir.path().join("Koidrive/Docs/Plan.key")).await,
+            Ok((SPACE.into(), "Docs/Plan.key".into()))
+        );
+        assert_eq!(
+            placed(photos.join("Plan.key")).await,
+            Ok((PHOTOS.into(), "Plan.key".into()))
+        );
+        assert_eq!(
+            placed(root.join("bridge/Plan.key")).await,
+            Ok((PHOTOS.into(), "Plan.key".into()))
+        );
+        assert_eq!(
+            placed(base.join("Shortcut/Docs/New.key")).await,
+            Ok((SPACE.into(), "Docs/New.key".into()))
+        );
+        assert_eq!(
+            placed(root.join("later/Plan.key")).await,
+            Ok((SPACE.into(), "Docs/Later/Plan.key".into()))
+        );
+        for path in [
+            "away/Plan.key",
+            "gone/Plan.key",
+            "up/Plan.key",
+            "chain0/Plan.key",
+            "chain30/Plan.key",
+        ] {
+            assert_eq!(placed(root.join(path)).await, refused, "{path}");
+            assert_eq!(
+                placed(base.join("Shortcut").join(path)).await,
+                refused,
+                "{path}"
+            );
+        }
+        assert_eq!(placed(base.join("Shortcut/../Plan.key")).await, refused);
     }
 
     /// A profile signed in to a server that never answers, whose folder `Koidrive` syncs `SPACE`, and the record of the
