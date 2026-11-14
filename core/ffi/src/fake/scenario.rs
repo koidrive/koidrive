@@ -505,7 +505,7 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
                     None,
                     ProblemKind::ServerUnreachable {
                         reason: "the server's address could not be found".to_owned(),
-                        retry_at_ms: now + 30_000,
+                        retry_at_ms: Some(now + 30_000),
                     },
                     now - 120_000,
                 );

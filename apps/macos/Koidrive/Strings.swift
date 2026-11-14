@@ -263,9 +263,11 @@ extension ProblemKind {
         case .unsupportedFileSystem: String(localized: "Move the folder to your Mac's disk.")
         case .spaceFormatTooNew: String(localized: "Update Koidrive to upload again.")
         case .fileUnreadable(let reason): reason
-        case .noInternet(let retryAtMs):
+        case .noInternet(nil): String(localized: "Trying again now.")
+        case .noInternet(let retryAtMs?):
             String(localized: "Trying again at \(Date(milliseconds: retryAtMs).formatted(.dateTime.hour().minute())).")
-        case .serverUnreachable(let reason, let retryAtMs):
+        case .serverUnreachable(let reason, nil): String(localized: "Trying again now: \(reason)")
+        case .serverUnreachable(let reason, let retryAtMs?):
             String(localized: "Trying again at \(Date(milliseconds: retryAtMs).formatted(.dateTime.hour().minute())): \(reason)")
         case .fileNotWritable(let reason): reason
         case .fileBusy: String(localized: "It changes too often to upload. If it's a log or database, add it to .koiignore.")

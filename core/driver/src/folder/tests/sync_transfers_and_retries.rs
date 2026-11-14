@@ -174,7 +174,7 @@ fn a_download_the_server_puts_off_for_an_hour_shows_in_the_status_until_it_goes_
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    assert!(wait.until_ms > now_ms + 3_500_000, "{wait:?}");
+    assert!(wait.until_ms.is_some_and(|at| at > now_ms + 3_500_000), "{wait:?}");
 
     *remote.chunks.refusal.lock().unwrap() = None;
     assert_eq!(b.run(&mut remote), ["stage again"]);
@@ -387,7 +387,7 @@ fn a_quota_wait_of_a_second_is_typed_in_the_status_without_a_problem() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    assert!(wait.until_ms <= now_ms + 1_000, "{wait:?}");
+    assert!(wait.until_ms.is_some_and(|at| at <= now_ms + 1_000), "{wait:?}");
 
     b.run(&mut remote);
     assert_eq!(b.folder.view().wait, None);

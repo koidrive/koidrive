@@ -676,11 +676,16 @@ pub enum ProblemKind {
     /// A file cannot be read, so it is not uploaded (design §5.7). The other changes go on.
     FileUnreadable { reason: String },
     /// The server cannot be reached, in plain words, such as "the server's address could not be
-    /// found". The connection is tried again at `retry_at_ms`, in Unix milliseconds.
-    ServerUnreachable { reason: String, retry_at_ms: i64 },
+    /// found". The connection is tried again at `retry_at_ms`, in Unix milliseconds, or is being
+    /// tried again when it is `None`.
+    ServerUnreachable {
+        reason: String,
+        retry_at_ms: Option<i64>,
+    },
     /// This device has no internet connection, so the server cannot be reached. The connection is
-    /// tried again at `retry_at_ms`, in Unix milliseconds.
-    NoInternet { retry_at_ms: i64 },
+    /// tried again at `retry_at_ms`, in Unix milliseconds, or is being tried again when it is
+    /// `None`.
+    NoInternet { retry_at_ms: Option<i64> },
     /// A file cannot be written, so a change to it cannot be applied (design §5.7).
     FileNotWritable { reason: String },
     /// A file keeps changing, such as a log or a database being written, so it is not uploaded.

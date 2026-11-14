@@ -529,14 +529,14 @@ pub struct WaitData {
 }
 
 impl WaitData {
-    fn of(wait: &Wait) -> Self {
-        WaitData {
+    fn of(wait: &Wait) -> Option<Self> {
+        Some(WaitData {
             kind: match wait.kind {
                 WaitKind::Quota => WaitReason::Quota,
                 WaitKind::Retry => WaitReason::Retry,
             },
-            until_ms: wait.until_ms,
-        }
+            until_ms: wait.until_ms?,
+        })
     }
 }
 
@@ -562,7 +562,7 @@ impl FolderData {
             local_entries: folder.local_entries,
             questions: folder.questions,
             problem: folder.problem.clone(),
-            wait: folder.wait.as_ref().map(WaitData::of),
+            wait: folder.wait.as_ref().and_then(WaitData::of),
             progress: (folder.progress.as_ref()).map(|progress| ProgressData {
                 files_to_upload: progress.files_to_upload,
                 files_to_download: progress.files_to_download,
@@ -754,10 +754,10 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
             | FolderState::CatchingUp
             | FolderState::UpToDate => {}
         }
-        if let Some(wait) = &folder.wait {
+        if let Some(wait) = folder.wait.as_ref().and_then(WaitData::of) {
             found.push(Condition::Waiting {
                 folder: folder.path.clone(),
-                wait: WaitData::of(wait),
+                wait,
             });
         }
     }
@@ -1780,7 +1780,7 @@ mod tests {
             problem: Some("no words here decide the exit".into()),
             wait: Some(Wait {
                 kind,
-                until_ms: 1_700_000_000_000,
+                until_ms: Some(1_700_000_000_000),
                 unreachable: None,
             }),
             ..folder("Work", FolderState::CatchingUp)

@@ -590,7 +590,7 @@ mod tests {
         let waiting = |why: &str, until_ms| {
             Some(driver::Wait {
                 kind: driver::WaitKind::Retry,
-                until_ms,
+                until_ms: Some(until_ms),
                 unreachable: Some(driver::Unreachable {
                     why: why.into(),
                     no_internet: false,
@@ -611,7 +611,7 @@ mod tests {
                 None,
                 ProblemKind::ServerUnreachable {
                     reason: "the server's address could not be found".into(),
-                    retry_at_ms: 1_000,
+                    retry_at_ms: Some(1_000),
                 }
             )]
         );
@@ -620,6 +620,21 @@ mod tests {
         status.folders[0].wait = waiting("the connection timed out", 3_000);
         let later = problems(&status, &mut seen);
         assert_eq!(later[0].since_ms, first[0].since_ms);
+
+        status.folders[0].wait =
+            (waiting("the connection timed out", 3_000)).map(|wait| driver::Wait {
+                until_ms: None,
+                ..wait
+            });
+        let trying = problems(&status, &mut seen);
+        assert_eq!(trying[0].since_ms, first[0].since_ms);
+        assert_eq!(
+            trying[0].kind,
+            ProblemKind::ServerUnreachable {
+                reason: "the connection timed out".into(),
+                retry_at_ms: None,
+            }
+        );
 
         status.folders[0].wait = None;
         assert!(problems(&status, &mut seen).is_empty());
@@ -805,7 +820,7 @@ mod unreachable_tests {
                 progress: None,
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
-                    until_ms: 7,
+                    until_ms: Some(7),
                     unreachable: Some(driver::Unreachable {
                         why: "there is no internet connection".into(),
                         no_internet: true,
@@ -817,7 +832,12 @@ mod unreachable_tests {
         };
         let listed = problems(&status, &mut Seen::new());
         let kinds: Vec<_> = listed.iter().map(|problem| problem.kind.clone()).collect();
-        assert_eq!(kinds, [ProblemKind::NoInternet { retry_at_ms: 7 }]);
+        assert_eq!(
+            kinds,
+            [ProblemKind::NoInternet {
+                retry_at_ms: Some(7)
+            }]
+        );
     }
 
     #[test]
@@ -839,7 +859,7 @@ mod unreachable_tests {
                     progress: None,
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
-                        until_ms: 1,
+                        until_ms: Some(1),
                         unreachable: Some(driver::Unreachable {
                             why: "the server's address could not be found".into(),
                             no_internet: false,

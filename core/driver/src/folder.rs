@@ -1197,38 +1197,38 @@ impl Folder {
         });
         let unix_ms =
             |at: SystemTime| (at.duration_since(UNIX_EPOCH)).map_or(0, |at| at.as_millis() as i64);
-        let wait = match reconnect {
-            Some(disconnected) => Some((
-                WaitKind::Retry,
-                disconnected.retry_at,
-                disconnected_unreachable(&disconnected.reason),
-            )),
-            None => (unreachable_call
-                .or_else(|| waiting.iter().max_by_key(|retrying| retrying.at)))
-            .map(|retrying| {
-                let unreachable = (retrying.unreachable).map(|cause| Unreachable {
-                    why: cause.to_string(),
-                    no_internet: cause == Cause::NoInternet,
-                });
-                (retrying.kind, retrying.at, unreachable)
-            }),
+        let call = |retrying: &&Retrying| {
+            let unreachable = (retrying.unreachable).map(|cause| Unreachable {
+                why: cause.to_string(),
+                no_internet: cause == Cause::NoInternet,
+            });
+            (retrying.kind, Some(retrying.at), unreachable)
         };
-        let offline = match (&wait, reconnecting) {
-            (Some((_, at, Some(unreachable))), _) => {
-                Some((unreachable.clone(), format!("at {}", utc(*at))))
-            }
-            (_, Some(disconnected)) => disconnected_unreachable(&disconnected.reason)
-                .map(|unreachable| (unreachable, "now".to_owned())),
-            _ => None,
-        }
-        .filter(|_| state == FolderState::Offline)
-        .map(|(unreachable, when)| match unreachable.no_internet {
-            true => format!("no internet connection; trying again {when}"),
-            false => format!(
-                "can't connect to the server: {}; trying again {when}",
-                unreachable.why
-            ),
-        });
+        let session = |disconnected: &Disconnected, at| {
+            let unreachable = disconnected_unreachable(&disconnected.reason);
+            (WaitKind::Retry, at, unreachable)
+        };
+        let wait = (reconnect.filter(|disconnected| disconnected.reason.unreachable()))
+            .map(|disconnected| session(disconnected, Some(disconnected.retry_at)))
+            .or_else(|| unreachable_call.map(call))
+            .or_else(|| reconnecting.map(|disconnected| session(disconnected, None)))
+            .or_else(|| {
+                reconnect.map(|disconnected| session(disconnected, Some(disconnected.retry_at)))
+            })
+            .or_else(|| (waiting.iter().max_by_key(|retrying| retrying.at)).map(call));
+        let offline = (wait.as_ref())
+            .filter(|_| state == FolderState::Offline)
+            .and_then(|(_, at, unreachable)| {
+                let when = at.map_or_else(|| "now".to_owned(), |at| format!("at {}", utc(at)));
+                Some((unreachable.as_ref()?, when))
+            })
+            .map(|(unreachable, when)| match unreachable.no_internet {
+                true => format!("no internet connection; trying again {when}"),
+                false => format!(
+                    "can't connect to the server: {}; trying again {when}",
+                    unreachable.why
+                ),
+            });
         let refused = reconnect
             .filter(|disconnected| !disconnected.reason.unreachable())
             .map(|disconnected| {
@@ -1240,7 +1240,7 @@ impl Folder {
             });
         let wait = wait.map(|(kind, at, unreachable)| Wait {
             kind,
-            until_ms: unix_ms(at),
+            until_ms: at.map(unix_ms),
             unreachable,
         });
         let retrying =
