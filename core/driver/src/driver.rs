@@ -260,11 +260,10 @@ pub enum Linked {
     Already(FolderStatus),
 }
 
-/// Runs sync for the folders one profile links. The Linux daemon and the macOS app use it alike: the daemon serves
-/// it over a local socket, the app calls it in-process through `core/ffi`.
+/// Runs sync for the folders one profile links.
 ///
-/// Opening a driver takes the profile's lock, so one process at a time writes a profile's credential and stores
-/// (H6 of reports/BOX-71). The lock is released when the last clone is dropped.
+/// Opening a driver takes the profile's lock, so one process at a time writes a profile's credential and stores.
+/// The lock is released when the last clone is dropped.
 #[derive(Clone)]
 pub struct Driver {
     inner: Arc<Inner>,
@@ -275,11 +274,9 @@ struct Inner {
     paths: Paths,
     _lock: Flock,
     matcher: Arc<dyn Matcher>,
-    /// The `[sync]` list that `matcher` applies, for the engine of each folder.
     local: LocalRules,
     /// The size cap in bytes of each folder's local trash, from `[trash]`.
     trash_cap: u64,
-    /// The limit on chunk uploads in flight from `[upload]`, which the uploads of every folder share.
     upload_gate: UploadGate,
     /// Held for the whole of a pair, claim, sign-out, link or unlink, so one runs at a time: a sign-out waits for a
     /// claim or a link in flight and then undoes it, and a credential the server issued is always stored.
@@ -341,7 +338,6 @@ enum Unlink {
     Abandoned,
 }
 
-/// Marks the folder's unlink abandoned if it is dropped while the unlink still runs, that is, when the caller cancels it.
 struct Unlinking<'a> {
     driver: &'a Driver,
     space_id: String,
@@ -368,7 +364,6 @@ impl Drop for Unlinking<'_> {
 
 struct Running {
     stop: watch::Sender<bool>,
-    /// Tells the task that the folder's store holds a new restore request.
     requests: Arc<Notify>,
     /// Closed when the task has ended, its observer and its hold on the folder included.
     done: watch::Receiver<()>,
@@ -392,7 +387,6 @@ impl Drop for BlockedStartup<'_> {
 }
 
 impl Running {
-    /// Tells the task to stop and returns what closes once it has.
     fn stop(&self) -> watch::Receiver<()> {
         let _ = self.stop.send(true);
         self.done.clone()
@@ -462,7 +456,6 @@ impl Changes {
     }
 }
 
-/// Waits until a task that [`Running::stop`] told to stop has ended. Any number of callers can wait for one task.
 async fn ended(mut done: watch::Receiver<()>) {
     while done.changed().await.is_ok() {}
 }
@@ -1086,7 +1079,6 @@ impl Driver {
         }
     }
 
-    /// Stores the credential the server issued in `file`, unless another one was stored meanwhile.
     fn adopt(
         &self,
         file: NewCredentialFile,
@@ -1552,7 +1544,6 @@ impl Driver {
         })?
         .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         tracing::info!(space_id, restore_id = %id, "recorded a restore request");
-        // A task that is not running takes the request when it next opens the folder.
         let folders = self.inner.folders.lock().unwrap();
         if let Some(run) = folders.get(space_id).and_then(|folder| folder.run.as_ref()) {
             run.requests.notify_one();
@@ -1667,8 +1658,6 @@ impl Driver {
         self.restart_with(folder, Some(lift)).await
     }
 
-    /// Stops the task of the folder at `folder`, applies `lift` to its store once the task has ended, and starts
-    /// a new task.
     async fn restart_with(
         &self,
         folder: &Path,
@@ -1820,7 +1809,6 @@ impl Driver {
         });
     }
 
-    /// The task that syncs `folder`, or the problem that keeps it from starting.
     fn task(
         &self,
         folder: &Folder,
@@ -1867,7 +1855,6 @@ impl Driver {
         })
     }
 
-    /// The process's one [`Auth`] for `credential`, the one this profile is signed in with.
     fn auth(&self, credential: &Credential) -> Result<Arc<Auth>, ApiError> {
         let mut slot = self.inner.auth.lock().unwrap();
         if let Some(auth) = slot.as_ref() {
@@ -1979,8 +1966,6 @@ pub(crate) fn check_placement(
     Ok(())
 }
 
-/// Whether `inner` is `outer` or lies under it: by path, or because one of `inner`'s existing ancestors is the same
-/// folder as `outer`.
 fn holds(outer: &Path, inner: &Path) -> bool {
     if inner.starts_with(outer) {
         return true;
@@ -1994,7 +1979,6 @@ fn holds(outer: &Path, inner: &Path) -> bool {
         .any(|dir| dir.dev() == outer.dev() && dir.ino() == outer.ino())
 }
 
-/// The linked folder at `folder`, by the path it was linked at or by the folder that path leads to now.
 fn find<'a>(
     folders: &'a mut BTreeMap<String, Folder>,
     folder: &Path,
@@ -2044,7 +2028,6 @@ fn folder_status(
     }
 }
 
-/// Every store under the profile's spaces directory that records a link, with the folder's status.
 fn load_folders(paths: &Paths) -> Result<BTreeMap<String, Folder>, DriverError> {
     Ok(read_folders(paths, |path| Store::open(path))?
         .into_iter()
@@ -2065,8 +2048,6 @@ fn load_folders(paths: &Paths) -> Result<BTreeMap<String, Folder>, DriverError> 
         .collect())
 }
 
-/// The link and the status of every store under the profile's spaces directory that records a link, each store opened
-/// with `open`.
 fn read_folders(
     paths: &Paths,
     open: impl Fn(&Path) -> Result<Store, koidrive_store::Error>,
@@ -2187,12 +2168,6 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// Revokes the credential's own device on the server. An answer that another device already revoked it counts as
-/// revoked. Without `confirm_last_device`, any HTTP 409 is the server's refusal to revoke the user's last active device,
-/// [`DriverError::LastDevice`], whatever its body, and any other failure, including no answer within [`SERVER_WAIT`],
-/// is [`DriverError::NotRevoked`]. With it, every failure, a 409 included, is logged and the device stays active on the
-/// server until another device revokes it.
-/// An [`Auth`] that owns the profile's credential files and rotates the refresh credential they hold.
 fn rotating_auth(
     paths: &Paths,
     stored: &StoredCredential,
@@ -2216,6 +2191,11 @@ struct RevokeFailure {
     definitive: bool,
 }
 
+/// Revokes the credential's own device on the server. An answer that another device already revoked it counts as
+/// revoked. Without `confirm_last_device`, any HTTP 409 is the server's refusal to revoke the user's last active device,
+/// [`DriverError::LastDevice`], whatever its body, and any other failure, including no answer within [`SERVER_WAIT`],
+/// is [`DriverError::NotRevoked`]. With it, every failure, a 409 included, is logged and the device stays active on the
+/// server until another device revokes it.
 async fn revoke(
     credential: &Credential,
     auth: Result<Arc<Auth>, ApiError>,
@@ -2332,7 +2312,6 @@ mod tests {
         driver
     }
 
-    /// A profile with one linked folder whose store holds `questions`.
     fn profile(questions: &[Question]) -> (tempfile::TempDir, Paths, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
@@ -3054,10 +3033,8 @@ mod tests {
         driver.stop().await;
     }
 
-    /// A server address nobody answers.
     const NOWHERE: &str = "http://127.0.0.1:9/";
 
-    /// Pairs the profile at `paths` as `device_id` with a server nobody answers.
     fn paired(paths: &Paths, device_id: &str) {
         Credential {
             server: NOWHERE.into(),
@@ -3067,13 +3044,11 @@ mod tests {
         .unwrap();
     }
 
-    /// Pairs the profile at `paths` as `device_id` and links `root` as a folder that passes its root check.
     fn linked(paths: &Paths, root: &Path, device_id: &str) {
         paired(paths, device_id);
         linked_to(paths, root, device_id, SPACE);
     }
 
-    /// Links `root` for the paired `device_id` as a folder of `space_id` that passes its root check.
     fn linked_to(paths: &Paths, root: &Path, device_id: &str, space_id: &str) {
         fs::create_dir_all(root).unwrap();
         write_marker(
@@ -3114,7 +3089,6 @@ mod tests {
         }
     }
 
-    /// Waits until the folder of `driver` halts, and returns its problem.
     async fn halted(driver: &Driver) -> String {
         eventually("the folder halts", || {
             driver.status().folders[0].state == FolderState::Halted
@@ -3350,8 +3324,6 @@ mod tests {
         driver.stop().await;
     }
 
-    /// The observer's first observation fails, and the pause after it lasts a day, so a stop that waits it out never
-    /// returns, and a stop that leaves the observer's thread in it leaves the folder locked.
     #[tokio::test]
     async fn stopping_does_not_wait_out_the_observers_pause_after_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -3476,7 +3448,6 @@ mod tests {
         driver.stop().await;
     }
 
-    /// Reads one HTTP request and returns its path and its body.
     async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
         use tokio::io::AsyncReadExt;
 
@@ -3517,8 +3488,6 @@ mod tests {
         socket.write_all(reply).await.unwrap();
     }
 
-    /// Serves one request on a loopback port with `reply`, a protobuf body, and returns the server's address and
-    /// what the request was: its path and its body.
     async fn serve_once(reply: Vec<u8>) -> (String, tokio::task::JoinHandle<(String, Vec<u8>)>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server = format!("http://{}/", listener.local_addr().unwrap());
@@ -3531,18 +3500,12 @@ mod tests {
         (server, served)
     }
 
-    /// A request the server has read and not answered yet.
     struct Held {
-        /// Fires once the last request has arrived.
         arrived: tokio::sync::oneshot::Receiver<()>,
-        /// Lets the server answer it.
         release: tokio::sync::oneshot::Sender<()>,
-        /// The paths of the requests, once all are answered.
         served: tokio::task::JoinHandle<Vec<String>>,
     }
 
-    /// Serves one request per entry of `replies` on a loopback port, in order, and holds the answer to the last one
-    /// until it is released.
     async fn serve_held(replies: Vec<Vec<u8>>) -> (String, Held) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server = format!("http://{}/", listener.local_addr().unwrap());
@@ -3574,7 +3537,6 @@ mod tests {
         )
     }
 
-    /// Whether `task` is still waiting a while after it was started.
     async fn still_waiting<T>(task: &tokio::task::JoinHandle<T>) -> bool {
         tokio::time::sleep(Duration::from_millis(200)).await;
         !task.is_finished()
@@ -4181,7 +4143,6 @@ mod tests {
         assert_eq!(driver.status().account.unwrap().device_id, "d2");
     }
 
-    /// Every file and folder under `dir` with its modification time and contents, to show that nothing changed.
     fn snapshot(dir: &Path) -> Vec<(PathBuf, SystemTime, Vec<u8>)> {
         let mut found = Vec::new();
         let mut todo = vec![dir.to_path_buf()];
@@ -4252,8 +4213,6 @@ mod tests {
         assert_eq!(status.folders.len(), 1);
     }
 
-    /// Serves one request per entry of `replies`, an HTTP status and a protobuf body, on a loopback port, in order,
-    /// and returns each request's path with whether `credential` still existed when the request arrived.
     async fn serve_each(
         replies: Vec<(u16, Vec<u8>)>,
         credential: PathBuf,
@@ -4289,7 +4248,6 @@ mod tests {
         (200, prost::Message::encode_to_vec(&token))
     }
 
-    /// The server's refusal to revoke the user's last active device without a confirmation.
     fn last_device_refused() -> (u16, Vec<u8>) {
         let refusal = koidrive_proto::v1::Error {
             code: koidrive_proto::v1::error::Code::ConfirmationRequired.into(),
@@ -4299,7 +4257,6 @@ mod tests {
         (409, prost::Message::encode_to_vec(&refusal))
     }
 
-    /// A profile in `base` paired as `d1` with the server at `server`, with a folder linked at `base/Koidrive`.
     fn linked_with_server(base: &Path, server: String) -> Paths {
         let paths = Paths::under(&base.join("profile"));
         linked(&paths, &base.join("Koidrive"), "d1");
@@ -5576,8 +5533,6 @@ mod tests {
         assert!(!paths.credential().exists());
     }
 
-    /// Answers a token request, then answers the revocation with `raw`, the bytes of an HTTP response, and keeps that
-    /// connection open until the test ends if `hold` is set.
     async fn revocation_answered_with(raw: &'static [u8], hold: bool) -> String {
         use tokio::io::AsyncWriteExt;
 
@@ -5866,7 +5821,6 @@ mod tests {
         assert!(!store_dir.exists());
     }
 
-    /// Holds the observer of a folder inside its first matcher call until it is opened or dropped.
     struct Gate(Arc<(Mutex<bool>, std::sync::Condvar)>);
 
     impl Gate {
@@ -5900,7 +5854,6 @@ mod tests {
         }
     }
 
-    /// A started driver whose one folder's observer is paused, holding the folder's lock, until the gate opens.
     async fn paused_driver(paths: &Paths, root: &Path) -> (Driver, Gate) {
         linked(paths, root, "d1");
         fs::write(root.join("file"), b"mine").unwrap();
@@ -5916,13 +5869,10 @@ mod tests {
         (driver, Gate(gate))
     }
 
-    /// Whether this process could lock `root` now, which it cannot while a folder task holds it.
     fn lockable(root: &Path) -> bool {
         claim::lock(root).unwrap().is_some()
     }
 
-    /// Checks that signing out finished: no account, no folders, no running tasks, nothing left in the profile or
-    /// the folder.
     fn signed_out(driver: &Driver, paths: &Paths, root: &Path) {
         let status = driver.status();
         assert_eq!(status.account, None);
@@ -6473,7 +6423,6 @@ mod tests {
         );
     }
 
-    /// Serves one request per entry of `replies`, in order, and returns each request's path and body.
     async fn serve_recorded(
         replies: Vec<(u16, Vec<u8>)>,
     ) -> (String, tokio::task::JoinHandle<Vec<(String, Vec<u8>)>>) {
@@ -6498,7 +6447,6 @@ mod tests {
         (server, served)
     }
 
-    /// A token answer of a server with RFC 0011, at server time `server_time_ms`.
     fn rotation_answer(server_time_ms: i64, rotated: bool) -> (u16, Vec<u8>) {
         let token = koidrive_proto::v1::AccessToken {
             token: "token".into(),
@@ -6995,7 +6943,6 @@ mod tests {
         ));
     }
 
-    /// A node or version ID as the server gives it.
     fn server_id(n: u128) -> String {
         koidrive_engine::ids::uuid_v7(1, n)
     }
@@ -7032,7 +6979,6 @@ mod tests {
         assert!(first < second, "the IDs sort in request order");
         drop(driver);
 
-        // Nothing ran the engine in between: the driver was stopped the whole time.
         let driver = Driver::open(paths).unwrap();
         let pending = |id: &str, request: &RestoreRequest| RestoreStatus {
             id: id.to_owned(),
@@ -7136,8 +7082,6 @@ mod tests {
             ),
             (Outcome::DoesNotFit, RestoreState::DoesNotFit),
         ];
-        // The engine's side of the store, as the folder task saves it: one restore queued, the rest ended, the
-        // newest first by ID so that the listed order is the order they ended in.
         let mut state = koidrive_store::EngineState::default();
         state.commits.restores.insert("queued".into(), intent(8));
         for (n, (outcome, _)) in outcomes.iter().enumerate() {
@@ -7249,9 +7193,6 @@ mod tests {
         }
     }
 
-    /// A running folder takes a request when it is recorded, without a restart. Nothing listens at the server's
-    /// address, so the folder stays offline, and the request is then queued in the engine and no longer in the
-    /// inbox.
     #[tokio::test]
     async fn a_restore_asked_for_while_the_folder_runs_reaches_its_engine() {
         let dir = tempfile::tempdir().unwrap();
@@ -7309,8 +7250,6 @@ mod tests {
 
         let (_dir, paths, _root) = profile(&[]);
         let driver = Driver::open(paths.clone()).unwrap();
-        // The engine's side of the store: the server refused a change to node 1, which is a problem since, and
-        // the engine holds a restore of an earlier version of it and a restore of node 2.
         let mut state = koidrive_store::EngineState::default();
         state.commits.problems.insert(server_id(1));
         let held = RestoreIntent::version(server_id(1), server_id(40)).unwrap();
@@ -7322,7 +7261,6 @@ mod tests {
             .unwrap()
             .transaction(|tx| tx.set_engine_state(&state))
             .unwrap();
-        // A request the engine has not taken yet waits for the same reason.
         let asked = driver.restore(SPACE, from_trash(1), None).unwrap();
 
         let listed = driver.restores(SPACE).unwrap();
@@ -7345,8 +7283,6 @@ mod tests {
         );
     }
 
-    /// A mass-delete question stored before questions kept the limits they crossed names the
-    /// limits its counts cross, or the deletions limit when they cross none.
     #[test]
     fn a_question_stored_without_its_limits_names_them() {
         let decoded = |deletions, affected_files, space_files| {

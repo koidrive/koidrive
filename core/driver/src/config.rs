@@ -129,7 +129,7 @@ impl TryFrom<i64> for UploadConcurrency {
     }
 }
 
-/// This device's own selective sync (H13 of reports/BOX-71), applied to every folder the profile links. It saves
+/// This device's own selective sync, applied to every folder the profile links. It saves
 /// bandwidth and disk, not access: the server still sends this device every name in the space, and its credential
 /// can still read everything.
 ///
