@@ -44,7 +44,7 @@ brew tap-new --no-git "$tap"
 repository=$(brew --repository "$tap")
 mkdir -p "$repository/Casks"
 build=100
-for version in 0.1.0-alpha.2 0.1.0-alpha.3 0.1.0-rc.1 0.1.0; do
+for version in 0.1.0-alpha.2 0.1.0-alpha.3 0.1.0-rc.1 0.1.0 0.1.1; do
     build=$((build + 1))
     tag=v$version
     release=$releases/download/$tag
@@ -96,13 +96,22 @@ PY
     if [ "$build" -eq 101 ]; then
         brew install --cask --appdir="$tmp/Applications" "$token"
     else
-        /usr/libexec/PlistBuddy -c "Set CFBundleShortVersionString ${version%%-*}" -c "Set CFBundleVersion $build" -c "Set KoidriveVersion $version" \
-            "$tmp/Applications/Koidrive.app/Contents/Info.plist"
+        installed=$tmp/Applications/Koidrive.app/Contents/Info.plist
+        if [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$installed")" != "${version%%-*}" ]; then
+            plain=$(brew outdated --cask "$token") || true
+            if ! grep -q koidrive <<< "$plain"; then
+                echo "FAIL Homebrew does not compare the app bundle's version with the cask's $version" >&2
+                exit 1
+            fi
+        fi
+        cp -p "$installed" "$tmp/installed.plist"
+        /usr/libexec/PlistBuddy -c "Set CFBundleShortVersionString ${version%%-*}" -c "Set CFBundleVersion $build" -c "Set KoidriveVersion $version" "$installed"
         plain=$(brew outdated --cask "$token") || true
         if grep -q koidrive <<< "$plain"; then
             echo "FAIL Homebrew replaces a self-updating app whose bundle already has the cask's version" >&2
             exit 1
         fi
+        cp -p "$tmp/installed.plist" "$installed"
         status=0
         outdated=$(brew outdated --cask --greedy "$token") || status=$?
         if [ "$status" -ne 1 ] || ! grep -q koidrive <<< "$outdated"; then
@@ -134,4 +143,4 @@ brew uninstall --cask --zap "$token"
 [ "$(grep -cx unregistered "$tmp/zap.log")" = 1 ] || { echo 'FAIL zap did not unregister once before removing the app' >&2; exit 1; }
 [[ ! -e "$tmp/Applications/Koidrive.app" && ! -L "$(brew --prefix)/bin/koi" ]] || { echo 'FAIL zap left the app or CLI link' >&2; exit 1; }
 echo 'PASS zap unregisters before app removal'
-echo 'Passed 7 Homebrew cask install tests'
+echo 'Passed 8 Homebrew cask install tests'
