@@ -597,6 +597,41 @@ private let fourVersions = [
         #expect(app.folder(containing: folderAlias.appending(path: "New.key")) == folder)
     }
 
+    @Test func aFinderAliasWhoseOriginalIsGoneIsInNoFolder() throws {
+        let (app, base, root, _) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = base.appending(path: "Gone.key")
+        try Data("gone".utf8).write(to: target)
+        let alias = root.appending(path: "Docs/Gone alias")
+        try URL.writeBookmarkData(target.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+        try FileManager.default.removeItem(at: target)
+
+        #expect(app.folder(containing: alias) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(alias))
+        #expect(VersionHistoryModel(app: app, file: alias, clock: halfPastMidnight).folder == nil)
+    }
+
+    @Test func aLinkedFolderReachedThroughALinkFollowsItWhenLinkedAgain() throws {
+        let (app, base, _, _) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = base.appending(path: "First")
+        let second = base.appending(path: "Second")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        let link = base.appending(path: "Current")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let folder = LinkedFolder(spaceId: "space-current", spaceName: "Current", path: link.path(percentEncoded: false), state: .upToDate)
+        app.apply(.folders(folders: [folder]))
+        #expect(app.folder(containing: first.appending(path: "Plan.key")) == folder)
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        app.apply(.folders(folders: []))
+        app.apply(.folders(folders: [folder]))
+        #expect(app.folder(containing: second.appending(path: "Plan.key")) == folder)
+        #expect(app.folder(containing: first.appending(path: "Plan.key")) == nil)
+    }
+
     @Test func aPathBelongsToTheLinkedFolderThatHoldsItsRealFile() throws {
         let (app, base, root, folder) = try linkedTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: base) }

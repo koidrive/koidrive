@@ -82,7 +82,9 @@ public final class AppModel {
         case .status(let status): state.status = status
         case .progress(let progress): state.progress = progress
         case .account(let account): state.account = account
-        case .folders(let folders): state.folders = folders
+        case .folders(let folders):
+            if folders.map(\.path) != state.folders.map(\.path) { realRoots.removeAll() }
+            state.folders = folders
         case .recentChanges(let changes): state.recentChanges = changes
         case .questions(let questions): replaceQuestions(questions)
         case .problems(let problems): state.problems = problems

@@ -92,10 +92,10 @@ extension URL {
                 continue
             }
             let item = URL(filePath: existing)
-            guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true,
-                  let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else {
+            guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true else {
                 return joined(existing, rest)
             }
+            guard let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else { return nil }
             path = joined(plainPath(target), rest)
         }
         return nil
