@@ -140,6 +140,27 @@ fn a_file_left_out_of_commits_hides_no_other_problem() {
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(problem.contains("notes.txt"), "{problem}");
     assert!(problem.contains("secret.txt"), "{problem}");
+    assert!(problem.contains("run koi folder restart"), "{problem}");
+}
+
+#[test]
+fn a_left_out_file_alone_asks_for_no_restart() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let secret = site.root.join("secret.txt");
+    fs::write(&secret, b"first").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+
+    fs::write(&secret, b"second version").unwrap();
+    leave_out_until_the_upload_fails(&mut a, &mut remote, &secret);
+    let problem = a.folder.view().problem.unwrap_or_default();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(problem.contains("secret.txt"), "{problem}");
+    assert!(problem.contains("trying again at"), "{problem}");
+    assert!(!problem.contains("restart"), "{problem}");
 }
 
 #[test]
