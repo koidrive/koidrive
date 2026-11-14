@@ -729,7 +729,7 @@ impl Terminal {
                 }
                 serde_json::from_slice::<Result<Answer, PromptFailure>>(&output).map_err(|_| {
                     PromptFailure::Io("the terminal helper returned an invalid answer".into())
-                })?
+                })
             };
             let (ready, rendered) = oneshot::channel();
             let completion = async {
@@ -739,7 +739,7 @@ impl Terminal {
                         .await
                         .map_err(PromptFailure::from)
                 })
-                .map(|(answer, ())| answer)
+                .map(|(answer, ())| answer)?
             };
             tokio::pin!(completion);
             let input = bridge.forward(rendered);

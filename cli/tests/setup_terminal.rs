@@ -2009,7 +2009,10 @@ fn a_name_clash_does_not_choose_between_duplicate_names() {
         let output = home.setup(&[], &["--telemetry", "off"], &[], true, rich, None);
         let text = shown(output.clone());
         assert!(!output.status.success(), "{text}");
-        assert!(text.contains("several spaces are called"), "{text}");
+        assert!(
+            text.contains("Several spaces have that name. Run koi space list and use the ID of the space you want."),
+            "{text}"
+        );
         assert!(home.links().is_empty());
         assert_eq!(home.spaces.lock().unwrap().len(), 2);
     }
