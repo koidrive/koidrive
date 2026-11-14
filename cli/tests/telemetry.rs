@@ -466,7 +466,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
 #[test]
 fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade() {
     use koidrive_telemetry::schema::{Event, SourceFile};
-    use koidrive_telemetry::{Pending, Store};
+    use koidrive_telemetry::{EventUuid, Pending, Store};
     use serde_json::{Value, json};
 
     let home = tempfile::tempdir().unwrap();
@@ -617,7 +617,8 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
                 "{body}"
             );
             for event in body["batch"].as_array().unwrap() {
-                assert!(event["uuid"].is_string(), "{event}");
+                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
+                assert!(EventUuid::try_from(uuid).is_ok(), "{event}");
             }
         }
         requests
