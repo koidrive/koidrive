@@ -135,6 +135,7 @@ async fn pair_and_claim_read_codes_from_stdin_or_positional_arguments() {
                         _ => Response::Error {
                             code: Code::WrongCode,
                             message: "the code is wrong or has expired".into(),
+                            reason: None,
                             next: Vec::new(),
                         },
                     };
@@ -336,6 +337,42 @@ fn errors_are_envelopes_with_their_code_and_exit_status() {
     let (code, envelope) = profile.json(&["status", "--json=2"]);
     assert_eq!(code, 2, "{envelope:#}");
     assert_eq!(envelope["error"]["code"], "usage");
+}
+
+#[test]
+fn a_share_password_is_the_first_line_of_stdin_and_a_short_one_names_its_reason() {
+    use std::io::Write;
+
+    let profile = Profile::new();
+    let file = profile.home.path().join("report.docx");
+    let share = |stdin: &str| {
+        let mut child = (profile.command(&["--json", "share", "create", "--password", "--"]))
+            .arg(&file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        schema::check(&envelope);
+        (output.status.code().unwrap(), envelope)
+    };
+
+    let (code, envelope) = share("short\nlong enough password\n");
+    assert_eq!(code, 2, "{envelope:#}");
+    assert_eq!(envelope["error"]["code"], "usage");
+    assert_eq!(envelope["error"]["reason"], "password_length");
+
+    let (code, envelope) = share("long enough password\nshort\n");
+    assert_eq!(code, 4, "{envelope:#}");
+    assert_eq!(envelope["error"]["code"], "auth_required");
+    assert!(envelope["error"].get("reason").is_none(), "{envelope:#}");
 }
 
 #[test]

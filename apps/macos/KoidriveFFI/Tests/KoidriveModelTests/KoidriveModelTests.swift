@@ -497,6 +497,38 @@ private final class Fetches {
         let folder = try documents(model)
         await #expect(throws: SessionError.PathIsLinkedFolder) { try await model.versions(of: folder) }
     }
+
+    @Test func aNewLinkIsListedWithoutItsURLAndARevokedOneStaysListed() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let seeded = try await model.shareLinks()
+        #expect(seeded.map(\.state) == [.active, .active, .active, .expired, .revoked])
+        #expect(seeded.filter { $0.itemURL == nil }.count == 1)
+
+        let file = try documents(model).appending(path: "Reports/Q3.docx")
+        let new = try await model.createShareLink(for: file, expiry: .day, password: "eight888")
+        #expect(new.url.hasPrefix("https://box.example.com/s/"))
+        #expect(new.link.itemURL == file)
+        #expect(new.link.hasPassword)
+        let listed = try await model.shareLinks()
+        #expect(listed.first == new.link)
+        #expect(listed.count == seeded.count + 1)
+
+        let revoked = try await model.revoke(new.link)
+        #expect(revoked.id == new.link.id)
+        #expect(revoked.state == .revoked)
+        #expect(try await model.shareLinks().first?.state == .revoked)
+    }
+
+    @Test func aShareLinkIsRefusedOutsideALinkedFolderOrWithAShortPassword() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let elsewhere = FileManager.default.temporaryDirectory.appending(path: "Elsewhere/a.docx")
+        let refused = SessionError.PathNotInLinkedFolder(path: elsewhere.path(percentEncoded: false))
+        await #expect(throws: refused) { try await model.createShareLink(for: elsewhere, expiry: .week, password: nil) }
+        let file = try documents(model).appending(path: "Notes.txt")
+        await #expect(throws: SessionError.PasswordLength) {
+            try await model.createShareLink(for: file, expiry: .month, password: "short")
+        }
+    }
 }
 
 @MainActor

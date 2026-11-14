@@ -209,6 +209,18 @@ impl From<DriverError> for CliError {
             DriverError::AnswerNotAllowed { .. } => {
                 CliError::usage(message).then(&["koi", "resolve", "--json"])
             }
+            DriverError::OutsideLinkedFolders(_) => {
+                CliError::usage(message).because(Reason::NotInLinkedFolder)
+            }
+            DriverError::PathNotFound(_) => CliError::usage(message).because(Reason::NotFound),
+            DriverError::NotOnServer(_) => CliError::usage(message).because(Reason::NotOnServer),
+            DriverError::PasswordLength => CliError::usage(message).because(Reason::PasswordLength),
+            DriverError::NotAShareLink | DriverError::ShareLinkNotFound => {
+                CliError::usage(message).because(Reason::NoSuchLink)
+            }
+            DriverError::ShareLinkLimit => CliError::new(Code::Failed, message)
+                .because(Reason::ShareLinkLimit)
+                .then(&["koi", "share", "list"]),
             DriverError::UnlinkUnfinished(folder) => CliError::usage(message).then(&[
                 "koi",
                 "folder",
@@ -235,12 +247,6 @@ impl From<DriverError> for CliError {
             | DriverError::UnsupportedFileSystem
             | DriverError::NothingToLift
             | DriverError::RelativePath(_)
-            | DriverError::OutsideLinkedFolders(_)
-            | DriverError::PathNotFound(_)
-            | DriverError::NotOnServer(_)
-            | DriverError::PasswordLength
-            | DriverError::NotAShareLink
-            | DriverError::ShareLinkNotFound
             | DriverError::ShareLinkAmbiguous(_)
             | DriverError::Paths(PathsError::BadSpaceId(_))
             | DriverError::Config(ConfigError::Invalid { .. }) => CliError::usage(message),
@@ -483,5 +489,35 @@ mod tests {
                 .message
                 .starts_with("cannot read the bucket fb: could not")
         );
+    }
+
+    #[test]
+    fn each_share_refusal_names_its_reason() {
+        let path = || PathBuf::from("/home/ada/Documents/report.docx");
+        for (error, reason) in [
+            (
+                DriverError::OutsideLinkedFolders(path()),
+                Reason::NotInLinkedFolder,
+            ),
+            (DriverError::PathNotFound(path()), Reason::NotFound),
+            (DriverError::NotOnServer(path()), Reason::NotOnServer),
+            (DriverError::PasswordLength, Reason::PasswordLength),
+            (DriverError::ShareLinkNotFound, Reason::NoSuchLink),
+            (DriverError::NotAShareLink, Reason::NoSuchLink),
+        ] {
+            let message = error.to_string();
+            let refused = CliError::from(error);
+            assert_eq!(
+                (refused.code, refused.reason, refused.message),
+                (Code::Usage, Some(reason), message)
+            );
+        }
+        let full = CliError::from(DriverError::ShareLinkLimit);
+        assert_eq!(
+            (full.code, full.reason),
+            (Code::Failed, Some(Reason::ShareLinkLimit))
+        );
+        let ambiguous = CliError::from(DriverError::ShareLinkAmbiguous("0123456789".into()));
+        assert_eq!((ambiguous.code, ambiguous.reason), (Code::Usage, None));
     }
 }

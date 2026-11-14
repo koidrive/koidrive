@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::sync::{Mutex, MutexGuard};
@@ -8,11 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::{Core, Events, pairing_code};
 use crate::types::{
     Account, Answer, ChangeKind, DeletedItem, Device, Direction, FileVersion, FileVersions,
-    FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit, NodeKind, Notice,
-    NoticeKind, PairingCode, Problem, ProblemKind, Question, QuestionKind, RECENT_CHANGES,
-    RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger, RestoreAsked, RestoreRequest,
-    RestoreState, RestoreTarget, ServerInfo, SessionError, SessionEvent, SessionState, Space,
-    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash,
+    FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit, NewShareLink,
+    NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind, Question, QuestionKind,
+    RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger, RestoreAsked,
+    RestoreRequest, RestoreState, RestoreTarget, ServerInfo, SessionError, SessionEvent,
+    SessionState, ShareExpiry, ShareLink, ShareState, Space, SpaceUsage, SyncProgress, SyncStatus,
+    TelemetrySetting, Trash,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -38,7 +40,9 @@ pub enum FakeScenario {
     /// A fresh install: no server, no account, no folders, and the server is not claimed yet.
     FirstRun,
     /// Up to date, with a few recent changes. Documents has three deletions in its trash and a file with three
-    /// versions, `Reports/Annual Report.docx`.
+    /// versions, `Reports/Annual Report.docx`. The account has five share links, newest first: two that work, the
+    /// newer with a password; one that works to an item that is gone; one expired; one revoked. A new link to a name
+    /// with an extension is a file's, any other a folder's.
     UpToDate,
     /// Syncing, with progress and recent changes.
     Syncing,
@@ -88,6 +92,7 @@ struct Saved {
     paused: bool,
     next_id: u64,
     history: BTreeMap<String, History>,
+    share_links: Vec<ShareLink>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -598,6 +603,15 @@ impl FakeCore {
         })
     }
 
+    /// Replaces the account's share links.
+    pub fn set_share_links(&self, links: Vec<ShareLink>) -> Result<(), SessionError> {
+        self.update(&mut self.lock(), &[], |saved| {
+            saved.share_links = links;
+            (saved.share_links).sort_by_key(|link| Reverse(link.created_at_ms));
+            Ok(())
+        })
+    }
+
     /// Makes the next call that can fail return `error` instead.
     pub fn fail_next(&self, error: SessionError) {
         self.lock().fail_next = Some(error);
@@ -1020,6 +1034,77 @@ impl Core for FakeCore {
         Ok((state.saved.history.get(&folder.space_id))
             .map(|history| history.requests.clone())
             .unwrap_or_default())
+    }
+
+    fn share_links(&self) -> Result<Vec<ShareLink>, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        state.saved.account()?;
+        Ok(state.saved.share_links.clone())
+    }
+
+    fn create_share_link(
+        &self,
+        path: &str,
+        expiry: ShareExpiry,
+        password: Option<String>,
+    ) -> Result<NewShareLink, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        if (password.as_ref())
+            .is_some_and(|password| !(8..=256).contains(&password.chars().count()))
+        {
+            return Err(SessionError::PasswordLength);
+        }
+        self.update(&mut state, &[], |saved| {
+            let server = saved.account()?.server_url.clone();
+            let (folder, below) = located(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let deleted = (saved.history.get(&space_id).into_iter())
+                .flat_map(|history| &history.trash)
+                .any(|item| Path::new(&below).starts_with(&item.path));
+            if deleted {
+                return Err(SessionError::NothingAtPath);
+            }
+            let kind = match Path::new(&below).extension() {
+                Some(_) => NodeKind::File,
+                None => NodeKind::Folder,
+            };
+            let days = match expiry {
+                ShareExpiry::Day => 1,
+                ShareExpiry::Week => 7,
+                ShareExpiry::Month => 30,
+            };
+            let now = now_ms();
+            let link = ShareLink {
+                id: saved.next_id("link"),
+                folder: Some(folder),
+                path: Some(below),
+                kind: Some(kind),
+                created_at_ms: now,
+                expires_at_ms: Some(now + days * 86_400_000),
+                has_password: password.is_some(),
+                state: ShareState::Active,
+            };
+            saved.share_links.insert(0, link.clone());
+            Ok(NewShareLink {
+                url: format!("{server}/s/{}", link.id),
+                link,
+            })
+        })
+    }
+
+    fn revoke_share_link(&self, link_id: &str) -> Result<ShareLink, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        self.update(&mut state, &[], |saved| {
+            saved.account()?;
+            let link = (saved.share_links.iter_mut())
+                .find(|link| link.id == link_id)
+                .ok_or(SessionError::ShareLinkNotFound)?;
+            link.state = ShareState::Revoked;
+            Ok(link.clone())
+        })
     }
 
     fn answer(&self, question_id: &str, answer: Answer) -> Result<(), SessionError> {
@@ -2030,5 +2115,161 @@ mod tests {
             listed(&documents)[2],
             (budget.request_id, RestoreState::Restored)
         );
+    }
+
+    #[test]
+    fn up_to_date_has_links_in_every_state_newest_first() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let links = h.core.share_links().unwrap();
+        let shown: Vec<(ShareState, bool, bool)> = (links.iter())
+            .map(|link| (link.state, link.has_password, link.path.is_some()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (ShareState::Active, true, true),
+                (ShareState::Active, false, true),
+                (ShareState::Active, false, false),
+                (ShareState::Expired, false, true),
+                (ShareState::Revoked, false, true),
+            ]
+        );
+        assert!(links.is_sorted_by_key(|link| Reverse(link.created_at_ms)));
+        assert!((links.iter()).all(|link| link.path.is_some() == link.kind.is_some()));
+    }
+
+    #[test]
+    fn a_new_link_needs_a_path_in_a_linked_folder_and_a_password_of_8_to_256_characters() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let at = |below: &str| format!("{documents}/{below}");
+        let share = |path: &str, password: Option<&str>| {
+            (h.core).create_share_link(path, ShareExpiry::Week, password.map(str::to_owned))
+        };
+
+        assert_eq!(
+            share("/elsewhere/a.docx", None),
+            Err(SessionError::PathNotInLinkedFolder {
+                path: "/elsewhere/a.docx".into()
+            })
+        );
+        assert_eq!(
+            share("Documents/a.docx", None),
+            Err(SessionError::PathNotInLinkedFolder {
+                path: "Documents/a.docx".into()
+            })
+        );
+        assert_eq!(
+            share(&at("Q3 Budget.xlsx"), None),
+            Err(SessionError::NothingAtPath)
+        );
+        assert_eq!(
+            share(&at("Old Slides/Intro.pptx"), None),
+            Err(SessionError::NothingAtPath)
+        );
+        for password in ["seven77", &"x".repeat(257)] {
+            assert_eq!(
+                share(&at("Notes.txt"), Some(password)),
+                Err(SessionError::PasswordLength)
+            );
+        }
+        assert_eq!(h.core.share_links().unwrap().len(), 5);
+
+        let file = share(&at("Reports/Q3.docx"), Some("eight888")).unwrap();
+        let longest = "가".repeat(256);
+        let folder = (h.core)
+            .create_share_link(&documents, ShareExpiry::Day, Some(longest))
+            .unwrap();
+        assert!(file.url.starts_with("https://box.example.com/s/"));
+        assert_eq!(
+            (
+                file.link.folder.as_deref(),
+                file.link.path.as_deref(),
+                file.link.kind,
+                file.link.has_password,
+                file.link.state,
+            ),
+            (
+                Some(documents.as_str()),
+                Some("Reports/Q3.docx"),
+                Some(NodeKind::File),
+                true,
+                ShareState::Active,
+            )
+        );
+        let week = file.link.expires_at_ms.unwrap() - file.link.created_at_ms;
+        assert_eq!(week, 7 * 86_400_000);
+        assert_eq!(
+            (folder.link.path.as_deref(), folder.link.kind),
+            (Some(""), Some(NodeKind::Folder))
+        );
+        let day = folder.link.expires_at_ms.unwrap() - folder.link.created_at_ms;
+        assert_eq!(day, 86_400_000);
+        let links = h.core.share_links().unwrap();
+        assert_eq!(links.len(), 7);
+        assert!(links[..2].contains(&file.link) && links[..2].contains(&folder.link));
+    }
+
+    #[test]
+    fn a_revoked_link_stays_listed_as_revoked() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let link = h.core.share_links().unwrap().remove(0);
+
+        let revoked = h.core.revoke_share_link(&link.id).unwrap();
+        assert_eq!(
+            revoked,
+            ShareLink {
+                state: ShareState::Revoked,
+                ..link.clone()
+            }
+        );
+        assert_eq!(h.core.revoke_share_link(&link.id).unwrap(), revoked);
+        assert_eq!(h.core.share_links().unwrap()[0], revoked);
+        assert_eq!(
+            h.core.revoke_share_link("link-unknown"),
+            Err(SessionError::ShareLinkNotFound)
+        );
+    }
+
+    #[test]
+    fn a_scripted_failure_reaches_every_share_call_and_links_can_be_staged() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let offline = || SessionError::ServerUnreachable {
+            reason: "offline".into(),
+        };
+
+        h.core.fail_next(offline());
+        assert_eq!(h.core.share_links(), Err(offline()));
+        h.core.fail_next(offline());
+        assert_eq!(
+            h.core.create_share_link(&documents, ShareExpiry::Day, None),
+            Err(offline())
+        );
+        h.core.fail_next(offline());
+        assert_eq!(h.core.revoke_share_link("link-report"), Err(offline()));
+        assert_eq!(h.core.share_links().unwrap().len(), 5);
+
+        let staged = |id: &str, created_at_ms| ShareLink {
+            id: id.into(),
+            folder: None,
+            path: None,
+            kind: None,
+            created_at_ms,
+            expires_at_ms: Some(created_at_ms + 1),
+            has_password: false,
+            state: ShareState::Expired,
+        };
+        h.core
+            .set_share_links(vec![staged("older", 1), staged("newer", 2)])
+            .unwrap();
+        let ids: Vec<String> = (h.core.share_links().unwrap().into_iter())
+            .map(|link| link.id)
+            .collect();
+        assert_eq!(ids, ["newer", "older"]);
     }
 }

@@ -2095,6 +2095,32 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
     let unknown = machine.fails(&["share", "revoke", "0123456789"]);
     assert!(unknown.contains("no share link"), "{unknown}");
 
+    let listed = machine.data(&["share", "list"]);
+    let here = (listed["links"].as_array().unwrap().iter())
+        .filter(|link| link["space_id"] == space.space_id.as_str())
+        .count();
+    for _ in here..1000 {
+        (owner.api())
+            .create_share_link(
+                &owner,
+                &space.space_id,
+                &CreateShareLinkRequest {
+                    node_id: docs.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let output = machine.output(&["share", "create", plan.to_str().unwrap(), "--json"]);
+    let full: Value = serde_json::from_slice(&output.stdout).unwrap();
+    schema::check(&full);
+    assert_eq!(
+        (&full["error"]["code"], &full["error"]["reason"]),
+        (&Value::from("failed"), &Value::from("share_link_limit")),
+        "{full:#}"
+    );
+
     assert!(stop(daemon).success());
     let logged = fs::read_to_string(&log).unwrap();
     assert!(logged.contains("DEBUG"), "the daemon logged at debug level");

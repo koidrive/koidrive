@@ -3,9 +3,9 @@
 use std::sync::{Arc, Weak};
 
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, PairingCode, RestoreAsked, RestoreRequest,
-    ServerInfo, SessionError, SessionEvent, SessionState, Space, SpaceUsage, TelemetrySetting,
-    Trash,
+    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
+    RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink,
+    Space, SpaceUsage, TelemetrySetting, Trash,
 };
 
 pub(crate) fn pairing_code<'a>(text: &'a str, server_url: &str) -> Result<&'a str, SessionError> {
@@ -162,6 +162,19 @@ pub trait Core: Send + Sync {
     /// The restores asked for in the linked folder that holds absolute `path`, a linked folder or a folder inside
     /// one: first those that ended, in the order they ended, then those that wait, in request order.
     fn restore_requests(&self, path: &str) -> Result<Vec<RestoreRequest>, SessionError>;
+
+    /// Every share link of the spaces this device's user owns, newest first, ended ones included.
+    fn share_links(&self) -> Result<Vec<ShareLink>, SessionError>;
+    /// Makes a link to the file or folder at absolute `path` in a linked folder, which works for `expiry` and, with
+    /// `password`, only after that password of 8 to 256 characters is given.
+    fn create_share_link(
+        &self,
+        path: &str,
+        expiry: ShareExpiry,
+        password: Option<String>,
+    ) -> Result<NewShareLink, SessionError>;
+    /// Ends the link `link_id` at once. A link that was revoked already comes back as it is.
+    fn revoke_share_link(&self, link_id: &str) -> Result<ShareLink, SessionError>;
 
     /// Answers a question. The answer must be one of the question's
     /// [`answers`](crate::Question::answers).

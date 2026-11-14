@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use koidrive_driver::{self as driver, FolderState, Status};
 use koidrive_ipc::{Code, Next, Reason};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::types::{
-    Account, DeletedItem, Device, FileVersion, FileVersions, LinkedFolder, NodeKind, PairingCode,
-    RestoreAsked, RestoreRefusal, RestoreRequest, RestoreState, RestoreTarget, SessionError, Space,
-    SpaceUsage, Trash,
+    Account, DeletedItem, Device, FileVersion, FileVersions, LinkedFolder, NewShareLink, NodeKind,
+    PairingCode, RestoreAsked, RestoreRefusal, RestoreRequest, RestoreState, RestoreTarget,
+    SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash,
 };
 
 #[derive(Clone)]
@@ -49,13 +49,9 @@ struct Envelope {
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
     code: Code,
-    #[serde(default, deserialize_with = "known")]
+    #[serde(default, deserialize_with = "Reason::known")]
     reason: Option<Reason>,
     message: String,
-}
-
-fn known<'de, D: Deserializer<'de>>(reason: D) -> Result<Option<Reason>, D::Error> {
-    Ok(Option::<Value>::deserialize(reason)?.and_then(|reason| Reason::deserialize(reason).ok()))
 }
 
 #[derive(Debug)]
@@ -92,20 +88,27 @@ impl Refusal {
             Some(Reason::NotInLinkedFolder) => SessionError::PathNotInLinkedFolder {
                 path: path.to_owned(),
             },
-            Some(Reason::LinkedFolderItself) => SessionError::PathIsLinkedFolder,
-            Some(Reason::NotFound) => SessionError::NothingAtPath,
-            Some(Reason::IsFolder) => SessionError::PathIsFolder,
-            Some(Reason::NotDeleted) => SessionError::NotDeleted,
-            Some(Reason::NotInTrash) => SessionError::DeletedItemNotFound,
-            Some(Reason::NoSuchVersion) => SessionError::VersionNotFound,
-            Some(Reason::AlreadyCurrent) => SessionError::VersionIsCurrent,
-            Some(Reason::SeveralDeletions) | None => self.into(),
+            _ => self.into(),
         }
     }
 }
 
 impl From<Refusal> for SessionError {
     fn from(refusal: Refusal) -> Self {
+        match refusal.reason {
+            Some(Reason::LinkedFolderItself) => return SessionError::PathIsLinkedFolder,
+            Some(Reason::NotFound) => return SessionError::NothingAtPath,
+            Some(Reason::IsFolder) => return SessionError::PathIsFolder,
+            Some(Reason::NotDeleted) => return SessionError::NotDeleted,
+            Some(Reason::NotInTrash) => return SessionError::DeletedItemNotFound,
+            Some(Reason::NoSuchVersion) => return SessionError::VersionNotFound,
+            Some(Reason::AlreadyCurrent) => return SessionError::VersionIsCurrent,
+            Some(Reason::NotOnServer) => return SessionError::NotOnServer,
+            Some(Reason::PasswordLength) => return SessionError::PasswordLength,
+            Some(Reason::NoSuchLink) => return SessionError::ShareLinkNotFound,
+            Some(Reason::ShareLinkLimit) => return SessionError::ShareLinkLimit,
+            Some(Reason::NotInLinkedFolder | Reason::SeveralDeletions) | None => {}
+        }
         match refusal.code {
             Code::AuthRequired => SessionError::NotSignedIn,
             Code::WrongCode => SessionError::InvalidCode,
@@ -183,6 +186,7 @@ impl Helper {
             .map_err(|error| Refusal::failed(format!("{shown} cannot run: {error}")))?;
         let timeout = match args {
             ["status"] | ["device", "list"] | ["space", "list" | "usage"] => Duration::from_secs(5),
+            ["share", ..] => Duration::from_secs(600),
             _ => Duration::from_secs(60),
         };
         let output = finish(&mut child, input, timeout)
@@ -831,6 +835,79 @@ impl RequestsData {
                 },
             })
             .collect()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ShareLinkData {
+    id: String,
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    kind: Option<EntryKind>,
+    created_at_ms: i64,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+    has_password: bool,
+    state: ShareStateData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ShareStateData {
+    Active,
+    Expired,
+    Revoked,
+}
+
+impl ShareLinkData {
+    pub(crate) fn link(self) -> ShareLink {
+        ShareLink {
+            id: self.id,
+            folder: self.folder,
+            path: self.path,
+            kind: self.kind.map(|kind| match kind {
+                EntryKind::Folder => NodeKind::Folder,
+                EntryKind::File | EntryKind::Symlink => NodeKind::File,
+            }),
+            created_at_ms: self.created_at_ms,
+            expires_at_ms: self.expires_at_ms,
+            has_password: self.has_password,
+            state: match self.state {
+                ShareStateData::Active => ShareState::Active,
+                ShareStateData::Expired => ShareState::Expired,
+                ShareStateData::Revoked => ShareState::Revoked,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SharedData {
+    url: String,
+    #[serde(flatten)]
+    link: ShareLinkData,
+}
+
+impl SharedData {
+    pub(crate) fn shared(self) -> NewShareLink {
+        NewShareLink {
+            url: self.url,
+            link: self.link.link(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ShareLinksData {
+    links: Vec<ShareLinkData>,
+}
+
+impl ShareLinksData {
+    pub(crate) fn links(self) -> Vec<ShareLink> {
+        self.links.into_iter().map(ShareLinkData::link).collect()
     }
 }
 

@@ -313,6 +313,52 @@ pub enum RestoreRefusal {
     },
 }
 
+/// A share link without its URL, which only [`NewShareLink`] carries.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ShareLink {
+    pub id: String,
+    /// The absolute path of the linked folder that syncs the link's space on this device; none when no folder here
+    /// syncs it.
+    pub folder: Option<String>,
+    /// Where the shared file or folder is now, relative to `folder`; empty for the whole space; none when it is in
+    /// the trash or gone.
+    pub path: Option<String>,
+    /// A symbolic link counts as a file; none when the item is gone.
+    pub kind: Option<NodeKind>,
+    pub created_at_ms: i64,
+    /// None for a link that never expires.
+    pub expires_at_ms: Option<i64>,
+    pub has_password: bool,
+    pub state: ShareState,
+}
+
+/// Whether a [`ShareLink`] opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ShareState {
+    Active,
+    Expired,
+    Revoked,
+}
+
+/// How long a new share link works.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ShareExpiry {
+    /// One day.
+    Day,
+    /// Seven days.
+    Week,
+    /// Thirty days.
+    Month,
+}
+
+/// A share link just made, with its URL. The URL is in no other result, so the app shows it now or never.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct NewShareLink {
+    /// Anyone who has it can open what the link shares.
+    pub url: String,
+    pub link: ShareLink,
+}
+
 /// A folder on this device linked to a space. Each space links at most one folder, and linked
 /// folders never contain each other.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -753,6 +799,14 @@ pub enum SessionError {
     VersionNotFound,
     #[error("the version is already the file's current one")]
     VersionIsCurrent,
+    #[error("the file or folder is not on the server yet")]
+    NotOnServer,
+    #[error("a link's password has 8 to 256 characters")]
+    PasswordLength,
+    #[error("the account has no such share link")]
+    ShareLinkNotFound,
+    #[error("the space has as many active share links as the server allows")]
+    ShareLinkLimit,
     #[error("{reason}")]
     Failed { reason: String },
 }

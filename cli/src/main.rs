@@ -3020,6 +3020,7 @@ mod tests {
                 &Response::Error {
                     code: Code::Failed,
                     message: "cleanup pending".into(),
+                    reason: None,
                     next: Vec::new(),
                 },
             )
