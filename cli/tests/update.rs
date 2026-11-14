@@ -1236,6 +1236,34 @@ fn koi_update_through_homebrew_shows_steps_and_brew_output_only_on_failure() {
 }
 
 #[test]
+fn an_incomplete_homebrew_update_shows_why_the_tap_did_not_refresh() {
+    let home = tempfile::tempdir().unwrap();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    scripted_brew(&prefix, 1, "  exit 0");
+    let output = koi_at(&link, home.path(), &github, &["update"])
+        .env("PATH", home.path().join("empty"))
+        .output()
+        .unwrap();
+    if development_version() {
+        assert!(output.status.success());
+        return;
+    }
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with("Updating Koidrive with Homebrew\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("fatal: unable to access https://github.com/koidrive/homebrew-tap/: Could not resolve host: github.com\n"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Homebrew installed"), "{stderr}");
+}
+
+#[test]
 fn koi_update_names_the_brew_command_when_homebrew_fails_or_is_missing() {
     for cask in [false, true] {
         let home = tempfile::tempdir().unwrap();

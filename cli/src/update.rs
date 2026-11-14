@@ -936,11 +936,10 @@ async fn homebrew(
             Err(error) => failure = Some(format!("{} did not run: {error}", brew.display())),
         }
         match (&failure, service::version_of(&koi)) {
-            (None, Some(now)) if now.cmp_precedence(&from).is_gt() => {
+            (None, Some(now)) if now.cmp_precedence(&to).is_ge() => {
                 finish(step, &format!("Homebrew installed Koidrive {now}"));
             }
-            (None, _) => finish(step, "Homebrew has no newer Koidrive"),
-            (Some(_), _) => {
+            _ => {
                 drop(step);
                 echo.replay();
             }
