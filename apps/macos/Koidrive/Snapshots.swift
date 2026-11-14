@@ -53,6 +53,17 @@ enum Snapshots {
                               width: 280, titled: nil, dark: dark,
                               to: directory.appending(path: "questions-confirm-\(suffix).png"))
             }
+            for (name, phase, thumbnails, activity) in conflictStates() {
+                let model = AppModel.preview(.conflict)
+                if let activity { model.session.fakeCore()?.setActivity(activity: activity) }
+                let conflict = model.state.questions.first.flatMap { ConflictResolution(question: $0, model: model, phase: phase) }
+                if case .settled(let answer) = phase, let question = conflict?.question {
+                    try? await model.answer(question, with: answer)
+                }
+                await capture(QuestionsView(conflict: conflict, thumbnails: thumbnails).environment(model).frame(width: 900, height: 560),
+                              width: 900, height: 560, titled: nil, dark: dark,
+                              to: directory.appending(path: "conflict-\(name)-\(suffix).png"))
+            }
             await capture(ButtonGallery(), width: 432, titled: nil, dark: dark,
                           to: directory.appending(path: "buttons-\(suffix).png"))
             for (name, view) in await settingsStates() {
@@ -432,6 +443,14 @@ enum Snapshots {
                                     by device: String, _ name: String) -> DeletedItem {
         DeletedItem(nodeId: id, path: path, kind: kind, files: files, bytes: bytes, modifiedAtMs: ms - 3_600_000,
                     deletedAtMs: ms, deletedByDeviceId: device, deletedByDeviceName: name)
+    }
+
+    private static func conflictStates() -> [(String, ConflictResolution.Phase, FileThumbnail.Phase?, FakeActivity?)] {
+        [("1-compare", .choosing, nil, nil), ("2-keeping", .keeping(.keepCopy), nil, nil),
+         ("3-answer-failed", .failed(.QuestionNotFound), nil, nil), ("4-preview-loading", .choosing, .loading, nil),
+         ("5-no-preview", .choosing, FileThumbnail.Phase.none, nil), ("6-settled-copy", .settled(.keepCopy), nil, nil),
+         ("6b-settled-original", .settled(.keepOriginal), nil, nil), ("6c-settled-both", .settled(.keepBoth), nil, nil),
+         ("7-offline", .choosing, nil, .offline)]
     }
 
     private static func menuStates() async -> [(String, AppModel)] {
