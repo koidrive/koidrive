@@ -1,0 +1,1 @@
+cc a9f41d28b27ca3a731ee2721320fd9e401e7b032183c4b587f9789a6e261cf64 # shrinks to devices = 3, a write a rolled-back device made over a download, with the bytes the node held at the store's cursor

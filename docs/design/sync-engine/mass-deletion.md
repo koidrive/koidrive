@@ -117,7 +117,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 ### Steps
 
 1. Pause: no commits and no effects, except the recovery of an effect already in flight (§5.3).
-2. Bootstrap the new tree R′ into a staging tree (§4.4): the live tree with `ListTree`, the trash with `ListTrash`, then the log replay up to the highest page head. For a store rollback within one history, R′ is the server's current tree. Adopt the new `history_id`, and continue `device_seq` from the value the server reported.
+2. Bootstrap the new tree R′ into a staging tree (§4.4): the live tree with `ListTree`, the trash with `ListTrash`, then the log replay up to the highest page head. For a store rollback within one history, R′ is the server's current tree, and the log is also read from the store's cursor, which with R₀ shows every place the server gave each node since then. Adopt the new `history_id`, and continue `device_seq` from the value the server reported.
 3. Classify every node ID in R′, S₀ or L, and every intent in I₀, by whether this device changed it since its last sync (L against S₀), never by path or content. Ops a user could have taken more than one way are never inferred.
 4. Apply the certain cases at once through the ordinary planner: set S for those nodes as the table says, and let §2.3 produce the effects. Hold the rest.
 5. Resume normal sync for every node that is not held. Held nodes are excluded from planning, like guard holds (§6.1), and stay on disk exactly as they are.
@@ -162,6 +162,10 @@ An answer names a set of nodes, but an op can change others on the server: R8 re
 One recovery notice per space names the trigger and, when the server reports it (`restore_point_ms`, RFC 0002 §8), the restore point. Five groups list counts and paths: created after the restore point, changed on this device, created on this device, deleted on this device, and requested before the reset (`RecoveryGroup`). Each group offers its two answers for all of its nodes. Until answered, held nodes are listed as not synced, and nothing about them leaves the device.
 
 Nothing local is published, and nothing is deleted on either side, without an answer, except what the device had not changed since its last sync, and that goes to the local trash.
+
+### Entries the store lost track of
+
+A store rolled back to before a download has no S₀ for what the download put on disk. Before classifying, each local entry S₀ does not hold is matched against R′ as on a first link (below), then against the one node R′ holds in the trash at its place, and then against the places R₀ and the log since the store's cursor show: the one node of R′ that the server held at exactly that place, with the same kind and, for a file, the same content, which R′ still gives it. A file that holds bytes the server has since replaced may be a user's write after the download, so it is held. An entry is also held when S cannot take the match's shape there, as when S would hold a cycle. A matched entry takes the node's ID, and S(n) takes the shape that matched, so the entry is unchanged and follows R′, also when the server moved, renamed or deleted the node since. When the log no longer reaches back to the store's cursor, the entry is held as created on this device.
 
 ### A device with no store
 

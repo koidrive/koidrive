@@ -11,7 +11,7 @@ use prost::Message;
 
 use crate::classify::{Class, Origin, Trees, Waiting};
 use crate::effects;
-use crate::first_link;
+use crate::first_link::{self, History};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
 use crate::names::{MAX_NAME_BYTES, name_key, nfc};
@@ -503,7 +503,7 @@ impl Commits {
         if trees.remote().iter().all(|(_, node)| node.trashed) {
             return;
         }
-        let tops = first_link::adopt(trees, false);
+        let tops = first_link::adopt(trees, None);
         if let Some(question) = first_link::ask(trees, tops, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
         }
@@ -518,7 +518,8 @@ impl Commits {
 
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
     /// scan of the disk (section 6.4). `device_seq` is the server's count of this device's commits
-    /// there, which the next commit continues. The commit in flight is dropped: the tree changes it
+    /// there, which the next commit continues, and `history` the shapes the log gave nodes since
+    /// the store's cursor, by which an entry the store lost track of is found. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
     /// device changed it since S. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
@@ -529,6 +530,7 @@ impl Commits {
         trees: &mut Trees,
         device_seq: u64,
         cause: &RecoveryCause,
+        history: &History,
         ids: &mut IdGen,
         now_ms: u64,
     ) {
@@ -544,7 +546,7 @@ impl Commits {
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
-        first_link::adopt(trees, true);
+        first_link::adopt(trees, Some(history));
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
             .collect::<BTreeSet<_>>()

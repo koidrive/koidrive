@@ -339,7 +339,6 @@ fn rewinds_converge_from_seed_122() {
 }
 
 #[test]
-#[ignore = "a folder keeps a pending name no user gave until the server marks pending names (GUN-547)"]
 fn rewinds_converge_from_seed_605() {
     converges_from(test_name!(rewinds_converge_from_seed_605), 605, 4096);
 }

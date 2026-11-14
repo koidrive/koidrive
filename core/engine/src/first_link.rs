@@ -10,7 +10,25 @@ use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Kind, NodeId, Shape, pending_stem, same_content};
+use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, Tree, pending_stem, same_content};
+
+/// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
+/// a place it left, where a download made before the store lost track of it may still hold it on
+/// disk (design section 6.4).
+pub type History = BTreeMap<NodeId, Vec<Shape>>;
+
+/// The history of a recovery whose log reaches back to the store's cursor: the shape `remote`, R
+/// as the store held it, gives each live node, and then each shape in `log`.
+pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
+    let mut history: History = (remote.iter())
+        .filter(|(_, node)| !node.trashed)
+        .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
+        .collect();
+    for (id, shapes) in log {
+        history.entry(id).or_default().extend(shapes);
+    }
+    history
+}
 
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
@@ -23,10 +41,12 @@ use crate::tree::{Kind, NodeId, Shape, pending_stem, same_content};
 /// neither adopted nor returned, and neither is an entry S holds, though a folder S holds has its
 /// children matched, so a recovery adopts what a store that lost track of it finds on disk. An
 /// entry whose name S gives another node is returned, since S keeps its shapes during a recovery.
-/// With `from_trash`, as in a recovery, an entry at a place no live node of R holds also matches
-/// the one node R holds in the trash there that it matches, since the disk may hold what the server
-/// sent before the store lost track of it.
-pub fn adopt(trees: &mut Trees, from_trash: bool) -> Vec<NodeId> {
+/// With `history`, as in a recovery, the disk may hold what the server sent before the store lost
+/// track of it: an entry at a place no live node of R holds also matches the one node R holds in the
+/// trash there that it matches, and then the one node of R that `history` shows at that place
+/// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
+/// cycle, is returned.
+pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
         .map(|(id, node)| {
@@ -47,10 +67,19 @@ pub fn adopt(trees: &mut Trees, from_trash: bool) -> Vec<NodeId> {
         }
     }
     let mut trashed: BTreeMap<(NodeId, String), Vec<NodeId>> = BTreeMap::new();
-    for (id, node) in trees.remote().iter().filter(|_| from_trash) {
+    for (id, node) in trees.remote().iter().filter(|_| history.is_some()) {
         if node.trashed {
             let key = (node.shape.parent.clone(), node.shape.name.clone());
             trashed.entry(key).or_default().push(id.clone());
+        }
+    }
+    let mut left: BTreeMap<(NodeId, String), Vec<(NodeId, Shape)>> = BTreeMap::new();
+    for (id, shapes) in history.into_iter().flatten() {
+        for shape in shapes {
+            let key = (shape.parent.clone(), shape.name.clone());
+            left.entry(key)
+                .or_default()
+                .push((id.clone(), shape.clone()));
         }
     }
     let mut held = Vec::new();
@@ -72,15 +101,11 @@ pub fn adopt(trees: &mut Trees, from_trash: bool) -> Vec<NodeId> {
                 continue;
             }
             let key = (parent.clone(), name);
-            let matches = |remote_id: &NodeId| {
-                let shape = &trees.remote().get(remote_id).expect("indexed").shape;
+            let matches = |remote_id: &NodeId, shape: &Shape| {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
                     && shape.kind == local.kind
-                    && match (&shape.content, &local.content) {
-                        (Some(remote), Some(local)) => same_content(remote, local),
-                        (remote, local) => remote.is_none() && local.is_none(),
-                    }
+                    && same_bytes(&shape.content, &local.content)
             };
             let pending_match = match pending_dirs.get(&key).map(Vec::as_slice) {
                 Some([only]) if local.kind == Kind::Dir && holds_no_more(trees, only, &id) => {
@@ -88,37 +113,63 @@ pub fn adopt(trees: &mut Trees, from_trash: bool) -> Vec<NodeId> {
                 }
                 _ => None,
             };
+            let now = |remote_id: &&NodeId| {
+                matches(
+                    remote_id,
+                    &trees.remote().get(remote_id).expect("indexed").shape,
+                )
+            };
             let in_trash = (trashed.get(&key)).filter(|_| !remote.contains_key(&key));
-            let in_trash = in_trash.and_then(|ids| {
-                let mut matching = ids.iter().filter(|remote_id| matches(remote_id));
-                matching.next().filter(|_| matching.next().is_none())
-            });
-            let found = (remote.get(&key).filter(|remote_id| matches(remote_id)))
-                .or_else(|| pending_match.filter(|remote_id| matches(remote_id)))
-                .or(in_trash);
-            let Some(remote_id) = found.cloned() else {
+            let in_trash = in_trash.and_then(|ids| only(ids.iter().filter(now)));
+            let found = (remote.get(&key).filter(now))
+                .or_else(|| pending_match.filter(now))
+                .or(in_trash)
+                .map(|remote_id| {
+                    let shape = &trees.remote().get(remote_id).expect("indexed").shape;
+                    (remote_id.clone(), shape.clone())
+                });
+            let earlier = || {
+                let mut matching =
+                    (left.get(&key)?.iter()).filter(|(remote_id, shape)| matches(remote_id, shape));
+                let first = matching.next()?;
+                let unique = matching.all(|(other, _)| *other == first.0);
+                let held_now = (trees.remote().get(&first.0))
+                    .is_some_and(|node| same_bytes(&node.shape.content, &first.1.content));
+                (unique && held_now).then(|| first.clone())
+            };
+            let Some((remote_id, shape)) = found.or_else(earlier) else {
                 held.push(id);
                 continue;
             };
-            let shape = trees
-                .remote()
-                .get(&remote_id)
-                .expect("indexed")
-                .shape
-                .clone();
+            let renamed = shape.name != local.name;
+            if !trees.set_synced_if_valid(remote_id.clone(), Some(shape)) {
+                held.push(id);
+                continue;
+            }
+            if renamed {
+                trees.adopt_pending(remote_id.clone());
+            }
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
             }
-            if shape.name != local.name {
-                trees.adopt_pending(remote_id.clone());
-            }
-            trees.set_synced(remote_id.clone(), Some(shape));
             if local.kind == Kind::Dir {
                 pending.push(remote_id);
             }
         }
     }
     held
+}
+
+fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => same_content(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
+}
+
+fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
+    let mut items = items.into_iter();
+    items.next().filter(|_| items.next().is_none())
 }
 
 /// Whether the question holds what a first link found on this device and nothing on the server.
