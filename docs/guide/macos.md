@@ -42,6 +42,30 @@ Open **Settings** from the menu bar:
 - In **Problems**, read what stopped or failed and follow the advice for the affected folder or file.
 - In **General**, choose whether Koidrive opens at login and sends anonymous usage reports.
 
+## Share links
+
+A share link lets anyone open a file or folder from your linked folders in a browser, without an account. A link is read-only. A link to a folder also shows files added to it later.
+
+### Share a file or folder
+
+Open the Share Link window in one of three ways:
+
+- Choose **Share Link…** in the menu bar, then pick the file or folder. Only items in your linked folders can be chosen.
+- Drag the item onto the Koidrive icon in the menu bar, then drop it on **Share Link** in the panel that opens.
+- Drop the item on the **Shared Links** window.
+
+Choose how long the link works: 1, 7 or 30 days. To ask for a password, select **Require a password** and enter one of 8 to 256 characters. Click **Create Link**. Koidrive checks that the server has the item, then shows the link. Click **Copy** and send the link to the person.
+
+Koidrive shows the full link only once, when it's made. Neither the app nor the server can show it again, so copy it before you click **Done**. If you lose it, share the item again to get a new link.
+
+An item that hasn't finished syncing can't be shared yet. The window says so, and you can share the item once it's up to date. Making a link also needs your Mac to be online.
+
+### See and revoke links
+
+Choose **Shared Links…** in the menu bar. The window lists your links, newest first. Each row shows the item, when the link was made, when it expires, a lock if it needs a password, and its state. A link whose item was moved or deleted shows "Item no longer there". Select **Show ended links** to also list links that expired or were revoked.
+
+To stop a link working, click **Revoke…** next to it and confirm. Anyone who has the link can no longer open it. The row shows **Revoked**.
+
 ## Deleted files and earlier versions
 
 The server keeps deleted files and folders and the earlier versions of each file. The app lists both and brings them back. Both windows read the server, so your Mac must be online.
