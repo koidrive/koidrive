@@ -96,8 +96,12 @@ PY
     if [ "$build" -eq 101 ]; then
         brew install --cask --appdir="$tmp/Applications" "$token"
     else
+        if brew outdated --cask "$token" | grep -q koidrive; then
+            echo "FAIL Homebrew upgrades the self-updating app without being asked" >&2
+            exit 1
+        fi
         status=0
-        outdated=$(brew outdated --cask "$token") || status=$?
+        outdated=$(brew outdated --cask --greedy "$token") || status=$?
         if [ "$status" -ne 1 ] || ! grep -q koidrive <<< "$outdated"; then
             echo "FAIL Homebrew does not consider $version an app upgrade" >&2
             exit 1
@@ -111,7 +115,7 @@ PY
     [ "$(/bin/sh "$(brew --prefix)/bin/koi" --version)" = "koi $version" ] || { echo 'FAIL the linked CLI version differs from the app' >&2; exit 1; }
     [ ! -e "$tmp/zap.log" ] || { echo 'FAIL install or upgrade ran login-item cleanup' >&2; exit 1; }
     [ -z "$(brew list --formula --versions koidrive 2>/dev/null)" ] || { echo 'FAIL the cask installed a separate CLI formula' >&2; exit 1; }
-    echo "PASS cask installs app and bundled CLI $version without --greedy or a formula dependency"
+    echo "PASS cask installs app and bundled CLI $version without a formula dependency, and only a named upgrade replaces it"
 done
 brew reinstall --cask --appdir="$tmp/Applications" "$token"
 [ ! -e "$tmp/zap.log" ] || { echo 'FAIL reinstall ran login-item cleanup' >&2; exit 1; }
