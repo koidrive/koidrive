@@ -440,6 +440,8 @@ fn a_failed_app_removal_keeps_the_command_that_finishes_it() {
     use std::os::unix::fs::PermissionsExt;
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(".zprofile", &format!("{line}\n"));
     machine.copy_koi("Applications/Koidrive.app/Contents/Helpers/koi");
     machine.script(
         "Applications/Koidrive.app/Contents/MacOS/Koidrive",
@@ -453,6 +455,7 @@ fn a_failed_app_removal_keeps_the_command_that_finishes_it() {
     fs::set_permissions(&applications, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!output.status.success(), "{envelope:#}");
     assert!(koi.is_file(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&zprofile).unwrap(), format!("{line}\n"));
 }
 
 #[cfg(target_os = "macos")]

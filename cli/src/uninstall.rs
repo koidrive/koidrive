@@ -438,22 +438,10 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
             },
         );
     }
-    for profile in &found.profiles {
-        match strip_path_line(profile) {
-            Ok(true) => run.removed.push(Removed::ShellProfile {
-                path: profile.display().to_string(),
-            }),
-            Ok(false) => {}
-            Err(error) => run.problems.push(format!(
-                "cannot remove the PATH line from {}: {error}",
-                shown_folder(profile)
-            )),
-        }
-    }
     if !run.problems.is_empty() {
         return finish(device, run);
     }
-    remove_programs(&found.programs, &mut run).await;
+    remove_programs(&found.programs, &found.profiles, &mut run).await;
     finish(device, run)
 }
 
@@ -1189,62 +1177,84 @@ async fn unregister_login_item(bundle: &Path, run: &mut Run) {
     }
 }
 
-async fn remove_programs(programs: &[Program], run: &mut Run) {
+async fn remove_programs(programs: &[Program], profiles: &[PathBuf], run: &mut Run) {
     for bundle in bundles(programs) {
         unregister_login_item(bundle, run).await;
     }
     run.kept.extend(kept_programs(programs));
     let (commands, others): (Vec<_>, Vec<_>) =
         (programs.iter()).partition(|program| matches!(program, Program::Command(_)));
-    for program in others.into_iter().chain(commands) {
-        if matches!(program, Program::Command(_)) && !run.problems.is_empty() {
-            return;
+    for program in others {
+        remove_program(program, programs, run).await;
+    }
+    if !run.problems.is_empty() {
+        return;
+    }
+    for profile in profiles {
+        match strip_path_line(profile) {
+            Ok(true) => run.removed.push(Removed::ShellProfile {
+                path: profile.display().to_string(),
+            }),
+            Ok(false) => {}
+            Err(error) => run.problems.push(format!(
+                "cannot remove the PATH line from {}: {error}",
+                shown_folder(profile)
+            )),
         }
-        match program {
-            Program::Command(path) => {
-                let target = fs::symlink_metadata(path)
-                    .is_ok_and(|meta| meta.is_symlink())
-                    .then(|| fs::canonicalize(path).ok())
-                    .flatten();
-                run.remove(
-                    path,
-                    Removed::Command {
-                        path: path.display().to_string(),
-                    },
-                );
-                if let Some(target) = target
-                    && !programs.contains(&Program::Command(target.clone()))
-                    && fs::symlink_metadata(&target).is_ok()
-                {
-                    run.kept.push(Kept::LinkTarget {
-                        path: target.display().to_string(),
-                    });
-                }
-            }
-            Program::App(path) => run.remove(
+    }
+    if !run.problems.is_empty() {
+        return;
+    }
+    for program in commands {
+        remove_program(program, programs, run).await;
+    }
+}
+
+async fn remove_program(program: &Program, programs: &[Program], run: &mut Run) {
+    match program {
+        Program::Command(path) => {
+            let target = fs::symlink_metadata(path)
+                .is_ok_and(|meta| meta.is_symlink())
+                .then(|| fs::canonicalize(path).ok())
+                .flatten();
+            run.remove(
                 path,
-                Removed::App {
+                Removed::Command {
                     path: path.display().to_string(),
                 },
-            ),
-            Program::Homebrew { brew, cask, .. } => {
-                let argv = vec![
-                    brew_word(brew),
-                    "uninstall".to_owned(),
-                    if *cask { "--cask" } else { "--formula" }.to_owned(),
-                    "koidrive".to_owned(),
-                ];
-                let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-                match helper(brew, &args, HOMEBREW).await {
-                    Ok(()) => run.removed.push(Removed::Homebrew { argv }),
-                    Err(problem) => {
-                        run.problems.push(problem);
-                        run.next.push(argv);
-                    }
+            );
+            if let Some(target) = target
+                && !programs.contains(&Program::Command(target.clone()))
+                && fs::symlink_metadata(&target).is_ok()
+            {
+                run.kept.push(Kept::LinkTarget {
+                    path: target.display().to_string(),
+                });
+            }
+        }
+        Program::App(path) => run.remove(
+            path,
+            Removed::App {
+                path: path.display().to_string(),
+            },
+        ),
+        Program::Homebrew { brew, cask, .. } => {
+            let argv = vec![
+                brew_word(brew),
+                "uninstall".to_owned(),
+                if *cask { "--cask" } else { "--formula" }.to_owned(),
+                "koidrive".to_owned(),
+            ];
+            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+            match helper(brew, &args, HOMEBREW).await {
+                Ok(()) => run.removed.push(Removed::Homebrew { argv }),
+                Err(problem) => {
+                    run.problems.push(problem);
+                    run.next.push(argv);
                 }
             }
-            Program::Elsewhere(_) | Program::Development(_) => {}
         }
+        Program::Elsewhere(_) | Program::Development(_) => {}
     }
 }
 
