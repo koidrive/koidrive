@@ -10,12 +10,25 @@ use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Kind, NodeId, Shape, pending_stem, same_content};
+use crate::tree::{Kind, NodeId, RemoteNode, Shape, Tree, pending_stem, same_content};
 
-/// Each shape the log shows the server gave a node after the store's cursor, so that a recovery
-/// finds a node at a place it left, where a download made before the store lost track of it may
-/// still hold it on disk (design section 6.4).
+/// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
+/// a place it left, where a download made before the store lost track of it may still hold it on
+/// disk (design section 6.4).
 pub type History = BTreeMap<NodeId, Vec<Shape>>;
+
+/// The history of a recovery whose log reaches back to the store's cursor: the shape `remote`, R
+/// as the store held it, gives each live node, and then each shape in `log`.
+pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
+    let mut history: History = (remote.iter())
+        .filter(|(_, node)| !node.trashed)
+        .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
+        .collect();
+    for (id, shapes) in log {
+        history.entry(id).or_default().extend(shapes);
+    }
+    history
+}
 
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
@@ -31,7 +44,8 @@ pub type History = BTreeMap<NodeId, Vec<Shape>>;
 /// With `history`, as in a recovery, the disk may hold what the server sent before the store lost
 /// track of it: an entry at a place no live node of R holds also matches the one node R holds in the
 /// trash there that it matches, and then the one node of R that `history` shows at that place,
-/// which S then holds there.
+/// which S then holds there. An entry whose match S cannot hold there, as when it would make S a
+/// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
@@ -128,10 +142,14 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 held.push(id);
                 continue;
             };
-            if shape.name != local.name {
+            let renamed = shape.name != local.name;
+            if !trees.set_synced_if_valid(remote_id.clone(), Some(shape)) {
+                held.push(id);
+                continue;
+            }
+            if renamed {
                 trees.adopt_pending(remote_id.clone());
             }
-            trees.set_synced(remote_id.clone(), Some(shape));
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
             }

@@ -1392,11 +1392,8 @@ impl Staging {
         self.history.take().map(|_| &self.last)
     }
 
-    pub fn take_history(&mut self) -> History {
-        self.history
-            .take()
-            .map(|(_, history)| history)
-            .unwrap_or_default()
+    pub fn take_history(&mut self) -> Option<History> {
+        self.history.take().map(|(_, history)| history)
     }
 
     pub fn remember(&mut self, seq: u64, changes: &[ChangeRecord]) {

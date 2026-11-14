@@ -66,7 +66,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::{self, History};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
@@ -415,17 +415,20 @@ fn history_since(space: &SpaceDo, engine: &Engine) -> History {
         since_commit_id: engine.cursor.commit_id.clone(),
         since_committed_at_ms: engine.cursor.committed_at_ms,
     };
-    let mut history = History::new();
-    for record in space.resume(&since).unwrap_or_default() {
+    let Ok(records) = space.resume(&since) else {
+        return History::new();
+    };
+    let mut log = History::new();
+    for record in records {
         for change in &record.changes {
             if let Some(change_record::Change::Node(state)) = &change.change
                 && let Ok((id, node)) = RemoteNode::from_state(state)
             {
-                history.entry(id).or_default().push(node.shape);
+                log.entry(id).or_default().push(node.shape);
             }
         }
     }
-    history
+    first_link::since(engine.trees.remote(), log)
 }
 
 /// The files a write a restore took from the server may end in, until the devices are quiet

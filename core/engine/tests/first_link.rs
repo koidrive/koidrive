@@ -11,7 +11,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
 
 const ROOT: &str = "root";
@@ -116,6 +116,20 @@ fn a_place_the_log_shows_two_nodes_left_with_the_same_bytes_adopts_neither() {
         ]);
         assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"], "{remote:?}");
     }
+}
+
+#[test]
+fn a_place_the_log_shows_is_not_adopted_when_s_would_hold_a_cycle() {
+    let mut trees = trees(
+        &[("p", dir(ROOT, "p")), ("l-d", dir("p", "n"))],
+        &[("x", dir(ROOT, "x")), ("p", dir("x", "p"))],
+    );
+    trees.set_synced("x".into(), Some(dir(ROOT, "x")));
+    trees.set_synced("p".into(), Some(dir("x", "p")));
+    trees.settle();
+    let history = History::from([("x".into(), vec![dir("p", "n")])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), ["l-d"]);
+    assert_eq!(trees.synced().check(Names::ByKey), Ok(()));
 }
 
 #[test]

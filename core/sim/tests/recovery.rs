@@ -1461,6 +1461,30 @@ fn a_file_a_store_rollback_forgot_follows_the_servers_rename() {
 }
 
 #[test]
+fn a_file_a_store_rollback_forgot_before_downloading_it_follows_the_servers_rename() {
+    let mut world = World::new(2);
+    world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world.run(0, &[(0, file("a"))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(
+            0,
+            &[(1, DELIVER), (1, Step::CopyStore), (1, EFFECT), (1, EFFECT)],
+        )
+        .unwrap();
+    let downloaded = only_entry(&world, 1, "a");
+    world.run(0, &[(0, rename(0, "b"))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
+        .unwrap();
+    world.phase(1, &[]).unwrap();
+    assert_eq!(live(&world), ["b"]);
+    assert_eq!(only_entry(&world, 1, "b"), downloaded);
+    assert_eq!(answered(&world), Vec::<&str>::new());
+}
+
+#[test]
 fn a_file_a_store_rollback_forgot_follows_the_servers_rename_and_delete() {
     let mut world = World::new(2);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
