@@ -589,3 +589,34 @@ fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is
         .count();
     assert_eq!(deletes, 0);
 }
+
+#[test]
+fn a_rewind_that_takes_back_another_devices_delete_of_a_file_this_device_created_asks_about_it() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let backup = remote.space.clone();
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    remote.space.rewind(&backup, NOW);
+
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), Vec::<String>::new());
+    let held: Vec<_> = (a.folder.engine.commits.questions().iter())
+        .flat_map(|question| question.held.keys())
+        .collect();
+    assert!(held.contains(&&notes), "held: {held:?}");
+}

@@ -1685,6 +1685,7 @@ impl World {
             }
             Message::Listing { nodes, head } => {
                 note(&mut self.seen, "listing replaces R");
+                let device_seq = self.space.welcome(&self.devices[d].session).device_seq;
                 let Engine {
                     trees,
                     commits,
@@ -1724,7 +1725,7 @@ impl World {
                         trees.set_listed_remote(id, node);
                     }
                 }
-                trees.listed_removals(removed, |seq| commits.listed_here(seq));
+                trees.listed_removals(removed, |seq| commits.listed_here(seq, device_seq));
                 if *behind && recovering.is_none() {
                     trees.forget_lost(
                         trashed,
@@ -1744,7 +1745,6 @@ impl World {
                 link.listing = false;
                 if let Some(cause) = recovering {
                     note(&mut self.seen, "recovery classifies the trees");
-                    let device_seq = self.space.welcome(&self.devices[d].session).device_seq;
                     let device = &mut self.devices[d];
                     device.engine.scan(&device.disk);
                     self.scanned[d] = self.clock;

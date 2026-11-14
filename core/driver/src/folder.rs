@@ -1620,7 +1620,7 @@ impl Folder {
         };
         let device_seq = self.device_seq;
         self.remote_nodes = self.step(|engine, tx| {
-            engine.replace_remote(tx, staging)?;
+            engine.replace_remote(tx, staging, device_seq)?;
             if recovering {
                 (engine.commits).recover(
                     &mut engine.trees,

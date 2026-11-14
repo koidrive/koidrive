@@ -402,11 +402,12 @@ impl Commits {
 
     /// Whether a listed node at revision `seq` was placed there by this device: by a commit of
     /// this device that the server kept, or by the commit in flight, whose result has that seq.
-    /// Never during a recovery: its listing may reuse the seqs of the slots and of the commit in
-    /// flight for other commits, and [`Commits::recover`] drops both.
-    pub fn listed_here(&self, seq: u64) -> bool {
+    /// `device_seq` is the server's count of this device's commits in the listed history. During a
+    /// recovery only the slots at or below it count: the listing may reuse the seqs of the slots
+    /// above it and of the commit in flight for other commits.
+    pub fn listed_here(&self, seq: u64, device_seq: u64) -> bool {
         if matches!(*self.halted, Some(Halt::Recovery(_))) {
-            return false;
+            return (self.slots.range(..=device_seq)).any(|(_, &made)| made == seq);
         }
         (self.made_here(seq) && !self.lost_here(seq))
             || (self.in_flight.as_ref())

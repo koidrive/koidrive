@@ -498,7 +498,12 @@ impl Engine {
     /// nodes it lost ([`Trees::forget_lost`]), so that they are uploaded again, and takes back the deletes and edits
     /// of this device it lost, so that they are sent again. A tree that is not valid stops the task before anything is
     /// replaced.
-    pub fn replace_remote(&mut self, tx: &Tx<'_>, staging: Staging) -> Result<(), Stop> {
+    pub fn replace_remote(
+        &mut self,
+        tx: &Tx<'_>,
+        staging: Staging,
+        device_seq: u64,
+    ) -> Result<(), Stop> {
         let behind = (self.cursor.as_ref()).is_some_and(|cursor| cursor.ahead_of_server);
         let trashed = self.trees.trashed_here();
         let edited = self.trees.edited_here();
@@ -533,7 +538,7 @@ impl Engine {
             }
         }
         let commits = &self.commits;
-        (self.trees).listed_removals(removed, |seq| commits.listed_here(seq));
+        (self.trees).listed_removals(removed, |seq| commits.listed_here(seq, device_seq));
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery(_)));
         if behind && !recovering {
             (self.trees).forget_lost(
@@ -1584,7 +1589,7 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(4, vec![node("a", "a"), node("b", "b")]))?;
+                engine.replace_remote(tx, listed(4, vec![node("a", "a"), node("b", "b")]), 0)?;
                 let records = [
                     record(4, vec![change_record::Change::Node(node("a", "stale"))]),
                     record(5, vec![change_record::Change::Node(node("a", "a2"))]),
@@ -1621,7 +1626,7 @@ mod tests {
                     head_committed_at_ms: 30,
                     ..Default::default()
                 };
-                engine.replace_remote(tx, Staging::new("h".into(), vec![page], Vec::new()))?;
+                engine.replace_remote(tx, Staging::new("h".into(), vec![page], Vec::new()), 0)?;
                 assert_eq!(
                     tx.cursor()?.unwrap().base(),
                     koidrive_engine::commit::Base {
@@ -1655,7 +1660,7 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(4, Vec::new()))?;
+                engine.replace_remote(tx, listed(4, Vec::new()), 0)?;
                 let head = |head_seq| CaughtUp {
                     head_seq,
                     head_commit_id: format!("c{head_seq}"),
@@ -1682,7 +1687,7 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(1, Vec::new()))?;
+                engine.replace_remote(tx, listed(1, Vec::new()), 0)?;
                 let records = [
                     record(2, vec![change_record::Change::Node(node("a", "a"))]),
                     record(4, vec![change_record::Change::Node(node("b", "b"))]),
@@ -1701,7 +1706,7 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(0, Vec::new()))?;
+                engine.replace_remote(tx, listed(0, Vec::new()), 0)?;
                 let mut unknown = record(2, vec![change_record::Change::Node(node("b", "b"))]);
                 unknown.changes.push(ChangeRecord { change: None });
                 let records = [
@@ -1726,8 +1731,8 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(3, vec![node("a", "a"), node("b", "b")]))?;
-                engine.replace_remote(tx, listed(9, vec![node("c", "c")]))?;
+                engine.replace_remote(tx, listed(3, vec![node("a", "a"), node("b", "b")]), 0)?;
+                engine.replace_remote(tx, listed(9, vec![node("c", "c")]), 0)?;
                 assert_eq!(names(tx, &engine), ["c"]);
                 assert_eq!(tx.cursor()?, Some(cursor(9)));
                 Ok::<_, Stop>(())
@@ -1741,13 +1746,13 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut engine = Engine::load(tx, ROOT)?;
-                engine.replace_remote(tx, listed(3, vec![node("a", "a")]))?;
+                engine.replace_remote(tx, listed(3, vec![node("a", "a")]), 0)?;
                 let orphan = NodeState {
                     parent_id: "missing".into(),
                     ..node("b", "b")
                 };
                 let stop = engine
-                    .replace_remote(tx, listed(9, vec![orphan]))
+                    .replace_remote(tx, listed(9, vec![orphan]), 0)
                     .unwrap_err();
                 assert!(matches!(stop, Stop::Protocol(_)), "{stop}");
                 assert_eq!(names(tx, &engine), ["a"]);
@@ -3604,7 +3609,7 @@ mod tests {
                 let claim = change_record::Change::Node(listed_at(5));
                 assert_eq!(staging.replay(&[record(5, vec![claim])])?, Applied::Through);
                 staging.caught_up(5);
-                engine.replace_remote(tx, staging)?;
+                engine.replace_remote(tx, staging, 0)?;
                 assert_eq!(engine.trees.remote().get("f").map(|f| f.edit_rev), Some(5));
                 assert_eq!(
                     tx.remote_nodes()?
