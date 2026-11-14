@@ -353,6 +353,7 @@ esac
             &[],
             Some(self.path()),
             matches!(mode, ErrorMode::Redirected),
+            None,
         );
         let raw = String::from_utf8(output.stdout).unwrap();
         let text = console::strip_ansi_codes(&raw).into_owned();
@@ -663,7 +664,7 @@ fn callback(page: &str) {
 }
 
 fn terminal(command: Command, steps: &[(&str, String)], home: Option<&Path>) -> Output {
-    terminal_with_stdout(command, steps, home, false)
+    terminal_with_stdout(command, steps, home, false, None)
 }
 
 fn terminal_with_stdout(
@@ -671,6 +672,7 @@ fn terminal_with_stdout(
     steps: &[(&str, String)],
     home: Option<&Path>,
     redirected: bool,
+    interrupt: Option<rustix::process::Signal>,
 ) -> Output {
     let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
     rustix::pty::grantpt(&master).unwrap();
@@ -735,7 +737,15 @@ fn terminal_with_stdout(
                         .map(str::to_owned)
                 });
             if let Some(page) = page.filter(|page| !page.trim().is_empty()) {
-                callback(page.trim());
+                if let Some(signal) = interrupt {
+                    rustix::process::kill_process(
+                        rustix::process::Pid::from_child(&child.0),
+                        signal,
+                    )
+                    .unwrap();
+                } else {
+                    callback(page.trim());
+                }
                 called_back = true;
             }
         }
@@ -761,6 +771,73 @@ fn terminal_with_stdout(
         status,
         stdout: raw,
         stderr: Vec::new(),
+    }
+}
+
+#[test]
+fn stopped_login_messages_follow_effective_output_detail() {
+    for setup in [false, true] {
+        for mode in ErrorMode::ALL {
+            for signal in [rustix::process::Signal::INT, rustix::process::Signal::TERM] {
+                let home = Home::new(&[], &[]);
+                let mut command = home.command();
+                let steps = if setup {
+                    command.args(["setup", "--no-app"]);
+                    vec![(ROUTE, pick(true, 0))]
+                } else {
+                    command.args(["server", "deploy"]);
+                    Vec::new()
+                };
+                command.args(["--interactive", "--no-browser"]);
+                match mode {
+                    ErrorMode::Verbose => {
+                        command.arg("--verbose");
+                    }
+                    ErrorMode::Plain => {
+                        command.arg("--plain");
+                    }
+                    ErrorMode::Concise | ErrorMode::Redirected => {}
+                }
+                let steps = if matches!(mode, ErrorMode::Plain) && setup {
+                    vec![(ROUTE, pick(false, 0))]
+                } else {
+                    steps
+                };
+                let output = terminal_with_stdout(
+                    command,
+                    &steps,
+                    Some(home.path()),
+                    matches!(mode, ErrorMode::Redirected),
+                    Some(signal),
+                );
+                let raw = String::from_utf8(output.stdout).unwrap();
+                let text = console::strip_ansi_codes(&raw);
+                let expected = if signal == rustix::process::Signal::INT {
+                    130
+                } else {
+                    143
+                };
+                assert_eq!(
+                    output.status.code(),
+                    Some(expected),
+                    "{setup} {mode:?}: {text}"
+                );
+                let raw_message = if signal == rustix::process::Signal::INT {
+                    "stopped before the login finished"
+                } else {
+                    "stopped by SIGTERM before the login finished"
+                };
+                if matches!(mode, ErrorMode::Verbose | ErrorMode::Redirected) {
+                    assert!(text.contains(raw_message), "{setup} {mode:?}: {text}");
+                    assert!(!text.contains("Stopped before sign-in finished."), "{text}");
+                } else {
+                    assert!(text.contains("Stopped before sign-in finished."), "{text}");
+                    assert!(!text.contains(raw_message), "{text}");
+                }
+                assert!(!home.paths().credential().exists());
+                assert!(home.state.lock().unwrap().links.is_empty());
+            }
+        }
     }
 }
 

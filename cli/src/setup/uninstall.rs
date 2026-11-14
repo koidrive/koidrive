@@ -296,7 +296,7 @@ async fn scan(
                     error,
                 );
                 let human = format!(
-                    "{} Nothing was deleted.",
+                    "{} This scan did not delete any bucket objects.",
                     error.human.as_deref().unwrap_or(&error.message)
                 );
                 return Err(error.human(human));
@@ -592,6 +592,53 @@ mod tests {
 
         assert!(!fake.sent(&["DELETE"]));
         assert_eq!(file.load().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_scan_does_not_deny_the_worker_was_already_deleted() {
+        let (fake, mut cloud) = start(vec![
+            cf(
+                "GET",
+                "/workers/scripts",
+                json!([{ "id": "koidrive", "created_on": CREATED }]),
+            ),
+            cf("DELETE", "/workers/scripts/koidrive?force=true", Value::Null),
+            bucket(BUCKET_CREATED),
+            cf("GET", "/workers/scripts", json!([])),
+            cf_status(
+                "GET",
+                "/r2/buckets/koidrive/objects?per_page=1000",
+                503,
+                json!({ "success": false, "errors": [{ "code": 10000, "message": "Listing unavailable" }], "result": null }),
+            ),
+        ])
+        .await;
+        let (_dir, file) = state_file();
+        file.save(&recorded("koidrive")).unwrap();
+        let error = finish(&mut cloud, &file, recorded("koidrive"))
+            .await
+            .unwrap_err();
+        let deletes: Vec<String> = fake
+            .seen()
+            .into_iter()
+            .filter(|seen| seen.method == "DELETE")
+            .map(|seen| seen.path)
+            .collect();
+        assert_eq!(
+            deletes,
+            [format!(
+                "/client/v4/accounts/{ACCOUNT}/workers/scripts/koidrive?force=true"
+            )]
+        );
+        assert_eq!(file.load().unwrap(), Some(recorded("")));
+        assert!(error.message.ends_with("; deleted nothing"), "{error:?}");
+        let human = error.human.unwrap();
+        assert!(human.contains("Listing unavailable"), "{human}");
+        assert!(
+            human.ends_with("This scan did not delete any bucket objects."),
+            "{human}"
+        );
+        assert!(!human.contains("Nothing was deleted."), "{human}");
     }
 
     #[tokio::test]

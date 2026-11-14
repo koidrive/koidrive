@@ -160,6 +160,9 @@ impl CliError {
             return CliError::refused_credential();
         }
         let mut human = match &error {
+            ApiError::Server { status: 500..=599, error } => {
+                format!("The server reported a problem: {}", error.message())
+            }
             ApiError::Server { error, .. } => {
                 format!("The server refused the request: {}", error.message())
             }
@@ -179,15 +182,25 @@ impl CliError {
             (ApiError::Transport(_), RetrySafety::Inspect) => {
                 " Check your connection and the server address. Before repeating a change, inspect the affected item from a connected device to see whether it took effect."
             }
-            (ApiError::Status { status: 429 } | ApiError::Unreadable { status: 429 }, _) => {
-                " Wait before trying this command again."
-            }
             (
-                ApiError::Status { status: 500..=599 } | ApiError::Unreadable { status: 500..=599 },
+                ApiError::Server { status: 429, .. }
+                | ApiError::Status { status: 429 }
+                | ApiError::Unreadable { status: 429 },
+                _,
+            ) => " Wait before trying this command again.",
+            (
+                ApiError::Server {
+                    status: 500..=599, ..
+                }
+                | ApiError::Status { status: 500..=599 }
+                | ApiError::Unreadable { status: 500..=599 },
                 RetrySafety::Safe,
             ) => " Wait before trying this command again.",
             (
-                ApiError::Status { status: 500..=599 }
+                ApiError::Server {
+                    status: 500..=599, ..
+                }
+                | ApiError::Status { status: 500..=599 }
                 | ApiError::Unreadable { status: 500..=599 }
                 | ApiError::TooLarge { .. }
                 | ApiError::Decode(_),
@@ -716,6 +729,46 @@ mod tests {
         assert_eq!(shown.message, message);
         assert_eq!(shown.code, Code::Unavailable);
         assert_eq!(shown.human.as_deref(), Some(message));
+    }
+
+    #[test]
+    fn typed_server_failures_keep_the_retry_safety_of_the_operation() {
+        for status in [500, 503, 599, 429] {
+            for safe in [false, true] {
+                let error = refused(status, ServerCode::Internal);
+                let raw = error.to_string();
+                let shown = if safe {
+                    CliError::api_retry_safe(error)
+                } else {
+                    CliError::from(error)
+                };
+                assert_eq!(shown.message, raw);
+                assert_eq!(
+                    shown.code,
+                    if matches!(status, 429 | 503) {
+                        Code::Unavailable
+                    } else {
+                        Code::Failed
+                    }
+                );
+                assert!(shown.next.is_empty());
+                let human = shown.human.unwrap();
+                assert!(human.contains("refused"), "{human}");
+                if status >= 500 {
+                    assert!(
+                        human.starts_with("The server reported a problem:"),
+                        "{human}"
+                    );
+                }
+                if safe || status == 429 {
+                    assert!(human.contains("Wait before trying"), "{human}");
+                    assert!(!human.contains("inspect"), "{human}");
+                } else {
+                    assert!(human.contains("Before repeating a change"), "{human}");
+                    assert!(human.contains("inspect the affected item"), "{human}");
+                }
+            }
+        }
     }
 
     #[test]

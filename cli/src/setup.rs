@@ -270,6 +270,7 @@ pub async fn setup(
     login: &LoginArgs,
     script: &ScriptArgs,
     json: bool,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<Done, CliError> {
     if let (Some(folder), Some(space)) = (&script.folder, &script.space) {
@@ -324,7 +325,7 @@ pub async fn setup(
             });
         }
     } else {
-        connect(paths, device_name, login, terminal.clone()).await?;
+        connect(paths, device_name, login, verbose, terminal.clone()).await?;
     }
     onboard(paths, &terminal).await
 }
@@ -333,6 +334,7 @@ async fn connect(
     paths: &Paths,
     device_name: &str,
     login: &LoginArgs,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<(), CliError> {
     let route = terminal
@@ -348,7 +350,7 @@ async fn connect(
         0 => {
             crate::telemetry::set_flow(SetupFlow::Cloudflare);
             bundled()?;
-            with_session(login, terminal.clone(), async |session| {
+            with_session(login, terminal.clone(), verbose, async |session| {
                 session.setup(paths, device_name).await
             })
             .await?;
@@ -973,6 +975,7 @@ pub async fn server(
     paths: &Paths,
     action: ServerAction,
     json: bool,
+    verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<Done, CliError> {
     let login = action.login().expect("main sends a claim to the driver");
@@ -994,7 +997,7 @@ pub async fn server(
             not_set_up(paths)?;
             bundled()?;
             let name = device.name();
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 session.server_deploy(paths, &name).await
             })
             .await?;
@@ -1007,7 +1010,7 @@ pub async fn server(
             not_set_up(paths)?;
             bundled()?;
             let name = device.name();
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 session
                     .server_add_device(paths, worker.as_deref(), &name)
                     .await
@@ -1017,7 +1020,7 @@ pub async fn server(
         ServerAction::Claim { .. } => unreachable!("main sends a claim to the driver"),
         ServerAction::Upgrade { worker, yes, login } => {
             bundled()?;
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 let found = session.pick(worker.as_deref()).await?;
                 crate::telemetry::step(SetupStep::Upgrade, session.upgrade(&found, yes)).await
             })
@@ -1036,7 +1039,7 @@ pub async fn server(
             if bucket.is_none() && !resuming {
                 bundled()?;
             }
-            with_session(&login, terminal.clone(), async |session| {
+            with_session(&login, terminal.clone(), verbose, async |session| {
                 let uninstall = session.uninstall(
                     paths,
                     worker.as_deref(),
@@ -1138,6 +1141,7 @@ fn report_paired(paths: &Paths, response: Response, terminal: &Terminal) -> Resu
 async fn with_session(
     args: &LoginArgs,
     terminal: Arc<Terminal>,
+    verbose: bool,
     work: impl AsyncFnOnce(&mut Session) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
     let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
@@ -1158,7 +1162,7 @@ async fn with_session(
     SESSION.store(false, Ordering::Relaxed);
     if let (Err(error), Some(code)) = (&outcome, status) {
         crate::telemetry::flush();
-        let message = if crate::output::concise("setup") {
+        let message = if !verbose && crate::output::concise("setup") {
             error.human.as_deref().unwrap_or(&error.message)
         } else {
             &error.message
@@ -2491,6 +2495,7 @@ mod tests {
             &paths,
             parse(&["koi", "server", "deploy"]),
             true,
+            false,
             Arc::new(Terminal::new(true, false)),
         )
         .await
@@ -2502,9 +2507,15 @@ mod tests {
         );
 
         let action = parse(&["koi", "server", "upgrade", "--worker", "fb", "--no-browser"]);
-        let error = server(&paths, action, false, Arc::new(Terminal::new(true, false)))
-            .await
-            .unwrap_err();
+        let error = server(
+            &paths,
+            action,
+            false,
+            false,
+            Arc::new(Terminal::new(true, false)),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.code, Code::AuthRequired);
         assert_eq!(
             error.next,
@@ -2547,6 +2558,7 @@ mod tests {
             let error = server(
                 &paths,
                 parse(&argv),
+                false,
                 false,
                 Arc::new(Terminal::new(true, false)),
             )

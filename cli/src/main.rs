@@ -513,7 +513,7 @@ fn main() -> ExitCode {
                 if let Some((name, flow, switch)) = telemetry {
                     telemetry::start(&paths, switch, name, flow).await;
                 }
-                let mut outcome = run(paths, command_args, json, work_terminal.clone()).await;
+                let mut outcome = run(paths, command_args, json, verbose, work_terminal.clone()).await;
                 if let Err(error) = &outcome {
                     telemetry::command_failed(error.code);
                 }
@@ -611,6 +611,7 @@ async fn run(
     paths: Paths,
     command: Command,
     json: bool,
+    verbose: bool,
     terminal: Arc<terminal::Terminal>,
 ) -> Result<Done, CliError> {
     let lifecycle_deadline = matches!(command, Command::Reconcile { .. })
@@ -651,7 +652,7 @@ async fn run(
                         | setup::ServerAction::AddDevice { .. }
                 }
         );
-    let done = execute(paths.clone(), command, json, terminal.clone()).await?;
+    let done = execute(paths.clone(), command, json, verbose, terminal.clone()).await?;
     let service = if reconciles {
         let _progress = terminal
             .setup_guided()
@@ -919,6 +920,7 @@ async fn execute(
     paths: Paths,
     command: Command,
     json: bool,
+    verbose: bool,
     terminal: Arc<terminal::Terminal>,
 ) -> Result<Done, CliError> {
     match command {
@@ -944,7 +946,18 @@ async fn execute(
             login,
             script,
             ..
-        } => setup::setup(&paths, &device.name(), &login, &script, json, terminal).await,
+        } => {
+            setup::setup(
+                &paths,
+                &device.name(),
+                &login,
+                &script,
+                json,
+                verbose,
+                terminal,
+            )
+            .await
+        }
         Command::Join {
             code,
             code_stdin,
@@ -986,7 +999,7 @@ async fn execute(
             let claim = async { paired(&paths, ipc::run(&paths, request).await?) };
             telemetry::step(SetupStep::Claim, claim).await
         }
-        Command::Server { action } => setup::server(&paths, action, json, terminal).await,
+        Command::Server { action } => setup::server(&paths, action, json, verbose, terminal).await,
         Command::Space { action } => space(paths, action).await,
         Command::Folder { action } => folder(&paths, action).await,
         Command::Service {
@@ -3591,6 +3604,7 @@ mod tests {
                 paths.clone(),
                 Command::Resume,
                 true,
+                false,
                 Arc::new(terminal::Terminal::new(true, false)),
             )
             .await
@@ -4699,6 +4713,7 @@ mod tests {
                 setup::server(
                     &paths,
                     action,
+                    false,
                     false,
                     Arc::new(terminal::Terminal::new(true, false)),
                 ),
