@@ -99,7 +99,7 @@ public final class VersionHistoryModel {
         let load = loads
         let answer: LoadState<FileVersions>
         do {
-            answer = .loaded(try await app.versions(of: file))
+            answer = .loaded(try await app.versions(of: linkedFile()))
         } catch {
             answer = .failed(sessionError(error))
         }
@@ -111,11 +111,16 @@ public final class VersionHistoryModel {
         guard canRestore, let version = selectedVersion else { return }
         restore = .sending(version)
         do {
-            let asked = try await app.restore(version, of: file)
+            let asked = try await app.restore(version, of: linkedFile())
             restore = .requested(version, requestID: asked.requestId)
         } catch {
             restore = .failed(version, sessionError(error))
         }
+    }
+
+    private func linkedFile() throws -> URL {
+        guard realPath != nil else { throw SessionError.PathNotInLinkedFolder(path: plainPath(file)) }
+        return file
     }
 
     /// Reads how the requested restore went. Once it ended as restored, the versions load again.

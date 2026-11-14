@@ -439,6 +439,41 @@ private let fourVersions = [
         #expect(history.requestedVersion?.versionId == "v3")
     }
 
+    @Test func aPathWhoseLinksDontResolveIsNeverSentToTheCore() async throws {
+        let temporary = FileManager.default.temporaryDirectory.appending(path: "koidrive-chain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let real = try #require(realpath(temporary.path(percentEncoded: false), nil))
+        defer { free(real) }
+        let root = URL(filePath: String(cString: real), directoryHint: .isDirectory)
+        for hop in 0..<40 {
+            let destination = hop == 39 ? root.appending(path: "Outside/Missing").path(percentEncoded: false) : "chain\(hop + 1)"
+            try FileManager.default.createSymbolicLink(atPath: root.appending(path: "chain\(hop)").path(percentEncoded: false), withDestinationPath: destination)
+        }
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-photos")
+        let photos = try await app.linkFolder(spaceID: "space-photos", path: root.path(percentEncoded: false))
+        let fake = try #require(app.session.fakeCore())
+        let old = FileVersion(versionId: "old", size: 6, savedAtMs: 1, deviceId: "device-1", deviceName: nil, current: false)
+        try fake.setVersions(spaceId: photos.spaceId, versions: FileVersions(path: "chain0/Plan.key", nodeId: "synced", versions: [old]))
+        let file = root.appending(path: "chain0/Plan.key")
+        let refused = SessionError.PathNotInLinkedFolder(path: file.path(percentEncoded: false))
+
+        let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
+        await history.load()
+        history.selection = old.id
+        await history.restoreSelected()
+        #expect(history.folder == nil)
+        #expect(history.content == .failed(refused))
+        #expect(!history.canRestore)
+        #expect(try await app.restoreRequests(in: photos.url).isEmpty)
+
+        let share = ShareLinkModel(app: app, item: file)
+        await share.create()
+        #expect(share.folder == nil)
+        #expect(share.step == .failed(refused))
+    }
+
     @Test func aFileOutsideTheLinkedFoldersIsRefused() async throws {
         let app = AppModel.fake(scenario: .upToDate)
         let file = FileManager.default.temporaryDirectory.appending(path: "Elsewhere/Notes.md")

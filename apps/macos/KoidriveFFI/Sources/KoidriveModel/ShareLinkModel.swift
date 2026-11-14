@@ -95,6 +95,7 @@ public final class ShareLinkModel {
         }
         step = .checking
         do {
+            guard realPath != nil else { throw SessionError.PathNotInLinkedFolder(path: plainPath(item)) }
             let made = try await app.createShareLink(for: item, expiry: expiry, password: password)
             step = .created(made)
             NotificationCenter.default.post(name: Self.linkCreated, object: app, userInfo: [Self.linkKey: made.link])
