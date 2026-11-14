@@ -138,6 +138,10 @@ pub enum Reason {
     /// The folder a removal acts on holds entries other than platform files,
     /// named here in order. The folder went back as it was.
     Holds(Vec<OsString>),
+    /// The system did not allow the effect's first change, as for a folder
+    /// without write permission, a locked file or a read-only volume. Nothing
+    /// changed.
+    Denied,
 }
 
 /// Effects whose steps become durable together (design §5.2), begun by
@@ -212,12 +216,21 @@ fn overtaken(placed: Outcome) -> Outcome {
     }
 }
 
+fn denied(err: io::Error) -> io::Result<Outcome> {
+    match err.kind() {
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+            Ok(failed(Reason::Denied))
+        }
+        _ => Err(err),
+    }
+}
+
 fn unresolved(err: Unresolved) -> io::Result<Outcome> {
     match err {
         Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. } => {
             Ok(failed(Reason::Moved))
         }
-        err => Err(err.into()),
+        err => denied(err.into()),
     }
 }
 
@@ -356,7 +369,7 @@ impl Space {
                 match rustix::fs::mkdirat(parent.fd(), name, Mode::from_raw_mode(0o755)) {
                     Ok(()) => self.flush_folder(&parent, Flush::Plain)?,
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
-                    Err(err) => return Err(err.into()),
+                    Err(err) => return denied(err.into()),
                 }
                 let identity = stat_at(parent.fd(), name)?.id;
                 hook(Step::Placed);
@@ -368,7 +381,10 @@ impl Space {
                 let staging = self.private(&[STAGING_DIR])?;
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
-                self.place(&staging, &effect.id, &parent, name, hook)?
+                match self.place(&staging, &effect.id, &parent, name, hook) {
+                    Ok(outcome) => outcome,
+                    Err(err) => denied(err)?,
+                }
             }
             Action::WriteFile {
                 at,
@@ -403,7 +419,7 @@ impl Space {
                     Err(err) if err.kind() == io::ErrorKind::NotFound => {
                         return Ok(failed(Reason::Missing));
                     }
-                    Err(err) => return Err(err),
+                    Err(err) => return denied(err),
                 }
                 self.flush_folder(&source, Flush::Plain)?;
                 self.flush_folder(&target, Flush::Plain)?;
@@ -459,7 +475,7 @@ impl Space {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Ok(failed(Reason::Missing));
             }
-            Err(err) => return Err(err),
+            Err(err) => return denied(err),
         }
         self.flush_folder(&parent, Flush::Plain)?;
         self.flush_folder(&quarantine, Flush::Barrier)?;

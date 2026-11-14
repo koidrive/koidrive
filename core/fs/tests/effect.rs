@@ -763,3 +763,33 @@ fn recovery_of_a_replacement_whose_name_was_taken_before_a_crash_after_the_trash
     assert_eq!(trashed(root), [SYNCED]);
     assert_settled(root);
 }
+
+#[test]
+fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    for (scenario, mode) in SCENARIOS
+        .iter()
+        .flat_map(|scenario| [(scenario, 0o555), (scenario, 0o000)])
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(scenario, root);
+        let docs = root.join("docs");
+        let before = listing(&docs);
+        fs::set_permissions(&docs, fs::Permissions::from_mode(mode)).unwrap();
+        let outcome = apply(root, &effect, |_| {});
+        fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            outcome,
+            failed(Reason::Denied),
+            "{} {mode:o}",
+            scenario.name
+        );
+        assert_eq!(listing(&docs), before, "{} {mode:o}", scenario.name);
+        assert_eq!(private_names(root, QUARANTINE_DIR), Vec::<String>::new());
+    }
+}

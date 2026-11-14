@@ -264,6 +264,82 @@ fn a_left_out_file_that_changes_again_is_left_out_at_its_next_failure() {
     assert!(problem.contains("secret.txt"), "the file went back to abandoning commits: {problem:?}");
 }
 
+proptest::proptest! {
+    #![proptest_config(koidrive_test_support::regression_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/folder_unwritable.txt"),
+        8,
+    ))]
+    #[test]
+    fn files_that_cannot_be_written_hold_back_no_other_download(
+        unwritable in proptest::strategy::Strategy::prop_filter(
+            proptest::collection::vec(proptest::bool::ANY, 2..7),
+            "some files can be written and some cannot",
+            |files: &Vec<bool>| files.contains(&true) && files.contains(&false),
+        ),
+    ) {
+        every_file_but_the_unwritable_ones_is_downloaded(&unwritable);
+    }
+}
+
+fn every_file_but_the_unwritable_ones_is_downloaded(unwritable: &[bool]) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let (site_b, mut b) = linked(&mut remote, "b");
+    let paths: Vec<String> = (0..unwritable.len())
+        .map(|at| format!("{at}/file.txt"))
+        .collect();
+    for (at, path) in paths.iter().enumerate() {
+        fs::create_dir(site_a.root.join(at.to_string())).unwrap();
+        fs::write(site_a.root.join(path), version(0, path)).unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    b.rest(&mut remote);
+
+    let mode = |mode| fs::Permissions::from_mode(mode);
+    for (at, _) in (unwritable.iter().enumerate()).filter(|(_, unwritable)| **unwritable) {
+        fs::set_permissions(site_b.root.join(at.to_string()), mode(0o555)).unwrap();
+    }
+    for path in &paths {
+        fs::write(site_a.root.join(path), version(1, path)).unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let on_b = |site: &Site| -> Vec<String> {
+        (paths.iter())
+            .map(|path| fs::read_to_string(site.root.join(path)).unwrap())
+            .collect()
+    };
+    let expected: Vec<String> = (paths.iter().zip(unwritable))
+        .map(|(path, unwritable)| version(usize::from(!unwritable), path))
+        .collect();
+    let mut timers = Vec::new();
+    eventually("every file that can be written reaches the folder", || {
+        for _ in 0..50 {
+            let Some(work) = b.work.pop_front() else { break };
+            match work {
+                Work::RetryAfter(_) => timers.push(work),
+                work => b.perform(work, &mut remote).unwrap(),
+            }
+        }
+        b.scan(Duration::from_millis(100));
+        on_b(&site_b) == expected
+    });
+
+    for at in 0..paths.len() {
+        fs::set_permissions(site_b.root.join(at.to_string()), mode(0o755)).unwrap();
+    }
+    b.work.extend(timers);
+    b.rest(&mut remote);
+    let everything: Vec<String> = (paths.iter()).map(|path| version(1, path)).collect();
+    assert_eq!(on_b(&site_b), everything);
+    assert_eq!(b.folder.view().problem, None);
+}
+
 
 
 #[test]
