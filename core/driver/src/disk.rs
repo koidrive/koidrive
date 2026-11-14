@@ -1230,6 +1230,9 @@ fn settle(
                     Reason::Changed => failed("the entry changed on this device"),
                     Reason::Taken => failed("another entry holds its name"),
                     Reason::Interrupted => failed("it was interrupted"),
+                    Reason::Denied => failed(
+                        "this device does not allow the change: the folder or the file may be read-only or locked",
+                    ),
                     Reason::Overtaken => {
                         failed("the file it replaced is gone and its name changed on this device")
                     }
