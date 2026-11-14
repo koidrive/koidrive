@@ -35,8 +35,7 @@ fn private_dir(root: &Path) -> io::Result<OwnedFd> {
 
 /// An exclusive or shared `flock` on an open file or folder, unlocked when it is dropped. Closing the descriptor is not
 /// enough. A close releases the lock only once no copy of the descriptor is left, and a child process holds a copy
-/// of every descriptor of its parent from its fork to its exec, close-on-exec or not. Without the unlock, a folder
-/// whose task ended while another thread started a child stayed locked for some milliseconds (GUN-343).
+/// of every descriptor of its parent from its fork to its exec, close-on-exec or not.
 #[derive(Debug)]
 pub struct Flock(File);
 
