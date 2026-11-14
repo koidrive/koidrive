@@ -48,7 +48,7 @@ public final class ShareLinkModel {
 
     public init(app: AppModel, item: URL) {
         self.app = app
-        self.item = item.aliasResolved
+        self.item = item.finderAliasResolved
     }
 
     #if DEBUG

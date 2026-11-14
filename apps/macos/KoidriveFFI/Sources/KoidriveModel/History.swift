@@ -58,15 +58,26 @@ extension AppModel {
         return name.map(DeviceLabel.named)
     }
 
-    /// The linked folder that holds `url`, or is `url`, judged by where `url` leads after its symbolic links and Finder alias resolve.
+    /// The linked folder that holds `url`, or is `url`, placed the way the core places a path: by the first part of it that leads into a linked folder once its symbolic links resolve.
     public func folder(containing url: URL) -> LinkedFolder? {
         location(of: url)?.folder
     }
 
     func location(of url: URL) -> (folder: LinkedFolder, below: [String])? {
-        let path = resolvedPath(plainPath(url.aliasResolved))
-        return state.folders.flatMap { folder in
-            Set([plainPath(folder.url), resolvedPath(plainPath(folder.url))]).compactMap { root in
+        let names = plainPath(url.finderAliasResolved).split(separator: "/").map(String.init)
+        var prefix = ""
+        for (index, name) in names.enumerated() {
+            prefix += "/" + name
+            if let found = location(ofPath: realPath(prefix) ?? prefix) {
+                return (found.folder, found.below + names[(index + 1)...])
+            }
+        }
+        return nil
+    }
+
+    private func location(ofPath path: String) -> (folder: LinkedFolder, below: [String])? {
+        state.folders.flatMap { folder in
+            Set([plainPath(folder.url), realPath(plainPath(folder.url))].compactMap(\.self)).compactMap { root in
                 if path == root { return (folder: folder, root: root, below: [String]()) }
                 guard path.hasPrefix(root + "/") else { return nil }
                 return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
@@ -78,24 +89,17 @@ extension AppModel {
 }
 
 extension URL {
-    var aliasResolved: URL {
-        (try? URL(resolvingAliasFileAt: self)) ?? self
+    var finderAliasResolved: URL {
+        guard let values = try? resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]),
+              values.isAliasFile == true, values.isSymbolicLink != true else { return self }
+        return (try? URL(resolvingAliasFileAt: self)) ?? self
     }
 }
 
-private func resolvedPath(_ path: String) -> String {
-    var existing = path
-    var rest: [String] = []
-    while existing != "/" {
-        if let resolved = realpath(existing, nil) {
-            defer { free(resolved) }
-            let real = String(cString: resolved)
-            return ([real == "/" ? "" : real] + rest).joined(separator: "/")
-        }
-        rest.insert((existing as NSString).lastPathComponent, at: 0)
-        existing = (existing as NSString).deletingLastPathComponent
-    }
-    return path
+private func realPath(_ path: String) -> String? {
+    guard let resolved = realpath(path, nil) else { return nil }
+    defer { free(resolved) }
+    return String(cString: resolved)
 }
 
 func plainPath(_ url: URL) -> String {

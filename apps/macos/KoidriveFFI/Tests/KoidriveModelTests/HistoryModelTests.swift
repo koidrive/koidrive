@@ -527,19 +527,52 @@ private let fourVersions = [
         #expect(history.parentPath == "Sync/Docs/")
     }
 
-    @Test func aLinkIntoTheFolderCannotBringInAFileOutsideIt() throws {
-        let (app, base, root, _) = try linkedTemporaryFolder()
+    @Test func aPathBelongsToTheFirstLinkedFolderItLeadsIntoAsTheCorePlacesIt() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: base) }
         let outside = base.appending(path: "Outside")
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        try Data("outside".utf8).write(to: outside.appending(path: "Plan.key"))
         try FileManager.default.createSymbolicLink(at: root.appending(path: "away"), withDestinationURL: outside)
         let shortcut = base.appending(path: "Shortcut")
         try FileManager.default.createSymbolicLink(at: shortcut, withDestinationURL: root)
 
-        #expect(app.folder(containing: shortcut.appending(path: "away/Plan.key")) == nil)
-        #expect(app.folder(containing: root.appending(path: "away/Plan.key")) == nil)
-        #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: "away/Plan.key")))
-        #expect(app.folder(containing: shortcut.appending(path: "Docs/New.key")) != nil)
+        #expect(app.folder(containing: shortcut.appending(path: "Docs/New.key")) == folder)
+        #expect(app.folder(containing: shortcut.appending(path: "away/Plan.key")) == folder)
+        #expect(app.folder(containing: outside.appending(path: "Plan.key")) == nil)
+        #expect(app.folder(containing: URL(filePath: shortcut.path + "/../Plan.key")) == nil)
+    }
+
+    @Test func aRestoreThroughALinkToAnotherLinkedFolderIsFollowedInTheFolderItWasAskedIn() async throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-bridge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = base.appending(path: "Documents")
+        let second = base.appending(path: "Photos")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data("plan".utf8).write(to: second.appending(path: "Plan.key"))
+        try FileManager.default.createSymbolicLink(at: first.appending(path: "bridge"), withDestinationURL: second)
+
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-documents")
+        try await app.unlinkFolder(spaceID: "space-photos")
+        let documents = try await app.linkFolder(spaceID: "space-documents", path: first.path(percentEncoded: false))
+        _ = try await app.linkFolder(spaceID: "space-photos", path: second.path(percentEncoded: false))
+        let old = FileVersion(versionId: "old", size: 4, savedAtMs: 1, deviceId: "device-1", deviceName: nil, current: false)
+        let fake = try #require(app.session.fakeCore())
+        try fake.setVersions(spaceId: documents.spaceId, versions: FileVersions(path: "bridge/Plan.key", nodeId: "node-plan", versions: [old]))
+
+        let history = VersionHistoryModel(app: app, file: first.appending(path: "bridge/Plan.key"), clock: halfPastMidnight)
+        #expect(history.folder == documents)
+        #expect(history.parentPath == "Documents/bridge/")
+        await history.load()
+        history.selection = old.id
+        await history.restoreSelected()
+        guard case .requested(_, let requestID) = history.restore else {
+            Issue.record("not requested: \(history.restore)")
+            return
+        }
+        try fake.finishRestore(requestId: requestID, state: .restored)
+        await history.refreshRestore()
+        #expect(history.restore == .restored(old, .restored))
     }
 }

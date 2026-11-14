@@ -30,7 +30,7 @@ public final class VersionHistoryModel {
 
     public init(app: AppModel, file: URL, clock: HistoryClock = HistoryClock()) {
         self.app = app
-        self.file = file.aliasResolved
+        self.file = file.finderAliasResolved
         self.clock = clock
     }
 
