@@ -598,6 +598,18 @@ impl Change {
     fn carries(self, action: Change) -> bool {
         self == Change::Made || self == action
     }
+
+    fn settled(self, here: &Shape, there: &Shape) -> bool {
+        match self {
+            Change::Made => here.same(there),
+            Change::Moved => here.same_position(there),
+            Change::Edited => match (&here.content, &there.content) {
+                (Some(here), Some(there)) => same_content(here, there),
+                (None, None) => true,
+                _ => false,
+            },
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -2318,8 +2330,20 @@ impl World {
                             }
                             let carried: BTreeSet<u64> = (self.actions[d].range(..=built))
                                 .filter(|(_, (own, action))| {
-                                    (changes.iter())
-                                        .any(|(ino, change)| ino == own && change.carries(*action))
+                                    let settled = || {
+                                        crate::space::node_states(&record.changes).any(|state| {
+                                            let here = (local.get(&state.node_id))
+                                                .filter(|here| here.identity.ino == *own);
+                                            let there = RemoteNode::from_state(state).ok();
+                                            here.zip(there).is_some_and(|(here, (_, there))| {
+                                                !there.trashed
+                                                    && action.settled(&here.shape, &there.shape)
+                                            })
+                                        })
+                                    };
+                                    (changes.iter()).any(|(ino, change)| {
+                                        ino == own && (change.carries(*action) || settled())
+                                    })
                                 })
                                 .map(|(at, _)| *at)
                                 .collect();
@@ -4014,5 +4038,28 @@ mod tests {
         ];
         world.phase(1, &steps).unwrap();
         assert!(live_writes(&world.space).contains_key(&2));
+    }
+
+    #[test]
+    fn a_move_away_and_back_that_an_edit_commit_settles_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        world
+            .phase(1, &[(0, user(3, 2)), (0, user(3, 0)), (0, user(2, 0))])
+            .unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
+        );
     }
 }
