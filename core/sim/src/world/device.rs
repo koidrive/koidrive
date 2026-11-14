@@ -103,7 +103,12 @@ impl Engine {
                     let (id, node) = RemoteNode::from_state(state).map_err(|error| {
                         Failure::Broken(format!("unreadable node state: {error:?}"))
                     })?;
-                    if made.is_some_and(|commit_id| self.commits.edits_in_flight(commit_id, &id)) {
+                    if made.is_some_and(|commit_id| self.commits.answers_in_flight(commit_id, &id))
+                    {
+                        self.trees.set_remote_answered_here(id, node);
+                    } else if made
+                        .is_some_and(|commit_id| self.commits.edits_in_flight(commit_id, &id))
+                    {
                         self.trees.set_remote_edited_here(id, node);
                     } else if made.is_some() {
                         self.trees.set_remote_made_here(id, node);

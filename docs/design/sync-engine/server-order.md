@@ -78,7 +78,7 @@ The server lost commits this device applied when it reports `AHEAD_OF_SERVER`, i
 
 The bound is the seq of the newest commit of this device that the server still counts. The engine keeps the seq of each of its last 1,000 acknowledged commits by slot, and slot *w* is a commit the restored server holds, so every seq at or below its seq is from before the loss.
 
-The commit's own record counts as its result for these records. When the record of the commit in flight arrives before its result, the commit's slot takes the record's seq, and the nodes the record shows the commit trashed, edited or positioned are recorded as above. So a loss that drops the commit before its result reaches the device sends its changes again as this device's own, rather than taking them for another device's change.
+The commit's own record counts as its result for these records. When the record of the commit in flight arrives before its result, the commit's slot takes the record's seq, and the nodes the record shows the commit trashed, edited or positioned are recorded as above. So a loss that drops the commit before its result reaches the device sends its changes again as this device's own, rather than taking them for another device's change. S takes the content of each file the record shows the commit edited, as the result would set it. A later record in the same backlog of another device's edit of that file is then a remote change of synced content, not a conflict with this device's own write.
 
 A delete this device made in a lost commit is sent again:
 

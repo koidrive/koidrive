@@ -381,6 +381,18 @@ impl Commits {
         })
     }
 
+    /// Whether the commit in flight is `commit_id` and its edit of `id` answers a conflict
+    /// question: the file takes the content of its copy, which L does not hold for it.
+    pub fn answers_in_flight(&self, commit_id: &str, id: &str) -> bool {
+        (self.in_flight.as_ref()).is_some_and(|flight| {
+            flight.commit.commit_id == commit_id
+                && (flight.commit.ops.iter().filter_map(|op| op.op.as_ref())).any(|op| {
+                    matches!(op, op::Op::UpdateContent(update) if update.node_id == id)
+                        && self.answer_for(commit_id, op).is_some()
+                })
+        })
+    }
+
     /// The files the commit in flight edits, other than by a resend.
     pub fn edited_in_flight(&self) -> Vec<NodeId> {
         let ops = (self.in_flight.as_ref()).map_or(&[][..], |flight| &flight.commit.ops[..]);

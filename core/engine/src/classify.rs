@@ -439,15 +439,19 @@ impl Trees {
     }
 
     pub fn set_remote(&mut self, id: NodeId, node: RemoteNode) {
-        self.apply_remote(id, node, false, false);
+        self.apply_remote(id, node, Made::Elsewhere);
     }
 
     pub fn set_remote_made_here(&mut self, id: NodeId, node: RemoteNode) {
-        self.apply_remote(id, node, true, false);
+        self.apply_remote(id, node, Made::Here);
     }
 
     pub fn set_remote_edited_here(&mut self, id: NodeId, node: RemoteNode) {
-        self.apply_remote(id, node, true, true);
+        self.apply_remote(id, node, Made::Edit);
+    }
+
+    pub fn set_remote_answered_here(&mut self, id: NodeId, node: RemoteNode) {
+        self.apply_remote(id, node, Made::Answer);
     }
 
     fn all_trees_hold(&self, id: &str) -> bool {
@@ -468,7 +472,9 @@ impl Trees {
         }
     }
 
-    fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool, edit: bool) {
+    fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
+        let made_here = made != Made::Elsewhere;
+        let edit = matches!(made, Made::Edit | Made::Answer);
         let hidden = (self.r.get(&id)).is_some_and(|old| old.content_rev != node.content_rev)
             && !node.trashed
             && self.edited(&id)
@@ -531,11 +537,22 @@ impl Trees {
             && !node.trashed
             && self.l.get(&id).is_none()
             && self.removed_here.contains_key(&id);
+        let sent = (self.acknowledged(&id))
+            .filter(|_| edited_here && made == Made::Edit)
+            .map(|synced| Shape {
+                content: node.shape.content.clone(),
+                ..synced.clone()
+            });
         let shape = node.shape.clone();
         if edited_here {
             self.edited_here.insert(id.clone(), node.edit_rev);
         }
         self.place_remote(id.clone(), node);
+        if let Some(sent) = sent
+            && !self.set_synced_if_valid(id.clone(), Some(sent.clone()))
+        {
+            self.wait(id.clone(), Some(sent), Origin::Other);
+        }
         if removed_again && !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
             self.wait(id.clone(), Some(shape.clone()), Origin::Other);
         }
@@ -3137,6 +3154,14 @@ enum Discard {
     Reclaimed,
     Kept,
     Pending,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Made {
+    Elsewhere,
+    Here,
+    Edit,
+    Answer,
 }
 
 #[cfg(test)]

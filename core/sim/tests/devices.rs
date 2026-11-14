@@ -5754,7 +5754,6 @@ fn a_folder_owing_its_name_that_another_device_deletes_and_a_third_brings_back_l
 }
 
 #[test]
-#[ignore = "a file one device deletes and another edits ends in a recovery copy although the server kept the edit (GUN-730)"]
 fn a_file_edited_after_another_device_deleted_it_converges() {
     let w = |d: usize| (d, Step::Work(0));
     let mut steps = vec![(2, Step::Work(0)); 8];
@@ -5773,6 +5772,132 @@ fn a_file_edited_after_another_device_deleted_it_converges() {
         (0, folder("a")),
     ]);
     converge(3, &[vec![(0, file("a"))], steps]).unwrap();
+}
+
+#[test]
+fn a_write_the_server_kept_is_taken_as_synced_when_its_record_arrives_before_its_result() {
+    let a = |kind: u8, target: usize, parent: usize, name: usize, text: u8| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let w = |d: usize| (d, Step::Work(0));
+    let mut owed = vec![(2, Step::Work(0)); 8];
+    owed.push((1, delete(1)));
+    owed.extend(commit(1));
+    owed.push((2, overwrite(0)));
+    owed.extend(commit(2));
+    owed.extend(owing());
+    owed.extend([
+        (1, delete(1)),
+        (0, COMMIT),
+        w(0),
+        (0, Step::Work(4240733720137905515)),
+        (0, Step::Commit(Reply::NoChunks)),
+        w(0),
+        w(0),
+        (0, user(2, 3211346187131332213, 0, "a")),
+    ]);
+    let cases = vec![
+        (3, vec![vec![(0, file("a"))], owed]),
+        (
+            3,
+            vec![
+                vec![(1, a(1, 0, 0, 0, 0))],
+                vec![
+                    (2, a(2, 0, 0, 0, 0)),
+                    (2, Step::Work(0)),
+                    (2, Step::Work(0)),
+                    (2, Step::Commit(Reply::Served)),
+                    (1, Step::Work(0)),
+                    (1, Step::Work(0)),
+                    (2, Step::Duplicate(0)),
+                    (1, Step::Work(0)),
+                    (1, a(2, 0, 0, 0, 0)),
+                    (1, Step::Work(0)),
+                    (1, Step::Work(43)),
+                    (1, Step::Commit(Reply::Served)),
+                ],
+            ],
+        ),
+        (
+            2,
+            vec![
+                vec![(0, a(1, 0, 0, 0, 3)), (0, a(3, 0, 0, 1, 0))],
+                vec![
+                    (1, a(0, 0, 0, 0, 0)),
+                    (1, a(2, 2008427414769409736, 0, 0, 0)),
+                    (1, Step::Work(0)),
+                    (1, Step::Work(0)),
+                    (1, Step::Commit(Reply::Served)),
+                    (2, Step::Work(0)),
+                    (0, Step::Effect(Outcome::Run)),
+                    (0, Step::Work(0)),
+                    (1, a(3, 994829453346764372, 0, 2, 0)),
+                    (0, a(2, 132281987842843300, 12501385776686876657, 5, 3)),
+                ],
+            ],
+        ),
+        (
+            2,
+            vec![
+                vec![(0, a(1, 0, 0, 0, 0))],
+                vec![
+                    (1, a(2, 0, 0, 0, 0)),
+                    (1, Step::Work(0)),
+                    (1, Step::Commit(Reply::Served)),
+                    (1, Step::Work(0)),
+                    (1, a(3, 0, 0, 1, 0)),
+                    (2, Step::Work(0)),
+                    (0, Step::Effect(Outcome::Crash(Cut::Quarantined))),
+                    (0, a(0, 0, 0, 1, 0)),
+                    (0, Step::Work(0)),
+                    (2, a(2, 1121116636878847081, 0, 0, 0)),
+                ],
+            ],
+        ),
+        (
+            2,
+            vec![
+                vec![(0, a(0, 0, 0, 2, 0))],
+                vec![
+                    (0, a(3, 0, 0, 3, 0)),
+                    (0, Step::Scan),
+                    (0, Step::Commit(Reply::Served)),
+                    (1, a(4, 0, 0, 0, 0)),
+                    (1, a(0, 0, 0, 0, 0)),
+                    (1, a(1, 0, 1, 0, 0)),
+                    (1, Step::Scan),
+                    (1, Step::Commit(Reply::Served)),
+                    (0, Step::Commit(Reply::Served)),
+                    (1, Step::Commit(Reply::Served)),
+                    (2, a(1, 0, 0, 2, 2)),
+                    (1, a(0, 0, 0, 2, 0)),
+                ],
+                vec![
+                    (1, a(2, 3930299441111155299, 0, 0, 0)),
+                    (1, Step::Work(0)),
+                    (0, a(4, 910564747632835397, 0, 0, 0)),
+                    (1, Step::Work(0)),
+                    (1, Step::Work(0)),
+                    (2, Step::Deliver(0)),
+                    (0, Step::Work(1748583625567181184)),
+                    (2, Step::Work(2635125152357438952)),
+                    (0, a(2, 1772821328963428142, 0, 0, 2)),
+                    (2, Step::Work(2733997028527349943)),
+                    (2, Step::Commit(Reply::Served)),
+                    (0, Step::Work(0)),
+                ],
+            ],
+        ),
+    ];
+    for (devices, phases) in cases {
+        converge(devices, &phases).unwrap();
+    }
 }
 
 fn drawn(kind: u8, target: usize, parent: usize, name: usize) -> Step {
