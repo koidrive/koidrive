@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
 use koidrive_proto::v1::error;
@@ -6366,6 +6367,55 @@ fn a_file_edited_after_another_device_deleted_it_converges() {
         (0, folder("a")),
     ]);
     converge(3, &[vec![(0, file("a"))], steps]).unwrap();
+}
+
+fn a_rewind_after_a_restore_took_a_write_a_disk_held() -> Vec<(usize, Step)> {
+    use Step::*;
+    let mut steps = vec![(0, act(0, 0, 0, "a", 0))];
+    steps.extend([(0, Work(0)); 12]);
+    steps.extend([(1, Work(0)); 12]);
+    steps.push((0, Backup));
+    steps.push((0, act(1, 0, 0, "A", 0)));
+    steps.extend([(0, Work(0)); 8]);
+    steps.extend([
+        (0, Restore),
+        (1, Connect),
+        (1, Deliver(0)),
+        (1, Effect(Outcome::Run)),
+        (0, Rewind),
+    ]);
+    steps
+}
+
+#[test]
+fn a_write_a_restore_took_may_be_discarded_once_a_rewind_follows() {
+    let mut steps = a_rewind_after_a_restore_took_a_write_a_disk_held();
+    steps.push((0, act(0, 0, 7662212994444525949, "a", 0)));
+    converge(2, &[steps]).unwrap();
+}
+
+#[test]
+fn a_write_a_restore_took_is_not_sent_again_after_a_rewind_until_a_user_keeps_it() {
+    let mut world = World::new(2);
+    world
+        .run(0, &a_rewind_after_a_restore_took_a_write_a_disk_held())
+        .unwrap();
+    world
+        .run(1, &[(0, Step::Connect), (0, Step::Deliver(0))])
+        .unwrap();
+    let commits = &mut world.devices[0].engine.commits;
+    let asked = (commits.questions().iter())
+        .find(|question| {
+            matches!(question.kind, QuestionKind::Recovery { .. }) && question.answer.is_none()
+        })
+        .map(|question| question.id.clone())
+        .expect("the rewind asks about the write the restore took");
+    assert!(commits.decide(&asked, Answer::Keep));
+    let failure = world.phase(2, &[]).unwrap_err();
+    assert!(
+        failure.to_string().contains("sent write 1 again"),
+        "{failure}"
+    );
 }
 
 #[test]

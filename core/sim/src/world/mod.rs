@@ -934,9 +934,13 @@ impl World {
         };
         note(&mut self.seen, "server rewound");
         unspend(&mut self.spent, &mut self.touches, backup);
+        let backed_up: BTreeSet<i64> = (backup.space.nodes().into_iter())
+            .filter_map(|node| Some(node.current?.content?.mtime_ns))
+            .collect();
         let taken: Vec<i64> = (self.writers.keys())
             .filter(|write| {
                 stored(&self.in_history, **write) && !stored(&backup.in_history, **write)
+                    || self.exposed.contains_key(write) && !backed_up.contains(write)
             })
             .copied()
             .collect();
