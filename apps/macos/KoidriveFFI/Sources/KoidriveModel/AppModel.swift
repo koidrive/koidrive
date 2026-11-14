@@ -24,11 +24,14 @@ public final class AppModel {
     /// The version this Mac updated to since the person last acknowledged an update, shown once until
     /// `acknowledgeUpdate()`. Nil on the first launch, which is an install rather than an update.
     public private(set) var justUpdated: String?
+    /// Whether an `update()` is running.
+    public private(set) var updating = false
     public let session: SyncSession
     @ObservationIgnored private let version: String
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var consumer: Task<Void, Never>?
     @ObservationIgnored private var realRoots: [String: String?] = [:]
+    @ObservationIgnored private var updateInFlight: Task<UpdateResult, Error>?
     private static let acknowledgedVersion = "AcknowledgedVersion"
 
     /// With `defaults`, the model remembers there which version's update note the person saw; without, it shows none.
@@ -44,8 +47,9 @@ public final class AppModel {
         self.version = version
         self.defaults = defaults
         let acknowledged = defaults?.string(forKey: Self.acknowledgedVersion)
-        justUpdated = acknowledged.flatMap { $0 == version ? nil : version }
-        if acknowledged == nil {
+        if let acknowledged, Self.isNewer(version, than: acknowledged) {
+            justUpdated = version
+        } else if acknowledged != version {
             defaults?.set(version, forKey: Self.acknowledgedVersion)
         }
         consumer = Task { [weak self] in
@@ -261,7 +265,37 @@ public final class AppModel {
     /// `relaunch()` opens the new version. Throws `SessionError.UpdateFailed` with the reason, the log and a command
     /// that updates from Terminal, or `SessionError.UpdateUnavailable` when this Mac runs the newest release.
     public func update() async throws -> UpdateResult {
-        try await run { try $0.update() }
+        if let updateInFlight {
+            return try await updateInFlight.value
+        }
+        let task = Task { try await run { try $0.update() } }
+        updateInFlight = task
+        updating = true
+        defer {
+            updateInFlight = nil
+            updating = false
+        }
+        return try await task.value
+    }
+
+    private static func isNewer(_ version: String, than other: String) -> Bool {
+        func split(_ version: String) -> (String, String?) {
+            let parts = version.split(separator: "-", maxSplits: 1).map(String.init)
+            return (parts[0], parts.count > 1 ? parts[1] : nil)
+        }
+        let (core, prerelease) = split(version)
+        let (otherCore, otherPrerelease) = split(other)
+        switch core.compare(otherCore, options: .numeric) {
+        case .orderedDescending: return true
+        case .orderedAscending: return false
+        case .orderedSame:
+            switch (prerelease, otherPrerelease) {
+            case (nil, .some): return true
+            case (.some(let prerelease), .some(let otherPrerelease)):
+                return prerelease.compare(otherPrerelease, options: .numeric) == .orderedDescending
+            default: return false
+            }
+        }
     }
 
     /// Records that the person saw the note about `justUpdated`, so it does not show again.

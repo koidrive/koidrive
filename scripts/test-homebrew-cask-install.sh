@@ -98,7 +98,7 @@ PY
     else
         plain=$(brew outdated --cask "$token") || true
         if grep -q koidrive <<< "$plain"; then
-            echo "FAIL Homebrew upgrades the self-updating app without being asked" >&2
+            echo "FAIL Homebrew replaces a self-updating app whose bundle already has the cask's version" >&2
             exit 1
         fi
         status=0

@@ -124,6 +124,35 @@ private final class Fetches {
         #expect(AppModel.fake().justUpdated == nil)
     }
 
+    @Test func aDowngradeShowsNoUpdateNoteAndAReleaseIsNewerThanItsPrereleases() throws {
+        let suite = "dev.koidrive.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch(_ version: String) -> AppModel {
+            let (session, events) = SyncSession.fakeWithEventStream()
+            return AppModel(session: session, events: events, defaults: defaults, version: version)
+        }
+        #expect(launch("0.1.0-alpha.9").justUpdated == nil)
+        #expect(launch("0.1.0-alpha.10").justUpdated == "0.1.0-alpha.10")
+        launch("0.1.0-alpha.10").acknowledgeUpdate()
+        #expect(launch("0.1.0").justUpdated == "0.1.0")
+        launch("0.1.0").acknowledgeUpdate()
+        #expect(launch("0.1.0-alpha.10").justUpdated == nil)
+        #expect(launch("0.1.0").justUpdated == "0.1.0")
+    }
+
+    @Test func aSecondUpdateWhileOneRunsWaitsForItInsteadOfStartingAnother() async throws {
+        let model = AppModel.fake(scenario: .updateAvailable)
+        async let first = model.update()
+        async let second = model.update()
+        let results = try await [first, second]
+        #expect(results[0] == results[1])
+        #expect(!model.updating)
+        await #expect(throws: SessionError.UpdateUnavailable) {
+            try await model.update()
+        }
+    }
+
     @Test func onlyADebugBuildStartsOnTheFakeScenarioPreference() throws {
         let suite = "dev.koidrive.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

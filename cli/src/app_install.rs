@@ -263,6 +263,7 @@ function run(args) {
     pub(crate) const QUIESCE: &str = r#"ObjC.import('AppKit');
 function run(args) {
     const paths = args.map(p => ObjC.unwrap($(p).stringByStandardizingPath));
+    const asked = [];
     let running = false;
     while (true) {
         const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('dev.koidrive.Koidrive');
@@ -273,7 +274,9 @@ function run(args) {
             if (app.terminated) continue;
             remaining = true;
             running = true;
-            if (!app.terminate()) throw Error('Koidrive refused graceful termination');
+            if (asked.indexOf(app.processIdentifier) >= 0) continue;
+            if (!app.terminate) throw Error('Koidrive refused graceful termination');
+            asked.push(app.processIdentifier);
         }
         if (!remaining) return running ? 'running' : 'stopped';
         $.NSThread.sleepForTimeInterval(0.05);

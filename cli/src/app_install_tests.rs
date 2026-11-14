@@ -1,6 +1,97 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[tokio::test]
+async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join(BUNDLE);
+    let run = |program: &str, arguments: &[&OsStr]| {
+        let output = std::process::Command::new(program)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{program}: {output:?}");
+    };
+    run(
+        "/usr/bin/osacompile",
+        &[
+            OsStr::new("-s"),
+            OsStr::new("-o"),
+            app.as_os_str(),
+            OsStr::new("-e"),
+            OsStr::new("on idle"),
+            OsStr::new("-e"),
+            OsStr::new("return 30"),
+            OsStr::new("-e"),
+            OsStr::new("end idle"),
+        ],
+    );
+    let plist = app.join("Contents/Info.plist");
+    for entry in [
+        format!("Add :CFBundleIdentifier string {IDENTIFIER}"),
+        "Add :LSUIElement bool true".to_owned(),
+    ] {
+        run(
+            "/usr/libexec/PlistBuddy",
+            &[OsStr::new("-c"), OsStr::new(&entry), plist.as_os_str()],
+        );
+    }
+    run(
+        "/usr/bin/codesign",
+        &[
+            OsStr::new("-s"),
+            OsStr::new("-"),
+            OsStr::new("--force"),
+            app.as_os_str(),
+        ],
+    );
+    let tools = dir.path().join("tools");
+    let config = Config {
+        system: dir.path().join("system"),
+        user: dir.path().join("user"),
+        work: dir.path().join("work"),
+        release: "http://127.0.0.1:9/releases/download".into(),
+        codesign: tools.join("codesign"),
+        spctl: tools.join("spctl"),
+        hdiutil: tools.join("hdiutil"),
+        ditto: "/usr/bin/ditto".into(),
+        osascript: "/usr/bin/osascript".into(),
+        open: "/usr/bin/open".into(),
+        updater: dir.path().join("updater"),
+        max_download: 1024,
+    };
+    let (_tx, cancel) = watch::channel(false);
+    let control = Control {
+        deadline: Instant::now() + Duration::from_secs(60),
+        cancel,
+    };
+    let inspect = async || {
+        process(
+            &config.osascript,
+            &args(&[
+                OsStr::new("-l"),
+                OsStr::new("JavaScript"),
+                OsStr::new("-e"),
+                OsStr::new(INSPECT_RUNNING),
+                app.as_os_str(),
+            ]),
+            &control,
+        )
+        .await
+        .unwrap()
+    };
+    run("/usr/bin/open", &[OsStr::new("-n"), app.as_os_str()]);
+    let launched = Instant::now() + Duration::from_secs(20);
+    while inspect().await.trim_ascii() != b"running" {
+        assert!(Instant::now() < launched, "the probe app never ran");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(quiesce(&config, &[&app], &control).await.unwrap());
+    assert_eq!(inspect().await.trim_ascii(), b"stopped");
+    assert!(!quiesce(&config, &[&app], &control).await.unwrap());
+}
+
+#[tokio::test]
 async fn malformed_receipt_version_is_rejected_before_namespace_replacement() {
     let f = Fixture::new(None, DMG.to_vec(), 200).await;
     f.old();
