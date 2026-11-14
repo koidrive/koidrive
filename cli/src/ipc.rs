@@ -575,6 +575,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_status_request_cut_off_by_an_exiting_daemon_reaches_the_profile_instead() {
+        let (_dir, paths, _root) = linked_profile();
+        let listener = bind(&paths.socket()).unwrap();
+        let daemon = tokio::spawn(async move {
+            loop {
+                drop(listener.accept().await.unwrap());
+            }
+        });
+        let response = run(&paths, Request::Status).await.unwrap();
+        assert!(
+            matches!(&response, Response::Status { status } if !status.running),
+            "{response:?}"
+        );
+        daemon.abort();
+    }
+
+    #[tokio::test]
     async fn a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit() {
         let (_dir, paths, _root) = linked_profile();
         let listener = bind(&paths.socket()).unwrap();

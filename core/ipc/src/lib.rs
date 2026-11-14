@@ -442,6 +442,12 @@ pub async fn send(socket: &Path, request: &Request, owner: u32) -> io::Result<Op
     let (reader, mut writer) = stream.into_split();
     write_line(&mut writer, request).await?;
     let line = read_line(reader).await?;
+    if line.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the daemon closed the connection without answering",
+        ));
+    }
     parse(&line).map(Some)
 }
 
@@ -508,12 +514,20 @@ async fn connect(socket: &Path, owner: u32) -> io::Result<Option<UnixStream>> {
     Ok(Some(stream))
 }
 
-/// Runs a request in the daemon, or returns `None` when no daemon answers on the profile's socket.
+/// Runs a request in the daemon, or returns `None` when no daemon answers on the profile's socket. A daemon that
+/// closes the connection without answering a status request, as an exiting daemon does, also returns `None`.
 pub async fn ask(paths: &Paths, request: &Request) -> Result<Option<Response>, String> {
     let socket = paths.socket();
-    send(&socket, request, rustix::process::getuid().as_raw())
-        .await
-        .map_err(|error| format!("the daemon's socket {} failed: {error}", socket.display()))
+    match send(&socket, request, rustix::process::getuid().as_raw()).await {
+        Err(error)
+            if error.kind() == io::ErrorKind::UnexpectedEof
+                && matches!(request, Request::Status) =>
+        {
+            Ok(None)
+        }
+        answer => answer
+            .map_err(|error| format!("the daemon's socket {} failed: {error}", socket.display())),
+    }
 }
 
 /// Reads one line of at most the socket's line limit.
@@ -699,6 +713,22 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_closes_without_answering_is_an_unexpected_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon.sock");
+        let daemon = UnixListener::bind(&socket).unwrap();
+        let closed = tokio::spawn(async move {
+            let (stream, _) = daemon.accept().await.unwrap();
+            drop(stream);
+        });
+        let owner = rustix::process::getuid().as_raw();
+        let error = send(&socket, &Request::Pause, owner).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+        assert!(error.to_string().contains("without answering"), "{error}");
+        closed.await.unwrap();
     }
 
     #[tokio::test]
