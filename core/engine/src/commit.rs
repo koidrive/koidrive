@@ -1747,8 +1747,12 @@ impl Commits {
                 }
                 _ => continue,
             };
-            if applied && sent.is_some() && !flight.resent.contains(node) {
-                trees.record_moved(node, result.seq);
+            if applied && sent.is_some() {
+                if flight.resent.contains(node) {
+                    trees.end_resend(node);
+                } else {
+                    trees.record_moved(node, result.seq);
+                }
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created
