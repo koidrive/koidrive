@@ -64,9 +64,13 @@ extension AppModel {
     }
 
     func location(of url: URL) -> (folder: LinkedFolder, below: [String])? {
-        let path = url.realPath
-        return state.folders.flatMap { folder in
-            Set([plainPath(folder.url), folder.url.realPath]).compactMap { root in
+        location(ofRealPath: url.realPath)
+    }
+
+    func location(ofRealPath path: String) -> (folder: LinkedFolder, below: [String])? {
+        state.folders.flatMap { folder in
+            let stored = plainPath(folder.url)
+            return Set([stored, realRoot(stored)]).compactMap { root in
                 if path == root { return (folder: folder, root: root, below: [String]()) }
                 guard path.hasPrefix(root + "/") else { return nil }
                 return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
@@ -78,11 +82,7 @@ extension AppModel {
 }
 
 extension URL {
-    var realItem: URL {
-        URL(filePath: realPath, directoryHint: hasDirectoryPath ? .isDirectory : .checkFileSystem)
-    }
-
-    fileprivate var realPath: String {
+    var realPath: String {
         var path = plainPath(self)
         for _ in 0..<16 {
             let (existing, rest) = deepestExistingPart(of: path)

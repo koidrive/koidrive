@@ -21,6 +21,7 @@ public final class VersionHistoryModel {
     }
 
     public let file: URL
+    private let realPath: String
     public private(set) var content: LoadState<FileVersions> = .loading
     public var selection: FileVersion.ID?
     public private(set) var restore: Restore = .idle
@@ -30,18 +31,19 @@ public final class VersionHistoryModel {
 
     public init(app: AppModel, file: URL, clock: HistoryClock = HistoryClock()) {
         self.app = app
-        self.file = file.realItem
+        realPath = file.realPath
+        self.file = URL(filePath: realPath, directoryHint: file.hasDirectoryPath ? .isDirectory : .checkFileSystem)
         self.clock = clock
     }
 
     public var name: String { file.lastPathComponent }
 
     /// The linked folder that holds the file.
-    public var folder: LinkedFolder? { app.folder(containing: file) }
+    public var folder: LinkedFolder? { app.location(ofRealPath: realPath)?.folder }
 
     /// The file's folder, starting with its linked folder's name and ending with a slash.
     public var parentPath: String {
-        guard let location = app.location(of: file) else { return plainPath(file.deletingLastPathComponent()) + "/" }
+        guard let location = app.location(ofRealPath: realPath) else { return plainPath(file.deletingLastPathComponent()) + "/" }
         return ([location.folder.spaceName] + location.below.dropLast()).joined(separator: "/") + "/"
     }
 

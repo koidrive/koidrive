@@ -31,6 +31,7 @@ public final class ShareLinkModel {
     public static let passwordLengths = 8...256
 
     public let item: URL
+    private let realPath: String
     public var expiry: ShareExpiry = .week
     public var requiresPassword = false {
         didSet { passwordIssue = nil }
@@ -48,7 +49,8 @@ public final class ShareLinkModel {
 
     public init(app: AppModel, item: URL) {
         self.app = app
-        self.item = item.realItem
+        realPath = item.realPath
+        self.item = URL(filePath: realPath, directoryHint: item.hasDirectoryPath ? .isDirectory : .checkFileSystem)
     }
 
     #if DEBUG
@@ -66,7 +68,7 @@ public final class ShareLinkModel {
     }
 
     /// The linked folder that holds the item.
-    public var folder: LinkedFolder? { app.folder(containing: item) }
+    public var folder: LinkedFolder? { app.location(ofRealPath: realPath)?.folder }
 
     /// True while the session can't reach the server and no link was made.
     public var isOffline: Bool { app.state.status == .offline && link == nil }
