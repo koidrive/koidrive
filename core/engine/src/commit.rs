@@ -3317,29 +3317,48 @@ fn plan(
             }
             false
         };
-        let unplaced: BTreeSet<NodeId> = (planned.keys())
-            .filter(|id| trees.lost_position(id).is_some() && !placed(id))
-            .map(|id| (*id).clone())
+        let redirects: BTreeMap<NodeId, (NodeId, String)> = (wants.iter())
+            .filter_map(|want| {
+                let Want::Create { id, shape, .. } = want else {
+                    return None;
+                };
+                let local = (trees.local().get(id))
+                    .filter(|_| trees.lost_position(id).is_some() && !placed(id))?;
+                let parent = aliases
+                    .get(&local.shape.parent)
+                    .unwrap_or(&local.shape.parent);
+                (shape.parent != *parent || shape.name != local.shape.name)
+                    .then(|| (id.clone(), (parent.clone(), local.shape.name.clone())))
+            })
             .collect();
-        let mut moved = false;
-        for want in &mut wants {
-            let Want::Create { id, shape, .. } = want else {
-                continue;
-            };
-            let Some(local) = trees.local().get(id).filter(|_| unplaced.contains(id)) else {
-                continue;
-            };
-            let parent = aliases
-                .get(&local.shape.parent)
-                .unwrap_or(&local.shape.parent);
-            if shape.parent != *parent || shape.name != local.shape.name {
-                shape.parent = parent.clone();
-                shape.name = local.shape.name.clone();
-                moved = true;
+        let below_another = |id: &NodeId| {
+            let mut parent = planned.get(id);
+            for _ in 0..planned.len() {
+                let Some(&at) = parent else {
+                    return false;
+                };
+                if at == id {
+                    return false;
+                }
+                if redirects.contains_key(at) {
+                    return true;
+                }
+                parent = planned.get(at);
             }
-        }
-        if !moved {
+            false
+        };
+        let Some((id, (parent, name))) = (redirects.iter())
+            .find(|(id, _)| !below_another(id))
+            .or_else(|| redirects.iter().next())
+            .map(|(id, at)| (id.clone(), at.clone()))
+        else {
             break;
+        };
+        if let Some(Want::Create { shape, .. }) = (wants.iter_mut())
+            .find(|want| matches!(want, Want::Create { id: create, .. } if *create == id))
+        {
+            shape.parent = parent;
+            shape.name = name;
         }
     }
     scratch.creating = (wants.iter())

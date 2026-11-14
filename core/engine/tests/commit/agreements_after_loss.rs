@@ -397,6 +397,36 @@ fn a_resend_whose_lost_folder_the_user_moved_into_it_is_created_where_l_holds_it
 }
 
 #[test]
+fn a_resend_in_a_lost_folder_the_user_moved_into_it_keeps_the_position_another_device_gave_it() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("q", dir(ROOT, "q")),
+        synced("f", file(ROOT, "a", 1)),
+    ]);
+    trees.set_remote("p".into(), remote_at(dir("q", "p"), 2));
+    trees.set_remote("f".into(), remote_at(file("p", "b", 1), 3));
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.remove_remote("p");
+    trees.remove_remote("q");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.set_local("q".into(), local(dir("p", "q"), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created: std::collections::BTreeSet<(String, String, String)> = (ops(&commit).into_iter())
+        .filter_map(|op| match op {
+            op::Op::CreateDir(create) => Some((create.node_id, create.parent_id, create.name)),
+            op::Op::CreateFile(create) => Some((create.node_id, create.parent_id, create.name)),
+            _ => None,
+        })
+        .collect();
+    let expected = [("f", "p", "b"), ("p", ROOT, "p"), ("q", "p", "q")]
+        .map(|(id, parent, name)| (id.to_owned(), parent.to_owned(), name.to_owned()));
+    assert_eq!(created, std::collections::BTreeSet::from(expected));
+}
+
+#[test]
 fn a_resent_folder_the_server_merges_into_another_takes_the_position_the_server_held() {
     let mut trees = trees(&[synced("d", dir(ROOT, "x"))]);
     trees.set_remote("d".into(), remote_at(dir(ROOT, "y"), 2));
