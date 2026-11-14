@@ -917,8 +917,14 @@ impl Trees {
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
-        if !made_here && !self.resends.contains(&id) {
+        if !made_here && node.trashed {
             self.lost_positions.remove(&id);
+        } else if !made_here && self.lost_positions.contains_key(&id) {
+            let at = LostPosition {
+                parent: node.shape.parent.clone(),
+                name: node.shape.name.clone(),
+            };
+            self.lost_positions.insert(id.clone(), at);
         }
         let trashed = node.trashed;
         self.unsent_marks.remove(&id);
