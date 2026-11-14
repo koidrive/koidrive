@@ -698,3 +698,18 @@ fn a_resend_the_server_merges_into_a_folder_and_renames_to_the_name_l_holds_leav
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.state().lost_positions.is_empty());
 }
+
+#[test]
+fn a_resend_another_device_renames_before_its_acknowledgement_takes_that_name() {
+    let (mut trees, mut commits, mut ids) = renamed_elsewhere_then_lost();
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 1)]);
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "b", 1), 3));
+    trees.set_remote("f".into(), remote_at(file(ROOT, "c", 1), 4));
+    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied)]);
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
+    assert!(trees.state().lost_positions.is_empty());
+}

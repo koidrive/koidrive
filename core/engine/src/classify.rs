@@ -605,7 +605,7 @@ impl Trees {
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
-        if !made_here {
+        if !made_here && !self.resends.contains(&id) {
             self.lost_positions.remove(&id);
         }
         let trashed = node.trashed;
