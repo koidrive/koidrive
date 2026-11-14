@@ -53,7 +53,7 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode};
 use koidrive_fs::{
     Action, Base, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId, Location, Marker,
-    Outcome, Reason, Reclaimed, RootProblem, Space, Step,
+    Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -723,6 +723,11 @@ impl Disk {
         self.batch = batch;
     }
 
+    pub fn refuses(&self, effect: &EngineEffect) -> Option<Refusal> {
+        let (action, _) = action(effect).ok()?;
+        self.space.refuses(&action).ok().flatten()
+    }
+
     /// Asks the observer to reset `paths` to L and scan them again.
     pub fn rescan(&mut self, engine: &Engine, paths: Vec<PathBuf>) {
         self.rescan_after = Some(self.sections.request(engine.resets(paths)));
@@ -1232,7 +1237,8 @@ fn settle(
                     Reason::Taken => failed("another entry holds its name"),
                     Reason::Interrupted => failed("it was interrupted"),
                     Reason::Denied => Settled::Denied(
-                        "this device does not allow the change: the folder or the file may be read-only or locked"
+                        "this device does not allow the change: the folder or the file is read-only or locked; \
+                         Koidrive tries again by itself once it can write there"
                             .into(),
                     ),
                     Reason::Overtaken => {
@@ -1363,21 +1369,27 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
         what,
     };
     name(&record.effect_id).map_err(bad)?;
-    let (action, contents) = match &record.effect {
-        EngineEffect::CreateDir { at } => (
-            Action::CreateDir {
-                at: location(at).map_err(bad)?,
-            },
-            Expected::default(),
-        ),
+    let (action, contents) = action(&record.effect).map_err(bad)?;
+    let effect = Effect {
+        id: record.effect_id.clone(),
+        action,
+    };
+    Ok((effect, contents))
+}
+
+fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
+    Ok(match effect {
+        EngineEffect::CreateDir { at } => {
+            (Action::CreateDir { at: location(at)? }, Expected::default())
+        }
         EngineEffect::WriteFile {
             at,
             content,
             replaces,
         } => (
             Action::WriteFile {
-                at: location(at).map_err(bad)?,
-                replaces: replaces.as_ref().map(displaced).transpose().map_err(bad)?,
+                at: location(at)?,
+                replaces: replaces.as_ref().map(displaced).transpose()?,
             },
             Expected {
                 displaced: replaces.as_ref().map(|d| d.content.clone()),
@@ -1386,15 +1398,15 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
         ),
         EngineEffect::Move { from, identity, to } => (
             Action::Move {
-                from: location(from).map_err(bad)?,
+                from: location(from)?,
                 id: file_id(*identity),
-                to: location(to).map_err(bad)?,
+                to: location(to)?,
             },
             Expected::default(),
         ),
         EngineEffect::RemoveFile { displaced: removed } => (
             Action::RemoveFile {
-                displaced: displaced(removed).map_err(bad)?,
+                displaced: displaced(removed)?,
             },
             Expected {
                 displaced: Some(removed.content.clone()),
@@ -1403,17 +1415,12 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
         ),
         EngineEffect::RemoveDir { at, identity } => (
             Action::RemoveDir {
-                at: location(at).map_err(bad)?,
+                at: location(at)?,
                 id: file_id(*identity),
             },
             Expected::default(),
         ),
-    };
-    let effect = Effect {
-        id: record.effect_id.clone(),
-        action,
-    };
-    Ok((effect, contents))
+    })
 }
 
 fn location(location: &EngineLocation) -> Result<Location, String> {

@@ -4,15 +4,17 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use koidrive_ignore::PLATFORM_FILES;
-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{Access, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
 use crate::resolve::{Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
-use crate::root::{Flush, Marker, flush, remove_if_present, rename_no_replace, write_marker_at};
+use crate::root::{
+    Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, write_marker_at,
+};
 use crate::trash::TRASH_DIR;
 use crate::{Entry, EntryKind, FileId, Stat, list, stat_at, stat_fd};
 
@@ -143,6 +145,17 @@ pub enum Reason {
     Denied,
 }
 
+/// Where the system would refuse a change that an action makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// A folder the action changes cannot be written, or an entry it moves,
+    /// replaces or removes is locked.
+    Here,
+    /// Koidrive's own folder at this path, relative to the root, cannot be
+    /// written.
+    Private(PathBuf),
+}
+
 /// Effects whose steps become durable together (design §5.2), begun by
 /// [`Space::section`]. Each step is ordered on disk against the steps it must
 /// precede, and [`Section::finish`] makes all of them durable before it hands
@@ -225,6 +238,19 @@ fn is_denied(outcome: &Outcome) -> bool {
     )
 }
 
+fn writable(folder: BorrowedFd) -> io::Result<bool> {
+    let access = Access::WRITE_OK | Access::EXEC_OK;
+    match rustix::fs::accessat(folder, c".", access, AtFlags::EACCESS) {
+        Ok(()) | Err(Errno::NOENT) => Ok(true),
+        Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn locked(folder: BorrowedFd, name: &OsStr) -> bool {
+    rustix::fs::accessat(folder, name, Access::WRITE_OK, AtFlags::EACCESS) == Err(Errno::PERM)
+}
+
 fn refused(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -259,6 +285,46 @@ macro_rules! resolve {
 }
 
 impl Space {
+    /// Whether the system would refuse a change `action` makes, checked
+    /// without changing anything. A place that cannot be found is no refusal:
+    /// applying the action reports it.
+    pub fn refuses(&self, action: &Action) -> io::Result<Option<Refusal>> {
+        let private: &[&str] = match action {
+            Action::WriteFile { replaces: None, .. } => &[STAGING_DIR],
+            Action::WriteFile {
+                replaces: Some(_), ..
+            } => &[STAGING_DIR, QUARANTINE_DIR],
+            Action::RemoveFile { .. } | Action::RemoveDir { .. } => &[QUARANTINE_DIR],
+            Action::CreateDir { .. } | Action::Move { .. } => &[],
+        };
+        for dir in private {
+            let Ok(folder) = self.private(&[dir]) else {
+                continue;
+            };
+            if !writable(folder.fd())? {
+                return Ok(Some(Refusal::Private(Path::new(PRIVATE_DIR).join(dir))));
+            }
+        }
+        let changed: Vec<(&Location, bool)> = match action {
+            Action::CreateDir { at } => vec![(at, false)],
+            Action::WriteFile { at, replaces } => std::iter::once((at, false))
+                .chain(replaces.iter().map(|displaced| (&displaced.at, true)))
+                .collect(),
+            Action::Move { from, to, .. } => vec![(to, false), (from, true)],
+            Action::RemoveFile { displaced } => vec![(&displaced.at, true)],
+            Action::RemoveDir { at, .. } => vec![(at, true)],
+        };
+        for (at, displaced) in changed {
+            let Ok((parent, name)) = self.parent(at) else {
+                continue;
+            };
+            if !writable(parent.fd())? || (displaced && locked(parent.fd(), name)) {
+                return Ok(Some(Refusal::Here));
+            }
+        }
+        Ok(None)
+    }
+
     /// Creates the staged file for effect `id`, replacing a leftover one.
     pub fn stage(&self, id: &str) -> io::Result<File> {
         check_name(OsStr::new(id))?;

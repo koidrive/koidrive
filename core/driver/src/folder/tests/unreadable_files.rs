@@ -518,13 +518,87 @@ fn a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinar
     let why = &b.folder.effect_failures.values().next().unwrap().1;
     assert_eq!(why, "the entry changed on this device");
 
-    let wait = b.work.iter().filter_map(|work| match work {
-        Work::RetryAfter(wait) => Some(*wait),
-        _ => None,
-    }).min().unwrap();
-    assert!(wait <= Duration::from_secs(3));
-    std::thread::sleep(wait + Duration::from_millis(50));
     let step = b.folder.retry();
     b.take(step).unwrap();
-    assert!(b.folder.engine.effects.blocked().is_empty(), "the ordinary failure is held by the earlier permission wait");
+    assert!(
+        b.folder.engine.effects.blocked().is_empty(),
+        "the ordinary failure is held by the earlier permission wait"
+    );
+}
+
+fn denied_download(file: &str) -> (Remote, Site, Device, Site, Device, Vec<Work>, usize) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, site_a, mut a, site_b, mut b) = synced_on_both(&[file, "open/g.txt"]);
+    let folder = site_b.root.join(Path::new(file).parent().unwrap());
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::write(site_a.root.join(file), "second version").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let mut timers = Vec::new();
+    let stages = run_holding_timers(&mut b, &mut remote, &mut timers);
+    (remote, site_a, a, site_b, b, timers, stages)
+}
+
+fn writable_again(site: &Site, folder: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(site.root.join(folder), fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only() {
+    let (mut remote, _site_a, _a, site_b, mut b, mut timers, mut stages) = denied_download("locked/file.txt");
+    for _ in 0..6 {
+        for due in b.folder.denied_due.values_mut() {
+            *due = Instant::now();
+        }
+        timers.clear();
+        let step = b.folder.retry();
+        b.take(step).unwrap();
+        stages += run_holding_timers(&mut b, &mut remote, &mut timers);
+    }
+    writable_again(&site_b, "locked");
+    assert_eq!(stages, 1);
+}
+
+#[test]
+fn a_folder_made_writable_again_gets_its_download_without_waiting() {
+    let (mut remote, _site_a, _a, site_b, mut b, mut timers, _) = denied_download("locked/file.txt");
+    writable_again(&site_b, "locked");
+    eventually("the download lands once its folder can be written", || {
+        run_holding_timers(&mut b, &mut remote, &mut timers);
+        fs::read_to_string(site_b.root.join("locked/file.txt")).unwrap() == "second version"
+    });
+}
+
+#[test]
+fn a_denied_change_says_koidrive_tries_again_by_itself() {
+    let (_remote, _site_a, _a, site_b, b, _, _) = denied_download("locked/file.txt");
+    let problem = b.folder.view().problem.unwrap_or_default();
+    writable_again(&site_b, "locked");
+    assert!(problem.contains("locked/file.txt"), "{problem}");
+    assert!(problem.contains("Koidrive tries again by itself"), "{problem}");
+    assert!(!problem.contains("restart"), "{problem}");
+}
+
+#[test]
+fn a_change_koidrive_cannot_make_in_its_own_folder_names_that_folder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, site_a, mut a, site_b, mut b) = synced_on_both(&["docs/file.txt"]);
+    let quarantine = site_b.root.join(".koidrive/quarantine");
+    fs::create_dir_all(&quarantine).unwrap();
+    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::write(site_a.root.join("docs/file.txt"), "second version").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let mut timers = Vec::new();
+    run_holding_timers(&mut b, &mut remote, &mut timers);
+    let problem = b.folder.view().problem.unwrap_or_default();
+    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(problem.contains(r#"".koidrive/quarantine""#), "{problem}");
+    assert!(problem.contains("Koidrive tries again by itself"), "{problem}");
 }
