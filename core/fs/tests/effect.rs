@@ -773,7 +773,7 @@ fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
     }
     for (scenario, mode) in SCENARIOS
         .iter()
-        .flat_map(|scenario| [(scenario, 0o555), (scenario, 0o000)])
+        .flat_map(|scenario| [(scenario, 0o555), (scenario, 0o400), (scenario, 0o000)])
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -791,5 +791,53 @@ fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
         );
         assert_eq!(listing(&docs), before, "{} {mode:o}", scenario.name);
         assert_eq!(private_names(root, QUARANTINE_DIR), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn a_permission_lost_after_the_first_change_fails_the_section_and_recovery_finishes_once_it_returns()
+ {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let mode = |mode| fs::Permissions::from_mode(mode);
+    for crashed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = replace(root);
+        let space = bind(root);
+        let docs = root.join("docs");
+        let result = if crashed {
+            let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                apply_one(&space, &effect, &mut |step| {
+                    assert_ne!(step, Step::Quarantined, "crash");
+                })
+            }));
+            assert!(crash.is_err());
+            fs::set_permissions(&docs, mode(0o000)).unwrap();
+            recover_one(&space, &effect, &mut |_| {})
+        } else {
+            apply_one(&space, &effect, &mut |step| {
+                if step == Step::Quarantined {
+                    fs::set_permissions(&docs, mode(0o000)).unwrap();
+                }
+            })
+        };
+        fs::set_permissions(&docs, mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "crashed: {crashed}"
+        );
+
+        assert!(matches!(
+            recover_one(&space, &effect, &mut |_| {}).unwrap(),
+            Outcome::Done { .. }
+        ));
+        assert_eq!(fs::read(docs.join("report.txt")).unwrap(), REMOTE);
+        assert_eq!(trashed(root), [SYNCED.to_vec()]);
     }
 }
