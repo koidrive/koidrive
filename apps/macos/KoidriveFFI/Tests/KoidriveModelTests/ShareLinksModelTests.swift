@@ -385,6 +385,27 @@ private final class Moment: @unchecked Sendable {
         #expect(links.activeLinks.map(\.state) == [.active, .revoked])
     }
 
+    @Test func aLinkMadeAndRevokedWhileTheListLoadsStaysRevoked() async throws {
+        let (app, session) = scripted()
+        try fakeCore(app).setShareLinks(links: [])
+        let links = SharedLinksModel(app: app, clock: fixedClock)
+        await links.load()
+
+        session.holdNext(.shareLinks)
+        let loading = Task { await links.sessionStatusChanged() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        let share = ShareLinkModel(app: app, item: try report(in: app))
+        await share.create()
+        let made = try #require(share.link)
+        await links.revoke(made.link)
+        session.release.signal()
+        await loading.value
+
+        #expect(links.activeLinks.map(\.id) == [made.link.id])
+        #expect(links.activeLinks.map(\.state) == [.revoked])
+    }
+
     @Test func aLinkMadeBeforeTheFirstLoadEndsIsListed() async throws {
         let (app, session) = scripted()
         try fakeCore(app).setShareLinks(links: [])

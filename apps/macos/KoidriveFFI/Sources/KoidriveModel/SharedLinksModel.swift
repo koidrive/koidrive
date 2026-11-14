@@ -101,7 +101,7 @@ public final class SharedLinksModel {
 
     private func reconciled(_ links: [ShareLink]) -> [ShareLink] {
         let listed = Set(links.map(\.id))
-        return madeHere.filter { !listed.contains($0.id) } + links.map { revokedHere[$0.id] ?? $0 }
+        return (madeHere.filter { !listed.contains($0.id) } + links).map { revokedHere[$0.id] ?? $0 }
     }
 
     private func state(of link: ShareLink) -> ShareState {
