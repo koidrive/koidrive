@@ -318,6 +318,7 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         rules: Rules::default(),
         touched: BTreeSet::new(),
         acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
     };
     for (id, parent, name) in [("d", "root", "d"), ("m", "d", "m"), ("c", "m", "c")] {
         let shape = koidrive_engine::tree::Shape {

@@ -555,6 +555,7 @@ struct Device {
     rules: Rules,
     touched: BTreeSet<String>,
     acted: BTreeSet<String>,
+    removed_from: BTreeMap<String, String>,
 }
 
 impl Device {
@@ -735,6 +736,9 @@ impl Device {
                     self.trees.ignore_local(folder);
                 }
                 for other in doomed {
+                    if let Some(node) = self.trees.local().get(&other) {
+                        self.removed_from.insert(other.clone(), node.shape.parent.clone());
+                    }
                     self.acted.insert(other.clone());
                     self.trees.remove_local(&other);
                 }
@@ -1116,7 +1120,7 @@ fn revive(
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && (!kept_with.contains_key(child)
-                        || acted_below(trees, kept_with, &device.acted, child))
+                        || acted_below(device, kept_with, child))
                     && discarded
                         .get(child)
                         .is_none_or(|shown| &shown.parent != *id)
@@ -1146,11 +1150,11 @@ fn positions(trees: &Trees) -> BTreeMap<String, Position> {
 }
 
 fn acted_below(
-    trees: &Trees,
+    device: &Device,
     kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    acted: &BTreeSet<String>,
     id: &str,
 ) -> bool {
+    let trees = &device.trees;
     let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
         let mut current = Some(entry.to_owned());
         for _ in 0..=trees.local().len() + kept_with.len() {
@@ -1164,17 +1168,15 @@ fn acted_below(
     };
     let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
     let in_kept = |at: &str| kept_with.get(at).map(|shape| shape.parent.clone());
-    let on_server = |at: &str| {
-        in_local(at).or_else(|| (trees.remote().live(at)).map(|shape| shape.parent.clone()))
-    };
+    let removed_from = |at: &str| in_local(at).or_else(|| device.removed_from.get(at).cloned());
     let as_on_server = |entry: &str| match (trees.local().get(entry), trees.remote().live(entry)) {
         (Some(local), Some(remote)) => local.shape.same(remote),
         (local, remote) => local.is_none() && remote.is_none(),
     };
-    (acted.iter())
+    (device.acted.iter())
         .filter(|entry| !as_on_server(entry))
         .any(|entry| {
-            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &on_server)
+            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
         })
 }
 
@@ -1236,6 +1238,7 @@ fn run_ignoring_answering_after(
         rules: Rules::default(),
         touched: BTreeSet::new(),
         acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -1433,7 +1436,7 @@ fn run_ignoring_answering_after(
                 device.trees.local().get(&record.node),
             ) {
                 let taken_along = kept_with.contains_key(&record.node)
-                    && !acted_below(&device.trees, &kept_with, &device.acted, &record.node);
+                    && !acted_below(&device, &kept_with, &record.node);
                 let left_where_put =
                     !taken_along && placed.get(&record.node) == Some(&position(&local.shape));
                 prop_assert!(
