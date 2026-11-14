@@ -241,6 +241,13 @@ mod tests {
                 let mut leaving = Leaving::begin(dir.path(), intent).unwrap();
                 leaving.set_phase(Phase::Revoking).unwrap();
                 drop(leaving);
+                for entry in fs::read_dir(dir.path()).unwrap() {
+                    let name = entry.unwrap().file_name().into_string().unwrap();
+                    assert!(
+                        crate::Paths::STATE_ENTRIES.contains(&name.as_str()),
+                        "{name}"
+                    );
+                }
                 let leaving = Leaving::load(dir.path()).unwrap().unwrap();
                 assert!(leaving.phase == Phase::Revoking);
                 assert_eq!(serde_json::to_value(&leaving.intent).unwrap(), expected);

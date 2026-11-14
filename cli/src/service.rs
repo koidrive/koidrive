@@ -90,6 +90,13 @@ impl Service {
         (self.home.join("Library/LaunchAgents")).join(format!("{}.plist", self.label()))
     }
 
+    pub fn file(&self, manager: ServiceManager) -> PathBuf {
+        match manager {
+            ServiceManager::Launchd => self.plist_file(),
+            ServiceManager::Systemd => self.unit_file(),
+        }
+    }
+
     pub fn log_file(&self) -> PathBuf {
         (self.home.join("Library/Logs/Koidrive")).join(format!("{}.log", self.label()))
     }
@@ -213,6 +220,159 @@ fn plist_binary(plist: &str) -> Option<String> {
             .replace("&gt;", ">")
             .replace("&amp;", "&"),
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installed {
+    pub name: String,
+    pub binary: Option<String>,
+    pub env: Vec<(&'static str, Option<String>)>,
+}
+
+const PROFILE_VARS: [&str; 3] = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"];
+
+fn suffixed(name: &str, stem: &str, end: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(stem)
+        .and_then(|rest| rest.strip_suffix(end))
+    else {
+        return false;
+    };
+    rest.is_empty()
+        || rest.strip_prefix(['.', '-']).is_some_and(|key| {
+            key.len() == 8 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        })
+}
+
+pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<Installed>, String> {
+    let read = |path: &Path| {
+        fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+    };
+    let mut found = Vec::new();
+    match manager {
+        ServiceManager::Launchd => {
+            let dir = home.join("Library/LaunchAgents");
+            for entry in entries_of(&dir)? {
+                let Some(name) = (entry.file_name().to_str())
+                    .filter(|file| suffixed(file, "dev.koidrive.koi", ".plist"))
+                    .and_then(|file| file.strip_suffix(".plist"))
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let text = read(&entry.path())?;
+                found.push(Installed {
+                    name,
+                    binary: plist_binary(&text),
+                    env: plist_env(&text),
+                });
+            }
+        }
+        ServiceManager::Systemd => {
+            match systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"]) {
+                Ok(units) => {
+                    for name in units
+                        .lines()
+                        .filter_map(|line| line.split_whitespace().next())
+                    {
+                        if !suffixed(name, "koidrive", ".service") {
+                            continue;
+                        }
+                        let text = systemctl(&["cat", name])?;
+                        found.push(Installed {
+                            name: name.to_owned(),
+                            binary: unit_binary(&text),
+                            env: unit_env(&text),
+                        });
+                    }
+                }
+                Err(_) => {
+                    for entry in entries_of(&home.join(".config/systemd/user"))? {
+                        let Some(name) = (entry.file_name().to_str())
+                            .filter(|file| suffixed(file, "koidrive", ".service"))
+                            .map(str::to_owned)
+                        else {
+                            continue;
+                        };
+                        let text = match fs::read_to_string(entry.path()) {
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                            text => text.map_err(|error| {
+                                format!("cannot read {}: {error}", entry.path().display())
+                            })?,
+                        };
+                        found.push(Installed {
+                            name,
+                            binary: unit_binary(&text),
+                            env: unit_env(&text),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(found)
+}
+
+fn entries_of(dir: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    let shown = |error: io::Error| format!("cannot list {}: {error}", dir.display());
+    match fs::read_dir(dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        entries => entries
+            .map_err(shown)?
+            .collect::<io::Result<_>>()
+            .map_err(shown),
+    }
+}
+
+fn plist_env(plist: &str) -> Vec<(&'static str, Option<String>)> {
+    let Some(dict) = plist
+        .split_once("<key>EnvironmentVariables</key>")
+        .and_then(|(_, after)| after.split_once("<dict>"))
+        .and_then(|(_, dict)| dict.split_once("</dict>"))
+        .map(|(dict, _)| dict)
+    else {
+        return Vec::new();
+    };
+    PROFILE_VARS
+        .into_iter()
+        .filter_map(|name| {
+            let (_, after) = dict.split_once(&format!("<key>{name}</key>"))?;
+            let (value, _) = after
+                .trim_start()
+                .strip_prefix("<string>")?
+                .split_once("</string>")?;
+            let value = (value.replace("&lt;", "<").replace("&gt;", ">")).replace("&amp;", "&");
+            Some((name, (!value.is_empty()).then_some(value)))
+        })
+        .collect()
+}
+
+fn unit_env(unit: &str) -> Vec<(&'static str, Option<String>)> {
+    let unquoted = |word: &str| -> Option<String> {
+        let mut text = String::new();
+        let mut chars = word.strip_prefix('"')?.strip_suffix('"')?.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' | '%' => text.push(chars.next()?),
+                c => text.push(c),
+            }
+        }
+        Some(text)
+    };
+    PROFILE_VARS
+        .into_iter()
+        .filter_map(|name| {
+            unit.lines().find_map(|line| {
+                if line.strip_prefix("UnsetEnvironment=") == Some(name) {
+                    return Some((name, None));
+                }
+                let set = unquoted(line.strip_prefix("Environment=")?)?;
+                let value = set.strip_prefix(name)?.strip_prefix('=')?;
+                Some((name, Some(value.to_owned())))
+            })
+        })
+        .collect()
 }
 
 /// What the service manager reports for a service, or what keeps koi from using it.
@@ -1293,6 +1453,46 @@ mod tests {
                 .contains("/internal/daemon.log")
         );
         assert!(data.get("summary_problem").is_none());
+    }
+
+    #[test]
+    fn the_profile_of_an_installed_service_reads_back_from_its_plist_and_its_unit() {
+        let home = Path::new("/Users/ada");
+        let state = "/srv/a <b> & \"c\" 100%";
+        let paths = Paths::from_vars(|name| match name {
+            "HOME" => Some(home.into()),
+            "XDG_STATE_HOME" => Some(state.into()),
+            _ => None,
+        })
+        .unwrap();
+        let service = Service::new(&paths, home, &home.join(".local/bin/koi")).unwrap();
+        let expected = vec![
+            ("XDG_CONFIG_HOME", Some("/Users/ada/.config".to_owned())),
+            ("XDG_STATE_HOME", Some(state.to_owned())),
+            ("XDG_RUNTIME_DIR", None),
+        ];
+        assert_eq!(plist_env(&service.plist()), expected);
+        assert_eq!(unit_env(&service.unit()), expected);
+        assert!(suffixed(
+            &format!("{}.plist", service.label()),
+            "dev.koidrive.koi",
+            ".plist"
+        ));
+        assert!(suffixed(&service.unit_name(), "koidrive", ".service"));
+        assert!(suffixed(
+            "dev.koidrive.koi.plist",
+            "dev.koidrive.koi",
+            ".plist"
+        ));
+        assert!(suffixed("koidrive.service", "koidrive", ".service"));
+        for other in [
+            "dev.koidrive.koi.other.plist",
+            "dev.koidrive.koix.plist",
+            "dev.koidrive.koi.1234567.plist",
+            "dev.koidrive.koi.ABCDEF12.plist",
+        ] {
+            assert!(!suffixed(other, "dev.koidrive.koi", ".plist"), "{other}");
+        }
     }
 
     #[test]

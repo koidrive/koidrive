@@ -221,6 +221,9 @@ pub(crate) async fn verify_existing(
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) use macos::QUIESCE;
+
+#[cfg(target_os = "macos")]
 mod macos {
     use super::*;
     use std::ffi::{OsStr, OsString};
@@ -257,7 +260,7 @@ function run(args) {
     return 'stopped';
 }"#;
 
-    const QUIESCE: &str = r#"ObjC.import('AppKit');
+    pub(crate) const QUIESCE: &str = r#"ObjC.import('AppKit');
 function run(args) {
     const paths = args.map(p => ObjC.unwrap($(p).stringByStandardizingPath));
     let running = false;

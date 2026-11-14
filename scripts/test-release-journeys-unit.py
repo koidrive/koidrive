@@ -327,7 +327,7 @@ class ReleaseJourneys(unittest.TestCase):
 
     def test_homebrew_update_runs_with_the_worker_and_in_the_full_matrix(self):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
-        self.assertEqual(journeys.count("if: matrix.scenario == 'installer' || matrix.scenario == 'homebrew-update'"), 3)
+        self.assertEqual(journeys.count("if: contains(fromJSON('[\"installer\", \"homebrew-update\", \"uninstall\"]'), matrix.scenario)"), 3)
         self.assertLessEqual(DRIVER.release_order("0.1.0-alpha.5"), DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE))
 
     def test_checksums_allow_standard_text_and_binary_markers(self):
@@ -1036,10 +1036,83 @@ class ReleaseJourneys(unittest.TestCase):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
         matrix = re.search(r"scenario: \$\{\{ fromJSON\(inputs\.skip_homebrew && '([^']+)' \|\| '([^']+)'\) \}\}", journeys)
         self.assertIsNotNone(matrix)
-        self.assertEqual(json.loads(matrix[1]), ["installer"])
-        self.assertEqual(json.loads(matrix[2]), ["formula-conflict", "cask", "installer", "homebrew-update"])
+        self.assertEqual(json.loads(matrix[1]), ["installer", "uninstall"])
+        self.assertEqual(json.loads(matrix[2]), ["formula-conflict", "cask", "installer", "homebrew-update", "uninstall"])
         self.assertIn("selected: ${{ steps.tap.outputs.selected }}", release)
         self.assertRegex(release, r"(?s)  release-journeys:\n.*?needs: homebrew.*?skip_homebrew: \$\{\{ needs\.homebrew\.outputs\.selected != 'true' \}\}")
+
+    @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
+    def test_uninstall_journey_requires_unchanged_files_and_nothing_of_koidrive_left(self, _uid):
+        for change in (None, "edited file", "kept state", "no peer command", "no shared command", "peer still loaded"):
+            with self.subTest(change=change):
+                home = self.root / str(change) / "home"
+                folder, peer_folder = home / "Sync", home / "PeerSync"
+                for synced in (folder, peer_folder):
+                    (synced / ".koidrive").mkdir(parents=True)
+                    (synced / "outbound.bin").write_bytes(b"out")
+                    (synced / "inbound.bin").write_bytes(b"in")
+                binary = home / ".local/bin/koi"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"koi")
+                profile = home / ".zprofile"
+                profile.write_text("export PATH=\"$HOME/.local/bin:$PATH\"; : 'koidrive PATH'\n")
+                peer_env = {"XDG_STATE_HOME": str(home / "peer/state"), "XDG_CONFIG_HOME": str(home / "peer/config")}
+                argv = ["env", "XDG_CONFIG_HOME=" + peer_env["XDG_CONFIG_HOME"],
+                        "XDG_STATE_HOME=" + peer_env["XDG_STATE_HOME"], str(binary), "uninstall"]
+                evidence = DRIVER.Evidence(self.root / str(change) / "evidence", "v0.1.0-alpha.3", "uninstall")
+
+                def run(argv_, env=None, **_):
+                    argv_ = list(map(str, argv_))
+                    if "uninstall" in argv_ and "--last-device" not in argv_:
+                        (folder / ".koidrive").rmdir()
+                        if change == "edited file":
+                            (folder / "outbound.bin").write_bytes(b"changed")
+                        kept = [{"kind": "folder", "path": str(folder)}]
+                        if change != "no shared command":
+                            kept.append({"kind": "shared", "path": str(binary)})
+                        if change != "no peer command":
+                            kept.append({"kind": "other_profile", "service": "dev.koidrive.koi.0123abcd", "argv": argv})
+                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": kept},
+                                              "next_commands": [{"argv": argv}]}), ""
+                    if "uninstall" in argv_:
+                        self.assertEqual(argv_[:len(argv)], argv)
+                        (peer_folder / ".koidrive").rmdir()
+                        profile.unlink()
+                        binary.unlink()
+                        if change == "kept state":
+                            (home / ".local/state/koidrive").mkdir(parents=True)
+                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": []}}), ""
+                    if argv_[0] == "/bin/launchctl" and change == "peer still loaded" and argv_[-1].endswith(".0123abcd"):
+                        return 0, "state = running", ""
+                    if argv_[0] == "/bin/launchctl":
+                        return 113, "", "Could not find service"
+                    if argv_[0] == "/bin/zsh" and binary.exists():
+                        return 0, str(binary) + "\n", ""
+                    return 0, "", ""
+
+                def koi_json(_evidence, _binary, *args, env=None):
+                    if args == ("status",):
+                        return {"account": {"device_id": "D"}}
+                    return {"devices": [{"device_id": "D", "revoked_at_ms": 1}]}
+
+                with patch.object(evidence, "run", side_effect=run), patch.object(DRIVER, "koi_json", koi_json), \
+                        patch.object(DRIVER, "APP", self.root / "Applications/Koidrive.app"):
+                    call = lambda: DRIVER.uninstalled(evidence, home, binary, "peer", folder, peer_folder, peer_env, profile)
+                    if change is None:
+                        call()
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            call()
+                failed = [a["name"] for a in evidence.report["assertions"] if not a["passed"]]
+                expected = {None: [], "edited file": ["uninstall keeps synced files"],
+                            "kept state": ["uninstall leaves no Koidrive state"],
+                            "no peer command": ["uninstall keeps what the peer profile uses"],
+                            "no shared command": ["uninstall keeps the peer's app and PATH entry"],
+                            "peer still loaded": ["peer profile uninstall unloads its service"]}[change]
+                self.assertEqual(failed, expected)
+                if change is None:
+                    self.assertEqual(DRIVER.REQUIRED["uninstall"] - DRIVER.REQUIRED["installer"],
+                                     {a["name"] for a in evidence.report["assertions"]})
 
     @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
     def test_native_service_cleanup_refuses_foreign_profile_or_binary(self, _uid):

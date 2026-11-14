@@ -26,6 +26,7 @@ mod setup;
 mod share;
 mod telemetry;
 mod terminal;
+mod uninstall;
 mod update;
 
 use std::ffi::OsString;
@@ -195,6 +196,19 @@ enum Command {
         #[arg(long)]
         verbose: bool,
     },
+    /// Remove Koidrive from this computer: sign this device out, stop the background service, and delete the app, the
+    /// koi command, the settings, the sync state and the logs. The files in your folders stay.
+    Uninstall {
+        /// Remove without asking.
+        #[arg(long)]
+        yes: bool,
+        /// Keep this device on the server's device list instead of signing it out.
+        #[arg(long)]
+        keep_signed_in: bool,
+        /// Sign out even if this is the account's last active device or the server does not answer.
+        #[arg(long, conflicts_with = "keep_signed_in")]
+        last_device: bool,
+    },
     /// Write a file for a report of a problem: the version, the system, the status and the daemon's log, with your
     /// paths, file names, space and device names, server address and tokens replaced.
     Diagnose,
@@ -220,7 +234,10 @@ impl Command {
     fn reports_pending(&self) -> bool {
         !matches!(
             self,
-            Command::Daemon { .. } | Command::Status { .. } | Command::Resolve { id: None, .. }
+            Command::Daemon { .. }
+                | Command::Status { .. }
+                | Command::Resolve { id: None, .. }
+                | Command::Uninstall { .. }
         )
     }
 }
@@ -462,9 +479,10 @@ fn main() -> ExitCode {
     let daemon_run = matches!(command_args, Command::Daemon { .. });
     let pending_paths = paths.clone();
     let telemetry_paths = paths.clone();
-    let (name, flow, switch) = telemetry_of(&command_args);
+    let telemetry = telemetry_of(&command_args);
     let ask = guided
         && !daemon_run
+        && !matches!(command_args, Command::Uninstall { .. })
         && (matches!(command_args, Command::Setup { .. }) || telemetry::prompt_pending(&paths));
     let command_name = command.as_str();
     let work_terminal = terminal.clone();
@@ -490,7 +508,9 @@ fn main() -> ExitCode {
         };
         tokio::select! {
             done = async move {
-                telemetry::start(&paths, switch, name, flow).await;
+                if let Some((name, flow, switch)) = telemetry {
+                    telemetry::start(&paths, switch, name, flow).await;
+                }
                 let mut outcome = run(paths, command_args, json, work_terminal.clone()).await;
                 if let Err(error) = &outcome {
                     telemetry::command_failed(error.code);
@@ -541,14 +561,14 @@ fn main() -> ExitCode {
 /// its `--telemetry` flag. `koi setup` learns its flow from the person's choice.
 fn telemetry_of(
     command: &Command,
-) -> (
+) -> Option<(
     koidrive_telemetry::schema::Command,
     Option<koidrive_telemetry::schema::SetupFlow>,
     Option<telemetry::Switch>,
-) {
+)> {
     use koidrive_telemetry::schema::{Command as Name, SetupFlow as Flow};
     use setup::ServerAction;
-    match command {
+    Some(match command {
         Command::Status { .. } => (Name::Status, None, None),
         Command::Resolve { .. } => (Name::Resolve, None, None),
         Command::Setup { device, .. } => (Name::Setup, None, device.telemetry),
@@ -579,7 +599,8 @@ fn telemetry_of(
         Command::Diagnose => (Name::Diagnose, None, None),
         Command::Update { .. } => (Name::Update, None, None),
         Command::Daemon { .. } => (Name::Daemon, None, None),
-    }
+        Command::Uninstall { .. } => return None,
+    })
 }
 
 /// Runs the command. After one that may change the folders this profile links or its pairing, `service start` or
@@ -903,6 +924,18 @@ async fn execute(
         Command::Status { check } => status(&paths, check).await,
         Command::Diagnose => diagnose::run(&paths).await,
         Command::Update { verbose } => update::run(&paths, json, verbose).await,
+        Command::Uninstall {
+            yes,
+            keep_signed_in,
+            last_device,
+        } => {
+            let options = uninstall::Options {
+                yes,
+                keep_signed_in,
+                last_device,
+            };
+            uninstall::run(&paths, options, &terminal).await
+        }
         Command::Resolve { id, answer } => resolve(&paths, id, answer, json).await,
         Command::Setup {
             device,

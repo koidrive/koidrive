@@ -1,0 +1,1264 @@
+{
+  "$defs": {
+    "AnswerChoice": {
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "consequence": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "consequence",
+        "argv"
+      ],
+      "type": "object"
+    },
+    "ArgumentInfo": {
+      "properties": {
+        "about": {
+          "type": "string"
+        },
+        "conflicts": {
+          "description": "What it can't be given with, named as in `requires`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "repeated": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "requires": {
+          "description": "What it needs beside it: argument names, and options as `--long`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "required",
+        "repeated",
+        "requires",
+        "conflicts",
+        "about"
+      ],
+      "type": "object"
+    },
+    "Auth": {
+      "description": "What the command signs in with.",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "device",
+          "description": "This device's credential, from `koi setup`. Without one it fails with `auth_required`.",
+          "type": "string"
+        },
+        {
+          "const": "cloudflare",
+          "description": "A Cloudflare login, which only `--interactive` starts. Without one it fails with `auth_required`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Code": {
+      "description": "What kind of failure an error is. Each code has one exit status.",
+      "oneOf": [
+        {
+          "const": "failed",
+          "description": "No more specific code applies.",
+          "type": "string"
+        },
+        {
+          "const": "usage",
+          "description": "The arguments are invalid, or input the command needs is missing.",
+          "type": "string"
+        },
+        {
+          "const": "decision_required",
+          "description": "`status --check` found a decision that needs a choice.",
+          "type": "string"
+        },
+        {
+          "const": "auth_required",
+          "description": "Credentials are missing or refused, or a person must log in.",
+          "type": "string"
+        },
+        {
+          "const": "halted",
+          "description": "Sync is halted or stopped, and the command cannot go on until that is fixed.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "The server or the network is offline, unavailable or limits the rate at the moment.",
+          "type": "string"
+        },
+        {
+          "const": "stale_decision",
+          "description": "The decision answered no longer exists, or a local request ID was replayed with different arguments or after\nits saved invitation expired.",
+          "type": "string"
+        },
+        {
+          "const": "wrong_code",
+          "description": "The server rejected a claim or pairing code as wrong or expired.",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "A signal stopped the command, or an earlier run with the same request ID has no recorded outcome.",
+          "type": "string"
+        }
+      ]
+    },
+    "CommandInfo": {
+      "properties": {
+        "about": {
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "arguments": {
+          "items": {
+            "$ref": "#/$defs/ArgumentInfo"
+          },
+          "type": "array"
+        },
+        "auth": {
+          "$ref": "#/$defs/Auth"
+        },
+        "command": {
+          "description": "The subcommand path, as in the envelope's `command`.",
+          "type": "string"
+        },
+        "groups": {
+          "description": "Arguments that are given together or apart, named as in `requires`.",
+          "items": {
+            "$ref": "#/$defs/GroupInfo"
+          },
+          "type": "array"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/OptionInfo"
+          },
+          "type": "array"
+        },
+        "output": {
+          "$ref": "#/$defs/Output"
+        },
+        "schema": {
+          "description": "The file of the schema of its envelope in docs/json-schema/v1.",
+          "type": "string"
+        },
+        "subcommands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "description": "Clap's usage line, as `--help` shows it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "about",
+        "usage",
+        "aliases",
+        "arguments",
+        "options",
+        "groups",
+        "subcommands",
+        "auth",
+        "output",
+        "schema"
+      ],
+      "type": "object"
+    },
+    "ConflictData": {
+      "oneOf": [
+        {
+          "properties": {
+            "copy": {
+              "$ref": "#/$defs/ConflictFileData"
+            },
+            "original": {
+              "$ref": "#/$defs/ConflictFileData"
+            },
+            "sent_in": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "conflict",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "original",
+            "copy"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ConflictFileData": {
+      "properties": {
+        "node_id": {
+          "type": "string"
+        },
+        "revisions": {
+          "$ref": "#/$defs/RevisionsData"
+        }
+      },
+      "required": [
+        "node_id",
+        "revisions"
+      ],
+      "type": "object"
+    },
+    "Counts": {
+      "properties": {
+        "affected_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "exceeded": {
+          "items": {
+            "$ref": "#/$defs/LimitKind"
+          },
+          "type": "array"
+        },
+        "space_files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deletions",
+        "affected_files",
+        "space_files",
+        "exceeded"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "description": "A decision sync waits on, with every item it holds and the command for each answer.",
+      "properties": {
+        "answers": {
+          "items": {
+            "$ref": "#/$defs/AnswerChoice"
+          },
+          "type": "array"
+        },
+        "asked_at_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "conflict": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConflictData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Counts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "group": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionGroup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "recovery_cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoveryCauseData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requires_choice": {
+          "description": "False for a notice that only takes `dismiss`: it holds nothing and blocks nothing.",
+          "type": "boolean"
+        },
+        "space_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "space_id",
+        "kind",
+        "asked_at_ms",
+        "requires_choice",
+        "items",
+        "answers"
+      ],
+      "type": "object"
+    },
+    "DecisionGroup": {
+      "enum": [
+        "created_after_restore_point",
+        "changed_on_this_device",
+        "created_on_this_device",
+        "deleted_on_this_device",
+        "requested_before_reset"
+      ],
+      "type": "string"
+    },
+    "DecisionKind": {
+      "enum": [
+        "mass_delete",
+        "remote_mass_delete",
+        "ambiguous_disappearance",
+        "conflict",
+        "recovery"
+      ],
+      "type": "string"
+    },
+    "DeviceOutcome": {
+      "description": "Whether this device is still on its server's device list.",
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "not_paired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "state": {
+              "const": "signed_out",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "server"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Still on the server's list, because of `--keep-signed-in` or, with `problem`, because the sign-out did not go\nthrough.",
+          "properties": {
+            "device_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "problem": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "const": "still_listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ErrorBody": {
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "message": {
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "GroupInfo": {
+      "properties": {
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "multiple": {
+          "description": "More than one member may be given.",
+          "type": "boolean"
+        },
+        "required": {
+          "description": "One of the members must be given.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "members",
+        "required",
+        "multiple"
+      ],
+      "type": "object"
+    },
+    "HelpData": {
+      "properties": {
+        "commands": {
+          "description": "The command asked about and every command under it.",
+          "items": {
+            "$ref": "#/$defs/CommandInfo"
+          },
+          "type": "array"
+        },
+        "help": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "help",
+        "commands"
+      ],
+      "type": "object"
+    },
+    "Item": {
+      "properties": {
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modified_at_ms": {
+          "description": "For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "description": "For a file of a conflict, the size of its current version in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "node_id",
+        "path",
+        "files"
+      ],
+      "type": "object"
+    },
+    "Kept": {
+      "oneOf": [
+        {
+          "description": "A folder this device synced, with every file in it.",
+          "properties": {
+            "kind": {
+              "const": "folder",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A part of a synced folder's `.koidrive` that still holds files, such as the local trash.",
+          "properties": {
+            "kind": {
+              "const": "folder_data",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The `.koidrive` folder of a synced folder that another device or profile links.",
+          "properties": {
+            "kind": {
+              "const": "linked_elsewhere",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "development_build",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An app outside the Applications folders, such as one still on its disk image.",
+          "properties": {
+            "kind": {
+              "const": "app",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "login_item",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "problem": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "problem"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A path that holds or lies inside a synced folder, so it stays with the folder.",
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "in_folder",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "folder"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A settings or state folder that holds files Koidrive does not write.",
+          "properties": {
+            "kind": {
+              "const": "unrecognized",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file the removed `koi` command linked to.",
+          "properties": {
+            "kind": {
+              "const": "link_target",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A program or file that another Koidrive profile on this computer still uses.",
+          "properties": {
+            "kind": {
+              "const": "shared",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The installer's PATH line in a shell profile, which another Koidrive profile still uses.",
+          "properties": {
+            "kind": {
+              "const": "path_line",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The background service of another Koidrive profile on this computer; `argv` removes that profile.",
+          "properties": {
+            "argv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "other_profile",
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "argv"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LimitKind": {
+      "enum": [
+        "deletions",
+        "share"
+      ],
+      "type": "string"
+    },
+    "Next": {
+      "description": "A command to run next, as the arguments to pass.",
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "type": "object"
+    },
+    "OptionInfo": {
+      "properties": {
+        "about": {
+          "type": "string"
+        },
+        "conflicts": {
+          "description": "What it can't be given with, named as in `requires`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "global": {
+          "description": "Whether every subcommand takes it too.",
+          "type": "boolean"
+        },
+        "long": {
+          "type": "string"
+        },
+        "require_equals": {
+          "description": "A value follows an equals sign, as in `--json=1`, never as the next argument.",
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "requires": {
+          "description": "What it needs beside it, named as in the arguments, and options as `--long`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "short": {
+          "maxLength": 1,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "description": "The name of the value it takes, or null for a flag.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value_optional": {
+          "description": "The value may be left out, as in `--json`.",
+          "type": "boolean"
+        },
+        "values": {
+          "description": "The values it accepts, when it accepts only some.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "long",
+        "short",
+        "value",
+        "value_optional",
+        "require_equals",
+        "values",
+        "required",
+        "requires",
+        "conflicts",
+        "global",
+        "about"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "oneOf": [
+        {
+          "enum": [
+            "error"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "ok",
+          "description": "The command did what it was asked.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "The work is recorded and happens later; it has not finished.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The state the command asks for already held, or the command repeated an accepted answer, so nothing changed.",
+          "type": "string"
+        }
+      ]
+    },
+    "Output": {
+      "description": "What it prints on stdout with `--json`.",
+      "oneOf": [
+        {
+          "const": "envelope",
+          "description": "One envelope.",
+          "type": "string"
+        },
+        {
+          "const": "lines",
+          "description": "One JSON object per line while it runs.",
+          "type": "string"
+        }
+      ]
+    },
+    "Reason": {
+      "description": "What a refusal is about, beside its [`Code`], for a surface that says it in its own words. A refusal without one\nis only as specific as its code.",
+      "oneOf": [
+        {
+          "const": "not_in_linked_folder",
+          "description": "The path is not in a linked folder.",
+          "type": "string"
+        },
+        {
+          "const": "linked_folder_itself",
+          "description": "The path is a linked folder, and the command needs a file or folder in one.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The server has nothing at the path: no live file, or no deletion in the trash.",
+          "type": "string"
+        },
+        {
+          "const": "not_deleted",
+          "description": "The path is live, so there is nothing to bring back from the trash.",
+          "type": "string"
+        },
+        {
+          "const": "is_folder",
+          "description": "The path is a folder, and the command needs a file.",
+          "type": "string"
+        },
+        {
+          "const": "no_such_version",
+          "description": "The file has no such version.",
+          "type": "string"
+        },
+        {
+          "const": "already_current",
+          "description": "The version is the file's current one already.",
+          "type": "string"
+        },
+        {
+          "const": "several_deletions",
+          "description": "Several deletions had the path, and none was picked.",
+          "type": "string"
+        },
+        {
+          "const": "not_in_trash",
+          "description": "None of the deletions at the path is the node asked for.",
+          "type": "string"
+        },
+        {
+          "const": "not_on_server",
+          "description": "The path is on disk but not on the server: it has not synced yet, or the folder's rules leave it out.",
+          "type": "string"
+        },
+        {
+          "const": "password_length",
+          "description": "A share link's password does not have 8 to 256 characters.",
+          "type": "string"
+        },
+        {
+          "const": "no_such_link",
+          "description": "No share link of the account matches the ID or URL.",
+          "type": "string"
+        },
+        {
+          "const": "share_link_limit",
+          "description": "The space has as many active share links as the server allows.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoveryCauseData": {
+      "properties": {
+        "restore_point_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trigger": {
+          "$ref": "#/$defs/RecoveryTriggerData"
+        }
+      },
+      "required": [
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "RecoveryTriggerData": {
+      "enum": [
+        "space_rewound",
+        "store_rolled_back",
+        "store_older_than_disk",
+        "space_imported",
+        "no_sync_state",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "Removed": {
+      "oneOf": [
+        {
+          "description": "The background service, by its launchd label or systemd unit.",
+          "properties": {
+            "kind": {
+              "const": "service",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "app",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "command",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The Homebrew command that removed the cask or the formula.",
+          "properties": {
+            "argv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "homebrew",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "argv"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "files",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A shell profile the installer's PATH line was removed from, or deleted when nothing else was in it.",
+          "properties": {
+            "kind": {
+              "const": "shell_profile",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The `.koidrive` folder of a synced folder.",
+          "properties": {
+            "kind": {
+              "const": "folder_data",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RevisionsData": {
+      "properties": {
+        "content_rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "meta_rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content_rev",
+        "meta_rev"
+      ],
+      "type": "object"
+    },
+    "UninstalledData": {
+      "properties": {
+        "device": {
+          "$ref": "#/$defs/DeviceOutcome"
+        },
+        "kept": {
+          "items": {
+            "$ref": "#/$defs/Kept"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "items": {
+            "$ref": "#/$defs/Removed"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "device",
+        "removed",
+        "kept"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "else": {
+    "properties": {
+      "error": {
+        "type": "null"
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "error"
+      }
+    }
+  },
+  "properties": {
+    "command": {
+      "const": "uninstall"
+    },
+    "data": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/HelpData"
+        },
+        {
+          "$ref": "#/$defs/UninstalledData"
+        }
+      ]
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/Decision"
+      },
+      "type": "array"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ErrorBody"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "next_commands": {
+      "items": {
+        "$ref": "#/$defs/Next"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/Outcome"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "command",
+    "outcome",
+    "data",
+    "error",
+    "decisions",
+    "next_commands"
+  ],
+  "then": {
+    "properties": {
+      "error": {
+        "type": "object"
+      }
+    }
+  },
+  "title": "koi uninstall --json",
+  "type": "object"
+}
