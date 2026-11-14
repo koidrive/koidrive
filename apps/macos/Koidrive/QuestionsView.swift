@@ -9,6 +9,7 @@ struct QuestionsView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: String?
     @State private var conflict: ConflictResolution?
+    @State private var answering: [String: ConflictResolution] = [:]
     private let thumbnails: FileThumbnail.Phase?
 
     init(conflict: ConflictResolution? = nil, thumbnails: FileThumbnail.Phase? = nil) {
@@ -81,7 +82,10 @@ struct QuestionsView: View {
         }
         .onChange(of: selection, initial: true) { _, id in
             guard conflict?.id != id else { return }
-            conflict = model.state.questions.first { $0.id == id }.flatMap { ConflictResolution(question: $0, model: model) }
+            if let conflict { answering[conflict.id] = conflict }
+            answering = answering.filter { $0.value.isKeeping }
+            conflict = id.flatMap { answering[$0] }
+                ?? model.state.questions.first { $0.id == id }.flatMap { ConflictResolution(question: $0, model: model) }
         }
     }
 

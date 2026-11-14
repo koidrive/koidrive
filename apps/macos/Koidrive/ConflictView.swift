@@ -147,7 +147,7 @@ private struct ConflictCard: View {
                 Button("Quick Look") { previewURL = file.url }
                     .controlSize(.small)
                     .accessibilityLabel(Text("Quick Look \(file.name)"))
-                    .disabled(thumbnail != .ready)
+                    .disabled(file.url == nil)
                 Spacer(minLength: 0)
                 Button(file.role == .original ? "Keep Original" : "Keep Copy", action: keep)
             }
