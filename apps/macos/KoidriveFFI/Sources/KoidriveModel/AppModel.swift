@@ -19,7 +19,7 @@ public final class AppModel {
     public var usageReportsTurnedOffByVariable: Bool { telemetry.locked && !telemetry.enabled }
     public let session: SyncSession
     @ObservationIgnored private var consumer: Task<Void, Never>?
-    @ObservationIgnored private var realRoots: [String: String] = [:]
+    @ObservationIgnored private var realRoots: [String: String?] = [:]
 
     public init(session: SyncSession, events: AsyncStream<SessionEvent>) {
         self.session = session
@@ -34,7 +34,7 @@ public final class AppModel {
         }
     }
 
-    func realRoot(_ root: String) -> String {
+    func realRoot(_ root: String) -> String? {
         if let real = realRoots[root] { return real }
         let real = URL(filePath: root).realPath
         realRoots[root] = real

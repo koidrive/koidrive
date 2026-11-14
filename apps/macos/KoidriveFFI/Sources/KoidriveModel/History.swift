@@ -67,10 +67,11 @@ extension AppModel {
         location(ofRealPath: url.realPath)
     }
 
-    func location(ofRealPath path: String) -> (folder: LinkedFolder, below: [String])? {
-        state.folders.flatMap { folder in
+    func location(ofRealPath path: String?) -> (folder: LinkedFolder, below: [String])? {
+        guard let path else { return nil }
+        return state.folders.flatMap { folder in
             let stored = plainPath(folder.url)
-            return Set([stored, realRoot(stored)]).compactMap { root in
+            return Set([stored, realRoot(stored)].compactMap { $0 }).compactMap { root in
                 if path == root { return (folder: folder, root: root, below: [String]()) }
                 guard path.hasPrefix(root + "/") else { return nil }
                 return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
@@ -82,9 +83,9 @@ extension AppModel {
 }
 
 extension URL {
-    var realPath: String {
+    var realPath: String? {
         var path = plainPath(self)
-        for _ in 0..<16 {
+        for _ in 0..<32 {
             let (existing, rest) = deepestExistingPart(of: path)
             if let name = rest.first, let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: joined(existing, [name])) {
                 path = joined(destination.hasPrefix("/") ? destination : joined(existing, [destination]), Array(rest.dropFirst()))
@@ -93,12 +94,11 @@ extension URL {
             let item = URL(filePath: existing)
             guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true,
                   let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else {
-                path = joined(existing, rest)
-                break
+                return joined(existing, rest)
             }
             path = joined(plainPath(target), rest)
         }
-        return path
+        return nil
     }
 }
 

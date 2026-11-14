@@ -21,7 +21,7 @@ public final class VersionHistoryModel {
     }
 
     public let file: URL
-    private let realPath: String
+    private let realPath: String?
     public private(set) var content: LoadState<FileVersions> = .loading
     public var selection: FileVersion.ID?
     public private(set) var restore: Restore = .idle
@@ -32,7 +32,7 @@ public final class VersionHistoryModel {
     public init(app: AppModel, file: URL, clock: HistoryClock = HistoryClock()) {
         self.app = app
         realPath = file.realPath
-        self.file = URL(filePath: realPath, directoryHint: file.hasDirectoryPath ? .isDirectory : .checkFileSystem)
+        self.file = realPath.map { URL(filePath: $0, directoryHint: file.hasDirectoryPath ? .isDirectory : .checkFileSystem) } ?? file
         self.clock = clock
     }
 

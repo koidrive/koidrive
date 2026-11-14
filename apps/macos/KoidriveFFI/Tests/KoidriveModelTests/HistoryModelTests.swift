@@ -585,6 +585,14 @@ private let fourVersions = [
             #expect(app.folder(containing: root.appending(path: path)) == nil, "\(path)")
             #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: path)), "\(path)")
         }
+        for hop in 0..<40 {
+            try FileManager.default.createSymbolicLink(atPath: root.appending(path: "l\(hop)").path(percentEncoded: false), withDestinationPath: hop == 39 ? outside.appending(path: "Missing").path(percentEncoded: false) : "l\(hop + 1)")
+        }
+        #expect(app.folder(containing: root.appending(path: "l0/Plan.key")) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(root.appending(path: "l0/Plan.key")))
+        #expect(VersionHistoryModel(app: app, file: root.appending(path: "l0/Plan.key"), clock: halfPastMidnight).folder == nil)
+        #expect(ShareLinkModel(app: app, item: root.appending(path: "l0/Plan.key")).folder == nil)
+        #expect(app.folder(containing: root.appending(path: "l30/Plan.key")) == nil)
         try FileManager.default.createSymbolicLink(atPath: root.appending(path: "later").path(percentEncoded: false), withDestinationPath: "Docs/Later")
         #expect(VersionHistoryModel(app: app, file: shortcut.appending(path: "later/Plan.key"), clock: halfPastMidnight).parentPath == "Sync/Docs/Later/")
     }

@@ -31,7 +31,7 @@ public final class ShareLinkModel {
     public static let passwordLengths = 8...256
 
     public let item: URL
-    private let realPath: String
+    private let realPath: String?
     public var expiry: ShareExpiry = .week
     public var requiresPassword = false {
         didSet { passwordIssue = nil }
@@ -50,7 +50,7 @@ public final class ShareLinkModel {
     public init(app: AppModel, item: URL) {
         self.app = app
         realPath = item.realPath
-        self.item = URL(filePath: realPath, directoryHint: item.hasDirectoryPath ? .isDirectory : .checkFileSystem)
+        self.item = realPath.map { URL(filePath: $0, directoryHint: item.hasDirectoryPath ? .isDirectory : .checkFileSystem) } ?? item
     }
 
     #if DEBUG
