@@ -197,6 +197,9 @@ pub trait Core: Send + Sync {
     /// turning it off deletes the id and every report not sent yet. While [`TelemetrySetting::locked`], the choice is
     /// stored anyway and takes effect once the environment variable is gone.
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError>;
+    /// Queues a crash of the app from `report`, a crash report KSCrash wrote, under this profile's usage-report choice.
+    /// Only what [`koidrive_telemetry::app_crash`] reads from it is kept; `executable` is the app's own executable.
+    fn record_app_crash(&self, report: &str, executable: &str);
 
     /// Stops syncing and releases what the core holds outside memory, such as the lock on this
     /// device's sync state, so that the state can be opened again at once. The session calls it

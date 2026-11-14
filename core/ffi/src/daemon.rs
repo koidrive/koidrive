@@ -60,6 +60,19 @@ struct Watcher {
 }
 
 impl DaemonCore {
+    fn telemetry_store(&self) -> koidrive_telemetry::Store {
+        let environment = koidrive_telemetry::Environment::detect(
+            koidrive_telemetry::schema::Client::MacosApp,
+            env!("CARGO_PKG_VERSION"),
+        );
+        koidrive_telemetry::Store::new(&self.paths.state_dir).recorded_by(
+            koidrive_telemetry::Origin {
+                koi_version: environment.koi_version,
+                client: environment.client,
+            },
+        )
+    }
+
     pub(crate) fn open(
         helper: PathBuf,
         profile: Profile,
@@ -110,6 +123,8 @@ impl DaemonCore {
             watcher: Mutex::new(None),
             reconciled: Once::new(),
         });
+        static PANIC_HOOK: Once = Once::new();
+        PANIC_HOOK.call_once(|| koidrive_telemetry::install_panic_hook(core.telemetry_store()));
         core.reload();
         Ok(core)
     }
@@ -727,6 +742,25 @@ impl Core for DaemonCore {
         match done.outcome {
             Outcome::Unchanged => Err(SessionError::NoticeNotFound),
             _ => Ok(()),
+        }
+    }
+
+    fn record_app_crash(&self, report: &str, executable: &str) {
+        let store = self.telemetry_store();
+        let recording = (store.status(|name| std::env::var_os(name)))
+            .is_ok_and(|status| status.mode != koidrive_telemetry::Mode::Off);
+        let Some(event) = (serde_json::from_str(report).ok())
+            .and_then(|report| koidrive_telemetry::app_crash(&report, executable))
+            .filter(|_| recording)
+        else {
+            return;
+        };
+        let pending = koidrive_telemetry::Pending {
+            events: vec![event],
+            ..Default::default()
+        };
+        if let Err(error) = store.absorb(pending) {
+            tracing::warn!(%error, "the app's crash could not be queued");
         }
     }
 

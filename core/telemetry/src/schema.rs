@@ -201,6 +201,20 @@ pub enum Event {
         problem: Failure,
         count: u64,
     },
+    /// The Mac app crashed. KSCrash recorded it, and only these fields are kept from its report.
+    AppCrash {
+        at: u64,
+        kind: CrashKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exception: Option<MachException>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal: Option<CrashSignal>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binary: Option<BinaryId>,
+        /// Offsets into the app's executable of the crashed thread's frames in it, innermost first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        offsets: Vec<u64>,
+    },
 }
 
 impl Event {
@@ -209,7 +223,8 @@ impl Event {
             Event::SetupStep { at, .. }
             | Event::Panic { at, .. }
             | Event::CommandFailed { at, .. }
-            | Event::Problem { at, .. } => *at,
+            | Event::Problem { at, .. }
+            | Event::AppCrash { at, .. } => *at,
         }
     }
 
@@ -229,6 +244,7 @@ impl Event {
         match self {
             Event::SetupStep { .. } => ("setup_step", "", ""),
             Event::Panic { .. } => ("panic", "", ""),
+            Event::AppCrash { .. } => ("app_crash", "", ""),
             Event::CommandFailed { code, .. } => ("command_failed", code.name(), ""),
             Event::Problem { problem, .. } => {
                 let (group, name) = problem.key();
@@ -1079,6 +1095,95 @@ impl Symbol {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("not a valid {0}")]
 pub struct Invalid(&'static str);
+
+labels! {
+    /// How KSCrash caught a crash of the Mac app.
+    pub enum CrashKind {
+        Mach => "mach",
+        Signal => "signal",
+        NsException => "nsexception",
+        CppException => "cpp_exception",
+        Other => "other",
+    }
+}
+
+labels! {
+    /// The Mach exception of a crash of the Mac app.
+    pub enum MachException {
+        BadAccess => "bad_access",
+        BadInstruction => "bad_instruction",
+        Arithmetic => "arithmetic",
+        Emulation => "emulation",
+        Software => "software",
+        Breakpoint => "breakpoint",
+        Syscall => "syscall",
+        MachSyscall => "mach_syscall",
+        RpcAlert => "rpc_alert",
+        Crash => "crash",
+        Resource => "resource",
+        Guard => "guard",
+        CorpseNotify => "corpse_notify",
+        Other => "other",
+    }
+}
+
+labels! {
+    /// The signal of a crash of the Mac app.
+    pub enum CrashSignal {
+        Ill => "sigill",
+        Trap => "sigtrap",
+        Abort => "sigabrt",
+        FloatingPoint => "sigfpe",
+        Bus => "sigbus",
+        Segv => "sigsegv",
+        Sys => "sigsys",
+        Other => "other",
+    }
+}
+
+named!(
+    CrashKind,
+    "crash kind",
+    CrashKind::ALL.iter().copied(),
+    |kind: CrashKind| kind.name().to_owned()
+);
+named!(
+    MachException,
+    "mach exception",
+    MachException::ALL.iter().copied(),
+    |exception: MachException| exception.name().to_owned()
+);
+named!(
+    CrashSignal,
+    "crash signal",
+    CrashSignal::ALL.iter().copied(),
+    |signal: CrashSignal| signal.name().to_owned()
+);
+
+/// The build UUID of the Mac app's executable, which matches a crash to the build's debug symbols.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BinaryId(String);
+
+impl TryFrom<String> for BinaryId {
+    type Error = Invalid;
+
+    fn try_from(value: String) -> Result<Self, Invalid> {
+        let uuid = value.len() == 36
+            && value.char_indices().all(|(index, char)| match index {
+                8 | 13 | 18 | 23 => char == '-',
+                _ => char.is_ascii_hexdigit(),
+            });
+        uuid.then(|| BinaryId(value.to_ascii_uppercase()))
+            .ok_or(Invalid("binary id"))
+    }
+}
+
+impl From<BinaryId> for String {
+    fn from(id: BinaryId) -> String {
+        id.0
+    }
+}
 
 #[cfg(test)]
 mod tests {

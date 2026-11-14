@@ -218,7 +218,8 @@ impl Queue {
         self.admitted = self.admitted.split_off(&(oldest / 24));
         let mut over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
         let mut keep = |queued: &Queued| {
-            let evicted = over > 0 && !matches!(queued.event, Event::Panic { .. });
+            let evicted =
+                over > 0 && !matches!(queued.event, Event::Panic { .. } | Event::AppCrash { .. });
             over -= usize::from(evicted);
             !evicted
         };

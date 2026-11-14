@@ -6,6 +6,7 @@
 //! keeps it on disk under the profile's state directory until [`send`] posts it to PostHog's batch API, through
 //! the project's own host.
 
+mod app_crash;
 mod consent;
 mod cpu;
 mod panic;
@@ -15,6 +16,7 @@ mod send;
 mod store;
 mod system;
 
+pub use app_crash::app_crash;
 pub use consent::{Mode, Source, Status, VARIABLE, resolve, should_ask};
 pub use cpu::Cpu;
 pub use panic::install_panic_hook;

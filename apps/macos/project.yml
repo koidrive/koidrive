@@ -12,6 +12,9 @@ options:
 packages:
   KoidriveFFI:
     path: KoidriveFFI
+  KSCrash:
+    url: https://github.com/kstenerud/KSCrash
+    exactVersion: 2.6.1
 targets:
   Koidrive:
     type: application
@@ -27,6 +30,8 @@ targets:
         product: KoidriveFFI
       - package: KoidriveFFI
         product: KoidriveModel
+      - package: KSCrash
+        product: Recording
     postBuildScripts:
       - name: Embed koi
         inputFiles:

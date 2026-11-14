@@ -361,9 +361,9 @@ mod tests {
     use super::*;
     use crate::recorder::Recorder;
     use crate::schema::{
-        Arch, Build, Client, Command, Counter, Distro, ErrorCode, Event, Failure, Halted, Level,
-        Measure, Origin, Os, OsVersion, Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Symbol,
-        Synced, Version,
+        Arch, BinaryId, Build, Client, Command, Counter, CrashKind, CrashSignal, Distro, ErrorCode,
+        Event, Failure, Halted, Level, MachException, Measure, Origin, Os, OsVersion, Outcome,
+        Refusal, SetupFlow, SetupStep, SourceFile, Symbol, Synced, Version,
     };
 
     #[test]
@@ -410,6 +410,24 @@ mod tests {
                 count: 2,
             });
         }
+        recorder.event(Event::AppCrash {
+            at: 3_728,
+            kind: CrashKind::Mach,
+            exception: Some(MachException::BadAccess),
+            signal: Some(CrashSignal::Segv),
+            binary: Some(
+                BinaryId::try_from("17D33ED4-005A-358B-BA17-36B819625055".to_owned()).unwrap(),
+            ),
+            offsets: vec![1000, 2000],
+        });
+        recorder.event(Event::AppCrash {
+            at: 3_729,
+            kind: CrashKind::Other,
+            exception: None,
+            signal: None,
+            binary: None,
+            offsets: vec![],
+        });
         let pending = recorder.take();
         let reports = Batch {
             hours: pending.hours.into_values().collect(),

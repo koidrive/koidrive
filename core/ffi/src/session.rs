@@ -204,4 +204,10 @@ impl SyncSession {
     pub fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
         self.core.set_telemetry(enabled)
     }
+
+    /// Queues a crash of the app that KSCrash recorded, keeping only its kind, exception, signal, time, build and the
+    /// offsets of the app's own frames.
+    pub fn record_app_crash(&self, report: String, executable: String) {
+        self.core.record_app_crash(&report, &executable);
+    }
 }

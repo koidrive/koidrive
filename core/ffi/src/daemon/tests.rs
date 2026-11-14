@@ -1517,3 +1517,36 @@ fn a_relative_share_path_or_a_password_with_a_line_break_is_refused_without_runn
     }
     assert!(koi.calls_of("share").is_empty(), "{:?}", koi.calls());
 }
+
+#[test]
+fn an_app_crash_is_queued_under_the_app_only_while_reports_are_on() {
+    let koi = Koi::new(signed_in(true));
+    let store = koidrive_telemetry::Store::new(&koi.core.paths.state_dir);
+    let executable = "/Applications/Koidrive.app/Contents/MacOS/Koidrive";
+    let report = json!({
+        "report": { "timestamp": 1_794_527_123_000_000u64 },
+        "binary_images": [{ "name": executable, "image_addr": 4096, "uuid": "17D33ED4-005A-358B-BA17-36B819625055" }],
+        "crash": {
+            "error": { "type": "signal", "signal": { "signal": 11 }, "reason": "/Users/alice/Notes" },
+            "threads": [{ "crashed": true, "backtrace": { "contents": [{ "object_addr": 4096, "instruction_addr": 5096 }] } }],
+        },
+    })
+    .to_string();
+    koi.core.record_app_crash(&report, executable);
+    assert!(store.peek().unwrap().events.is_empty());
+
+    store.set(true).unwrap();
+    koi.core.record_app_crash("not a report", executable);
+    koi.core.record_app_crash(&report, executable);
+    let queued = store.peek().unwrap();
+    let [koidrive_telemetry::Queued { event, origin }] = queued.events.as_slice() else {
+        panic!("{queued:?}");
+    };
+    assert!(
+        matches!(event, koidrive_telemetry::Event::AppCrash { offsets, .. } if offsets == &[1000])
+    );
+    assert_eq!(
+        origin.as_ref().map(|origin| origin.client),
+        Some(koidrive_telemetry::schema::Client::MacosApp)
+    );
+}
