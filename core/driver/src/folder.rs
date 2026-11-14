@@ -1798,9 +1798,6 @@ fn unreadable_why(error: &ChunkError) -> String {
     };
     match source.kind() {
         io::ErrorKind::PermissionDenied => "Koidrive is not allowed to read it".into(),
-        io::ErrorKind::Deadlock => {
-            "it is stored only in iCloud; open it in Finder to download it".into()
-        }
         _ => source.to_string(),
     }
 }
