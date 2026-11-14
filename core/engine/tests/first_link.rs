@@ -1644,17 +1644,26 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
     );
 }
 
-#[test]
-fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_let_in_a_server_file_moved_into_it()
- {
-    let mut trees = trees(
-        &[
-            ("l-new", dir(ROOT, "new")),
-            ("l-e", file("l-new", "e", 1)),
-            ("l-c", file(ROOT, "c.txt", 9)),
-        ],
-        &[("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))],
-    );
+fn local_node(shape: Shape, ino: u128) -> LocalNode {
+    LocalNode {
+        shape,
+        identity: FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    }
+}
+
+fn discarded_twice_around_a_server_node(
+    local: &[(&str, Shape)],
+    remote: &[(&str, Shape)],
+    moved: &str,
+    change: impl FnOnce(&mut Trees),
+) -> (Trees, Vec<(&'static str, String)>, Vec<(String, Effect)>) {
+    let held = [("l-new", dir(ROOT, "new")), ("l-e", file("l-new", "e", 1))];
+    let mut trees = trees(&[&held[..], local].concat(), remote);
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.first_link(&mut trees, &mut ids, NOW);
@@ -1663,27 +1672,20 @@ fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_
     assert!(commits.decide(&asked.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let root: [&str; 0] = [];
-    trees.set_rules(&root, Some(RuleFile::parse(b"e\n*.txt\nss/\n")));
-    let mut remote = trees.remote().get("r-c").unwrap().clone();
+    trees.set_rules(&root, Some(RuleFile::parse(b"e\n*.txt\nss/\nd/\n")));
+    let mut remote = trees.remote().get(moved).unwrap().clone();
     remote.shape.parent = "r-ss".into();
     remote.meta_rev = 2;
-    trees.set_remote("r-c".into(), remote);
+    trees.set_remote(moved.into(), remote);
     trees.settle();
-    let mut moved = trees.local().get("r-c").unwrap().clone();
-    moved.shape.parent = "l-new".into();
-    trees.set_local("r-c".into(), moved);
+    let mut local = trees.local().get(moved).unwrap().clone();
+    local.shape.parent = "l-new".into();
+    trees.set_local(moved.into(), local);
+    trees.settle();
+    change(&mut trees);
     trees.settle();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let later = LocalNode {
-        shape: file("l-new", "later", 6),
-        identity: FileIdentity {
-            dev: 1,
-            ino: 99,
-            birth_ns: Some(0),
-        },
-        parked: false,
-    };
-    trees.set_local("l-later".into(), later);
+    trees.set_local("l-later".into(), local_node(file("l-new", "later", 6), 99));
     trees.settle();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = question(&commits);
@@ -1693,13 +1695,10 @@ fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_
     assert!(trees.local().get("l-later").is_none());
 
     trees.set_rules(&root, None);
+    let (mut sent, mut done) = (Vec::new(), Vec::new());
     for ino in 200.. {
         trees.settle();
-        let sent = ops(&mut commits, &mut trees, &mut ids);
-        assert!(
-            !sent.iter().any(|(_, id)| id == "l-new"),
-            "the folder discarded twice is created: {sent:?}"
-        );
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
         let Some(record) = effects
             .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
             .first()
@@ -1720,5 +1719,155 @@ fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_
                 Some(identity),
             )
             .unwrap();
+        done.push((record.node, record.effect));
     }
+    (trees, sent, done)
+}
+
+#[test]
+fn a_folder_discarded_again_after_a_reclaim_stays_off_the_server_once_the_rules_let_in_a_server_file_moved_into_it()
+ {
+    let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
+    let (trees, sent, _) = discarded_twice_around_a_server_node(
+        &[("l-c", file(ROOT, "c.txt", 9))],
+        &remote,
+        "r-c",
+        |_| {},
+    );
+    assert_eq!(
+        sent,
+        [],
+        "the folder discarded twice or its server file is sent"
+    );
+    assert!(trees.local().get("l-new").is_none());
+    assert_eq!(
+        trees.local().get("r-c").map(|node| &node.shape),
+        Some(&file("r-ss", "c.txt", 9))
+    );
+}
+
+#[test]
+fn a_server_file_that_s_still_places_in_a_discarded_folder_gives_that_place_up() {
+    let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
+    let local = [("l-c", file(ROOT, "c.txt", 9))];
+    let (trees, sent, _) = discarded_twice_around_a_server_node(&local, &remote, "r-c", |trees| {
+        assert!(trees.set_synced_if_valid("r-c".into(), Some(file("l-new", "c.txt", 9))));
+        trees.settle();
+        assert_eq!(trees.synced().live("r-c"), None);
+    });
+    assert_eq!(sent, []);
+    assert_eq!(
+        trees.local().get("r-c").map(|node| &node.shape),
+        Some(&file("r-ss", "c.txt", 9))
+    );
+}
+
+#[test]
+fn a_server_file_edited_while_excluded_before_its_folder_is_discarded_keeps_the_edit() {
+    let remote = [("r-c", file(ROOT, "c.txt", 9)), ("r-ss", dir(ROOT, "ss"))];
+    let (trees, sent, done) = discarded_twice_around_a_server_node(
+        &[("l-c", file(ROOT, "c.txt", 9))],
+        &remote,
+        "r-c",
+        |trees| {
+            let mut edited = trees.local().get("r-c").unwrap().clone();
+            edited.shape.content = Some(content(7));
+            trees.set_local_changed("r-c".into(), edited);
+        },
+    );
+    assert!(
+        !done
+            .iter()
+            .any(|(id, effect)| id == "r-c" && matches!(effect, Effect::RemoveFile { .. })),
+        "the edit made before the Discard is removed: {done:?}"
+    );
+    assert!(
+        (trees.local().iter()).any(|(_, node)| node.shape.content == Some(content(7))),
+        "{sent:?} {done:?}"
+    );
+}
+
+#[test]
+fn a_server_folder_holding_a_new_local_file_stays_when_its_discarded_folder_is_let_in() {
+    let remote = [
+        ("r-d", dir(ROOT, "d")),
+        ("r-f", file("r-d", "f", 3)),
+        ("r-ss", dir(ROOT, "ss")),
+    ];
+    let (trees, sent, done) = discarded_twice_around_a_server_node(
+        &[("l-d", dir(ROOT, "d")), ("l-f", file("l-d", "f", 3))],
+        &remote,
+        "r-d",
+        |trees| {
+            trees.set_local("l-x".into(), local_node(file("r-d", "x", 4), 98));
+        },
+    );
+    assert!(
+        !done.iter().any(|(id, _)| id == "l-x" || id == "r-d"),
+        "the folder or the file the person never saw is removed: {done:?}"
+    );
+    assert!(sent.contains(&("create file", "l-x".into())), "{sent:?}");
+}
+
+#[test]
+fn an_excluded_entry_the_person_never_saw_stays_when_its_discarded_folder_is_let_in() {
+    let mut trees = trees(
+        &[
+            ("l-new", dir(ROOT, "new")),
+            ("l-in", file("l-new", "inside", 4)),
+            ("l-e2", file("l-new", "e2", 5)),
+        ],
+        &[("r-a", file(ROOT, "a", 9))],
+    );
+    let root: [&str; 0] = [];
+    trees.set_rules(&root, Some(RuleFile::parse(b"e2\n")));
+    trees.settle();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW);
+    trees.settle();
+    let asked = question(&commits);
+    assert!(!asked.holds().any(|id| id == "l-e2"));
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+
+    trees.set_rules(&root, None);
+    let done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 200);
+    assert!(
+        trees.local().get("l-e2").is_some(),
+        "new/e2, which no question showed, went to the local trash: {done:?}"
+    );
+}
+
+#[test]
+fn an_edit_to_an_excluded_server_file_after_its_folder_is_discarded_is_not_removed() {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "new")), ("x", file(ROOT, "server", 9))],
+        &[("x", file(ROOT, "server", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    let mut trashed = trees.remote().get("x").unwrap().clone();
+    trashed.trashed = true;
+    trees.set_remote("x".into(), trashed);
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(commits.questions().is_empty());
+    let mut edited = trees.local().get("x").unwrap().clone();
+    edited.shape.content = Some(content(8));
+    trees.set_local_changed("x".into(), edited);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(trees.edited("x"));
+    let mut planner = Effects::default();
+    let effects = planner.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(effects.iter().all(|record| record.node != "x" || !matches!(record.effect, Effect::RemoveFile { .. })), "a post-Discard edit is removed: {effects:?}");
 }
