@@ -8226,7 +8226,7 @@ fn probe_484_pr_schedule() -> Vec<Vec<(usize, Step)>> {
 }
 
 fn probe_484_run(name: &'static str, seed: u64, strategy: impl Strategy<Value = Vec<Vec<(usize, Step)>>>) {
-    let cases: u32 = std::env::var("PROBE_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    let cases: u32 = std::env::var("PROBE_CASES").or_else(|_| std::env::var("PROPTEST_CASES")).ok().and_then(|v| v.parse().ok()).unwrap_or(400);
     let mut runner = TestRunner::new(ProptestConfig {
         rng_seed: RngSeed::Fixed(seed),
         failure_persistence: None,
@@ -8244,7 +8244,7 @@ fn probe_484_run(name: &'static str, seed: u64, strategy: impl Strategy<Value = 
 #[test]
 #[ignore]
 fn probe_484_mutate_core() {
-    let seed = std::env::var("PROBE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let seed = std::env::var("PROBE_SEED").or_else(|_| std::env::var("PROPTEST_RNG_SEED")).ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     let strategy = (0..6usize).prop_flat_map(|wait| probe_484_mutate(probe_484_one_phases(true, wait)));
     probe_484_run("probe_484_mutate_core", seed, strategy);
 }
@@ -8252,7 +8252,7 @@ fn probe_484_mutate_core() {
 #[test]
 #[ignore]
 fn probe_484_mutate_pr() {
-    let seed = std::env::var("PROBE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let seed = std::env::var("PROBE_SEED").or_else(|_| std::env::var("PROPTEST_RNG_SEED")).ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     probe_484_run("probe_484_mutate_pr", seed, probe_484_mutate(probe_484_pr_schedule()));
 }
 
