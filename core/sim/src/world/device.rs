@@ -231,6 +231,7 @@ pub struct Device {
     pub recovery: Option<String>,
     pub store_copy: Option<Engine>,
     pub rolled_back: bool,
+    pub restored_ahead: bool,
     pub left: bool,
 }
 
