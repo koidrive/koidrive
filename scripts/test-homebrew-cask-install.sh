@@ -96,6 +96,8 @@ PY
     if [ "$build" -eq 101 ]; then
         brew install --cask --appdir="$tmp/Applications" "$token"
     else
+        /usr/libexec/PlistBuddy -c "Set CFBundleShortVersionString ${version%%-*}" -c "Set CFBundleVersion $build" -c "Set KoidriveVersion $version" \
+            "$tmp/Applications/Koidrive.app/Contents/Info.plist"
         plain=$(brew outdated --cask "$token") || true
         if grep -q koidrive <<< "$plain"; then
             echo "FAIL Homebrew replaces a self-updating app whose bundle already has the cask's version" >&2
@@ -116,7 +118,7 @@ PY
     [ "$(/bin/sh "$(brew --prefix)/bin/koi" --version)" = "koi $version" ] || { echo 'FAIL the linked CLI version differs from the app' >&2; exit 1; }
     [ ! -e "$tmp/zap.log" ] || { echo 'FAIL install or upgrade ran login-item cleanup' >&2; exit 1; }
     [ -z "$(brew list --formula --versions koidrive 2>/dev/null)" ] || { echo 'FAIL the cask installed a separate CLI formula' >&2; exit 1; }
-    echo "PASS cask installs app and bundled CLI $version without a formula dependency, and only a named upgrade replaces it"
+    echo "PASS cask installs app and bundled CLI $version without a formula dependency, plain outdated skips it once the app updated itself, and --greedy upgrades it"
 done
 brew reinstall --cask --appdir="$tmp/Applications" "$token"
 [ ! -e "$tmp/zap.log" ] || { echo 'FAIL reinstall ran login-item cleanup' >&2; exit 1; }
