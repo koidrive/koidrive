@@ -2,19 +2,28 @@
 
 ## Remove Koidrive from one device
 
-Your files stay where they are.
+```sh
+koi uninstall
+```
 
-1. Unlink each folder. Find them with `koi status`. Unlinking the last one stops and removes the [background service](install.md#background-sync):
+Koidrive lists what it will remove and asks before it changes anything. Then it:
 
-   ```sh
-   koi folder unlink ~/Koidrive
-   ```
+1. Quits the Koidrive app.
+2. Signs this device out of the server. Other devices then list it as revoked.
+3. Stops and removes the [background service](service.md).
+4. Deletes the settings, the sync state and the logs: `~/.config/koidrive`, `~/.local/state/koidrive`, and on macOS `~/Library/Logs/Koidrive` and the app's files in `~/Library`.
+5. Deletes the `.koidrive` folder in each folder it synced. A part of it that still holds files stays, and the summary names it. `.koidrive/trash/` holds files that sync replaced in the last 7 days.
+6. Removes the line the installer added to your shell profile.
+7. Removes the app and the `koi` command. For a Homebrew install, it runs `brew uninstall --cask koidrive` or `brew uninstall --formula koidrive`.
 
-2. Sign the device out with `koi device leave`, or revoke it from another device with `koi device revoke <id>`. If this is the last active device or the server is unreachable, read [sign-out confirmation and owner recovery](devices.md#sign-this-device-out) before you add `--last-device` or delete the profile.
-3. Delete Koidrive's files on this machine: `~/.local/state/koidrive` and `~/.config/koidrive`, or the `koidrive` folders under `$XDG_STATE_HOME` and `$XDG_CONFIG_HOME` when those are set to absolute paths, and the `.koidrive/` folder in each folder it linked. `.koidrive/trash/` holds files that sync replaced in the last 7 days, so look through it first.
-4. Remove the command: delete `~/.local/bin/koi`, or run `cargo uninstall koidrive-cli` for a build from source.
+The files in your folders stay where they are. The summary lists what Koidrive removed and what it kept. If a step fails, the summary says why and Koidrive keeps the `koi` command, so you can run `koi uninstall` again to finish.
 
-The macOS app shows the same device as `koi`. If you installed only the app, run each step with `/Applications/Koidrive.app/Contents/Helpers/koi` in place of `koi` and skip step 4. Then quit the app and delete it.
+- `--yes` removes without asking. Without a terminal, `koi uninstall` needs it.
+- `--keep-signed-in` keeps this device on the server's device list. To revoke it later, run `koi device revoke <id>` on another device.
+- `--last-device` signs out even if this is your account's last active device or the server doesn't answer. Read [sign-out confirmation and owner recovery](devices.md#sign-this-device-out) first. Without it, `koi uninstall` asks on a terminal. Otherwise it keeps the device signed in and removes everything else.
+- `--json` prints the result as JSON. `data.removed` and `data.kept` list each path, and `data.device` says whether the device signed out.
+
+If you installed only the app, run `/Applications/Koidrive.app/Contents/Helpers/koi uninstall`. A `koi` you built from source stays. Remove it with `cargo uninstall koidrive-cli`.
 
 ## Remove everything
 
@@ -34,4 +43,4 @@ You log in with Cloudflare. Koidrive finds the server, names the bucket and the 
 - `--yes` deletes without asking.
 - `--bucket <name>` empties and deletes a bucket whose Worker is already gone. Add `--jurisdiction` when the bucket is in the `eu`, `us`, `fedramp` or `fedramp-high` jurisdiction.
 
-Then remove Koidrive from each device as the previous section describes. Skip the revoke step, since the server is gone.
+Then run `koi uninstall --keep-signed-in` on each device, since the server is gone.

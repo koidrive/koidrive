@@ -90,6 +90,13 @@ impl Service {
         (self.home.join("Library/LaunchAgents")).join(format!("{}.plist", self.label()))
     }
 
+    pub fn file(&self, manager: ServiceManager) -> PathBuf {
+        match manager {
+            ServiceManager::Launchd => self.plist_file(),
+            ServiceManager::Systemd => self.unit_file(),
+        }
+    }
+
     pub fn log_file(&self) -> PathBuf {
         (self.home.join("Library/Logs/Koidrive")).join(format!("{}.log", self.label()))
     }

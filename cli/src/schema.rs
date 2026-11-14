@@ -60,6 +60,7 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "telemetry preview" => &[of::<Map<String, Value>>],
         "diagnose" => &[of::<DiagnosticsData>],
         "update" => &[of::<UpdatedData>],
+        "uninstall" => &[of::<crate::uninstall::UninstalledData>],
         _ => return None,
     })
 }

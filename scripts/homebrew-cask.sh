@@ -43,8 +43,8 @@ cask "koidrive" do
       ]
 
   caveats <<~EOS
-    For full removal of the app, its login item and preferences, run:
-      brew uninstall --zap --cask koidrive
+    To remove Koidrive with its background service, settings and sync state, run:
+      koi uninstall
   EOS
 end
 EOF

@@ -50,13 +50,7 @@ The cask and CLI-only formula are alternatives. Before switching from the formul
 
 After switching, run `koi service start` with the newly installed `koi`. This updates the background service to the new executable.
 
-For full removal of the app and its settings:
-
-```sh
-brew uninstall --zap --cask koidrive
-```
-
-This quits the app, unregisters its login item, removes the app and CLI link, and deletes `~/Library/Application Support/Koidrive` and `~/Library/Preferences/dev.koidrive.Koidrive.plist`. It keeps synced folders and CLI state.
+To remove Koidrive, run `koi uninstall`, as [Uninstall](uninstall.md) describes. It removes the background service and Koidrive's state, then runs `brew uninstall --cask koidrive`. `brew uninstall --zap --cask koidrive` on its own removes the app, its login item and its settings, and leaves the background service, the sync state and the device's sign-in.
 
 For the CLI only on macOS or Linux:
 

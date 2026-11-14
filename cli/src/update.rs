@@ -112,7 +112,7 @@ pub fn homebrew_link(binary: &Path) -> Option<PathBuf> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Method {
+pub(crate) enum Method {
     Cask { brew: PathBuf },
     Formula { brew: PathBuf },
     Installer,
@@ -138,8 +138,7 @@ pub(crate) struct Install {
 }
 
 impl Install {
-    pub(crate) fn current() -> Result<Self, CliError> {
-        let installs = Installs::of_this_machine();
+    fn prefixes(installs: &Installs) -> Vec<PathBuf> {
         let mut prefixes: Vec<PathBuf> = installs
             .homebrew
             .iter()
@@ -158,6 +157,53 @@ impl Install {
                     .filter_map(|bin| bin.parent().map(Path::to_path_buf)),
             );
         }
+        prefixes
+    }
+
+    pub(crate) fn every(also: &[PathBuf]) -> Vec<Self> {
+        let installs = Installs::of_this_machine();
+        let prefixes = Self::prefixes(&installs);
+        let known = installs.all();
+        let running = std::env::current_exe().ok();
+        let mut found: Vec<Install> = Vec::new();
+        for binary in running.iter().chain(also).chain(&known) {
+            let Ok(resolved) = fs::canonicalize(binary) else {
+                continue;
+            };
+            if found.iter().any(|install| install.binary == resolved) {
+                continue;
+            }
+            let development = Some(binary) == running.as_ref()
+                && update::is_development_version(env!("CARGO_PKG_VERSION"))
+                && !known
+                    .iter()
+                    .any(|path| fs::canonicalize(path).is_ok_and(|path| path == resolved));
+            let install = match development {
+                true => Install {
+                    binary: resolved,
+                    method: Method::Development,
+                },
+                false => match Self::locate(binary, &prefixes, &installs.apps) {
+                    Ok(install) => install,
+                    Err(_) => continue,
+                },
+            };
+            found.push(install);
+        }
+        found
+    }
+
+    pub(crate) fn binary(&self) -> &Path {
+        &self.binary
+    }
+
+    pub(crate) fn method(&self) -> &Method {
+        &self.method
+    }
+
+    pub(crate) fn current() -> Result<Self, CliError> {
+        let installs = Installs::of_this_machine();
+        let prefixes = Self::prefixes(&installs);
         let binary = std::env::current_exe()
             .map_err(|error| failed(format!("Cannot locate this koi: {error}")))?;
         let invoked = std::env::args_os()
@@ -207,6 +253,10 @@ impl Install {
                 method: Method::Development,
             });
         }
+        Self::locate(binary, prefixes, apps)
+    }
+
+    fn locate(binary: &Path, prefixes: &[PathBuf], apps: &[PathBuf]) -> Result<Self, CliError> {
         let resolved = fs::canonicalize(binary)
             .map_err(|error| failed(format!("Cannot resolve {}: {error}", binary.display())))?;
         let mut candidates = Vec::new();
@@ -353,7 +403,7 @@ fn command_text(command: &[&str]) -> String {
         .join(" ")
 }
 
-fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .map(|bin| bin.join(Path::new(name)))
         .find(|candidate| {

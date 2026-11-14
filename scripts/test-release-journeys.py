@@ -36,7 +36,7 @@ INSTALLER_SOURCES = {"held": HELD_URL, "live": "https://koidrive.com/install.sh"
 APP = Path("/Applications/Koidrive.app")
 TAP = "koidrive/tap/koidrive"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-SCENARIOS = ("verify", "cask", "formula-conflict", "installer", "homebrew-update")
+SCENARIOS = ("verify", "cask", "formula-conflict", "installer", "homebrew-update", "uninstall")
 HOMEBREW_UPDATE_SINCE = "0.1.0-alpha.6"
 REQUIRED = {
     "verify": {"release assets verified", "signed static verification"},
@@ -51,6 +51,10 @@ REQUIRED = {
     "homebrew-update": {"release assets verified", "clean account", "tap cask matches release", "previous release installed",
                         "previous release syncs", "koi update through Homebrew"},
 }
+REQUIRED["uninstall"] = REQUIRED["installer"] | {
+    "uninstall finished", "uninstall signed out", "uninstall removes folder records", "uninstall keeps synced files",
+    "uninstall leaves no Koidrive state", "uninstall unloads the service", "uninstall removes the PATH line",
+    "fresh login shell has no koi", "peer sees the device signed out"}
 
 
 def tag_value(value):
@@ -420,7 +424,7 @@ def state_paths(home):
             home / "Library/Application Support/Koidrive",
             home / "Library/Preferences/dev.koidrive.Koidrive.plist",
             home / "Library/Logs/Koidrive", home / "Library/Caches/dev.koidrive.app-install",
-            Path("/Applications/.koidrive-app-install.lock"), home / "Applications/.koidrive-app-install.lock"]
+            APP.parent / ".koidrive-app-install.lock", home / "Applications/.koidrive-app-install.lock"]
 
 
 def clean_account(evidence, ownership):
@@ -864,7 +868,7 @@ def verified_installer(evidence, root, source="held", reference="accepted", wait
     return script
 
 
-def installer(evidence, root, ownership, assets, source="held", reference="accepted"):
+def installer(evidence, root, ownership, assets, source="held", reference="accepted", uninstall=False):
     home = Path.home()
     binary = home / ".local/bin/koi"
     profile = home / ".zprofile"
@@ -927,6 +931,8 @@ def installer(evidence, root, ownership, assets, source="held", reference="accep
         evidence.check("xattrs preserved", all(quarantine_paths(initial) <= quarantine_paths(final_attrs[path])
                        for path, initial in initial_attrs.items()))
         evidence.report["coverage"]["menu_attachment"] = "Not asserted; no GUI automation or menu-bar probe. App installation, native service and released-byte sync are required."
+        if uninstall:
+            uninstalled(evidence, home, binary, bootstrap / "koi", folder, peer_env, profile)
     finally:
         safe = True
         for app in (APP, home / "Applications/Koidrive.app"):
@@ -1057,6 +1063,34 @@ def homebrew_update(evidence, root, ownership, entries):
             for path in [*state_paths(home)[3:], folder]:
                 evidence.cleanup("owned state " + str(path), lambda p=path: ownership.remove(p))
         evidence.cleanup("no loaded owned services", lambda: assert_native_absent(evidence, owned_labels))
+def uninstalled(evidence, home, binary, peer_koi, folder, peer_env, profile):
+    device = koi_json(evidence, binary, "status")["account"]["device_id"]
+    records = folder / ".koidrive"
+    files = {path.name: sha256(path) for path in folder.iterdir() if path != records}
+    status, out, _ = evidence.run([binary, "--json", "uninstall", "--yes"], required=False, timeout=300)
+    try:
+        envelope = json.loads(out)
+    except ValueError:
+        envelope = {}
+    data = envelope.get("data") or {}
+    evidence.check("uninstall finished", status == 0 and envelope.get("outcome") == "ok", f"status={status}")
+    evidence.check("uninstall signed out", data.get("device", {}).get("state") == "signed_out", data.get("device"))
+    evidence.check("uninstall removes folder records", not records.exists() and not records.is_symlink())
+    kept = [Path(item["path"]).resolve() for item in data.get("kept", []) if item.get("kind") == "folder"]
+    evidence.check("uninstall keeps synced files", folder.resolve() in kept and len(files) == 2
+                   and {path.name: sha256(path) for path in folder.iterdir()} == files, json.dumps(files))
+    left = [path for path in state_paths(home) if path.exists() or path.is_symlink()]
+    left += sorted((home / "Library/LaunchAgents").glob("dev.koidrive.koi.plist"))
+    evidence.check("uninstall leaves no Koidrive state", not left, json.dumps(list(map(str, left))))
+    status, _, error = evidence.run(["/bin/launchctl", "print", f"gui/{os.getuid()}/dev.koidrive.koi"], required=False)
+    evidence.check("uninstall unloads the service", unloaded(status, error))
+    evidence.check("uninstall removes the PATH line", not profile.exists() or "koidrive PATH" not in profile.read_text())
+    _, shell, _ = evidence.run(["/bin/zsh", "-d", "-l", "-c", "command -v koi || true"],
+                               env={**evidence.env, "PATH": SYSTEM_PATH})
+    evidence.check("fresh login shell has no koi", shell.strip() == "", shell)
+    devices = koi_json(evidence, peer_koi, "device", "list", env=peer_env)["devices"]
+    entry = next((item for item in devices if item.get("device_id") == device), None)
+    evidence.check("peer sees the device signed out", entry is not None and (entry.get("revoked_at_ms") or 0) > 0, entry)
 
 
 def assert_native_absent(evidence, labels=("dev.koidrive.koi",)):
@@ -1094,8 +1128,9 @@ def main(argv=None):
         else:
             ownership = Ownership()
             clean_account(evidence, ownership)
-            if args.scenario == "installer":
-                installer(evidence, root, ownership, assets, args.installer_source, args.installer_reference)
+            if args.scenario in ("installer", "uninstall"):
+                installer(evidence, root, ownership, assets, args.installer_source, args.installer_reference,
+                          uninstall=args.scenario == "uninstall")
             elif args.scenario == "homebrew-update":
                 homebrew_update(evidence, root, ownership, entries)
             else:

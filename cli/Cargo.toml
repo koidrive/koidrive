@@ -22,6 +22,10 @@ name = "update"
 required-features = ["test-install-inventory"]
 
 [[test]]
+name = "uninstall"
+required-features = ["test-install-inventory"]
+
+[[test]]
 name = "setup_cloudflare_terminal"
 required-features = ["test-setup"]
 

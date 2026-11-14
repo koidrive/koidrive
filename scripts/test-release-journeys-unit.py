@@ -327,7 +327,7 @@ class ReleaseJourneys(unittest.TestCase):
 
     def test_homebrew_update_runs_with_the_worker_and_in_the_full_matrix(self):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
-        self.assertEqual(journeys.count("if: matrix.scenario == 'installer' || matrix.scenario == 'homebrew-update'"), 3)
+        self.assertEqual(journeys.count("if: contains(fromJSON('[\"installer\", \"homebrew-update\", \"uninstall\"]'), matrix.scenario)"), 3)
         self.assertLessEqual(DRIVER.release_order("0.1.0-alpha.5"), DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE))
 
     def test_checksums_allow_standard_text_and_binary_markers(self):
@@ -1036,10 +1036,55 @@ class ReleaseJourneys(unittest.TestCase):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
         matrix = re.search(r"scenario: \$\{\{ fromJSON\(inputs\.skip_homebrew && '([^']+)' \|\| '([^']+)'\) \}\}", journeys)
         self.assertIsNotNone(matrix)
-        self.assertEqual(json.loads(matrix[1]), ["installer"])
-        self.assertEqual(json.loads(matrix[2]), ["formula-conflict", "cask", "installer", "homebrew-update"])
+        self.assertEqual(json.loads(matrix[1]), ["installer", "uninstall"])
+        self.assertEqual(json.loads(matrix[2]), ["formula-conflict", "cask", "installer", "homebrew-update", "uninstall"])
         self.assertIn("selected: ${{ steps.tap.outputs.selected }}", release)
         self.assertRegex(release, r"(?s)  release-journeys:\n.*?needs: homebrew.*?skip_homebrew: \$\{\{ needs\.homebrew\.outputs\.selected != 'true' \}\}")
+
+    @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
+    def test_uninstall_journey_requires_unchanged_files_and_nothing_of_koidrive_left(self, _uid):
+        for change in (None, "edited file", "kept state"):
+            with self.subTest(change=change):
+                home = self.root / str(change) / "home"
+                folder = home / "Sync"
+                (folder / ".koidrive").mkdir(parents=True)
+                (folder / "outbound.bin").write_bytes(b"out")
+                (folder / "inbound.bin").write_bytes(b"in")
+                profile = home / ".zprofile"
+                profile.write_text("export PATH=\"$HOME/.local/bin:$PATH\"; : 'koidrive PATH'\n")
+                evidence = DRIVER.Evidence(self.root / str(change) / "evidence", "v0.1.0-alpha.3", "uninstall")
+
+                def run(argv, **_):
+                    argv = list(map(str, argv))
+                    if "uninstall" in argv:
+                        (folder / ".koidrive").rmdir()
+                        profile.unlink()
+                        if change == "edited file":
+                            (folder / "outbound.bin").write_bytes(b"changed")
+                        if change == "kept state":
+                            (home / ".local/state/koidrive").mkdir(parents=True)
+                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"},
+                                              "kept": [{"kind": "folder", "path": str(folder)}]}}), ""
+                    if argv[0] == "/bin/launchctl":
+                        return 113, "", "Could not find service"
+                    return 0, "", ""
+
+                def koi_json(_evidence, _binary, *args, env=None):
+                    if args == ("status",):
+                        return {"account": {"device_id": "D"}}
+                    return {"devices": [{"device_id": "D", "revoked_at_ms": 1}]}
+
+                with patch.object(evidence, "run", side_effect=run), patch.object(DRIVER, "koi_json", koi_json), \
+                        patch.object(DRIVER, "APP", self.root / "Applications/Koidrive.app"):
+                    if change is None:
+                        DRIVER.uninstalled(evidence, home, home / ".local/bin/koi", "peer", folder, {}, profile)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            DRIVER.uninstalled(evidence, home, home / ".local/bin/koi", "peer", folder, {}, profile)
+                failed = [a["name"] for a in evidence.report["assertions"] if not a["passed"]]
+                expected = {None: [], "edited file": ["uninstall keeps synced files"],
+                            "kept state": ["uninstall leaves no Koidrive state"]}[change]
+                self.assertEqual(failed, expected)
 
     @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
     def test_native_service_cleanup_refuses_foreign_profile_or_binary(self, _uid):

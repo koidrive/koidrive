@@ -10,6 +10,7 @@ Each runtime case gets a separate [GitHub-hosted macOS 26 runner](https://docs.g
 | Clean cask | The public cask installs, and the next command, `koi --version`, reports the requested release. Plain uninstall removes the app and CLI. A second installation followed by zap removes app state without deleting a test document. |
 | Formula first | Record whether Homebrew rejects the binary collision or installs the app while skipping its CLI link. The formula's executable and version must remain intact, including after cask removal. Evidence includes the exact warning or error and resulting installation state. |
 | Shell installer | The pinned installer runs through `curl \| sh` in a controlling terminal, completes guided setup with the released CLI, and leaves a usable installation. Cleanup stops the test's app and services. |
+| Shell uninstall | After the shell installer case syncs with a second device, `koi uninstall --yes` signs this device out and removes the app, CLI, service, PATH line and state. The synced files stay byte for byte, and the second device lists this one as signed out. |
 
 The manual shell case uses immutable installer commit `2ffddfa8472a87f858698681551cc663e4579f8d`, checked against SHA-256 `5811e418e8b896542327585e19c7f0626ee1d5b64f69ed1c88df2c5f1e1ac522`. It exercises the installer before publication without deploying it. A local Worker and public CLI commands supply test authentication and a shared folder. They do not substitute for the installer or pre-link its folder.
 
