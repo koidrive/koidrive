@@ -35,17 +35,41 @@ pub fn path(path: &Path) -> String {
     crate::printable(&crate::setup::shown_folder(path))
 }
 
+pub fn command_word(word: &str) -> String {
+    crate::printable(&crate::pairing::shell_word(word))
+}
+
 pub fn command_path(path: &Path) -> String {
     let relative = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .filter(|home| home.is_absolute())
         .and_then(|home| path.strip_prefix(home).ok());
-    let word = match relative {
+    match relative {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Some(rest) => format!("~/{}", crate::pairing::shell_word(&rest.to_string_lossy())),
-        None => crate::pairing::shell_word(&path.to_string_lossy()),
+        Some(rest) => format!("~/{}", command_word(&rest.to_string_lossy())),
+        None => command_word(&path.to_string_lossy()),
+    }
+}
+
+pub fn wait_cause(wait: &koidrive_driver::Wait, now_ms: i64) -> String {
+    let cause = match wait.kind {
+        koidrive_driver::WaitKind::Quota => "Storage is full or a daily limit was reached.",
+        koidrive_driver::WaitKind::Retry => "Sync is waiting to retry an operation.",
     };
-    crate::printable(&word)
+    let seconds = (wait.until_ms.saturating_sub(now_ms).max(0) as u64).div_ceil(1000);
+    let retry = match seconds {
+        0 => "Retry is due now.".to_owned(),
+        1..=60 => format!("Retry in {}.", crate::count(seconds, "second")),
+        61..=3600 => format!(
+            "Retry in about {}.",
+            crate::count(seconds.div_ceil(60), "minute")
+        ),
+        _ => format!(
+            "Retry in about {}.",
+            crate::count(seconds.div_ceil(3600), "hour")
+        ),
+    };
+    format!("{cause} {retry}")
 }
 
 pub fn concise(command: &str) -> bool {
@@ -126,6 +150,56 @@ pub fn print(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_words_quote_shell_syntax_and_escape_terminal_controls() {
+        for word in [
+            "Notes",
+            "Work Files",
+            "Team's $(exit 99)",
+            "Work\u{1b}[2J\u{202e}",
+        ] {
+            let shown = command_word(word);
+            assert!(!shown.chars().any(char::is_control));
+            assert!(!shown.contains('\u{202e}'));
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("printf '%s' {shown}")])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, crate::printable(word).as_bytes());
+        }
+    }
+
+    #[test]
+    fn wait_causes_keep_the_cause_and_round_retry_times_up() {
+        for (kind, cause) in [
+            (
+                koidrive_driver::WaitKind::Quota,
+                "Storage is full or a daily limit was reached.",
+            ),
+            (
+                koidrive_driver::WaitKind::Retry,
+                "Sync is waiting to retry an operation.",
+            ),
+        ] {
+            for (delay, retry) in [
+                (-1, "Retry is due now."),
+                (0, "Retry is due now."),
+                (1, "Retry in 1 second."),
+                (60_000, "Retry in 60 seconds."),
+                (60_001, "Retry in about 2 minutes."),
+                (3_600_000, "Retry in about 60 minutes."),
+                (3_600_001, "Retry in about 2 hours."),
+            ] {
+                let wait = koidrive_driver::Wait {
+                    kind,
+                    until_ms: 1_000_000 + delay,
+                };
+                assert_eq!(wait_cause(&wait, 1_000_000), format!("{cause} {retry}"));
+            }
+        }
+    }
 
     #[test]
     fn concise_command_paths_expand_home_and_quote_only_the_relative_name() {

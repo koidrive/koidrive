@@ -1499,9 +1499,20 @@ async fn resolve(
             let device = credential
                 .as_ref()
                 .map(|credential| credential.device_id.as_str());
+            let folders = Driver::linked_folders(paths).unwrap_or_default();
             questions
                 .iter()
-                .map(|question| question_text_with_writers(question, Writers::RelativeTo(device)))
+                .map(|question| {
+                    question_text_presented(
+                        question,
+                        QuestionPresentation::Standalone {
+                            folder: folders
+                                .iter()
+                                .find(|folder| folder.space_id == question.space_id),
+                            device,
+                        },
+                    )
+                })
                 .collect()
         };
         let mut done = Done::ok(Value::Null, questions_text(&questions)).human(summary, "");
@@ -1941,8 +1952,8 @@ async fn space(paths: Paths, action: SpaceAction) -> Result<Done, CliError> {
                 }
             };
             let summary = format!(
-                "{summary}Link a folder with koi folder link <folder> --space {}.\n",
-                pairing::shell_word(&space.name)
+                "{summary}Link a folder with:\n  koi folder link <folder> --space {}\n",
+                output::command_word(&space.name)
             );
             let done = done.human(format!("{id}\n"), summary);
             Ok(match named {
@@ -2345,18 +2356,7 @@ fn status_summary(
             }
         }
         if let Some(wait) = &folder.wait {
-            let cause = match wait.kind {
-                koidrive_driver::WaitKind::Quota => "Storage is full or a daily limit was reached.",
-                koidrive_driver::WaitKind::Retry => "Sync is waiting to retry an operation.",
-            };
-            let seconds = (wait.until_ms.saturating_sub(now_ms()).max(0) as u64).div_ceil(1000);
-            let retry = match seconds {
-                0 => "Retry is due now.".to_owned(),
-                1..=60 => format!("Retry in {}.", count(seconds, "second")),
-                61..=3600 => format!("Retry in about {}.", count(seconds.div_ceil(60), "minute")),
-                _ => format!("Retry in about {}.", count(seconds.div_ceil(3600), "hour")),
-            };
-            text.push_str(&format!("  {cause} {retry}\n"));
+            text.push_str(&format!("  {}\n", output::wait_cause(wait, now_ms())));
         }
         if let Some(cause) = &folder.recovery {
             let described = koidrive_driver::describe(cause);
@@ -2618,7 +2618,7 @@ fn first_path(question: &Question) -> String {
 fn conflict_path(question: &Question, node_id: &str) -> String {
     (question.items.iter())
         .find(|item| item.node_id == node_id)
-        .map(|item| printable(&pairing::shell_word(&item.path)))
+        .map(|item| output::command_word(&item.path))
         .unwrap_or_else(|| format!("node {}", printable(node_id)))
 }
 
@@ -2767,16 +2767,39 @@ fn question_brief_with_writers(question: &Question, writers: Writers<'_>) -> Str
 
 /// How `koi resolve` shows a decision: what it is about, how to make it, and its first [`ITEMS_SHOWN`] items.
 fn question_text(question: &Question) -> String {
-    question_text_with_writers(question, Writers::Detailed)
+    question_text_presented(question, QuestionPresentation::Detailed)
 }
 
-fn question_text_with_writers(question: &Question, writers: Writers<'_>) -> String {
-    let space = match writers {
-        Writers::Detailed => format!("  space {}", printable(&question.space_id)),
-        Writers::RelativeTo(_) => String::new(),
+enum QuestionPresentation<'a> {
+    Detailed,
+    Standalone {
+        folder: Option<&'a FolderStatus>,
+        device: Option<&'a str>,
+    },
+}
+
+fn question_text_presented(question: &Question, presentation: QuestionPresentation<'_>) -> String {
+    let (scope, writers, inspection) = match presentation {
+        QuestionPresentation::Detailed => (
+            format!("  space {}", printable(&question.space_id)),
+            Writers::Detailed,
+            "",
+        ),
+        QuestionPresentation::Standalone { folder, device } => (
+            match folder {
+                Some(folder) => format!("  folder {}", output::path(Path::new(&folder.path))),
+                None => format!("  space {}", printable(&question.space_id)),
+            },
+            Writers::RelativeTo(device),
+            if folder.is_none() {
+                "  Inspect context: koi resolve --json\n"
+            } else {
+                ""
+            },
+        ),
     };
     let mut text = format!(
-        "{}{space}  {}\n{}{}",
+        "{}{scope}  {}\n{inspection}{}{}",
         printable(&question.id),
         question_summary(question),
         conflict_files(question, "    ", writers),
@@ -2944,6 +2967,7 @@ mod tests {
         assert!(summary.contains("written by another device"), "{summary}");
         assert!(!summary.contains(DESK), "{summary}");
         assert!(!summary.contains(LAPTOP), "{summary}");
+        assert!(!summary.contains("space s1"), "{summary}");
         assert!(summary.contains("keep-node:"));
     }
     use koidrive_net::ApiError;

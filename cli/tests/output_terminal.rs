@@ -182,6 +182,230 @@ fn terminal_results_use_the_setup_theme() {
 }
 
 #[test]
+fn summary_regression_space_link_hints_are_copyable_and_terminal_safe() {
+    use prost::Message;
+
+    for name in ["Notes", "Team's notes $(exit 99)", "Work\u{1b}[2J\u{202e}"] {
+        let profile = Profile::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server_url = format!("http://{}/", listener.local_addr().unwrap());
+        let credential = profile.0.path().join("state/koidrive/credential.json");
+        fs::create_dir_all(credential.parent().unwrap()).unwrap();
+        fs::write(
+            &credential,
+            serde_json::to_vec(&json!({
+                "server":server_url, "user_id":"owner", "device_id":"local-device",
+                "device_name":"Laptop", "refresh_credential":"fixture-only"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let replies = [
+                koidrive_proto::v1::AccessToken {
+                    token: "fixture-only".into(),
+                    expires_at_ms: i64::MAX,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                koidrive_proto::v1::SpaceList {
+                    spaces: vec![koidrive_proto::v1::SpaceInfo {
+                        space_id: "space-fixture".into(),
+                        name: name.into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            ];
+            for body in replies {
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(connection) => break connection,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing fixture request");
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let output = profile.run(
+            &["space", "create", name],
+            true,
+            false,
+            &[("NO_COLOR", "1")],
+        );
+        server.join().unwrap();
+        assert_eq!(output.exit, 0, "{}", output.terminal);
+        assert!(!output.terminal.contains('\u{1b}'), "{:?}", output.terminal);
+        assert!(
+            !output.terminal.contains('\u{202e}'),
+            "{:?}",
+            output.terminal
+        );
+        let command = output
+            .terminal
+            .lines()
+            .find_map(|line| {
+                line.split_once("koi folder link <folder> --space ")
+                    .map(|(_, word)| word)
+            })
+            .unwrap();
+        let parsed = Command::new("/bin/sh")
+            .args(["-c", &format!("printf '%s' {command}")])
+            .output()
+            .unwrap();
+        assert!(parsed.status.success());
+        let expected = name
+            .replace('\u{1b}', "\\u{1b}")
+            .replace('\u{202e}', "\\u{202e}");
+        assert_eq!(
+            String::from_utf8(parsed.stdout).unwrap(),
+            expected,
+            "{}",
+            output.terminal
+        );
+    }
+}
+
+#[test]
+fn summary_regression_standalone_decisions_keep_their_scope() {
+    let ids = [
+        "0190f0a0-0000-7000-8000-000000000001",
+        "0190f0a0-0000-7000-8000-000000000002",
+    ];
+    for context in ["missing", "linked", "unreadable"] {
+        let profile = Profile::new();
+        let state = profile.0.path().join("state/koidrive");
+        fs::create_dir_all(&state).unwrap();
+        if context == "linked" {
+            for (id, folder) in ids.iter().zip(["Work Files", "Personal"]) {
+                let store = state.join("spaces").join(id).join("store.sqlite");
+                fs::create_dir_all(store.parent().unwrap()).unwrap();
+                koidrive_store::Store::open(&store)
+                    .unwrap()
+                    .transaction(|tx| {
+                        tx.set_link(&koidrive_store::Link {
+                            space_id: (*id).into(),
+                            space_name: folder.into(),
+                            root: profile.0.path().join(folder),
+                            root_dev: 1,
+                            server_url: "https://files.example.com/".into(),
+                            device_id: "local".into(),
+                            linked_at_ms: 1,
+                        })
+                    })
+                    .unwrap();
+            }
+        } else if context == "unreadable" {
+            fs::write(state.join("spaces"), "not a directory").unwrap();
+        }
+        let server = profile.fixture(1, move |request| {
+            assert_eq!(request["request"], "questions");
+            json!({"response":"questions", "questions":ids.iter().enumerate().map(|(index, id)| json!({
+                "id":format!("q{index}"), "space_id":id, "asked_at_ms":1000,
+                "kind":{"type":"ambiguous_disappearance"},
+                "items":[{"node_id":"n1", "path":"report.docx", "files":1}]
+            })).collect::<Vec<_>>()})
+        });
+        let output = profile.run(&["resolve"], true, false, &[("NO_COLOR", "1")]);
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        if context == "linked" {
+            for (index, folder) in ["~/Work Files", "~/Personal"].iter().enumerate() {
+                assert!(
+                    output
+                        .terminal
+                        .contains(&format!("q{index}  folder {folder}  files disappeared")),
+                    "{}",
+                    output.terminal
+                );
+            }
+            for id in ids {
+                assert!(!output.terminal.contains(id), "{}", output.terminal);
+            }
+        } else {
+            for (index, id) in ids.iter().enumerate() {
+                assert!(
+                    output
+                        .terminal
+                        .contains(&format!("q{index}  space {id}  files disappeared")),
+                    "{}",
+                    output.terminal
+                );
+            }
+            assert!(
+                output.terminal.contains("koi resolve --json"),
+                "{}",
+                output.terminal
+            );
+        }
+    }
+}
+
+#[test]
+fn summary_regression_pending_restores_explain_wait_causes() {
+    for (kind, cause) in [
+        ("quota", "Storage is full or a daily limit was reached."),
+        ("retry", "Sync is waiting to retry an operation."),
+    ] {
+        let profile = Profile::new();
+        let folder = profile.0.path().join("Work");
+        fs::create_dir(&folder).unwrap();
+        let path = fs::canonicalize(folder).unwrap().display().to_string();
+        let server = profile.fixture(3, move |request| match request["request"].as_str().unwrap() {
+            "status" => json!({"response":"status", "status":{
+                "account":null, "running":true, "folders":[{"space_id":"s1", "space_name":"Work", "path":path,
+                    "state":"up_to_date","history_id":null,"last_seq":null,"head_seq":null,
+                    "remote_nodes":0,"local_entries":0,"questions":0,"problem":null,
+                    "wait":{"kind":kind,"until_ms":0}}]
+            }}),
+            "restores" => json!({"response":"restores", "restores":[{
+                "id":"restore-internal", "path":"report.docx", "asked_at_ms":1000,
+                "request":{"type":"from_trash", "node_id":"node-internal", "parent_id":null, "name":null},
+                "state":{"type":"pending", "waits_for":null}
+            }]}),
+            "questions" => json!({"response":"questions", "questions":[]}),
+            other => panic!("unexpected fixture request {other}"),
+        });
+        let output = profile.run(
+            &["history", "requests", "Work"],
+            true,
+            false,
+            &[("NO_COLOR", "1")],
+        );
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        assert!(output.terminal.starts_with("▲  "), "{}", output.terminal);
+        assert!(output.terminal.contains(cause), "{}", output.terminal);
+        assert!(
+            output.terminal.contains("Retry is due now."),
+            "{}",
+            output.terminal
+        );
+    }
+}
+
+#[test]
 fn terminal_errors_use_the_setup_error_symbol() {
     let output = Profile::new().run(&["space", "list"], true, false, &[("NO_COLOR", "1")]);
     assert_eq!(output.exit, 4);

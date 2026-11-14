@@ -956,6 +956,9 @@ fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String
                 printable(problem)
             ));
         }
+        if let Some(wait) = &linked.wait {
+            report.push_str(&format!("{}\n", crate::output::wait_cause(wait, now_ms())));
+        }
         if linked.questions > 0 {
             report.push_str(&format!(
                 "{}: koi resolve lists them.\n",
