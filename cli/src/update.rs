@@ -870,9 +870,10 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         reconcile_deadline,
     )
     .await;
-    checked(step, &reconciled, &mut echo);
-    let (actual, report, app) =
-        finish_reconciliation(paths, prepared_app, &from, reconciled, app_deadline).await?;
+    let finished =
+        finish_reconciliation(paths, prepared_app, &from, reconciled, app_deadline).await;
+    checked(step, &finished, &mut echo);
+    let (actual, report, app) = finished?;
     updated(
         &from,
         actual,
@@ -974,9 +975,9 @@ async fn homebrew(
         deadline,
     )
     .await;
-    checked(step, &reconciled, &mut echo);
-    let (actual, report, app) =
-        finish_reconciliation(paths, None, &from, reconciled, deadline).await?;
+    let finished = finish_reconciliation(paths, None, &from, reconciled, deadline).await;
+    checked(step, &finished, &mut echo);
+    let (actual, report, app) = finished?;
     let incomplete = actual.cmp_precedence(&to).is_lt();
     let (mut done, service) =
         match updated(&from, actual.clone(), Via::Homebrew, report, app, false) {
@@ -1268,11 +1269,11 @@ fn reached(koi: &Path, actual: Option<Version>, target: &Version) -> Result<Vers
 
 fn checked(
     step: Option<Progress<'_>>,
-    reconciled: &Result<(Version, service::Report, Option<crate::app::Report>), ReconcileError>,
+    finished: &Result<(Version, service::Report, Option<crate::app::Report>), CliError>,
     echo: &mut Echo,
 ) {
-    match reconciled {
-        Ok((_, report, _)) if update_problem(report, None).is_none() => {
+    match finished {
+        Ok((_, report, app)) if update_problem(report, app.as_ref()).is_none() => {
             echo.finish(step, "Checked the background service");
         }
         _ => echo.fail(step),

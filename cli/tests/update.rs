@@ -747,6 +747,22 @@ fn a_failed_service_check_shows_only_its_own_output() {
     assert!(!stderr.contains("verified"), "{stderr}");
 }
 
+const APP_FAILED: &str = r#"{"schema_version":1,"command":"_reconcile","outcome":"ok","data":{"service":{"manager":"launchd","name":"dev.koidrive.koi","state":"running"},"app":{"state":"failed","problem":"Koidrive.app did not start"}}}"#;
+
+#[test]
+fn a_failed_app_report_fails_the_service_check() {
+    let Some((output, _)) = update_text(CHECKS, &["update"], APP_FAILED) else {
+        return;
+    };
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("Koidrive.app did not start"), "{stderr}");
+    assert!(
+        !stderr.contains("Checked the background service"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn an_installer_that_leaves_the_old_koi_fails_its_step() {
     let home = tempfile::tempdir().unwrap();
