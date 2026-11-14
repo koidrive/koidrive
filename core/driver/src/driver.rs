@@ -1399,17 +1399,32 @@ impl Driver {
         }
     }
 
-    /// Unanswered questions of every linked folder, oldest first per folder.
+    /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
+    /// current version in the folder's remote tree.
     pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
         let mut questions = Vec::new();
         for space_id in self.space_ids() {
-            for stored in self.stored_questions(&space_id)?.unwrap_or_default() {
-                if stored.answer.is_none()
-                    && let Some(question) = decode_question(&space_id, &stored)
-                {
-                    questions.push(question);
-                }
-            }
+            let open = self.read_store(&space_id, |store| {
+                store.transaction(|tx| {
+                    let mut open = Vec::new();
+                    for stored in tx.questions()? {
+                        let Some(mut question) = (stored.answer.is_none())
+                            .then(|| decode_question(&space_id, &stored))
+                            .flatten()
+                        else {
+                            continue;
+                        };
+                        if let QuestionKind::Conflict { .. } = question.kind {
+                            for item in &mut question.items {
+                                item.show_current(tx.remote_current(&item.node_id)?);
+                            }
+                        }
+                        open.push(question);
+                    }
+                    Ok(open)
+                })
+            })?;
+            questions.extend(open.into_iter().flatten());
         }
         Ok(questions)
     }
@@ -2583,6 +2598,75 @@ mod tests {
             })
         ));
         driver.stop().await;
+    }
+
+    #[test]
+    fn a_conflict_stored_without_its_versions_reads_them_from_the_remote_tree() {
+        use koidrive_engine::question::{ConflictFile, Revisions};
+        use koidrive_proto::v1::{Content, NodeState, VersionInfo};
+
+        let file = |node_id: &str| ConflictFile {
+            node_id: node_id.into(),
+            revisions: Revisions {
+                content_rev: 1,
+                meta_rev: 1,
+            },
+        };
+        let item = |node_id: &str, path: &str, device_id: &str| HeldItem {
+            node_id: node_id.into(),
+            path: path.into(),
+            files: 1,
+            device_id: Some(device_id.into()),
+            size: None,
+            modified_at_ms: None,
+        };
+        let stored = Question {
+            recovery_cause: None,
+            id: "c1".into(),
+            lineage: "c1".into(),
+            space_id: SPACE.into(),
+            asked_at_ms: 10,
+            kind: QuestionKind::Conflict {
+                original: file("n-original"),
+                copy: file("n-copy"),
+                sent_in: None,
+            },
+            items: vec![
+                item("n-copy", "notes (conflict).txt", "d1"),
+                item("n-original", "notes.txt", "d1"),
+            ],
+        };
+        let (_dir, paths, _root) = profile(&[stored.clone(), mass_delete("q1")]);
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                tx.put_remote_node(&NodeState {
+                    node_id: "n-original".into(),
+                    name: "notes.txt".into(),
+                    current: Some(VersionInfo {
+                        device_id: "d2".into(),
+                        content: Some(Content {
+                            size: 1_024,
+                            mtime_ns: 1_794_442_400_123_456_789,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+
+        let driver = Driver::open(paths).unwrap();
+        let mut expected = stored;
+        expected.items[0].device_id = None;
+        expected.items[1] = HeldItem {
+            device_id: Some("d2".into()),
+            size: Some(1_024),
+            modified_at_ms: Some(1_794_442_400_123),
+            ..item("n-original", "notes.txt", "d2")
+        };
+        assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
     }
 
     #[tokio::test]

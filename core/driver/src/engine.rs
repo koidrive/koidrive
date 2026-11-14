@@ -302,18 +302,16 @@ impl Engine {
             engine::QuestionKind::Conflict { original, copy, .. } => [original, copy]
                 .into_iter()
                 .map(|file| {
-                    let current = tx.remote_current(&file.node_id)?;
-                    let content = current
-                        .as_ref()
-                        .and_then(|version| version.content.as_ref());
-                    Ok(HeldItem {
+                    let mut item = HeldItem {
                         node_id: file.node_id.clone(),
                         path: path(self.trees.remote(), &file.node_id),
                         files: 1,
-                        size: content.map(|content| content.size),
-                        modified_at_ms: content.map(|content| content.mtime_ns / 1_000_000),
-                        device_id: current.map(|version| version.device_id),
-                    })
+                        device_id: None,
+                        size: None,
+                        modified_at_ms: None,
+                    };
+                    item.show_current(tx.remote_current(&file.node_id)?);
+                    Ok(item)
                 })
                 .collect::<Result<_, Error>>()?,
             _ => (asked.held.iter())
