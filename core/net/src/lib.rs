@@ -21,6 +21,7 @@ mod error;
 mod event;
 mod session;
 mod stream;
+mod transport;
 
 pub use api::Api;
 pub use auth::{
@@ -37,3 +38,4 @@ pub use event::{Committed, DisconnectReason, Event};
 pub use session::{
     Events, MAX_CLIENT_MESSAGE, MAX_SERVER_MESSAGE, PROTO_MAX, PROTO_MIN, Session, SessionConfig,
 };
+pub use transport::{Cause, Step, Transport, chain};

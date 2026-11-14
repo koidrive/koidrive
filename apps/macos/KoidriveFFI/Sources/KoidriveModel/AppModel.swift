@@ -134,7 +134,7 @@ public final class AppModel {
         switch headline {
         case .setup: .none
         case .halted: .problem
-        case _ where !state.problems.isEmpty: .problem
+        case _ where state.problems.contains(where: { !$0.kind.isServerUnreachable }): .problem
         case .questions: .question
         case .status(.offline): .offline
         case .status(.paused): .paused
@@ -460,6 +460,15 @@ extension RestoreState {
     /// True until the folder has sent the restore and the server has answered it.
     public var isPending: Bool {
         if case .pending = self { true } else { false }
+    }
+}
+
+extension ProblemKind {
+    var isServerUnreachable: Bool {
+        switch self {
+        case .serverUnreachable, .noInternet: true
+        default: false
+        }
     }
 }
 

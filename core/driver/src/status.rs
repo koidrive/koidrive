@@ -137,12 +137,33 @@ pub struct Totals {
     pub bytes_total: u64,
 }
 
+impl FolderStatus {
+    /// Why the folder cannot reach the server, and when it tries again in Unix milliseconds, while it is offline. No
+    /// time means it is trying now.
+    pub fn unreachable(&self) -> Option<(&Unreachable, Option<i64>)> {
+        let wait = (self.wait.as_ref()).filter(|_| self.state == FolderState::Offline)?;
+        Some((wait.unreachable.as_ref()?, wait.until_ms))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unreachable {
+    /// In plain words, such as "the server's address could not be found".
+    pub why: String,
+    /// This device has no network connection at all.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_internet: bool,
+}
+
 /// A call a folder sends again later, after the server put it off or it kept failing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wait {
     pub kind: WaitKind,
-    /// When the call is sent again, in Unix milliseconds.
-    pub until_ms: i64,
+    /// When the call is sent again, in Unix milliseconds, or `None` while it is being sent again.
+    pub until_ms: Option<i64>,
+    /// Why the server cannot be reached, when that is what the call waits on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable: Option<Unreachable>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

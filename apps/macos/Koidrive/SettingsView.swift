@@ -157,7 +157,7 @@ extension FolderState {
         switch self {
         case .upToDate: .statusGreen
         case .syncing: .koi
-        case .recovering, .waiting: .statusYellow
+        case .recovering, .waiting, .offline: .statusYellow
         case .halted: .statusRed
         case .readOnly: .text3
         }

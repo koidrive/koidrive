@@ -133,6 +133,7 @@ pub(crate) enum Stall {
         wait: Duration,
         why: String,
         kind: WaitKind,
+        unreachable: Option<koidrive_net::Cause>,
     },
     /// Staging cannot go on: the root was withdrawn, a staged file could not be written, or the session ended.
     Halt(Stop),
@@ -1121,10 +1122,12 @@ fn failed_transfer(effect_id: &str, error: ChunkError, corrupt: bool) -> Result<
         | ChunkError::Call(CallError::Server(refusal)) => Some(refusal),
         _ => None,
     });
+    let unreachable = policy::unreachable(&error);
     let later = |wait| Stall::Later {
         wait,
         why: format!("downloading a file's content failed: {why}"),
         kind,
+        unreachable,
     };
     match disposition {
         None => Ok(format!("its content cannot be downloaded: {error}")),
