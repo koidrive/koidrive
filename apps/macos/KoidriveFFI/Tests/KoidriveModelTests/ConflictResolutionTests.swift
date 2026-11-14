@@ -85,11 +85,10 @@ private struct ConflictError: Error {}
 
     @Test func aSecondAnswerWhileOneIsSentIsIgnored() async throws {
         let (_, resolution) = try conflict()
-        async let first: Void = resolution.keep(.keepOriginal)
-        await Task.yield()
+        let first = Task.immediate { await resolution.keep(.keepOriginal) }
         #expect(resolution.isKeeping)
         await resolution.keep(.keepCopy)
-        await first
+        await first.value
         #expect(resolution.phase == .settled(.keepOriginal))
     }
 }
