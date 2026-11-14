@@ -679,7 +679,12 @@ pub async fn converge(
     let mut report = match manager.state(service) {
         _ if off => Report::new(manager, name, State::Off),
         Err(problem) => Report::unavailable(manager, problem),
-        Ok(before) => {
+        Ok(mut before) => {
+            let settled = Instant::now() + ipc::STARTING;
+            while before == State::Starting && Instant::now() < settled {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                before = manager.state(service).unwrap_or(before);
+            }
             let action = plan(folders, before, asked);
             let daemon = match before {
                 State::Running => daemon,
@@ -692,8 +697,9 @@ pub async fn converge(
             };
             let mut after = manager.state(service).unwrap_or(before);
             let spawned = Instant::now()
-                + match after {
-                    State::Starting => ipc::STARTING,
+                + match (before, after) {
+                    (State::Starting, _) => Duration::ZERO,
+                    (_, State::Starting) => ipc::STARTING,
                     _ => SPAWN,
                 };
             let started = |after| match after {
@@ -1190,6 +1196,9 @@ fn launchd_state(job: &str) -> State {
 }
 
 fn launchd_exit(job: &str) -> Option<String> {
+    if launchd_field(job, "state") == Some("running") {
+        return None;
+    }
     match launchd_field(job, "last exit code")?.parse::<i32>() {
         Ok(0) | Err(_) => None,
         Ok(code) => Some(format!("exit code {code}")),
@@ -1476,7 +1485,7 @@ mod tests {
         service_lock: Option<PathBuf>,
         locked_at_start: Cell<Option<bool>>,
         crashed: Option<&'static str>,
-        permanently_starting: bool,
+        starting: Cell<u32>,
     }
 
     impl Manager for Fake {
@@ -1489,7 +1498,9 @@ mod tests {
         }
 
         fn state(&self, _: &Service) -> Result<State, String> {
-            if self.permanently_starting {
+            let starting = self.starting.get();
+            if starting > 0 {
+                self.starting.set(starting - 1);
                 return Ok(State::Starting);
             }
             if self.unavailable {
@@ -2707,7 +2718,7 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
     async fn a_service_that_never_leaves_starting_is_a_retryable_problem() {
         let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
         let fake = Fake {
-            permanently_starting: true,
+            starting: Cell::new(u32::MAX),
             ..Fake::default()
         };
         let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
@@ -2719,6 +2730,21 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         );
         assert!(report.failed());
         assert!(report.retryable());
+    }
+
+    #[tokio::test]
+    async fn a_service_that_finishes_restarting_is_planned_on_its_settled_state() {
+        let service = service(&[]);
+        let fake = Fake {
+            unit: RefCell::new(Some("an older definition".to_owned())),
+            running: Cell::new(true),
+            starting: Cell::new(3),
+            ..Fake::default()
+        };
+        let report = converge(&fake, &service, 1, false, false, &Daemon::Absent).await;
+        assert_eq!(report.state, State::Running);
+        assert_eq!(*fake.unit.borrow(), Some(service.unit()));
+        assert_eq!(fake.restarts.get(), 1);
     }
 
     #[test]
@@ -2760,8 +2786,9 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             State::Stopped
         );
         assert_eq!(launchd_state(&job("not running", "")), State::Stopped);
+        assert_eq!(launchd_exit(&job("running", "last exit code = 78")), None);
         assert_eq!(
-            launchd_exit(&job("running", "last exit code = 78")).as_deref(),
+            launchd_exit(&job("spawn scheduled", "last exit code = 78")).as_deref(),
             Some("exit code 78")
         );
         assert!(plan(1, State::Starting, false) == Action::Leave);
