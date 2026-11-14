@@ -128,6 +128,8 @@ mod tests {
                 path: "d".into(),
                 files: 11,
                 device_id: None,
+                size: None,
+                modified_at_ms: None,
             }],
             lineage: lineage.into(),
         }

@@ -6,6 +6,7 @@
 //! app and the CLI.
 
 pub use koidrive_engine::question::{Answer, Limit, QuestionKind, RecoveryGroup};
+use koidrive_proto::v1::VersionInfo;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +75,23 @@ pub struct HeldItem {
     /// For a file of a conflict, the device that wrote its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// For a file of a conflict, the size of its current version in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<i64>,
+}
+
+impl HeldItem {
+    pub(crate) fn show_current(&mut self, current: Option<VersionInfo>) {
+        let content = current
+            .as_ref()
+            .and_then(|version| version.content.as_ref());
+        self.size = content.map(|content| content.size);
+        self.modified_at_ms = content.map(|content| content.mtime_ns / 1_000_000);
+        self.device_id = current.map(|version| version.device_id);
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +127,8 @@ mod tests {
                 path: "a/b".into(),
                 files: 1,
                 device_id: None,
+                size: None,
+                modified_at_ms: None,
             }],
             lineage: "q1".into(),
             recovery_cause: None,

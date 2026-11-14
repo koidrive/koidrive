@@ -480,11 +480,28 @@
           "minimum": 0,
           "type": "integer"
         },
+        "modified_at_ms": {
+          "description": "For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "node_id": {
           "type": "string"
         },
         "path": {
           "type": "string"
+        },
+        "size": {
+          "description": "For a file of a conflict, the size of its current version in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [

@@ -5,11 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use koidrive_driver::{self as driver, FolderState as DriverFolderState, Status};
 
-use crate::helper::Helper;
 use crate::types::{
-    Account, Answer, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit,
-    NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question, QuestionKind, RecoveryCause,
-    RecoveryGroup, RecoveryTrigger, SessionState, SyncProgress, SyncStatus,
+    Account, Answer, ConflictSide, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder,
+    MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question, QuestionKind,
+    RecoveryCause, RecoveryGroup, RecoveryTrigger, SessionState, SyncProgress, SyncStatus,
 };
 
 pub(crate) type Halted = BTreeMap<String, (String, i64)>;
@@ -19,7 +18,6 @@ pub(crate) fn session_state(
     questions: &[driver::Question],
     started: bool,
     halted: &mut Halted,
-    helper: &Helper,
 ) -> SessionState {
     let shown = match started {
         true => sync_status(status),
@@ -35,12 +33,7 @@ pub(crate) fn session_state(
         folders: status.folders.iter().map(folder).collect(),
         recent_changes: Vec::new(),
         questions: questions.iter().cloned().filter_map(question).collect(),
-        problems: {
-            let mut problems = problems(status, halted);
-            problems.extend(questions.iter().filter_map(|asked| conflict(asked, helper)));
-            problems.sort_by_key(|problem| problem.since_ms);
-            problems
-        },
+        problems: problems(status, halted),
         notices: questions.iter().cloned().filter_map(notice).collect(),
     }
 }
@@ -161,25 +154,6 @@ fn mass_delete_limit(limit: driver::Limit) -> MassDeleteLimit {
     }
 }
 
-fn conflict(asked: &driver::Question, helper: &Helper) -> Option<Problem> {
-    let driver::QuestionKind::Conflict { original, .. } = &asked.kind else {
-        return None;
-    };
-    Some(Problem {
-        id: asked.id.clone(),
-        space_id: Some(asked.space_id.clone()),
-        path: asked
-            .items
-            .iter()
-            .find(|item| item.node_id == original.node_id)
-            .map(|item| item.path.clone()),
-        kind: ProblemKind::Conflict {
-            resolve_command: helper.action_command(&["resolve"]),
-        },
-        since_ms: asked.asked_at_ms,
-    })
-}
-
 fn notice(asked: driver::Question) -> Option<Notice> {
     let driver::QuestionKind::RemoteMassDelete {
         deletions,
@@ -205,9 +179,7 @@ fn notice(asked: driver::Question) -> Option<Notice> {
 
 fn question(question: driver::Question) -> Option<Question> {
     let kind = match question.kind {
-        driver::QuestionKind::RemoteMassDelete { .. } | driver::QuestionKind::Conflict { .. } => {
-            return None;
-        }
+        driver::QuestionKind::RemoteMassDelete { .. } => return None,
         driver::QuestionKind::MassDelete {
             deletions,
             affected_files,
@@ -232,6 +204,26 @@ fn question(question: driver::Question) -> Option<Question> {
                 driver::RecoveryGroup::RequestedBeforeReset => RecoveryGroup::RequestedBeforeReset,
             },
         },
+        driver::QuestionKind::Conflict { original, copy, .. } => {
+            let side = |node_id: &str| {
+                let item = question.items.iter().find(|item| item.node_id == node_id)?;
+                Some(ConflictSide {
+                    node_id: item.node_id.clone(),
+                    path: item.path.clone(),
+                    size: item.size?,
+                    modified_at_ms: item.modified_at_ms?,
+                })
+            };
+            let (Some(original), Some(copy)) = (side(&original.node_id), side(&copy.node_id))
+            else {
+                tracing::warn!(
+                    question_id = question.id,
+                    "a conflict lacks the path, size or modification time of a file, so it is not shown"
+                );
+                return None;
+            };
+            QuestionKind::Conflict { original, copy }
+        }
     };
     Some(Question {
         id: question.id,
@@ -280,8 +272,12 @@ fn recovery_cause(cause: Option<driver::RecoveryCause>) -> RecoveryCause {
     }
 }
 
-pub(crate) fn word(answer: Answer) -> &'static str {
-    match answer {
+pub(crate) fn word(answer: Answer, kind: Option<&driver::QuestionKind>) -> Option<String> {
+    let conflict = match kind {
+        Some(driver::QuestionKind::Conflict { original, copy, .. }) => Some((original, copy)),
+        _ => None,
+    };
+    let engine = match answer {
         Answer::Delete => driver::Answer::Delete,
         Answer::Restore => driver::Answer::Restore,
         Answer::Keep => driver::Answer::Keep,
@@ -289,23 +285,29 @@ pub(crate) fn word(answer: Answer) -> &'static str {
         Answer::Publish => driver::Answer::Publish,
         Answer::Repeat => driver::Answer::Repeat,
         Answer::Cancel => driver::Answer::Cancel,
+        Answer::KeepOriginal => driver::Answer::KeepOriginal,
+        Answer::KeepCopy => driver::Answer::KeepCopy,
+        Answer::KeepBoth => driver::Answer::KeepBoth,
+    };
+    match (engine, conflict) {
+        (driver::Answer::KeepOriginal, Some((original, _))) => {
+            Some(format!("keep-node:{}", original.node_id))
+        }
+        (driver::Answer::KeepCopy, Some((_, copy))) => Some(format!("keep-node:{}", copy.node_id)),
+        (driver::Answer::KeepBoth, Some(_)) => Some("keep-both".to_owned()),
+        (
+            driver::Answer::KeepOriginal | driver::Answer::KeepCopy | driver::Answer::KeepBoth,
+            None,
+        ) => None,
+        (engine, _) => Some(engine.as_str().to_owned()),
     }
-    .as_str()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     use super::*;
-
-    fn helper() -> Helper {
-        Helper {
-            path: "/Applications/Koidrive.app/Contents/Helpers/koi".into(),
-            env: Vec::new(),
-        }
-    }
 
     fn recovery_payload(cause: Option<serde_json::Value>) -> driver::Question {
         let mut payload = serde_json::json!({
@@ -375,75 +377,91 @@ mod tests {
     }
 
     #[test]
-    fn conflicts_are_visible_with_a_shell_safe_bundled_resolution_command() {
-        let asked: driver::Question = serde_json::from_value(serde_json::json!({
-            "id": "q-conflict", "space_id": "s1", "asked_at_ms": 7,
-            "kind": {
-                "type": "conflict",
-                "original": { "node_id": "original", "revisions": { "content_rev": 1, "meta_rev": 1 } },
-                "copy": { "node_id": "copy", "revisions": { "content_rev": 1, "meta_rev": 1 } }
-            },
-            "items": [
-                { "node_id": "copy", "path": "A conflict.txt", "files": 1 },
-                { "node_id": "original", "path": "notes.txt", "files": 1 }
-            ]
-        }))
-        .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("Ada's $(false) Koidrive koi");
-        std::fs::write(
-            &path,
-            "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"$HOME\" \"$XDG_CONFIG_HOME\" \"${XDG_STATE_HOME-unset}\" \"${XDG_RUNTIME_DIR-unset}\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let helper = Helper {
-            path,
-            env: vec![
-                ("HOME", Some("/Users/Ada's home".into())),
-                (
-                    "XDG_CONFIG_HOME",
-                    Some("/private/other $(false) profile".into()),
-                ),
-                ("XDG_STATE_HOME", None),
-                ("XDG_RUNTIME_DIR", None),
-            ],
+    fn a_conflict_is_a_question_with_both_files_and_a_halted_folder_stays_a_problem() {
+        let asked = |items: serde_json::Value| -> driver::Question {
+            serde_json::from_value(serde_json::json!({
+                "id": "q-conflict", "space_id": "s1", "asked_at_ms": 7,
+                "kind": {
+                    "type": "conflict",
+                    "original": { "node_id": "original", "revisions": { "content_rev": 1, "meta_rev": 1 } },
+                    "copy": { "node_id": "copy", "revisions": { "content_rev": 1, "meta_rev": 1 } }
+                },
+                "items": items
+            }))
+            .unwrap()
         };
+        let copy = serde_json::json!({
+            "node_id": "copy", "path": "notes (conflict).txt", "files": 1, "device_id": "d2",
+            "size": 2_048, "modified_at_ms": 1_794_442_424_000_i64
+        });
+        let original = serde_json::json!({
+            "node_id": "original", "path": "notes.txt", "files": 1, "device_id": "d1",
+            "size": 1_024, "modified_at_ms": 1_794_442_400_000_i64
+        });
         let status = status_of(&[DriverFolderState::Halted]);
         let mut halted = Halted::new();
-        let state = session_state(&status, &[asked], true, &mut halted, &helper);
-        assert!(state.questions.is_empty());
-        assert_eq!(state.problems.len(), 2);
-        let problem = state
-            .problems
-            .iter()
-            .find(|p| p.id == "q-conflict")
-            .unwrap();
-        assert_eq!(problem.space_id.as_deref(), Some("s1"));
-        assert_eq!(problem.path.as_deref(), Some("notes.txt"));
-        assert_eq!(problem.since_ms, 7);
-        let ProblemKind::Conflict { resolve_command } = &problem.kind else {
-            panic!("a conflict must remain visible as a problem");
+        let halted_only = |state: &SessionState| {
+            matches!(
+                state.problems.as_slice(),
+                [Problem {
+                    kind: ProblemKind::FolderHalted { .. },
+                    ..
+                }]
+            )
         };
-        let parsed = std::process::Command::new("/bin/sh")
-            .args(["-c", resolve_command])
-            .env("HOME", "/wrong/home")
-            .env("XDG_CONFIG_HOME", "/wrong/config")
-            .env("XDG_STATE_HOME", "/wrong/state")
-            .env("XDG_RUNTIME_DIR", "/wrong/runtime")
-            .output()
-            .unwrap();
-        assert!(parsed.status.success());
+
+        let conflict = asked(serde_json::json!([copy, original]));
+        let state = session_state(&status, &[conflict], true, &mut halted);
+        let [question] = state.questions.as_slice() else {
+            panic!("one question: {:?}", state.questions);
+        };
         assert_eq!(
-            String::from_utf8(parsed.stdout).unwrap(),
-            "1\nresolve\n/Users/Ada's home\n/private/other $(false) profile\nunset\nunset\n"
+            (question.id.as_str(), question.space_id.as_str()),
+            ("q-conflict", "s1")
         );
-        let resolved = session_state(&status, &[], true, &mut halted, &helper);
-        assert_eq!(resolved.problems.len(), 1);
-        assert!(matches!(
-            resolved.problems[0].kind,
-            ProblemKind::FolderHalted { .. }
-        ));
+        assert_eq!(question.asked_at_ms, 7);
+        assert_eq!(
+            question.kind,
+            QuestionKind::Conflict {
+                original: ConflictSide {
+                    node_id: "original".into(),
+                    path: "notes.txt".into(),
+                    size: 1_024,
+                    modified_at_ms: 1_794_442_400_000,
+                },
+                copy: ConflictSide {
+                    node_id: "copy".into(),
+                    path: "notes (conflict).txt".into(),
+                    size: 2_048,
+                    modified_at_ms: 1_794_442_424_000,
+                },
+            }
+        );
+        assert_eq!(
+            question.answers,
+            [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth]
+        );
+        assert!(halted_only(&state), "{:?}", state.problems);
+
+        let without = |item: &serde_json::Value, field: &str| {
+            let mut item = item.clone();
+            item.as_object_mut().unwrap().remove(field);
+            item
+        };
+        for items in [
+            serde_json::json!([copy]),
+            serde_json::json!([original]),
+            serde_json::json!([without(&copy, "size"), original]),
+            serde_json::json!([copy, without(&original, "modified_at_ms")]),
+        ] {
+            let state = session_state(&status, &[asked(items.clone())], true, &mut halted);
+            assert!(state.questions.is_empty(), "{items}");
+            assert!(halted_only(&state), "{:?}", state.problems);
+        }
+
+        let resolved = session_state(&status, &[], true, &mut halted);
+        assert!(resolved.questions.is_empty());
+        assert!(halted_only(&resolved), "{:?}", resolved.problems);
     }
 
     fn folder_in(state: DriverFolderState, problem: Option<&str>) -> driver::FolderStatus {
@@ -487,7 +505,7 @@ mod tests {
     fn the_session_status_follows_its_folders_and_the_daemon() {
         use DriverFolderState::*;
         let status = |status: &Status, started| {
-            session_state(status, &[], started, &mut Default::default(), &helper()).status
+            session_state(status, &[], started, &mut Default::default()).status
         };
         let up = status_of(&[UpToDate]);
         assert_eq!(status(&up, false), SyncStatus::Stopped);
@@ -579,12 +597,16 @@ mod tests {
                     path: "Archive".into(),
                     files: 1_499,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 },
                 driver::HeldItem {
                     node_id: "n2".into(),
                     path: "notes.txt".into(),
                     files: 1,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 },
             ],
         };
@@ -617,13 +639,7 @@ mod tests {
                 },
             ),
         ];
-        let state = session_state(
-            &status_of(&[]),
-            &questions,
-            true,
-            &mut Halted::new(),
-            &helper(),
-        );
+        let state = session_state(&status_of(&[]), &questions, true, &mut Halted::new());
         let limits = vec![
             MassDeleteLimit::Deletions { limit: 1_000 },
             MassDeleteLimit::ShareOfSpace { percent: 50 },
@@ -671,7 +687,24 @@ mod tests {
             (Answer::Repeat, "repeat"),
             (Answer::Cancel, "cancel"),
         ] {
-            assert_eq!(word(answer), expected);
+            assert_eq!(word(answer, None).as_deref(), Some(expected));
+        }
+        for answer in [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth] {
+            assert_eq!(word(answer, None), None);
+        }
+        let conflict: driver::QuestionKind = serde_json::from_value(serde_json::json!({
+            "type": "conflict",
+            "original": { "node_id": "original", "revisions": { "content_rev": 1, "meta_rev": 1 } },
+            "copy": { "node_id": "copy", "revisions": { "content_rev": 1, "meta_rev": 1 } }
+        }))
+        .unwrap();
+        for (answer, expected) in [
+            (Answer::KeepOriginal, "keep-node:original"),
+            (Answer::KeepCopy, "keep-node:copy"),
+            (Answer::KeepBoth, "keep-both"),
+            (Answer::Delete, "delete"),
+        ] {
+            assert_eq!(word(answer, Some(&conflict)).as_deref(), Some(expected));
         }
     }
 }

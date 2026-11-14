@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use super::*;
 use crate::core::SessionListener;
 use crate::types::{
-    DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState, RestoreTarget,
-    ShareState, SyncProgress,
+    ConflictSide, DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState,
+    RestoreTarget, ShareState, SyncProgress,
 };
 
 const KOI: &str = r#"#!/bin/sh
@@ -714,7 +714,7 @@ fn a_stopped_profile_retries_a_busy_read_even_without_another_file_change() {
 }
 
 #[test]
-fn a_stopped_profiles_conflict_reaches_problems_through_koi_status() {
+fn a_stopped_profiles_conflict_is_a_question_answered_with_the_node_koi_keeps() {
     let koi = Koi::new(signed_in(false));
     let conflict = json!({
         "type": "conflict",
@@ -730,8 +730,8 @@ fn a_stopped_profiles_conflict_reaches_problems_through_koi_status() {
         "conflict": conflict,
         "asked_at_ms": 7,
         "items": [
-            { "node_id": "original", "path": "notes.txt", "files": 1 },
-            { "node_id": "copy", "path": "notes conflict.txt", "files": 1 },
+            { "node_id": "copy", "path": "notes conflict.txt", "files": 1, "size": 2048, "modified_at_ms": 1_794_442_424_000_i64 },
+            { "node_id": "original", "path": "notes.txt", "files": 1, "size": 1024, "modified_at_ms": 1_794_442_400_000_i64 },
         ],
     }]);
     koi.answer("status", status);
@@ -739,20 +739,62 @@ fn a_stopped_profiles_conflict_reaches_problems_through_koi_status() {
 
     let state = koi.core.state();
     assert_eq!(state.status, SyncStatus::Stopped);
-    assert!(state.questions.is_empty());
-    let [problem] = state.problems.as_slice() else {
-        panic!("the stopped profile's conflict must remain visible");
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    let [question] = state.questions.as_slice() else {
+        panic!("the stopped profile's conflict must be a question: {state:?}");
     };
-    assert_eq!(problem.id, "q-conflict");
-    assert_eq!(problem.path.as_deref(), Some("notes.txt"));
-    assert!(matches!(
-        &problem.kind,
-        crate::types::ProblemKind::Conflict { resolve_command }
-            if resolve_command == &koi.core.helper.action_command(&["resolve"])
-    ));
+    assert_eq!(question.id, "q-conflict");
     assert_eq!(
-        koi.core.lock().questions[0].kind,
-        serde_json::from_value::<driver::QuestionKind>(conflict).unwrap(),
+        question.kind,
+        QuestionKind::Conflict {
+            original: ConflictSide {
+                node_id: "original".into(),
+                path: "notes.txt".into(),
+                size: 1024,
+                modified_at_ms: 1_794_442_400_000,
+            },
+            copy: ConflictSide {
+                node_id: "copy".into(),
+                path: "notes conflict.txt".into(),
+                size: 2048,
+                modified_at_ms: 1_794_442_424_000,
+            },
+        }
+    );
+    assert_eq!(
+        question.answers,
+        [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth]
+    );
+
+    koi.answer("resolve", ok(json!({})));
+    for answer in [Answer::KeepCopy, Answer::KeepOriginal, Answer::KeepBoth] {
+        koi.core.answer("q-conflict", answer).unwrap();
+    }
+
+    let mut answered = ok(signed_in(false));
+    answered["decisions"] = json!([]);
+    koi.answer("status", answered);
+    koi.core.reload();
+    assert!(koi.core.state().questions.is_empty());
+    koi.answer("resolve", json!({ "outcome": "unchanged", "data": {} }));
+    assert_eq!(
+        koi.core.answer("q-conflict", Answer::KeepCopy),
+        Err(SessionError::QuestionNotFound)
+    );
+    for answer in [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth] {
+        assert_eq!(
+            koi.core.answer("q-gone", answer),
+            Err(SessionError::QuestionNotFound)
+        );
+    }
+    assert_eq!(
+        koi.calls_of("resolve"),
+        [
+            "resolve -- q-conflict keep-node:copy",
+            "resolve -- q-conflict keep-node:original",
+            "resolve -- q-conflict keep-both",
+            "resolve -- q-conflict keep-node:copy",
+        ]
     );
 }
 

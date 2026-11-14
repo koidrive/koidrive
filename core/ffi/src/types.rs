@@ -402,7 +402,8 @@ pub struct Question {
     pub kind: QuestionKind,
     /// Every node the answer applies to, in path order. Nothing else is affected by the answer.
     pub items: Vec<HeldItem>,
-    /// The answers this question accepts, in the order the app shows them. Always two.
+    /// The answers this question accepts, in the order the app shows them: two, or three for a
+    /// conflict.
     pub answers: Vec<Answer>,
 }
 
@@ -436,6 +437,28 @@ pub enum QuestionKind {
         cause: RecoveryCause,
         group: RecoveryGroup,
     },
+    /// Two devices changed the same file, and the server kept both versions: the other device's
+    /// edit is the original, and this device's edit was saved as the copy under a conflict name
+    /// (design §2.4). Both files keep syncing until answered. Answers: [`Answer::KeepOriginal`]
+    /// moves the copy to the space's trash; [`Answer::KeepCopy`] gives the original the copy's
+    /// content, keeping the old content in its version history, and moves the copy to the
+    /// space's trash; [`Answer::KeepBoth`] keeps both files.
+    Conflict {
+        original: ConflictSide,
+        copy: ConflictSide,
+    },
+}
+
+/// One file of a [`QuestionKind::Conflict`], as its current version on the server stands.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ConflictSide {
+    pub node_id: String,
+    /// The path relative to the linked folder.
+    pub path: String,
+    /// The size in bytes.
+    pub size: u64,
+    /// When the file was last modified, in milliseconds since the epoch.
+    pub modified_at_ms: i64,
 }
 
 /// A limit of the mass-delete guard (design §6.1).
@@ -527,7 +550,7 @@ pub enum ItemDetail {
     RestoreVersion { version_at_ms: i64 },
 }
 
-/// An answer to a question. Each [`QuestionKind`] accepts two of them, listed in
+/// An answer to a question. Each [`QuestionKind`] accepts the ones listed in
 /// [`Question::answers`]; the engine refuses any other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Answer {
@@ -545,10 +568,16 @@ pub enum Answer {
     Repeat,
     /// Drop a request.
     Cancel,
+    /// Keep the original of a conflict and move the copy to the space's trash.
+    KeepOriginal,
+    /// Give the original of a conflict the copy's content and move the copy to the space's trash.
+    KeepCopy,
+    /// Keep both files of a conflict.
+    KeepBoth,
 }
 
 impl QuestionKind {
-    /// The two answers this kind of question accepts.
+    /// The answers this kind of question accepts, in the order the app shows them.
     pub fn answers(&self) -> Vec<Answer> {
         match self {
             QuestionKind::MassDelete { .. } | QuestionKind::AmbiguousDisappearance => {
@@ -562,6 +591,9 @@ impl QuestionKind {
                 RecoveryGroup::DeletedOnThisDevice => vec![Answer::Delete, Answer::Restore],
                 RecoveryGroup::RequestedBeforeReset => vec![Answer::Repeat, Answer::Cancel],
             },
+            QuestionKind::Conflict { .. } => {
+                vec![Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth]
+            }
         }
     }
 }
@@ -661,8 +693,6 @@ pub enum ProblemKind {
     StateNotWritable { reason: String },
     /// The folder stopped syncing for the reason the driver gives, which only a person can fix.
     FolderHalted { reason: String },
-    /// Both versions of a file are syncing. `resolve_command` lists the choices in the bundled CLI.
-    Conflict { resolve_command: String },
 }
 
 /// Whether this profile sends anonymous usage reports (docs/guide/telemetry.md).

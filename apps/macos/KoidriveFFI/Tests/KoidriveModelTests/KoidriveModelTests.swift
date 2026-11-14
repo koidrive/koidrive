@@ -258,6 +258,27 @@ private final class Fetches {
         }
     }
 
+    @Test func aConflictShowsBothFilesAndTakesItsThreeAnswers() async throws {
+        let model = AppModel.fake(scenario: .conflict)
+        let question = try #require(model.state.questions.first)
+        guard case .conflict(let original, let copy) = question.kind else {
+            Issue.record("a conflict: \(question.kind)")
+            return
+        }
+        #expect(original.path == "Budget 2027.xlsx")
+        #expect(question.items.map(\.nodeId) == [copy.nodeId, original.nodeId])
+        #expect(question.answers == [.keepOriginal, .keepCopy, .keepBoth])
+
+        await #expect(throws: SessionError.AnswerNotAllowed) {
+            try await model.answer(question, with: .delete)
+        }
+        try await model.answer(question, with: .keepCopy)
+        #expect(model.state.questions.isEmpty)
+        await #expect(throws: SessionError.QuestionNotFound) {
+            try await model.answer(question, with: .keepBoth)
+        }
+    }
+
     @Test func questionSectionsGroupBySpaceAndOrderRecoveryGroups() throws {
         let model = AppModel.fake(scenario: .manyQuestions)
         let sections = model.questionSections

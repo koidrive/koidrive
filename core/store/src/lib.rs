@@ -498,8 +498,8 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// The device that wrote the current version of the remote node, if R holds the node with one.
-    pub fn remote_writer(&self, node_id: &str) -> Result<Option<String>> {
+    /// The current version of the remote node, if R holds the node with one.
+    pub fn remote_current(&self, node_id: &str) -> Result<Option<VersionInfo>> {
         let current: Option<Option<Vec<u8>>> = self
             .0
             .query_row(
@@ -508,8 +508,7 @@ impl Tx<'_> {
                 |row| row.get(0),
             )
             .optional()?;
-        let version = decode::<VersionInfo>(current.flatten())?;
-        Ok(version.map(|version| version.device_id))
+        decode::<VersionInfo>(current.flatten())
     }
 
     /// How many nodes the remote tree holds, live and trashed.
