@@ -636,20 +636,24 @@ async fn versions_and_current(
     node: &NodeState,
 ) -> Result<(Vec<VersionInfo>, Option<String>), CliError> {
     let mut current = (node.current.as_ref()).map(|version| version.version_id.clone());
-    let mut kept = versions_of(auth, space, &node.node_id).await?;
-    for _ in 0..3 {
+    for read in 0..4 {
+        if read > 0 {
+            current = (tree(auth, space).await?.into_iter())
+                .find(|again| again.node_id == node.node_id)
+                .and_then(|again| again.current)
+                .map(|version| version.version_id);
+        }
+        let kept = versions_of(auth, space, &node.node_id).await?;
         let listed = (current.as_ref())
             .and_then(|current| kept.iter().find(|version| &version.version_id == current));
         if listed.is_some_and(|listed| kept.iter().all(|version| version.seq <= listed.seq)) {
-            break;
+            return Ok((kept, current));
         }
-        current = (tree(auth, space).await?.into_iter())
-            .find(|again| again.node_id == node.node_id)
-            .and_then(|again| again.current)
-            .map(|version| version.version_id);
-        kept = versions_of(auth, space, &node.node_id).await?;
     }
-    Ok((kept, current))
+    Err(CliError::new(
+        koidrive_ipc::Code::Unavailable,
+        "the file kept changing while its versions were read; try again",
+    ))
 }
 
 async fn versions_of(
@@ -1436,6 +1440,42 @@ mod tests {
             .collect();
         assert_eq!(current, [serde_json::json!(true), serde_json::json!(false)]);
         assert_eq!(refused.reason, Some(Reason::AlreadyCurrent), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn a_file_that_keeps_changing_while_its_versions_are_read_asks_to_try_again() {
+        let rpc = format!("/v1/spaces/{SPACE}/rpc");
+        let saved = |id: &str, seq: u64| VersionInfo {
+            seq,
+            ..version(id, seq, seq as i64)
+        };
+        let tree = || {
+            let page = TreePage {
+                nodes: vec![NodeState {
+                    current: Some(saved("a-1", 2)),
+                    ..node("a", SPACE, "a.txt", NodeKind::File, 3, "")
+                }],
+                ..TreePage::default()
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Tree(page)))
+        };
+        let kept = || {
+            let list = VersionList {
+                versions: vec![saved("a-2", 3), saved("a-1", 2)],
+                next_cursor: String::new(),
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Versions(list)))
+        };
+        let mut replies = vec![token()];
+        for _ in 0..4 {
+            replies.extend([tree(), kept()]);
+        }
+        let fake = Fake::start(replies).await;
+        let (_dir, paths, root) = linked_on(fake.base.as_str());
+
+        let error = versions(&paths, &root.join("a.txt")).await.unwrap_err();
+
+        assert_eq!(error.code, koidrive_ipc::Code::Unavailable, "{error:?}");
     }
 
     #[tokio::test]
