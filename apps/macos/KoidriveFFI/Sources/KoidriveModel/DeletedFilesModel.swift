@@ -130,18 +130,14 @@ public final class DeletedFilesModel {
         }
     }
 
-    /// Catches up after the session's status changed: a failed load runs again, loaded content reads its restores.
+    /// Catches up after the session's status changed: the trash and restores load again, keeping what's shown until the answer.
     public func sessionStatusChanged() async {
-        if case .failed = content {
-            await load()
-        } else {
-            await refreshRequests()
-        }
+        await load()
     }
 
     /// Asks to bring the selected item back to where it was.
     public func restoreSelected() async {
-        guard let entry = selectedEntry, !entry.isRequested,
+        guard !isRestoring, let entry = selectedEntry, !entry.isRequested,
               let history = scopedFolders.first(where: { $0.folder.spaceId == entry.id.spaceID }) else { return }
         isRestoring = true
         restoreError = nil

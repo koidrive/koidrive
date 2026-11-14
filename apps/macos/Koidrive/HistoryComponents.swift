@@ -38,6 +38,7 @@ struct HistoryFooter<Content: View>: View {
         HStack(spacing: 8) {
             content
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 20)
         .frame(height: 56)
         .overlay(alignment: .top) { Color.line.frame(height: 1) }

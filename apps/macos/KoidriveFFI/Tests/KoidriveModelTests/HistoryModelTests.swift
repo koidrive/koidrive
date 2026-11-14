@@ -220,6 +220,35 @@ private func twoFoldersWithDeletions() throws -> AppModel {
         #expect(files.sections.flatMap(\.entries).count == 5)
     }
 
+    @Test func aDeletionThatSyncsLaterShowsUpWhenTheStatusChanges() async throws {
+        let app = try twoFoldersWithDeletions()
+        let files = DeletedFilesModel(app: app, clock: halfPastMidnight)
+        await files.load()
+        #expect(files.sections.flatMap(\.entries).count == 5)
+
+        try fakeCore(app).setTrash(spaceId: folder(app, "Photos").spaceId, items: [
+            deleted("node-trip", "2026/Trip drafts", kind: .folder, files: 18, bytes: 96_000_000, at: "2026-11-12T23:50:00Z"),
+            deleted("node-photo", "2026/Seoul/IMG_0412.heic", at: "2026-11-12T07:55:00Z"),
+            deleted("node-new", "2026/Seoul/IMG_0500.heic", at: "2026-11-13T00:25:00Z"),
+        ])
+        app.apply(.status(status: .syncing))
+        await files.sessionStatusChanged()
+        app.apply(.status(status: .idle))
+        await files.sessionStatusChanged()
+        #expect(files.sections[1].entries.first?.path == "Photos/2026/Seoul/IMG_0500.heic")
+    }
+
+    @Test func aSecondRestoreWhileTheFirstIsSendingAsksOnce() async throws {
+        let files = DeletedFilesModel(app: try twoFoldersWithDeletions(), clock: halfPastMidnight)
+        await files.load()
+        files.selection = try #require(files.sections[1].entries.first).id
+
+        async let first: Void = files.restoreSelected()
+        async let second: Void = files.restoreSelected()
+        _ = await (first, second)
+        #expect(files.restoreSections.flatMap(\.requests).count == 1)
+    }
+
     @Test func nothingDeletedLoadsAnEmptyList() async throws {
         let files = DeletedFilesModel(app: AppModel.fake(scenario: .syncing), clock: halfPastMidnight)
         await files.load()
@@ -355,6 +384,34 @@ private let fourVersions = [
         app.apply(.status(status: .idle))
         await history.sessionStatusChanged()
         #expect(history.versions.count == 4)
+    }
+
+    @Test func aVersionThatSyncsLaterShowsUpWhenTheStatusChanges() async throws {
+        let (app, history) = try reportWithVersions(Array(fourVersions.dropFirst()))
+        await history.load()
+        #expect(history.versions.count == 3)
+
+        try fakeCore(app).setVersions(spaceId: folder(app, "Documents").spaceId, versions: FileVersions(
+            path: "Reports/Launch plan.key", nodeId: "node-plan", versions: fourVersions
+        ))
+        app.apply(.status(status: .syncing))
+        await history.sessionStatusChanged()
+        app.apply(.status(status: .idle))
+        await history.sessionStatusChanged()
+        #expect(history.versions.map(\.versionId) == ["v4", "v3", "v2", "v1"])
+    }
+
+    @Test func aSecondRestoreWhileTheFirstIsSendingAsksOnce() async throws {
+        let (app, history) = try reportWithVersions(fourVersions)
+        await history.load()
+        history.selection = "v3"
+
+        async let first: Void = history.restoreSelected()
+        async let second: Void = history.restoreSelected()
+        _ = await (first, second)
+        let requests = try await app.restoreRequests(in: folder(app, "Documents").url)
+        #expect(requests.count == 1)
+        #expect(history.requestedVersion?.versionId == "v3")
     }
 
     @Test func aFileOutsideTheLinkedFoldersIsRefused() async throws {

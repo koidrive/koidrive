@@ -142,13 +142,11 @@ public final class VersionHistoryModel {
         }
     }
 
-    /// Catches up after the session's status changed: a failed load runs again, a waiting restore is read again.
+    /// Catches up after the session's status changed: the versions load again, keeping what's shown until the answer,
+    /// and a waiting restore is read again.
     public func sessionStatusChanged() async {
-        if case .failed = content {
-            await load()
-        } else {
-            await refreshRestore()
-        }
+        await load()
+        await refreshRestore()
     }
 
     /// Puts the window back to choosing a version after a restore ended.
