@@ -446,7 +446,7 @@ impl Disk {
     /// The identity of the entry an effect made, when the disk is in the effect's final state. A
     /// removal is final only once its entry is in the local trash.
     fn finished(&self, record: &EffectRecord) -> Result<Option<FileIdentity>, Refused> {
-        let at = |at: &Location| self.at(at).map_err(|_| Refused::Interrupted);
+        let at = |at: &Location| self.found(at).map_err(|_| Refused::Interrupted);
         let done = match &record.effect {
             Effect::CreateDir { at: place } => at(place)?
                 .filter(|ino| self.entries[ino].content.is_none())
@@ -478,7 +478,7 @@ impl Disk {
 
     /// The identity of the file at `at`, when it holds `content`.
     fn written(&self, at: &Location, content: &Content) -> Option<FileIdentity> {
-        let ino = self.at(at).ok()??;
+        let ino = self.found(at).ok()??;
         let held = self.entries[&ino].content.as_ref()?;
         same_content(held, content).then(|| identity(ino))
     }
@@ -502,6 +502,25 @@ impl Disk {
             Place::Parked(_) => self.children(&place).next(),
             place => self.child(&place, &name),
         })
+    }
+
+    fn found(&self, at: &Location) -> Result<Option<u128>, Refused> {
+        let Location::At {
+            base: Base::Root,
+            dirs,
+            name,
+        } = at
+        else {
+            return self.at(at);
+        };
+        let Some(dir) = dirs.last() else {
+            return self.at(at);
+        };
+        let folder = Place::In(dir.identity.ino);
+        match self.entries.get(&dir.identity.ino) {
+            Some(entry) if entry.content.is_none() => Ok(self.child(&folder, name)),
+            _ => Err(Refused::Moved),
+        }
     }
 
     /// The directory a location is in and the name it has there. An entry in the parked directory

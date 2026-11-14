@@ -715,6 +715,27 @@ fn recovery_of_a_removal_whose_file_the_user_moved_first_fails() {
 }
 
 #[test]
+fn recovery_of_a_done_effect_whose_folder_the_user_renamed_and_moved_reports_it_done() {
+    for (scenario, folder) in [
+        ("replace", "docs"),
+        ("write_new", "docs"),
+        ("create_dir", "docs"),
+        ("move", "other"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(common::scenario(scenario), root);
+        let done = apply(root, &effect, |_| {});
+        assert!(matches!(done, Outcome::Done { .. }), "{scenario}");
+        fs::create_dir(root.join("C")).unwrap();
+        fs::rename(root.join(folder), root.join("C/C.TXT")).unwrap();
+        let outcome = recover_one(&bind(root), &effect, &mut |_| {}).unwrap();
+        assert_eq!(outcome, done, "{scenario}");
+        assert_settled(root);
+    }
+}
+
+#[test]
 fn recovery_of_a_replacement_whose_target_the_user_changed_is_overtaken() {
     let remove: fn(&Path) = |file| fs::remove_file(file).unwrap();
     let write: fn(&Path) = |file| fs::write(file, EDITED).unwrap();

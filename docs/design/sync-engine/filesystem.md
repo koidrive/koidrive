@@ -95,6 +95,7 @@ After a crash the driver recovers the effects in flight, if any, in one section 
 These rules complete the table:
 
 - The third row judges the effect by what the disk holds alone, so the engine takes `EffectDone` from it only when L confirms that the entry found is the effect's own. An entry L holds as another node is that node's, and the driver reports `EffectFailed`. The second row needs no such check: the removal put its entry in the local trash only after it matched the entry against what it displaced, so the removal is done wherever L last saw the node.
+- The rows that judge the target find its folder by identity, wherever the user has since renamed or moved it, so a folder change while the driver was down does not hide a finished effect.
 - A removal that finds its name empty also needs its entry in the local trash. Without one, the user moved or deleted the entry before the effect reached it, and recovery reports `EffectFailed` with the entry missing, so the rescan does not upload the moved entry as a new file.
 - A write is overtaken whenever the entry it replaced matched and went to the local trash while its target does not hold the new content: the user changed or removed the written file, or took its name before it was placed. An overtaken write leaves the node out of S and L, so R's content is downloaded again and what the user left on disk is kept beside it as a new file. S never stays at the content the write replaced.
 - In every row, quarantine is either moved to the trash after it is verified as synced content, or returned to the user.

@@ -212,6 +212,10 @@ impl Space {
         Ok(folder)
     }
 
+    pub(crate) fn find_folder(&self, id: FileId) -> Result<Option<Folder>, Unresolved> {
+        Ok(search(self.root_folder()?, id))
+    }
+
     /// Opens `.koidrive/<parts>`, creating the folders that are missing, and
     /// records the identity of each folder on the way, so that
     /// [`Space::recheck`] also notices one of them moved. Each part must be a
@@ -324,6 +328,35 @@ fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
         id: found,
         route,
     })
+}
+
+fn search(folder: Folder, id: FileId) -> Option<Folder> {
+    let names = crate::list(folder.fd()).ok()?;
+    for name in names {
+        if folder.route.is_empty() && name == PRIVATE_DIR {
+            continue;
+        }
+        let Ok(fd) = open_beneath(folder.fd(), &name) else {
+            continue;
+        };
+        let Ok(found) = identity(&fd, &folder.route, &name) else {
+            continue;
+        };
+        let mut route = folder.route.clone();
+        route.push(Dir { name, id: found });
+        let child = Folder {
+            fd,
+            id: found,
+            route,
+        };
+        if found == id {
+            return Some(child);
+        }
+        if let Some(found) = search(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn open_dir(parent: BorrowedFd<'_>, name: &OsStr, route: &[Dir]) -> Result<OwnedFd, Unresolved> {

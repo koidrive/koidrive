@@ -11,7 +11,7 @@ use koidrive_ignore::PLATFORM_FILES;
 use rustix::fs::{Access, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
-use crate::resolve::{Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
+use crate::resolve::{Base, Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
 use crate::root::{
     Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, write_marker_at,
 };
@@ -866,7 +866,7 @@ impl Space {
         contents: &mut dyn Contents,
     ) -> io::Result<Option<Outcome>> {
         let entry_at = |at: &Location| -> io::Result<Option<Option<Stat>>> {
-            match self.parent(at) {
+            match self.found(at) {
                 Ok((parent, name)) => Ok(Some(lookup(parent.fd(), name)?)),
                 Err(
                     Unresolved::Missing(_)
@@ -908,8 +908,34 @@ impl Space {
         Ok(Some(Outcome::Done { identity }))
     }
 
+    fn found<'a>(&self, at: &'a Location) -> Result<(Folder, &'a OsStr), Unresolved> {
+        let resolved = self.parent(at);
+        let moved = matches!(
+            resolved,
+            Err(Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. })
+        );
+        let (
+            true,
+            Location::At {
+                base: Base::Root,
+                dirs,
+                name,
+            },
+        ) = (moved, at)
+        else {
+            return resolved;
+        };
+        let Some(dir) = dirs.last() else {
+            return resolved;
+        };
+        match self.find_folder(dir.id)? {
+            Some(folder) => Ok((folder, name)),
+            None => resolved,
+        }
+    }
+
     fn written_at(&self, at: &Location, contents: &mut dyn Contents) -> io::Result<Option<FileId>> {
-        let (parent, name) = match self.parent(at) {
+        let (parent, name) = match self.found(at) {
             Ok(resolved) => resolved,
             Err(
                 Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. },
