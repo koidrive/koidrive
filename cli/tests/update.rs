@@ -1171,74 +1171,104 @@ fn koi_update_keeps_a_direct_app_helper_on_the_manual_download_path() {
 }
 
 #[test]
-fn koi_update_upgrades_a_formula_or_cask_with_the_brew_that_owns_it() {
-    for cask in [false, true] {
-        for alias in [false, true] {
-            let home = tempfile::tempdir().unwrap();
-            let github = github("v99.0.0");
-            let link = homebrew_binary(home.path(), cask);
-            let koi = std::fs::canonicalize(&link).unwrap();
-            let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
-            let calls = upgrading_brew(&prefix, &koi, "99.0.0", 0);
-            let elsewhere = home.path().join("elsewhere/bin");
-            executable(
-                &elsewhere.join("brew"),
-                "#!/bin/sh\necho selected >> \"$0.calls\"\nexit 99\n",
-            );
-            let invoked = if alias {
-                let first = home.path().join("alias-one");
-                let second = home.path().join("alias-two");
-                std::os::unix::fs::symlink(&link, &first).unwrap();
-                std::os::unix::fs::symlink(first, &second).unwrap();
-                second
-            } else {
-                link.clone()
-            };
-            let output = koi_at(&invoked, home.path(), &github, &["update", "--json"])
-                .env("PATH", &elsewhere)
-                .output()
-                .unwrap();
-            if development_update(&output, home.path(), &github) {
-                continue;
-            }
-            let envelope = envelope(&output);
-            assert!(output.status.success(), "{envelope:#}");
-            assert_eq!(
-                envelope["data"],
-                serde_json::json!({
-                    "from": env!("CARGO_PKG_VERSION"),
-                    "to": "99.0.0",
-                    "via": "homebrew",
-                    "result": "updated",
-                    "service": { "manager": "launchd", "name": "dev.koidrive.koi", "state": "running" },
-                })
-            );
-            let upgrade = if cask {
-                "upgrade --cask koidrive"
-            } else {
-                "upgrade koidrive"
-            };
-            assert_eq!(
-                std::fs::read_to_string(&calls).unwrap(),
-                format!("--repository koidrive/tap|1\n{upgrade}|1\n")
-            );
-            assert_eq!(
-                std::fs::read_to_string(prefix.join("bin/git.calls")).unwrap(),
-                format!(
-                    "-C {} pull --ff-only --quiet\n",
-                    prefix.join("Library/Taps/koidrive/homebrew-tap").display()
-                )
-            );
-            assert!(
-                std::fs::read_to_string(koi.with_extension("calls"))
-                    .unwrap()
-                    .contains("_reconcile --json\n")
-            );
-            assert!(String::from_utf8_lossy(&output.stderr).contains("==> Upgrading koidrive\n"));
-            assert!(!elsewhere.join("brew.calls").exists());
-            assert_eq!(github.requests.lock().unwrap().len(), 1);
+fn koi_update_upgrades_a_formula_with_the_brew_that_owns_it() {
+    for alias in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let github = github("v99.0.0");
+        let link = homebrew_binary(home.path(), false);
+        let koi = std::fs::canonicalize(&link).unwrap();
+        let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+        let calls = upgrading_brew(&prefix, &koi, "99.0.0", 0);
+        let elsewhere = home.path().join("elsewhere/bin");
+        executable(
+            &elsewhere.join("brew"),
+            "#!/bin/sh\necho selected >> \"$0.calls\"\nexit 99\n",
+        );
+        let invoked = if alias {
+            let first = home.path().join("alias-one");
+            let second = home.path().join("alias-two");
+            std::os::unix::fs::symlink(&link, &first).unwrap();
+            std::os::unix::fs::symlink(first, &second).unwrap();
+            second
+        } else {
+            link.clone()
+        };
+        let output = koi_at(&invoked, home.path(), &github, &["update", "--json"])
+            .env("PATH", &elsewhere)
+            .output()
+            .unwrap();
+        if development_update(&output, home.path(), &github) {
+            continue;
         }
+        let envelope = envelope(&output);
+        assert!(output.status.success(), "{envelope:#}");
+        assert_eq!(
+            envelope["data"],
+            serde_json::json!({
+                "from": env!("CARGO_PKG_VERSION"),
+                "to": "99.0.0",
+                "via": "homebrew",
+                "result": "updated",
+                "service": { "manager": "launchd", "name": "dev.koidrive.koi", "state": "running" },
+            })
+        );
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "--repository koidrive/tap|1\nupgrade koidrive|1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(prefix.join("bin/git.calls")).unwrap(),
+            format!(
+                "-C {} pull --ff-only --quiet\n",
+                prefix.join("Library/Taps/koidrive/homebrew-tap").display()
+            )
+        );
+        assert!(
+            std::fs::read_to_string(koi.with_extension("calls"))
+                .unwrap()
+                .contains("_reconcile --json\n")
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("==> Upgrading koidrive\n"));
+        assert!(!elsewhere.join("brew.calls").exists());
+        assert_eq!(github.requests.lock().unwrap().len(), 1);
     }
+}
+
+#[test]
+fn koi_update_updates_a_cask_with_the_app_updater_and_names_brew_only_as_the_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), true);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let brew = std::fs::canonicalize(home.path().join("brew"))
+        .unwrap()
+        .join("bin/brew");
+    let before = std::fs::read(&koi).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .env("PATH", home.path().join("empty"))
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let envelope = envelope(&output);
+    assert!(!output.status.success(), "{envelope:#}");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(&format!(
+            "To update, run: {} upgrade --cask koidrive",
+            brew.display()
+        )),
+        "{message}"
+    );
+    assert_eq!(
+        envelope["next_commands"],
+        serde_json::json!([{ "argv": [brew, "upgrade", "--cask", "koidrive"] }])
+    );
+    assert!(!brew.with_extension("calls").exists());
+    assert_eq!(std::fs::read(&koi).unwrap(), before);
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    assert!(log.contains(message), "{log}");
 }
 
 #[test]
@@ -1381,57 +1411,49 @@ fn an_incomplete_homebrew_update_shows_why_the_tap_did_not_refresh() {
 
 #[test]
 fn koi_update_names_the_brew_command_when_homebrew_fails_or_is_missing() {
-    for cask in [false, true] {
-        let home = tempfile::tempdir().unwrap();
-        let github = github("v99.0.0");
-        let link = homebrew_binary(home.path(), cask);
-        let koi = std::fs::canonicalize(&link).unwrap();
-        let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
-        upgrading_brew(&prefix, &koi, "99.0.0", 1);
-        let before = std::fs::read(&koi).unwrap();
-        let brew = prefix.join("bin/brew");
-        let command = format!(
-            "{} {}",
-            brew.display(),
-            if cask {
-                "upgrade --cask koidrive"
-            } else {
-                "upgrade koidrive"
-            }
-        );
-        let output = koi_at(&link, home.path(), &github, &["update", "--json"])
-            .env("PATH", home.path().join("empty"))
-            .output()
-            .unwrap();
-        if development_update(&output, home.path(), &github) {
-            continue;
-        }
-        let envelope = envelope(&output);
-        assert!(!output.status.success(), "{envelope:#}");
-        assert_eq!(
-            envelope["error"]["message"],
-            format!("brew upgrade failed (exit status 1). To update, run: {command}")
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("Error: koidrive did not download\n")
-        );
-        assert_eq!(std::fs::read(&koi).unwrap(), before);
-        std::fs::remove_file(&brew).unwrap();
-        let output = koi_at(&link, home.path(), &github, &["update"])
-            .env("PATH", home.path().join("empty"))
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(
-            stderr.contains(&format!(
-                "Homebrew is not at {}. To update, run: {command}",
-                brew.display()
-            )),
-            "{stderr}"
-        );
-        assert_eq!(std::fs::read(&koi).unwrap(), before);
+    let home = tempfile::tempdir().unwrap();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 1);
+    let before = std::fs::read(&koi).unwrap();
+    let brew = prefix.join("bin/brew");
+    let command = format!("{} upgrade koidrive", brew.display());
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .env("PATH", home.path().join("empty"))
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
     }
+    let envelope = envelope(&output);
+    assert!(!output.status.success(), "{envelope:#}");
+    assert_eq!(
+        envelope["error"]["message"],
+        format!("brew upgrade failed (exit status 1). To update, run: {command}")
+    );
+    assert_eq!(
+        envelope["next_commands"],
+        serde_json::json!([{ "argv": [brew, "upgrade", "koidrive"] }])
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Error: koidrive did not download\n"));
+    assert_eq!(std::fs::read(&koi).unwrap(), before);
+    std::fs::remove_file(&brew).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update"])
+        .env("PATH", home.path().join("empty"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(&format!(
+            "Homebrew is not at {}. To update, run: {command}",
+            brew.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read(&koi).unwrap(), before);
 }
 
 fn scripted_brew(prefix: &Path, git_status: i32, upgrade: &str) -> PathBuf {
@@ -1837,7 +1859,7 @@ fn without_a_daemon_status_reads_the_last_check_and_the_switch_turns_it_off() {
 }
 
 #[test]
-fn cached_status_uses_the_current_homebrew_formula_or_cask_upgrade_command() {
+fn cached_status_names_brew_upgrade_for_a_formula_and_koi_update_for_a_cask() {
     for cask in [false, true] {
         let home = tempfile::tempdir().unwrap();
         let github = github("v99.0.0");
@@ -1879,16 +1901,20 @@ fn cached_status_uses_the_current_homebrew_formula_or_cask_upgrade_command() {
             assert!(!text.contains("Update:"), "{text}");
         } else {
             let command = if cask {
-                "brew upgrade --cask koidrive"
+                format!(
+                    "{} update",
+                    std::fs::canonicalize(&binary).unwrap().display()
+                )
             } else {
-                "brew upgrade koidrive"
+                "brew upgrade koidrive".to_owned()
             };
             assert_eq!(
                 update,
                 serde_json::json!({
                     "state": "available", "version": env!("CARGO_PKG_VERSION"),
                     "latest": "99.0.0", "url": "https://example.com/v99.0.0",
-                    "checked_at": "2025-11-13T04:00:00Z", "command": command,
+                    "checked_at": "2025-11-13T04:00:00Z", "checked_at_ms": 1763006400000_i64,
+                    "command": command,
                 })
             );
             assert!(
@@ -1982,95 +2008,89 @@ fn an_installer_notice_names_its_real_binary_despite_another_koi_on_path() {
 
 #[test]
 fn homebrew_guidance_targets_its_owner_when_path_selects_another_brew() {
-    for cask in [false, true] {
-        let home = tempfile::tempdir().unwrap();
-        let root = home.path().join("owning copy's home");
-        let github = github("v99.0.0");
-        let binary = homebrew_binary(&root, cask);
-        let helper_before = std::fs::read(&binary).unwrap();
-        let link_before = std::fs::read_link(&binary).unwrap();
-        let owner = std::fs::canonicalize(root.join("brew/bin/brew")).unwrap();
-        executable(&owner, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n");
-        let other_bin = home.path().join("other/bin");
-        let other = other_bin.join("brew");
-        executable(
-            &other,
-            "#!/bin/sh\necho selected >> \"$0.calls\"\nexit 99\n",
-        );
-        let run = |args: &[&str]| {
-            let mut command = koi_at(&binary, &root, &github, args);
-            command
-                .env("PATH", &other_bin)
-                .env("XDG_RUNTIME_DIR", home.path().join("run"));
-            command
-        };
-        if development_version() {
-            continue;
-        }
-        let args = if cask {
-            vec!["upgrade", "--cask", "koidrive"]
-        } else {
-            vec!["upgrade", "koidrive"]
-        };
-        let mut argv = vec![owner.to_str().unwrap()];
-        argv.extend(args.iter().copied());
-        let command = format!(
-            "'{}' {}",
-            owner.to_str().unwrap().replace('\'', "'\\''"),
-            args.join(" ")
-        );
-        let state = root.join("state/koidrive");
-        std::fs::create_dir_all(&state).unwrap();
-        std::fs::write(
-            state.join("update-check.json"),
-            serde_json::json!({
-                "asset": asset(), "checked_at": 1763006400000_i64,
-                "release": { "version": "99.0.0", "url": "https://example.com/v99.0.0" },
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let status = run(&["status", "--json"]).output().unwrap();
-        assert!(
-            status.status.success(),
-            "{}",
-            String::from_utf8_lossy(&status.stdout)
-        );
-        assert_eq!(envelope(&status)["data"]["update"]["command"], command);
-        let status = run(&["status"]).output().unwrap();
-        assert!(
-            String::from_utf8(status.stdout)
-                .unwrap()
-                .contains(&format!("Run: {command}\n"))
-        );
-        assert!(!owner.with_extension("calls").exists());
-        assert!(!other.with_extension("calls").exists());
-        assert!(github.requests.lock().unwrap().is_empty());
-        std::fs::remove_file(&other).unwrap();
-        std::os::unix::fs::symlink(&owner, &other).unwrap();
-        let status = run(&["status", "--json"]).output().unwrap();
-        assert_eq!(envelope(&status)["data"]["update"]["command"], command);
-        let status = Command::new(argv[0])
-            .args(&argv[1..])
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("owning copy's home");
+    let github = github("v99.0.0");
+    let binary = homebrew_binary(&root, false);
+    let helper_before = std::fs::read(&binary).unwrap();
+    let link_before = std::fs::read_link(&binary).unwrap();
+    let owner = std::fs::canonicalize(root.join("brew/bin/brew")).unwrap();
+    executable(&owner, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n");
+    let other_bin = home.path().join("other/bin");
+    let other = other_bin.join("brew");
+    executable(
+        &other,
+        "#!/bin/sh\necho selected >> \"$0.calls\"\nexit 99\n",
+    );
+    let run = |args: &[&str]| {
+        let mut command = koi_at(&binary, &root, &github, args);
+        command
             .env("PATH", &other_bin)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let output = Command::new("/bin/sh")
-            .args(["-c", &command])
-            .env("PATH", &other_bin)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(
-            std::fs::read_to_string(owner.with_extension("calls")).unwrap(),
-            format!("{}\n", args.join(" ")).repeat(2)
-        );
-        assert!(!other.with_extension("calls").exists());
-        assert_eq!(std::fs::read(&binary).unwrap(), helper_before);
-        assert_eq!(std::fs::read_link(&binary).unwrap(), link_before);
-        assert!(!update_log(&root).exists());
+            .env("XDG_RUNTIME_DIR", home.path().join("run"));
+        command
+    };
+    if development_version() {
+        return;
     }
+    let args = ["upgrade", "koidrive"];
+    let mut argv = vec![owner.to_str().unwrap()];
+    argv.extend(args.iter().copied());
+    let command = format!(
+        "'{}' {}",
+        owner.to_str().unwrap().replace('\'', "'\\''"),
+        args.join(" ")
+    );
+    let state = root.join("state/koidrive");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("update-check.json"),
+        serde_json::json!({
+            "asset": asset(), "checked_at": 1763006400000_i64,
+            "release": { "version": "99.0.0", "url": "https://example.com/v99.0.0" },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let status = run(&["status", "--json"]).output().unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    assert_eq!(envelope(&status)["data"]["update"]["command"], command);
+    let status = run(&["status"]).output().unwrap();
+    assert!(
+        String::from_utf8(status.stdout)
+            .unwrap()
+            .contains(&format!("Run: {command}\n"))
+    );
+    assert!(!owner.with_extension("calls").exists());
+    assert!(!other.with_extension("calls").exists());
+    assert!(github.requests.lock().unwrap().is_empty());
+    std::fs::remove_file(&other).unwrap();
+    std::os::unix::fs::symlink(&owner, &other).unwrap();
+    let status = run(&["status", "--json"]).output().unwrap();
+    assert_eq!(envelope(&status)["data"]["update"]["command"], command);
+    let status = Command::new(argv[0])
+        .args(&argv[1..])
+        .env("PATH", &other_bin)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let output = Command::new("/bin/sh")
+        .args(["-c", &command])
+        .env("PATH", &other_bin)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(owner.with_extension("calls")).unwrap(),
+        format!("{}\n", args.join(" ")).repeat(2)
+    );
+    assert!(!other.with_extension("calls").exists());
+    assert_eq!(std::fs::read(&binary).unwrap(), helper_before);
+    assert_eq!(std::fs::read_link(&binary).unwrap(), link_before);
+    assert!(!update_log(&root).exists());
 }
 
 #[test]

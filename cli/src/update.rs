@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use koidrive_driver::Paths;
 use koidrive_driver::update::{self, Release};
-use koidrive_ipc::Code;
+use koidrive_ipc::{Code, Next};
 use semver::Version;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -114,6 +114,7 @@ pub fn homebrew_link(binary: &Path) -> Option<PathBuf> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Method {
     Cask { brew: PathBuf },
+    CaskElsewhere { brew: PathBuf },
     Formula { brew: PathBuf },
     Installer,
     App,
@@ -124,9 +125,9 @@ pub(crate) enum Method {
 impl Method {
     fn via(&self) -> Option<Via> {
         match self {
-            Method::Cask { .. } | Method::Formula { .. } => Some(Via::Homebrew),
+            Method::CaskElsewhere { .. } | Method::Formula { .. } => Some(Via::Homebrew),
             Method::Installer => Some(Via::Installer),
-            Method::App | Method::AppDownload => Some(Via::App),
+            Method::Cask { .. } | Method::App | Method::AppDownload => Some(Via::App),
             Method::Development => None,
         }
     }
@@ -226,7 +227,7 @@ impl Install {
         if invoked.is_none()
             && matches!(
                 install.method,
-                Method::Installer | Method::App | Method::AppDownload
+                Method::Installer | Method::Cask { .. } | Method::App | Method::AppDownload
             )
         {
             return Err(failed(
@@ -323,23 +324,25 @@ impl Install {
                     })
                 })
             });
+            let standard = apps
+                .iter()
+                .any(|helper| fs::canonicalize(helper).is_ok_and(|helper| helper == resolved));
             match owned {
-                Some(prefix) => Method::Cask {
-                    brew: fs::canonicalize(prefix)
+                Some(prefix) => {
+                    let brew = fs::canonicalize(prefix)
                         .map_err(|error| {
                             failed(format!(
                                 "Cannot resolve Homebrew at {}: {error}",
                                 prefix.display()
                             ))
                         })?
-                        .join("bin/brew"),
-                },
-                None if apps.iter().any(|helper| {
-                    fs::canonicalize(helper).is_ok_and(|helper| helper == resolved)
-                }) =>
-                {
-                    Method::App
+                        .join("bin/brew");
+                    match standard {
+                        true => Method::Cask { brew },
+                        false => Method::CaskElsewhere { brew },
+                    }
                 }
+                None if standard => Method::App,
                 None => Method::AppDownload,
             }
         } else if resolved.ends_with("bin/koi")
@@ -368,28 +371,36 @@ impl Install {
     }
 
     fn command(&self) -> Option<Vec<&str>> {
-        match &self.method {
-            Method::Cask { brew } | Method::Formula { brew } => {
-                let path = std::env::var_os("PATH");
-                let selected = on_path(OsStr::new("brew"), path.as_deref()).and_then(|selected| {
-                    selected.parent().and_then(|bin| fs::canonicalize(bin).ok())
-                });
-                let owned = brew.parent().and_then(|bin| fs::canonicalize(bin).ok());
-                let executable = if owned.is_some() && selected == owned {
-                    "brew"
-                } else {
-                    brew.to_str()?
-                };
-                let mut command = vec![executable, "upgrade"];
-                if matches!(self.method, Method::Cask { .. }) {
-                    command.push("--cask");
-                }
-                command.push("koidrive");
-                Some(command)
+        match self.method {
+            Method::CaskElsewhere { .. } | Method::Formula { .. } => self.fallback(),
+            Method::Cask { .. } | Method::Installer | Method::App => {
+                Some(vec![self.binary.to_str()?, "update"])
             }
-            Method::Installer | Method::App => Some(vec![self.binary.to_str()?, "update"]),
             Method::AppDownload | Method::Development => None,
         }
+    }
+
+    fn fallback(&self) -> Option<Vec<&str>> {
+        let (Method::Cask { brew } | Method::CaskElsewhere { brew } | Method::Formula { brew }) =
+            &self.method
+        else {
+            return None;
+        };
+        let path = std::env::var_os("PATH");
+        let selected = on_path(OsStr::new("brew"), path.as_deref())
+            .and_then(|selected| selected.parent().and_then(|bin| fs::canonicalize(bin).ok()));
+        let owned = brew.parent().and_then(|bin| fs::canonicalize(bin).ok());
+        let executable = if owned.is_some() && selected == owned {
+            "brew"
+        } else {
+            brew.to_str()?
+        };
+        let mut command = vec![executable, "upgrade"];
+        if !matches!(self.method, Method::Formula { .. }) {
+            command.push("--cask");
+        }
+        command.push("koidrive");
+        Some(command)
     }
 
     pub(crate) fn notice(&self, update: &update::Update, version: &str) -> UpdateNoticeData {
@@ -454,6 +465,12 @@ impl Echo {
             quiet: !json && !verbose,
             held: Vec::new(),
             log,
+        }
+    }
+
+    fn log(&mut self, line: &str) {
+        if let Some(log) = &mut self.log {
+            let _ = writeln!(log, "{line}");
         }
     }
 
@@ -653,14 +670,6 @@ async fn installer(
     }
 }
 
-fn log_path(paths: &Paths) -> PathBuf {
-    let home = (std::env::var_os("HOME").map(PathBuf::from)).filter(|home| home.is_absolute());
-    match (cfg!(target_os = "macos"), home) {
-        (true, Some(home)) => home.join("Library/Logs/Koidrive/update.log"),
-        _ => paths.state_dir.join("update.log"),
-    }
-}
-
 enum UpdateBinary {
     Other(PathBuf),
     #[cfg(target_os = "macos")]
@@ -744,59 +753,93 @@ async fn select_app_helper(
     Ok(None)
 }
 
-pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliError> {
-    refuse_root(rustix::process::geteuid().is_root())?;
-    let install = Install::current()?;
-    if install.method == Method::Development {
-        return Ok(Done::ok(
-            UpdatedData {
-                from: env!("CARGO_PKG_VERSION").to_owned(),
-                to: env!("CARGO_PKG_VERSION").to_owned(),
-                via: None,
-                app: None,
-                result: UpdateResult::Unchanged,
-                service: None,
-            },
-            "Development builds do not update to releases.\n".to_owned(),
-        )
-        .unchanged());
-    }
-    if let Method::Cask { brew } | Method::Formula { brew } = &install.method {
-        return homebrew(paths, &install, brew, json, verbose).await;
-    }
-    let release = update::check_now(paths)
+async fn newest(paths: &Paths) -> Result<(Version, String), CliError> {
+    let Release { version, url } = update::check_now(paths)
         .await
         .map_err(|error| CliError::new(Code::Unavailable, error.to_string()))?
         .ok_or_else(|| failed("GitHub lists no Koidrive release for this system".to_owned()))?;
-    let Release { version, url } = release;
     let to = Version::parse(&version).map_err(|_| {
         failed(format!(
             "GitHub names the release {version}, which is not a version"
         ))
     })?;
-    if install.method == Method::AppDownload {
-        let from = service::this_version();
-        if to.cmp_precedence(&from).is_gt() {
-            return Err(failed(format!("Download Koidrive {to} from {url}")));
+    Ok((to, url))
+}
+
+pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliError> {
+    refuse_root(rustix::process::geteuid().is_root())?;
+    let install = Install::current()?;
+    match &install.method {
+        Method::Development => {
+            return Ok(Done::ok(
+                UpdatedData {
+                    from: env!("CARGO_PKG_VERSION").to_owned(),
+                    to: env!("CARGO_PKG_VERSION").to_owned(),
+                    via: None,
+                    app: None,
+                    result: UpdateResult::Unchanged,
+                    service: None,
+                },
+                "Development builds do not update to releases.\n".to_owned(),
+            )
+            .unchanged());
         }
-        return Ok(Done::ok(
-            UpdatedData {
-                from: from.to_string(),
-                to: from.to_string(),
-                via: install.method.via(),
-                app: None,
-                result: UpdateResult::Unchanged,
-                service: None,
-            },
-            format!("Koidrive {from} is the newest release.\n"),
-        )
-        .unchanged());
+        Method::AppDownload => return download(paths, &install).await,
+        _ => {}
     }
+    let mut echo = Echo::open(&update::log_path(paths), json, verbose);
+    let steps = Steps::new(json, verbose);
+    let updated = match &install.method {
+        Method::Formula { brew } | Method::CaskElsewhere { brew } => {
+            homebrew(paths, &install, brew, &mut echo, &steps).await
+        }
+        _ => release(paths, &install, &mut echo, &steps).await,
+    };
+    updated.map_err(|mut error| {
+        echo.log(&error.message);
+        if let Some(command) = install.fallback() {
+            error.next.push(Next::of(&command));
+        }
+        error
+    })
+}
+
+async fn download(paths: &Paths, install: &Install) -> Result<Done, CliError> {
+    let (to, url) = newest(paths).await?;
+    let from = service::this_version();
+    if to.cmp_precedence(&from).is_gt() {
+        return Err(failed(format!("Download Koidrive {to} from {url}")));
+    }
+    Ok(Done::ok(
+        UpdatedData {
+            from: from.to_string(),
+            to: from.to_string(),
+            via: install.method.via(),
+            app: None,
+            result: UpdateResult::Unchanged,
+            service: None,
+        },
+        format!("Koidrive {from} is the newest release.\n"),
+    )
+    .unchanged())
+}
+
+async fn release(
+    paths: &Paths,
+    install: &Install,
+    echo: &mut Echo,
+    steps: &Steps,
+) -> Result<Done, CliError> {
+    let (to, url) = newest(paths).await?;
+    let guidance = match install.fallback() {
+        Some(command) => format!("To update, run: {}", command_text(&command)),
+        None => format!("Download Koidrive {to} from {url}"),
+    };
     let manager = service::system();
     let service = service::this_service(paths);
     let app_deadline = tokio::time::Instant::now() + RECONCILE;
     #[cfg(target_os = "macos")]
-    let existing_app = if install.method == Method::App {
+    let existing_app = if matches!(install.method, Method::App | Method::Cask { .. }) {
         let binary = &install.binary;
         let discovered = async {
             let helper = crate::app_install::verify_existing(binary, app_deadline)
@@ -811,9 +854,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
                 ReconcileError::Failed(error) => error,
                 ReconcileError::Unverified(error) => failed(error.to_string()),
             };
-            error
-                .message
-                .push_str(&format!("\nDownload Koidrive {to} from {url}"));
+            error.message.push_str(&format!("\n{guidance}"));
             error
         })?)
     } else {
@@ -821,17 +862,14 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
     };
     let from = match install.method {
         #[cfg(target_os = "macos")]
-        Method::App => existing_app.as_ref().unwrap().1.clone(),
+        Method::App | Method::Cask { .. } => existing_app.as_ref().unwrap().1.clone(),
         #[cfg(not(target_os = "macos"))]
-        Method::App => service::this_version(),
+        Method::App | Method::Cask { .. } => service::this_version(),
         _ => service::version_of(&install.binary).unwrap_or_else(service::this_version),
     };
     let upgrading = to.cmp_precedence(&from).is_gt();
-    let download = || failed(format!("Download Koidrive {to} from {url}"));
-    let mut echo = Echo::open(&log_path(paths), json, verbose);
-    let steps = Steps::new(json, verbose);
     let koi = match install.method {
-        Method::App => None,
+        Method::App | Method::Cask { .. } => None,
         _ => Some(UpdateBinary::Other(install.binary.clone())),
     };
     #[cfg(target_os = "macos")]
@@ -840,7 +878,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
     #[cfg(target_os = "macos")]
     let mut prepared_app = prepared_app;
     match install.method {
-        Method::App => {
+        Method::App | Method::Cask { .. } => {
             #[cfg(target_os = "macos")]
             let step = steps.start(&format!("Downloading Koidrive {to}"));
             let prepared =
@@ -862,8 +900,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
                         return Err(app_not_updated(
                             paths,
                             &from,
-                            &to,
-                            &url,
+                            &guidance,
                             prepared,
                             app_deadline,
                         )
@@ -873,8 +910,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
                         return Err(app_not_updated(
                             paths,
                             &from,
-                            &to,
-                            &url,
+                            &guidance,
                             prepared.invalidate(error),
                             app_deadline,
                         )
@@ -885,13 +921,13 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
                 echo.finish(step, &format!("Downloaded and checked Koidrive {to}"));
             }
             #[cfg(not(target_os = "macos"))]
-            return Err(app_not_updated(paths, &from, &to, &url, prepared, app_deadline).await);
+            return Err(app_not_updated(paths, &from, &guidance, prepared, app_deadline).await);
         }
         Method::Installer if upgrading => {
-            let dir = install.binary.parent().ok_or_else(download)?;
+            let dir = (install.binary.parent()).ok_or_else(|| failed(guidance.clone()))?;
             let source = script_url()?;
             let step = steps.start(&format!("Downloading Koidrive {to}"));
-            let installed = installer(source, dir, &to, &mut echo)
+            let installed = installer(source, dir, &to, echo)
                 .await
                 .and_then(|()| reached(&install.binary, service::version_of(&install.binary), &to));
             if let Err(error) = installed {
@@ -904,7 +940,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
             );
         }
         Method::Installer => (),
-        Method::Cask { .. }
+        Method::CaskElsewhere { .. }
         | Method::Formula { .. }
         | Method::AppDownload
         | Method::Development => unreachable!(),
@@ -924,13 +960,13 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         &to,
         manager.as_ref(),
         service,
-        &mut echo,
+        echo,
         reconcile_deadline,
     )
     .await;
     let finished =
         finish_reconciliation(paths, prepared_app, &from, reconciled, app_deadline).await;
-    checked(step, &finished, &mut echo);
+    checked(step, &finished, echo);
     let (actual, report, app) = finished?;
     updated(
         &from,
@@ -949,10 +985,10 @@ async fn homebrew(
     paths: &Paths,
     install: &Install,
     brew: &Path,
-    json: bool,
-    verbose: bool,
+    echo: &mut Echo,
+    steps: &Steps,
 ) -> Result<Done, CliError> {
-    let command = install.command().ok_or_else(|| {
+    let command = install.fallback().ok_or_else(|| {
         failed("Homebrew's path cannot be represented as a shell command".to_owned())
     })?;
     let guidance = format!("To update, run: {}", command_text(&command));
@@ -965,18 +1001,7 @@ async fn homebrew(
         _ => install.binary.clone(),
     };
     let from = service::version_of(&koi).unwrap_or_else(service::this_version);
-    let release = update::check_now(paths)
-        .await
-        .map_err(|error| CliError::new(Code::Unavailable, error.to_string()))?
-        .ok_or_else(|| failed("GitHub lists no Koidrive release for this system".to_owned()))?;
-    let to = Version::parse(&release.version).map_err(|_| {
-        failed(format!(
-            "GitHub names the release {}, which is not a version",
-            release.version
-        ))
-    })?;
-    let mut echo = Echo::open(&log_path(paths), json, verbose);
-    let steps = Steps::new(json, verbose);
+    let (to, _) = newest(paths).await?;
     let (mut refresh, mut failure) = (None, None);
     if to.cmp_precedence(&from).is_gt() {
         if !fs::metadata(brew)
@@ -988,7 +1013,7 @@ async fn homebrew(
             )));
         }
         let step = steps.still("Updating Koidrive with Homebrew");
-        if let Err(why) = refresh_tap(brew, &mut echo).await {
+        if let Err(why) = refresh_tap(brew, echo).await {
             echo.line(&why, true);
             refresh = Some(why);
         }
@@ -1029,12 +1054,12 @@ async fn homebrew(
         &from,
         service::system().as_ref(),
         service::this_service(paths),
-        &mut echo,
+        echo,
         deadline,
     )
     .await;
     let finished = finish_reconciliation(paths, None, &from, reconciled, deadline).await;
-    checked(step, &finished, &mut echo);
+    checked(step, &finished, echo);
     let (actual, report, app) = finished?;
     let incomplete = actual.cmp_precedence(&to).is_lt();
     let (mut done, service) =
@@ -1275,8 +1300,7 @@ fn app_partial(from: &Version, app: crate::app::Report, text: String) -> Done {
 async fn app_not_updated(
     paths: &Paths,
     from: &Version,
-    target: &Version,
-    url: &str,
+    guidance: &str,
     prepared: crate::app::Prepared,
     deadline: tokio::time::Instant,
 ) -> CliError {
@@ -1288,7 +1312,6 @@ async fn app_not_updated(
             deadline,
         )
         .await;
-    let guidance = format!("Download Koidrive {target} from {url}");
     let message = match &app {
         crate::app::Report::Failed { problem, .. } => format!("{problem}\n{guidance}"),
         crate::app::Report::Skipped { reason } => {
@@ -1873,8 +1896,7 @@ mod tests {
             let error = app_not_updated(
                 &Paths::under(dir.path()),
                 &Version::parse(from).unwrap(),
-                &Version::parse("99.0.0").unwrap(),
-                "https://example.test/release",
+                "Download Koidrive 99.0.0 from https://example.test/release",
                 crate::app::Prepared::fixture(app),
                 tokio::time::Instant::now(),
             )
@@ -2293,8 +2315,7 @@ mod tests {
             let error = app_not_updated(
                 &paths,
                 &Version::parse("1.0.0").unwrap(),
-                &Version::parse("99.0.0").unwrap(),
-                "https://example.test/releases/v99.0.0",
+                "Download Koidrive 99.0.0 from https://example.test/releases/v99.0.0",
                 prepared,
                 tokio::time::Instant::now(),
             )
@@ -2759,17 +2780,59 @@ mod tests {
         assert_eq!(classify().method, Method::AppDownload);
         fs::remove_file(&registration).unwrap();
         std::os::unix::fs::symlink(&app, &registration).unwrap();
-        let cask = classify();
+        let elsewhere = classify();
         let brew = fs::canonicalize(&prefix).unwrap().join("bin/brew");
-        assert_eq!(cask.method, Method::Cask { brew: brew.clone() });
+        let upgrade = [brew.to_str().unwrap(), "upgrade", "--cask", "koidrive"];
         assert_eq!(
-            Install::resolve(&helper, "0.1.0", &prefixes, std::slice::from_ref(&helper))
-                .unwrap()
-                .method,
-            cask.method
+            elsewhere.method,
+            Method::CaskElsewhere { brew: brew.clone() }
         );
+        assert_eq!(elsewhere.method.via(), Some(Via::Homebrew));
+        assert_eq!(elsewhere.command().as_deref(), Some(upgrade.as_slice()));
+        assert_eq!(elsewhere.fallback().as_deref(), Some(upgrade.as_slice()));
+        let available = update::Update::Available {
+            latest: "0.2.0".into(),
+            url: "https://github.com/koidrive/koidrive/releases/tag/v0.2.0".into(),
+            checked_at_ms: 1,
+        };
+        assert_eq!(
+            elsewhere.notice(&available, "0.1.0").command.as_deref(),
+            Some(format!("{} upgrade --cask koidrive", brew.display()).as_str())
+        );
+        assert!(!prefix.join("bin/koi").exists());
+    }
+
+    #[test]
+    fn a_cask_in_an_applications_folder_updates_itself_and_names_brew_only_as_its_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("brew");
+        let app = dir.path().join("Applications/Koidrive.app");
+        let helper = app.join("Contents/Helpers/koi");
+        executable(&helper, "#!/bin/sh\nexit 0\n");
+        let registration = prefix.join("Caskroom/koidrive/0.1.0/Koidrive.app");
+        fs::create_dir_all(registration.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&app, &registration).unwrap();
+        let link = prefix.join("bin/koi");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&helper, &link).unwrap();
+        let cask = Install::resolve(
+            &link,
+            "0.1.0",
+            std::slice::from_ref(&prefix),
+            std::slice::from_ref(&helper),
+        )
+        .unwrap();
+        let brew = fs::canonicalize(&prefix).unwrap().join("bin/brew");
+        let resolved = fs::canonicalize(&helper).unwrap();
+        assert_eq!(cask.method, Method::Cask { brew: brew.clone() });
+        assert_eq!(cask.binary, resolved);
+        assert_eq!(cask.method.via(), Some(Via::App));
         assert_eq!(
             cask.command().as_deref(),
+            Some([resolved.to_str().unwrap(), "update"].as_slice())
+        );
+        assert_eq!(
+            cask.fallback().as_deref(),
             Some([brew.to_str().unwrap(), "upgrade", "--cask", "koidrive"].as_slice())
         );
         let available = update::Update::Available {
@@ -2778,10 +2841,13 @@ mod tests {
             checked_at_ms: 1,
         };
         assert_eq!(
-            cask.notice(&available, "0.1.0").command.as_deref(),
-            Some(format!("{} upgrade --cask koidrive", brew.display()).as_str())
+            cask.notice(&available, "0.1.0").command,
+            Some(command_text(&[resolved.to_str().unwrap(), "update"]))
         );
-        assert!(!prefix.join("bin/koi").exists());
+        let app_only =
+            Install::resolve(&helper, "0.1.0", &[], std::slice::from_ref(&helper)).unwrap();
+        assert_eq!(app_only.method, Method::App);
+        assert_eq!(app_only.fallback(), None);
     }
 
     #[test]
@@ -2804,7 +2870,7 @@ mod tests {
         let cask = Install::resolve(&link, "0.1.0", &[], &[]).unwrap();
         assert_eq!(
             cask.method,
-            Method::Cask {
+            Method::CaskElsewhere {
                 brew: fs::canonicalize(&prefix).unwrap().join("bin/brew")
             }
         );

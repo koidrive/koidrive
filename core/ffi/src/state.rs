@@ -9,6 +9,7 @@ use crate::types::{
     Account, Answer, ConflictSide, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder,
     MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question, QuestionKind,
     RecoveryCause, RecoveryGroup, RecoveryTrigger, SessionState, SyncProgress, SyncStatus,
+    UpdateStatus,
 };
 
 pub(crate) type Seen = BTreeMap<String, (String, i64)>;
@@ -35,6 +36,26 @@ pub(crate) fn session_state(
         questions: questions.iter().cloned().filter_map(question).collect(),
         problems: problems(status, seen),
         notices: questions.iter().cloned().filter_map(notice).collect(),
+        update: update(&status.update),
+    }
+}
+
+fn update(update: &driver::Update) -> UpdateStatus {
+    match update {
+        driver::Update::Available {
+            latest,
+            url,
+            checked_at_ms,
+        } => UpdateStatus::Available {
+            version: latest.clone(),
+            release_url: url.clone(),
+            checked_at_ms: *checked_at_ms,
+        },
+        driver::Update::UpToDate { checked_at_ms } => UpdateStatus::UpToDate {
+            checked_at_ms: *checked_at_ms,
+        },
+        driver::Update::Unknown => UpdateStatus::Unknown,
+        driver::Update::Off => UpdateStatus::Off,
     }
 }
 

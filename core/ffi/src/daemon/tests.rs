@@ -13,7 +13,7 @@ use super::*;
 use crate::core::SessionListener;
 use crate::types::{
     ConflictSide, DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState,
-    RestoreTarget, ShareState, SyncProgress,
+    RestoreTarget, ShareState, SyncProgress, UpdateResult, UpdateStatus,
 };
 
 const KOI: &str = r#"#!/bin/sh
@@ -216,6 +216,133 @@ fn while_no_daemon_answers_the_state_is_what_koi_status_reads() {
     koi.answer("status", ok(signed_in(true)));
     koi.core.reload();
     assert_eq!(koi.core.state().status, SyncStatus::Idle);
+}
+
+#[test]
+fn while_no_daemon_answers_koi_status_says_whether_an_update_is_out() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    struct Updates(Arc<std::sync::Mutex<Vec<UpdateStatus>>>);
+    impl SessionListener for Updates {
+        fn on_event(&self, event: SessionEvent) {
+            if let SessionEvent::Update { update } = event {
+                self.0.lock().unwrap().push(update);
+            }
+        }
+    }
+    let koi = Koi::with_listener(signed_in(false), Box::new(Updates(seen.clone())));
+    assert_eq!(koi.core.state().update, UpdateStatus::Unknown);
+    let release = "https://github.com/koidrive/koidrive/releases/tag/v0.1.1";
+    let notices = [
+        (
+            json!({
+                "state": "available", "version": "0.1.0", "latest": "0.1.1", "url": release,
+                "command": "koi update", "checked_at": "2026-11-13T04:00:00Z", "checked_at_ms": 1_794_542_400_000_i64,
+            }),
+            UpdateStatus::Available {
+                version: "0.1.1".into(),
+                release_url: release.into(),
+                checked_at_ms: 1_794_542_400_000,
+            },
+        ),
+        (
+            json!({
+                "state": "up_to_date", "version": "0.1.1",
+                "checked_at": "2026-11-13T04:00:00Z", "checked_at_ms": 1_794_542_400_000_i64,
+            }),
+            UpdateStatus::UpToDate {
+                checked_at_ms: 1_794_542_400_000,
+            },
+        ),
+        (
+            json!({ "state": "off", "version": "0.1.1" }),
+            UpdateStatus::Off,
+        ),
+        (
+            json!({ "state": "unknown", "version": "0.1.1" }),
+            UpdateStatus::Unknown,
+        ),
+    ];
+    for (notice, expected) in notices.clone() {
+        let mut status = signed_in(false);
+        status["update"] = notice;
+        koi.answer("status", ok(status));
+        koi.core.reload();
+        assert_eq!(koi.core.state().update, expected);
+    }
+    assert_eq!(*seen.lock().unwrap(), notices.map(|(_, expected)| expected));
+}
+
+#[test]
+fn an_update_runs_koi_update_and_names_the_newest_release_it_installed() {
+    let koi = Koi::new(signed_in(true));
+    koi.answer(
+        "update",
+        printed(
+            "update",
+            "ok",
+            json!({ "from": "0.1.0", "to": "0.1.1", "via": "app", "result": "updated" }),
+        ),
+    );
+    assert_eq!(
+        koi.core.update(),
+        Ok(UpdateResult {
+            from: "0.1.0".into(),
+            to: "0.1.1".into(),
+        })
+    );
+    assert_eq!(koi.calls_of("update"), ["update"]);
+    koi.answer(
+        "update",
+        printed(
+            "update",
+            "unchanged",
+            json!({ "from": "0.1.1", "to": "0.1.1", "via": "app", "result": "unchanged" }),
+        ),
+    );
+    assert_eq!(koi.core.update(), Err(SessionError::UpdateUnavailable));
+}
+
+#[test]
+fn a_failed_update_names_the_reason_the_log_and_the_command_koi_suggests() {
+    let koi = Koi::new(signed_in(true));
+    let log_path = driver::update::log_path(&koi.core.paths)
+        .to_string_lossy()
+        .into_owned();
+    let brew = "/opt/homebrew/bin/brew";
+    let reason = format!(
+        "App signature verification failed\nTo update, run: {brew} upgrade --cask koidrive"
+    );
+    for (next, fallback) in [
+        (
+            vec![brew, "upgrade", "--cask", "koidrive"],
+            Some(format!("{brew} upgrade --cask koidrive")),
+        ),
+        (
+            vec!["/My Brew/bin/brew", "upgrade", "--cask", "koidrive"],
+            Some("'/My Brew/bin/brew' upgrade --cask koidrive".to_owned()),
+        ),
+        (vec![], None),
+    ] {
+        let mut failure = refused("failed", &reason, &next);
+        failure["schema_version"] = json!(1);
+        failure["command"] = json!("update");
+        failure["decisions"] = json!([]);
+        published("update", &failure);
+        koi.answer("update", failure);
+        assert_eq!(
+            koi.core.update(),
+            Err(SessionError::UpdateFailed {
+                reason: reason.clone(),
+                log_path: log_path.clone(),
+                fallback_command: fallback,
+            })
+        );
+    }
+    fs::remove_file(koi.dir.path().join("update.json")).unwrap();
+    let Err(SessionError::UpdateFailed { reason, .. }) = koi.core.update() else {
+        panic!("a koi that prints nothing fails the update");
+    };
+    assert!(reason.contains("printed no result"), "{reason}");
 }
 
 #[tokio::test]

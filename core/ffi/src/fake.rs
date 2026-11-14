@@ -14,7 +14,7 @@ use crate::types::{
     Question, QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup,
     RecoveryTrigger, RestoreAsked, RestoreRequest, RestoreState, RestoreTarget, ServerInfo,
     SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState, Space,
-    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash,
+    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -34,10 +34,12 @@ pub enum FakeActivity {
 
 /// A whole state the fake can switch to at once. Every scenario but [`FakeScenario::FirstRun`]
 /// is signed in to `https://box.example.com` with two linked folders, Documents and Photos, from
-/// one of the account's two devices.
+/// one of the account's two devices. The fake runs Koidrive 0.1.0; a signed-in scenario is up to date with the
+/// newest release unless it says otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FakeScenario {
-    /// A fresh install: no server, no account, no folders, and the server is not claimed yet.
+    /// A fresh install: no server, no account, no folders, and the server is not claimed yet. No update check has
+    /// answered yet.
     FirstRun,
     /// Up to date, with a few recent changes. Documents has three deletions in its trash and a file with three
     /// versions, `Reports/Annual Report.docx`. The account has five share links, newest first: two that work, the
@@ -48,7 +50,7 @@ pub enum FakeScenario {
     Syncing,
     /// Paused by the person.
     Paused,
-    /// The server cannot be reached.
+    /// The server cannot be reached, and no update check has answered.
     Offline,
     /// One mass-delete question in Documents: 14 held deletions of 4,553 files in a space of
     /// 6,000, over half of the space.
@@ -71,6 +73,10 @@ pub enum FakeScenario {
     ManyQuestions,
     /// One problem of every kind. Photos is halted because its folder is missing.
     Problems,
+    /// Koidrive 0.1.1 is out. Updating to it succeeds.
+    UpdateAvailable,
+    /// Koidrive 0.1.1 is out, and every update fails with its reason, the log and a Homebrew command.
+    UpdateFails,
 }
 
 /// An answer the fake received, for tests.
@@ -118,6 +124,9 @@ struct State {
     not_writable: Option<Problem>,
     status: SyncStatus,
     telemetry: TelemetrySetting,
+    version: String,
+    update: UpdateStatus,
+    update_fails: bool,
 }
 
 impl Saved {
@@ -220,9 +229,10 @@ enum Part {
     Questions,
     Problems,
     Notices,
+    Update,
 }
 
-const ALL_PARTS: [Part; 7] = [
+const ALL_PARTS: [Part; 8] = [
     Part::Progress,
     Part::Account,
     Part::Folders,
@@ -230,6 +240,7 @@ const ALL_PARTS: [Part; 7] = [
     Part::Questions,
     Part::Problems,
     Part::Notices,
+    Part::Update,
 ];
 
 /// The fake core. Swift scripts it through [`SyncSession::fake_core`](crate::SyncSession::fake_core).
@@ -255,6 +266,9 @@ impl FakeCore {
                 not_writable: None,
                 status: SyncStatus::Stopped,
                 telemetry: TelemetrySetting::default(),
+                version: scenario::RUNNING.to_owned(),
+                update: UpdateStatus::Unknown,
+                update_fails: false,
             }),
             events,
         }
@@ -281,7 +295,7 @@ impl FakeCore {
         Ok(state.set_save_failure(None))
     }
 
-    fn update<T>(
+    fn change<T>(
         &self,
         state: &mut State,
         parts: &[Part],
@@ -317,6 +331,9 @@ impl FakeCore {
                 },
                 Part::Notices => SessionEvent::Notices {
                     notices: state.saved.notices.clone(),
+                },
+                Part::Update => SessionEvent::Update {
+                    update: state.update.clone(),
                 },
             });
         }
@@ -403,6 +420,9 @@ impl FakeCore {
         state.activity = script.activity;
         state.progress = script.progress;
         state.recent = script.recent;
+        state.version = scenario::RUNNING.to_owned();
+        state.update = script.update;
+        state.update_fails = script.update_fails;
         state.answers.clear();
         state.fail_next = None;
         state.usage_refusals.clear();
@@ -444,7 +464,7 @@ impl FakeCore {
     /// Sets whether the server reports itself claimed, which decides between claiming and
     /// pairing in the first-run setup.
     pub fn set_server_claimed(&self, claimed: bool) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             saved.claimed = claimed;
             if let Some(server) = &mut saved.server {
                 server.claimed = claimed;
@@ -455,7 +475,7 @@ impl FakeCore {
 
     /// Sets the devices the server lists for the account.
     pub fn set_devices(&self, devices: Vec<Device>) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             saved.devices = devices;
             Ok(())
         })
@@ -466,7 +486,7 @@ impl FakeCore {
         space_id: String,
         folder_state: FolderState,
     ) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[Part::Folders], |saved| {
+        self.change(&mut self.lock(), &[Part::Folders], |saved| {
             for folder in &mut saved.folders {
                 if folder.space_id == space_id {
                     folder.state = folder_state;
@@ -483,7 +503,7 @@ impl FakeCore {
         kind: QuestionKind,
         items: Vec<HeldItem>,
     ) -> Result<String, SessionError> {
-        self.update(&mut self.lock(), &[Part::Questions], |saved| {
+        self.change(&mut self.lock(), &[Part::Questions], |saved| {
             let id = saved.next_id("question");
             let answers = kind.answers();
             saved.questions.push(Question {
@@ -501,7 +521,7 @@ impl FakeCore {
     /// Withdraws a question without an answer, as the engine does when its held set changes or
     /// a certain case now applies (design §6.1, §6.4).
     pub fn withdraw_question(&self, question_id: String) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[Part::Questions], |saved| {
+        self.change(&mut self.lock(), &[Part::Questions], |saved| {
             saved.questions.retain(|q| q.id != question_id);
             Ok(())
         })
@@ -509,7 +529,7 @@ impl FakeCore {
 
     /// Adds a notice and returns its ID.
     pub fn notify(&self, space_id: String, kind: NoticeKind) -> Result<String, SessionError> {
-        self.update(&mut self.lock(), &[Part::Notices], |saved| {
+        self.change(&mut self.lock(), &[Part::Notices], |saved| {
             let id = saved.next_id("notice");
             saved.notices.push(Notice {
                 id: id.clone(),
@@ -528,7 +548,7 @@ impl FakeCore {
         path: Option<String>,
         kind: ProblemKind,
     ) -> Result<String, SessionError> {
-        self.update(&mut self.lock(), &[Part::Problems], |saved| {
+        self.change(&mut self.lock(), &[Part::Problems], |saved| {
             let id = saved.next_id("problem");
             saved.problems.push(Problem {
                 id: id.clone(),
@@ -542,7 +562,7 @@ impl FakeCore {
     }
 
     pub fn resolve_problem(&self, problem_id: String) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[Part::Problems], |saved| {
+        self.change(&mut self.lock(), &[Part::Problems], |saved| {
             saved.problems.retain(|p| p.id != problem_id);
             Ok(())
         })
@@ -550,7 +570,7 @@ impl FakeCore {
 
     /// Replaces what the trash of the space holds.
     pub fn set_trash(&self, space_id: String, items: Vec<DeletedItem>) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             let trash = &mut saved.history.entry(space_id).or_default().trash;
             *trash = items;
             trash.sort_by(|a, b| a.path.cmp(&b.path));
@@ -564,7 +584,7 @@ impl FakeCore {
         space_id: String,
         versions: FileVersions,
     ) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             let kept = &mut saved.history.entry(space_id).or_default().versions;
             kept.retain(|file| file.path != versions.path);
             kept.push(versions);
@@ -579,7 +599,7 @@ impl FakeCore {
         request_id: String,
         state: RestoreState,
     ) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             for history in saved.history.values_mut() {
                 let Some(index) =
                     (history.requests.iter()).position(|request| request.id == request_id)
@@ -608,11 +628,18 @@ impl FakeCore {
 
     /// Replaces the account's share links.
     pub fn set_share_links(&self, links: Vec<ShareLink>) -> Result<(), SessionError> {
-        self.update(&mut self.lock(), &[], |saved| {
+        self.change(&mut self.lock(), &[], |saved| {
             saved.share_links = links;
             (saved.share_links).sort_by_key(|link| Reverse(link.created_at_ms));
             Ok(())
         })
+    }
+
+    /// Sets what the last update check found, as the daemon reports it.
+    pub fn set_update(&self, update: UpdateStatus) {
+        let mut state = self.lock();
+        state.update = update;
+        self.publish(&mut state, &[Part::Update], false);
     }
 
     /// Makes the next call that can fail return `error` instead.
@@ -648,6 +675,7 @@ impl Core for FakeCore {
             questions: state.saved.questions.clone(),
             problems: state.problems(),
             notices: state.saved.notices.clone(),
+            update: state.update.clone(),
         }
     }
 
@@ -671,7 +699,7 @@ impl Core for FakeCore {
         if !state.running || state.saved.paused {
             return Ok(());
         }
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.paused = true;
             Ok(())
         })
@@ -682,7 +710,7 @@ impl Core for FakeCore {
         if !state.saved.paused {
             return Ok(());
         }
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.paused = false;
             Ok(())
         })
@@ -699,7 +727,7 @@ impl Core for FakeCore {
         if host.is_empty() || host.contains(char::is_whitespace) {
             return Err(SessionError::InvalidServerUrl);
         }
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             let server = ServerInfo {
                 url: url.to_owned(),
                 server_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -718,7 +746,7 @@ impl Core for FakeCore {
     ) -> Result<Account, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[Part::Account], |saved| {
+        self.change(&mut state, &[Part::Account], |saved| {
             let server = saved.server.clone().ok_or(SessionError::NoServer)?;
             if saved.claimed {
                 return Err(SessionError::AlreadyClaimed);
@@ -744,7 +772,7 @@ impl Core for FakeCore {
     fn pair(&self, code: &str, device_name: &str) -> Result<Account, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[Part::Account], |saved| {
+        self.change(&mut state, &[Part::Account], |saved| {
             let server = saved.server.clone().ok_or(SessionError::NoServer)?;
             if !saved.claimed {
                 return Err(SessionError::NotClaimed);
@@ -788,7 +816,7 @@ impl Core for FakeCore {
         }
         let progress = state.progress.take();
         let recent = std::mem::take(&mut state.recent);
-        let result = self.update(&mut state, &ALL_PARTS, |saved| {
+        let result = self.change(&mut state, &ALL_PARTS, |saved| {
             saved.account()?;
             *saved = Saved {
                 server: saved.server.take(),
@@ -815,7 +843,7 @@ impl Core for FakeCore {
     fn revoke_device(&self, device_id: &str) -> Result<(), SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             if saved.account()?.device_id == device_id {
                 return Err(SessionError::ThisDevice);
             }
@@ -835,7 +863,7 @@ impl Core for FakeCore {
     fn start_pairing(&self) -> Result<PairingCode, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.account()?;
             let n = saved.next_id;
             saved.next_id += 1;
@@ -862,7 +890,7 @@ impl Core for FakeCore {
     fn create_space(&self, name: &str) -> Result<Space, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.account()?;
             let space = Space {
                 name: required(name)?,
@@ -901,7 +929,7 @@ impl Core for FakeCore {
     fn link_folder(&self, space_id: &str, path: &str) -> Result<LinkedFolder, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[Part::Folders], |saved| {
+        self.change(&mut state, &[Part::Folders], |saved| {
             saved.account()?;
             let space = saved
                 .spaces
@@ -944,7 +972,7 @@ impl Core for FakeCore {
             Part::Problems,
             Part::Notices,
         ];
-        self.update(&mut state, &parts, |saved| {
+        self.change(&mut state, &parts, |saved| {
             saved.account()?;
             if !saved.folders.iter().any(|f| f.space_id == space_id) {
                 return Err(SessionError::FolderNotLinked);
@@ -988,7 +1016,7 @@ impl Core for FakeCore {
     fn restore_deleted(&self, path: &str, node_id: &str) -> Result<RestoreAsked, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.account()?;
             let (folder, below) = located_inside(&saved.folders, path)?;
             let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
@@ -1008,7 +1036,7 @@ impl Core for FakeCore {
     fn restore_version(&self, path: &str, version_id: &str) -> Result<RestoreAsked, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.account()?;
             let (folder, below) = located_inside(&saved.folders, path)?;
             let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
@@ -1069,7 +1097,7 @@ impl Core for FakeCore {
         {
             return Err(SessionError::PasswordLength);
         }
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             let server = saved.account()?.server_url.clone();
             let (folder, below) = located(&saved.folders, path)?;
             let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
@@ -1110,7 +1138,7 @@ impl Core for FakeCore {
     fn revoke_share_link(&self, link_id: &str) -> Result<ShareLink, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[], |saved| {
+        self.change(&mut state, &[], |saved| {
             saved.account()?;
             let link = (saved.share_links.iter_mut())
                 .find(|link| link.id == link_id)
@@ -1124,7 +1152,7 @@ impl Core for FakeCore {
         let mut state = self.lock();
         state.take_failure()?;
         let parts = [Part::Questions, Part::Folders];
-        self.update(&mut state, &parts, |saved| {
+        self.change(&mut state, &parts, |saved| {
             let index = saved
                 .questions
                 .iter()
@@ -1205,10 +1233,27 @@ impl Core for FakeCore {
         Ok(())
     }
 
+    fn update(&self) -> Result<UpdateResult, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        let UpdateStatus::Available { version, .. } = state.update.clone() else {
+            return Err(SessionError::UpdateUnavailable);
+        };
+        if state.update_fails {
+            return Err(scenario::update_failure());
+        }
+        let from = std::mem::replace(&mut state.version, version.clone());
+        state.update = UpdateStatus::UpToDate {
+            checked_at_ms: now_ms(),
+        };
+        self.publish(&mut state, &[Part::Update], false);
+        Ok(UpdateResult { from, to: version })
+    }
+
     fn dismiss_notice(&self, notice_id: &str) -> Result<(), SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        self.update(&mut state, &[Part::Notices], |saved| {
+        self.change(&mut state, &[Part::Notices], |saved| {
             if !saved.notices.iter().any(|n| n.id == notice_id) {
                 return Err(SessionError::NoticeNotFound);
             }
@@ -1457,6 +1502,127 @@ mod tests {
         let code = h.core.start_pairing().unwrap();
         assert_eq!(normalize_code(&code.code).len(), PAIRING_CODE_LEN);
         assert!(code.expires_at_ms > now_ms());
+    }
+
+    fn updates(events: Vec<SessionEvent>) -> Vec<UpdateStatus> {
+        (events.into_iter())
+            .filter_map(|event| match event {
+                SessionEvent::Update { update } => Some(update),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_scenario_says_what_the_update_check_found() {
+        let h = Harness::new();
+        assert_eq!(h.core.state().update, UpdateStatus::Unknown);
+        for (scenario, expected) in [
+            (FakeScenario::FirstRun, "unknown"),
+            (FakeScenario::Offline, "unknown"),
+            (FakeScenario::UpToDate, "up to date"),
+            (FakeScenario::MassDelete, "up to date"),
+            (FakeScenario::UpdateAvailable, "0.1.1"),
+            (FakeScenario::UpdateFails, "0.1.1"),
+        ] {
+            h.core.load_scenario(scenario).unwrap();
+            let shown = match h.core.state().update {
+                UpdateStatus::Unknown => "unknown".to_owned(),
+                UpdateStatus::UpToDate { .. } => "up to date".to_owned(),
+                UpdateStatus::Available {
+                    version,
+                    release_url,
+                    ..
+                } => {
+                    assert!(release_url.ends_with(&format!("/v{version}")));
+                    version
+                }
+                UpdateStatus::Off => "off".to_owned(),
+            };
+            assert_eq!(shown, expected, "{scenario:?}");
+            assert_eq!(updates(h.take()), [h.core.state().update], "{scenario:?}");
+        }
+        h.core.set_update(UpdateStatus::Off);
+        assert_eq!(updates(h.take()), [UpdateStatus::Off]);
+        assert_eq!(h.core.update(), Err(SessionError::UpdateUnavailable));
+    }
+
+    #[test]
+    fn an_available_update_installs_once_then_the_mac_is_up_to_date() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpdateAvailable).unwrap();
+        h.take();
+        assert_eq!(
+            h.core.update(),
+            Ok(UpdateResult {
+                from: "0.1.0".to_owned(),
+                to: "0.1.1".to_owned(),
+            })
+        );
+        let [UpdateStatus::UpToDate { .. }] = updates(h.take())[..] else {
+            panic!("one up-to-date update event expected");
+        };
+        assert!(matches!(
+            h.core.state().update,
+            UpdateStatus::UpToDate { .. }
+        ));
+        assert_eq!(h.core.update(), Err(SessionError::UpdateUnavailable));
+        h.core.set_update(UpdateStatus::Available {
+            version: "0.2.0".to_owned(),
+            release_url: "https://github.com/koidrive/koidrive/releases/tag/v0.2.0".to_owned(),
+            checked_at_ms: 1,
+        });
+        assert_eq!(
+            h.core.update().map(|result| result.from),
+            Ok("0.1.1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_failing_update_names_its_log_and_homebrew_command_every_time_and_stays_available() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpdateFails).unwrap();
+        let available = h.core.state().update;
+        h.take();
+        for _ in 0..2 {
+            let Err(SessionError::UpdateFailed {
+                reason,
+                log_path,
+                fallback_command,
+            }) = h.core.update()
+            else {
+                panic!("the update should fail");
+            };
+            assert!(reason.contains("0.1.1"), "{reason}");
+            assert!(
+                log_path.ends_with("/Library/Logs/Koidrive/update.log"),
+                "{log_path}"
+            );
+            assert_eq!(
+                fallback_command.as_deref(),
+                Some("brew upgrade --cask koidrive")
+            );
+        }
+        assert_eq!(h.core.state().update, available);
+        assert!(updates(h.take()).is_empty());
+    }
+
+    #[test]
+    fn a_scripted_failure_reaches_the_next_update_only() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpdateAvailable).unwrap();
+        let unreachable = SessionError::UpdateFailed {
+            reason: "GitHub cannot be reached".to_owned(),
+            log_path: "/tmp/update.log".to_owned(),
+            fallback_command: None,
+        };
+        h.core.fail_next(unreachable.clone());
+        assert_eq!(h.core.update(), Err(unreachable));
+        assert!(matches!(
+            h.core.state().update,
+            UpdateStatus::Available { .. }
+        ));
+        assert!(h.core.update().is_ok());
     }
 
     #[test]

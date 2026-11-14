@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import AppKit
 import KoidriveFFI
 import Foundation
 import Observation
@@ -20,16 +21,33 @@ public final class AppModel {
     @ObservationIgnored public var telemetryChanged: ((TelemetrySetting) -> Void)?
     /// Whether an environment variable such as `DO_NOT_TRACK` keeps usage reports off.
     public var usageReportsTurnedOffByVariable: Bool { telemetry.locked && !telemetry.enabled }
+    /// The version this Mac updated to since the person last acknowledged an update, shown once until
+    /// `acknowledgeUpdate()`. Nil on the first launch, which is an install rather than an update.
+    public private(set) var justUpdated: String?
     public let session: SyncSession
+    @ObservationIgnored private let version: String
+    @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var consumer: Task<Void, Never>?
     @ObservationIgnored private var realRoots: [String: String?] = [:]
+    private static let acknowledgedVersion = "AcknowledgedVersion"
 
-    public init(session: SyncSession, events: AsyncStream<SessionEvent>) {
+    /// With `defaults`, the model remembers there which version's update note the person saw; without, it shows none.
+    public init(
+        session: SyncSession, events: AsyncStream<SessionEvent>,
+        defaults: UserDefaults? = nil, version: String = KoidriveFFI.version()
+    ) {
         self.session = session
         let state = session.state()
         self.state = state
         unseenQuestionIDs = Set(state.questions.map(\.id))
         telemetry = session.telemetry()
+        self.version = version
+        self.defaults = defaults
+        let acknowledged = defaults?.string(forKey: Self.acknowledgedVersion)
+        justUpdated = acknowledged.flatMap { $0 == version ? nil : version }
+        if acknowledged == nil {
+            defaults?.set(version, forKey: Self.acknowledgedVersion)
+        }
         consumer = Task { [weak self] in
             for await event in events {
                 self?.apply(event)
@@ -47,7 +65,8 @@ public final class AppModel {
     /// A model of the CLI's sync profile on this Mac, worked through the `koi` at `helper`.
     public static func open(helper: URL) throws -> AppModel {
         let (session, events) = try SyncSession.openWithEventStream(helper: helper)
-        return AppModel(session: session, events: events)
+        let version = Bundle.main.object(forInfoDictionaryKey: "KoidriveVersion") as? String ?? KoidriveFFI.version()
+        return AppModel(session: session, events: events, defaults: .standard, version: version)
     }
 
     /// A model backed by the fake core, for previews and tests. With `scenario`, it starts from
@@ -69,6 +88,7 @@ public final class AppModel {
             "offline": .offline, "massDelete": .massDelete, "ambiguousDisappearance": .ambiguousDisappearance,
             "recovery": .recovery, "conflict": .conflict, "recoveredWithoutQuestions": .recoveredWithoutQuestions,
             "remoteMassDelete": .remoteMassDelete, "manyQuestions": .manyQuestions, "problems": .problems,
+            "updateAvailable": .updateAvailable, "updateFails": .updateFails,
         ]
         return defaults.string(forKey: "FakeScenario").flatMap { all[$0] }
         #else
@@ -92,6 +112,7 @@ public final class AppModel {
         case .questions(let questions): replaceQuestions(questions)
         case .problems(let problems): state.problems = problems
         case .notices(let notices): state.notices = notices
+        case .update(let update): state.update = update
         }
     }
 
@@ -112,6 +133,7 @@ public final class AppModel {
         apply(.questions(questions: latest.questions))
         apply(.problems(problems: latest.problems))
         apply(.notices(notices: latest.notices))
+        apply(.update(update: latest.update))
         telemetry = session.telemetry()
     }
 
@@ -232,6 +254,32 @@ public final class AppModel {
     public func setTelemetry(enabled: Bool) throws {
         defer { refresh() }
         try session.setTelemetry(enabled: enabled)
+    }
+
+    /// Updates Koidrive to the newest release. When the update replaces this app, the updater quits it and opens the
+    /// new version, which shows `justUpdated`; the call returns only when the update leaves this app running, and then
+    /// `relaunch()` opens the new version. Throws `SessionError.UpdateFailed` with the reason, the log and a command
+    /// that updates from Terminal, or `SessionError.UpdateUnavailable` when this Mac runs the newest release.
+    public func update() async throws -> UpdateResult {
+        try await run { try $0.update() }
+    }
+
+    /// Records that the person saw the note about `justUpdated`, so it does not show again.
+    public func acknowledgeUpdate() {
+        defaults?.set(version, forKey: Self.acknowledgedVersion)
+        justUpdated = nil
+    }
+
+    /// Quits this app and opens its bundle again once it has quit, so it runs the version installed there.
+    public func relaunch() throws {
+        let relauncher = Process()
+        relauncher.executableURL = URL(filePath: "/bin/sh")
+        relauncher.arguments = [
+            "-c", "while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.2; done; exec /usr/bin/open \"$2\"",
+            "relaunch", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundlePath,
+        ]
+        try relauncher.run()
+        NSApplication.shared.terminate(nil)
     }
 
     /// Records that the questions window showed every current question.

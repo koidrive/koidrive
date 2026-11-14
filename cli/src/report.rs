@@ -636,6 +636,9 @@ pub struct UpdateNoticeData {
     /// When GitHub last answered the check, in UTC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
+    /// When GitHub last answered the check, in milliseconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
 }
 
 /// `unknown` until a check has had an answer, and `off` when config.toml or `KOIDRIVE_UPDATE_CHECK` turns it off.
@@ -657,6 +660,7 @@ impl UpdateNoticeData {
             url: None,
             command: None,
             checked_at: None,
+            checked_at_ms: None,
         };
         match update {
             Update::Available {
@@ -668,10 +672,12 @@ impl UpdateNoticeData {
                 url: Some(url.clone()),
                 command: command.map(str::to_owned),
                 checked_at: Some(utc(*checked_at_ms)),
+                checked_at_ms: Some(*checked_at_ms),
                 ..notice(UpdateState::Available)
             },
             Update::UpToDate { checked_at_ms } => UpdateNoticeData {
                 checked_at: Some(utc(*checked_at_ms)),
+                checked_at_ms: Some(*checked_at_ms),
                 ..notice(UpdateState::UpToDate)
             },
             Update::Unknown => notice(UpdateState::Unknown),
@@ -1389,11 +1395,15 @@ mod tests {
                 "url": "https://github.com/koidrive/koidrive/releases/tag/v0.1.2",
                 "command": "koi update",
                 "checked_at": "2025-11-13T04:00:00Z",
+                "checked_at_ms": 1_763_006_400_000_i64,
             })
         );
         assert_eq!(
             json(&Update::UpToDate { checked_at_ms }),
-            serde_json::json!({ "state": "up_to_date", "version": "0.1.0", "checked_at": "2025-11-13T04:00:00Z" })
+            serde_json::json!({
+                "state": "up_to_date", "version": "0.1.0",
+                "checked_at": "2025-11-13T04:00:00Z", "checked_at_ms": 1_763_006_400_000_i64,
+            })
         );
         assert_eq!(
             json(&Update::Unknown),

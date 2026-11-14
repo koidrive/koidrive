@@ -38,6 +38,7 @@ TAP = "koidrive/tap/koidrive"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 SCENARIOS = ("verify", "cask", "formula-conflict", "installer", "homebrew-update", "uninstall")
 HOMEBREW_UPDATE_SINCE = "0.1.0-alpha.6"
+CASK_SELF_UPDATE_SINCE = "0.1.0-alpha.7"
 REQUIRED = {
     "verify": {"release assets verified", "signed static verification"},
     "cask": {"release assets verified", "clean account", "immediate version", "bundled helper link",
@@ -987,6 +988,31 @@ def preserved(transfers, *folders):
                for t in transfers for folder in folders)
 
 
+def update_env(env, previous):
+    env = {**env, "PATH": SYSTEM_PATH}
+    if release_order(previous) >= release_order(CASK_SELF_UPDATE_SINCE):
+        env.pop("CI", None)
+    return env
+
+
+def cask_self_update(evidence, tap, head, link, previous, current):
+    _, shown, _ = evidence.run(["/usr/bin/plutil", "-extract", "KoidriveVersion", "raw", "-o", "-",
+                                APP / "Contents/Info.plist"])
+    evidence.check("app replaced in place", shown.strip() == current, shown)
+    evidence.check("koi link follows the new app",
+                   link.resolve() == (APP / "Contents/Helpers/koi").resolve(), str(link.resolve()))
+    _, casks, _ = evidence.run(["brew", "list", "--cask", "--versions"])
+    evidence.check("Homebrew still records the cask it installed",
+                   re.search(r"(?m)^koidrive " + re.escape(previous) + "$", casks), casks)
+    evidence.run(["git", "-C", tap, "reset", "--hard", "--quiet", head.strip()])
+    _, info, _ = evidence.run(["brew", "info", "--json=v2", "--cask", TAP])
+    spec = json.loads(info)["casks"][0]
+    evidence.check("cask auto-updates", spec.get("auto_updates") is True and spec["version"] == current,
+                   json.dumps({"auto_updates": spec.get("auto_updates"), "version": spec["version"]}))
+    status, plan, err = evidence.run(["brew", "upgrade", "--cask", "--dry-run"], required=False, timeout=300)
+    evidence.check("brew upgrade leaves the self-updated app", status == 0 and "koidrive" not in plan + err, plan + err)
+
+
 def homebrew_update(evidence, root, ownership, entries):
     brew_prepare(evidence, entries, "cask")
     home = Path.home()
@@ -1023,7 +1049,7 @@ def homebrew_update(evidence, root, ownership, entries):
                        and any(f.get("path") == str(folder) for f in before.get("folders", []))
                        and all(t["passed"] for t in earlier), json.dumps({"status": before, "transfers": earlier}))
         status, out, err = evidence.run([link, "update", "--json"], required=False, timeout=900,
-                                        env={**evidence.env, "PATH": SYSTEM_PATH})
+                                        env=update_env(evidence.env, previous))
         envelope = json.loads(out) if out.strip().startswith("{") else {}
         data = envelope.get("data") or {}
         evidence.report["koi_update"] = {"status": status, "outcome": envelope.get("outcome"), "data": data,
@@ -1036,21 +1062,36 @@ def homebrew_update(evidence, root, ownership, entries):
                 f"Koidrive {previous} predates koi update through Homebrew and printed the brew command; "
                 f"the upgrade is asserted from a previous release of {HOMEBREW_UPDATE_SINCE} or later.")
             return
+        self_updated = release_order(previous) >= release_order(CASK_SELF_UPDATE_SINCE)
         evidence.check("koi update through Homebrew", status == 0 and envelope.get("outcome") == "ok"
-                       and data.get("via") == "homebrew" and data.get("result") == "updated"
+                       and data.get("via") == ("app" if self_updated else "homebrew") and data.get("result") == "updated"
                        and data.get("from") == previous and data.get("to") == current
                        and not envelope.get("error")
                        and (data.get("service") or {}).get("state") == "running"
                        and not (data.get("service") or {}).get("problem"), out + err)
         version(evidence, link, "updated version")
-        _, refreshed, _ = evidence.run(["git", "-C", tap, "rev-parse", "HEAD"])
-        evidence.check("koidrive tap refreshed", refreshed == head, refreshed)
+        if self_updated:
+            cask_self_update(evidence, tap, head, link, previous, current)
+        else:
+            _, refreshed, _ = evidence.run(["git", "-C", tap, "rev-parse", "HEAD"])
+            evidence.check("koidrive tap refreshed", refreshed == head, refreshed)
+            evidence.report["coverage"]["cask_self_update"] = (
+                f"Koidrive {previous} predates the cask self-update; it is asserted from a previous release of "
+                f"{CASK_SELF_UPDATE_SINCE} or later.")
         evidence.check("files from before the update kept", preserved(earlier, folder, peer_folder), json.dumps(earlier))
         after = koi_json(evidence, link, "status")
         later = byte_sync(folder, peer_folder, "after-")
         evidence.check("updated service syncs", after.get("running") is True
                        and any(f.get("path") == str(folder) for f in after.get("folders", []))
                        and all(t["passed"] for t in later), json.dumps({"status": after, "transfers": later}))
+        if self_updated:
+            stop_app(evidence, APP)
+            status, out, err = evidence.run(["brew", "uninstall", "--zap", "--cask", "--verbose", TAP], timeout=180)
+            installed = False
+            evidence.check("zap removes the self-updated app",
+                           zap_invoked(status, out + err, evidence.report["zap_hook"]["executable"])
+                           and not APP.exists() and not link.exists() and not link.is_symlink()
+                           and not (home / "Library/Application Support/Koidrive").exists(), out + err)
     finally:
         safe = True
         if APP.exists():

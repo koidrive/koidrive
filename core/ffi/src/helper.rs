@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::types::{
     Account, DeletedItem, Device, FileVersion, FileVersions, LinkedFolder, NewShareLink, NodeKind,
     PairingCode, RestoreAsked, RestoreRefusal, RestoreRequest, RestoreState, RestoreTarget,
-    SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash,
+    SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash, UpdateResult,
 };
 
 #[cfg(target_os = "macos")]
@@ -118,6 +118,12 @@ impl Refusal {
         (self.next.iter()).any(|next| next.argv.iter().any(|arg| arg == flag))
     }
 
+    pub(crate) fn next_command(&self) -> Option<String> {
+        let next = self.next.first()?;
+        let words: Vec<String> = next.argv.iter().map(|word| shell_word(word)).collect();
+        Some(words.join(" "))
+    }
+
     pub(crate) fn at(self, path: &str) -> SessionError {
         match self.reason {
             Some(Reason::NotInLinkedFolder) => SessionError::PathNotInLinkedFolder {
@@ -179,7 +185,10 @@ impl Helper {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(match args {
+                ["update"] => Stdio::null(),
+                _ => Stdio::piped(),
+            });
         for (name, value) in &self.env {
             match value {
                 Some(value) => command.env(name, value),
@@ -193,6 +202,7 @@ impl Helper {
         let timeout = match args {
             ["status"] | ["device", "list"] | ["space", "list" | "usage"] => Duration::from_secs(5),
             ["share", ..] => Duration::from_secs(600),
+            ["update"] => Duration::from_secs(15 * 60),
             _ => Duration::from_secs(60),
         };
         let output = finish(&mut child, input, timeout)
@@ -311,7 +321,7 @@ impl Done {
             running: status.running,
             paused: status.paused,
             version: None,
-            update: driver::Update::Unknown,
+            update: driver::Update::deserialize(&status.update).unwrap_or_default(),
             folders: status.folders.into_iter().map(FolderData::driver).collect(),
             progress: None,
         };
@@ -398,6 +408,23 @@ struct StatusData {
     #[serde(default)]
     paused: bool,
     folders: Vec<FolderData>,
+    #[serde(default)]
+    update: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpdatedData {
+    from: String,
+    to: String,
+}
+
+impl UpdatedData {
+    pub(crate) fn result(self) -> UpdateResult {
+        UpdateResult {
+            from: self.from,
+            to: self.to,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

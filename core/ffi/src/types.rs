@@ -728,6 +728,32 @@ pub struct TelemetrySetting {
     pub locked: bool,
 }
 
+/// Whether a newer Koidrive release is out than the one this Mac runs, from the daemon's last check.
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Enum)]
+pub enum UpdateStatus {
+    /// No check has had an answer yet, or the daemon is too old to say.
+    #[default]
+    Unknown,
+    /// The check is turned off in config.toml or by KOIDRIVE_UPDATE_CHECK, or this is a development build.
+    Off,
+    UpToDate {
+        checked_at_ms: i64,
+    },
+    Available {
+        version: String,
+        /// The release's page on GitHub.
+        release_url: String,
+        checked_at_ms: i64,
+    },
+}
+
+/// What an update did: this Mac went from Koidrive `from` to `to`.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UpdateResult {
+    pub from: String,
+    pub to: String,
+}
+
 /// The whole state the app shows. [`SessionEvent`]s replace one part of it at a time.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SessionState {
@@ -744,6 +770,7 @@ pub struct SessionState {
     pub problems: Vec<Problem>,
     /// Notices not dismissed yet, oldest first.
     pub notices: Vec<Notice>,
+    pub update: UpdateStatus,
 }
 
 /// How many recent changes the session keeps.
@@ -762,6 +789,7 @@ pub enum SessionEvent {
     Questions { questions: Vec<Question> },
     Problems { problems: Vec<Problem> },
     Notices { notices: Vec<Notice> },
+    Update { update: UpdateStatus },
 }
 
 /// Why a session call failed.
@@ -859,6 +887,16 @@ pub enum SessionError {
     ShareLinkNotFound,
     #[error("the space has as many active share links as the server allows")]
     ShareLinkLimit,
+    /// `koi update` did not update this Mac. `log_path` is the log of what it ran, and `fallback_command`, when the
+    /// install has one, updates it from Terminal instead.
+    #[error("{reason}")]
+    UpdateFailed {
+        reason: String,
+        log_path: String,
+        fallback_command: Option<String>,
+    },
+    #[error("this Mac already runs the newest release")]
+    UpdateUnavailable,
     #[error("{reason}")]
     Failed { reason: String },
 }
