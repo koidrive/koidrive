@@ -14,7 +14,10 @@ public final class AppModel {
     /// app launches.
     public private(set) var unseenQuestionIDs: Set<String>
     /// Whether this profile sends anonymous usage reports, read again after every session call.
-    public private(set) var telemetry: TelemetrySetting
+    public private(set) var telemetry: TelemetrySetting {
+        didSet { telemetryChanged?(telemetry) }
+    }
+    @ObservationIgnored public var telemetryChanged: ((TelemetrySetting) -> Void)?
     /// Whether an environment variable such as `DO_NOT_TRACK` keeps usage reports off.
     public var usageReportsTurnedOffByVariable: Bool { telemetry.locked && !telemetry.enabled }
     public let session: SyncSession

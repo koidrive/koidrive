@@ -232,7 +232,8 @@ pub async fn finish() {
     let events_written = run.flush(run.mode());
     let waiting = run.command != schema::Command::Telemetry
         && (run.store.peek()).is_ok_and(|queued| {
-            (queued.events.iter()).any(|queued| matches!(queued.event, Event::Panic { .. }))
+            (queued.events.iter())
+                .any(|queued| matches!(queued.event, Event::Panic { .. } | Event::AppCrash { .. }))
         });
     if events_written > 0 || waiting {
         let _ = tokio::time::timeout(EXIT_SEND, send(&run.store, Client::CliCommand)).await;

@@ -22,9 +22,9 @@ use crate::helper::{
 use crate::profile::Profile;
 use crate::state::{self, Seen};
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
-    RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash,
+    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
+    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
+    ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash,
 };
 
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -59,7 +59,32 @@ struct Watcher {
     thread: JoinHandle<()>,
 }
 
+pub(crate) fn app_crash_stamp(paths: &driver::Paths) -> AppCrashStamp {
+    let stamp = koidrive_telemetry::Store::new(&paths.state_dir)
+        .app_crash_stamp(|name| std::env::var_os(name));
+    stamp.map_or_else(
+        |_| AppCrashStamp::default(),
+        |stamp| AppCrashStamp {
+            reports_on: stamp.on,
+            generation: stamp.generation,
+        },
+    )
+}
+
 impl DaemonCore {
+    fn telemetry_store(&self) -> koidrive_telemetry::Store {
+        let environment = koidrive_telemetry::Environment::detect(
+            koidrive_telemetry::schema::Client::MacosApp,
+            env!("CARGO_PKG_VERSION"),
+        );
+        koidrive_telemetry::Store::new(&self.paths.state_dir).recorded_by(
+            koidrive_telemetry::Origin {
+                koi_version: environment.koi_version,
+                client: environment.client,
+            },
+        )
+    }
+
     pub(crate) fn open(
         helper: PathBuf,
         profile: Profile,
@@ -110,6 +135,8 @@ impl DaemonCore {
             watcher: Mutex::new(None),
             reconciled: Once::new(),
         });
+        static PANIC_HOOK: Once = Once::new();
+        PANIC_HOOK.call_once(|| koidrive_telemetry::install_panic_hook(core.telemetry_store()));
         core.reload();
         Ok(core)
     }
@@ -730,6 +757,19 @@ impl Core for DaemonCore {
         }
     }
 
+    fn record_app_crash(&self, report: &str) -> Result<(), SessionError> {
+        let store = self.telemetry_store();
+        let not_saved = |error: std::io::Error| SessionError::NotSaved {
+            reason: error.to_string(),
+        };
+        let Ok(report) = serde_json::from_str(report) else {
+            return Ok(());
+        };
+        store
+            .absorb_app_crash(&report, |name| std::env::var_os(name))
+            .map_err(not_saved)
+    }
+
     fn telemetry(&self) -> TelemetrySetting {
         let store = koidrive_telemetry::Store::new(&self.paths.state_dir);
         let settings = (store.settings())
@@ -744,6 +784,10 @@ impl Core for DaemonCore {
                 koidrive_telemetry::Source::DoNotTrack | koidrive_telemetry::Source::Variable
             ),
         }
+    }
+
+    fn app_crash_stamp(&self) -> AppCrashStamp {
+        app_crash_stamp(&self.paths)
     }
 
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {

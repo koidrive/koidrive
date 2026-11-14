@@ -12,11 +12,12 @@ use serde_json::{Map, Value};
 
 use crate::consent::{self, Status};
 use crate::recorder::Pending;
-use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin, Version};
 
 pub const KEEP_HOURS: u32 = 14 * 24;
 pub const MAX_EVENTS: usize = 500;
 const QUEUE: &str = "queue-v2.json";
+const MAX_APP_CRASH_REPORTS: usize = 64;
 const OLD_QUEUE: &str = "queue.json";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +28,18 @@ pub struct Settings {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<InstallId>,
+    /// Drawn anew each time reports are turned off or reset. An app crash report carries the generation in force when
+    /// the app last read the setting and is sent only while that generation is still in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+}
+
+/// What the app writes into its crash reports each time it reads the setting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppCrashStamp {
+    /// Reports are on for the reading process, its environment included.
+    pub on: bool,
+    pub generation: String,
 }
 
 /// Reports and events taken from the queue to send.
@@ -74,6 +87,8 @@ struct Queue {
     out: Option<Out>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     admitted: BTreeMap<u32, BTreeMap<String, usize>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    app_crash_reports: Vec<String>,
 }
 
 fn known_events<'de, D: serde::Deserializer<'de>>(
@@ -218,7 +233,8 @@ impl Queue {
         self.admitted = self.admitted.split_off(&(oldest / 24));
         let mut over = (self.events.len() + self.out_events().count()).saturating_sub(MAX_EVENTS);
         let mut keep = |queued: &Queued| {
-            let evicted = over > 0 && !matches!(queued.event, Event::Panic { .. });
+            let evicted =
+                over > 0 && !matches!(queued.event, Event::Panic { .. } | Event::AppCrash { .. });
             over -= usize::from(evicted);
             !evicted
         };
@@ -342,10 +358,13 @@ impl Store {
     /// queue goes too.
     pub fn set(&self, on: bool) -> io::Result<Settings> {
         let _lock = self.lock(true)?;
-        let mut settings = match self.settings() {
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => Settings::default(),
-            settings => settings?,
+        let (mut settings, replaced) = match self.settings() {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => (Settings::default(), true),
+            settings => (settings?, false),
         };
+        if !on || replaced {
+            settings.generation = Some(new_generation());
+        }
         settings.enabled = Some(on);
         settings.install_id = settings.install_id.filter(|_| on);
         if settings.install_id.is_none() {
@@ -359,19 +378,16 @@ impl Store {
         Ok(settings)
     }
 
-    /// Deletes everything waiting to be sent and then draws a new install id.
-    /// Without an id there is nothing to reset.
+    /// Deletes everything waiting to be sent and then draws a new install id, or none without an id.
     pub fn reset(&self) -> io::Result<Option<InstallId>> {
         let _lock = self.lock(true)?;
         self.remove_queues()?;
         let mut settings = self.settings()?;
-        if settings.install_id.is_none() {
-            return Ok(None);
-        }
-        let id = InstallId::generate();
-        settings.install_id = Some(id.clone());
+        let id = settings.install_id.as_ref().map(|_| InstallId::generate());
+        settings.install_id = id.clone();
+        settings.generation = Some(new_generation());
         write(&self.dir.join("settings.json"), &settings)?;
-        Ok(Some(id))
+        Ok(id)
     }
 
     /// The install id, drawn and stored when telemetry is on through `KOIDRIVE_TELEMETRY` and none exists yet.
@@ -430,6 +446,72 @@ impl Store {
             .collect();
         queue.put(pending.hours.into_values(), events);
         queue.trim(hour);
+        write(&self.dir.join(QUEUE), &queue)
+    }
+
+    pub fn app_crash_stamp(
+        &self,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<AppCrashStamp> {
+        let settings = self.settings()?;
+        Ok(AppCrashStamp {
+            on: consent::resolve(var, settings.enabled).mode != consent::Mode::Off,
+            generation: settings.generation.unwrap_or_default(),
+        })
+    }
+
+    /// Queues the crash in `report`, a crash report KSCrash 2.6 wrote. Only the crash's kind, Mach exception, signal and
+    /// time are read, with the build UUID of the executable that crashed, the offsets of the crashed thread's frames in it
+    /// and what the app stamped into `user`: `koidrive_version`, which the event goes under, and the
+    /// [`AppCrashStamp`] as `reports_on` and `reports_generation`; paths, names, messages, memory and everything else
+    /// in the report are never read. The crash is queued, once by its report id, only when the stamp says reports were
+    /// on, its generation is still in force and reports are on now under `var`.
+    pub fn absorb_app_crash(
+        &self,
+        report: &Value,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<()> {
+        let stamped = (report["user"]["reports_on"] == true)
+            .then(|| report["user"]["reports_generation"].as_str())
+            .flatten();
+        let (Some(event), Some(stamped)) = (crate::app_crash::app_crash(report), stamped) else {
+            return Ok(());
+        };
+        let id = report["report"]["id"].as_str().map(str::to_owned);
+        let _lock = self.lock(true)?;
+        let mut settings = self.settings()?;
+        if consent::resolve(&var, settings.enabled).mode == consent::Mode::Off
+            || settings.generation.as_deref().unwrap_or_default() != stamped
+        {
+            return Ok(());
+        }
+        if settings.install_id.is_none() {
+            self.remove_queues()?;
+            settings.install_id = Some(InstallId::generate());
+            write(&self.dir.join("settings.json"), &settings)?;
+        }
+        let mut queue = self.queue()?;
+        if id
+            .as_ref()
+            .is_some_and(|id| queue.app_crash_reports.contains(id))
+        {
+            return Ok(());
+        }
+        let crashed = report["user"]["koidrive_version"]
+            .as_str()
+            .and_then(|version| Version::parse(version).ok());
+        let origin = (self.origin.clone()).map(|origin| Origin {
+            koi_version: crashed.unwrap_or(origin.koi_version),
+            ..origin
+        });
+        queue.put(std::iter::empty(), vec![Queued { event, origin }]);
+        queue.app_crash_reports.extend(id);
+        let over = queue
+            .app_crash_reports
+            .len()
+            .saturating_sub(MAX_APP_CRASH_REPORTS);
+        queue.app_crash_reports.drain(..over);
+        queue.trim(crate::this_hour());
         write(&self.dir.join(QUEUE), &queue)
     }
 
@@ -636,6 +718,10 @@ impl Store {
     }
 }
 
+fn new_generation() -> String {
+    InstallId::generate().as_str().to_owned()
+}
+
 fn read<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -760,7 +846,8 @@ mod tests {
             off,
             Settings {
                 enabled: Some(false),
-                install_id: None
+                install_id: None,
+                generation: off.generation.clone(),
             }
         );
         assert!(store.peek().unwrap().is_empty());
@@ -1281,5 +1368,222 @@ mod tests {
         let _held = store.lock(true).unwrap();
         let error = store.absorb_at(pending(100, 1), 100, false).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    fn none(_: &str) -> Option<std::ffi::OsString> {
+        None
+    }
+
+    fn crash_report(
+        store: &Store,
+        id: &str,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Value {
+        let stamp = store.app_crash_stamp(var).unwrap();
+        serde_json::json!({
+            "report": { "id": id, "timestamp": crate::now() * 1_000_000 },
+            "crash": { "error": { "type": "signal", "signal": { "signal": 11 } } },
+            "user": { "reports_on": stamp.on, "reports_generation": stamp.generation },
+        })
+    }
+
+    fn app_crashes(store: &Store) -> usize {
+        (store.peek().unwrap().events.iter())
+            .filter(|queued| matches!(queued.event, Event::AppCrash { .. }))
+            .count()
+    }
+
+    #[test]
+    fn an_app_crash_report_handed_over_again_is_queued_once_even_after_its_send() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let first = crash_report(&store, "4D2B0160-69B6-4DC1-BFED-08A0554A67C9", none);
+        store.absorb_app_crash(&first, none).unwrap();
+        store.absorb_app_crash(&first, none).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+
+        let sending = store.take(crate::this_hour()).unwrap().unwrap();
+        store.sent(sending).unwrap();
+        store.absorb_app_crash(&first, none).unwrap();
+        assert_eq!(app_crashes(&store), 0);
+
+        let second = crash_report(&store, "0F3C2E7A-1B4D-4E5F-8A9B-0C1D2E3F4A5B", none);
+        store.absorb_app_crash(&second, none).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+        let queue = fs::read_to_string(store.dir.join(QUEUE)).unwrap();
+        assert_eq!(queue.matches("4D2B0160").count(), 1);
+    }
+
+    #[test]
+    fn an_app_crash_goes_under_the_version_that_crashed() {
+        let (_dir, store) = store();
+        let store = store.recorded_by(Origin {
+            koi_version: Version::parse("0.1.1").unwrap(),
+            client: crate::schema::Client::MacosApp,
+        });
+        store.set(true).unwrap();
+        let mut report = crash_report(&store, "A", none);
+        report["user"]["koidrive_version"] = "0.1.0-rc.1".into();
+        report["user"]["name"] = "alice".into();
+        store.absorb_app_crash(&report, none).unwrap();
+        store
+            .absorb_app_crash(&crash_report(&store, "B", none), none)
+            .unwrap();
+        let versions: Vec<_> = (store.peek().unwrap().events.into_iter())
+            .map(|queued| String::from(queued.origin.unwrap().koi_version))
+            .collect();
+        assert_eq!(versions, ["0.1.0-rc.1", "0.1.1"]);
+    }
+
+    #[test]
+    fn an_app_crash_that_cannot_be_written_is_an_error_and_is_queued_once_the_queue_is_back() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        fs::create_dir(store.dir.join(QUEUE)).unwrap();
+        let report = crash_report(&store, "A", none);
+        assert!(store.absorb_app_crash(&report, none).is_err());
+        fs::remove_dir(store.dir.join(QUEUE)).unwrap();
+        store.absorb_app_crash(&report, none).unwrap();
+        assert_eq!(app_crashes(&store), 1);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Env {
+        Unset,
+        On,
+        Off,
+    }
+
+    impl Env {
+        fn var(self) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+            move |name| match (self, name) {
+                (Env::On, consent::VARIABLE) => Some("1".into()),
+                (Env::Off, "DO_NOT_TRACK") => Some("1".into()),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        TurnOn,
+        TurnOff,
+        Reset,
+        AppReads(Env),
+    }
+
+    const STEPS: [Step; 6] = [
+        Step::TurnOn,
+        Step::TurnOff,
+        Step::Reset,
+        Step::AppReads(Env::Unset),
+        Step::AppReads(Env::On),
+        Step::AppReads(Env::Off),
+    ];
+
+    fn sequences(longest: usize, steps: &[Step]) -> Vec<Vec<Step>> {
+        let mut all = vec![Vec::new()];
+        let mut last = vec![Vec::new()];
+        for _ in 0..longest {
+            last = (last.iter())
+                .flat_map(|done: &Vec<Step>| {
+                    (steps.iter()).map(move |step| [done.as_slice(), &[*step]].concat())
+                })
+                .collect();
+            all.extend(last.iter().cloned());
+        }
+        all
+    }
+
+    struct Model {
+        stored: Option<bool>,
+        read_under: Env,
+        read_on: bool,
+        purged_since_read: bool,
+        on_at_crash: bool,
+        revoked: bool,
+    }
+
+    #[test]
+    fn an_app_crash_is_sent_only_if_reports_were_on_as_it_crashed_and_no_off_or_reset_came_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cases = 0;
+        for before in sequences(3, &STEPS) {
+            for after in sequences(2, &STEPS[..3]) {
+                for import in [Env::Unset, Env::On, Env::Off] {
+                    cases += 1;
+                    let store = Store::new(&dir.path().join(cases.to_string()));
+                    let mut model = Model {
+                        stored: None,
+                        read_under: Env::Unset,
+                        read_on: false,
+                        purged_since_read: false,
+                        on_at_crash: false,
+                        revoked: false,
+                    };
+                    let mut stamp = store.app_crash_stamp(Env::Unset.var()).unwrap();
+                    let mut report = None;
+                    let steps = before
+                        .iter()
+                        .map(Some)
+                        .chain([None])
+                        .chain(after.iter().map(Some));
+                    for step in steps {
+                        let crashed = report.is_some();
+                        match step {
+                            None => {
+                                model.on_at_crash =
+                                    consent::resolve(model.read_under.var(), model.stored).mode
+                                        != consent::Mode::Off;
+                                report = Some(serde_json::json!({
+                                    "report": { "id": "A", "timestamp": crate::now() * 1_000_000 },
+                                    "crash": { "error": { "type": "signal" } },
+                                    "user": { "reports_on": stamp.on, "reports_generation": stamp.generation },
+                                }));
+                            }
+                            Some(Step::TurnOn) => {
+                                store.set(true).unwrap();
+                                model.stored = Some(true);
+                            }
+                            Some(Step::TurnOff) => {
+                                store.set(false).unwrap();
+                                model.stored = Some(false);
+                                model.purged_since_read = true;
+                                model.revoked |= crashed;
+                            }
+                            Some(Step::Reset) => {
+                                store.reset().unwrap();
+                                model.purged_since_read = true;
+                                model.revoked |= crashed;
+                            }
+                            Some(Step::AppReads(env)) if !crashed => {
+                                stamp = store.app_crash_stamp(env.var()).unwrap();
+                                model.read_under = *env;
+                                model.read_on = consent::resolve(env.var(), model.stored).mode
+                                    != consent::Mode::Off;
+                                model.purged_since_read = false;
+                            }
+                            Some(Step::AppReads(_)) => {}
+                        }
+                    }
+                    let on_at_import =
+                        consent::resolve(import.var(), model.stored).mode != consent::Mode::Off;
+                    store
+                        .absorb_app_crash(report.as_ref().unwrap(), import.var())
+                        .unwrap();
+                    let sent = app_crashes(&store) == 1;
+                    let case = format!("{before:?}, crash, {after:?}, import under {import:?}");
+                    if sent {
+                        assert!(
+                            model.on_at_crash && !model.revoked && on_at_import,
+                            "sent against consent: {case}"
+                        );
+                    }
+                    let expected = model.read_on && !model.purged_since_read && on_at_import;
+                    assert_eq!(sent, expected, "{case}");
+                }
+            }
+        }
+        assert_eq!(cases, 259 * 13 * 3);
     }
 }

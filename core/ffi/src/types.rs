@@ -709,6 +709,14 @@ pub enum ProblemKind {
     FolderHalted { reason: String },
 }
 
+/// What the app writes into a KSCrash report each time it reads the usage-report setting: whether reports are on for
+/// the app and the generation in force, which an off or reset replaces.
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct AppCrashStamp {
+    pub reports_on: bool,
+    pub generation: String,
+}
+
 /// Whether this profile sends anonymous usage reports (docs/guide/telemetry.md).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Record)]
 pub struct TelemetrySetting {

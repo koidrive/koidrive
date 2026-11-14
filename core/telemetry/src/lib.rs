@@ -6,6 +6,7 @@
 //! keeps it on disk under the profile's state directory until [`send`] posts it to PostHog's batch API, through
 //! the project's own host.
 
+mod app_crash;
 mod consent;
 mod cpu;
 mod panic;
@@ -24,7 +25,7 @@ pub use send::{
     ENDPOINT, ENDPOINT_VARIABLE, PROJECT_TOKEN, Sent, TOKEN_VARIABLE, UploadError, Uploader, batch,
     old_batch, send,
 };
-pub use store::{Batch, OldBatch, Queued, Sending, Settings, Store};
+pub use store::{AppCrashStamp, Batch, OldBatch, Queued, Sending, Settings, Store};
 pub use system::Environment;
 
 /// Seconds since 1970-01-01T00:00Z, the time an event carries.

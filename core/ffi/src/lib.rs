@@ -25,6 +25,15 @@ pub use crate::types::*;
 
 uniffi::setup_scaffolding!();
 
+/// The [`AppCrashStamp`] of the profile [`SyncSession::open`] opens through the `koi` at `helper`, read without opening
+/// it; reports off when no profile is found.
+#[uniffi::export]
+pub fn app_crash_stamp(helper: String) -> AppCrashStamp {
+    profile::Profile::discover(std::path::Path::new(&helper), |name| std::env::var_os(name))
+        .map(|profile| daemon::app_crash_stamp(&profile.paths))
+        .unwrap_or_default()
+}
+
 /// Returns the version of the Rust core.
 #[uniffi::export]
 pub fn version() -> String {
