@@ -2,16 +2,6 @@
   "sourceLanguage" : "en",
   "strings" : {
     "%@ Check the address." : {},
-    "%@ and %@ keep syncing." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ and %2$@ keep syncing."
-          }
-        }
-      }
-    },
     "%@ changed on two devices" : {},
     "%@ is kept" : {},
     "%@ is missing." : {},
@@ -236,6 +226,8 @@
     "Asked %@" : {},
     "At least 8 characters." : {},
     "Both files are kept" : {},
+    "Both keep syncing in %@." : {},
+    "Both keep syncing." : {},
     "Both versions are kept for now. Choose the one to keep." : {},
     "Both versions are kept until you choose." : {},
     "Can't reach the server" : {},

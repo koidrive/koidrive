@@ -218,6 +218,7 @@ struct FileThumbnail: View {
 }
 
 struct SettledConflict: View {
+    @Environment(AppModel.self) private var model
     let resolution: ConflictResolution
     let answer: Answer
 
@@ -230,6 +231,8 @@ struct SettledConflict: View {
             .controlSize(.small)
             .disabled(resolution.original.url == nil)
         }
+        .frame(maxWidth: 420)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var title: LocalizedStringKey {
@@ -243,7 +246,12 @@ struct SettledConflict: View {
     private var message: String {
         switch answer {
         case .keepCopy: String(localized: "Its old content is in Version History. The copy moved to Deleted Files.")
-        case .keepBoth: String(localized: "\(resolution.original.name) and \(resolution.copy.name) keep syncing.")
+        case .keepBoth:
+            if let folder = model.folder(spaceID: resolution.question.spaceId) {
+                String(localized: "Both keep syncing in \(folder.spaceName).")
+            } else {
+                String(localized: "Both keep syncing.")
+            }
         default: String(localized: "The copy moved to Deleted Files.")
         }
     }
