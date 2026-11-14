@@ -89,7 +89,7 @@ pub enum Effect {
 }
 
 /// An effect as it is persisted before the driver receives it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct EffectRecord {
     pub effect_id: String,
     pub node: NodeId,
@@ -101,6 +101,27 @@ pub struct EffectRecord {
     pub after: Option<Shape>,
     /// The recoveries [`Trees::recoveries`] counted when the effect was planned.
     pub recoveries: u64,
+}
+
+impl PartialEq for EffectRecord {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            effect_id,
+            node,
+            counter,
+            effect,
+            after,
+            recoveries: _,
+        } = self;
+        (effect_id, node, counter, effect, after)
+            == (
+                &other.effect_id,
+                &other.node,
+                &other.counter,
+                &other.effect,
+                &other.after,
+            )
+    }
 }
 
 impl EffectRecord {
@@ -200,7 +221,7 @@ impl Effects {
     }
 
     /// The disk side the store kept. Refuses an effect in flight whose counter is not the effects cleared plus the
-    /// effects in flight.
+    /// effects in flight. Each effect's recovery count starts over at 0, as [`Trees::recoveries`] does.
     pub fn from_state(state: EffectsState) -> Result<Self, StateError> {
         let upper = state.cleared.checked_add(state.in_flight.len() as u64);
         if let Some(record) = (state.in_flight.iter()).find(|record| Some(record.counter) != upper)
@@ -215,6 +236,12 @@ impl Effects {
             cleared,
             failed,
         } = state;
+        let in_flight: Vec<EffectRecord> = (in_flight.into_iter())
+            .map(|record| EffectRecord {
+                recoveries: 0,
+                ..record
+            })
+            .collect();
         Ok(Self {
             in_flight: in_flight.into(),
             cleared: cleared.into(),

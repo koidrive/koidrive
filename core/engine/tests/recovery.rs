@@ -1805,6 +1805,49 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
     stale.commits.enter_recovery(rewind());
     stale.trees.settle();
     refused(&mut stale);
+    let Stale {
+        trees,
+        ids,
+        commits,
+        ..
+    } = &mut stale;
+    commits.recover(trees, 0, &rewind(), ids, NOW);
+    trees.settle();
+    refused(&mut stale);
+}
+
+#[test]
+fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
+    let rows = [live("y", file(ROOT, "y", 1))];
+    let mut trees = trees(&[], &[], &rows);
+    let (mut commits, mut ids, mut effects) =
+        (Commits::default(), IdGen::new(3), Effects::default());
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    trees.settle();
+    let record = (effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first())
+    .cloned()
+    .expect("a planned download");
+    assert!(
+        matches!(record.effect, Effect::WriteFile { .. }),
+        "{record:?}"
+    );
+    assert!(record.applies(&trees, None));
+    let mut reloaded = self::trees(&[], &[], &rows);
+    let mut effects = Effects::from_state(effects.state()).unwrap();
+    assert!(effects.in_flight()[0].applies(&reloaded, None));
+    let identity = FileIdentity {
+        dev: 1,
+        ino: 9,
+        birth_ns: Some(0),
+    };
+    effects
+        .done(&mut reloaded, None, &record.effect_id, Some(identity))
+        .unwrap();
+    reloaded.settle();
+    assert_eq!(reloaded.synced().get("y"), Some(&file(ROOT, "y", 1)));
 }
 
 #[test]
