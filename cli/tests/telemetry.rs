@@ -541,17 +541,12 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
                     events.push(event.clone());
                     continue;
                 };
-                let key = [
-                    event["event"].clone(),
-                    event["timestamp"].clone(),
-                    event["properties"]["distinct_id"].clone(),
-                ];
                 match copies.entry(uuid.to_owned()) {
                     std::collections::hash_map::Entry::Occupied(first) => {
-                        assert_eq!(first.get(), &key, "two copies of {uuid} differ");
+                        assert_eq!(first.get(), event, "two copies of {uuid} differ");
                     }
                     std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(key);
+                        slot.insert(event.clone());
                         events.push(event.clone());
                     }
                 }
