@@ -14,13 +14,13 @@ enum CrashReports {
         configuration.addConsoleLogToReport = false
         try? KSCrash.shared.install(with: configuration)
         KSCrash.shared.setUserInfo(KoidriveFFI.version(), forKey: "koidrive_version")
-        KSCrash.shared.setUserInfo(KoidriveFFI.telemetrySetting(helper: helper.path).enabled, forKey: "reports_on")
+        stamp(KoidriveFFI.appCrashStamp(helper: helper.path))
     }
 
     @MainActor static func forward(from model: AppModel) {
-        model.telemetryChanged = { KSCrash.shared.setUserInfo($0.enabled, forKey: "reports_on") }
-        KSCrash.shared.setUserInfo(model.telemetry.enabled, forKey: "reports_on")
         let session = model.session
+        model.telemetryChanged = { _ in stamp(session.appCrashStamp()) }
+        stamp(session.appCrashStamp())
         Task.detached(priority: .utility) {
             guard let store = KSCrash.shared.reportStore else { return }
             for id in store.reportIDs.map(\.int64Value) {
@@ -34,5 +34,10 @@ enum CrashReports {
                 store.deleteReport(with: id)
             }
         }
+    }
+
+    private static func stamp(_ stamp: AppCrashStamp) {
+        KSCrash.shared.setUserInfo(stamp.reportsOn, forKey: "reports_on")
+        KSCrash.shared.setUserInfo(stamp.generation, forKey: "reports_generation")
     }
 }

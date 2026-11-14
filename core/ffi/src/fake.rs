@@ -8,13 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::types::{
-    Account, Answer, ChangeKind, ConflictSide, DeletedItem, Device, Direction, FileVersion,
-    FileVersions, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit,
-    NewShareLink, NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind, Question,
-    QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger,
-    RestoreAsked, RestoreRequest, RestoreState, RestoreTarget, ServerInfo, SessionError,
-    SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState, Space, SpaceUsage,
-    SyncProgress, SyncStatus, TelemetrySetting, Trash,
+    Account, Answer, AppCrashStamp, ChangeKind, ConflictSide, DeletedItem, Device, Direction,
+    FileVersion, FileVersions, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder,
+    MassDeleteLimit, NewShareLink, NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind,
+    Question, QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup,
+    RecoveryTrigger, RestoreAsked, RestoreRequest, RestoreState, RestoreTarget, ServerInfo,
+    SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState, Space,
+    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -1179,6 +1179,10 @@ impl Core for FakeCore {
 
     fn telemetry(&self) -> TelemetrySetting {
         self.lock().telemetry
+    }
+
+    fn app_crash_stamp(&self) -> AppCrashStamp {
+        AppCrashStamp::default()
     }
 
     fn record_app_crash(&self, _report: &str) -> Result<(), SessionError> {

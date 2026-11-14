@@ -3,9 +3,9 @@
 use std::sync::{Arc, Weak};
 
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
-    RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, TelemetrySetting, Trash,
+    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
+    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
+    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash,
 };
 
 pub(crate) fn refuse_line_breaks(password: &str) -> Result<(), SessionError> {
@@ -197,6 +197,8 @@ pub trait Core: Send + Sync {
     /// turning it off deletes the id and every report not sent yet. While [`TelemetrySetting::locked`], the choice is
     /// stored anyway and takes effect once the environment variable is gone.
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError>;
+    /// What the app writes into its crash reports each time it reads the usage-report setting.
+    fn app_crash_stamp(&self) -> AppCrashStamp;
     /// Queues a crash of the app from `report`, a crash report KSCrash wrote, under this profile's usage-report choice,
     /// keeping only what [`koidrive_telemetry::Store::absorb_app_crash`] reads. Ok once the crash is queued or is not to
     /// be recorded, so the app can delete the report; an error leaves the report for the next launch.

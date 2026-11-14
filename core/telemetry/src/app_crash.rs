@@ -77,7 +77,7 @@ pub(crate) fn app_crash(report: &Value) -> Option<Event> {
     })
 }
 
-pub(crate) fn micros(timestamp: &Value) -> Option<u64> {
+fn micros(timestamp: &Value) -> Option<u64> {
     if let Some(micros) = timestamp.as_u64() {
         return Some(micros);
     }

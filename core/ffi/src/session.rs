@@ -7,9 +7,9 @@ use crate::daemon::DaemonCore;
 use crate::fake::FakeCore;
 use crate::profile::Profile;
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
-    RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink, Space,
-    SpaceUsage, TelemetrySetting, Trash,
+    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
+    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink,
+    Space, SpaceUsage, TelemetrySetting, Trash,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -203,6 +203,10 @@ impl SyncSession {
 
     pub fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
         self.core.set_telemetry(enabled)
+    }
+
+    pub fn app_crash_stamp(&self) -> AppCrashStamp {
+        self.core.app_crash_stamp()
     }
 
     /// Queues a crash of the app that KSCrash recorded, keeping only its kind, exception, signal, time, build and the

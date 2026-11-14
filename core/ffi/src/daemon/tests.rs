@@ -1524,6 +1524,7 @@ fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
     let store = koidrive_telemetry::Store::new(&koi.core.paths.state_dir);
     let executable = "/Applications/Koidrive.app/Contents/MacOS/Koidrive";
     let report = |id: &str, timestamp: serde_json::Value| {
+        let stamp = store.app_crash_stamp(|_| None).unwrap();
         json!({
             "report": { "id": id, "process_name": "Koidrive", "timestamp": timestamp },
             "binary_images": [{ "name": executable, "image_addr": 4096, "uuid": "17D33ED4-005A-358B-BA17-36B819625055" }],
@@ -1531,15 +1532,16 @@ fn an_app_crash_is_queued_under_the_app_once_and_only_while_reports_are_on() {
                 "error": { "type": "signal", "signal": { "signal": 11 }, "reason": "/Users/alice/Notes" },
                 "threads": [{ "crashed": true, "backtrace": { "contents": [{ "object_addr": 4096, "instruction_addr": 5096 }] } }],
             },
-            "user": { "reports_on": id != "off" },
+            "user": { "reports_on": stamp.on && id != "off", "reports_generation": stamp.generation },
         })
         .to_string()
     };
-    store.set(false).unwrap();
-    let while_off = report("A", json!((koidrive_telemetry::now() - 5) * 1_000_000));
-    assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
     store.set(true).unwrap();
-    assert_eq!(koi.core.record_app_crash(&while_off), Ok(()));
+    let before_off = report("A", json!(koidrive_telemetry::now() * 1_000_000));
+    store.set(false).unwrap();
+    assert_eq!(koi.core.record_app_crash(&before_off), Ok(()));
+    store.set(true).unwrap();
+    assert_eq!(koi.core.record_app_crash(&before_off), Ok(()));
     assert_eq!(koi.core.record_app_crash("not a report"), Ok(()));
     let stamped_off = report("off", json!("2099-01-01T00:00:00Z"));
     assert_eq!(koi.core.record_app_crash(&stamped_off), Ok(()));

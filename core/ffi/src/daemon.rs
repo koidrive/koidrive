@@ -22,9 +22,9 @@ use crate::helper::{
 use crate::profile::Profile;
 use crate::state::{self, Seen};
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
-    RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash,
+    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
+    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
+    ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash,
 };
 
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -59,20 +59,16 @@ struct Watcher {
     thread: JoinHandle<()>,
 }
 
-pub(crate) fn telemetry_setting(paths: &driver::Paths) -> TelemetrySetting {
-    let store = koidrive_telemetry::Store::new(&paths.state_dir);
-    let settings = (store.settings())
-        .inspect_err(|error| tracing::warn!(%error, "the telemetry settings cannot be read"))
-        .unwrap_or_default();
-    let status = koidrive_telemetry::resolve(|name| std::env::var_os(name), settings.enabled);
-    TelemetrySetting {
-        enabled: status.mode != koidrive_telemetry::Mode::Off,
-        decided: settings.enabled.is_some(),
-        locked: matches!(
-            status.source,
-            koidrive_telemetry::Source::DoNotTrack | koidrive_telemetry::Source::Variable
-        ),
-    }
+pub(crate) fn app_crash_stamp(paths: &driver::Paths) -> AppCrashStamp {
+    let stamp = koidrive_telemetry::Store::new(&paths.state_dir)
+        .app_crash_stamp(|name| std::env::var_os(name));
+    stamp.map_or_else(
+        |_| AppCrashStamp::default(),
+        |stamp| AppCrashStamp {
+            reports_on: stamp.on,
+            generation: stamp.generation,
+        },
+    )
 }
 
 impl DaemonCore {
@@ -766,20 +762,32 @@ impl Core for DaemonCore {
         let not_saved = |error: std::io::Error| SessionError::NotSaved {
             reason: error.to_string(),
         };
-        let status = store
-            .status(|name| std::env::var_os(name))
-            .map_err(not_saved)?;
         let Ok(report) = serde_json::from_str(report) else {
             return Ok(());
         };
-        if status.mode == koidrive_telemetry::Mode::Off {
-            return Ok(());
-        }
-        store.absorb_app_crash(&report).map_err(not_saved)
+        store
+            .absorb_app_crash(&report, |name| std::env::var_os(name))
+            .map_err(not_saved)
     }
 
     fn telemetry(&self) -> TelemetrySetting {
-        telemetry_setting(&self.paths)
+        let store = koidrive_telemetry::Store::new(&self.paths.state_dir);
+        let settings = (store.settings())
+            .inspect_err(|error| tracing::warn!(%error, "the telemetry settings cannot be read"))
+            .unwrap_or_default();
+        let status = koidrive_telemetry::resolve(|name| std::env::var_os(name), settings.enabled);
+        TelemetrySetting {
+            enabled: status.mode != koidrive_telemetry::Mode::Off,
+            decided: settings.enabled.is_some(),
+            locked: matches!(
+                status.source,
+                koidrive_telemetry::Source::DoNotTrack | koidrive_telemetry::Source::Variable
+            ),
+        }
+    }
+
+    fn app_crash_stamp(&self) -> AppCrashStamp {
+        app_crash_stamp(&self.paths)
     }
 
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
