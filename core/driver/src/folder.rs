@@ -421,6 +421,12 @@ impl Folder {
                 self.publish_remote()?;
             }
             Event::ResyncRequired(resync) => match Reason::try_from(resync.reason) {
+                Ok(Reason::LogTruncated)
+                    if let Stream::Replaying(staging) = &mut self.stream
+                        && let Some(last) = staging.forget_history() =>
+                {
+                    work.push(Work::Subscribe(resume(&self.history_id, last)));
+                }
                 Ok(reason @ (Reason::LogTruncated | Reason::AheadOfServer)) => {
                     tracing::info!(
                         space_id = self.link.space_id,
@@ -521,13 +527,24 @@ impl Folder {
                 return Ok(vec![Work::ListAfter(wait, listing)]);
             }
         };
-        let staging = Staging::new(self.history_id.clone(), pages, trash);
+        let mut staging = Staging::new(self.history_id.clone(), pages, trash);
         tracing::info!(
             space_id = self.link.space_id,
             seq = staging.last_seq(),
             "read the space's tree"
         );
-        let work = vec![Work::Subscribe(resume(&self.history_id, staging.last()))];
+        let recovering = matches!(self.engine.commits.halted(), Some(CommitHalt::Recovery(_)));
+        let since = (self.engine.cursor.as_ref()).filter(|cursor| {
+            recovering
+                && cursor.history_id == self.history_id
+                && !cursor.ahead_of_server
+                && cursor.last_seq < staging.last_seq()
+        });
+        let from = match since {
+            Some(cursor) => staging.read_history_since(cursor.base()),
+            None => staging.last().clone(),
+        };
+        let work = vec![Work::Subscribe(resume(&self.history_id, &from))];
         self.stream = Stream::Replaying(staging);
         Ok(work)
     }
@@ -1672,6 +1689,8 @@ impl Folder {
         if let Stream::Replaying(staging) = &mut self.stream {
             if result.seq == staging.last_seq() + 1 {
                 staging.replay_commit(at, &result.changes)?;
+            } else {
+                staging.remember(result.seq, &result.changes);
             }
             if ours {
                 self.step(|engine, _| receive(engine, result))?;
@@ -1716,7 +1735,7 @@ impl Folder {
             return Ok(());
         }
         let head = Some(staging.last_seq());
-        let Stream::Replaying(staging) =
+        let Stream::Replaying(mut staging) =
             std::mem::replace(&mut self.stream, Stream::Following { head })
         else {
             unreachable!("checked above");
@@ -1728,6 +1747,7 @@ impl Folder {
             _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
         };
         let device_seq = self.device_seq;
+        let history = staging.take_history();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
             if recovering {
@@ -1735,6 +1755,7 @@ impl Folder {
                     &mut engine.trees,
                     device_seq,
                     &cause,
+                    &history,
                     &mut engine.ids,
                     now_ms,
                 );

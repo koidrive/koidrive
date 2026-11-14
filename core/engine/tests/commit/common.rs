@@ -1186,6 +1186,7 @@ fn reparent_a_folder_at_its_pending_name(answer_first: bool) {
         Some(("x", "A (pending)"))
     );
 }
+use koidrive_engine::first_link::History;
 use koidrive_engine::question::{Answer, RecoveryCause, RecoveryTrigger};
 
 fn owed_mv(node: &str, parent: &str, name: &str, from: &str) -> op::Op {
