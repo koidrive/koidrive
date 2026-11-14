@@ -3331,25 +3331,25 @@ fn plan(
                     .then(|| (id.clone(), (parent.clone(), local.shape.name.clone())))
             })
             .collect();
-        let below_another = |id: &NodeId| {
-            let mut parent = planned.get(id);
-            for _ in 0..planned.len() {
-                let Some(&at) = parent else {
-                    return false;
-                };
-                if at == id {
-                    return false;
-                }
-                if redirects.contains_key(at) {
-                    return true;
-                }
-                parent = planned.get(at);
+        let ancestors = |id: &NodeId| {
+            let mut chain: Vec<&NodeId> = Vec::new();
+            let mut at = planned.get(id);
+            while let Some(&parent) = at
+                && chain.len() < planned.len()
+            {
+                chain.push(parent);
+                at = planned.get(parent);
             }
-            false
+            chain
         };
+        let below_another = |id: &NodeId| {
+            (ancestors(id).into_iter().take_while(|at| *at != id))
+                .any(|at| redirects.contains_key(at))
+        };
+        let on_cycle = |id: &NodeId| ancestors(id).contains(&id);
         let Some((id, (parent, name))) = (redirects.iter())
             .find(|(id, _)| !below_another(id))
-            .or_else(|| redirects.iter().next())
+            .or_else(|| redirects.iter().find(|(id, _)| on_cycle(id)))
             .map(|(id, at)| (id.clone(), at.clone()))
         else {
             break;

@@ -396,6 +396,43 @@ fn a_resend_whose_lost_folder_the_user_moved_into_it_is_created_where_l_holds_it
     assert_eq!(created, [("p".into(), ROOT.into()), ("q".into(), "p".into())]);
 }
 
+fn a_resend_below_a_cycle_of_lost_folders_keeps_the_position_another_device_gave_it(file_id: &'static str) {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("q", dir(ROOT, "q")),
+        synced("r", dir(ROOT, "r")),
+        synced(file_id, file(ROOT, "a", 1)),
+    ]);
+    trees.set_remote("p".into(), remote_at(dir("q", "p"), 2));
+    trees.set_remote("q".into(), remote_at(dir("r", "q"), 3));
+    trees.set_remote(file_id.into(), remote_at(file("p", "b", 1), 4));
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    for id in [file_id, "p", "q", "r"] {
+        trees.remove_remote(id);
+    }
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.set_local_changed("r".into(), local(dir("p", "r"), 3));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created = (ops(&commit).into_iter()).find_map(|op| match op {
+        op::Op::CreateFile(create) if create.node_id == file_id => Some((create.parent_id, create.name)),
+        _ => None,
+    });
+    assert_eq!(created, Some(("p".into(), "b".into())), "{:?}", ops(&commit));
+}
+
+#[test]
+fn a_resend_ordered_before_a_cycle_of_lost_folders_keeps_the_position_another_device_gave_it() {
+    a_resend_below_a_cycle_of_lost_folders_keeps_the_position_another_device_gave_it("f");
+}
+
+#[test]
+fn a_resend_ordered_after_a_cycle_of_lost_folders_keeps_the_position_another_device_gave_it() {
+    a_resend_below_a_cycle_of_lost_folders_keeps_the_position_another_device_gave_it("z");
+}
+
 #[test]
 fn a_resend_in_a_lost_folder_the_user_moved_into_it_keeps_the_position_another_device_gave_it() {
     let mut trees = trees(&[
