@@ -132,7 +132,7 @@ A reverted node is one whose local position the server will not take: a move tha
 - When R no longer has it, the effects remove it only if it holds no unuploaded edit. A file that holds one becomes a new node and the edit is uploaded as a create.
 - A reverted node that the server lost, so that R does not hold it at all, stops being reverted when S forgets it or drops its waiting update (§4.4). It keeps its ID and is created again at the position L holds.
 - A folder that L deleted on the way from a reverted or parked node to the root is reverted too, so it is created again. So is a folder that the keep rule cannot clear from S because S still has children under it.
-- A node stops being reverted once L has it at its R position.
+- A node stops being reverted once both L and S have it at its R position.
 
 ### Size limits
 
