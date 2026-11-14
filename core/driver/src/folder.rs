@@ -289,6 +289,7 @@ struct Retrying {
 struct Disconnected {
     reason: DisconnectReason,
     retry_at: SystemTime,
+    since: Instant,
     shown: bool,
 }
 
@@ -475,9 +476,12 @@ impl Folder {
                 let shown = self.disconnected.is_some()
                     || matches!(self.stream, Stream::Connecting)
                     || retry_in >= QUICK_RECONNECT;
+                let since = (self.disconnected.as_ref())
+                    .map_or_else(Instant::now, |disconnected| disconnected.since);
                 self.disconnected = Some(Disconnected {
                     reason,
                     retry_at: SystemTime::now() + retry_in,
+                    since,
                     shown,
                 });
             }
@@ -1097,9 +1101,15 @@ impl Folder {
             .filter(|retrying| retrying.at > now)
             .collect();
         let unreachable_call = (waiting.iter()).find(|retrying| retrying.unreachable.is_some());
+        let reconnecting = (self.disconnected.as_ref()).filter(|disconnected| {
+            disconnected.retry_at <= now
+                && disconnected.reason.unreachable()
+                && disconnected.since.elapsed() >= QUICK_RECONNECT
+        });
         let state = match &self.stream {
             _ if reconnect.is_some_and(|disconnected| disconnected.reason.unreachable())
-                || unreachable_call.is_some() =>
+                || unreachable_call.is_some()
+                || reconnecting.is_some() =>
             {
                 FolderState::Offline
             }
@@ -1203,19 +1213,22 @@ impl Folder {
                 (retrying.kind, retrying.at, unreachable)
             }),
         };
-        let offline = (wait.as_ref())
-            .filter(|_| state == FolderState::Offline)
-            .and_then(|(_, at, unreachable)| {
-                let unreachable = unreachable.as_ref()?;
-                Some(match unreachable.no_internet {
-                    true => format!("no internet connection; trying again at {}", utc(*at)),
-                    false => format!(
-                        "can't connect to the server: {}; trying again at {}",
-                        unreachable.why,
-                        utc(*at)
-                    ),
-                })
-            });
+        let offline = match (&wait, reconnecting) {
+            (Some((_, at, Some(unreachable))), _) => {
+                Some((unreachable.clone(), format!("at {}", utc(*at))))
+            }
+            (_, Some(disconnected)) => disconnected_unreachable(&disconnected.reason)
+                .map(|unreachable| (unreachable, "now".to_owned())),
+            _ => None,
+        }
+        .filter(|_| state == FolderState::Offline)
+        .map(|(unreachable, when)| match unreachable.no_internet {
+            true => format!("no internet connection; trying again {when}"),
+            false => format!(
+                "can't connect to the server: {}; trying again {when}",
+                unreachable.why
+            ),
+        });
         let refused = reconnect
             .filter(|disconnected| !disconnected.reason.unreachable())
             .map(|disconnected| {
@@ -1291,12 +1304,15 @@ impl Folder {
     /// How long until a wait the status shows ends, so the status can be shown again then.
     pub fn next_change(&self) -> Option<Duration> {
         let now = SystemTime::now();
+        let grace = (self.disconnected.iter())
+            .filter_map(|disconnected| QUICK_RECONNECT.checked_sub(disconnected.since.elapsed()));
         (self
             .disconnected
             .iter()
             .map(|disconnected| disconnected.retry_at))
         .chain(self.retrying.values().map(|retrying| retrying.at))
         .filter_map(|at| at.duration_since(now).ok())
+        .chain(grace)
         .min()
     }
 

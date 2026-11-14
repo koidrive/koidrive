@@ -509,6 +509,26 @@ fn a_quick_reconnect_shows_connecting_until_it_fails_again() {
 }
 
 #[test]
+fn a_reconnect_still_under_way_after_a_moment_shows_offline_without_a_past_next_try() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    a.event(Event::Disconnected {
+        reason: unreachable_server(),
+        retry_in: Duration::from_millis(1),
+    })
+    .unwrap();
+    assert_eq!(a.folder.view().state, FolderState::Connecting);
+    std::thread::sleep(QUICK_RECONNECT + Duration::from_millis(100));
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Offline);
+    assert_eq!(view.wait, None);
+    assert_eq!(
+        view.problem.as_deref(),
+        Some("can't connect to the server: the server's address could not be found; trying again now")
+    );
+}
+
+#[test]
 fn a_transfer_that_cannot_reach_the_server_shows_offline() {
     for (cause, offline) in [
         (koidrive_net::Cause::Unreachable, true),
