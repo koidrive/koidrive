@@ -16,8 +16,6 @@ use crate::ipc;
 
 const UNIT: &str = include_str!("../systemd/koidrive.service");
 
-const STARTUP: Duration = Duration::from_secs(10);
-
 /// How long a started service may take to show as running. launchd spawns a job a moment after `launchctl bootstrap`
 /// returns, so the first read can still find it not running.
 const SPAWN: Duration = Duration::from_secs(5);
@@ -695,7 +693,7 @@ pub async fn converge(
             let mut after = manager.state(service).unwrap_or(before);
             let spawned = Instant::now()
                 + match after {
-                    State::Starting => STARTUP,
+                    State::Starting => ipc::STARTING,
                     _ => SPAWN,
                 };
             let started = |after| match after {
@@ -724,7 +722,7 @@ pub async fn converge(
     if report.state == State::Starting && report.problem.is_none() {
         report.problem = Some(format!(
             "it was still starting after {} seconds; its log: {}",
-            STARTUP.as_secs(),
+            ipc::STARTING.as_secs(),
             report.log
         ));
     }
@@ -809,7 +807,7 @@ async fn reconcile_with(
     if report.state != State::Running || folders == 0 {
         return report;
     }
-    if !answers(paths, STARTUP).await {
+    if !answers(paths, ipc::STARTING).await {
         if let Some(exit) = manager.crashed(&service) {
             report.state = State::Stopped;
             report.problem = Some(format!(
@@ -820,7 +818,7 @@ async fn reconcile_with(
         }
         report.problem = Some(format!(
             "it started, but its daemon did not answer within {} seconds; its log: {}",
-            STARTUP.as_secs(),
+            ipc::STARTING.as_secs(),
             report.log
         ));
         return report;
@@ -1186,7 +1184,7 @@ fn launchd_field<'a>(job: &'a str, name: &str) -> Option<&'a str> {
 fn launchd_state(job: &str) -> State {
     match (launchd_field(job, "state"), launchd_exit(job)) {
         (Some("running"), _) => State::Running,
-        (Some("SIGTERMed" | "spawn scheduled"), None) => State::Starting,
+        (Some("SIGTERMed" | "spawn scheduled" | "xpcproxy"), None) => State::Starting,
         _ => State::Stopped,
     }
 }
@@ -2716,7 +2714,7 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         assert_eq!(report.state, State::Starting);
         let problem = report.problem.clone().unwrap();
         assert!(
-            problem.starts_with("it was still starting after 10 seconds; its log: "),
+            problem.starts_with("it was still starting after 15 seconds; its log: "),
             "{problem}"
         );
         assert!(report.failed());
@@ -2750,7 +2748,15 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             State::Starting
         );
         assert_eq!(
+            launchd_state(&job("xpcproxy", "last exit code = 0")),
+            State::Starting
+        );
+        assert_eq!(
             launchd_state(&job("spawn scheduled", "last exit code = 1")),
+            State::Stopped
+        );
+        assert_eq!(
+            launchd_state(&job("xpcproxy", "last exit code = 1")),
             State::Stopped
         );
         assert_eq!(launchd_state(&job("not running", "")), State::Stopped);
