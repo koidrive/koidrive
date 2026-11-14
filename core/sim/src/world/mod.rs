@@ -1688,6 +1688,10 @@ impl World {
         if self.devices[d].link.is_some() {
             return Ok(());
         }
+        if self.space.refuses() {
+            note(&mut self.seen, "server refuses a history a rewind replaced");
+            return Ok(());
+        }
         let welcome = self.space.welcome(&self.devices[d].session);
         if self.devices[d].engine.history != welcome.history_id {
             self.recover(
@@ -2552,13 +2556,17 @@ impl World {
                     );
                 }
             }
+            let refused = self.space.refuses();
             let idle = |device: &Device| {
-                device.left || device.link.as_ref().is_some_and(|l| l.inbox.is_empty())
+                device.left || refused || device.link.as_ref().is_some_and(|l| l.inbox.is_empty())
             };
             if self.devices.iter().all(idle)
                 && self.devices.iter().map(|d| &d.engine).eq(before.iter())
             {
-                return self.converged();
+                return match refused {
+                    true => Ok(()),
+                    false => self.converged(),
+                };
             }
         }
         Err(Failure::Diverged(format!(
@@ -2749,10 +2757,14 @@ impl World {
                  user answered to keep it"
             )));
         }
+        let refused = self.space.refuses();
         let gone = (self.exposed.keys()).find(|write| {
             !server.contains(write)
                 && !self.retired.contains(write)
                 && !self.removed.iter().any(|removed| removed.contains(write))
+                && !(refused
+                    && (self.devices.iter())
+                        .any(|device| device.disk.holds(**write) || device.disk.binned(**write)))
         });
         match gone {
             Some(write) => Err(Failure::Broken(format!(

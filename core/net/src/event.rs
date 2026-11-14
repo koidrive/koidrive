@@ -47,6 +47,9 @@ pub enum DisconnectReason {
     Transport(Transport),
     /// The server refused the WebSocket upgrade with this HTTP status.
     Refused { status: u16 },
+    /// The server refused the connection with an error that may clear, such as a space whose storage holds a
+    /// history that a rewind replaced.
+    Rejected(String),
     /// The server closed the connection, after a `Goodbye` when it sent one.
     Closed { code: Option<u16>, reason: String },
     /// The server broke the protocol, for example with a message larger than 1 MiB.
@@ -64,6 +67,7 @@ impl DisconnectReason {
                 format!("{}: {}", transport.step, transport.cause.label())
             }
             DisconnectReason::Refused { status } => format!("upgrade: http {status}"),
+            DisconnectReason::Rejected(_) => "refused".into(),
             DisconnectReason::Closed {
                 code: Some(code), ..
             } => format!("closed: {code}"),
@@ -79,7 +83,7 @@ impl DisconnectReason {
         match self {
             DisconnectReason::Transport(transport) => &transport.detail,
             DisconnectReason::Closed { reason, .. } => reason,
-            DisconnectReason::ProtocolViolation(what) => what,
+            DisconnectReason::ProtocolViolation(what) | DisconnectReason::Rejected(what) => what,
             DisconnectReason::Refused { .. } | DisconnectReason::Timeout => "",
         }
     }
@@ -105,6 +109,9 @@ impl fmt::Display for DisconnectReason {
             }) => f.write_str(detail),
             DisconnectReason::Transport(transport) => transport.cause.fmt(f),
             DisconnectReason::Refused { status } => write!(f, "the server answered HTTP {status}"),
+            DisconnectReason::Rejected(error) => {
+                write!(f, "the server refused the connection: {error}")
+            }
             DisconnectReason::Closed {
                 code: Some(code), ..
             } => {

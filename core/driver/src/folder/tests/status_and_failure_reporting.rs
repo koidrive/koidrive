@@ -645,6 +645,10 @@ fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happen
             DisconnectReason::ProtocolViolation("an unknown message".into()),
             "the server broke the protocol: an unknown message; trying again at ",
         ),
+        (
+            DisconnectReason::Rejected("CODE_HISTORY_MISMATCH: restored outside a rewind".into()),
+            "the server refused the connection: CODE_HISTORY_MISMATCH: restored outside a rewind; trying again at ",
+        ),
     ] {
         let mut remote = Remote::new();
         let (_site, mut a) = linked(&mut remote, "a");
@@ -658,6 +662,8 @@ fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happen
         assert_eq!(offline_cause(&view), None, "{reason:?}");
         let problem = view.problem.unwrap_or_default();
         assert!(problem.starts_with(said), "{problem}");
+        a.connect(&remote);
+        assert_eq!(a.folder.view().problem, None, "{reason:?}");
     }
 }
 

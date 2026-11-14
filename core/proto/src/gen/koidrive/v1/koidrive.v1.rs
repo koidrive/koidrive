@@ -794,7 +794,8 @@ pub mod error {
         RetryLater = 8,
         UnsupportedVersion = 9,
         Internal = 10,
-        /// The commit's history_id is not the space's current history.
+        /// The commit's history_id is not the space's current history, or the space's storage holds a history that a
+        /// rewind replaced, which refuses every connection until the storage is restored (RFC 0003 section 4).
         HistoryMismatch = 11,
         /// An unknown commit whose device_seq is at or below the device's highest accepted one.
         StaleDeviceState = 12,

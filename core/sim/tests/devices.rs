@@ -6480,6 +6480,44 @@ fn a_write_a_restore_took_is_not_sent_again_after_a_rewind_until_a_user_keeps_it
 }
 
 #[test]
+fn a_restore_across_a_rewind_no_device_saw_is_refused_and_sends_nothing_again() {
+    let user = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let world = converge(
+        2,
+        &[
+            vec![(0, user(1, 1)), (0, Step::Backup)],
+            vec![
+                (0, user(0, 0)),
+                (0, Step::Rewind),
+                (0, Step::Restore),
+                (0, user(0, 0)),
+                (0, user(0, 0)),
+                (0, user(0, 0)),
+            ],
+        ],
+    )
+    .unwrap();
+    assert!(world.space().refuses());
+    assert!(
+        world
+            .seen
+            .contains_key("server refuses a history a rewind replaced")
+    );
+    let written = (world.space().nodes().into_iter())
+        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .collect::<Vec<_>>();
+    assert!(written.is_empty(), "{written:?}");
+}
+
+#[test]
 fn a_write_the_server_kept_is_taken_as_synced_when_its_record_arrives_before_its_result() {
     let a = |kind: u8, target: usize, parent: usize, name: usize, text: u8| {
         Step::User(Action {

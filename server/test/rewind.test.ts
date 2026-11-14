@@ -28,10 +28,12 @@ import {
 import { ChunkPlan_Action, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import { Close, CONNECT_HEADER, type SpaceDO } from "../src/space-do";
+import { RETIRED_HISTORY } from "../src/space/space";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
 import { restoreFromR2, serverState } from "./export-reader";
 import { content, op, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
+import { pitrBackend } from "../src/space/pitr";
 import { simulatedPitr } from "./pitr";
 
 simulatedPitr.install();
@@ -745,6 +747,30 @@ describe("space rewind (RFC 0003)", () => {
     }
   });
 
+  it("refuses every connection while the space's storage holds a history that a rewind replaced", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await createFile(a, spaceId, "notes.txt", "first");
+    const p1 = createdAtMs + MINUTE;
+    const beforeRewind = await snapshot(spaceId, p1);
+    const previous = await a.history();
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+    const done = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: previous });
+    expect(done.status).toBe(200);
+    (await socket(spaceId, token)).ws.close();
+
+    await runInDurableObject(space(spaceId), (_instance, state) => pitrBackend.open(state).restoreOnNextStart(beforeRewind));
+    await runInDurableObject(space(spaceId), (instance: SpaceDO) => instance.restart()).catch(() => undefined);
+    expect(await spaceRows(spaceId, "SELECT value FROM meta WHERE key = 'history_id'")).toEqual([{ value: previous }]);
+
+    const upgrade = await call(`/v1/spaces/${spaceId}/ws`, { token, headers: { Upgrade: "websocket" } }, ErrorSchema);
+    expect([upgrade.status, upgrade.error?.code]).toEqual([409, Error_Code.HISTORY_MISMATCH]);
+    expect(upgrade.error?.message).toContain("RFC 0003 section 4");
+    const listed = await rpc(token, spaceId, { case: "listTree", value: {} });
+    expect(listed.result).toMatchObject({ case: "error", value: { code: Error_Code.HISTORY_MISMATCH } });
+  });
+
   it("writes one marker per attempt however often preparing repeats, and removes them when the rewind fails", async () => {
     const { spaceId } = await newSpace();
     const rewindId = uuidv7();
@@ -769,3 +795,81 @@ function device(spaceId: string) {
     origin: BASE,
   });
 }
+
+describe("a deploy that runs one Durable Object on the old code", () => {
+  function answerWithoutHistory(spaceId: string, without: boolean) {
+    return runInDurableObject(space(spaceId), (instance: SpaceDO) => {
+      const target = instance as unknown as { account: () => AccountStub; realAccount?: () => AccountStub };
+      target.realAccount ??= target.account.bind(instance);
+      const real = target.realAccount;
+      target.account = !without
+        ? real
+        : () =>
+            new Proxy(real(), {
+              get(stub, prop) {
+                const methods = stub as unknown as Record<string | symbol, (...args: unknown[]) => Promise<unknown>>;
+                if (prop !== "checkSessions") return (...args: unknown[]) => methods[prop]!(...args);
+                return async (...args: unknown[]) => {
+                  const answers = (await methods.checkSessions!(...args)) as Record<string, Record<string, unknown>>;
+                  return Object.fromEntries(Object.entries(answers).map(([id, { historyId: _old, ...check }]) => [id, check]));
+                };
+              },
+            });
+    });
+  }
+
+  async function upgrade(spaceId: string, token: string) {
+    const response = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Upgrade: "websocket", Authorization: "Bearer " + token } });
+    await response.arrayBuffer();
+    response.webSocket?.accept();
+    response.webSocket?.close();
+    return response.status;
+  }
+
+  for (const old of [false, true]) {
+    it(`asks an Account DO that answers ${old ? "without" : "with"} the space's history again on every connect, and serves once it answers`, async () => {
+      const { spaceId, creds } = await newSpace();
+      const token = creds.access!.token;
+      await answerWithoutHistory(spaceId, old);
+      for (let i = 0; i < 2; i++) {
+        expect(await upgrade(spaceId, token)).toBe(old ? 503 : 101);
+        const listed = await rpc(token, spaceId, { case: "listTree", value: {} });
+        if (old) expect(listed.result).toMatchObject({ case: "error", value: { code: Error_Code.RETRY_LATER } });
+        else expect(listed.result?.case).not.toBe("error");
+      }
+      await answerWithoutHistory(spaceId, false);
+      expect(await upgrade(spaceId, token)).toBe(101);
+    });
+  }
+
+  it("keeps a space closed to a Space DO that asks without its history", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const history = await device().history();
+    expect(await account().isSpaceClosed(spaceId, history)).toBe(false);
+    expect(await account().isSpaceClosed(spaceId)).toBe(true);
+    const p1 = createdAtMs + MINUTE;
+    await snapshot(spaceId, p1);
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+    const done = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: history });
+    expect(await account().isSpaceClosed(spaceId, done.message!.historyId)).toBe(false);
+    expect(await account().isSpaceClosed(spaceId, history)).toBe(true);
+    expect(await account().isSpaceClosed(spaceId)).toBe(true);
+  });
+
+  it("closes a socket with a reason too long for a close frame, keeping the whole reason in its Goodbye", async () => {
+    const { spaceId, creds } = await newSpace();
+    const open = await socket(spaceId, creds.access!.token);
+    expect(new TextEncoder().encode(RETIRED_HISTORY).length).toBeGreaterThan(123);
+    await runInDurableObject(space(spaceId), (instance: SpaceDO, state) => {
+      const target = instance as unknown as { goodbye(ws: WebSocket, code: number, reason: string): void };
+      for (const ws of state.getWebSockets()) target.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
+    });
+    await open.until(() => open.state.closed);
+    expect(open.state.closed).toBe(Close.TRY_AGAIN_LATER);
+    expect(open.received.at(-1)).toMatchObject({ case: "goodbye", value: { code: Close.TRY_AGAIN_LATER, reason: RETIRED_HISTORY } });
+  });
+});
+
+type AccountStub = ReturnType<typeof account>;
+

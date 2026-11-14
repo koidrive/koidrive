@@ -382,6 +382,7 @@ fn covered(commit: &Commit) -> Commit {
 pub struct SpaceDo {
     space_id: String,
     history_id: String,
+    account_history: String,
     format_version: u32,
     state: State,
     log: Vec<CommitRecord>,
@@ -432,6 +433,7 @@ impl SpaceDo {
             row: 1,
         };
         Self {
+            account_history: history_id.clone(),
             history_id,
             format_version: FORMAT_VERSION,
             state: State {
@@ -576,15 +578,22 @@ impl SpaceDo {
     pub fn restore(&mut self, backup: &SpaceDo) {
         let ids = self.state.ids.clone();
         let objects = std::mem::take(&mut self.objects);
+        let account_history = std::mem::take(&mut self.account_history);
         *self = backup.clone();
         self.state.ids = ids;
         self.objects = objects;
+        self.account_history = account_history;
     }
 
     pub fn rewind(&mut self, backup: &SpaceDo, now_ms: i64) {
         self.restore(backup);
         self.history_id = self.state.ids.uuid_v7(now_ms as u64);
+        self.account_history = self.history_id.clone();
         self.restore_seq = self.head_seq;
+    }
+
+    pub fn refuses(&self) -> bool {
+        self.history_id != self.account_history
     }
 
     /// Forgets the log up to and including `floor_seq`, so that older resumes need a bootstrap,

@@ -668,6 +668,13 @@ impl Task {
     }
 
     fn refused_with(&mut self, server: &ServerError) -> Option<Exit> {
+        if server.code() == koidrive_proto::v1::error::Code::HistoryMismatch {
+            self.asked_wait = Some(self.config.backoff.max);
+            return Some(Exit::Reconnect {
+                reason: DisconnectReason::Rejected(server.to_string()),
+                now: false,
+            });
+        }
         match server.resend() {
             Resend::Never => Some(Exit::Stop(StopReason::Refused(server.to_string()))),
             Resend::Allowed => {
