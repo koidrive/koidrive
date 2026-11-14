@@ -1157,12 +1157,13 @@ async fn trash_and_versions_list_what_the_space_keeps() {
         versions[0]["size"].clone()
     };
     std::os::unix::fs::symlink("target.txt", &link).unwrap();
-    assert_eq!(size_of_link("a link to target.txt"), 4);
+    assert_eq!(size_of_link("a link to target.txt"), 11);
     fs::remove_file(&link).unwrap();
     let elsewhere = machine.path("elsewhere.txt");
     fs::write(&elsewhere, b"not synced").unwrap();
     std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-    assert_eq!(size_of_link("a link outside the folder"), 4);
+    let outward = machine.fails(&["history", "versions", link_arg]);
+    assert!(outward.contains("not in a linked folder"), "{outward}");
     let stopped = machine.run(&["history", "trash", folder_arg, "--json"]);
     assert!(stopped.contains("docs/gone.txt"), "{stopped}");
     let unlinked = machine.fails(&[
