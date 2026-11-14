@@ -224,7 +224,7 @@ struct Device {
     s: Synced,
     r: Node,
     seen: Vec<u8>,
-    history: [Vec<Tok>; 2],
+    history: [Vec<(Tok, Seq)>; 2],
     unsent: Unsent,
     by_user: [bool; 2],
     flight: Option<Flight>,
@@ -699,9 +699,9 @@ impl World {
                 let record = w.server.log[w.devices[d].seen.len()];
                 let dev = &mut w.devices[d];
                 for field in FIELDS.into_iter().filter(|_| rules.bound_only()) {
-                    let replaced = dev.r.get(field);
+                    let replaced = (dev.r.get(field), dev.r.rev(field));
                     let history = &mut dev.history[slot(field)];
-                    if replaced != record.node.get(field) && !history.contains(&replaced) {
+                    if replaced.0 != record.node.get(field) && !history.contains(&replaced) {
                         history.push(replaced);
                     }
                 }
@@ -1003,9 +1003,9 @@ impl World {
                 (Op::Update { content, .. }, Code::Applied) => (Field::Content, content),
                 _ => continue,
             };
-            let replaced = dev.r.get(field);
+            let replaced = (dev.r.get(field), dev.r.rev(field));
             let history = &mut dev.history[slot(field)];
-            if replaced != value && !history.contains(&replaced) {
+            if replaced.0 != value && !history.contains(&replaced) {
                 history.push(replaced);
             }
         }
@@ -1318,20 +1318,20 @@ impl World {
         let placed_here =
             (dev.seen.get(listing.meta_rev as usize - 1)).is_some_and(|&token| own(token));
         let removed_at = (!dev.s.live && dev.s.deleted_here).then_some(dev.s.exist_seq);
-        let at = |field: Field, value: Tok| {
+        let at = |field: Field, record: Option<Seq>, value: Tok| {
             (rules.bound_only())
                 .then(|| {
-                    dev.history[slot(field)]
-                        .iter()
-                        .position(|&held| held == value)
+                    (dev.history[slot(field)].iter()).position(|&(held, rev)| {
+                        held == value && record.is_none_or(|record| record == rev)
+                    })
                 })
                 .flatten()
         };
-        let known = FIELDS
-            .map(|field| listing.rev(field) <= held || at(field, listing.get(field)).is_some());
+        let listed = |field: Field| at(field, Some(listing.rev(field)), listing.get(field));
+        let known = FIELDS.map(|field| listing.rev(field) <= held || listed(field).is_some());
         let earlier = FIELDS.map(|field| {
-            at(field, listing.get(field)).is_some_and(|listed| {
-                at(field, dev.s.get(field).val).is_none_or(|synced| listed < synced)
+            listed(field).is_some_and(|listed| {
+                at(field, None, dev.s.get(field).val).is_none_or(|synced| listed < synced)
             })
         });
         let known = |field: Field| known[slot(field)];
