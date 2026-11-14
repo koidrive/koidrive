@@ -133,9 +133,9 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
         ))
         .because(Reason::IsFolder));
     }
-    let kept = versions_of(&auth, space, &node.node_id).await?;
+    let (kept, current) = versions_and_current(&auth, space, node).await?;
+    let current = current.as_deref();
     let names = device_names(&auth).await?;
-    let current = kept.first().map(|version| version.version_id.as_str());
     let data = VersionsData {
         path: below.join("/"),
         node_id: node.node_id.clone(),
@@ -151,7 +151,7 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
             })
             .collect(),
     };
-    let text = versions_report(&below.join("/"), &kept, now_ms());
+    let text = versions_report(&below.join("/"), &kept, current, now_ms());
     Ok(Done::ok(data, text))
 }
 
@@ -264,9 +264,8 @@ async fn checked(
                 ))
                 .because(Reason::IsFolder));
             }
-            let kept = versions_of(&auth, space, &file.node_id).await?;
-            if kept.first().map(|current| current.version_id.as_str()) == Some(version_id.as_str())
-            {
+            let (kept, current) = versions_and_current(&auth, space, file).await?;
+            if current.as_deref() == Some(version_id.as_str()) {
                 return Err(CliError::usage(format!(
                     "{version_id} is already the current version of {shown}"
                 ))
@@ -631,6 +630,28 @@ async fn trash_nodes(
     Ok((nodes, deleted))
 }
 
+async fn versions_and_current(
+    auth: &Auth,
+    space: &str,
+    node: &NodeState,
+) -> Result<(Vec<VersionInfo>, Option<String>), CliError> {
+    let mut current = (node.current.as_ref()).map(|version| version.version_id.clone());
+    let mut kept = versions_of(auth, space, &node.node_id).await?;
+    for _ in 0..3 {
+        let listed = (current.as_ref())
+            .and_then(|current| kept.iter().find(|version| &version.version_id == current));
+        if listed.is_some_and(|listed| kept.iter().all(|version| version.seq <= listed.seq)) {
+            break;
+        }
+        current = (tree(auth, space).await?.into_iter())
+            .find(|again| again.node_id == node.node_id)
+            .and_then(|again| again.current)
+            .map(|version| version.version_id);
+        kept = versions_of(auth, space, &node.node_id).await?;
+    }
+    Ok((kept, current))
+}
+
 async fn versions_of(
     auth: &Auth,
     space: &str,
@@ -913,8 +934,7 @@ fn rejection(reason: &RestoreRejection) -> String {
     }
 }
 
-fn versions_report(path: &str, kept: &[VersionInfo], now_ms: i64) -> String {
-    let current = kept.first().map(|version| version.version_id.as_str());
+fn versions_report(path: &str, kept: &[VersionInfo], current: Option<&str>, now_ms: i64) -> String {
     let mut report = format!(
         "{}: {}, newest first\n",
         printable(path),
@@ -1365,18 +1385,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_newest_listed_version_is_current_when_a_save_lands_after_the_tree_was_read() {
+    async fn a_save_between_reading_the_tree_and_the_versions_reads_both_again() {
         let rpc = format!("/v1/spaces/{SPACE}/rpc");
-        let tree = || {
+        let saved = |id: &str, seq: u64| VersionInfo {
+            seq,
+            ..version(id, seq, seq as i64)
+        };
+        let tree = |current: VersionInfo| {
             let page = TreePage {
-                nodes: vec![node("a", SPACE, "a.txt", NodeKind::File, 3, "")],
+                nodes: vec![NodeState {
+                    current: Some(current),
+                    ..node("a", SPACE, "a.txt", NodeKind::File, 3, "")
+                }],
                 ..TreePage::default()
             };
             proto("POST", &rpc, answer(rpc_response::Result::Tree(page)))
         };
         let kept = || {
             let list = VersionList {
-                versions: vec![version("a-2", 5, 3), version("a-1", 3, 2)],
+                versions: vec![saved("a-2", 3), saved("a-1", 2)],
+                next_cursor: String::new(),
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Versions(list)))
+        };
+        let no_devices = koidrive_proto::v1::DeviceList::default();
+        let fake = Fake::start(vec![
+            token(),
+            tree(saved("a-1", 2)),
+            kept(),
+            tree(saved("a-2", 3)),
+            kept(),
+            proto("GET", "/v1/devices", no_devices),
+            token(),
+            tree(saved("a-1", 2)),
+            kept(),
+            tree(saved("a-2", 3)),
+            kept(),
+        ])
+        .await;
+        let (_dir, paths, root) = linked_on(fake.base.as_str());
+        let file = root.join("a.txt");
+
+        let done = versions(&paths, &file).await.unwrap();
+        let refused = checked(&paths, &file, Some("a-2".into()), None)
+            .await
+            .unwrap_err();
+
+        let current: Vec<serde_json::Value> = (done.data["versions"].as_array().unwrap().iter())
+            .map(|version| version["current"].clone())
+            .collect();
+        assert_eq!(current, [serde_json::json!(true), serde_json::json!(false)]);
+        assert_eq!(refused.reason, Some(Reason::AlreadyCurrent), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn two_saves_in_one_commit_keep_the_current_version_the_tree_names() {
+        let rpc = format!("/v1/spaces/{SPACE}/rpc");
+        let in_one_commit = |id: &str| VersionInfo {
+            seq: 2,
+            ..version(id, 3, 2)
+        };
+        let tree = || {
+            let page = TreePage {
+                nodes: vec![NodeState {
+                    current: Some(in_one_commit("a-1")),
+                    ..node("a", SPACE, "a.txt", NodeKind::File, 3, "")
+                }],
+                ..TreePage::default()
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Tree(page)))
+        };
+        let kept = || {
+            let list = VersionList {
+                versions: vec![in_one_commit("a-2"), in_one_commit("a-1")],
                 next_cursor: String::new(),
             };
             proto("POST", &rpc, answer(rpc_response::Result::Versions(list)))
@@ -1396,15 +1477,13 @@ mod tests {
         let file = root.join("a.txt");
 
         let done = versions(&paths, &file).await.unwrap();
-        let refused = restore(&paths, &file, Some("a-2".into()), None, None)
-            .await
-            .unwrap_err();
+        let older = checked(&paths, &file, Some("a-2".into()), None).await;
 
         let current: Vec<serde_json::Value> = (done.data["versions"].as_array().unwrap().iter())
             .map(|version| version["current"].clone())
             .collect();
-        assert_eq!(current, [serde_json::json!(true), serde_json::json!(false)]);
-        assert_eq!(refused.reason, Some(Reason::AlreadyCurrent), "{refused:?}");
+        assert_eq!(current, [serde_json::json!(false), serde_json::json!(true)]);
+        assert!(older.is_ok(), "{:?}", older.err());
     }
 
     #[tokio::test]
@@ -1878,7 +1957,7 @@ mod tests {
     fn the_versions_report_marks_the_current_one() {
         let kept = [version("note-1", 20, 3_000_000), version("note-0", 10, 0)];
 
-        let report = versions_report("note.txt", &kept, 3_000_000 + 7_200_000);
+        let report = versions_report("note.txt", &kept, Some("note-1"), 3_000_000 + 7_200_000);
 
         assert_eq!(
             report,
