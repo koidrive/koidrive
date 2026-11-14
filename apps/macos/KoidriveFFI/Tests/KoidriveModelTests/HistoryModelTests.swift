@@ -476,4 +476,28 @@ private let fourVersions = [
         #expect(app.folder(containing: documents.url) == documents)
         #expect(app.folder(containing: URL(filePath: documents.path + " copy/Notes.md")) == nil)
     }
+
+    @Test func aFileReachedThroughASymbolicLinkIsInItsLinkedFolder() async throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-alias-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let real = base.appending(path: "Real", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: real.appending(path: "Reports"), withIntermediateDirectories: true)
+        let alias = base.appending(path: "Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        let canonical = try #require(realpath(real.path(percentEncoded: false), nil))
+        defer { free(canonical) }
+
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-photos")
+        let photos = try await app.linkFolder(spaceID: "space-photos", path: String(cString: canonical))
+        let file = alias.appending(path: "Reports/Plan.key")
+
+        #expect(app.folder(containing: file) == photos)
+        #expect(app.folder(containing: real.appending(path: "Reports/Plan.key")) == photos)
+        #expect(app.folder(containing: alias) == photos)
+        #expect(app.folder(containing: base.appending(path: "Elsewhere/Plan.key")) == nil)
+        let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
+        #expect(history.folder == photos)
+        #expect(history.parentPath == "Photos/Reports/")
+    }
 }

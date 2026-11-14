@@ -41,10 +41,8 @@ public final class VersionHistoryModel {
 
     /// The file's folder, starting with its linked folder's name and ending with a slash.
     public var parentPath: String {
-        let parent = file.deletingLastPathComponent()
-        guard let folder else { return plainPath(parent) + "/" }
-        let below = plainPath(parent).dropFirst(plainPath(folder.url).count)
-        return folder.spaceName + below + "/"
+        guard let location = app.location(of: file) else { return plainPath(file.deletingLastPathComponent()) + "/" }
+        return ([location.folder.spaceName] + location.below.dropLast()).joined(separator: "/") + "/"
     }
 
     /// True when the load failed while the session can't reach the server.

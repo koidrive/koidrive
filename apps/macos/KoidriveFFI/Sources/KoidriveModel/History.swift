@@ -58,14 +58,43 @@ extension AppModel {
         return name.map(DeviceLabel.named)
     }
 
-    /// The linked folder that holds `url`, or is `url`.
+    /// The linked folder that holds `url`, or is `url`, also when `url` reaches it through a symbolic link.
     public func folder(containing url: URL) -> LinkedFolder? {
-        let path = plainPath(url)
-        return state.folders.first { folder in
-            let root = plainPath(folder.url)
-            return path == root || path.hasPrefix(root + "/")
-        }
+        location(of: url)?.folder
     }
+
+    func location(of url: URL) -> (folder: LinkedFolder, below: [String])? {
+        let path = plainPath(url)
+        if let found = location(ofPath: path) { return found }
+        let names = path.split(separator: "/").map(String.init)
+        var prefix = ""
+        for (index, name) in names.enumerated() {
+            prefix += "/" + name
+            guard let real = realPath(prefix) else { return nil }
+            if let found = location(ofPath: real) {
+                return (found.folder, found.below + names[(index + 1)...])
+            }
+        }
+        return nil
+    }
+
+    private func location(ofPath path: String) -> (folder: LinkedFolder, below: [String])? {
+        state.folders.flatMap { folder in
+            Set([plainPath(folder.url), realPath(plainPath(folder.url))].compactMap(\.self)).compactMap { root in
+                if path == root { return (folder: folder, root: root, below: [String]()) }
+                guard path.hasPrefix(root + "/") else { return nil }
+                return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
+            }
+        }
+        .max { $0.root.count < $1.root.count }
+        .map { ($0.folder, $0.below) }
+    }
+}
+
+private func realPath(_ path: String) -> String? {
+    guard let resolved = realpath(path, nil) else { return nil }
+    defer { free(resolved) }
+    return String(cString: resolved)
 }
 
 func plainPath(_ url: URL) -> String {
