@@ -545,6 +545,55 @@ fn a_file_a_store_older_than_the_disk_forgot_is_asked_about_when_the_log_no_long
 }
 
 #[test]
+fn a_file_a_store_copied_before_its_download_forgot_follows_a_rename_made_while_the_tree_is_read() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("one.txt"), b"one");
+    drop(a);
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    while let Some(work) = a.work.pop_front() {
+        if matches!(work, Work::Stage(_) | Work::StageAfter(..)) {
+            break;
+        }
+        a.perform(work, &mut remote).unwrap();
+    }
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["one.txt", "two.txt"]);
+    drop(a);
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    while let Some(work) = a.work.pop_front() {
+        let listing = matches!(work, Work::List { .. });
+        a.perform(work, &mut remote).unwrap();
+        if listing {
+            break;
+        }
+    }
+    fs::rename(other.root.join("two.txt"), other.root.join("three.txt")).unwrap();
+    b.scan_until(|device| !device.work.is_empty());
+    b.run(&mut remote);
+    assert_eq!(remote.names(), ["one.txt", "three.txt"]);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["one.txt", "three.txt"]);
+    assert!(shown(&site).is_empty());
+    assert_eq!(remote.names(), ["one.txt", "three.txt"]);
+}
+
+#[test]
 fn a_welcome_during_a_recovery_keeps_its_cause() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");

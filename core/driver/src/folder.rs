@@ -538,7 +538,7 @@ impl Folder {
             recovering
                 && cursor.history_id == self.history_id
                 && !cursor.ahead_of_server
-                && cursor.last_seq < staging.last_seq()
+                && cursor.last_seq <= staging.last_seq()
         });
         let from = match since {
             Some(cursor) => staging.read_history_since(cursor.base()),
