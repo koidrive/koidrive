@@ -216,6 +216,16 @@ fn overtaken(placed: Outcome) -> Outcome {
     }
 }
 
+fn is_denied(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Failed {
+            reason: Reason::Denied,
+            ..
+        }
+    )
+}
+
 fn refused(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -387,7 +397,7 @@ impl Space {
                 let staging = self.private(&[STAGING_DIR])?;
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
-                self.place(&staging, &effect.id, &parent, name, true, hook)?
+                self.place(&staging, &effect.id, &parent, name, hook)?
             }
             Action::WriteFile {
                 at,
@@ -495,7 +505,19 @@ impl Space {
         }
         let outcome = match target {
             Some((staging, (target, new_name))) => {
-                overtaken(self.place(&staging, &effect.id, &target, new_name, false, hook)?)
+                match self.place(&staging, &effect.id, &target, new_name, hook)? {
+                    placed if is_denied(&placed) => {
+                        return self.returned(
+                            &quarantine,
+                            effect,
+                            displaced,
+                            Reason::Denied,
+                            now,
+                            hook,
+                        );
+                    }
+                    placed => overtaken(placed),
+                }
             }
             None => Outcome::Done { identity: None },
         };
@@ -517,16 +539,9 @@ impl Space {
         id: &str,
         target: &Folder,
         name: &OsStr,
-        first_change: bool,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
-        match self.recheck(target) {
-            Ok(()) => {}
-            Err(Unresolved::Io { err, .. }) if first_change && refused(&err) => {
-                return Ok(failed(Reason::Denied));
-            }
-            Err(err) => return unresolved(err),
-        }
+        resolve!(self.recheck(target));
         self.recheck(staging)?;
         let identity = stat_at(staging.fd(), OsStr::new(id))?.id;
         match rename_no_replace(staging.fd(), OsStr::new(id), target.fd(), name) {
@@ -534,8 +549,7 @@ impl Space {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 return Ok(failed(Reason::Taken));
             }
-            Err(err) if first_change && refused(&err) => return Ok(failed(Reason::Denied)),
-            Err(err) => return Err(err),
+            Err(err) => return denied(err),
         }
         self.flush_folder(staging, Flush::Plain)?;
         self.flush_folder(target, Flush::Plain)?;
@@ -543,6 +557,22 @@ impl Space {
         Ok(Outcome::Done {
             identity: Some(identity),
         })
+    }
+
+    fn returned(
+        &self,
+        quarantine: &Folder,
+        effect: &Effect,
+        displaced: &Displaced,
+        reason: Reason,
+        now: SystemTime,
+        hook: &mut dyn FnMut(Step),
+    ) -> io::Result<Outcome> {
+        let id = OsStr::new(&effect.id);
+        let recovered = self.put_back(quarantine, id, &displaced.at, now)?;
+        hook(Step::Returned);
+        self.drop_staged(&effect.id)?;
+        Ok(Outcome::Failed { reason, recovered })
     }
 
     fn put_back(
@@ -619,18 +649,29 @@ impl Space {
             let differs = differs(quarantine.fd(), id, &displaced.entry, contents)?;
             hook(Step::Compared);
             if let Some(reason) = differs {
-                let recovered = self.put_back(&quarantine, id, &displaced.at, now)?;
-                hook(Step::Returned);
-                self.drop_staged(&effect.id)?;
-                return Ok(Outcome::Failed { reason, recovered });
+                return self.returned(&quarantine, effect, &displaced, reason, now, hook);
             }
             let outcome = match place {
-                Some(at) if staged => overtaken(match self.parent(at) {
-                    Ok((target, name)) => {
-                        self.place(&staging, &effect.id, &target, name, false, hook)?
+                Some(at) if staged => {
+                    let placed = match self.parent(at) {
+                        Ok((target, name)) => {
+                            self.place(&staging, &effect.id, &target, name, hook)?
+                        }
+                        Err(Unresolved::Io { err, .. }) if refused(&err) => failed(Reason::Denied),
+                        Err(err) => unresolved(err)?,
+                    };
+                    if is_denied(&placed) {
+                        return self.returned(
+                            &quarantine,
+                            effect,
+                            &displaced,
+                            Reason::Denied,
+                            now,
+                            hook,
+                        );
                     }
-                    Err(err) => unresolved(err)?,
-                }),
+                    overtaken(placed)
+                }
                 Some(at) => match self.written_at(at, contents)? {
                     Some(identity) => Outcome::Done {
                         identity: Some(identity),
