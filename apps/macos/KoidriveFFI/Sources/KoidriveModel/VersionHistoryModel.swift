@@ -21,6 +21,7 @@ public final class VersionHistoryModel {
     }
 
     public let file: URL
+    private let realPath: String?
     public private(set) var content: LoadState<FileVersions> = .loading
     public var selection: FileVersion.ID?
     public private(set) var restore: Restore = .idle
@@ -30,21 +31,20 @@ public final class VersionHistoryModel {
 
     public init(app: AppModel, file: URL, clock: HistoryClock = HistoryClock()) {
         self.app = app
-        self.file = file
+        realPath = file.realPath
+        self.file = realPath.map { URL(filePath: $0, directoryHint: file.hasDirectoryPath ? .isDirectory : .checkFileSystem) } ?? file
         self.clock = clock
     }
 
     public var name: String { file.lastPathComponent }
 
     /// The linked folder that holds the file.
-    public var folder: LinkedFolder? { app.folder(containing: file) }
+    public var folder: LinkedFolder? { app.location(ofRealPath: realPath)?.folder }
 
     /// The file's folder, starting with its linked folder's name and ending with a slash.
     public var parentPath: String {
-        let parent = file.deletingLastPathComponent()
-        guard let folder else { return plainPath(parent) + "/" }
-        let below = plainPath(parent).dropFirst(plainPath(folder.url).count)
-        return folder.spaceName + below + "/"
+        guard let location = app.location(ofRealPath: realPath) else { return plainPath(file.deletingLastPathComponent()) + "/" }
+        return ([location.folder.spaceName] + location.below.dropLast()).joined(separator: "/") + "/"
     }
 
     /// True when the load failed while the session can't reach the server.
@@ -99,7 +99,7 @@ public final class VersionHistoryModel {
         let load = loads
         let answer: LoadState<FileVersions>
         do {
-            answer = .loaded(try await app.versions(of: file))
+            answer = .loaded(try await app.versions(of: linkedFile()))
         } catch {
             answer = .failed(sessionError(error))
         }
@@ -111,11 +111,16 @@ public final class VersionHistoryModel {
         guard canRestore, let version = selectedVersion else { return }
         restore = .sending(version)
         do {
-            let asked = try await app.restore(version, of: file)
+            let asked = try await app.restore(version, of: linkedFile())
             restore = .requested(version, requestID: asked.requestId)
         } catch {
             restore = .failed(version, sessionError(error))
         }
+    }
+
+    private func linkedFile() throws -> URL {
+        guard realPath != nil else { throw SessionError.PathNotInLinkedFolder(path: plainPath(file)) }
+        return file
     }
 
     /// Reads how the requested restore went. Once it ended as restored, the versions load again.

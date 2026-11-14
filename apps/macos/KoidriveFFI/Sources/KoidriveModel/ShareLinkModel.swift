@@ -31,6 +31,7 @@ public final class ShareLinkModel {
     public static let passwordLengths = 8...256
 
     public let item: URL
+    private let realPath: String?
     public var expiry: ShareExpiry = .week
     public var requiresPassword = false {
         didSet { passwordIssue = nil }
@@ -48,7 +49,8 @@ public final class ShareLinkModel {
 
     public init(app: AppModel, item: URL) {
         self.app = app
-        self.item = item
+        realPath = item.realPath
+        self.item = realPath.map { URL(filePath: $0, directoryHint: item.hasDirectoryPath ? .isDirectory : .checkFileSystem) } ?? item
     }
 
     #if DEBUG
@@ -66,7 +68,7 @@ public final class ShareLinkModel {
     }
 
     /// The linked folder that holds the item.
-    public var folder: LinkedFolder? { app.folder(containing: item) }
+    public var folder: LinkedFolder? { app.location(ofRealPath: realPath)?.folder }
 
     /// True while the session can't reach the server and no link was made.
     public var isOffline: Bool { app.state.status == .offline && link == nil }
@@ -93,6 +95,7 @@ public final class ShareLinkModel {
         }
         step = .checking
         do {
+            guard realPath != nil else { throw SessionError.PathNotInLinkedFolder(path: plainPath(item)) }
             let made = try await app.createShareLink(for: item, expiry: expiry, password: password)
             step = .created(made)
             NotificationCenter.default.post(name: Self.linkCreated, object: app, userInfo: [Self.linkKey: made.link])

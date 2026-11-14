@@ -22,6 +22,7 @@ public final class AppModel {
     public var usageReportsTurnedOffByVariable: Bool { telemetry.locked && !telemetry.enabled }
     public let session: SyncSession
     @ObservationIgnored private var consumer: Task<Void, Never>?
+    @ObservationIgnored private var realRoots: [String: String?] = [:]
 
     public init(session: SyncSession, events: AsyncStream<SessionEvent>) {
         self.session = session
@@ -34,6 +35,13 @@ public final class AppModel {
                 self?.apply(event)
             }
         }
+    }
+
+    func realRoot(_ root: String) -> String? {
+        if let real = realRoots[root] { return real }
+        let real = URL(filePath: root).realPath
+        realRoots[root] = real
+        return real
     }
 
     /// A model of the CLI's sync profile on this Mac, worked through the `koi` at `helper`.
@@ -77,7 +85,9 @@ public final class AppModel {
         case .status(let status): state.status = status
         case .progress(let progress): state.progress = progress
         case .account(let account): state.account = account
-        case .folders(let folders): state.folders = folders
+        case .folders(let folders):
+            if folders.map(\.path) != state.folders.map(\.path) { realRoots.removeAll() }
+            state.folders = folders
         case .recentChanges(let changes): state.recentChanges = changes
         case .questions(let questions): replaceQuestions(questions)
         case .problems(let problems): state.problems = problems

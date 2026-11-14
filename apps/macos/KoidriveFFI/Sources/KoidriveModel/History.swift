@@ -58,14 +58,66 @@ extension AppModel {
         return name.map(DeviceLabel.named)
     }
 
-    /// The linked folder that holds `url`, or is `url`.
+    /// The linked folder that holds the real item `url` leads to, or is that item, once its symbolic links and Finder alias resolve.
     public func folder(containing url: URL) -> LinkedFolder? {
-        let path = plainPath(url)
-        return state.folders.first { folder in
-            let root = plainPath(folder.url)
-            return path == root || path.hasPrefix(root + "/")
-        }
+        location(of: url)?.folder
     }
+
+    func location(of url: URL) -> (folder: LinkedFolder, below: [String])? {
+        location(ofRealPath: url.realPath)
+    }
+
+    func location(ofRealPath path: String?) -> (folder: LinkedFolder, below: [String])? {
+        guard let path else { return nil }
+        return state.folders.flatMap { folder in
+            let stored = plainPath(folder.url)
+            return Set([stored, realRoot(stored)].compactMap { $0 }).compactMap { root in
+                if path == root { return (folder: folder, root: root, below: [String]()) }
+                guard path.hasPrefix(root + "/") else { return nil }
+                return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
+            }
+        }
+        .max { $0.root.count < $1.root.count }
+        .map { ($0.folder, $0.below) }
+    }
+}
+
+extension URL {
+    var realPath: String? {
+        var path = plainPath(self)
+        for _ in 0..<32 {
+            let (existing, rest) = deepestExistingPart(of: path)
+            if let name = rest.first, let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: joined(existing, [name])) {
+                path = joined(destination.hasPrefix("/") ? destination : joined(existing, [destination]), Array(rest.dropFirst()))
+                continue
+            }
+            let item = URL(filePath: existing)
+            guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true else {
+                return joined(existing, rest)
+            }
+            guard let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else { return nil }
+            path = joined(plainPath(target), rest)
+        }
+        return nil
+    }
+}
+
+private func deepestExistingPart(of path: String) -> (real: String, rest: [String]) {
+    var existing = path
+    var rest: [String] = []
+    while existing != "/" {
+        if let resolved = realpath(existing, nil) {
+            defer { free(resolved) }
+            return (String(cString: resolved), rest)
+        }
+        rest.insert((existing as NSString).lastPathComponent, at: 0)
+        existing = (existing as NSString).deletingLastPathComponent
+    }
+    return ("/", rest)
+}
+
+private func joined(_ path: String, _ names: [String]) -> String {
+    ([path == "/" ? "" : path] + names).joined(separator: "/")
 }
 
 func plainPath(_ url: URL) -> String {

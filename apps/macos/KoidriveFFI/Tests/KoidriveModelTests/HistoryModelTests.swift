@@ -439,13 +439,52 @@ private let fourVersions = [
         #expect(history.requestedVersion?.versionId == "v3")
     }
 
+    @Test func aPathWhoseLinksDontResolveIsNeverSentToTheCore() async throws {
+        let temporary = FileManager.default.temporaryDirectory.appending(path: "koidrive-chain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let real = try #require(realpath(temporary.path(percentEncoded: false), nil))
+        defer { free(real) }
+        let root = URL(filePath: String(cString: real), directoryHint: .isDirectory)
+        for hop in 0..<40 {
+            let destination = hop == 39 ? root.appending(path: "Outside/Missing").path(percentEncoded: false) : "chain\(hop + 1)"
+            try FileManager.default.createSymbolicLink(atPath: root.appending(path: "chain\(hop)").path(percentEncoded: false), withDestinationPath: destination)
+        }
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-photos")
+        let photos = try await app.linkFolder(spaceID: "space-photos", path: root.path(percentEncoded: false))
+        let fake = try #require(app.session.fakeCore())
+        let old = FileVersion(versionId: "old", size: 6, savedAtMs: 1, deviceId: "device-1", deviceName: nil, current: false)
+        try fake.setVersions(spaceId: photos.spaceId, versions: FileVersions(path: "chain0/Plan.key", nodeId: "synced", versions: [old]))
+        let file = root.appending(path: "chain0/Plan.key")
+        let refused = SessionError.PathNotInLinkedFolder(path: file.path(percentEncoded: false))
+
+        let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
+        await history.load()
+        history.selection = old.id
+        await history.restoreSelected()
+        #expect(history.folder == nil)
+        #expect(history.content == .failed(refused))
+        #expect(!history.canRestore)
+        #expect(try await app.restoreRequests(in: photos.url).isEmpty)
+
+        let share = ShareLinkModel(app: app, item: file)
+        await share.create()
+        #expect(share.folder == nil)
+        #expect(share.step == .failed(refused))
+    }
+
     @Test func aFileOutsideTheLinkedFoldersIsRefused() async throws {
         let app = AppModel.fake(scenario: .upToDate)
         let file = FileManager.default.temporaryDirectory.appending(path: "Elsewhere/Notes.md")
         let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
         await history.load()
+        let temporary = try #require(realpath(FileManager.default.temporaryDirectory.path(percentEncoded: false), nil))
+        defer { free(temporary) }
+        let real = String(cString: temporary) + "/Elsewhere/Notes.md"
         #expect(history.folder == nil)
-        #expect(history.content == .failed(.PathNotInLinkedFolder(path: file.path(percentEncoded: false))))
+        #expect(history.file.path(percentEncoded: false) == real)
+        #expect(history.content == .failed(.PathNotInLinkedFolder(path: real)))
     }
 }
 
@@ -475,5 +514,196 @@ private let fourVersions = [
         #expect(app.folder(containing: documents.url.appending(path: "Reports/Annual Report.docx")) == documents)
         #expect(app.folder(containing: documents.url) == documents)
         #expect(app.folder(containing: URL(filePath: documents.path + " copy/Notes.md")) == nil)
+    }
+
+    @Test func aFileReachedThroughASymbolicLinkIsInItsLinkedFolder() async throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-alias-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let real = base.appending(path: "Real", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: real.appending(path: "Reports"), withIntermediateDirectories: true)
+        let alias = base.appending(path: "Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        let canonical = try #require(realpath(real.path(percentEncoded: false), nil))
+        defer { free(canonical) }
+
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-photos")
+        let photos = try await app.linkFolder(spaceID: "space-photos", path: String(cString: canonical))
+        let file = alias.appending(path: "Reports/Plan.key")
+
+        #expect(app.folder(containing: file) == photos)
+        #expect(app.folder(containing: real.appending(path: "Reports/Plan.key")) == photos)
+        #expect(app.folder(containing: alias) == photos)
+        #expect(app.folder(containing: base.appending(path: "Elsewhere/Plan.key")) == nil)
+        let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
+        #expect(history.folder == photos)
+        #expect(history.parentPath == "Photos/Reports/")
+    }
+
+    private func linkedTemporaryFolder() throws -> (AppModel, URL, URL, LinkedFolder) {
+        let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-alias-\(UUID().uuidString)").resolvingSymlinksInPath()
+        let root = base.appending(path: "Sync")
+        try FileManager.default.createDirectory(at: root.appending(path: "Docs"), withIntermediateDirectories: true)
+        let folder = LinkedFolder(spaceId: "space-sync", spaceName: "Sync", path: root.path(percentEncoded: false), state: .upToDate)
+        let app = AppModel.fake(scenario: .upToDate)
+        app.apply(.folders(folders: [folder]))
+        return (app, base, root, folder)
+    }
+
+    @Test func aFinderAliasOfAFileIsThatFile() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = root.appending(path: "Docs/Plan.key")
+        try Data("plan".utf8).write(to: target)
+        let alias = base.appending(path: "Plan alias")
+        try URL.writeBookmarkData(target.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+
+        #expect(app.folder(containing: alias) == folder)
+        #expect(SharedLinksModel(app: app).canShare(alias))
+        #expect(ShareLinkModel(app: app, item: alias).name == "Plan.key")
+        let history = VersionHistoryModel(app: app, file: alias, clock: halfPastMidnight)
+        #expect(history.name == "Plan.key")
+        #expect(history.parentPath == "Sync/Docs/")
+    }
+
+    @Test func chainsOfSymbolicLinksAndFinderAliasesLeadToTheOriginalItem() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = root.appending(path: "Docs/Plan.key")
+        try Data("plan".utf8).write(to: target)
+        func alias(_ name: String, of item: URL) throws -> URL {
+            let alias = base.appending(path: name)
+            try URL.writeBookmarkData(item.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+            return alias
+        }
+        func link(_ name: String, to item: URL) throws -> URL {
+            let link = base.appending(path: name)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: item)
+            return link
+        }
+        let linkToAlias = try link("Link to alias", to: alias("Plan alias", of: target))
+        let aliasOfLink = try alias("Alias of link", of: link("Plan link", to: target))
+        let folderAlias = try alias("Docs alias", of: root.appending(path: "Docs"))
+        let aliasOfLinkToAlias = try alias("Alias of link to alias", of: linkToAlias)
+
+        for path in [linkToAlias, aliasOfLink, folderAlias.appending(path: "Plan.key"), aliasOfLinkToAlias] {
+            #expect(app.folder(containing: path) == folder, "\(path.lastPathComponent)")
+            #expect(SharedLinksModel(app: app).canShare(path), "\(path.lastPathComponent)")
+            #expect(ShareLinkModel(app: app, item: path).name == "Plan.key", "\(path.lastPathComponent)")
+            let history = VersionHistoryModel(app: app, file: path, clock: halfPastMidnight)
+            #expect(try Data(contentsOf: history.file) == Data("plan".utf8), "\(path.lastPathComponent)")
+            #expect(history.parentPath == "Sync/Docs/", "\(path.lastPathComponent)")
+        }
+        #expect(app.folder(containing: folderAlias.appending(path: "New.key")) == folder)
+    }
+
+    @Test func aFinderAliasWhoseOriginalIsGoneIsInNoFolder() throws {
+        let (app, base, root, _) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = base.appending(path: "Gone.key")
+        try Data("gone".utf8).write(to: target)
+        let alias = root.appending(path: "Docs/Gone alias")
+        try URL.writeBookmarkData(target.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+        try FileManager.default.removeItem(at: target)
+
+        #expect(app.folder(containing: alias) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(alias))
+        #expect(VersionHistoryModel(app: app, file: alias, clock: halfPastMidnight).folder == nil)
+    }
+
+    @Test func aLinkedFolderReachedThroughALinkFollowsItWhenLinkedAgain() throws {
+        let (app, base, _, _) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = base.appending(path: "First")
+        let second = base.appending(path: "Second")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        let link = base.appending(path: "Current")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let folder = LinkedFolder(spaceId: "space-current", spaceName: "Current", path: link.path(percentEncoded: false), state: .upToDate)
+        app.apply(.folders(folders: [folder]))
+        #expect(app.folder(containing: first.appending(path: "Plan.key")) == folder)
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        app.apply(.folders(folders: []))
+        app.apply(.folders(folders: [folder]))
+        #expect(app.folder(containing: second.appending(path: "Plan.key")) == folder)
+        #expect(app.folder(containing: first.appending(path: "Plan.key")) == nil)
+    }
+
+    @Test func aPathBelongsToTheLinkedFolderThatHoldsItsRealFile() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let outside = base.appending(path: "Outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outside.appending(path: "Plan.key"))
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "away"), withDestinationURL: outside)
+        let shortcut = base.appending(path: "Shortcut")
+        try FileManager.default.createSymbolicLink(at: shortcut, withDestinationURL: root)
+
+        #expect(app.folder(containing: shortcut.appending(path: "Docs/New.key")) == folder)
+        #expect(app.folder(containing: shortcut.appending(path: "away/Plan.key")) == nil)
+        #expect(app.folder(containing: root.appending(path: "away/Plan.key")) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: "away/Plan.key")))
+        #expect(app.folder(containing: URL(filePath: shortcut.path + "/../Plan.key")) == nil)
+
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "gone").path(percentEncoded: false), withDestinationPath: outside.appending(path: "Missing").path(percentEncoded: false))
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "up").path(percentEncoded: false), withDestinationPath: "../Outside/Missing")
+        for path in ["gone/Plan.key", "up/Plan.key", "gone"] {
+            #expect(app.folder(containing: shortcut.appending(path: path)) == nil, "\(path)")
+            #expect(app.folder(containing: root.appending(path: path)) == nil, "\(path)")
+            #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: path)), "\(path)")
+        }
+        for hop in 0..<40 {
+            try FileManager.default.createSymbolicLink(atPath: root.appending(path: "l\(hop)").path(percentEncoded: false), withDestinationPath: hop == 39 ? outside.appending(path: "Missing").path(percentEncoded: false) : "l\(hop + 1)")
+        }
+        #expect(app.folder(containing: root.appending(path: "l0/Plan.key")) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(root.appending(path: "l0/Plan.key")))
+        #expect(VersionHistoryModel(app: app, file: root.appending(path: "l0/Plan.key"), clock: halfPastMidnight).folder == nil)
+        #expect(ShareLinkModel(app: app, item: root.appending(path: "l0/Plan.key")).folder == nil)
+        #expect(app.folder(containing: root.appending(path: "l30/Plan.key")) == nil)
+        try FileManager.default.createSymbolicLink(atPath: root.appending(path: "later").path(percentEncoded: false), withDestinationPath: "Docs/Later")
+        #expect(VersionHistoryModel(app: app, file: shortcut.appending(path: "later/Plan.key"), clock: halfPastMidnight).parentPath == "Sync/Docs/Later/")
+    }
+
+    @Test func aFileReachedThroughALinkFromAnotherLinkedFolderUsesTheFolderThatHoldsIt() async throws {
+        let temporary = FileManager.default.temporaryDirectory.appending(path: "koidrive-bridge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let real = try #require(realpath(temporary.path(percentEncoded: false), nil))
+        defer { free(real) }
+        let base = URL(filePath: String(cString: real), directoryHint: .isDirectory)
+        let first = base.appending(path: "Documents")
+        let second = base.appending(path: "Photos")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data("plan".utf8).write(to: second.appending(path: "Plan.key"))
+        try FileManager.default.createSymbolicLink(at: first.appending(path: "bridge"), withDestinationURL: second)
+
+        let app = AppModel.fake(scenario: .upToDate)
+        try await app.unlinkFolder(spaceID: "space-documents")
+        try await app.unlinkFolder(spaceID: "space-photos")
+        _ = try await app.linkFolder(spaceID: "space-documents", path: first.path(percentEncoded: false))
+        let photos = try await app.linkFolder(spaceID: "space-photos", path: second.path(percentEncoded: false))
+        let old = FileVersion(versionId: "old", size: 4, savedAtMs: 1, deviceId: "device-1", deviceName: nil, current: false)
+        let fake = try #require(app.session.fakeCore())
+        try fake.setVersions(spaceId: photos.spaceId, versions: FileVersions(path: "Plan.key", nodeId: "node-plan", versions: [old]))
+
+        let history = VersionHistoryModel(app: app, file: first.appending(path: "bridge/Plan.key"), clock: halfPastMidnight)
+        #expect(history.folder == photos)
+        #expect(history.parentPath == "Photos/")
+        await history.load()
+        #expect(history.versions == [old])
+        history.selection = old.id
+        await history.restoreSelected()
+        guard case .requested(_, let requestID) = history.restore else {
+            Issue.record("not requested: \(history.restore)")
+            return
+        }
+        #expect(try await app.restoreRequests(in: photos.url).map(\.id) == [requestID])
+        try fake.finishRestore(requestId: requestID, state: .restored)
+        await history.refreshRestore()
+        #expect(history.restore == .restored(old, .restored))
     }
 }
