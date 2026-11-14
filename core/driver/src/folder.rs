@@ -27,7 +27,7 @@ use koidrive_engine::classify::Class;
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::ignore::LocalRules;
-use koidrive_engine::tree::{Content, Kind, RemoteNode, Shape, Tree, same_content};
+use koidrive_engine::tree::{Content, Kind, LocalNode, RemoteNode, Shape, Tree, same_content};
 use koidrive_fs::{Snapshot, Unresolved, check_root};
 use koidrive_net::{
     Auth, Backoff, CallError, ChunkError, Event, NotResent, ServerError, Session, SessionConfig,
@@ -44,7 +44,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::claim::{self, Flock, Identity, Owner};
 use crate::credential::SET_UP_AGAIN;
-use crate::disk::{Batch, Disk, Pending, Sections, Settled, Staged, Stall, Stop, Upload};
+use crate::disk::{Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload};
 use crate::driver::check_placement;
 use crate::engine::{Applied, Engine, Staging};
 use crate::failures::{self, Halted};
@@ -72,6 +72,11 @@ const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// The wait before a commit is built again after a file changed while its content was uploaded. The observer
 /// reads the file again meanwhile.
 const BUILD_AGAIN: Duration = Duration::from_secs(1);
+const LEFT_OUT_AFTER: u32 = 3;
+const UNREADABLE_RETRY: Backoff = Backoff {
+    initial: Duration::from_secs(30),
+    max: Duration::from_secs(1800),
+};
 /// The waits before a node whose disk effect failed is planned again: from about a second, doubling with each
 /// failure of the node in a row, up to ten minutes.
 const EFFECT_RETRY: Backoff = Backoff {
@@ -122,6 +127,7 @@ pub(crate) struct Folder {
     backoff: Backoff,
     /// What the last disconnect was.
     note: Option<String>,
+    unreadable: BTreeMap<String, Unreadable>,
     /// The calls that failed and are sent again, by kind, until one of the kind goes through. The status shows
     /// them once they have failed for [`RETRY_SHOWN`], or at once when the wait is that long.
     retrying: BTreeMap<Call, Retrying>,
@@ -164,7 +170,7 @@ enum Flight {
     /// again unchanged, once a `Welcome` allows that (design §2.8).
     Unknown,
     /// The content the commit adds is being uploaded from these files. The server holds nothing of the commit.
-    Uploading(Vec<PathBuf>),
+    Uploading(Sources),
     /// `Session::commit` is out with this copy of the commit, which carries the upload's receipts. The session
     /// resends it after a reconnect, so the folder starts no second call.
     Sending(Commit),
@@ -252,6 +258,14 @@ enum Call {
 
 /// Calls of one kind that keep failing: since when, the latest failure and when the call is sent again.
 #[derive(Debug)]
+struct Unreadable {
+    failures: u32,
+    why: String,
+    at: SystemTime,
+    due: Instant,
+    seen: Option<LocalNode>,
+}
+
 struct Retrying {
     since: Instant,
     why: String,
@@ -326,6 +340,7 @@ impl Folder {
             failures: 0,
             backoff: Backoff::default(),
             note: None,
+            unreadable: BTreeMap::new(),
             retrying: BTreeMap::new(),
             effect_failures: BTreeMap::new(),
             stuck_effects: BTreeSet::new(),
@@ -494,6 +509,25 @@ impl Folder {
         self.local_entries = Some(entries);
         self.disk
             .observed(batch, &mut self.engine, &mut self.store)?;
+        let problems = self.engine.commits.problems();
+        let changed: Vec<String> = (self.unreadable.iter())
+            .filter(|(node, unreadable)| {
+                problems.contains(*node)
+                    && self.engine.trees.local().get(node.as_str()) != unreadable.seen.as_ref()
+            })
+            .map(|(node, _)| node.clone())
+            .collect();
+        if !changed.is_empty() {
+            self.step(|engine, _| {
+                for node in &changed {
+                    engine.commits.clear_problem(node);
+                }
+                Ok(())
+            })?;
+            for node in &changed {
+                self.unreadable.remove(node);
+            }
+        }
         let mut work = Vec::new();
         self.drive(&mut work)?;
         Ok(work)
@@ -624,29 +658,47 @@ impl Folder {
             .filter(|node| !self.stuck_effects.contains(*node))
             .cloned()
             .collect();
-        if !timed.is_empty() {
+        let now = Instant::now();
+        let problems = self.engine.commits.problems();
+        let due: Vec<String> = (self.unreadable.iter())
+            .filter(|(node, unreadable)| problems.contains(*node) && unreadable.due <= now)
+            .map(|(node, _)| node.clone())
+            .collect();
+        if !timed.is_empty() || !due.is_empty() {
             self.step(|engine, _| {
                 for node in &timed {
                     engine.effects.unblock(node);
+                }
+                for node in &due {
+                    engine.commits.clear_problem(node);
                 }
                 Ok(())
             })?;
         }
         let mut work = Vec::new();
+        let problems = self.engine.commits.problems();
+        let next = (self.unreadable.iter())
+            .filter(|(node, _)| problems.contains(*node))
+            .map(|(_, unreadable)| unreadable.due)
+            .min();
+        if let Some(next) = next {
+            self.retry_at = Some(next);
+            work.push(Work::RetryAfter(next.saturating_duration_since(now)));
+        }
         self.drive(&mut work)?;
         Ok(work)
     }
 
     /// The upload of the content a commit adds ended. With its receipts the commit is sent. A file that changed
     /// since it was chunked, or that can no longer be read, abandons the commit, which the server holds nothing
-    /// of (design §4.2), and the observer reads the commit's files again.
+    /// of (design §4.2).
     pub fn uploaded(
         &mut self,
         receipts: Result<Vec<UploadReceipt>, ChunkError>,
     ) -> Result<Vec<Work>, Stop> {
         let mut work = Vec::new();
-        let paths = match std::mem::replace(&mut self.flight, Flight::Idle) {
-            Flight::Uploading(paths) => paths,
+        let sources = match std::mem::replace(&mut self.flight, Flight::Idle) {
+            Flight::Uploading(sources) => sources,
             other => {
                 self.flight = other;
                 return Ok(work);
@@ -656,6 +708,9 @@ impl Folder {
             Ok(receipts) => {
                 self.failures = 0;
                 self.retrying.remove(&Call::Upload);
+                for (node, _) in sources.values() {
+                    self.unreadable.remove(node);
+                }
                 if let Some(flight) = self.engine.commits.in_flight() {
                     let commit = Commit {
                         receipts,
@@ -671,39 +726,13 @@ impl Folder {
         };
         failures::transfer_failed(&error, failures::Failure::Upload);
         let disposition = match &error {
-            ChunkError::SourceChanged { .. } | ChunkError::Io { .. } => {
-                tracing::info!(
-                    space_id = self.link.space_id,
-                    %error,
-                    "a file changed while it was uploaded; planning its commit again"
-                );
-                let unresolved = match &error {
-                    ChunkError::Io { source, .. } => {
-                        (source.get_ref()).and_then(|inner| inner.downcast_ref::<Unresolved>())
-                    }
-                    _ => None,
-                };
-                let paths = match unresolved {
-                    Some(Unresolved::RootWithdrawn(_)) => {
-                        return Err(Stop::Withdrawn(self.link.root.clone()));
-                    }
-                    Some(
-                        Unresolved::Missing(folder)
-                        | Unresolved::NotAFolder(folder)
-                        | Unresolved::Replaced { path: folder, .. },
-                    ) => vec![folder.clone()],
-                    _ if paths.is_empty() => vec![PathBuf::new()],
-                    _ => paths,
-                };
-                self.step(|engine, _| Ok(engine.commits.abandon()))?;
-                self.commit_ended();
-                self.disk.rescan(&self.engine, paths);
-                self.flight = Flight::Waiting(Next::Build);
-                work.push(Work::ResendAfter(BUILD_AGAIN));
+            ChunkError::SourceChanged { hash } | ChunkError::Io { hash, .. } => {
+                let (node, path) = sources.get(hash).cloned().unwrap_or_default();
+                self.unreadable(node, path, &error, &mut work)?;
                 return Ok(work);
             }
             ChunkError::Call(CallError::Stopped(_)) => {
-                self.flight = Flight::Uploading(paths);
+                self.flight = Flight::Uploading(sources);
                 return Ok(work);
             }
             ChunkError::Call(call) => policy::after_call_error(call),
@@ -745,6 +774,89 @@ impl Folder {
         self.flight = Flight::Waiting(Next::Upload);
         work.push(Work::ResendAfter(wait));
         Ok(work)
+    }
+
+    fn unreadable(
+        &mut self,
+        node: String,
+        path: Option<PathBuf>,
+        error: &ChunkError,
+        work: &mut Vec<Work>,
+    ) -> Result<(), Stop> {
+        let unresolved = match error {
+            ChunkError::Io { source, .. } => {
+                (source.get_ref()).and_then(|inner| inner.downcast_ref::<Unresolved>())
+            }
+            _ => None,
+        };
+        let (changed, scope) = match (error, unresolved) {
+            (_, Some(Unresolved::RootWithdrawn(_))) => {
+                return Err(Stop::Withdrawn(self.link.root.clone()));
+            }
+            (
+                _,
+                Some(
+                    Unresolved::Missing(folder)
+                    | Unresolved::NotAFolder(folder)
+                    | Unresolved::Replaced { path: folder, .. },
+                ),
+            ) => (true, Some(folder.clone())),
+            (ChunkError::Io { source, .. }, _) => (
+                matches!(
+                    source.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof
+                ),
+                path.clone(),
+            ),
+            _ => (true, path.clone()),
+        };
+        let failures = (self.unreadable.get(&node)).map_or(0, |unreadable| unreadable.failures) + 1;
+        let why = unreadable_why(error);
+        tracing::info!(
+            space_id = self.link.space_id,
+            path = path.as_deref().map(|path| koidrive_fs::quoted(path).to_string()),
+            %error,
+            failures,
+            "a file could not be read for its upload"
+        );
+        self.disk
+            .rescan(&self.engine, vec![scope.unwrap_or_default()]);
+        self.commit_ended();
+        if changed && failures < LEFT_OUT_AFTER {
+            self.step(|engine, _| Ok(engine.commits.abandon()))?;
+            self.unreadable.insert(
+                node,
+                Unreadable {
+                    failures,
+                    why,
+                    at: SystemTime::now(),
+                    due: Instant::now(),
+                    seen: None,
+                },
+            );
+            self.flight = Flight::Waiting(Next::Build);
+            work.push(Work::ResendAfter(BUILD_AGAIN));
+            return Ok(());
+        }
+        let wait = UNREADABLE_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
+        self.step(|engine, _| Ok(engine.commits.leave_out(&node)))?;
+        let at = Instant::now() + wait;
+        let seen = self.engine.trees.local().get(&node).cloned();
+        self.unreadable.insert(
+            node,
+            Unreadable {
+                failures,
+                why,
+                at: SystemTime::now() + wait,
+                due: at,
+                seen,
+            },
+        );
+        if self.retry_at.is_none_or(|out| at < out) {
+            self.retry_at = Some(at);
+            work.push(Work::RetryAfter(wait));
+        }
+        self.drive(work)
     }
 
     /// `Session::commit` returned. A result is acknowledged once R has reached it. A refusal goes to the engine,
@@ -873,15 +985,27 @@ impl Folder {
             )
         };
         let mut reasons: BTreeMap<&String, Vec<String>> = BTreeMap::new();
+        let mut restart = !self.engine.effects.blocked().is_empty() || !held.is_empty();
         for id in self.engine.effects.blocked().keys() {
             let why = (self.effect_failures.get(id)).map_or("it failed earlier", |(_, why)| why);
             let why = format!("the server's change could not be made here: {why}");
             reasons.entry(id).or_default().push(why);
         }
         for id in self.engine.commits.problems() {
-            let why =
-                (self.refused_nodes.get(id)).map_or("the server did not take it", String::as_str);
-            reasons.entry(id).or_default().push(why.to_owned());
+            let why = match self.unreadable.get(id) {
+                Some(unreadable) => format!(
+                    "it could not be read: {}; trying again at {}",
+                    unreadable.why,
+                    utc(unreadable.at)
+                ),
+                None => {
+                    restart = true;
+                    (self.refused_nodes.get(id))
+                        .map_or("the server did not take it", String::as_str)
+                        .to_owned()
+                }
+            };
+            reasons.entry(id).or_default().push(why);
         }
         let kept_in = |id: &str| {
             (trees.local().get(id))
@@ -957,8 +1081,12 @@ impl Folder {
                     0 => String::new(),
                     more => format!(", and {more} more"),
                 };
+                let restart = match restart {
+                    true => format!("; run koi folder restart once {fixed} fixed"),
+                    false => String::new(),
+                };
                 Some(format!(
-                    "{count} could not be synced: {}{more}; run koi folder restart once {fixed} fixed",
+                    "{count} could not be synced: {}{more}{restart}",
                     stuck.join(", ")
                 ))
             }
@@ -1572,7 +1700,7 @@ impl Folder {
             self.flight = Flight::Sending(commit.clone());
             work.push(Work::Send(commit));
         } else {
-            self.flight = Flight::Uploading(upload.paths());
+            self.flight = Flight::Uploading(upload.sources());
             work.push(Work::Upload(upload));
         }
     }
@@ -1669,6 +1797,16 @@ impl Folder {
             };
             self.timing.first_sync(files, at);
         }
+    }
+}
+
+fn unreadable_why(error: &ChunkError) -> String {
+    let ChunkError::Io { source, .. } = error else {
+        return "it keeps changing while it is uploaded".into();
+    };
+    match source.kind() {
+        io::ErrorKind::PermissionDenied => "Koidrive is not allowed to read it".into(),
+        _ => source.to_string(),
     }
 }
 
