@@ -183,11 +183,7 @@ struct StatusPill: View {
             case .dot(let color):
                 Circle().fill(color).frame(width: 6, height: 6)
             case .progress:
-                Circle()
-                    .trim(from: 0, to: 0.7)
-                    .stroke(Color.koi, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 8, height: 8)
+                ProgressMark()
             }
             Text(verbatim: title)
                 .font(.callout.weight(.medium))
@@ -197,6 +193,16 @@ struct StatusPill: View {
         .padding(.horizontal, 8)
         .frame(height: 22)
         .overlay(Capsule().strokeBorder(Color.chipBorder))
+    }
+}
+
+struct ProgressMark: View {
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.7)
+            .stroke(Color.koi, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            .rotationEffect(.degrees(-90))
+            .frame(width: 8, height: 8)
     }
 }
 

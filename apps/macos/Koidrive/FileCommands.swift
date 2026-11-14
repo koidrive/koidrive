@@ -6,8 +6,11 @@ import KoidriveModel
 import SwiftUI
 
 @MainActor
-enum VersionHistoryPicker {
-    static func choose(in folders: [LinkedFolder], then open: @escaping @MainActor (URL) -> Void) {
+enum FilePicker {
+    case versionHistory
+    case shareLink
+
+    func choose(in folders: [LinkedFolder], then open: @escaping @MainActor (URL) -> Void) {
         let (panel, filter) = makePanel(in: folders)
         NSApp.activate()
         panel.begin { response in
@@ -17,15 +20,24 @@ enum VersionHistoryPicker {
         }
     }
 
-    static func makePanel(in folders: [LinkedFolder]) -> (NSOpenPanel, NSOpenSavePanelDelegate) {
+    func makePanel(in folders: [LinkedFolder]) -> (NSOpenPanel, NSOpenSavePanelDelegate) {
         let panel = NSOpenPanel()
-        let filter = LinkedFolderFilter(folders: folders)
+        let names = folders.map(\.spaceName).formatted(.list(type: .or))
+        let filter = LinkedFolderFilter(folders: folders, refusal: String(localized: "Choose a file or folder in \(names)."))
         panel.delegate = filter
-        panel.title = String(localized: "Version History")
-        panel.message = String(localized: "Choose a file in \(folders.map(\.spaceName).formatted(.list(type: .or))) to see its versions.")
-        panel.prompt = String(localized: "Show Versions")
+        switch self {
+        case .versionHistory:
+            panel.title = String(localized: "Version History")
+            panel.message = String(localized: "Choose a file in \(names) to see its versions.")
+            panel.prompt = String(localized: "Show Versions")
+            panel.canChooseDirectories = false
+        case .shareLink:
+            panel.title = String(localized: "Share Link")
+            panel.message = String(localized: "Choose a file or folder in \(names) to share.")
+            panel.prompt = String(localized: "Share")
+            panel.canChooseDirectories = true
+        }
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = folders.first?.url
         return (panel, filter)
@@ -34,9 +46,11 @@ enum VersionHistoryPicker {
 
 private final class LinkedFolderFilter: NSObject, NSOpenSavePanelDelegate {
     private let roots: [String]
+    private let refusal: String
 
-    init(folders: [LinkedFolder]) {
+    init(folders: [LinkedFolder], refusal: String) {
         roots = folders.map { resolvedPath($0.url) }
+        self.refusal = refusal
     }
 
     func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
@@ -44,6 +58,12 @@ private final class LinkedFolderFilter: NSObject, NSOpenSavePanelDelegate {
         if roots.contains(where: { path.hasPrefix($0 + "/") }) { return true }
         let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         return isDirectory && roots.contains { $0 == path || $0.hasPrefix(path == "/" ? path : path + "/") }
+    }
+
+    func panel(_ sender: Any, validate url: URL) throws {
+        let path = resolvedPath(url)
+        guard !roots.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) else { return }
+        throw CocoaError(.fileReadNoPermission, userInfo: [NSLocalizedDescriptionKey: refusal])
     }
 }
 
@@ -54,24 +74,28 @@ private func resolvedPath(_ url: URL) -> String {
 }
 
 enum DropTarget: CaseIterable, Identifiable {
+    case shareLink
     case versionHistory
 
     var id: Self { self }
 
     var title: String {
         switch self {
+        case .shareLink: String(localized: "Share Link")
         case .versionHistory: String(localized: "Version History")
         }
     }
 
     var subtitle: String {
         switch self {
+        case .shareLink: String(localized: "Make a link")
         case .versionHistory: String(localized: "See versions")
         }
     }
 
     var systemImage: String {
         switch self {
+        case .shareLink: "square.and.arrow.up"
         case .versionHistory: "clock.arrow.circlepath"
         }
     }
@@ -232,6 +256,7 @@ struct MenuBarDrop: ViewModifier {
             for _ in 0..<40 {
                 let installed = MenuBarDropTarget.install(isEnabled: { !model.needsSetup }) { target, url in
                     switch target {
+                    case .shareLink: openWindow.showShareLink(for: url)
                     case .versionHistory: openWindow.showVersionHistory(of: url)
                     }
                 }

@@ -345,8 +345,14 @@ struct MenuContent: View {
             }
             Divider()
             Group {
+                MenuButton(title: "Share Link…", systemImage: "square.and.arrow.up") {
+                    FilePicker.shareLink.choose(in: model.state.folders) { openWindow.showShareLink(for: $0) }
+                }
+                MenuButton(title: "Shared Links…", systemImage: "link") {
+                    openWindow.show(WindowID.sharedLinks)
+                }
                 MenuButton(title: "Version History…", systemImage: "clock.arrow.circlepath") {
-                    VersionHistoryPicker.choose(in: model.state.folders) { openWindow.showVersionHistory(of: $0) }
+                    FilePicker.versionHistory.choose(in: model.state.folders) { openWindow.showVersionHistory(of: $0) }
                 }
                 MenuButton(title: "Deleted Files…", systemImage: "trash") {
                     openWindow.show(WindowID.deletedFiles)

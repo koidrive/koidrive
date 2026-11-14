@@ -319,11 +319,7 @@ private struct RestoreRow: View {
     private var outcomeMark: some View {
         switch request.state {
         case .pending:
-            Circle()
-                .trim(from: 0, to: 0.7)
-                .stroke(Color.koi, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .frame(width: 8, height: 8)
+            ProgressMark()
                 .frame(width: 14)
         case .restored, .restoredAs:
             Image(systemName: "checkmark")

@@ -364,6 +364,56 @@ func versionCount(_ count: Int) -> String {
     String(localized: "\(count) versions")
 }
 
+func linkCount(_ count: Int) -> String {
+    String(localized: "\(count) links")
+}
+
+func daysLeft(_ days: Int) -> String {
+    String(localized: "In \(days) days")
+}
+
+extension ShareExpiry {
+    var title: String {
+        switch self {
+        case .day: daysLeft(1)
+        case .week: daysLeft(7)
+        case .month: daysLeft(30)
+        }
+    }
+}
+
+extension SharedLink {
+    var createdText: String {
+        let time = created.formatted(.dateTime.hour().minute())
+        return switch createdDay {
+        case .today: String(localized: "Today, \(time)")
+        case .yesterday: String(localized: "Yesterday, \(time)")
+        case .earlier: created.formatted(.dateTime.day().month(.abbreviated).year())
+        }
+    }
+}
+
+extension LinkEnd {
+    var text: String {
+        switch self {
+        case .never: String(localized: "Doesn’t expire")
+        case .remaining(.days(let days)): daysLeft(days)
+        case .remaining(.hours(let hours)): String(localized: "In \(hours) hours")
+        case .remaining(.lessThanAnHour): String(localized: "In less than an hour")
+        case .on(let date): date.formatted(.dateTime.day().month(.abbreviated).year())
+        }
+    }
+}
+
+extension SessionError {
+    var shareFailure: String {
+        switch self {
+        case .ServerUnreachable, .Failed: String(localized: "Couldn’t create the link. The server didn’t answer.")
+        default: String(localized: "Couldn’t create the link. \(message)")
+        }
+    }
+}
+
 func byteSize(_ bytes: UInt64) -> String {
     Int64(clamping: bytes).formatted(.byteCount(style: .file))
 }

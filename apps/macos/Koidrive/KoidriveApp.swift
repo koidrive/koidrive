@@ -97,6 +97,24 @@ struct KoidriveApp: App {
         .defaultSize(width: 720, height: 480)
         .defaultLaunchBehavior(launchFile == nil ? .automatic : .presented)
 
+        Window("Shared Links", id: WindowID.sharedLinks) {
+            SharedLinksView(app: model)
+                .environment(model)
+                .buttonStyle(.secondary)
+        }
+        .defaultSize(width: 760, height: 516)
+        .defaultLaunchBehavior(launchWindow == .sharedLinks ? .presented : .automatic)
+
+        WindowGroup("Share Link", id: WindowID.shareLink, for: URL.self) { $item in
+            if let item = item ?? launchShareItem {
+                ShareLinkView(app: model, item: item)
+                    .environment(model)
+                    .buttonStyle(.secondary)
+            }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(launchShareItem == nil ? .automatic : .presented)
+
         Settings {
             SettingsView()
                 .environment(model)
@@ -108,6 +126,11 @@ struct KoidriveApp: App {
         guard case .versionHistory(let path) = launchWindow else { return nil }
         return model.url(ofDisplayPath: path)
     }
+
+    private var launchShareItem: URL? {
+        guard case .shareLink(let path) = launchWindow else { return nil }
+        return model.url(ofDisplayPath: path)
+    }
 }
 
 enum WindowID {
@@ -115,6 +138,8 @@ enum WindowID {
     static let questions = "questions"
     static let deletedFiles = "deleted-files"
     static let versionHistory = "version-history"
+    static let shareLink = "share-link"
+    static let sharedLinks = "shared-links"
 }
 
 extension OpenWindowAction {
@@ -128,6 +153,12 @@ extension OpenWindowAction {
     @MainActor
     func showVersionHistory(of file: URL) {
         self(id: WindowID.versionHistory, value: file)
+        NSApp.activate()
+    }
+
+    @MainActor
+    func showShareLink(for item: URL) {
+        self(id: WindowID.shareLink, value: item)
         NSApp.activate()
     }
 }

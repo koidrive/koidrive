@@ -38,6 +38,28 @@
         }
       }
     },
+    "%lld links" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld link"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld links"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld need you" : {
       "localizations" : {
         "en" : {
@@ -175,11 +197,13 @@
     "A file can't be written" : {},
     "A file keeps changing" : {},
     "A folder stopped syncing" : {},
+    "A link is shown in full only when it’s made." : {},
     "A name is taken by an ignored item" : {},
     "A name isn't allowed on this Mac" : {},
     "A waiting restore goes out once its folder’s earlier changes sync." : {},
     "About" : {},
     "Account" : {},
+    "Active" : {},
     "Add Folder…" : {},
     "Add a Device…" : {},
     "Add a folder to start syncing." : {},
@@ -193,8 +217,11 @@
     "Another device removed this Mac, or its credential stopped working. Sign out in Account settings, then sign in with a pairing code from another device." : {},
     "Another device syncs this folder. Unlink it there first." : {},
     "Another disk is at the folder's path" : {},
+    "Anyone with the link can browse and download this folder, including files added later." : {},
+    "Anyone with the link can download this file." : {},
     "Applies to %@, %@" : {},
     "Asked %@" : {},
+    "At least 8 characters." : {},
     "Both files are kept and continue syncing. Run %@ in Terminal to review the files and choose which to keep." : {},
     "Can't reach the server" : {},
     "Can't reach the server." : {},
@@ -205,8 +232,11 @@
     "Change not saved: %@" : {},
     "Changed on this Mac" : {},
     "Changes sync when you resume." : {},
+    "Checking files before sharing…" : {},
     "Choose" : {},
     "Choose a file in %@ to see its versions." : {},
+    "Choose a file or folder in %@ to share." : {},
+    "Choose a file or folder in %@." : {},
     "Choose a file or folder inside the linked folder." : {},
     "Choose a folder on your Mac's disk. This file system isn't supported." : {},
     "Choose a folder to sync" : {},
@@ -226,13 +256,21 @@
     "Connect to a server first." : {},
     "Connect to your server" : {},
     "Connecting…" : {},
+    "Copied" : {},
     "Copy" : {},
     "Copy Path" : {},
+    "Copy it now. Koidrive won’t show this link again." : {},
+    "Couldn’t create the link. %@" : {},
+    "Couldn’t create the link. The server didn’t answer." : {},
     "Couldn’t load deleted files" : {},
+    "Couldn’t load links" : {},
     "Couldn’t load versions" : {},
     "Couldn’t restore. %@" : {},
     "Couldn’t restore. The server no longer has this version." : {},
     "Couldn’t restore. Too many items for one restore." : {},
+    "Couldn’t revoke the link. %@" : {},
+    "Create Link" : {},
+    "Created" : {},
     "Created after the restore point" : {},
     "Created on this Mac" : {},
     "Current" : {},
@@ -264,10 +302,13 @@
     "Deleted yesterday at %@ on this Mac" : {},
     "Devices" : {},
     "Dismiss" : {},
+    "Doesn’t expire" : {},
     "Done" : {},
     "Download All Again" : {},
     "Download only" : {},
     "Drop on %@" : {},
+    "Drop to share" : {},
+    "Drop to share %@" : {},
     "Each chunk counts once. Unreferenced: uploads in progress and chunks awaiting deletion." : {},
     "Each synced change keeps a version here." : {},
     "Earlier" : {},
@@ -276,12 +317,17 @@
     "Edited %@" : {},
     "Edited and moved from %@" : {},
     "Edited or moved on this Mac since the last sync. Upload them, or trash them here and keep the server's." : {},
+    "Ended" : {},
+    "Ends" : {},
     "Enter a name." : {},
     "Enter an address starting with https://." : {},
     "Enter it on the new device. Expires %@." : {},
     "Every folder is unlinked. Files stay on this Mac and the server." : {},
     "Everything else is up to date." : {},
+    "Expired" : {},
+    "Expires" : {},
     "Files" : {},
+    "Files and folders in %@" : {},
     "Files deleted in %@ show up here." : {},
     "Files disappeared" : {},
     "Files stay in the folder and on the server." : {},
@@ -298,9 +344,59 @@
     "Held files" : {},
     "If the name is taken, Koidrive keeps both." : {},
     "Imported space" : {},
+    "In %lld days" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "In %lld day"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "In %lld days"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "In %lld hours" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "In %lld hour"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "In %lld hours"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "In less than an hour" : {},
     "It changes too often to upload. If it's a log or database, add it to .koiignore." : {},
     "It never shares file names, paths or contents." : {},
     "It stops syncing. Files already on it stay there." : {},
+    "It stops working at once." : {},
+    "It stops working at once. You can share the file again with a new link." : {},
+    "It stops working at once. You can share the folder again with a new link." : {},
+    "Item" : {},
+    "Item no longer there" : {},
     "Its name isn't allowed." : {},
     "Its versions show once it’s up to date." : {},
     "Koidrive can't save its sync state" : {},
@@ -311,10 +407,14 @@
     "Link Folder" : {},
     "Linked folders can't be inside one another." : {},
     "Linked with files" : {},
+    "Links anyone can open" : {},
+    "Links load when Koidrive reconnects." : {},
     "Live files" : {},
     "Loading deleted files…" : {},
+    "Loading links…" : {},
     "Loading restores…" : {},
     "Loading versions…" : {},
+    "Make a link" : {},
     "Many files deleted from %@ on another device" : {},
     "Many files deleted on another device" : {},
     "Move All to Local Trash" : {},
@@ -333,6 +433,7 @@
     "Name of this Mac" : {},
     "Needs You" : {},
     "Needs You…" : {},
+    "Needs a password" : {},
     "Needs you" : {},
     "Needs your answer" : {},
     "New Space…" : {},
@@ -344,11 +445,13 @@
     "No other device is signed in. To get back in, run koi server add-device." : {},
     "No problems" : {},
     "No restores yet" : {},
+    "No shared links" : {},
     "None" : {},
     "Not signed in" : {},
     "Not synced yet" : {},
     "Nothing deleted in %@" : {},
     "Nothing needs you" : {},
+    "Offline" : {},
     "Old versions" : {},
     "Only a file has versions." : {},
     "Only files have versions." : {},
@@ -358,12 +461,14 @@
     "Open Login Items" : {},
     "Owner" : {},
     "Pairing code" : {},
+    "Password" : {},
     "Pause Sync" : {},
     "Problems" : {},
     "Put .koidrive back or unlink the folder." : {},
     "Put All Back on Server" : {},
     "Put the folder back or unlink it." : {},
     "Quit Koidrive" : {},
+    "Read-only. They can’t change anything." : {},
     "Recent changes" : {},
     "Recovering" : {},
     "Recovery needs a decision" : {},
@@ -378,6 +483,7 @@
     "Rename the file on another device." : {},
     "Repeat All Requests" : {},
     "Requested before the reset" : {},
+    "Require a password" : {},
     "Restore" : {},
     "Restore All Here" : {},
     "Restore Version" : {},
@@ -401,6 +507,11 @@
     "Resume Sync" : {},
     "Retrying %@." : {},
     "Review problems" : {},
+    "Revoke" : {},
+    "Revoke the link to %@?" : {},
+    "Revoke this link?" : {},
+    "Revoked" : {},
+    "Revoke…" : {},
     "Search Deleted Files" : {},
     "See versions" : {},
     "Selected path:" : {},
@@ -411,9 +522,16 @@
     "Set Up Koidrive…" : {},
     "Set up Koidrive" : {},
     "Settings…" : {},
+    "Share" : {},
+    "Share Link" : {},
+    "Share Link…" : {},
+    "Share a file or folder to get a link anyone can open." : {},
+    "Shared Links" : {},
+    "Shared Links…" : {},
     "Show" : {},
     "Show Restores" : {},
     "Show Versions" : {},
+    "Show ended links" : {},
     "Show in Finder" : {},
     "Sign In" : {},
     "Sign Out" : {},
@@ -427,6 +545,7 @@
     "Some files need your decision before Koidrive can sync them." : {},
     "Space" : {},
     "Space name" : {},
+    "Status" : {},
     "Stopped" : {},
     "Storage" : {},
     "Sync for this folder stopped" : {},
@@ -447,6 +566,7 @@
     "The folder's .koidrive marker can't be read" : {},
     "The folder's .koidrive marker is missing" : {},
     "The folder's file system isn't supported" : {},
+    "The item was moved or deleted" : {},
     "The linked folder itself can't be restored." : {},
     "The linked path isn't a folder" : {},
     "The place it goes back to is a file now." : {},
@@ -491,6 +611,7 @@
     "This space no longer exists." : {},
     "To remove this Mac, sign out." : {},
     "Today" : {},
+    "Today, %@" : {},
     "Too many items for one restore." : {},
     "Too many wrong codes. Try again in a few minutes." : {},
     "Total" : {},
@@ -509,6 +630,8 @@
     "Upload All" : {},
     "Upload This Mac's Versions" : {},
     "Use a password of 8 to 256 characters." : {},
+    "Use at least 8 characters." : {},
+    "Use at most 256 characters." : {},
     "Version History" : {},
     "Version History…" : {},
     "Version from %@ at %@" : {},
@@ -521,6 +644,9 @@
     "When you restore a file, you can follow it here." : {},
     "Wrong or expired code." : {},
     "Yesterday" : {},
+    "Yesterday, %@" : {},
+    "You can share it once it’s up to date." : {},
+    "You can share once Koidrive reconnects." : {},
     "Your name" : {},
     "^[%llu file](inflect: true)" : {},
     "^[%llu version](inflect: true)" : {},
