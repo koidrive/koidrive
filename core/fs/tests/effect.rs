@@ -841,3 +841,25 @@ fn a_permission_lost_after_the_first_change_fails_the_section_and_recovery_finis
         assert_eq!(trashed(root), [SYNCED.to_vec()]);
     }
 }
+
+#[test]
+fn a_permission_lost_after_the_check_and_before_a_new_file_is_placed_fails_only_the_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(&SCENARIOS[1], root);
+    let docs = root.join("docs");
+    let before = listing(&docs);
+    let outcome = apply(root, &effect, |step| {
+        if step == Step::Checked {
+            fs::set_permissions(&docs, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+    });
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(outcome, failed(Reason::Denied));
+    assert_eq!(listing(&docs), before);
+}
