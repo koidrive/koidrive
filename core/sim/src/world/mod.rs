@@ -313,24 +313,55 @@ fn given(asked: impl Fn(&str) -> bool, name: &str) -> bool {
     asked(name) || pending_stem(name).is_some_and(asked)
 }
 
-/// Fails when an effect sent a file to the local trash that held a write the server never held,
-/// unless a person discarded that write in answer to a recovery question.
-fn lost(
+fn retained(space: &SpaceDo, node: &str) -> Vec<Vec<u8>> {
+    let mut digests = Vec::new();
+    let mut cursor = String::new();
+    loop {
+        let request = ListVersions {
+            node_id: node.into(),
+            cursor,
+            limit: 1000,
+        };
+        let Ok(list) = space.list_versions(&request) else {
+            return digests;
+        };
+        digests.extend(
+            (list.versions.into_iter())
+                .filter_map(|version| Some(version.content?.manifest_digest)),
+        );
+        if list.next_cursor.is_empty() {
+            return digests;
+        }
+        cursor = list.next_cursor;
+    }
+}
+
+fn trashed_copy(
     held: &Held,
     discarded: &BTreeSet<i64>,
+    synced: Option<&Shape>,
+    retained: &[Vec<u8>],
     d: usize,
     record: &EffectRecord,
     applied: &Applied,
-) -> Result<(), Failure> {
-    let trashed = applied.trashed.as_ref();
-    let kept = |write: i64| stored(held, write) || discarded.contains(&write);
-    match trashed.filter(|content| !kept(content.mtime_ns)) {
-        Some(lost) => Err(Failure::Broken(format!(
-            "{:?} removed write {} from the disk of device {d}, and the server never held that write",
-            record.effect, lost.mtime_ns
-        ))),
-        None => Ok(()),
+) -> Result<Option<i64>, Failure> {
+    let Some(trashed) = applied.trashed.as_ref() else {
+        return Ok(None);
+    };
+    let write = trashed.mtime_ns;
+    if stored(held, write) || discarded.contains(&write) {
+        return Ok(None);
     }
+    let digest = &trashed.manifest_digest;
+    let unchanged = (synced.and_then(|shape| shape.content.as_ref()))
+        .is_some_and(|content| content.manifest_digest == *digest);
+    if !unchanged || !retained.contains(digest) {
+        return Err(Failure::Broken(format!(
+            "{:?} removed write {write} from the disk of device {d}, and the server never held that write",
+            record.effect
+        )));
+    }
+    Ok(Some(write))
 }
 
 /// Whether an effect that trashes a write the server never held downloads a lost write of the same
@@ -541,6 +572,7 @@ pub struct World {
     moved_since_rewind: BTreeSet<i64>,
     /// The writes a person discarded in answer to a recovery question, which go to the local trash.
     discarded: BTreeSet<i64>,
+    binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
 }
@@ -620,6 +652,7 @@ impl World {
             republished: BTreeSet::new(),
             moved_since_rewind: BTreeSet::new(),
             discarded: BTreeSet::new(),
+            binned_copies: BTreeSet::new(),
             answers: 0,
         }
     }
@@ -1309,7 +1342,18 @@ impl World {
             if let Some(applied) = applied.as_ref().filter(|applied| {
                 !resent_over_revert(&self.exposed, &self.rolled_back, record, applied)
             }) {
-                lost(&self.held, &self.discarded, d, record, applied)?;
+                let synced = device.engine.trees.synced().live(&record.node);
+                let retained = retained(&self.space, &record.node);
+                let copy = trashed_copy(
+                    &self.held,
+                    &self.discarded,
+                    synced,
+                    &retained,
+                    d,
+                    record,
+                    applied,
+                )?;
+                self.binned_copies.extend(copy);
             }
             let applied = applied.map(|applied| applied.outcome);
             if let Outcome::Crash(cut) = outcome {
@@ -1457,7 +1501,18 @@ impl World {
             let quarantined = device.disk.quarantine.contains_key(&record.effect_id);
             let applied = device.disk.recover(record);
             if !resent_over_revert(&self.exposed, &self.rolled_back, record, &applied) {
-                lost(&self.held, &self.discarded, d, record, &applied)?;
+                let synced = device.engine.trees.synced().live(&record.node);
+                let retained = retained(&self.space, &record.node);
+                let copy = trashed_copy(
+                    &self.held,
+                    &self.discarded,
+                    synced,
+                    &retained,
+                    d,
+                    record,
+                    &applied,
+                )?;
+                self.binned_copies.extend(copy);
             }
             let engine = &device.engine;
             let refuted = matches!(
@@ -2635,7 +2690,8 @@ impl World {
                 && !self.rewound.contains_key(write)
                 && !self.removed[**writer].contains(write)
                 && !disk.holds(**write)
-                && !(self.discarded.contains(write) && disk.binned(**write))
+                && !((self.discarded.contains(write) || self.binned_copies.contains(write))
+                    && disk.binned(**write))
         });
         if let Some((write, writer)) = lost {
             return Err(Failure::Broken(format!(
@@ -2926,6 +2982,7 @@ impl World {
                 && !self.published.contains(write)
                 && !self.removed[**writer].contains(write)
                 && !self.discarded.contains(write)
+                && !self.binned_copies.contains(write)
                 && !same_bytes_on_server(**write, **writer)
                 && !kept_by_a_departed_writer(**write, **writer)
         });
@@ -3370,7 +3427,18 @@ mod tests {
             }),
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
-        assert!(lost(&Held::new(), &BTreeSet::new(), 0, &record, &applied).is_err());
+        assert!(
+            trashed_copy(
+                &Held::new(),
+                &BTreeSet::new(),
+                None,
+                &[],
+                0,
+                &record,
+                &applied
+            )
+            .is_err()
+        );
         let rolled_back = BTreeMap::from([("a".into(), old.manifest_digest)]);
         for file in ["a", "b"] {
             let exposed = BTreeMap::from([(
@@ -3385,6 +3453,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_trashed_write_is_a_copy_only_of_synced_bytes_the_server_keeps() {
+        let (trashed, other) = (content(0, 1, 11), content(0, 2, 12));
+        let record = EffectRecord {
+            effect_id: "download".into(),
+            node: "a".into(),
+            counter: 1,
+            effect: Effect::WriteFile {
+                at: Location::At {
+                    base: Base::Root,
+                    dirs: Vec::new(),
+                    name: "a".into(),
+                },
+                content: other.clone(),
+                replaces: None,
+            },
+            after: None,
+        };
+        let applied = Applied {
+            outcome: Ok(None),
+            trashed: Some(trashed.clone()),
+        };
+        let synced = |bytes: &Content| Shape {
+            parent: "root".into(),
+            name: "a".into(),
+            kind: Kind::File,
+            content: Some(bytes.clone()),
+        };
+        let (same, changed) = (synced(&trashed), synced(&other));
+        let kept = vec![trashed.manifest_digest.clone()];
+        let erased = vec![other.manifest_digest.clone()];
+        for (synced, retained, copy) in [
+            (Some(&same), &kept, true),
+            (Some(&same), &erased, false),
+            (Some(&changed), &kept, false),
+            (None, &kept, false),
+        ] {
+            let found = trashed_copy(
+                &Held::new(),
+                &BTreeSet::new(),
+                synced,
+                retained,
+                0,
+                &record,
+                &applied,
+            );
+            assert_eq!(
+                found.ok(),
+                copy.then_some(Some(11)),
+                "{synced:?} {retained:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_in_the_local_trash_is_kept_only_as_a_copy_of_bytes_the_server_held() {
+        let mut world = World::new(1);
+        let write = content(0, 1, 5);
+        let disk = &mut world.devices[0].disk;
+        let ino = disk.create(Place::Root, "a", Some(write.clone())).unwrap();
+        let record = EffectRecord {
+            effect_id: "removal".into(),
+            node: "a".into(),
+            counter: 1,
+            effect: Effect::RemoveFile {
+                displaced: Displaced {
+                    at: Location::At {
+                        base: Base::Root,
+                        dirs: Vec::new(),
+                        name: "a".into(),
+                    },
+                    identity: disk::identity(ino),
+                    content: write,
+                },
+            },
+            after: None,
+        };
+        disk.apply(&record, Some(Cut::Done)).unwrap();
+        assert!(disk.binned(5));
+        world.writers.insert(5, 0);
+        let kept = world.kept();
+        assert!(
+            matches!(&kept, Err(Failure::Broken(why)) if why.starts_with("write 5 left")),
+            "{kept:?}"
+        );
+        let converged = world.converged();
+        assert!(
+            matches!(&converged, Err(Failure::Diverged(why)) if why.starts_with("write 5 of device 0")),
+            "{converged:?}"
+        );
+        world.binned_copies.insert(5);
+        world.kept().unwrap();
+        world.converged().unwrap();
+    }
+
     fn send(world: &mut World, d: usize) -> Result<(), Failure> {
         let mut steps = vec![
             (d, Step::Scan),
@@ -3393,6 +3556,103 @@ mod tests {
         ];
         steps.extend([(d, Step::Deliver(0)); 8]);
         world.run(0, &steps)
+    }
+
+    #[test]
+    fn a_revert_to_bytes_a_restore_erased_from_the_server_is_not_excused_from_the_trash() {
+        let user = |kind, text| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name: 0,
+                text,
+            })
+        };
+        let mut world = World::new(1);
+        world.phase(0, &[(0, user(1, 1))]).unwrap();
+        world.run(0, &[(0, Step::Backup)]).unwrap();
+        world.phase(1, &[(0, user(2, 0))]).unwrap();
+        let node = live_writes(&world.space).get(&2).unwrap().clone();
+        let a = content(0, 0, 4);
+        let save = |world: &mut World, text, write| {
+            let disk = &mut world.devices[0].disk;
+            let ino = disk.child(&Place::Root, "a").unwrap();
+            let old = disk.overwrite(ino, content(0, text, write)).unwrap();
+            world.removed[0].insert(old.mtime_ns);
+            world.writers.insert(write, 0);
+            world.writes = write;
+        };
+        save(&mut world, 1, 3);
+        world.phase(2, &[(0, Step::Restore)]).unwrap();
+        let versions = world
+            .space
+            .list_versions(&ListVersions {
+                node_id: node.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(versions.versions.iter().all(|v| {
+            v.content
+                .as_ref()
+                .is_none_or(|c| c.manifest_digest != a.manifest_digest)
+        }));
+        assert_eq!(world.held[&node][&2], a.manifest_digest);
+        world.kept().unwrap();
+        world.converged().unwrap();
+        save(&mut world, 0, 4);
+        world.scan(0).unwrap();
+        let local = world.devices[0].engine.trees.local().get(&node).unwrap();
+        let synced = world.devices[0].engine.trees.synced().live(&node).unwrap();
+        assert!(!same_content(
+            local.shape.content.as_ref().unwrap(),
+            synced.content.as_ref().unwrap()
+        ));
+        assert!(!world.removed[0].contains(&4));
+        assert!(!world.published.contains(&4));
+        assert!(!world.discarded.contains(&4));
+        let after = world.devices[0]
+            .engine
+            .trees
+            .remote()
+            .get(&node)
+            .unwrap()
+            .shape
+            .clone();
+        let b = after.content.clone().unwrap();
+        let disk = &mut world.devices[0].disk;
+        let ino = disk.child(&Place::Root, "a").unwrap();
+        let at = Location::At {
+            base: Base::Root,
+            dirs: vec![],
+            name: "a".into(),
+        };
+        let record = EffectRecord {
+            effect_id: "review-bad-download".into(),
+            node: node.clone(),
+            counter: disk.marker() + 1,
+            effect: Effect::WriteFile {
+                at: at.clone(),
+                content: b,
+                replaces: Some(Displaced {
+                    at,
+                    identity: disk::identity(ino),
+                    content: a,
+                }),
+            },
+            after: Some(after),
+        };
+        assert!(record.applies(&world.devices[0].engine.trees, None));
+        let mut state = world.devices[0].engine.effects.state();
+        state.in_flight = vec![record];
+        world.devices[0].engine.effects =
+            koidrive_engine::effects::Effects::from_state(state).unwrap();
+        world.devices[0].store = world.devices[0].engine.clone();
+        let effect = world.effect(0, Outcome::Run);
+        assert!(
+            matches!(&effect, Err(Failure::Broken(why)) if why.contains("removed write 4")),
+            "{effect:?}"
+        );
     }
 
     fn connect(world: &mut World, d: usize) {

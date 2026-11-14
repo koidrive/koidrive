@@ -7556,6 +7556,50 @@ fn a_node_keeps_no_pending_name_after_the_server_refuses_a_commit_as_too_large()
 }
 
 #[test]
+fn a_download_may_trash_a_save_of_bytes_the_server_held_on_the_same_node() {
+    use Step::*;
+    let phases = vec![
+        vec![
+            (2, act(1, 0, 0, "b", 0)),
+            (0, Backup),
+            (2, act(1, 0, 0, "ß", 1)),
+            (0, Rewind),
+        ],
+        vec![
+            (0, act(1, 0, 0, "a", 0)),
+            (0, Work(0)),
+            (2, Work(0)),
+            (2, act(1, 0, 0, "ss", 0)),
+            (1, act(2, 358069974005845777, 0, "a", 0)),
+            (0, act(0, 0, 0, "a", 0)),
+            (0, act(3, 1882893262604114980, 0, "C.TXT", 0)),
+            (2, act(2, 3537575246771866676, 0, "a", 0)),
+            (1, act(2, 653641773316331138, 0, "a", 0)),
+            (0, Backup),
+            (0, act(2, 9176386153569910301, 0, "a", 1)),
+            (2, act(3, 951376779630560569, 0, "\u{c9}", 0)),
+        ],
+        vec![
+            (0, act(0, 0, 0, "A", 0)),
+            (0, Work(0)),
+            (0, act(0, 0, 763628599738666124, "a", 0)),
+            (0, act(2, 275683492289250476, 0, "a", 0)),
+            (2, Work(66945335161669840)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (1, act(2, 745941074334699559, 0, "a", 0)),
+            (0, Work(0)),
+            (0, Rewind),
+            (2, act(0, 0, 0, "c.txt", 0)),
+            (0, Connect),
+            (0, Deliver(0)),
+            (2, act(2, 6100079202816984293, 0, "a", 1)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
 fn a_node_named_with_a_sharp_s_keeps_no_pending_name() {
     use Reply::*;
     use Step::*;
