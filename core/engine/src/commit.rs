@@ -2773,7 +2773,7 @@ fn wedged(
         }
         loop {
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
-            if (problems.contains(at) || pending) && !trees.excluded(at) {
+            if problems.contains(at) || (pending && !trees.excluded(at)) {
                 return None;
             }
             if !seen.insert(at) {
