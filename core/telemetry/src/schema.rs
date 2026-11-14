@@ -986,8 +986,8 @@ named!(
     |command: Command| command.name().to_owned()
 );
 named!(Failure, "failure", Failure::all(), |failure: Failure| {
-    let (group, name) = failure.key();
-    format!("{group}.{name}")
+    let (group, kind) = failure.key();
+    format!("{group}.{kind}")
 });
 
 /// A function of Koidrive's own code, such as `koidrive_driver::folder::Folder::run::{{closure}}`, without its generic
