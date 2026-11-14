@@ -235,6 +235,41 @@ fn a_state_folder_that_holds_other_files_loses_only_what_koidrive_wrote() {
 }
 
 #[test]
+fn a_state_folder_left_with_one_staged_file_is_removed() {
+    for name in [
+        "credential.next",
+        ".credential.next.123.tmp",
+        "leaving.next",
+    ] {
+        let machine = Machine::new();
+        let koi = machine.copy_koi(".local/bin/koi");
+        machine.write(&format!("state/koidrive/{name}"), "{}");
+
+        let (output, envelope) = machine.uninstall(&koi);
+
+        assert!(output.status.success(), "{name}: {envelope:#}");
+        assert!(
+            !machine.path("state/koidrive").exists(),
+            "{name}: {envelope:#}"
+        );
+        assert!(!koi.exists(), "{name}: {envelope:#}");
+        assert!(
+            !kept(&envelope)
+                .iter()
+                .any(|kept| kept["kind"] == "unrecognized"),
+            "{name}: {envelope:#}"
+        );
+        let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+        assert!(output.status.success(), "{name}: {envelope:#}");
+        assert_eq!(
+            removed(&envelope),
+            &Vec::<Value>::new(),
+            "{name}: {envelope:#}"
+        );
+    }
+}
+
+#[test]
 fn a_linked_state_folder_goes_with_its_link() {
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");

@@ -192,7 +192,6 @@ struct Found {
     files: Vec<PathBuf>,
     app_files: Vec<PathBuf>,
     profiles: Vec<PathBuf>,
-    kept: Vec<Kept>,
 }
 
 impl Found {
@@ -339,8 +338,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         .ok_or_else(|| CliError::usage("HOME is not set to an absolute path"))?;
     let found = find(paths, &home).await;
     if found.is_empty() {
-        let mut kept = found.kept.clone();
-        kept.extend(kept_programs(&found.programs));
+        let kept = kept_programs(&found.programs);
         let text = format!(
             "Koidrive is not installed for this user, so there is nothing to remove.\n{}",
             kept_text(&kept)
@@ -355,7 +353,6 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     confirm(&found, &options, terminal).await?;
     let shared = !found.others.is_empty();
     let mut run = Run {
-        kept: found.kept.clone(),
         folders: found.folders.clone(),
         ..Run::default()
     };
@@ -364,7 +361,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         quit_apps(&found.programs, &mut run).await;
     }
     let device = sign_out(paths, &found, &options, terminal).await;
-    remove_service(&found, &mut run);
+    remove_service(&found, &mut run).await;
     if let Err(problem) = released(paths).await {
         run.problems.push(problem);
         return finish(device, run);
@@ -470,14 +467,7 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         also.push(PathBuf::from(binary));
     }
     let programs = programs(home, &also);
-    let mut kept = Vec::new();
-    match state {
-        true => files.push(paths.state_dir.clone()),
-        false if fs::symlink_metadata(&paths.state_dir).is_ok() => kept.push(Kept::Unrecognized {
-            path: paths.state_dir.display().to_string(),
-        }),
-        false => {}
-    }
+    files.push(paths.state_dir.clone());
     files.extend(paths.config_file.parent().map(Path::to_path_buf));
     if paths.runtime_dir != paths.state_dir {
         files.push(paths.socket());
@@ -517,7 +507,6 @@ async fn find(paths: &Paths, home: &Path) -> Found {
             .into_iter()
             .filter(|path| has_path_line(path))
             .collect(),
-        kept,
     }
 }
 
@@ -723,14 +712,6 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
             lines.push(format!("  the background service {}", other.name));
         }
     }
-    for kept in &found.kept {
-        if let Kept::Unrecognized { path } = kept {
-            lines.push(format!(
-                "It keeps {}, which holds files Koidrive does not write.",
-                shown_folder(Path::new(path))
-            ));
-        }
-    }
     lines
 }
 
@@ -817,7 +798,7 @@ async fn sign_out(
     }
 }
 
-fn remove_service(found: &Found, run: &mut Run) {
+async fn remove_service(found: &Found, run: &mut Run) {
     let Some((manager, service)) = &found.service else {
         return;
     };
@@ -832,6 +813,19 @@ fn remove_service(found: &Found, run: &mut Run) {
         }
         Err(problem) => Err(problem),
     };
+    let mut removed = removed;
+    let deadline = Instant::now() + RELEASE;
+    while removed.is_ok() {
+        match manager.state(service) {
+            Ok(State::NotInstalled) => break,
+            Err(_) if !service.file(manager.kind()).exists() => break,
+            Ok(_) if Instant::now() >= deadline => {
+                removed = Err("it is still loaded after removal".to_owned());
+            }
+            Ok(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            Err(problem) => removed = Err(problem),
+        }
+    }
     match removed {
         Ok(()) => run.removed.push(Removed::Service { name }),
         Err(problem) => run.problems.push(format!(
