@@ -104,7 +104,11 @@ public final class AppModel {
 
     private func run<T: Sendable>(_ call: @escaping @Sendable (SyncSession) throws -> T) async throws -> T {
         let session = session
-        let result = await Task.detached { Result { try call(session) } }.value
+        let result = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: Result { try call(session) })
+            }
+        }
         refresh()
         return try result.get()
     }
