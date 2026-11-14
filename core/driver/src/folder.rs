@@ -1034,13 +1034,13 @@ impl Folder {
                 utc(unreadable.at)
             )),
             many => {
-                let mut named: Vec<String> = (many.iter())
+                let mut listed: Vec<String> = (many.iter())
                     .map(|(unreadable, path)| {
                         format!("{} ({})", koidrive_fs::quoted(path), unreadable.why)
                     })
                     .collect();
-                let more = named.len().saturating_sub(STUCK_SHOWN);
-                named.truncate(STUCK_SHOWN);
+                let more = listed.len().saturating_sub(STUCK_SHOWN);
+                listed.truncate(STUCK_SHOWN);
                 let more = match more {
                     0 => String::new(),
                     more => format!(", and {more} more"),
@@ -1049,7 +1049,7 @@ impl Folder {
                 Some(format!(
                     "{} files could not be read: {}{more}; trying again at {}",
                     many.len(),
-                    named.join(", "),
+                    listed.join(", "),
                     utc(next.unwrap_or(UNIX_EPOCH))
                 ))
             }
