@@ -500,4 +500,46 @@ private let fourVersions = [
         #expect(history.folder == photos)
         #expect(history.parentPath == "Photos/Reports/")
     }
+
+    private func linkedTemporaryFolder() throws -> (AppModel, URL, URL, LinkedFolder) {
+        let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-alias-\(UUID().uuidString)").resolvingSymlinksInPath()
+        let root = base.appending(path: "Sync")
+        try FileManager.default.createDirectory(at: root.appending(path: "Docs"), withIntermediateDirectories: true)
+        let folder = LinkedFolder(spaceId: "space-sync", spaceName: "Sync", path: root.path(percentEncoded: false), state: .upToDate)
+        let app = AppModel.fake(scenario: .upToDate)
+        app.apply(.folders(folders: [folder]))
+        return (app, base, root, folder)
+    }
+
+    @Test func aFinderAliasOfAFileIsThatFile() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = root.appending(path: "Docs/Plan.key")
+        try Data("plan".utf8).write(to: target)
+        let alias = base.appending(path: "Plan alias")
+        try URL.writeBookmarkData(target.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+
+        #expect(app.folder(containing: alias) == folder)
+        #expect(SharedLinksModel(app: app).canShare(alias))
+        #expect(ShareLinkModel(app: app, item: alias).name == "Plan.key")
+        let history = VersionHistoryModel(app: app, file: alias, clock: halfPastMidnight)
+        #expect(history.name == "Plan.key")
+        #expect(history.parentPath == "Sync/Docs/")
+    }
+
+    @Test func aLinkIntoTheFolderCannotBringInAFileOutsideIt() throws {
+        let (app, base, root, _) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let outside = base.appending(path: "Outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outside.appending(path: "Plan.key"))
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "away"), withDestinationURL: outside)
+        let shortcut = base.appending(path: "Shortcut")
+        try FileManager.default.createSymbolicLink(at: shortcut, withDestinationURL: root)
+
+        #expect(app.folder(containing: shortcut.appending(path: "away/Plan.key")) == nil)
+        #expect(app.folder(containing: root.appending(path: "away/Plan.key")) == nil)
+        #expect(!SharedLinksModel(app: app).canShare(shortcut.appending(path: "away/Plan.key")))
+        #expect(app.folder(containing: shortcut.appending(path: "Docs/New.key")) != nil)
+    }
 }
