@@ -103,7 +103,7 @@ struct KoidriveApp: App {
                 .buttonStyle(.secondary)
         }
         .defaultSize(width: 760, height: 516)
-        .defaultLaunchBehavior(launchWindow == .sharedLinks ? .presented : .automatic)
+        .defaultLaunchBehavior(AppModel.launchesSharedLinks(in: .standard) ? .presented : .automatic)
 
         WindowGroup("Share Link", id: WindowID.shareLink, for: URL.self) { $item in
             if let item = item ?? launchShareItem {
