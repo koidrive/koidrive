@@ -9,7 +9,7 @@ use koidrive_driver::{
     RecoveryTrigger, RestoreRejection, RestoreRequest, RestoreState, RestoreStatus, RestoreWait,
     Status, Update, Wait, WaitKind,
 };
-use koidrive_ipc::{Code, Next};
+use koidrive_ipc::{Code, Next, Reason};
 use koidrive_proto::v1::{DeviceInfo, SpaceInfo, SpaceUsage, device_info::Kind};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -99,6 +99,8 @@ impl Done {
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct ErrorBody {
     pub code: Code,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
     pub message: String,
     pub retryable: bool,
 }
@@ -140,6 +142,7 @@ impl Envelope {
             data,
             error: Some(ErrorBody {
                 code: error.code,
+                reason: error.reason,
                 retryable: error.code.retryable(),
                 message: error.message,
             }),
@@ -996,6 +999,14 @@ pub struct TrashEntry {
     pub trash_group: String,
     pub files: u64,
     pub bytes: u64,
+    /// When the content it has was saved; null for a folder.
+    pub modified_at_ms: Option<i64>,
+    /// When it was deleted, null when the server does not say (RFC 0023).
+    pub deleted_at_ms: Option<i64>,
+    /// The device that deleted it, null when the server does not say.
+    pub deleted_by_device_id: Option<String>,
+    /// That device's name, null for a device of another account or when the server does not say.
+    pub deleted_by_device_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
@@ -1010,6 +1021,8 @@ pub struct VersionData {
     pub seq: u64,
     pub size: u64,
     pub device_id: String,
+    /// The name of the device that saved it, or null for a device of another account.
+    pub device_name: Option<String>,
     pub created_at_ms: i64,
     pub current: bool,
 }
@@ -1037,6 +1050,10 @@ pub struct RequestsData {
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct RequestData {
     pub id: String,
+    /// The path of its node relative to the linked folder, or where it was while it is in the trash; null when the
+    /// folder does not know it.
+    pub path: Option<String>,
+    pub asked_at_ms: i64,
     pub request: RequestedData,
     pub state: RequestState,
 }
@@ -1070,6 +1087,8 @@ impl RequestData {
     pub fn of(restore: &RestoreStatus) -> Self {
         RequestData {
             id: restore.id.clone(),
+            path: restore.path.clone(),
+            asked_at_ms: restore.asked_at_ms,
             request: match &restore.request {
                 RestoreRequest::FromTrash {
                     node_id,

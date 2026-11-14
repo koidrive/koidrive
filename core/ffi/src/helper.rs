@@ -8,12 +8,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use koidrive_driver::{self as driver, FolderState, Status};
-use koidrive_ipc::{Code, Next};
-use serde::Deserialize;
+use koidrive_ipc::{Code, Next, Reason};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::types::{Account, Device, LinkedFolder, PairingCode, SessionError, Space, SpaceUsage};
+use crate::types::{
+    Account, DeletedItem, Device, FileVersion, FileVersions, LinkedFolder, NodeKind, PairingCode,
+    RestoreAsked, RestoreRefusal, RestoreRequest, RestoreState, RestoreTarget, SessionError, Space,
+    SpaceUsage, Trash,
+};
 
 #[derive(Clone)]
 pub(crate) struct Helper {
@@ -45,7 +49,13 @@ struct Envelope {
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
     code: Code,
+    #[serde(default, deserialize_with = "known")]
+    reason: Option<Reason>,
     message: String,
+}
+
+fn known<'de, D: Deserializer<'de>>(reason: D) -> Result<Option<Reason>, D::Error> {
+    Ok(Option::<Value>::deserialize(reason)?.and_then(|reason| Reason::deserialize(reason).ok()))
 }
 
 #[derive(Debug)]
@@ -58,6 +68,7 @@ pub(crate) struct Done {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub(crate) code: Code,
+    pub(crate) reason: Option<Reason>,
     pub(crate) message: String,
     pub(crate) next: Vec<Next>,
 }
@@ -66,6 +77,7 @@ impl Refusal {
     fn failed(message: String) -> Self {
         Refusal {
             code: Code::Failed,
+            reason: None,
             message,
             next: Vec::new(),
         }
@@ -73,6 +85,22 @@ impl Refusal {
 
     pub(crate) fn names(&self, flag: &str) -> bool {
         (self.next.iter()).any(|next| next.argv.iter().any(|arg| arg == flag))
+    }
+
+    pub(crate) fn at(self, path: &str) -> SessionError {
+        match self.reason {
+            Some(Reason::NotInLinkedFolder) => SessionError::PathNotInLinkedFolder {
+                path: path.to_owned(),
+            },
+            Some(Reason::LinkedFolderItself) => SessionError::PathIsLinkedFolder,
+            Some(Reason::NotFound) => SessionError::NothingAtPath,
+            Some(Reason::IsFolder) => SessionError::PathIsFolder,
+            Some(Reason::NotDeleted) => SessionError::NotDeleted,
+            Some(Reason::NotInTrash) => SessionError::DeletedItemNotFound,
+            Some(Reason::NoSuchVersion) => SessionError::VersionNotFound,
+            Some(Reason::AlreadyCurrent) => SessionError::VersionIsCurrent,
+            Some(Reason::SeveralDeletions) | None => self.into(),
+        }
     }
 }
 
@@ -169,6 +197,7 @@ impl Helper {
         match envelope.error {
             Some(error) => Err(Refusal {
                 code: error.code,
+                reason: error.reason,
                 message: error.message,
                 next: envelope.next_commands,
             }),
@@ -595,6 +624,204 @@ impl UsagesData {
             }),
             None => Err(SessionError::SpaceNotFound),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TrashData {
+    folder: String,
+    entries: Vec<TrashEntryData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrashEntryData {
+    node_id: String,
+    path: String,
+    kind: EntryKind,
+    files: u64,
+    bytes: u64,
+    #[serde(default)]
+    modified_at_ms: Option<i64>,
+    #[serde(default)]
+    deleted_at_ms: Option<i64>,
+    #[serde(default)]
+    deleted_by_device_id: Option<String>,
+    #[serde(default)]
+    deleted_by_device_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EntryKind {
+    File,
+    Folder,
+    Symlink,
+}
+
+impl TrashData {
+    pub(crate) fn trash(self) -> Trash {
+        Trash {
+            folder: self.folder,
+            items: (self.entries.into_iter())
+                .map(|entry| DeletedItem {
+                    node_id: entry.node_id,
+                    path: entry.path,
+                    kind: match entry.kind {
+                        EntryKind::Folder => NodeKind::Folder,
+                        EntryKind::File | EntryKind::Symlink => NodeKind::File,
+                    },
+                    files: entry.files,
+                    bytes: entry.bytes,
+                    modified_at_ms: entry.modified_at_ms,
+                    deleted_at_ms: entry.deleted_at_ms,
+                    deleted_by_device_id: entry.deleted_by_device_id,
+                    deleted_by_device_name: entry.deleted_by_device_name,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VersionsData {
+    path: String,
+    node_id: String,
+    versions: Vec<VersionData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionData {
+    version_id: String,
+    size: u64,
+    device_id: String,
+    #[serde(default)]
+    device_name: Option<String>,
+    created_at_ms: i64,
+    current: bool,
+}
+
+impl VersionsData {
+    pub(crate) fn versions(self) -> FileVersions {
+        FileVersions {
+            path: self.path,
+            node_id: self.node_id,
+            versions: (self.versions.into_iter())
+                .map(|version| FileVersion {
+                    version_id: version.version_id,
+                    size: version.size,
+                    saved_at_ms: version.created_at_ms,
+                    device_id: version.device_id,
+                    device_name: version.device_name,
+                    current: version.current,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RestoreAskedData {
+    request_id: String,
+    folder: String,
+    path: String,
+}
+
+impl RestoreAskedData {
+    pub(crate) fn asked(self) -> RestoreAsked {
+        RestoreAsked {
+            request_id: self.request_id,
+            folder: self.folder,
+            path: self.path,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RequestsData {
+    requests: Vec<RequestData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequestData {
+    id: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    asked_at_ms: i64,
+    request: RequestedData,
+    state: RequestStateData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RequestedData {
+    FromTrash { node_id: String },
+    Version { node_id: String, version_id: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RequestStateData {
+    Pending {
+        #[serde(default)]
+        waits_for: Option<String>,
+    },
+    Restored,
+    Renamed {
+        name: String,
+    },
+    Copied {
+        node_id: String,
+        name: String,
+    },
+    Rejected {
+        reason: String,
+    },
+    DoesNotFit,
+}
+
+impl RequestsData {
+    pub(crate) fn requests(self) -> Vec<RestoreRequest> {
+        (self.requests.into_iter())
+            .map(|request| RestoreRequest {
+                id: request.id,
+                path: request.path,
+                asked_at_ms: request.asked_at_ms,
+                target: match request.request {
+                    RequestedData::FromTrash { node_id } => RestoreTarget::Deleted { node_id },
+                    RequestedData::Version {
+                        node_id,
+                        version_id,
+                    } => RestoreTarget::Version {
+                        node_id,
+                        version_id,
+                    },
+                },
+                state: match request.state {
+                    RequestStateData::Pending { waits_for } => RestoreState::Pending {
+                        held_by_problem: waits_for.is_some(),
+                    },
+                    RequestStateData::Restored => RestoreState::Restored,
+                    RequestStateData::Renamed { name } => RestoreState::RestoredAs { name },
+                    RequestStateData::Copied { node_id, name } => {
+                        RestoreState::RestoredAsCopy { node_id, name }
+                    }
+                    RequestStateData::Rejected { reason } => RestoreState::Refused {
+                        reason: match reason.as_str() {
+                            "not_found" => RestoreRefusal::Gone,
+                            "not_file" => RestoreRefusal::NotAFile,
+                            "invalid_name" => RestoreRefusal::InvalidName,
+                            "parent_not_dir" => RestoreRefusal::DestinationNotAFolder,
+                            "cycle" => RestoreRefusal::DestinationInsideItself,
+                            "root" => RestoreRefusal::Root,
+                            "read_only" => RestoreRefusal::ReadOnly,
+                            _ => RestoreRefusal::Other { reason },
+                        },
+                    },
+                    RequestStateData::DoesNotFit => RestoreState::TooLarge,
+                },
+            })
+            .collect()
     }
 }
 

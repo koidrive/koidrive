@@ -1534,8 +1534,10 @@ impl Driver {
     /// that wait, in request order. A waiting restore whose node has a problem says so, because it stays pending
     /// until the problem is cleared. The store keeps the last 1,000 that ended and drops older ones.
     pub fn restores(&self, space_id: &str) -> Result<Vec<RestoreStatus>, DriverError> {
-        self.read_store(space_id, |store| store.transaction(restore::list))?
-            .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))
+        self.read_store(space_id, |store| {
+            store.transaction(|tx| restore::list(tx, space_id))
+        })?
+        .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))
     }
 
     /// Starts syncing every linked folder, each in a task on the current Tokio runtime, unless sync is paused: then
@@ -6925,6 +6927,8 @@ mod tests {
         let driver = Driver::open(paths).unwrap();
         let pending = |id: &str, request: &RestoreRequest| RestoreStatus {
             id: id.to_owned(),
+            path: None,
+            asked_at_ms: koidrive_engine::ids::unix_ms(id).unwrap() as i64,
             request: request.clone(),
             state: RestoreState::Pending { waits_for: None },
         };
@@ -7050,6 +7054,77 @@ mod tests {
         assert_eq!(listed[1].request, from_trash(1));
         for waiting in &listed[outcomes.len()..] {
             assert_eq!(waiting.state, RestoreState::Pending { waits_for: None });
+        }
+    }
+
+    #[test]
+    fn restores_name_the_path_of_their_node_and_when_they_were_asked_for() {
+        use koidrive_proto::v1::{Content, NodeKind, NodeState, NodeStatus, VersionInfo};
+
+        let (_dir, paths, _root) = profile(&[]);
+        let node =
+            |id: u128, parent: &str, name: &str, kind: NodeKind, status: NodeStatus| NodeState {
+                node_id: server_id(id),
+                parent_id: parent.to_owned(),
+                name: name.to_owned(),
+                kind: kind as i32,
+                status: status as i32,
+                trash_group: match status {
+                    NodeStatus::Trashed => "group".into(),
+                    _ => String::new(),
+                },
+                current: Some(VersionInfo {
+                    version_id: server_id(100 + id),
+                    content: Some(Content::default()),
+                    ..VersionInfo::default()
+                }),
+                ..NodeState::default()
+            };
+        let docs = server_id(1);
+        let nodes = [
+            node(1, SPACE, "Docs", NodeKind::Dir, NodeStatus::Live),
+            node(2, &docs, "report.docx", NodeKind::File, NodeStatus::Live),
+            node(3, &docs, "old.pptx", NodeKind::File, NodeStatus::Trashed),
+            node(
+                4,
+                &server_id(5),
+                "orphan.txt",
+                NodeKind::File,
+                NodeStatus::Trashed,
+            ),
+        ];
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| nodes.iter().try_for_each(|node| tx.put_remote_node(node)))
+            .unwrap();
+        let driver = Driver::open(paths).unwrap();
+        let before = now_ms();
+        let version = RestoreRequest::Version {
+            node_id: server_id(2),
+            version_id: server_id(200),
+        };
+        let asked: Vec<String> = [version, from_trash(3), from_trash(4), from_trash(9)]
+            .into_iter()
+            .map(|request| driver.restore(SPACE, request).unwrap())
+            .collect();
+        let after = now_ms();
+
+        let listed = driver.restores(SPACE).unwrap();
+        let found: Vec<Option<&str>> = (asked.iter())
+            .map(|id| {
+                let restore = listed.iter().find(|restore| &restore.id == id).unwrap();
+                restore.path.as_deref()
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [Some("Docs/report.docx"), Some("Docs/old.pptx"), None, None]
+        );
+        for restore in &listed {
+            assert!(
+                (before..=after).contains(&restore.asked_at_ms),
+                "{restore:?} was asked for between {before} and {after}"
+            );
         }
     }
 

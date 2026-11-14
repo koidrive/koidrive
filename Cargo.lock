@@ -1439,6 +1439,7 @@ dependencies = [
 name = "koidrive-ffi"
 version = "0.0.0-dev"
 dependencies = [
+ "jsonschema",
  "koidrive-driver",
  "koidrive-fs",
  "koidrive-ipc",

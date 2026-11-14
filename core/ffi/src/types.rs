@@ -179,6 +179,135 @@ pub struct SpaceUsage {
     pub unreferenced_bytes: u64,
 }
 
+/// What was deleted in a linked folder, or in a folder inside one, and is still in its space's trash.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Trash {
+    /// The linked folder's absolute path.
+    pub folder: String,
+    /// In path order.
+    pub items: Vec<DeletedItem>,
+}
+
+/// One deletion in the trash: a file, or a folder with what was deleted with it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DeletedItem {
+    pub node_id: String,
+    /// The path it had.
+    pub path: String,
+    /// A symbolic link counts as a file.
+    pub kind: NodeKind,
+    /// 1 for a file; for a folder, the files deleted with it.
+    pub files: u64,
+    pub bytes: u64,
+    /// When its content was saved; none for a folder.
+    pub modified_at_ms: Option<i64>,
+    /// When it was deleted; none when the server does not say.
+    pub deleted_at_ms: Option<i64>,
+    /// The device that deleted it; none when the server does not say.
+    pub deleted_by_device_id: Option<String>,
+    /// That device's name; none for a device of another account or when the server does not say.
+    pub deleted_by_device_name: Option<String>,
+}
+
+/// The versions the server keeps of a file.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FileVersions {
+    pub path: String,
+    pub node_id: String,
+    /// Newest first.
+    pub versions: Vec<FileVersion>,
+}
+
+/// One version of a file the server keeps.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FileVersion {
+    pub version_id: String,
+    pub size: u64,
+    pub saved_at_ms: i64,
+    /// The device that saved it.
+    pub device_id: String,
+    /// The device's name, or none for a device of another account.
+    pub device_name: Option<String>,
+    /// True for the file's content now.
+    pub current: bool,
+}
+
+/// A restore that was asked for. The folder sends it with its next commit; [`RestoreRequest`] says how it went.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RestoreAsked {
+    pub request_id: String,
+    /// The linked folder's absolute path.
+    pub folder: String,
+    pub path: String,
+}
+
+/// A restore asked for in a linked folder, with how it went.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RestoreRequest {
+    pub id: String,
+    /// Where its node is, or where it was while it is in the trash; none when the folder does not know it.
+    pub path: Option<String>,
+    pub asked_at_ms: i64,
+    pub target: RestoreTarget,
+    pub state: RestoreState,
+}
+
+/// What a restore brings back.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum RestoreTarget {
+    /// A deleted file or folder, from the trash.
+    Deleted { node_id: String },
+    /// An earlier version of a file, as its content now.
+    Version { node_id: String, version_id: String },
+}
+
+/// How a [`RestoreRequest`] went.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum RestoreState {
+    /// Not sent yet, or sent and not answered; it goes out once the folder syncs. With `held_by_problem`, a change
+    /// this device made to the node was refused, and the restore waits until that problem is cleared.
+    Pending {
+        held_by_problem: bool,
+    },
+    Restored,
+    /// Restored under `name`, because its name was taken.
+    RestoredAs {
+        name: String,
+    },
+    /// Another device changed the file meanwhile, so the version came back as the new file `name`.
+    RestoredAsCopy {
+        node_id: String,
+        name: String,
+    },
+    Refused {
+        reason: RestoreRefusal,
+    },
+    /// It brings back more than one commit can hold.
+    TooLarge,
+}
+
+/// Why the server refused a restore.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum RestoreRefusal {
+    /// The server no longer has it, or the folder to restore into: it was purged or it expired.
+    Gone,
+    /// Only a file has versions.
+    NotAFile,
+    InvalidName,
+    /// The place to restore into is a file.
+    DestinationNotAFolder,
+    /// The folder to restore into is inside what is restored.
+    DestinationInsideItself,
+    /// It is the root of the space.
+    Root,
+    /// The server takes no writes from this device.
+    ReadOnly,
+    /// A reason this app does not know, as the server spells it.
+    Other {
+        reason: String,
+    },
+}
+
 /// A folder on this device linked to a space. Each space links at most one folder, and linked
 /// folders never contain each other.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -603,6 +732,22 @@ pub enum SessionError {
         "the folder's file system cannot rename without replacing, so files cannot be applied safely"
     )]
     UnsupportedFileSystem,
+    #[error("{} is not in a linked folder", koidrive_fs::quoted(.path))]
+    PathNotInLinkedFolder { path: String },
+    #[error("the path is the linked folder itself; name a file or folder in it")]
+    PathIsLinkedFolder,
+    #[error("the server has nothing at the path")]
+    NothingAtPath,
+    #[error("the path is a folder; only a file has versions")]
+    PathIsFolder,
+    #[error("the file or folder at the path is not deleted")]
+    NotDeleted,
+    #[error("the deleted item is not in the trash")]
+    DeletedItemNotFound,
+    #[error("the file has no such version")]
+    VersionNotFound,
+    #[error("the version is already the file's current one")]
+    VersionIsCurrent,
     #[error("{reason}")]
     Failed { reason: String },
 }

@@ -3,8 +3,9 @@
 use std::sync::{Arc, Weak};
 
 use crate::types::{
-    Account, Answer, Device, LinkedFolder, PairingCode, ServerInfo, SessionError, SessionEvent,
-    SessionState, Space, SpaceUsage, TelemetrySetting,
+    Account, Answer, Device, FileVersions, LinkedFolder, PairingCode, RestoreAsked, RestoreRequest,
+    ServerInfo, SessionError, SessionEvent, SessionState, Space, SpaceUsage, TelemetrySetting,
+    Trash,
 };
 
 pub(crate) fn pairing_code<'a>(text: &'a str, server_url: &str) -> Result<&'a str, SessionError> {
@@ -147,6 +148,20 @@ pub trait Core: Send + Sync {
     fn link_folder(&self, space_id: &str, path: &str) -> Result<LinkedFolder, SessionError>;
     /// Stops syncing a space on this device. Files on disk stay.
     fn unlink_folder(&self, space_id: &str) -> Result<(), SessionError>;
+
+    /// What was deleted in the folder at absolute `path`, a linked folder or a folder inside one, and is still in
+    /// the trash of its space. A path that is not absolute returns [`SessionError::PathNotInLinkedFolder`].
+    fn trash(&self, path: &str) -> Result<Trash, SessionError>;
+    /// The versions the server keeps of the file at absolute `path` in a linked folder.
+    fn versions(&self, path: &str) -> Result<FileVersions, SessionError>;
+    /// Asks to bring the deleted item `node_id` of a [`Trash`] back to absolute `path`, the path it had. The folder
+    /// sends the request with its next commit; [`Core::restore_requests`] says how it went.
+    fn restore_deleted(&self, path: &str, node_id: &str) -> Result<RestoreAsked, SessionError>;
+    /// Asks to make the version `version_id` of the file at absolute `path` its content again, as a new version.
+    fn restore_version(&self, path: &str, version_id: &str) -> Result<RestoreAsked, SessionError>;
+    /// The restores asked for in the linked folder that holds absolute `path`, a linked folder or a folder inside
+    /// one: first those that ended, in the order they ended, then those that wait, in request order.
+    fn restore_requests(&self, path: &str) -> Result<Vec<RestoreRequest>, SessionError>;
 
     /// Answers a question. The answer must be one of the question's
     /// [`answers`](crate::Question::answers).

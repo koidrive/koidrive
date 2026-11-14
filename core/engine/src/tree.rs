@@ -4,6 +4,7 @@
 //! local tree L and the synced tree S, all keyed by `node_id` and sharing the root node.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
 
@@ -255,6 +256,22 @@ impl<N: Node> Tree<N> {
 
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// The path of `id` relative to the root, through the parents the tree holds, live or not. `None` when a node on
+    /// the way is missing or not placed, or the parents loop.
+    pub fn path(&self, id: &str) -> Option<PathBuf> {
+        let mut names = Vec::new();
+        let mut current = id;
+        while current != self.root {
+            let node = self.get(current).filter(|node| node.is_placed())?;
+            names.push(node.shape().name.as_str());
+            current = &node.shape().parent;
+            if names.len() > self.len() {
+                return None;
+            }
+        }
+        Some(names.into_iter().rev().collect())
     }
 
     /// Checks the invariants of section 2.2 over live nodes: every placed node's parent is the root

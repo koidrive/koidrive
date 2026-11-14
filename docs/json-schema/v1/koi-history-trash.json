@@ -391,6 +391,16 @@
         "message": {
           "type": "string"
         },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "retryable": {
           "type": "boolean"
         }
@@ -611,6 +621,56 @@
         }
       ]
     },
+    "Reason": {
+      "description": "What a refusal is about, beside its [`Code`], for a surface that says it in its own words. A refusal without one\nis only as specific as its code.",
+      "oneOf": [
+        {
+          "const": "not_in_linked_folder",
+          "description": "The path is not in a linked folder.",
+          "type": "string"
+        },
+        {
+          "const": "linked_folder_itself",
+          "description": "The path is a linked folder, and the command needs a file or folder in one.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The server has nothing at the path: no live file, or no deletion in the trash.",
+          "type": "string"
+        },
+        {
+          "const": "not_deleted",
+          "description": "The path is live, so there is nothing to bring back from the trash.",
+          "type": "string"
+        },
+        {
+          "const": "is_folder",
+          "description": "The path is a folder, and the command needs a file.",
+          "type": "string"
+        },
+        {
+          "const": "no_such_version",
+          "description": "The file has no such version.",
+          "type": "string"
+        },
+        {
+          "const": "already_current",
+          "description": "The version is the file's current one already.",
+          "type": "string"
+        },
+        {
+          "const": "several_deletions",
+          "description": "Several deletions had the path, and none was picked.",
+          "type": "string"
+        },
+        {
+          "const": "not_in_trash",
+          "description": "None of the deletions at the path is the node asked for.",
+          "type": "string"
+        }
+      ]
+    },
     "RecoveryCauseData": {
       "properties": {
         "restore_point_ms": {
@@ -684,6 +744,28 @@
           "minimum": 0,
           "type": "integer"
         },
+        "deleted_at_ms": {
+          "description": "When it was deleted, null when the server does not say (RFC 0023).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deleted_by_device_id": {
+          "description": "The device that deleted it, null when the server does not say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted_by_device_name": {
+          "description": "That device's name, null for a device of another account or when the server does not say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "files": {
           "format": "uint64",
           "minimum": 0,
@@ -691,6 +773,14 @@
         },
         "kind": {
           "$ref": "#/$defs/NodeType"
+        },
+        "modified_at_ms": {
+          "description": "When the content it has was saved; null for a folder.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "node_id": {
           "type": "string"
@@ -708,7 +798,11 @@
         "kind",
         "trash_group",
         "files",
-        "bytes"
+        "bytes",
+        "modified_at_ms",
+        "deleted_at_ms",
+        "deleted_by_device_id",
+        "deleted_by_device_name"
       ],
       "type": "object"
     }

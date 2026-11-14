@@ -123,6 +123,7 @@ fn signed_in() -> Saved {
         notices: Vec::new(),
         paused: false,
         next_id: 100,
+        history: BTreeMap::new(),
     }
 }
 
@@ -303,6 +304,74 @@ fn disappearance(saved: &mut Saved, now: i64, n: usize, files: u64) {
     );
 }
 
+fn history(saved: &mut Saved, now: i64) {
+    let deleted = |id: &str, path: &str, kind, files, bytes, modified_at_ms| DeletedItem {
+        node_id: id.to_owned(),
+        path: path.to_owned(),
+        kind,
+        files,
+        bytes,
+        modified_at_ms,
+        deleted_at_ms: modified_at_ms.map(|saved: i64| saved + 3_600_000),
+        deleted_by_device_id: Some("device-2".to_owned()),
+        deleted_by_device_name: Some("Ada's MacBook Air".to_owned()),
+    };
+    let version = |id: &str, size, days: i64, device: &str, name: &str, current| FileVersion {
+        version_id: id.to_owned(),
+        size,
+        saved_at_ms: now - days * DAY_MS - 3_600_000,
+        device_id: device.to_owned(),
+        device_name: Some(name.to_owned()),
+        current,
+    };
+    let documents = History {
+        trash: vec![
+            deleted(
+                "node-letter",
+                "Drafts/Letter to the landlord.docx",
+                NodeKind::File,
+                1,
+                22_016,
+                Some(now - 5 * 3_600_000),
+            ),
+            deleted(
+                "node-old-slides",
+                "Old Slides",
+                NodeKind::Folder,
+                12,
+                84_200_000,
+                None,
+            ),
+            deleted(
+                "node-budget",
+                "Q3 Budget.xlsx",
+                NodeKind::File,
+                1,
+                48_213,
+                Some(now - 2 * DAY_MS),
+            ),
+        ],
+        versions: vec![FileVersions {
+            path: "Reports/Annual Report.docx".to_owned(),
+            node_id: "node-annual-report".to_owned(),
+            versions: vec![
+                version("version-3", 310_400, 0, "device-1", "Ada's Mac mini", true),
+                version(
+                    "version-2",
+                    298_112,
+                    1,
+                    "device-2",
+                    "Ada's MacBook Air",
+                    false,
+                ),
+                version("version-1", 201_730, 3, "device-1", "Ada's Mac mini", false),
+            ],
+        }],
+        requests: Vec::new(),
+    };
+    saved.history.insert(DOCUMENTS.to_owned(), documents);
+}
+
 pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
     let mut script = Script {
         saved: signed_in(),
@@ -316,7 +385,7 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
             script.saved = Saved::default();
             script.recent.clear();
         }
-        FakeScenario::UpToDate => {}
+        FakeScenario::UpToDate => history(saved, now),
         FakeScenario::Syncing => {
             script.activity = FakeActivity::Syncing;
             script.progress = Some(SyncProgress {

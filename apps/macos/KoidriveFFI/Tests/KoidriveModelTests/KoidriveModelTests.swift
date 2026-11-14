@@ -444,6 +444,59 @@ private final class Fetches {
         try await model.signOut(confirmLastDevice: true)
         #expect(model.state.account == nil)
     }
+
+    private func documents(_ model: AppModel) throws -> URL {
+        let folder = try #require(model.state.folders.first { $0.spaceName == "Documents" })
+        return URL(filePath: folder.path, directoryHint: .isDirectory)
+    }
+
+    @Test func aDeletedFileComesBackOnceItsRestoreIsFinished() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let folder = try documents(model)
+        let trash = try await model.trash(in: folder)
+        #expect(trash.items.map(\.path) == ["Drafts/Letter to the landlord.docx", "Old Slides", "Q3 Budget.xlsx"])
+        #expect(try await model.trash(in: folder.appending(path: "Drafts")).items.count == 1)
+        let budget = try #require(trash.items.last)
+        #expect(trash.url(of: budget) == folder.appending(path: "Q3 Budget.xlsx"))
+
+        let asked = try await model.restore(budget, from: trash)
+        #expect(asked.path == "Q3 Budget.xlsx")
+        let pending = try await model.restoreRequests(in: folder)
+        #expect(pending.map(\.id) == [asked.requestId])
+        #expect(pending.map(\.state.isPending) == [true])
+
+        try #require(model.session.fakeCore()).finishRestore(requestId: asked.requestId, state: .restored)
+        let finished = try await model.restoreRequests(in: folder)
+        #expect(finished.map(\.state) == [.restored])
+        #expect(!finished[0].state.isPending)
+        let left = try await model.trash(in: folder)
+        #expect(!left.items.contains { $0.id == budget.id })
+    }
+
+    @Test func anEarlierVersionIsRestoredAndTheCurrentOneIsRefused() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let file = try documents(model).appending(path: "Reports/Annual Report.docx")
+        let versions = try await model.versions(of: file)
+        #expect(versions.versions.map(\.current) == [true, false, false])
+        #expect(versions.versions.map(\.deviceName) == ["Ada's Mac mini", "Ada's MacBook Air", "Ada's Mac mini"])
+
+        let oldest = try #require(versions.versions.last)
+        let asked = try await model.restore(oldest, of: file)
+        #expect(asked.path == "Reports/Annual Report.docx")
+        let requests = try await model.restoreRequests(in: file.deletingLastPathComponent())
+        #expect(requests.map(\.target) == [.version(nodeId: versions.nodeId, versionId: oldest.versionId)])
+        await #expect(throws: SessionError.VersionIsCurrent) { try await model.restore(versions.versions[0], of: file) }
+    }
+
+    @Test func historyOutsideALinkedFolderIsRefused() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let elsewhere = FileManager.default.temporaryDirectory.appending(path: "Elsewhere")
+        let refused = SessionError.PathNotInLinkedFolder(path: elsewhere.path(percentEncoded: false))
+        await #expect(throws: refused) { try await model.trash(in: elsewhere) }
+        await #expect(throws: refused) { try await model.restoreRequests(in: elsewhere) }
+        let folder = try documents(model)
+        await #expect(throws: SessionError.PathIsLinkedFolder) { try await model.versions(of: folder) }
+    }
 }
 
 @MainActor

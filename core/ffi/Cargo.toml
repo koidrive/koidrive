@@ -29,6 +29,7 @@ uniffi = "0.32"
 url = "2.5.8"
 
 [dev-dependencies]
+jsonschema = { version = "0.61.2", default-features = false }
 koidrive-store = { path = "../store" }
 prost.workspace = true
 reqwest = { version = "0.13.5", default-features = false }

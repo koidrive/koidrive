@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Component, Path};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{Core, Events, pairing_code};
 use crate::types::{
-    Account, Answer, ChangeKind, Device, Direction, FolderPath, FolderState, HeldItem, ItemDetail,
-    LinkedFolder, MassDeleteLimit, NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind,
-    Question, QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup,
-    RecoveryTrigger, ServerInfo, SessionError, SessionEvent, SessionState, Space, SpaceUsage,
-    SyncProgress, SyncStatus, TelemetrySetting,
+    Account, Answer, ChangeKind, DeletedItem, Device, Direction, FileVersion, FileVersions,
+    FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit, NodeKind, Notice,
+    NoticeKind, PairingCode, Problem, ProblemKind, Question, QuestionKind, RECENT_CHANGES,
+    RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger, RestoreAsked, RestoreRequest,
+    RestoreState, RestoreTarget, ServerInfo, SessionError, SessionEvent, SessionState, Space,
+    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -35,7 +37,8 @@ pub enum FakeActivity {
 pub enum FakeScenario {
     /// A fresh install: no server, no account, no folders, and the server is not claimed yet.
     FirstRun,
-    /// Up to date, with a few recent changes.
+    /// Up to date, with a few recent changes. Documents has three deletions in its trash and a file with three
+    /// versions, `Reports/Annual Report.docx`.
     UpToDate,
     /// Syncing, with progress and recent changes.
     Syncing,
@@ -84,6 +87,14 @@ struct Saved {
     notices: Vec<Notice>,
     paused: bool,
     next_id: u64,
+    history: BTreeMap<String, History>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct History {
+    trash: Vec<DeletedItem>,
+    versions: Vec<FileVersions>,
+    requests: Vec<RestoreRequest>,
 }
 
 struct State {
@@ -109,6 +120,34 @@ impl Saved {
 
     fn account(&self) -> Result<&Account, SessionError> {
         self.account.as_ref().ok_or(SessionError::NotSignedIn)
+    }
+
+    fn ask_restore(
+        &mut self,
+        space_id: String,
+        folder: String,
+        path: String,
+        target: RestoreTarget,
+    ) -> RestoreAsked {
+        let id = self.next_id("restore");
+        self.history
+            .entry(space_id)
+            .or_default()
+            .requests
+            .push(RestoreRequest {
+                id: id.clone(),
+                path: Some(path.clone()),
+                asked_at_ms: now_ms(),
+                target,
+                state: RestoreState::Pending {
+                    held_by_problem: false,
+                },
+            });
+        RestoreAsked {
+            request_id: id,
+            folder,
+            path,
+        }
     }
 }
 
@@ -304,6 +343,38 @@ fn this_device(account: &Account) -> Device {
     }
 }
 
+fn located<'a>(
+    folders: &'a [LinkedFolder],
+    path: &str,
+) -> Result<(&'a LinkedFolder, String), SessionError> {
+    let path = Path::new(path);
+    folders
+        .iter()
+        .find_map(|folder| {
+            let names: Option<Vec<&str>> = (path.strip_prefix(&folder.path).ok()?.components())
+                .map(|component| match component {
+                    Component::Normal(name) => name.to_str(),
+                    _ => None,
+                })
+                .collect();
+            Some((folder, names?.join("/")))
+        })
+        .ok_or_else(|| SessionError::PathNotInLinkedFolder {
+            path: path.to_string_lossy().into_owned(),
+        })
+}
+
+fn located_inside<'a>(
+    folders: &'a [LinkedFolder],
+    path: &str,
+) -> Result<(&'a LinkedFolder, String), SessionError> {
+    let (folder, below) = located(folders, path)?;
+    match below.is_empty() {
+        true => Err(SessionError::PathIsLinkedFolder),
+        false => Ok((folder, below)),
+    }
+}
+
 fn required(name: &str) -> Result<String, SessionError> {
     let name = name.trim();
     if name.is_empty() {
@@ -465,6 +536,64 @@ impl FakeCore {
     pub fn resolve_problem(&self, problem_id: String) -> Result<(), SessionError> {
         self.update(&mut self.lock(), &[Part::Problems], |saved| {
             saved.problems.retain(|p| p.id != problem_id);
+            Ok(())
+        })
+    }
+
+    /// Replaces what the trash of the space holds.
+    pub fn set_trash(&self, space_id: String, items: Vec<DeletedItem>) -> Result<(), SessionError> {
+        self.update(&mut self.lock(), &[], |saved| {
+            let trash = &mut saved.history.entry(space_id).or_default().trash;
+            *trash = items;
+            trash.sort_by(|a, b| a.path.cmp(&b.path));
+            Ok(())
+        })
+    }
+
+    /// Replaces the versions the server keeps of the file at `versions.path` in the space.
+    pub fn set_versions(
+        &self,
+        space_id: String,
+        versions: FileVersions,
+    ) -> Result<(), SessionError> {
+        self.update(&mut self.lock(), &[], |saved| {
+            let kept = &mut saved.history.entry(space_id).or_default().versions;
+            kept.retain(|file| file.path != versions.path);
+            kept.push(versions);
+            Ok(())
+        })
+    }
+
+    /// Ends the restore `request_id` with `state`, after the restores that ended before it. A restore from the trash
+    /// that brought its item back takes the item out of the trash.
+    pub fn finish_restore(
+        &self,
+        request_id: String,
+        state: RestoreState,
+    ) -> Result<(), SessionError> {
+        self.update(&mut self.lock(), &[], |saved| {
+            for history in saved.history.values_mut() {
+                let Some(index) =
+                    (history.requests.iter()).position(|request| request.id == request_id)
+                else {
+                    continue;
+                };
+                let mut request = history.requests.remove(index);
+                if let RestoreTarget::Deleted { node_id } = &request.target
+                    && matches!(
+                        state,
+                        RestoreState::Restored | RestoreState::RestoredAs { .. }
+                    )
+                {
+                    history.trash.retain(|item| &item.node_id != node_id);
+                }
+                request.state = state;
+                let ended = (history.requests.iter())
+                    .take_while(|request| !matches!(request.state, RestoreState::Pending { .. }))
+                    .count();
+                history.requests.insert(ended, request);
+                break;
+            }
             Ok(())
         })
     }
@@ -811,6 +940,85 @@ impl Core for FakeCore {
                 .retain(|p| p.space_id.as_deref() != Some(space_id));
             Ok(())
         })
+    }
+
+    fn trash(&self, path: &str) -> Result<Trash, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        state.saved.account()?;
+        let (folder, below) = located(&state.saved.folders, path)?;
+        let inside = |item: &&DeletedItem| Path::new(&item.path).starts_with(&below);
+        let items = (state.saved.history.get(&folder.space_id))
+            .map(|history| history.trash.iter().filter(inside).cloned().collect())
+            .unwrap_or_default();
+        Ok(Trash {
+            folder: folder.path.clone(),
+            items,
+        })
+    }
+
+    fn versions(&self, path: &str) -> Result<FileVersions, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        state.saved.account()?;
+        let (folder, below) = located_inside(&state.saved.folders, path)?;
+        (state.saved.history.get(&folder.space_id))
+            .and_then(|history| history.versions.iter().find(|file| file.path == below))
+            .cloned()
+            .ok_or(SessionError::NothingAtPath)
+    }
+
+    fn restore_deleted(&self, path: &str, node_id: &str) -> Result<RestoreAsked, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        self.update(&mut state, &[], |saved| {
+            saved.account()?;
+            let (folder, below) = located_inside(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let deleted = (saved.history.get(&space_id).into_iter())
+                .flat_map(|history| &history.trash)
+                .any(|item| item.node_id == node_id && item.path == below);
+            if !deleted {
+                return Err(SessionError::DeletedItemNotFound);
+            }
+            let target = RestoreTarget::Deleted {
+                node_id: node_id.to_owned(),
+            };
+            Ok(saved.ask_restore(space_id, folder, below, target))
+        })
+    }
+
+    fn restore_version(&self, path: &str, version_id: &str) -> Result<RestoreAsked, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        self.update(&mut state, &[], |saved| {
+            saved.account()?;
+            let (folder, below) = located_inside(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let file = (saved.history.get(&space_id))
+                .and_then(|history| history.versions.iter().find(|file| file.path == below))
+                .ok_or(SessionError::NothingAtPath)?;
+            let version = (file.versions.iter())
+                .find(|version| version.version_id == version_id)
+                .ok_or(SessionError::VersionNotFound)?;
+            if version.current {
+                return Err(SessionError::VersionIsCurrent);
+            }
+            let target = RestoreTarget::Version {
+                node_id: file.node_id.clone(),
+                version_id: version_id.to_owned(),
+            };
+            Ok(saved.ask_restore(space_id, folder, below, target))
+        })
+    }
+
+    fn restore_requests(&self, path: &str) -> Result<Vec<RestoreRequest>, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        let (folder, _) = located(&state.saved.folders, path)?;
+        Ok((state.saved.history.get(&folder.space_id))
+            .map(|history| history.requests.clone())
+            .unwrap_or_default())
     }
 
     fn answer(&self, question_id: &str, answer: Answer) -> Result<(), SessionError> {
@@ -1679,5 +1887,147 @@ mod tests {
         }
         h.core.load_scenario(FakeScenario::Problems).unwrap();
         assert!(h.core.state().problems.is_sorted_by_key(|p| p.since_ms));
+    }
+
+    #[test]
+    fn history_needs_a_path_in_a_linked_folder() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let at = |below: &str| format!("{documents}/{below}");
+        let report = at("Reports/Annual Report.docx");
+        let outside = |path: &str| {
+            Err(SessionError::PathNotInLinkedFolder {
+                path: path.to_owned(),
+            })
+        };
+
+        assert_eq!(h.core.trash("/elsewhere").map(drop), outside("/elsewhere"));
+        assert_eq!(h.core.trash("Documents").map(drop), outside("Documents"));
+        assert_eq!(
+            h.core.restore_requests("Documents").map(drop),
+            outside("Documents")
+        );
+        assert_eq!(
+            h.core.versions(&documents),
+            Err(SessionError::PathIsLinkedFolder)
+        );
+        assert_eq!(
+            h.core.restore_deleted(&documents, "node-budget"),
+            Err(SessionError::PathIsLinkedFolder)
+        );
+        assert_eq!(
+            h.core.versions(&at("Notes.txt")),
+            Err(SessionError::NothingAtPath)
+        );
+        assert_eq!(
+            h.core.restore_deleted(&at("Q3 Budget.xlsx"), "node-letter"),
+            Err(SessionError::DeletedItemNotFound)
+        );
+        assert_eq!(
+            h.core.restore_version(&report, "version-3"),
+            Err(SessionError::VersionIsCurrent)
+        );
+        assert_eq!(
+            h.core.restore_version(&report, "version-9"),
+            Err(SessionError::VersionNotFound)
+        );
+
+        let trash = h.core.trash(&documents).unwrap();
+        let paths: Vec<&str> = trash.items.iter().map(|item| item.path.as_str()).collect();
+        assert_eq!(trash.folder, documents);
+        assert_eq!(
+            paths,
+            [
+                "Drafts/Letter to the landlord.docx",
+                "Old Slides",
+                "Q3 Budget.xlsx"
+            ]
+        );
+        let drafts = h.core.trash(&at("Drafts")).unwrap();
+        assert_eq!(drafts.items.len(), 1);
+        assert_eq!(h.core.versions(&report).unwrap().versions.len(), 3);
+        assert!(h.core.restore_requests(&documents).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_restore_waits_until_it_is_finished_and_a_restored_item_leaves_the_trash() {
+        let h = Harness::new();
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let at = |below: &str| format!("{documents}/{below}");
+        let in_trash = |node: &str| {
+            (h.core.trash(&documents).unwrap().items.iter()).any(|item| item.node_id == node)
+        };
+
+        h.core.fail_saves(true);
+        assert!(matches!(
+            h.core.restore_deleted(&at("Q3 Budget.xlsx"), "node-budget"),
+            Err(SessionError::NotSaved { .. })
+        ));
+        h.core.fail_saves(false);
+        assert!(h.core.restore_requests(&documents).unwrap().is_empty());
+
+        let budget = h
+            .core
+            .restore_deleted(&at("Q3 Budget.xlsx"), "node-budget")
+            .unwrap();
+        let slides = h
+            .core
+            .restore_deleted(&at("Old Slides"), "node-old-slides")
+            .unwrap();
+        let report = (h.core)
+            .restore_version(&at("Reports/Annual Report.docx"), "version-1")
+            .unwrap();
+        assert_eq!(
+            (budget.folder.as_str(), budget.path.as_str()),
+            (documents.as_str(), "Q3 Budget.xlsx")
+        );
+        let listed = |path: &str| -> Vec<(String, RestoreState)> {
+            (h.core.restore_requests(path).unwrap().into_iter())
+                .map(|request| (request.id, request.state))
+                .collect()
+        };
+        let pending = RestoreState::Pending {
+            held_by_problem: false,
+        };
+        assert_eq!(
+            listed(&at("Reports")),
+            [
+                (budget.request_id.clone(), pending.clone()),
+                (slides.request_id.clone(), pending.clone()),
+                (report.request_id.clone(), pending.clone()),
+            ]
+        );
+
+        let copy = RestoreState::RestoredAsCopy {
+            node_id: "node-copy".into(),
+            name: "Annual Report (restored).docx".into(),
+        };
+        h.core
+            .finish_restore(report.request_id.clone(), copy.clone())
+            .unwrap();
+        h.core
+            .finish_restore(slides.request_id.clone(), RestoreState::TooLarge)
+            .unwrap();
+        assert_eq!(
+            listed(&documents),
+            [
+                (report.request_id.clone(), copy.clone()),
+                (slides.request_id.clone(), RestoreState::TooLarge),
+                (budget.request_id.clone(), pending),
+            ]
+        );
+        assert!(in_trash("node-budget") && in_trash("node-old-slides"));
+
+        h.core
+            .finish_restore(budget.request_id.clone(), RestoreState::Restored)
+            .unwrap();
+        assert!(!in_trash("node-budget"));
+        assert!(in_trash("node-old-slides"));
+        assert_eq!(
+            listed(&documents)[2],
+            (budget.request_id, RestoreState::Restored)
+        );
     }
 }

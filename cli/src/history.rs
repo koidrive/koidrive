@@ -14,11 +14,11 @@ use koidrive_driver::{
     RestoreState, RestoreStatus, RestoreWait,
 };
 use koidrive_engine::names::name_key;
-use koidrive_ipc::{Key, Request, RequestId, Response};
+use koidrive_ipc::{Key, Reason, Request, RequestId, Response};
 use koidrive_net::Auth;
 use koidrive_proto::v1::{
-    ListTrash, ListTree, ListVersions, NodeKind, NodeState, VersionInfo, rpc_request::Call,
-    rpc_response,
+    ListTrash, ListTree, ListVersions, NodeKind, NodeState, Trashed, VersionInfo,
+    rpc_request::Call, rpc_response,
 };
 
 use crate::error::CliError;
@@ -88,14 +88,21 @@ async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     let (linked, below) = locate(paths, folder).await?;
     let space = linked.space_id.as_str();
     let live = tree(&auth, space).await?;
-    let trashed = trash_nodes(&auth, space).await?;
-    let mut found = deletions(&live, &trashed, space);
+    let (trashed, deletions_of) = trash_nodes(&auth, space).await?;
+    let mut found = deletions(&live, &trashed, &deletions_of, space);
     found.retain(|deleted| starts_with(&deleted.names, &below));
+    let names = match found.iter().any(|deleted| deleted.deletion.is_some()) {
+        true => device_names(&auth).await?,
+        false => HashMap::new(),
+    };
     let data = TrashData {
         folder: linked.path.clone(),
-        entries: found.iter().map(Deleted::entry).collect(),
+        entries: found.iter().map(|deleted| deleted.entry(&names)).collect(),
     };
-    Ok(Done::ok(data, trash_report(&found, &linked)))
+    Ok(Done::ok(
+        data,
+        trash_report(&found, &linked, &names, now_ms()),
+    ))
 }
 
 /// `koi history versions <file>`: the versions the server keeps of a live file, newest first.
@@ -106,7 +113,8 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file in it",
             linked.path
-        )));
+        ))
+        .because(Reason::LinkedFolderItself));
     }
     let space = linked.space_id.as_str();
     let live = tree(&auth, space).await?;
@@ -116,14 +124,17 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
             printable(&below.join("/")),
             linked.path
         ))
+        .because(Reason::NotFound)
     })?;
     if node.kind() == NodeKind::Dir {
         return Err(CliError::usage(format!(
             "{} is a folder; name a file in it",
             printable(&below.join("/"))
-        )));
+        ))
+        .because(Reason::IsFolder));
     }
     let kept = versions_of(&auth, space, &node.node_id).await?;
+    let names = device_names(&auth).await?;
     let current = node
         .current
         .as_ref()
@@ -137,6 +148,7 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
                 seq: version.seq,
                 size: content_size(Some(version)),
                 device_id: version.device_id.clone(),
+                device_name: names.get(&version.device_id).cloned(),
                 created_at_ms: version.created_at_ms,
                 current: Some(version.version_id.as_str()) == current,
             })
@@ -234,7 +246,8 @@ async fn checked(
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file or folder in it",
             linked.path
-        )));
+        ))
+        .because(Reason::LinkedFolderItself));
     }
     let space = linked.space_id.as_str();
     let shown = printable(&below.join("/"));
@@ -246,11 +259,13 @@ async fn checked(
                     "the server has no file at {shown} in {}; koi history trash lists deleted ones",
                     linked.path
                 ))
+                .because(Reason::NotFound)
             })?;
             if file.kind() == NodeKind::Dir {
                 return Err(CliError::usage(format!(
                     "{shown} is a folder; only a file has versions"
-                )));
+                ))
+                .because(Reason::IsFolder));
             }
             if file
                 .current
@@ -260,13 +275,15 @@ async fn checked(
             {
                 return Err(CliError::usage(format!(
                     "{version_id} is already the current version of {shown}"
-                )));
+                ))
+                .because(Reason::AlreadyCurrent));
             }
             let kept = versions_of(&auth, space, &file.node_id).await?;
             if !kept.iter().any(|kept| kept.version_id == version_id) {
                 return Err(CliError::usage(format!(
                     "{shown} has no version {version_id}; koi history versions lists them"
-                )));
+                ))
+                .because(Reason::NoSuchVersion));
             }
             RestoreRequest::Version {
                 node_id: file.node_id.clone(),
@@ -274,9 +291,11 @@ async fn checked(
             }
         }
         None => {
-            let trashed = trash_nodes(&auth, space).await?;
-            let deleted = trashed_at(&live, &trashed, space, &below, node.as_deref())
-                .map_err(|why| CliError::usage(why.message(&shown, &linked)))?;
+            let (trashed, _) = trash_nodes(&auth, space).await?;
+            let deleted =
+                trashed_at(&live, &trashed, space, &below, node.as_deref()).map_err(|why| {
+                    CliError::usage(why.message(&shown, &linked)).because(why.reason())
+                })?;
             RestoreRequest::FromTrash {
                 node_id: deleted.node_id.clone(),
                 parent_id: None,
@@ -350,6 +369,15 @@ enum NotPicked<'a> {
 }
 
 impl NotPicked<'_> {
+    fn reason(&self) -> Reason {
+        match self {
+            Self::None { live: true } => Reason::NotDeleted,
+            Self::None { live: false } => Reason::NotFound,
+            Self::Several(_) => Reason::SeveralDeletions,
+            Self::NotThere(_) => Reason::NotInTrash,
+        }
+    }
+
     fn message(&self, shown: &str, linked: &FolderStatus) -> String {
         match self {
             Self::None { live: true } => {
@@ -468,7 +496,8 @@ async fn locate(paths: &Paths, path: &Path) -> Result<(FolderStatus, Vec<String>
     Err(CliError::usage(format!(
         "{} is not in a linked folder; koi status lists them",
         printable(&typed.display().to_string())
-    )))
+    ))
+    .because(Reason::NotInLinkedFolder))
 }
 
 /// `path` without `.` names, and with each `..` removing the name before it, worked out without reading the disk.
@@ -555,8 +584,19 @@ async fn tree(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliError> {
     .await
 }
 
-async fn trash_nodes(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliError> {
-    every_page(async |cursor| {
+/// The account's device names by device ID, revoked devices included.
+async fn device_names(auth: &Auth) -> Result<HashMap<String, String>, CliError> {
+    Ok((crate::devices(auth).await?.into_iter())
+        .map(|device| (device.device_id, device.name))
+        .collect())
+}
+
+/// The trashed nodes, and the deletion of each that the server reports (RFC 0023) by node ID.
+async fn trash_nodes(
+    auth: &Auth,
+    space: &str,
+) -> Result<(Vec<NodeState>, HashMap<String, Trashed>), CliError> {
+    let pages = every_page(async |cursor| {
         match call(
             auth,
             space,
@@ -567,11 +607,23 @@ async fn trash_nodes(auth: &Auth, space: &str) -> Result<Vec<NodeState>, CliErro
         )
         .await?
         {
-            rpc_response::Result::Trash(page) => Ok((page.nodes, page.next_cursor)),
+            rpc_response::Result::Trash(page) => {
+                Ok((vec![(page.nodes, page.trashed)], page.next_cursor))
+            }
             _ => Err(UNEXPECTED.into()),
         }
     })
-    .await
+    .await?;
+    let (mut nodes, mut deleted) = (Vec::new(), HashMap::new());
+    for (page, trashed) in pages {
+        nodes.extend(page);
+        deleted.extend(
+            (trashed.into_iter())
+                .filter(|deletion| deletion.trashed_at_ms > 0)
+                .map(|deletion| (deletion.node_id.clone(), deletion)),
+        );
+    }
+    Ok((nodes, deleted))
 }
 
 async fn versions_of(
@@ -635,13 +687,14 @@ fn names_of(node: &NodeState, by_id: &HashMap<&str, &NodeState>, root: &str) -> 
 #[derive(Debug)]
 struct Deleted<'a> {
     node: &'a NodeState,
+    deletion: Option<&'a Trashed>,
     names: Vec<String>,
     files: u64,
     bytes: u64,
 }
 
 impl Deleted<'_> {
-    fn entry(&self) -> TrashEntry {
+    fn entry(&self, names: &HashMap<String, String>) -> TrashEntry {
         TrashEntry {
             node_id: self.node.node_id.clone(),
             path: self.names.join("/"),
@@ -649,12 +702,35 @@ impl Deleted<'_> {
             trash_group: self.node.trash_group.clone(),
             files: self.files,
             bytes: self.bytes,
+            modified_at_ms: (self.node.current.as_ref())
+                .filter(|_| self.node.kind() != NodeKind::Dir)
+                .map(|version| version.created_at_ms),
+            deleted_at_ms: self.deletion.map(|deletion| deletion.trashed_at_ms),
+            deleted_by_device_id: (self.deletion)
+                .map(|deletion| deletion.device_id.clone())
+                .filter(|device| !device.is_empty()),
+            deleted_by_device_name: (self.deletion)
+                .and_then(|deletion| names.get(&deletion.device_id).cloned()),
         }
+    }
+
+    fn deleted_when(&self, names: &HashMap<String, String>, now_ms: i64) -> Option<String> {
+        let deletion = self.deletion?;
+        let when = ago(deletion.trashed_at_ms, now_ms);
+        Some(match names.get(&deletion.device_id) {
+            Some(name) => format!("deleted {when} on {}", printable(name)),
+            None => format!("deleted {when}"),
+        })
     }
 }
 
 /// The trash as deletions, sorted by path. A file counts with its own size; a folder counts the files trashed with it.
-fn deletions<'a>(live: &'a [NodeState], trash: &'a [NodeState], root: &str) -> Vec<Deleted<'a>> {
+fn deletions<'a>(
+    live: &'a [NodeState],
+    trash: &'a [NodeState],
+    deleted: &'a HashMap<String, Trashed>,
+    root: &str,
+) -> Vec<Deleted<'a>> {
     let by_id: HashMap<&str, &NodeState> = live
         .iter()
         .chain(trash)
@@ -681,6 +757,7 @@ fn deletions<'a>(live: &'a [NodeState], trash: &'a [NodeState], root: &str) -> V
             .entry(head.node_id.as_str())
             .or_insert_with(|| Deleted {
                 node: head,
+                deletion: deleted.get(&head.node_id),
                 names: names_of(head, &by_id, root),
                 files: 0,
                 bytes: 0,
@@ -713,7 +790,12 @@ fn kind(node: &NodeState) -> NodeType {
     }
 }
 
-fn trash_report(found: &[Deleted], linked: &FolderStatus) -> String {
+fn trash_report(
+    found: &[Deleted],
+    linked: &FolderStatus,
+    names: &HashMap<String, String>,
+    now_ms: i64,
+) -> String {
     if found.is_empty() {
         return format!(
             "Nothing from {} is in the trash.\n",
@@ -723,13 +805,16 @@ fn trash_report(found: &[Deleted], linked: &FolderStatus) -> String {
     let mut report = String::new();
     for deleted in found {
         let path = printable(&deleted.names.join("/"));
-        let line = match deleted.node.kind() {
-            NodeKind::Dir => format!(
-                "{:>9}  {path}/  (folder, {})",
+        let when = deleted.deleted_when(names, now_ms);
+        let line = match (deleted.node.kind(), when) {
+            (NodeKind::Dir, when) => format!(
+                "{:>9}  {path}/  (folder, {}{})",
                 size(deleted.bytes),
-                crate::count(deleted.files, "file")
+                crate::count(deleted.files, "file"),
+                when.map(|when| format!(", {when}")).unwrap_or_default()
             ),
-            _ => format!("{:>9}  {path}", size(deleted.bytes)),
+            (_, Some(when)) => format!("{:>9}  {path}  ({when})", size(deleted.bytes)),
+            (_, None) => format!("{:>9}  {path}", size(deleted.bytes)),
         };
         report.push_str(&line);
         report.push('\n');
@@ -1011,7 +1096,22 @@ mod tests {
             ..TreePage::default()
         };
         let trash_page = TrashPage {
-            nodes: vec![node("old", "docs", "old.txt", NodeKind::File, 12, "g")],
+            nodes: vec![
+                node("old", "docs", "old.txt", NodeKind::File, 12, "g"),
+                node("older", "docs", "older.txt", NodeKind::File, 1, "h"),
+            ],
+            trashed: vec![
+                Trashed {
+                    node_id: "old".into(),
+                    trashed_at_ms: 1_700,
+                    device_id: "desk".into(),
+                },
+                Trashed {
+                    node_id: "older".into(),
+                    trashed_at_ms: 0,
+                    device_id: String::new(),
+                },
+            ],
             ..TrashPage::default()
         };
         let refusal = Error {
@@ -1032,11 +1132,19 @@ mod tests {
         let auth = signed_in_to(&fake);
 
         let live = tree(&auth, SPACE).await.unwrap();
-        let trashed = trash_nodes(&auth, SPACE).await.unwrap();
+        let (trashed, deleted) = trash_nodes(&auth, SPACE).await.unwrap();
         let error = tree(&auth, SPACE).await.unwrap_err();
 
         assert_eq!(live[0].node_id, "docs");
         assert_eq!(trashed[0].node_id, "old");
+        assert_eq!(
+            (
+                deleted.len(),
+                deleted["old"].trashed_at_ms,
+                deleted["old"].device_id.as_str()
+            ),
+            (1, 1_700, "desk")
+        );
         assert_eq!(
             error.message,
             "the server refused: not a member of this space"
@@ -1059,20 +1167,14 @@ mod tests {
         assert_eq!(found("café.txt/below"), None);
     }
 
-    /// A profile signed in to a server that never answers, whose folder `Koidrive` syncs `SPACE`, and the record of the
-    /// finished request `done` that restored `a.txt` in `space_id`.
-    async fn silent_profile(
-        space_id: &str,
-    ) -> (tempfile::TempDir, Paths, PathBuf, tokio::net::TcpListener) {
+    fn linked_on(server: &str) -> (tempfile::TempDir, Paths, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let base = std::fs::canonicalize(dir.path()).unwrap();
         let paths = Paths::under(&base.join("profile"));
         let root = base.join("Koidrive");
         std::fs::create_dir_all(&root).unwrap();
-        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let server = format!("http://{}/", silent.local_addr().unwrap());
         Credential {
-            server: server.clone(),
+            server: server.into(),
             user_id: "user".into(),
             user_name: None,
             device_id: "d1".into(),
@@ -1091,12 +1193,22 @@ mod tests {
                     space_name: "Projects".into(),
                     root: root.clone(),
                     root_dev: 1,
-                    server_url: server.clone(),
+                    server_url: server.into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
                 })
             })
             .unwrap();
+        (dir, paths, root)
+    }
+
+    /// A profile signed in to a server that never answers, whose folder `Koidrive` syncs `SPACE`, and the record of the
+    /// finished request `done` that restored `a.txt` in `space_id`.
+    async fn silent_profile(
+        space_id: &str,
+    ) -> (tempfile::TempDir, Paths, PathBuf, tokio::net::TcpListener) {
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (dir, paths, root) = linked_on(&format!("http://{}/", silent.local_addr().unwrap()));
         let request::Begun::Claimed(claim) = request::begin(
             &paths,
             &RequestId::parse("done").unwrap(),
@@ -1132,6 +1244,226 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(10), run)
             .await
             .expect("the run waited for the server")
+    }
+
+    #[tokio::test]
+    async fn each_refusal_of_history_names_its_reason() {
+        let rpc = format!("/v1/spaces/{SPACE}/rpc");
+        let tree = || {
+            let nodes = vec![
+                node("docs", SPACE, "docs", NodeKind::Dir, 0, ""),
+                node("a", "docs", "a.txt", NodeKind::File, 3, ""),
+            ];
+            let page = TreePage {
+                nodes,
+                ..TreePage::default()
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Tree(page)))
+        };
+        let trash = || {
+            let nodes = vec![
+                node("b1", "docs", "b.txt", NodeKind::File, 1, "g1"),
+                node("b2", "docs", "b.txt", NodeKind::File, 2, "g2"),
+                node("c", "docs", "c.txt", NodeKind::File, 2, "g3"),
+            ];
+            let page = TrashPage {
+                nodes,
+                ..TrashPage::default()
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Trash(page)))
+        };
+        let kept = || {
+            let list = VersionList {
+                versions: vec![version("a-1", 3, 2), version("a-0", 1, 1)],
+                next_cursor: String::new(),
+            };
+            proto("POST", &rpc, answer(rpc_response::Result::Versions(list)))
+        };
+        let restore = |path: &'static str, version: Option<&str>, node: Option<&str>| {
+            (
+                path,
+                Some((version.map(String::from), node.map(String::from))),
+            )
+        };
+        let listing = |path: &'static str| (path, None);
+        let cases = [
+            (
+                listing("../elsewhere.txt"),
+                vec![],
+                Reason::NotInLinkedFolder,
+            ),
+            (listing(""), vec![], Reason::LinkedFolderItself),
+            (
+                listing("docs/gone.txt"),
+                vec![token(), tree()],
+                Reason::NotFound,
+            ),
+            (listing("docs"), vec![token(), tree()], Reason::IsFolder),
+            (restore("", None, None), vec![], Reason::LinkedFolderItself),
+            (
+                restore("docs/gone.txt", Some("v"), None),
+                vec![token(), tree()],
+                Reason::NotFound,
+            ),
+            (
+                restore("docs", Some("v"), None),
+                vec![token(), tree()],
+                Reason::IsFolder,
+            ),
+            (
+                restore("docs/a.txt", Some("a-1"), None),
+                vec![token(), tree()],
+                Reason::AlreadyCurrent,
+            ),
+            (
+                restore("docs/a.txt", Some("a-9"), None),
+                vec![token(), tree(), kept()],
+                Reason::NoSuchVersion,
+            ),
+            (
+                restore("docs/a.txt", None, None),
+                vec![token(), tree(), trash()],
+                Reason::NotDeleted,
+            ),
+            (
+                restore("docs/gone.txt", None, None),
+                vec![token(), tree(), trash()],
+                Reason::NotFound,
+            ),
+            (
+                restore("docs/b.txt", None, None),
+                vec![token(), tree(), trash()],
+                Reason::SeveralDeletions,
+            ),
+            (
+                restore("docs/b.txt", None, Some("c")),
+                vec![token(), tree(), trash()],
+                Reason::NotInTrash,
+            ),
+        ];
+        for ((path, restoring), replies, reason) in cases {
+            let fake = Fake::start(replies).await;
+            let (_dir, paths, root) = linked_on(fake.base.as_str());
+            let path = root.join(path);
+            let error = match restoring {
+                None => versions(&paths, &path).await.map(drop).unwrap_err(),
+                Some((version, node)) => checked(&paths, &path, version, node)
+                    .await
+                    .map(drop)
+                    .unwrap_err(),
+            };
+            assert_eq!(
+                (error.code, error.reason),
+                (koidrive_ipc::Code::Usage, Some(reason)),
+                "{path:?}: {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn versions_name_the_device_that_saved_each() {
+        let rpc = format!("/v1/spaces/{SPACE}/rpc");
+        let tree = TreePage {
+            nodes: vec![node("a", SPACE, "a.txt", NodeKind::File, 3, "")],
+            ..TreePage::default()
+        };
+        let saved_by = |id: &str, device: &str| VersionInfo {
+            device_id: device.into(),
+            ..version(id, 3, 1)
+        };
+        let kept = VersionList {
+            versions: vec![
+                saved_by("a-2", "d1"),
+                saved_by("a-1", "d0"),
+                saved_by("a-0", "elsewhere"),
+            ],
+            next_cursor: String::new(),
+        };
+        let revoked = koidrive_proto::v1::DeviceInfo {
+            device_id: "d0".into(),
+            name: "old laptop".into(),
+            revoked_at_ms: 5,
+            ..Default::default()
+        };
+        let devices = koidrive_proto::v1::DeviceList {
+            devices: vec![
+                koidrive_proto::v1::DeviceInfo {
+                    device_id: "d1".into(),
+                    name: "laptop".into(),
+                    ..Default::default()
+                },
+                revoked,
+            ],
+            next_cursor: String::new(),
+        };
+        let fake = Fake::start(vec![
+            token(),
+            proto("POST", &rpc, answer(rpc_response::Result::Tree(tree))),
+            proto("POST", &rpc, answer(rpc_response::Result::Versions(kept))),
+            proto("GET", "/v1/devices", devices),
+        ])
+        .await;
+        let (_dir, paths, root) = linked_on(fake.base.as_str());
+
+        let done = versions(&paths, &root.join("a.txt")).await.unwrap();
+
+        let names: Vec<serde_json::Value> = (done.data["versions"].as_array().unwrap().iter())
+            .map(|version| version["device_name"].clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                serde_json::json!("laptop"),
+                serde_json::json!("old laptop"),
+                serde_json::Value::Null
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reason_reaches_the_envelope_and_an_error_without_one_leaves_it_out() {
+        let validator =
+            jsonschema::validator_for(&crate::schema::envelope("history restore").unwrap())
+                .unwrap();
+        let printed = |error: CliError| {
+            let envelope = serde_json::to_value(crate::report::Envelope::failed(
+                "history restore",
+                error,
+                None,
+            ))
+            .unwrap();
+            assert!(validator.is_valid(&envelope), "{envelope}");
+            envelope["error"].clone()
+        };
+
+        let refused = printed(CliError::usage("no such version").because(Reason::NoSuchVersion));
+        let failed = printed(CliError::from("the server sent an empty answer"));
+
+        assert_eq!(refused["reason"], "no_such_version");
+        assert!(failed.get("reason").is_none(), "{failed}");
+    }
+
+    #[test]
+    fn a_request_names_its_path_and_when_it_was_asked_for() {
+        let restore = |path: Option<&str>| RestoreStatus {
+            id: "0194f8a2-0000-7000-8000-000000000001".into(),
+            path: path.map(String::from),
+            asked_at_ms: 1_738_000_000_000,
+            request: RestoreRequest::Version {
+                node_id: "note".into(),
+                version_id: "note-0".into(),
+            },
+            state: RestoreState::Restored,
+        };
+
+        let found = RequestData::of(&restore(Some("docs/note.txt")));
+        let unknown = RequestData::of(&restore(None));
+
+        assert_eq!(
+            (found.path.as_deref(), found.asked_at_ms),
+            (Some("docs/note.txt"), 1_738_000_000_000)
+        );
+        assert_eq!(unknown.path, None);
     }
 
     #[tokio::test]
@@ -1225,11 +1557,25 @@ mod tests {
             node("trip", "photos", "trip", NodeKind::Dir, 0, "g1"),
             node("dog", "trip", "dog.jpg", NodeKind::File, 700, "g1"),
             node("late", "photos", "late.jpg", NodeKind::File, 9, "g2"),
-            node("old", "docs", "old.txt", NodeKind::File, 12, "g3"),
+            NodeState {
+                current: Some(version("old-1", 12, 1_700)),
+                ..node("old", "docs", "old.txt", NodeKind::File, 12, "g3")
+            },
             node("lost", "purged", "lost.txt", NodeKind::File, 5, "g4"),
         ];
 
-        let found = deletions(&live, &trash, SPACE);
+        let deleted: HashMap<String, Trashed> = [("photos", 5_000, "desk"), ("old", 4_000, "gone")]
+            .map(|(node, at, device)| {
+                let deletion = Trashed {
+                    node_id: node.into(),
+                    trashed_at_ms: at,
+                    device_id: device.into(),
+                };
+                (node.to_owned(), deletion)
+            })
+            .into();
+        let names = HashMap::from([("desk".to_owned(), "Ada's Desk".to_owned())]);
+        let found = deletions(&live, &trash, &deleted, SPACE);
 
         let summary: Vec<_> = found
             .iter()
@@ -1244,6 +1590,29 @@ mod tests {
                 ("…/lost.txt".to_owned(), 1, 5),
             ]
         );
+        let modified: Vec<Option<i64>> = (found.iter())
+            .map(|deleted| deleted.entry(&names).modified_at_ms)
+            .collect();
+        assert_eq!(modified, [Some(1_700), None, Some(0), Some(0)]);
+        let deletion: Vec<_> = (found.iter())
+            .map(|deleted| {
+                let entry = deleted.entry(&names);
+                (
+                    entry.deleted_at_ms,
+                    entry.deleted_by_device_id,
+                    entry.deleted_by_device_name,
+                )
+            })
+            .collect();
+        assert_eq!(
+            deletion,
+            [
+                (Some(4_000), Some("gone".into()), None),
+                (Some(5_000), Some("desk".into()), Some("Ada's Desk".into())),
+                (None, None, None),
+                (None, None, None),
+            ]
+        );
         let linked = FolderStatus {
             recovery: None,
             path: "/home/ada/Koidrive".into(),
@@ -1255,11 +1624,11 @@ mod tests {
             .unwrap()
         };
         assert_eq!(
-            trash_report(&found[..2], &linked),
-            "     12 B  docs/old.txt\n   1.0 kB  photos/  (folder, 2 files)\n"
+            trash_report(&found, &linked, &names, 5_000 + 3 * 3_600_000),
+            "     12 B  docs/old.txt  (deleted 3 h ago)\n   1.0 kB  photos/  (folder, 2 files, deleted 3 h ago on Ada's Desk)\n      9 B  photos/late.jpg\n      5 B  …/lost.txt\n"
         );
         assert_eq!(
-            trash_report(&[], &linked),
+            trash_report(&[], &linked, &HashMap::new(), 0),
             "Nothing from /home/ada/Koidrive is in the trash.\n"
         );
         let forged = FolderStatus {
@@ -1268,7 +1637,7 @@ mod tests {
             ..linked
         };
         assert_eq!(
-            trash_report(&[], &forged),
+            trash_report(&[], &forged, &HashMap::new(), 0),
             "Nothing from /home/ada/Docs\\u{1b}[31m\\u{a}FORGED is in the trash.\n"
         );
         assert_eq!(
@@ -1352,6 +1721,8 @@ mod tests {
         let restores = [
             RestoreStatus {
                 id: "r1".into(),
+                path: None,
+                asked_at_ms: 0,
                 request: RestoreRequest::FromTrash {
                     node_id: "cat".into(),
                     parent_id: None,
@@ -1363,6 +1734,8 @@ mod tests {
             },
             RestoreStatus {
                 id: "r2".into(),
+                path: None,
+                asked_at_ms: 0,
                 request: RestoreRequest::Version {
                     node_id: "note".into(),
                     version_id: "note-0".into(),

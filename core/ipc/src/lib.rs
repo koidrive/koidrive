@@ -274,6 +274,31 @@ impl Code {
     }
 }
 
+/// What a refusal is about, beside its [`Code`], for a surface that says it in its own words. A refusal without one
+/// is only as specific as its code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    /// The path is not in a linked folder.
+    NotInLinkedFolder,
+    /// The path is a linked folder, and the command needs a file or folder in one.
+    LinkedFolderItself,
+    /// The server has nothing at the path: no live file, or no deletion in the trash.
+    NotFound,
+    /// The path is live, so there is nothing to bring back from the trash.
+    NotDeleted,
+    /// The path is a folder, and the command needs a file.
+    IsFolder,
+    /// The file has no such version.
+    NoSuchVersion,
+    /// The version is the file's current one already.
+    AlreadyCurrent,
+    /// Several deletions had the path, and none was picked.
+    SeveralDeletions,
+    /// None of the deletions at the path is the node asked for.
+    NotInTrash,
+}
+
 /// A command to run next, as the arguments to pass.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Next {
