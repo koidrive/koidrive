@@ -26,8 +26,9 @@ public final class AppModel {
     public private(set) var justUpdated: String?
     /// Whether an `update()` is running.
     public private(set) var updating = false
+    public internal(set) var updateFailure: UpdateFailure?
     public let session: SyncSession
-    @ObservationIgnored private let version: String
+    @ObservationIgnored public let version: String
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var consumer: Task<Void, Never>?
     @ObservationIgnored private var realRoots: [String: String?] = [:]

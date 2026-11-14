@@ -710,7 +710,7 @@ struct GeneralSettings: View {
             .padding(.vertical, 8)
             GroupBand("About")
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: "Koidrive " + (Bundle.main.object(forInfoDictionaryKey: "KoidriveVersion") as? String ?? KoidriveFFI.version()))
+                Text(verbatim: "Koidrive " + app.version)
                     .foregroundStyle(Color.text)
                 Text("Command-line tool: koi")
                     .font(.callout.monospaced())
@@ -719,6 +719,8 @@ struct GeneralSettings: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .help(Text(verbatim: "Core \(KoidriveFFI.version())"))
+            UpdateSettingsRow()
+                .padding(.horizontal, 12)
             Spacer()
         }
         .padding(12)

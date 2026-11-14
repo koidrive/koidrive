@@ -20,6 +20,12 @@ enum Snapshots {
                 await capture(MenuContent().environment(model).background(.background), width: 330, titled: nil,
                               dark: dark, to: directory.appending(path: "menubar-\(name)-\(suffix).png"))
             }
+            for (name, model, shown) in await updateStates() {
+                await capture(MenuContent().environment(model).environment(\.shownUpdateNotice, shown).background(.background),
+                              width: 330, titled: nil, dark: dark, to: directory.appending(path: "update-popover-\(name)-\(suffix).png"))
+                await capture(GeneralSettings().environment(model).environment(\.shownUpdateNotice, shown).frame(width: 600, height: 380),
+                              width: 600, height: 380, titled: nil, dark: dark, to: directory.appending(path: "update-general-\(name)-\(suffix).png"))
+            }
             for (name, setup, app, afterAppearing) in await setupStates() {
                 await capture(SetupSteps(setup: setup).environment(app).frame(width: 480), width: 480,
                               titled: "Set Up Koidrive", dark: dark, to: directory.appending(path: "setup-\(name)-\(suffix).png"),
@@ -451,6 +457,42 @@ enum Snapshots {
          ("5-no-preview", .choosing, FileThumbnail.Phase.none, nil), ("6-settled-copy", .settled(.keepCopy), nil, nil),
          ("6b-settled-original", .settled(.keepOriginal), nil, nil), ("6c-settled-both", .settled(.keepBoth), nil, nil),
          ("7-offline", .choosing, nil, .offline)]
+    }
+
+    private static func updateStates() async -> [(String, AppModel, UpdateNotice?)] {
+        let suite = "dev.koidrive.snapshots.updated"
+        UserDefaults().removePersistentDomain(forName: suite)
+        let defaults = UserDefaults(suiteName: suite)
+        func make(_ scenario: FakeScenario, version: String = "0.1.0", defaults: UserDefaults? = nil) -> AppModel {
+            let (session, events) = SyncSession.fakeWithEventStream()
+            _ = try? session.fakeCore()?.loadScenario(scenario: scenario)
+            let model = AppModel(session: session, events: events, defaults: defaults, version: version)
+            model.start()
+            return model
+        }
+        let offline = make(.updateAvailable)
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+        let failed = make(.updateFails)
+        _ = await failed.installUpdate()
+        let unsigned = make(.updateAvailable)
+        unsigned.session.fakeCore()?.failNext(error: .UpdateFailed(
+            reason: "The downloaded app's signature didn't match.", logPath: NSHomeDirectory() + "/Library/Logs/Koidrive/update.log",
+            fallbackCommand: nil))
+        _ = await unsigned.installUpdate()
+        _ = make(.upToDate, defaults: defaults)
+        let updated = make(.upToDate, version: "0.1.1", defaults: defaults)
+        let checking = make(.upToDate)
+        checking.session.fakeCore()?.setUpdate(update: .unknown)
+        let checkingOffline = make(.offline)
+        let off = make(.upToDate)
+        off.session.fakeCore()?.setUpdate(update: .off)
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-available", make(.updateAvailable), nil), ("2-available-offline", offline, nil),
+            ("3-updating", make(.updateAvailable), .updating(version: "0.1.1")), ("4-updated", updated, nil),
+            ("5-failed", unsigned, nil), ("6-failed-homebrew", failed, nil), ("7-up-to-date", make(.upToDate), nil),
+            ("8-checking", checking, nil), ("9-offline", checkingOffline, nil), ("10-off", off, nil),
+        ]
     }
 
     private static func menuStates() async -> [(String, AppModel)] {

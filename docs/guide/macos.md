@@ -48,7 +48,15 @@ Open **Settings** from the menu bar:
 - In **Account**, check your server and devices, generate a pairing code with **Add a Device…**, remove another device or sign out. Signing out unlinks this Mac's folders but keeps their files.
 - In **Storage**, check each space's storage use and choose **Refresh** to reload it.
 - In **Problems**, read what stopped or failed and follow the advice for the affected folder or file.
-- In **General**, choose whether Koidrive opens at login and sends anonymous usage reports.
+- In **General**, choose whether Koidrive opens at login and sends anonymous usage reports, and see whether Koidrive is up to date.
+
+## Update Koidrive
+
+Koidrive checks for a new release once a day. When one is out, the menu bar shows a notice with **What's New** and **Update**, and **Settings**, **General** shows the same choice under **About**. **General** also shows when Koidrive last checked, and says when it can't check because this Mac is offline or the check is turned off.
+
+Choose **Update** to update the app and `koi` together. Koidrive quits and reopens on the new version, and the menu bar says it updated. Your Mac must be online to update.
+
+If the update fails, the version you have keeps working. **Show Log** opens `~/Library/Logs/Koidrive/update.log`, and **Try Again** retries. For a Homebrew install, the notice also shows `brew upgrade --cask koidrive` with **Copy**, to update from Terminal. [Updates](service.md#updates) covers the update check and how to turn it off.
 
 ## Share links
 
