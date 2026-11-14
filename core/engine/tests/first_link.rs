@@ -2668,3 +2668,65 @@ fn a_user_folder_parked_below_a_folder_the_server_added_keeps_the_discarded_fold
         "the server folder leaves the folder that is the user's again: {planned:?}"
     );
 }
+
+#[test]
+fn a_server_folder_added_after_the_discard_and_moved_out_leaves_the_discarded_folder_held() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("c", file("x", "child", 9)),
+        ],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+
+    let server = trees.remote().get("x").unwrap().clone();
+    let added = RemoteNode {
+        shape: dir("x", "added"),
+        ..server
+    };
+    trees.set_remote("d".into(), added);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(!trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    let download = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(download.node, "d");
+    let identity = FileIdentity {
+        dev: 1,
+        ino: 902,
+        birth_ns: Some(0),
+    };
+    (effects.done(
+        &mut trees,
+        commits.in_flight(),
+        &download.effect_id,
+        Some(identity),
+    ))
+    .unwrap();
+    trees.settle();
+    let mut moved = trees.local().get("d").unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    trees.set_local_changed("d".into(), moved);
+    trees.settle();
+
+    assert!(!trees.reclaimed("f"));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        vec![("move", "d".to_string())]
+    );
+}
