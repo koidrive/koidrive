@@ -456,7 +456,7 @@ fn a_folder_created_where_a_moving_folder_still_is_takes_a_pending_name_first() 
     trees.set_remote("n".into(), remote(dir(ROOT, "a (pending)")));
     trees.set_remote("h".into(), remote(dir("n", "a")));
     let second = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&second), [mv("n", ROOT, "a")]);
+    assert_eq!(ops(&second), [owed_mv("n", ROOT, "a", "a (pending)")]);
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn a_folder_created_where_a_moving_file_still_is_takes_a_pending_name_first() {
     trees.set_remote("n".into(), remote(dir(ROOT, "a (pending)")));
     trees.set_remote("h".into(), remote(file("n", "ß", 1)));
     let second = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&second), [mv("n", ROOT, "a")]);
+    assert_eq!(ops(&second), [owed_mv("n", ROOT, "a", "a (pending)")]);
 }
 
 #[test]

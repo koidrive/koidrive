@@ -503,6 +503,10 @@ impl SpaceDo {
             .collect()
     }
 
+    pub(crate) fn recorded_result(&self, commit_id: &str) -> Option<&CommitResult> {
+        self.results.get(commit_id).map(|stored| &stored.result)
+    }
+
     pub fn node(&self, node_id: &str) -> Option<NodeState> {
         self.state
             .nodes

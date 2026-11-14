@@ -533,7 +533,13 @@ impl Trees {
                 old.content_rev == node.content_rev && old.meta_rev != node.meta_rev
             })
             && local.is_some_and(|local| {
-                !local.parked && synced.is_some_and(|synced| synced.same(&local.shape))
+                !local.parked
+                    && synced.is_some_and(|synced| synced.same(&local.shape))
+                    && !(self.pending_finishes.get(&id)).is_some_and(|finish| {
+                        finish.disk_first
+                            && local.shape.parent == finish.parent
+                            && nfc(&local.shape.name) == nfc(&finish.pending)
+                    })
             });
         let edited_over_delete = local_gone
             && synced.is_some()
@@ -999,7 +1005,7 @@ impl Trees {
     }
 
     pub(crate) fn check_finishes(&mut self) {
-        let ended: Vec<(NodeId, bool)> = (self.pending_finishes.iter())
+        let ended: Vec<(NodeId, bool, Option<Shape>)> = (self.pending_finishes.iter())
             .filter(|(_, finish)| !finish.sending)
             .filter_map(|(id, finish)| {
                 let at = |shape: &Shape, name: &str| {
@@ -1024,15 +1030,22 @@ impl Trees {
                                 FinishOrigin::Legacy => true,
                             }
                     });
-                let reached = (self.r.live(id)).is_some_and(|remote| at(remote, &finish.name))
-                    || (self.s.get(id)).is_some_and(|synced| at(synced, &finish.name));
-                (!holds).then(|| (id.clone(), taken && !reached))
+                let synced = (self.s.get(id)).is_some_and(|synced| at(synced, &finish.name));
+                let remote = (self.r.live(id)).filter(|remote| at(remote, &finish.name));
+                let reached = synced || remote.is_some();
+                let agreed = remote.filter(|_| taken && !synced).cloned();
+                (!holds).then(|| (id.clone(), taken && !reached, agreed))
             })
             .collect();
-        for (id, revert) in ended {
+        for (id, revert, agreed) in ended {
             self.pending_finishes.remove(&id);
             if revert {
-                self.revert(id);
+                self.revert(id.clone());
+            }
+            if let Some(shape) = agreed
+                && !self.set_synced_if_valid(id.clone(), Some(shape.clone()))
+            {
+                self.wait(id, Some(shape), Origin::Other);
             }
         }
     }

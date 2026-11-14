@@ -1119,7 +1119,6 @@ impl Commits {
             &self.aliases,
             &restores,
             &answers,
-            device_id,
         );
         for id in reverts {
             trees.revert(id);
@@ -2894,7 +2893,6 @@ fn plan(
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
-    device_id: &str,
 ) -> Planned {
     let mut wants = Vec::new();
     if !restores.is_empty() {
@@ -2972,12 +2970,14 @@ fn plan(
                 parent: local.parent.clone(),
                 name: local.name.clone(),
                 guarded: trees.resends().contains(id)
-                    || (trees.remote().live(id)).is_some_and(|remote| {
-                        let node = &trees.remote().get(id).expect("a live node of R");
-                        node.pending_by.as_deref() == Some(device_id)
-                            && remote.parent == local.parent
+                    || (trees.remote().get(id)).is_some_and(|node| {
+                        !node.trashed
+                            && node.shape.parent == local.parent
                             && (node.pending_for.as_deref())
                                 .is_some_and(|mark| nfc(mark) == nfc(&local.name))
+                    })
+                    || (trees.pending_finishes().get(id)).is_some_and(|finish| {
+                        finish.parent == local.parent && nfc(&finish.name) == nfc(&local.name)
                     }),
                 pending_for: None,
             });

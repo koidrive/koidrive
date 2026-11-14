@@ -70,8 +70,8 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
-    ChunkRef, Commit, Error, ListVersions, Move, NodeKind, NodeStatus, PrepareUpload, Resume,
-    UploadReceipt, chunk_plan, error, op, op_result, resync_required,
+    ChunkRef, Commit, CommitResult, Error, ListVersions, Move, NodeKind, NodeState, NodeStatus,
+    PrepareUpload, Resume, UploadReceipt, chunk_plan, error, op, op_result, resync_required,
 };
 use sha2::{Digest, Sha256};
 
@@ -2007,8 +2007,8 @@ impl World {
                             && (node.pending_for == moved.new_name || node.name == moved.new_name)
                     })
                 };
-                let made_up: Vec<&Move> = (sent.ops.iter())
-                    .filter_map(|op| match &op.op {
+                let made_up: Vec<(usize, &Move)> = (sent.ops.iter().enumerate())
+                    .filter_map(|(index, op)| match &op.op {
                         Some(op::Op::Move(moved)) if !applied && !finishes(moved) => {
                             let unchanged = held.iter().any(|node| {
                                 node.node_id == moved.node_id
@@ -2020,7 +2020,7 @@ impl World {
                                 self.named[d].contains(name)
                                     || restored.is_some_and(|names| names.contains(name))
                             };
-                            (!unchanged && !given(asked, &moved.new_name)).then_some(moved)
+                            (!unchanged && !given(asked, &moved.new_name)).then_some((index, moved))
                         }
                         _ => None,
                     })
@@ -2036,10 +2036,10 @@ impl World {
                     .collect();
                 match self.space.commit(&session, now_ms, &sent) {
                     Ok(committed) => {
-                        let named = made_up.into_iter().find(|moved| {
-                            (self.space.node(&moved.node_id))
-                                .is_some_and(|node| node.status == NodeStatus::Live as i32)
-                        });
+                        let answer = (self.space.recorded_result(&sent.commit_id))
+                            .cloned()
+                            .unwrap_or_default();
+                        let named = made_up_name(&made_up, &answer, &held, &self.space);
                         if let Some(moved) = named {
                             self.unasked.get_or_insert_with(|| {
                                 format!(
@@ -2903,12 +2903,84 @@ impl World {
         }
     }
 }
+fn made_up_name<'a>(
+    made_up: &[(usize, &'a Move)],
+    answer: &CommitResult,
+    held: &[NodeState],
+    space: &SpaceDo,
+) -> Option<&'a Move> {
+    let position = |node: &NodeState| (node.parent_id.clone(), node.name.clone(), node.status);
+    made_up
+        .iter()
+        .find(|(index, moved)| {
+            let after = space.node(&moved.node_id);
+            let before = held.iter().find(|node| node.node_id == moved.node_id);
+            let refused = (answer.results.get(*index))
+                .is_some_and(|result| result.code() == op_result::Code::Superseded)
+                && before.map(position) == after.as_ref().map(position);
+            !refused && after.is_some_and(|node| node.status == NodeStatus::Live as i32)
+        })
+        .map(|(_, moved)| *moved)
+}
+
 #[cfg(test)]
 mod tests {
     use koidrive_engine::effects::{Base, Displaced, Location};
     use koidrive_engine::tree::{Kind, Shape};
 
     use super::*;
+
+    #[test]
+    fn a_move_answered_superseded_that_still_moved_the_node_is_a_made_up_name() {
+        let mut space = SpaceDo::new(1, 0);
+        let session = Session {
+            device_id: "dev-a".into(),
+            user_id: "user".into(),
+            device_name: "Laptop A".into(),
+            role: Role::Owner,
+            max_format: 1,
+        };
+        let mut ids = koidrive_engine::ids::IdGen::new(2);
+        let root = space.space_id().to_string();
+        let dir = ids.uuid_v7(1);
+        let mut commit = |space: &mut SpaceDo, op: op::Op| {
+            let commit = Commit {
+                commit_id: ids.uuid_v7(1),
+                base_seq: space.head_seq(),
+                ops: vec![koidrive_proto::v1::Op { op: Some(op) }],
+                history_id: space.history_id().into(),
+                device_seq: space.device_seq(&session.device_id) + 1,
+                ..Default::default()
+            };
+            space.commit(&session, 0, &commit).unwrap().result
+        };
+        commit(
+            &mut space,
+            op::Op::CreateDir(koidrive_proto::v1::CreateDir {
+                node_id: dir.clone(),
+                parent_id: root.clone(),
+                name: "a".into(),
+                pending_for: String::new(),
+            }),
+        );
+        let held = space.nodes();
+        let moved = Move {
+            node_id: dir,
+            new_parent_id: root,
+            new_name: "b".into(),
+            pending_for: String::new(),
+            from: None,
+        };
+        let mut answer = commit(&mut space, op::Op::Move(moved.clone()));
+        let made_up = [(0, &moved)];
+        assert_eq!(made_up_name(&made_up, &answer, &held, &space), Some(&moved));
+        answer.results[0].code = op_result::Code::Superseded as i32;
+        assert_eq!(made_up_name(&made_up, &answer, &held, &space), Some(&moved));
+        assert_eq!(
+            made_up_name(&made_up, &answer, &space.nodes(), &space),
+            None
+        );
+    }
 
     #[test]
     fn a_restore_does_not_reopen_a_write_already_missing_from_retained_history() {
