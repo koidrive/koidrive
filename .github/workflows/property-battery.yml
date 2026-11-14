@@ -2,7 +2,7 @@
 
 name: Property battery
 
-run-name: Property battery on ${{ github.ref_name }} (${{ inputs.shards || '24' }} shards x ${{ inputs.cases || '8192' }} cases)
+run-name: Property battery on ${{ github.ref_name }} (${{ inputs.shards || '24' }} shards x ${{ inputs.cases || '8192' }} stress cases)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       cases:
-        description: PROPTEST_CASES on each shard (empty means 8192)
+        description: Cases per opted-in stress property on each shard; other properties keep their own budgets (empty means 8192)
         type: string
         default: ''
       shards:
@@ -164,7 +164,7 @@ jobs:
             echo "shards=$(jq -cn --argjson n "$SHARDS" '[range($n)]')"
             echo "mutation_shards=$mutation_shards"
           } >> "$GITHUB_OUTPUT"
-          echo "Commit $(git rev-parse HEAD), $SHARDS shards, PROPTEST_CASES=$CASES, shard k uses PROPTEST_RNG_SEED=$seed_base + k."
+          echo "Commit $(git rev-parse HEAD), $SHARDS shards, KOIDRIVE_BATTERY_CASES=$CASES for opted-in stress properties; other properties keep their own budgets. Shard k uses PROPTEST_RNG_SEED=$seed_base + k."
 
   shard:
     name: shard ${{ matrix.shard }}
@@ -195,7 +195,7 @@ jobs:
           seed=$((SEED_BASE + SHARD))
           out="$RUNNER_TEMP/out"
           mkdir -p "$out/logs" "$out/regressions"
-          echo "Shard $SHARD: PROPTEST_RNG_SEED=$seed PROPTEST_CASES=$CASES filter='$FILTER' commit $SHA"
+          echo "Shard $SHARD: PROPTEST_RNG_SEED=$seed KOIDRIVE_BATTERY_CASES=$CASES for opted-in stress properties; filter='$FILTER' commit $SHA"
           filter_args=()
           repro_filter=""
           if [ -n "$FILTER" ]; then
@@ -208,7 +208,7 @@ jobs:
             log="$out/logs/$(basename "$binary").log"
             echo "::group::$package $selector"
             set +e
-            (cd "$dir" && CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" PROPTEST_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" "${filter_args[@]}") 2>&1 | tee "$log"
+            (cd "$dir" && env -u PROPTEST_CASES CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" KOIDRIVE_BATTERY_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" "${filter_args[@]}") 2>&1 | tee "$log"
             code=${PIPESTATUS[0]}
             set -e
             echo "::endgroup::"
@@ -224,9 +224,9 @@ jobs:
               reason="ran $((p + f + i)) of the $expected tests listed for it"
             fi
             if [ -n "$reason" ]; then
-              repro="git checkout $SHA && PROPTEST_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked -p $package $selector$repro_filter"
+              repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked -p $package $selector$repro_filter"
               failing=$(jq -c --arg target "$package $selector" --arg reason "$reason" --arg repro "$repro" '. + [{target: $target, reason: $reason, repro: $repro}]' <<< "$failing")
-              echo "::error title=$package $selector failed on shard $SHARD::Seed $seed, $CASES cases, $reason. Reproduce: $repro"
+              echo "::error title=$package $selector failed on shard $SHARD::Seed $seed, stress budget $CASES, $reason. Reproduce: $repro"
             fi
           done < battery/targets.tsv
           if [ "$passed" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$failing" = '[]' ]; then
@@ -239,7 +239,7 @@ jobs:
           jq -n --argjson shard "$SHARD" --argjson seed "$seed" --argjson cases "$CASES" --argjson passed "$passed" --argjson failed "$failed" --argjson failing "$failing" \
             '{shard: $shard, seed: $seed, cases: $cases, passed: $passed, failed: $failed, failing: $failing}' > "$out/result-$SHARD.json"
           if [ "$failing" = '[]' ]; then
-            echo "Shard $SHARD passed: $passed tests, seed $seed, $CASES cases per property test." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; unit tests run once." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           jq -r '.[] | .repro' <<< "$failing" > "$out/repro.txt"
@@ -247,7 +247,7 @@ jobs:
           {
             echo "### Shard $SHARD failed"
             echo
-            echo "Seed $seed, $CASES cases, commit \`$SHA\`. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
+            echo "Seed $seed, stress budget $CASES, commit \`$SHA\`. Other properties keep their own budgets; unit tests run once. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
             echo
             jq -r '.[] | "```sh\n\(.repro)\n```"' <<< "$failing"
           } | tee -a "$GITHUB_STEP_SUMMARY"
@@ -361,10 +361,11 @@ jobs:
           {
             echo "## Property battery"
             echo
-            echo "Commit \`$SHA\` ($REF), $SHARDS shards, PROPTEST_CASES=$CASES, filter: ${FILTER:-none}."
+            echo "Commit \`$SHA\` ($REF), $SHARDS shards, KOIDRIVE_BATTERY_CASES=$CASES, filter: ${FILTER:-none}."
             echo
             echo "- Shards passed: $passing of $SHARDS"
-            echo "- Cases: each property test ran $CASES cases on each passing shard, $((CASES * passing)) per property test in total"
+            echo "- Stress budget: $CASES generated cases per selected, opted-in stress property on each passing shard, $((CASES * passing)) in total; saved regressions also replay"
+            echo "- Bounded properties keep their own case budgets; unit tests run once per shard"
             echo "- Tests: $tests_passed passed and $tests_failed failed, summed over shards"
             echo
             echo "| Shard | Seed | Result | Tests passed | Tests failed | Job |"
@@ -389,4 +390,4 @@ jobs:
             echo "::error::Shards: $SHARD_RESULT (failed: ${failed_shards:-none recorded, see the table}), mutations: $MUTATIONS_RESULT. The job summary lists the seeds and repro commands."
             exit 1
           fi
-          echo "All $SHARDS shards passed, $((CASES * passing)) cases per property test."
+          echo "All $SHARDS shards passed, $((CASES * passing)) generated cases budgeted per selected, opted-in stress property. Bounded properties keep their own budgets; unit tests run once per shard."

@@ -1,6 +1,6 @@
 # Testing
 
-[CI](../.github/workflows/ci.yml) runs every test suite on each pull request, in the merge queue and on `main`. The [property battery](#the-property-battery-runs-nightly-and-on-demand) runs the property tests at high case counts every night and when you start it. The [heavy tests workflow](#heavy-tests-run-on-github-actions) runs one package's tests on Ubuntu and macOS as many times as you ask. To run the Rust checks that CI runs:
+[CI](../.github/workflows/ci.yml) runs every test suite on each pull request, in the merge queue and on `main`. The [property battery](#the-property-battery-runs-nightly-and-on-demand) runs opted-in stress properties at high case counts every night and when you start it. The [heavy tests workflow](#heavy-tests-run-on-github-actions) runs one package's tests on Ubuntu and macOS as many times as you ask. To run the Rust checks that CI runs:
 
 ```sh
 cargo fmt --all --check
@@ -40,9 +40,10 @@ Two other workflows run on pull requests. [CLI distribution](../.github/workflow
 
 ## Property tests
 
-The property tests use [proptest](https://docs.rs/proptest/1.12.0/proptest/). They are the `proptest!` blocks in the integration tests of `core/chunk`, `core/engine`, `core/ignore` and `core/sim`, and in the unit tests of `core/driver/src/engine.rs` and `core/net/src/session/tests.rs`. The largest is the interleaving property in `core/sim/tests/engine_sync.rs`. Each block sets its own case count. Two environment variables override every block:
+The property tests use [proptest](https://docs.rs/proptest/1.12.0/proptest/). They are the `proptest!` blocks in the integration tests of `core/chunk`, `core/engine`, `core/ignore` and `core/sim`, and in the unit tests of `core/driver/src/engine.rs` and `core/net/src/session/tests.rs`. The largest is the interleaving property in `core/sim/tests/engine_sync.rs`. Each block sets its own case count. Environment variables control the case budgets and seeds:
 
 - `PROPTEST_CASES`: the number of cases each property runs.
+- `KOIDRIVE_BATTERY_CASES`: the case budget for properties that opt in with `koidrive_test_support::battery_config`. Other properties use `regression_config` and keep their own budgets. Invalid battery budgets fail opted-in properties.
 - `PROPTEST_RNG_SEED`: a fixed seed, a whole number. The same seed, case count and commit give the same cases. Without it, each run picks a random seed.
 
 The properties run in one of two modes, set by `KOIDRIVE_PROPTEST_DETERMINISTIC` (`true` or `false`, unset means `false`):
@@ -54,7 +55,7 @@ Both modes replay the saved cases first. `PROPTEST_RNG_SEED` overrides seed 0, a
 
 When a property fails, proptest prints the shrunk input. The shared configuration saves its `cc` line and a single-line `# shrinks to` description in a `<suite>.cases/cc-<seed>.txt` file, for example under `core/sim/tests/engine_sync.cases/`. Later runs replay saved cases first. Replay a failure by its `cc` line rather than by `PROPTEST_RNG_SEED`. Commit the case file with the fix so it keeps being checked.
 
-Every property block uses `koidrive_test_support::regression_config`. CI checks this with:
+Every property block uses `koidrive_test_support::battery_config`. The two driver properties for unreadable uploads and unwritable downloads use `regression_config` with eight generated cases because they wait on real retry deadlines. The checker records these exceptions by source path, test name and case count. A new bounded property requires an explicit entry. CI checks budget classes and regression persistence with:
 
 ```sh
 cargo run --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked --
@@ -79,7 +80,7 @@ Add `--ignored` to run an ignored test.
 
 ## The property battery runs nightly and on demand
 
-The [property battery](../.github/workflows/property-battery.yml) runs every property test at a high case count on GitHub Actions. It runs every night on `main` with 24 shards of 8192 cases. To start it for a branch, use `scripts/battery.sh`. It needs [gh](https://cli.github.com/) signed in to an account that can run workflows on the repository:
+The [property battery](../.github/workflows/property-battery.yml) runs every property test on GitHub Actions. It runs every night on `main` with 24 shards and a budget of 8192 generated cases per stress property. Only the two deadline-bound driver properties keep their own budgets, and unit tests run once per shard. CI rejects a property that does not use its recorded budget class. To start it for a branch, use `scripts/battery.sh`. It needs [gh](https://cli.github.com/) signed in to an account that can run workflows on the repository:
 
 ```sh
 scripts/battery.sh                         # the current branch, as pushed
@@ -92,7 +93,7 @@ The script prints the run URL and returns. With `--wait` it follows the run and 
 | Option | Workflow input | Default |
 |---|---|---|
 | `REF` | The branch or tag to test | The current branch |
-| `--cases N` | `cases`, the `PROPTEST_CASES` of each shard | 8192 |
+| `--cases N` | `cases`, the `KOIDRIVE_BATTERY_CASES` budget for opted-in stress properties on each shard | 8192 |
 | `--shards N` | `shards`, at most 256 | 24 |
 | `--filter TEXT` | `filter`, a test name filter as for `cargo test` | None |
 | `--mutations` | `mutations`, which also runs the [mutation set](#the-mutation-set) | Off |
@@ -106,7 +107,7 @@ The workflow runs on the ref it tests, with that ref's own copy of the workflow 
 The shard's job summary prints one command per failing test target, for example:
 
 ```sh
-git checkout <commit> && PROPTEST_CASES=8192 PROPTEST_RNG_SEED=<seed> cargo test --locked -p koidrive-sim --test engine_sync
+git checkout <commit> && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=8192 PROPTEST_RNG_SEED=<seed> cargo test --locked -p koidrive-sim --test engine_sync
 ```
 
 The command reproduces the failure locally. The `failure-shard-<k>` artifact holds the seed, the commands, the test logs and any new `*.cases/cc-<seed>.txt` files, including their `# shrinks to` descriptions. Copy the case files into the same paths in the checkout, then run the failing property with `PROPTEST_CASES=0` to replay saved cases without generating random cases.
@@ -127,12 +128,14 @@ gh run list --workflow heavy-tests.yml --limit 1   # the run's ID, for gh run wa
 | `crate` | The package, as for `cargo test -p` | Required |
 | `test` | One integration test target, as for `cargo test --test` | Every target of the package |
 | `filter` | A test name filter, as for `cargo test` | Every test |
-| `cases` | `PROPTEST_CASES` | Each property's own count |
+| `cases` | `KOIDRIVE_BATTERY_CASES`, for stress properties only | Each property's own count |
 | `repeat` | How many times each OS runs the selection, 1 to 100 | 1 |
 | `seed` | `PROPTEST_RNG_SEED` of the first run; run k uses seed + k - 1 | Run ID × 1000 |
 | `features` | Cargo features, comma-separated, such as `koidrive-engine/serde` | None |
 | `ignored` | Also runs the tests marked `#[ignore]` | Off |
 | `os` | `both`, `ubuntu` or `macos` | `both` |
+
+The workflow clears inherited case overrides. The `cases` input sets only the stress budget, so the two deadline-bound driver properties retain eight generated cases even when `cases` is set to zero. Use `PROPTEST_CASES=0` in a manual reproduction to replay saved cases without generating any cases.
 
 The workflow tests one commit: it resolves `ref` once, so both operating systems test the same code even if the branch moves. Each OS job builds the tests once and then runs them `repeat` times. Its summary has one row per run with the seed, the result and the passed, failed and ignored counts, then the failing tests with the number of runs each failed in, and a command that reproduces a run from its seed. The log of the job's `Run the tests` step ends with the same summary, so `gh run view <run-id> --log` shows it too. A run whose test binary crashes, or that runs no test, counts as not finished cleanly. The job fails unless every run passed, and stops after 340 minutes. Each run starts from the case files in the commit: the job moves the case files a run saves into the `heavy-tests-<OS>` artifact under `regressions/run-<k>/`, so a later run never replays them and a run's seed reproduces it on a clean checkout. The artifact also holds the summary and each run's log. To replay a saved case, copy its file to the same path and run the test with `PROPTEST_CASES=0`.
 

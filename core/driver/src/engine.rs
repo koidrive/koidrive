@@ -3356,7 +3356,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(koidrive_test_support::regression_config(
+        #![proptest_config(koidrive_test_support::battery_config(
             concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/engine.txt"),
             ProptestConfig::default().cases,
         ))]

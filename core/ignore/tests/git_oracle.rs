@@ -517,7 +517,7 @@ fn case_with(
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/git_oracle.proptest-regressions"),
         ProptestConfig::default().cases,
     ))]
@@ -538,7 +538,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(koidrive_test_support::regression_config(
+    #![proptest_config(koidrive_test_support::battery_config(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/git_oracle.proptest-regressions"),
         10_000,
     ))]

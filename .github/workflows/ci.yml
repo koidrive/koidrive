@@ -418,6 +418,7 @@ jobs:
           nice -n 10 cargo clippy --manifest-path scripts/check-proptest-persistence/Cargo.toml --all-targets --locked -- -D warnings
           nice -n 10 cargo test --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked
           nice -n 10 cargo run --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked --
+          python3 scripts/test-property-battery.py -v
       - name: Test the scenario splitter
         if: matrix.suite == 'engine'
         env:
