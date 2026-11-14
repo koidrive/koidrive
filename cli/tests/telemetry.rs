@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 #[test]
 fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
@@ -114,6 +118,10 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
 }
 
 fn koi(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
+    command(home, args, vars).output().expect("run koi")
+}
+
+fn command(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
     command
         .args(args)
@@ -130,7 +138,7 @@ fn koi(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
     for (name, value) in vars {
         command.env(name, value);
     }
-    command.output().expect("run koi")
+    command
 }
 
 fn stdout(output: &Output) -> String {
@@ -294,4 +302,74 @@ fn reset_draws_a_new_id() {
     assert_eq!(before.len(), 32);
     stdout(&koi(home.path(), &["telemetry", "reset"], &[]));
     assert_ne!(id(home.path()), before);
+}
+
+#[test]
+fn every_daemon_start_sends_the_reports_of_past_days() {
+    use koidrive_telemetry::schema::{Command as Name, Counter};
+    use koidrive_telemetry::{Recorder, Store};
+
+    let home = tempfile::tempdir().unwrap();
+    stdout(&koi(home.path(), &["telemetry", "on"], &[]));
+    let store = Store::new(&home.path().join("state/koidrive"));
+    let (url, bodies) = posthog();
+    let today = koidrive_telemetry::today();
+    for (day, name, property) in [
+        (today - 1, Name::Folder, "c.command.folder"),
+        (today - 2, Name::Space, "c.command.space"),
+    ] {
+        let recorder = Recorder::on();
+        recorder.count_on(day, Counter::Command(name), 1);
+        store.absorb(recorder.take()).unwrap();
+        let vars = [
+            ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+            ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+        ];
+        let mut daemon = command(home.path(), &["_daemon"], &vars)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("run koi");
+        let body = bodies.recv_timeout(Duration::from_secs(30));
+        Command::new("kill")
+            .args(["-TERM", &daemon.id().to_string()])
+            .status()
+            .unwrap();
+        daemon.wait().unwrap();
+        let body = body.expect("the daemon sent nothing as it started");
+        let events = body["batch"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "{body}");
+        assert_eq!(events[0]["event"], "daily_report", "{body}");
+        assert_eq!(events[0]["properties"][property], 1, "{body}");
+        assert_eq!(events[0]["properties"]["client"], "cli_daemon", "{body}");
+    }
+}
+
+fn posthog() -> (String, mpsc::Receiver<serde_json::Value>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, bodies) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let _ = sender.send(serde_json::from_slice(&body).unwrap());
+            let response = "HTTP/1.1 200 OK\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{\"status\":\"Ok\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    (url, bodies)
 }

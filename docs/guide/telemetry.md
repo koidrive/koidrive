@@ -22,7 +22,7 @@ koi telemetry reset     # draws a new install id and deletes the reports not sen
 
 Other commands ask only to finish an unanswered setup question. They send reports only when this profile already chose to send them, or when `KOIDRIVE_TELEMETRY` turns them on. `koi setup`, `koi join`, `koi server deploy`, `koi server add-device` and `koi server claim` also take `--telemetry on` or `--telemetry off`, which stores the choice without asking. Questions need a terminal on stdin and stderr and never appear with `--json`. The `CI` environment variable suppresses them, but with `--interactive`, setup can ask when `CI` is `0` or `false`.
 
-A running daemon notices `koi telemetry off` and `reset` at its next ten-minute tick. A daemon that started while reports were off records nothing of its own until it restarts, but it still sends what later commands queue. When the daemon stops, it writes what it holds to disk and leaves the sending to its next run.
+A running daemon follows `koi telemetry on`, `off` and `reset` at its next ten-minute tick. When the daemon stops, it writes what it holds to disk and leaves the sending to its next run.
 
 These environment variables override the choice:
 
@@ -76,4 +76,4 @@ Your own Koidrive server sends nothing to the project. Its Worker logs stay in y
 
 ## Where reports go
 
-Reports go to `https://tel.koidrive.com`, which forwards them to the project's [PostHog](https://posthog.com) project. Each report is an anonymous PostHog event: PostHog makes no person profile for it and doesn't look up a location from your address. A report waits on your machine for up to 14 days while it can't be sent, and is then dropped.
+Reports go to `https://tel.koidrive.com`, which forwards them to the project's [PostHog](https://posthog.com) project. Each report is an anonymous PostHog event: PostHog makes no person profile for it and doesn't look up a location from your address. The daemon sends the reports of days that have ended in UTC as it starts and then every ten minutes. A report waits on your machine for up to 14 days while it can't be sent, and is then dropped.

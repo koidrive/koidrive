@@ -96,9 +96,7 @@ pub async fn start(
                 .ok()
         })
         .flatten();
-    if on {
-        install_panic_hook(store.clone());
-    }
+    install_panic_hook(store.clone());
     let _ = RUN.set(Run {
         store,
         recorder,
@@ -217,24 +215,30 @@ pub async fn finish() {
     }
 }
 
-/// Moves what this run recorded to disk, now, under the install id it was recorded under: after `koi telemetry
-/// reset`, or off and then on, those sums are dropped and the next ones belong to the new id. A command calls it
-/// before it exits on a signal.
 pub fn flush() {
     let Some(run) = RUN.get() else { return };
-    let pending = run.recorder.take();
-    let Ok(mut id) = run.id.lock() else { return };
-    if let Some(recorded) = id.as_ref()
-        && matches!(
-            run.store.status(var).map(|status| status.mode),
-            Ok(Mode::On | Mode::Debug)
-        )
-        && let Err(error) = run.store.absorb_as(pending, recorded)
-    {
-        tracing::debug!(%error, "telemetry could not be written");
-    }
-    if let Ok(settings) = run.store.settings() {
-        *id = settings.install_id;
+    run.flush(
+        run.store
+            .status(var)
+            .map_or(Mode::Off, |status| status.mode),
+    );
+}
+
+impl Run {
+    fn flush(&self, mode: Mode) {
+        let on = matches!(mode, Mode::On | Mode::Debug);
+        let pending = self.recorder.take();
+        self.recorder.switch(on);
+        let Ok(mut id) = self.id.lock() else { return };
+        if on
+            && let Some(recorded) = id.as_ref()
+            && let Err(error) = self.store.absorb_as(pending, recorded)
+        {
+            tracing::debug!(%error, "telemetry could not be written");
+        }
+        if let Ok(settings) = self.store.settings() {
+            *id = settings.install_id;
+        }
     }
 }
 
@@ -256,9 +260,6 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
     .ok()
 }
 
-/// The daemon's loop: every ten minutes it records what `driver` synced, moves the sums to disk and sends what is
-/// due. When it stops it records and moves them to disk only, so that stopping never waits on the network; a later
-/// run sends them. It reads the choice again each time, so `koi telemetry off` stops it without a restart.
 pub async fn run_daemon(stop: tokio::sync::oneshot::Receiver<()>, driver: Driver) {
     let Some(run) = RUN.get() else { return };
     let mut last = Volume::default();
@@ -338,8 +339,6 @@ pub fn failed(failure: Failure) {
     }
 }
 
-/// Runs `tick` and then `work` every `period` until `stop` fires, and `tick` once more then. A `work` still running
-/// when `stop` fires is dropped, so stopping never waits on it.
 async fn every<W: Future>(
     period: Duration,
     mut stop: tokio::sync::oneshot::Receiver<()>,
@@ -347,13 +346,13 @@ async fn every<W: Future>(
     mut work: impl FnMut() -> W,
 ) {
     loop {
-        tokio::select! {
-            _ = tokio::time::sleep(period) => {}
-            _ = &mut stop => break,
-        }
         tick();
         tokio::select! {
             _ = work() => {}
+            _ = &mut stop => break,
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(period) => {}
             _ = &mut stop => break,
         }
     }
@@ -621,6 +620,94 @@ mod tests {
         for private in ["Alice", "/home"] {
             assert!(!text.contains(private), "{private} in {text}");
         }
+    }
+
+    #[test]
+    fn a_daemon_started_before_reports_were_on_records_from_its_next_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let run = Run {
+            store: store.clone(),
+            recorder: Recorder::off(),
+            id: Mutex::new(None),
+            flow: Mutex::new(None),
+        };
+        run.recorder
+            .count(Counter::Command(schema::Command::Daemon), 1);
+        store.set(true).unwrap();
+        run.flush(Mode::On);
+        run.recorder.count(Counter::Sync(Synced::CommitsSent), 2);
+        run.flush(Mode::On);
+        let days = serde_json::to_value(store.peek().unwrap().days).unwrap();
+        assert_eq!(
+            days[0]["counters"],
+            serde_json::json!({ "sync": { "commits_sent": 2 } })
+        );
+
+        store.set(false).unwrap();
+        run.flush(Mode::Off);
+        run.recorder.count(Counter::Sync(Synced::CommitsSent), 1);
+        store.set(true).unwrap();
+        run.flush(Mode::On);
+        run.flush(Mode::On);
+        assert!(store.peek().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reports_go_as_the_daemon_starts_and_one_tick_after_their_day_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.set(true).unwrap();
+        let environment = Environment::detect(Client::CliDaemon, "0.1.0");
+        let day = koidrive_telemetry::today();
+        let today = Cell::new(day);
+        let queue = |day: u32| {
+            let recorder = Recorder::on();
+            recorder.count_on(day, Counter::Command(schema::Command::Status), 1);
+            store.absorb(recorder.take()).unwrap();
+        };
+        let waiting = || {
+            (store.peek().unwrap().days.iter())
+                .map(|report| report.day)
+                .collect::<Vec<_>>()
+        };
+        let daemon = |stop| {
+            every(
+                TICK,
+                stop,
+                || {},
+                || koidrive_telemetry::send(&store, None, &environment, Mode::Debug, today.get()),
+            )
+        };
+        let settle = || async {
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        };
+
+        queue(day - 1);
+        queue(day);
+        let (stop_first, stop) = tokio::sync::oneshot::channel();
+        tokio::join!(daemon(stop), async {
+            settle().await;
+            assert_eq!(waiting(), [day], "a past day waited for a tick");
+            today.set(day + 1);
+            tokio::time::advance(TICK - Duration::from_secs(1)).await;
+            settle().await;
+            assert_eq!(waiting(), [day]);
+            tokio::time::advance(Duration::from_secs(1)).await;
+            settle().await;
+            assert_eq!(waiting(), Vec::<u32>::new(), "the day ended a tick ago");
+            stop_first.send(()).unwrap();
+        });
+
+        queue(day);
+        let (stop_second, stop) = tokio::sync::oneshot::channel();
+        tokio::join!(daemon(stop), async {
+            settle().await;
+            assert_eq!(waiting(), Vec::<u32>::new(), "a restart waited for a tick");
+            stop_second.send(()).unwrap();
+        });
     }
 
     #[tokio::test]

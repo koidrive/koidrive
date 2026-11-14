@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::schema::{Counter, DailyReport, Event, Level, Measure};
 
-/// A cheap handle that code passes around to record. One made with [`Recorder::off`] records nothing and costs one
-/// branch per call. Recording takes a short lock on the sums and does no I/O.
+/// A cheap handle that code passes around to record. Clones share one switch and one set of sums. While it is off it
+/// records nothing and costs one branch per call. Recording takes a short lock on the sums and does no I/O.
 #[derive(Clone, Debug, Default)]
-pub struct Recorder(Option<Arc<Mutex<Pending>>>);
+pub struct Recorder(Arc<Shared>);
+
+#[derive(Debug, Default)]
+struct Shared {
+    on: AtomicBool,
+    pending: Mutex<Pending>,
+}
 
 /// What a recorder holds and [`Recorder::take`] hands over.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -19,15 +26,28 @@ pub struct Pending {
 
 impl Recorder {
     pub fn off() -> Self {
-        Recorder(None)
+        Recorder::default()
     }
 
     pub fn on() -> Self {
-        Recorder(Some(Arc::default()))
+        let recorder = Recorder::default();
+        recorder.switch(true);
+        recorder
     }
 
     pub fn is_on(&self) -> bool {
-        self.0.is_some()
+        self.0.on.load(Ordering::Relaxed)
+    }
+
+    /// Starts or stops recording, for every clone. Stopping drops what is held.
+    pub fn switch(&self, on: bool) {
+        let Ok(mut pending) = self.0.pending.lock() else {
+            return;
+        };
+        self.0.on.store(on, Ordering::Relaxed);
+        if !on {
+            *pending = Pending::default();
+        }
     }
 
     pub fn count(&self, counter: Counter, by: u64) {
@@ -137,8 +157,9 @@ impl Recorder {
     }
 
     fn with(&self, update: impl FnOnce(&mut Pending)) {
-        if let Some(pending) = &self.0
-            && let Ok(mut pending) = pending.lock()
+        if self.is_on()
+            && let Ok(mut pending) = self.0.pending.lock()
+            && self.is_on()
         {
             update(&mut pending);
         }
@@ -163,6 +184,25 @@ mod tests {
         let recorder = Recorder::off();
         recorder.count(Counter::Command(Command::Status), 1);
         recorder.event(panic_on(1));
+        assert_eq!(recorder.take(), Pending::default());
+    }
+
+    #[test]
+    fn a_switch_reaches_every_clone_and_stopping_drops_the_sums() {
+        let recorder = Recorder::off();
+        let clone = recorder.clone();
+        clone.count_on(1, Counter::Command(Command::Status), 1);
+        recorder.switch(true);
+        assert!(clone.is_on());
+        clone.count_on(1, Counter::Command(Command::Folder), 1);
+        assert_eq!(
+            recorder.take().days[&1].counters["command"],
+            BTreeMap::from([("folder".to_owned(), 1)])
+        );
+        clone.event(panic_on(1));
+        recorder.switch(false);
+        clone.count_on(1, Counter::Command(Command::Status), 1);
+        recorder.switch(true);
         assert_eq!(recorder.take(), Pending::default());
     }
 
