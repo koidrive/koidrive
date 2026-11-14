@@ -3686,7 +3686,7 @@ struct Scratch<'a> {
     /// would trash what the create brings, so their deletes wait for the next commit.
     merges: BTreeMap<NodeId, (NodeId, usize)>,
     protected: BTreeSet<(NodeId, usize)>,
-    pinned: BTreeSet<NodeId>,
+    pinned: BTreeMap<NodeId, BTreeSet<(NodeId, usize)>>,
     /// For each node a queued restore names, how many wants that change it are not emitted yet,
     /// and one more while the node is not settled: this build leaves it out, so its changes are
     /// not among the wants, or S has not taken what L and R agree on. The restore waits for all
@@ -3706,7 +3706,7 @@ impl<'a> Scratch<'a> {
             children: BTreeMap::new(),
             merges: BTreeMap::new(),
             protected: BTreeSet::new(),
-            pinned: BTreeSet::new(),
+            pinned: BTreeMap::new(),
             unsent: BTreeMap::new(),
             restoring: BTreeSet::new(),
             owed: BTreeSet::new(),
@@ -3927,10 +3927,17 @@ impl<'a> Scratch<'a> {
 
     fn place(&mut self, id: &str, parent: &str, name: &str, kind: Kind) {
         if !self.protected.is_empty() {
-            let leaving: Vec<NodeId> = (std::iter::once(id.to_owned()).chain(self.subtree(id)))
-                .filter(|node| self.protects(node))
-                .collect();
-            self.pinned.extend(leaving);
+            let leaving: Vec<(NodeId, Vec<(NodeId, usize)>)> = (std::iter::once(id.to_owned())
+                .chain(self.subtree(id)))
+            .map(|node| {
+                let levels = self.protected_levels(&node);
+                (node, levels)
+            })
+            .filter(|(_, levels)| !levels.is_empty())
+            .collect();
+            for (node, levels) in leaving {
+                self.pinned.entry(node).or_default().extend(levels);
+            }
         }
         self.unlink(id);
         let entry = Entry {
@@ -4008,42 +4015,58 @@ impl<'a> Scratch<'a> {
     }
 
     fn protects(&self, id: &str) -> bool {
-        if self.pinned.contains(id) {
-            return true;
-        }
-        if !self.live(id) || self.kind(id) != Some(Kind::Dir) {
-            return false;
-        }
+        self.live(id) && self.kind(id) == Some(Kind::Dir) && !self.protected_levels(id).is_empty()
+    }
+
+    fn protected_levels(&self, id: &str) -> Vec<(NodeId, usize)> {
+        let mut found = Vec::new();
         let mut current = id;
-        for depth in 1..=self.trees.remote().len() + self.nodes.len() {
+        for depth in 0..=self.trees.remote().len() + self.nodes.len() {
+            let pinned = (self.pinned.get(current).into_iter().flatten())
+                .map(|(anchor, at)| (anchor.clone(), at + depth));
+            found.extend(pinned.filter(|level| self.protected.contains(level)));
             let Some(parent) = self.parent(current) else {
-                return false;
+                break;
             };
-            if self.protected.contains(&(parent.to_owned(), depth)) {
-                return true;
-            }
-            if !self.live(parent) {
-                return false;
+            let level = (parent.to_owned(), depth + 1);
+            if self.protected.contains(&level) {
+                found.push(level);
             }
             current = parent;
         }
-        false
+        found
     }
 
     fn merge_reaches(&self, parent: &str, id: &str) -> bool {
         let (anchor, depth) = self.merge_level(parent);
-        if self.inside(&anchor, id) {
-            return self.folder_below(&anchor, depth);
+        let below = |node: &str, at: usize| at <= depth && self.folder_below(node, depth - at);
+        let pinned_at = |node: &str| {
+            (self.pinned.get(node).into_iter().flatten())
+                .filter(|(at_anchor, _)| *at_anchor == anchor)
+                .map(|(_, at)| *at)
+                .collect::<Vec<_>>()
+        };
+        if self.inside(&anchor, id) && below(&anchor, 0) {
+            return true;
         }
-        let mut above = id;
-        for left in (0..depth).rev() {
-            let Some(next) = self.parent(above) else {
+        let inside = (self.pinned.keys()).filter(|node| self.inside(node, id));
+        if inside
+            .into_iter()
+            .any(|node| pinned_at(node).into_iter().any(|at| below(node, at)))
+        {
+            return true;
+        }
+        let mut current = id;
+        for up in 1..=depth {
+            let Some(next) = self.parent(current) else {
                 return false;
             };
-            if next == anchor {
-                return self.folder_below(id, left);
+            if (next == anchor && below(id, up))
+                || pinned_at(next).into_iter().any(|at| below(id, at + up))
+            {
+                return true;
             }
-            above = next;
+            current = next;
         }
         false
     }
