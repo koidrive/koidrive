@@ -56,7 +56,7 @@ public final class AppModel {
         let all: [String: FakeScenario] = [
             "firstRun": .firstRun, "upToDate": .upToDate, "syncing": .syncing, "paused": .paused,
             "offline": .offline, "massDelete": .massDelete, "ambiguousDisappearance": .ambiguousDisappearance,
-            "recovery": .recovery, "recoveredWithoutQuestions": .recoveredWithoutQuestions,
+            "recovery": .recovery, "conflict": .conflict, "recoveredWithoutQuestions": .recoveredWithoutQuestions,
             "remoteMassDelete": .remoteMassDelete, "manyQuestions": .manyQuestions, "problems": .problems,
         ]
         return defaults.string(forKey: "FakeScenario").flatMap { all[$0] }
@@ -417,6 +417,7 @@ extension Question: Identifiable {
         case .massDelete: 0
         case .ambiguousDisappearance: 1
         case .recovery(_, let group): 2 + group.rank
+        case .conflict: 7
         }
         return (rank, askedAtMs)
     }

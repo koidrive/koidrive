@@ -212,6 +212,32 @@ fn mass_delete(saved: &mut Saved, now: i64) {
     );
 }
 
+fn conflict(saved: &mut Saved, now: i64) {
+    let side = |node_id: &str, path: &str, size, minutes: i64| ConflictSide {
+        node_id: node_id.to_owned(),
+        path: path.to_owned(),
+        size,
+        modified_at_ms: now - minutes * 60_000,
+    };
+    let original = side("node-budget-2027", "Budget 2027.xlsx", 48_640, 12);
+    let copy = side(
+        "node-budget-2027-copy",
+        "Budget 2027 (conflict from Ada's Mac mini 2026-11-13).xlsx",
+        51_208,
+        9,
+    );
+    let items = [&copy, &original]
+        .map(|side| file(side.node_id.clone(), side.path.clone(), ItemDetail::Plain))
+        .into();
+    question(
+        saved,
+        DOCUMENTS,
+        now - 60_000,
+        QuestionKind::Conflict { original, copy },
+        items,
+    );
+}
+
 fn notice(saved: &mut Saved, space_id: &str, at: i64, kind: NoticeKind) {
     saved.next_id += 1;
     saved.notices.push(Notice {
@@ -468,6 +494,7 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
         FakeScenario::MassDelete => mass_delete(saved, now),
         FakeScenario::AmbiguousDisappearance => disappearance(saved, now, 1, 4),
         FakeScenario::Recovery => recovery(saved, now, 6),
+        FakeScenario::Conflict => conflict(saved, now),
         FakeScenario::RecoveredWithoutQuestions => notice(
             saved,
             PHOTOS,

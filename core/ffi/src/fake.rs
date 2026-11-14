@@ -8,13 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::types::{
-    Account, Answer, ChangeKind, DeletedItem, Device, Direction, FileVersion, FileVersions,
-    FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit, NewShareLink,
-    NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind, Question, QuestionKind,
-    RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger, RestoreAsked,
-    RestoreRequest, RestoreState, RestoreTarget, ServerInfo, SessionError, SessionEvent,
-    SessionState, ShareExpiry, ShareLink, ShareState, Space, SpaceUsage, SyncProgress, SyncStatus,
-    TelemetrySetting, Trash,
+    Account, Answer, ChangeKind, ConflictSide, DeletedItem, Device, Direction, FileVersion,
+    FileVersions, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder, MassDeleteLimit,
+    NewShareLink, NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind, Question,
+    QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup, RecoveryTrigger,
+    RestoreAsked, RestoreRequest, RestoreState, RestoreTarget, ServerInfo, SessionError,
+    SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState, Space, SpaceUsage,
+    SyncProgress, SyncStatus, TelemetrySetting, Trash,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -58,6 +58,9 @@ pub enum FakeScenario {
     /// Photos is recovering after a rewind: a recovery notice and one question for each of the
     /// five recovery groups.
     Recovery,
+    /// One conflict question in Documents: `Budget 2027.xlsx` was edited on this Mac and on
+    /// another device at once, and this Mac's edit became the conflict copy.
+    Conflict,
     /// Photos recovered after a rewind with nothing held: a recovery notice and no questions.
     RecoveredWithoutQuestions,
     /// Another device deleted 1,200 files from Photos, more than the guard's limit; a notice
@@ -1130,7 +1133,30 @@ impl Core for FakeCore {
             if !saved.questions[index].answers.contains(&answer) {
                 return Err(SessionError::AnswerNotAllowed);
             }
-            let space_id = saved.questions.remove(index).space_id;
+            let answered = saved.questions.remove(index);
+            if let (QuestionKind::Conflict { copy, .. }, Answer::KeepOriginal | Answer::KeepCopy) =
+                (&answered.kind, answer)
+            {
+                let device = saved.account()?.clone();
+                let trash = &mut saved
+                    .history
+                    .entry(answered.space_id.clone())
+                    .or_default()
+                    .trash;
+                trash.push(DeletedItem {
+                    node_id: copy.node_id.clone(),
+                    path: copy.path.clone(),
+                    kind: NodeKind::File,
+                    files: 1,
+                    bytes: copy.size,
+                    modified_at_ms: Some(copy.modified_at_ms),
+                    deleted_at_ms: Some(now_ms()),
+                    deleted_by_device_id: Some(device.device_id),
+                    deleted_by_device_name: Some(device.device_name),
+                });
+                trash.sort_by(|a, b| a.path.cmp(&b.path));
+            }
+            let space_id = answered.space_id;
             let recovering = saved
                 .questions
                 .iter()
@@ -1557,6 +1583,92 @@ mod tests {
         assert!(h.core.state().questions.is_empty());
         assert_eq!(h.core.given_answers().len(), 31);
         assert_eq!(h.core.given_answers()[0].answer, Answer::Restore);
+    }
+
+    #[test]
+    fn a_conflict_takes_its_three_answers_and_keeping_one_file_moves_the_copy_to_the_trash() {
+        for (answer, trashed) in [
+            (Answer::KeepOriginal, true),
+            (Answer::KeepCopy, true),
+            (Answer::KeepBoth, false),
+        ] {
+            let h = Harness::new();
+            h.core.load_scenario(FakeScenario::Conflict).unwrap();
+            let state = h.core.state();
+            let [question] = state.questions.as_slice() else {
+                panic!("one conflict: {:?}", state.questions);
+            };
+            let QuestionKind::Conflict { original, copy } = &question.kind else {
+                panic!("a conflict: {question:?}");
+            };
+            assert_eq!(question.space_id, DOCUMENTS);
+            assert_eq!(original.path, "Budget 2027.xlsx");
+            assert!(copy.modified_at_ms > original.modified_at_ms);
+            let items: Vec<_> = (question.items.iter())
+                .map(|item| (item.node_id.as_str(), item.path.as_str(), item.kind))
+                .collect();
+            assert_eq!(
+                items,
+                [
+                    (copy.node_id.as_str(), copy.path.as_str(), NodeKind::File),
+                    (
+                        original.node_id.as_str(),
+                        original.path.as_str(),
+                        NodeKind::File
+                    ),
+                ]
+            );
+            assert_eq!(
+                question.answers,
+                [Answer::KeepOriginal, Answer::KeepCopy, Answer::KeepBoth]
+            );
+            assert_eq!(
+                h.core.answer(&question.id, Answer::Delete),
+                Err(SessionError::AnswerNotAllowed)
+            );
+            assert_eq!(
+                h.core.answer("question-gone", answer),
+                Err(SessionError::QuestionNotFound)
+            );
+
+            h.core.answer(&question.id, answer).unwrap();
+            assert!(h.core.state().questions.is_empty());
+            assert_eq!(
+                h.core.answer(&question.id, answer),
+                Err(SessionError::QuestionNotFound)
+            );
+            assert_eq!(
+                h.core.given_answers(),
+                [GivenAnswer {
+                    question_id: question.id.clone(),
+                    answer,
+                }]
+            );
+            let documents = folder_of(&h.core, DOCUMENTS).path;
+            let trash = h.core.trash(&documents).unwrap().items;
+            let trashed_copy: Vec<_> = (trash.iter())
+                .map(|item| {
+                    (
+                        item.node_id.as_str(),
+                        item.path.as_str(),
+                        item.bytes,
+                        item.modified_at_ms,
+                        item.deleted_by_device_id.as_deref(),
+                    )
+                })
+                .collect();
+            let expected = (
+                copy.node_id.as_str(),
+                copy.path.as_str(),
+                copy.size,
+                Some(copy.modified_at_ms),
+                Some("device-1"),
+            );
+            match trashed {
+                true => assert_eq!(trashed_copy, [expected], "{answer:?}"),
+                false => assert!(trashed_copy.is_empty(), "{answer:?}"),
+            }
+        }
     }
 
     #[test]

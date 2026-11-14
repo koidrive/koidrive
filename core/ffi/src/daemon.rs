@@ -156,7 +156,6 @@ impl DaemonCore {
             &inner.questions,
             inner.started,
             &mut inner.halted,
-            &self.helper,
         );
         let sent = &inner.sent;
         let mut events = Vec::new();
@@ -686,13 +685,19 @@ impl Core for DaemonCore {
     }
 
     fn answer(&self, question_id: &str, answer: Answer) -> Result<(), SessionError> {
-        let done = (self.change(&["resolve", "--", question_id, state::word(answer)])).map_err(
-            |refusal| match refusal.code {
-                Code::StaleDecision => SessionError::QuestionNotFound,
-                Code::Usage => SessionError::AnswerNotAllowed,
-                _ => refusal.into(),
-            },
-        )?;
+        let word = {
+            let inner = self.lock();
+            let asked = inner.questions.iter().find(|asked| asked.id == question_id);
+            state::word(answer, asked.map(|asked| &asked.kind))
+        };
+        let done =
+            (self.change(&["resolve", "--", question_id, &word])).map_err(
+                |refusal| match refusal.code {
+                    Code::StaleDecision => SessionError::QuestionNotFound,
+                    Code::Usage => SessionError::AnswerNotAllowed,
+                    _ => refusal.into(),
+                },
+            )?;
         match done.outcome {
             Outcome::Unchanged => Err(SessionError::QuestionNotFound),
             _ => Ok(()),

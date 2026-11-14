@@ -123,37 +123,6 @@ impl From<Refusal> for SessionError {
 }
 
 impl Helper {
-    pub(crate) fn action_command(&self, args: &[&str]) -> String {
-        let env = [
-            "HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_STATE_HOME",
-            "XDG_RUNTIME_DIR",
-        ]
-        .map(|name| {
-            let value = match self.env.iter().find(|(set, _)| *set == name) {
-                Some((_, value)) => value.clone(),
-                None => std::env::var_os(name),
-            };
-            (name, value)
-        });
-        let mut words = vec!["/usr/bin/env".to_owned()];
-        for (name, value) in &env {
-            if value.is_none() {
-                words.extend(["-u".to_owned(), shell_word(name)]);
-            }
-        }
-        for (name, value) in &env {
-            if let Some(value) = value {
-                let assignment = [name, "=", value.to_string_lossy().as_ref()].concat();
-                words.push(shell_word(&assignment));
-            }
-        }
-        words.push(shell_word(&self.path.to_string_lossy()));
-        words.extend(args.iter().map(|arg| shell_word(arg)));
-        words.join(" ")
-    }
-
     pub(crate) fn run(&self, args: &[&str]) -> Result<Done, Refusal> {
         self.run_with_input(args, None)
     }
@@ -437,6 +406,10 @@ struct ItemData {
     node_id: String,
     path: String,
     files: u64,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    modified_at_ms: Option<i64>,
 }
 
 impl DecisionData {
@@ -494,6 +467,8 @@ impl DecisionData {
                     path: item.path.clone(),
                     files: item.files,
                     device_id: None,
+                    size: item.size,
+                    modified_at_ms: item.modified_at_ms,
                 })
                 .collect(),
         })

@@ -2369,6 +2369,8 @@ mod tests {
                 path: "old".into(),
                 files: 1_001,
                 device_id: None,
+                size: None,
+                modified_at_ms: None,
             }],
         }
     }

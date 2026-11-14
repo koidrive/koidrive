@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/// The device whose edit became a conflict copy asks about it, with both files, their revisions and the devices
-/// that wrote them. The other device asks nothing.
+/// The device whose edit became a conflict copy asks about it, with both files, their revisions, the devices that
+/// wrote them, and the size and modification time of each. The other device asks nothing.
 #[test]
 fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
     use crate::question::QuestionKind;
@@ -23,20 +23,40 @@ fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
     };
     assert_eq!(original.node_id, live_id(&nodes, "main.go"));
     assert_eq!(copy.node_id, live_id(&nodes, COPY));
+    let modified_at_ms = |node_id: &str| {
+        let current = remote.space.node(node_id).unwrap().current.unwrap();
+        let mtime_ns = current.content.unwrap().mtime_ns;
+        assert!(mtime_ns > 0, "{node_id} has a modification time");
+        Some(mtime_ns / 1_000_000)
+    };
     let items: Vec<_> = (question.items.iter())
         .map(|item| {
             (
                 item.path.as_str(),
                 item.node_id.as_str(),
                 item.device_id.as_deref(),
+                item.size,
+                item.modified_at_ms,
             )
         })
         .collect();
     assert_eq!(
         items,
         [
-            (COPY, copy.node_id.as_str(), Some("b")),
-            ("main.go", original.node_id.as_str(), Some("a")),
+            (
+                COPY,
+                copy.node_id.as_str(),
+                Some("b"),
+                Some(6),
+                modified_at_ms(&copy.node_id),
+            ),
+            (
+                "main.go",
+                original.node_id.as_str(),
+                Some("a"),
+                Some(6),
+                modified_at_ms(&original.node_id),
+            ),
         ]
     );
 }

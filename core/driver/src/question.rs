@@ -74,6 +74,12 @@ pub struct HeldItem {
     /// For a file of a conflict, the device that wrote its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// For a file of a conflict, the size of its current version in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<i64>,
 }
 
 #[cfg(test)]
@@ -109,6 +115,8 @@ mod tests {
                 path: "a/b".into(),
                 files: 1,
                 device_id: None,
+                size: None,
+                modified_at_ms: None,
             }],
             lineage: "q1".into(),
             recovery_cause: None,

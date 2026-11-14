@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn cli_status_update_metadata_is_unconsumed_by_the_app_fallback() {
@@ -35,94 +34,6 @@ fn cli_status_update_metadata_is_unconsumed_by_the_app_fallback() {
         assert!(!status.running);
         assert!(questions.is_empty());
     }
-}
-
-#[test]
-fn resolve_uses_the_selected_profile_and_unsets_the_terminal_runtime() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("Ada's $(false) koi");
-    std::fs::write(
-        &path,
-        "#!/bin/sh\nprintf '%s\\0' \"$HOME\" \"$XDG_CONFIG_HOME\" \"$XDG_STATE_HOME\" \"${XDG_RUNTIME_DIR-unset}\" \"$#\" \"$1\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let home = "/profile/Ada's $(false) home";
-    let config = "/profile/config; false";
-    let state = "/profile/state\nwith newline";
-    let helper = Helper {
-        path,
-        env: vec![
-            ("HOME", Some(home.into())),
-            ("XDG_CONFIG_HOME", Some(config.into())),
-            ("XDG_STATE_HOME", Some(state.into())),
-            ("XDG_RUNTIME_DIR", None),
-        ],
-    };
-    let command = helper.action_command(&["resolve"]);
-    assert!(!command.contains("UNRELATED_VALUE"));
-    let output = Command::new("/bin/sh")
-        .args(["-c", &command])
-        .env("HOME", "/terminal/home")
-        .env("XDG_CONFIG_HOME", "/terminal/config")
-        .env("XDG_STATE_HOME", "/terminal/state")
-        .env("XDG_RUNTIME_DIR", "/terminal/runtime")
-        .env("UNRELATED_VALUE", "not part of the copied command")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(
-        output.stdout,
-        [home, config, state, "unset", "1", "resolve", ""]
-            .join("\0")
-            .as_bytes(),
-    );
-}
-
-#[test]
-fn resolve_preserves_an_explicit_runtime_directory_and_an_unset_config_root() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("koi");
-    std::fs::write(
-        &path,
-        "#!/bin/sh\nprintf '%s\\0' \"${XDG_CONFIG_HOME-unset}\" \"$XDG_RUNTIME_DIR\" \"${HOME-unset}\" \"${XDG_STATE_HOME-unset}\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let helper = Helper {
-        path,
-        env: vec![
-            ("XDG_CONFIG_HOME", None),
-            ("XDG_RUNTIME_DIR", Some("/profile/runtime".into())),
-        ],
-    };
-    let inherited = ["HOME", "XDG_STATE_HOME"].map(|name| {
-        std::env::var_os(name)
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unset".to_owned())
-    });
-    let command = helper.action_command(&["resolve"]);
-    let output = Command::new("/bin/sh")
-        .args(["-c", &command])
-        .env("XDG_CONFIG_HOME", "/terminal/config")
-        .env("XDG_RUNTIME_DIR", "/terminal/runtime")
-        .env("HOME", "/terminal/home")
-        .env("XDG_STATE_HOME", "/terminal/state")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(
-        output.stdout,
-        [
-            "unset",
-            "/profile/runtime",
-            &inherited[0],
-            &inherited[1],
-            ""
-        ]
-        .join("\0")
-        .as_bytes(),
-    );
 }
 
 fn child(script: &str, input: bool) -> Child {

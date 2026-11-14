@@ -38,6 +38,7 @@ extension Question {
         case .massDelete: String(localized: "Delete many files?")
         case .ambiguousDisappearance: String(localized: "Files disappeared")
         case .recovery(_, let group): group.title
+        case .conflict: String(localized: "Edited on two devices")
         }
     }
 
@@ -56,6 +57,8 @@ extension Question {
             String(localized: "These went missing while Koidrive wasn't running. Other devices keep them until you decide.")
         case .recovery(_, let group):
             group.explanation
+        case .conflict:
+            String(localized: "Both versions are kept until you choose.")
         }
     }
 
@@ -71,6 +74,9 @@ extension Question {
         case (.publish, _): String(localized: "Upload All")
         case (.repeat, _): String(localized: "Repeat All Requests")
         case (.cancel, _): String(localized: "Cancel All Requests")
+        case (.keepOriginal, _): String(localized: "Keep Original")
+        case (.keepCopy, _): String(localized: "Keep Copy")
+        case (.keepBoth, _): String(localized: "Keep Both")
         }
     }
 
@@ -112,6 +118,7 @@ extension Question {
         case .massDelete: "trash"
         case .ambiguousDisappearance: "questionmark.circle"
         case .recovery: "clock"
+        case .conflict: "doc.on.doc"
         }
     }
 }
@@ -237,7 +244,6 @@ extension ProblemKind {
         case .signInRequired: String(localized: "This Mac was removed")
         case .stateNotWritable: String(localized: "Koidrive can't save its sync state")
         case .folderHalted: String(localized: "Sync for this folder stopped")
-        case .conflict: String(localized: "This file has a conflict copy")
         }
     }
 
@@ -264,8 +270,6 @@ extension ProblemKind {
             String(localized: "Another device removed this Mac, or its credential stopped working. Sign out in Account settings, then sign in with a pairing code from another device.")
         case .stateNotWritable(let reason): String(localized: "Free up disk space. \(reason)")
         case .folderHalted(let reason): reason
-        case .conflict(let resolveCommand):
-            String(localized: "Both files are kept and continue syncing. Run \(resolveCommand) in Terminal to review the files and choose which to keep.")
         }
     }
 }

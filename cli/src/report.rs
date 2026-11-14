@@ -313,6 +313,12 @@ pub struct Item {
     pub node_id: String,
     pub path: String,
     pub files: u64,
+    /// For a file of a conflict, the size of its current version in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
@@ -428,6 +434,8 @@ impl Decision {
                     node_id: item.node_id.clone(),
                     path: item.path.clone(),
                     files: item.files,
+                    size: item.size,
+                    modified_at_ms: item.modified_at_ms,
                 })
                 .collect(),
             answers: (crate::choices(question).into_iter())
@@ -1394,12 +1402,16 @@ mod tests {
                     path: "archive/a".into(),
                     files: 3,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 },
                 HeldItem {
                     node_id: "n2".into(),
                     path: "archive/b".into(),
                     files: 1,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 },
             ],
         }

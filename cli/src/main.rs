@@ -3728,6 +3728,8 @@ mod tests {
                     path: format!("old/{i:02}"),
                     files: 1,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 })
                 .collect(),
         }
@@ -3755,6 +3757,8 @@ mod tests {
             path: path.into(),
             files: 1,
             device_id: Some(device_id.into()),
+            size: None,
+            modified_at_ms: None,
         };
         Question {
             kind: QuestionKind::Conflict {

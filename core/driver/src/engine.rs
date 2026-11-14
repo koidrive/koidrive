@@ -288,7 +288,8 @@ impl Engine {
     }
 
     /// The question as the person sees it, with its items in path order: each item the engine holds with its path
-    /// ([`Self::path`]), or both files of a conflict with their paths in R and the devices that wrote them.
+    /// ([`Self::path`]), or both files of a conflict with their paths in R and the device, size and modification
+    /// time of their current versions.
     fn shown(
         &self,
         tx: &Tx<'_>,
@@ -301,11 +302,17 @@ impl Engine {
             engine::QuestionKind::Conflict { original, copy, .. } => [original, copy]
                 .into_iter()
                 .map(|file| {
+                    let current = tx.remote_current(&file.node_id)?;
+                    let content = current
+                        .as_ref()
+                        .and_then(|version| version.content.as_ref());
                     Ok(HeldItem {
                         node_id: file.node_id.clone(),
                         path: path(self.trees.remote(), &file.node_id),
                         files: 1,
-                        device_id: tx.remote_writer(&file.node_id)?,
+                        size: content.map(|content| content.size),
+                        modified_at_ms: content.map(|content| content.mtime_ns / 1_000_000),
+                        device_id: current.map(|version| version.device_id),
                     })
                 })
                 .collect::<Result<_, Error>>()?,
@@ -315,6 +322,8 @@ impl Engine {
                     path: self.path(id),
                     files: held.files,
                     device_id: None,
+                    size: None,
+                    modified_at_ms: None,
                 })
                 .collect(),
         };
