@@ -685,6 +685,13 @@ pub(crate) mod tests {
 
         files.stage(&staged("next")).unwrap();
         assert_eq!(slots(&path), ("secret-refresh".into(), Some("next".into())));
+        for entry in fs::read_dir(dir.path()).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            assert!(
+                crate::Paths::STATE_ENTRIES.contains(&name.as_str()),
+                "{name}"
+            );
+        }
         let mode = fs::metadata(next_path(&path)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
 

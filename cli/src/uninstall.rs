@@ -32,22 +32,6 @@ const STATE_MARKS: [&str; 5] = [
     RECORD,
     "update-check.json",
 ];
-const STATE_ENTRIES: [&str; 14] = [
-    "credential.json",
-    "lock",
-    "service.lock",
-    "paused",
-    "update-check.json",
-    "update.log",
-    "setup-state.json",
-    RECORD,
-    "leaving",
-    "spaces",
-    "requests",
-    "telemetry",
-    "systemd",
-    "daemon.sock",
-];
 const KOI_MARK: &[u8] = b"Koidrive sync client";
 const STATUS: Duration = Duration::from_secs(10);
 const HELPER: Duration = Duration::from_secs(20);
@@ -326,7 +310,7 @@ fn holds(outer: &Path, inner: &Path) -> bool {
 }
 
 fn is_state_entry(name: &str) -> bool {
-    let known = |name: &str| STATE_ENTRIES.contains(&name);
+    let known = |name: &str| Paths::STATE_ENTRIES.contains(&name);
     known(name)
         || name.starts_with(".tmp")
         || name

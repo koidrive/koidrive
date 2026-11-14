@@ -28,6 +28,27 @@ pub enum PathsError {
 }
 
 impl Paths {
+    /// The names Koidrive writes directly in a profile's state directory. Atomic writes add a temporary
+    /// `.<name>.<pid>.tmp` beside a file.
+    pub const STATE_ENTRIES: [&str; 16] = [
+        "credential.json",
+        "credential.next",
+        "lock",
+        "service.lock",
+        "paused",
+        "update-check.json",
+        "update.log",
+        "setup-state.json",
+        "uninstall.json",
+        "leaving",
+        "leaving.next",
+        "spaces",
+        "requests",
+        "telemetry",
+        "systemd",
+        "daemon.sock",
+    ];
+
     /// The XDG base directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`) with their defaults under
     /// `HOME`. Relative values are ignored, as the XDG specification requires. Without `XDG_RUNTIME_DIR` the socket
     /// lives in the state directory.

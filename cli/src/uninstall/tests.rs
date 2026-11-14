@@ -216,3 +216,26 @@ fn the_summary_names_what_stays_and_how_to_revoke_a_device_still_listed() {
          Kept /srv/Koidrive/.koidrive/trash, which still holds files. Delete it when you no longer need them.\n"
     );
 }
+
+#[test]
+fn only_what_koidrive_writes_leaves_a_state_folder() {
+    assert!(Paths::STATE_ENTRIES.contains(&RECORD));
+    for name in [
+        "credential.json",
+        "credential.next",
+        ".credential.next.123.tmp",
+        ".credential.json.9.tmp",
+        "leaving.next",
+        ".tmpA1b2C3",
+    ] {
+        assert!(is_state_entry(name), "{name}");
+    }
+    for name in [
+        "wedding.jpg",
+        ".credential.next.tmp",
+        ".notes.1.tmp",
+        "credential.json.bak",
+    ] {
+        assert!(!is_state_entry(name), "{name}");
+    }
+}
