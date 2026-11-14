@@ -2042,6 +2042,18 @@ impl Commits {
             .is_some()
     }
 
+    /// Forgets the commit in flight, which the server holds nothing of, because the content of
+    /// `node` could not be read for its upload, and leaves `node` out of planning until
+    /// [`Commits::clear_problem`], so that the next commit carries every other change. False, and
+    /// nothing changes, when [`Commits::abandon`] would refuse.
+    pub fn leave_out(&mut self, node: &str) -> bool {
+        if !self.abandon() {
+            return false;
+        }
+        self.problems.insert(node.to_owned());
+        true
+    }
+
     /// Compares the `Welcome` with the commit in flight and the accepted counter *a* (section
     /// 2.8). With *w* the server's counter, *w* = *a* means the commit in flight was not accepted
     /// and *w* = *a* + 1 that it was and its response was lost; both resend it unchanged, and

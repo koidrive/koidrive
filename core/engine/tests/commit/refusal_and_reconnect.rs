@@ -445,3 +445,48 @@ fn a_folder_the_user_empties_and_deletes_before_the_server_renames_its_create_is
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("c", ROOT, "y"), delete("n")]);
 }
+
+#[test]
+fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(file(ROOT, "a", 2)),
+            Some(file(ROOT, "a", 1)),
+            Some(remote(file(ROOT, "a", 1))),
+        ),
+        (
+            "b",
+            Some(file(ROOT, "b", 2)),
+            Some(file(ROOT, "b", 1)),
+            Some(remote(file(ROOT, "b", 1))),
+        ),
+        (
+            "c",
+            Some(file(ROOT, "c", 2)),
+            Some(file(ROOT, "c", 1)),
+            Some(remote(file(ROOT, "c", 1))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [update("a", 2), update("b", 2), update("c", 2)]
+    );
+    assert!(commits.leave_out("b"));
+    assert_eq!(commits.in_flight(), None);
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update("a", 2), update("c", 2)]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); 2],
+    );
+    assert!(!commits.leave_out("a"), "no commit in flight");
+    assert_eq!(commits.problems().iter().collect::<Vec<_>>(), ["b"]);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(commits.clear_problem("b"));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update("b", 2)]);
+}
