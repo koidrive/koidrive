@@ -8,6 +8,15 @@ import SwiftUI
 struct QuestionsView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: String?
+    @State private var conflict: ConflictResolution?
+    @State private var answering: [String: ConflictResolution] = [:]
+    private let thumbnails: FileThumbnail.Phase?
+
+    init(conflict: ConflictResolution? = nil, thumbnails: FileThumbnail.Phase? = nil) {
+        _selection = State(initialValue: conflict?.id)
+        _conflict = State(initialValue: conflict)
+        self.thumbnails = thumbnails
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -42,7 +51,13 @@ struct QuestionsView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 260)
         } detail: {
             Group {
-                if let question = model.state.questions.first(where: { $0.id == selection }) {
+                if let conflict, case .settled(let answer) = conflict.phase {
+                    SettledConflict(resolution: conflict, answer: answer)
+                } else if let conflict, conflict.id == selection {
+                    ConflictDetail(resolution: conflict, thumbnails: thumbnails)
+                        .id(conflict.id)
+                        .frame(minWidth: 560, minHeight: 360)
+                } else if let question = model.state.questions.first(where: { $0.id == selection }) {
                     QuestionDetail(question: question, folder: model.folder(spaceID: question.spaceId))
                         .id(question.id)
                         .frame(minWidth: 480, minHeight: 360)
@@ -62,9 +77,15 @@ struct QuestionsView: View {
         .onAppear(perform: seen)
         .onChange(of: model.unseenQuestionIDs) { seen() }
         .onChange(of: model.state.questions.map(\.id), initial: true) { _, ids in
-            if selection == nil || !ids.contains(selection!) {
-                selection = model.questionSections.first?.questions.first?.id
-            }
+            if let selection, ids.contains(selection) || conflictIsAnswered(selection) { return }
+            selection = model.questionSections.first?.questions.first?.id
+        }
+        .onChange(of: selection, initial: true) { _, id in
+            guard conflict?.id != id else { return }
+            if let conflict { answering[conflict.id] = conflict }
+            answering = answering.filter { $0.value.isKeeping }
+            conflict = id.flatMap { answering[$0] }
+                ?? model.state.questions.first { $0.id == id }.flatMap { ConflictResolution(question: $0, model: model) }
         }
     }
 
@@ -88,6 +109,14 @@ struct QuestionsView: View {
                 QuestionRow(question: question, selected: selection == question.id)
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    private func conflictIsAnswered(_ id: String) -> Bool {
+        guard let conflict, conflict.id == id else { return false }
+        switch conflict.phase {
+        case .keeping, .settled: return true
+        case .choosing, .failed: return false
         }
     }
 

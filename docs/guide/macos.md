@@ -30,6 +30,14 @@ Choose **Pause Sync** to pause, and **Resume Sync** to continue. Edits you make 
 
 When **Needs You** opens, select a question and review the affected files before choosing an answer. Koidrive asks before sending a large delete to your other machines. Destructive answers need confirmation.
 
+When a file changes on two devices at once, **Needs You** shows the original and the conflicted copy side by side, with each file's modified time, size and preview. **Quick Look** opens either file. Choose which one to keep:
+
+- **Keep Original** keeps the original and moves the copy to Deleted Files.
+- **Keep Copy** puts the copy's content in the original, keeps the old content in Version History and moves the copy to Deleted Files.
+- **Keep Both** keeps both files as they are.
+
+If this Mac is offline, the choice applies when Koidrive reconnects.
+
 To inspect a problem, choose **Review problems** in the menu bar. **Settings**, **Problems** lists each problem with advice. **Show in Finder** is available when the problem's space is still linked on this Mac.
 
 ## Manage folders and preferences

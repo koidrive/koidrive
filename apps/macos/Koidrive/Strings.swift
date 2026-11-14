@@ -39,13 +39,14 @@ extension Question {
         case .massDelete: String(localized: "Delete many files?")
         case .ambiguousDisappearance: String(localized: "Files disappeared")
         case .recovery(_, let group): group.title
-        case .conflict: String(localized: "Edited on two devices")
+        case .conflict(let original, _): String(localized: "\(original.name) changed on two devices")
         }
     }
 
     var listTitle: String {
         switch kind {
         case .massDelete: String(localized: "Delete many files")
+        case .conflict(let original, _): original.name
         default: title
         }
     }
@@ -59,7 +60,7 @@ extension Question {
         case .recovery(_, let group):
             group.explanation
         case .conflict:
-            String(localized: "Both versions are kept until you choose.")
+            String(localized: "Both versions are kept for now. Choose the one to keep.")
         }
     }
 
@@ -82,7 +83,10 @@ extension Question {
     }
 
     var counts: String {
-        String(localized: "\(itemCount(items.count)), \(fileCount(affectedFiles))")
+        switch kind {
+        case .conflict: String(localized: "Changed on two devices")
+        default: String(localized: "\(itemCount(items.count)), \(fileCount(affectedFiles))")
+        }
     }
 
     var scope: String {
@@ -119,7 +123,7 @@ extension Question {
         case .massDelete: "trash"
         case .ambiguousDisappearance: "questionmark.circle"
         case .recovery: "clock"
-        case .conflict: "doc.on.doc"
+        case .conflict: "doc.text"
         }
     }
 }

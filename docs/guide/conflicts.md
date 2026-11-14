@@ -11,7 +11,7 @@ report.txt
 report (conflict from laptop 2026-11-10).txt
 ```
 
-Both files sync to every device. Compare them, keep what you need, and delete the copy. The device whose edit became the copy also opens a [decision](status-reference.md#a-conflict-opens-a-decision) that keeps either file or both for you. If that name is taken too, Koidrive adds a number before the closing parenthesis: `report (conflict from laptop 2026-11-10 2).txt`. Koidrive shortens a long device name, and then the file name, so the result fits in 255 bytes.
+Both files sync to every device. Compare them, keep what you need, and delete the copy. The device whose edit became the copy also opens a [decision](status-reference.md#a-conflict-opens-a-decision) that keeps either file or both for you. On a Mac, the decision appears in the app's [Needs You](macos.md#check-sync-and-answer-questions) window. If that name is taken too, Koidrive adds a number before the closing parenthesis: `report (conflict from laptop 2026-11-10 2).txt`. Koidrive shortens a long device name, and then the file name, so the result fits in 255 bytes.
 
 An edit and a rename of the same file don't conflict. The file keeps the new content under the new name.
 
