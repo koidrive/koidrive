@@ -451,14 +451,8 @@ fn listing_with(space: &SpaceDo, history: History) -> Message {
     }
 }
 
-fn history_since(space: &SpaceDo, engine: &Engine) -> History {
-    let since = Resume {
-        history_id: engine.history.clone(),
-        since_seq: engine.cursor.seq,
-        since_commit_id: engine.cursor.commit_id.clone(),
-        since_committed_at_ms: engine.cursor.committed_at_ms,
-    };
-    let Ok(records) = space.resume(&since) else {
+fn history_since(space: &SpaceDo, from: &Resume, trees: &Trees) -> History {
+    let Ok(records) = space.resume(from) else {
         return History::new();
     };
     let mut log = History::new();
@@ -471,7 +465,7 @@ fn history_since(space: &SpaceDo, engine: &Engine) -> History {
             }
         }
     }
-    first_link::since(engine.trees.remote(), log)
+    first_link::since(trees.remote(), log)
 }
 
 /// The files a write a restore took from the server may end in, until the devices are quiet
@@ -645,7 +639,7 @@ impl World {
                     down: false,
                     link: Some(Link::default()),
                     recovery: None,
-                    since_cursor: History::new(),
+                    recovery_from: Resume::default(),
                     store_copy: None,
                     rolled_back: false,
                     left: false,
@@ -1035,18 +1029,25 @@ impl World {
                 false => "recovery starts after a rewind",
             },
         );
-        let since = history_since(&self.space, &self.devices[d].engine);
+        let engine = &self.devices[d].engine;
+        let from = Resume {
+            history_id: engine.history.clone(),
+            since_seq: engine.cursor.seq,
+            since_commit_id: engine.cursor.commit_id.clone(),
+            since_committed_at_ms: engine.cursor.committed_at_ms,
+        };
+        let since = history_since(&self.space, &from, &engine.trees);
         let history = self.space.history_id().to_owned();
         let device = &mut self.devices[d];
         device.recovery = Some(why);
-        device.since_cursor = since;
+        device.recovery_from = from;
         device
             .engine
             .commits
             .enter_recovery(RecoveryCause::of(trigger));
         device.engine.history = history;
         device.engine.behind = true;
-        let listed = listing_with(&self.space, device.since_cursor.clone());
+        let listed = listing_with(&self.space, since);
         if let Some(link) = &mut device.link {
             link.inbox.push(listed);
         }
@@ -1688,7 +1689,7 @@ impl World {
         let device = &mut self.devices[d];
         if device.engine.behind {
             let history = match device.recovering() {
-                true => device.since_cursor.clone(),
+                true => history_since(&self.space, &device.recovery_from, &device.engine.trees),
                 false => History::new(),
             };
             return Ok(listing_with(&self.space, history));

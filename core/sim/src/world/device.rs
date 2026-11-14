@@ -14,7 +14,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::{CommitsChanges, EffectsChanges, TreesChanges};
 use koidrive_engine::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{
-    ChangeRecord, CommitRecord, CommitResult, Error, NodeState, change_record,
+    ChangeRecord, CommitRecord, CommitResult, Error, NodeState, Resume, change_record,
 };
 
 use super::disk::{Disk, Place, identity};
@@ -234,7 +234,7 @@ pub struct Device {
     pub link: Option<Link>,
     /// Why the device last started a recovery (section 6.4).
     pub recovery: Option<String>,
-    pub since_cursor: History,
+    pub recovery_from: Resume,
     pub store_copy: Option<Engine>,
     pub rolled_back: bool,
     pub left: bool,
