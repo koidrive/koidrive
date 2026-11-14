@@ -261,6 +261,11 @@ impl Run {
         if fs::symlink_metadata(real).is_err() || !self.allowed(dir) || !self.allowed(real) {
             return;
         }
+        if !real.is_dir() {
+            return self.kept.push(Kept::Unrecognized {
+                path: dir.display().to_string(),
+            });
+        }
         let mut gone = Vec::new();
         let emptied = fs::read_dir(real)
             .and_then(|entries| {
@@ -864,7 +869,14 @@ async fn released(paths: &Paths) -> Result<(), String> {
     let deadline = Instant::now() + RELEASE;
     loop {
         let file = match fs::File::open(&lock) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(());
+            }
             Err(error) => return Err(format!("cannot open {}: {error}", shown_folder(&lock))),
             Ok(file) => file,
         };

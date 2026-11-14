@@ -344,6 +344,44 @@ fn a_linked_folder_whose_target_is_gone_loses_its_link() {
 }
 
 #[test]
+fn a_link_to_a_file_keeps_the_file_and_the_link() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let report = machine.write("Docs/report.docx", "report");
+    let notes = machine.write("Docs/notes.txt", "notes");
+    for (link, target) in [("state/koidrive", &report), ("config/koidrive", &notes)] {
+        fs::create_dir_all(machine.path(link).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, machine.path(link)).unwrap();
+    }
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(
+        fs::read_to_string(&report).unwrap(),
+        "report",
+        "{envelope:#}"
+    );
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "notes", "{envelope:#}");
+    assert!(!koi.exists(), "{envelope:#}");
+    for link in ["state/koidrive", "config/koidrive"] {
+        assert!(
+            fs::symlink_metadata(machine.path(link)).is_ok(),
+            "{link}: {envelope:#}"
+        );
+        assert!(
+            kept(&envelope).contains(&json!({
+                "kind": "unrecognized",
+                "path": machine.path(link),
+            })),
+            "{link}: {envelope:#}"
+        );
+    }
+    let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+    assert!(output.status.success(), "{envelope:#}");
+}
+
+#[test]
 fn without_a_terminal_it_asks_for_yes_and_changes_nothing() {
     let machine = Machine::new();
     machine.profile();
