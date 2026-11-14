@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! One case is left out: a purge of nodes this device has not removed yet, as after a month
+//! offline. R then holds no record of them, and a removal belongs to the deletion the guard
+//! counted or dismissed under one of the folders above it, or starts one under the outermost of
+//! them. The guard may then count their removals under another deletion, or one deletion as
+//! several.
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
@@ -30,6 +36,8 @@ enum Event {
     StepAll,
     Pause,
     Dismiss,
+    /// The log was truncated: R is listed again with the trash, as the driver does once the
+    /// folder has synced.
     Bootstrap,
     Lose,
     Resend,
@@ -76,7 +84,10 @@ struct Server {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Groups {
+    /// `<commit_id>:<op index>` (RFC 0012). Each Delete is one commit, so the commit ID is the
+    /// Delete's ID, and a resend keeps it.
     Commit,
+    /// `<seq>:<op index>`, as before RFC 0012: a commit that takes a lost seq takes its groups.
     Seq,
 }
 
@@ -505,6 +516,8 @@ impl World {
         }
     }
 
+    /// Removes every node L holds and R does not, counting each removal in the engine alone. The
+    /// model leaves out removals of nodes the server purged first, so this checks nothing.
     fn step_past_the_model(&mut self) {
         self.now += 1;
         let mut effects = Effects::default();
@@ -644,6 +657,9 @@ impl Model {
     }
 }
 
+/// Revives a trashed node with the nodes below it in its trash group, and each trashed folder
+/// above it on its own, as a restore does on the server (`reviveTarget` in
+/// server/src/space/commit.ts).
 fn revive(server: &mut Server, id: &str, changed: &mut Vec<String>) {
     let mut above = Vec::new();
     let mut parent = server.nodes[id].shape.parent.clone();
@@ -946,6 +962,10 @@ fn witness_a_restore_lost_after_the_dismissal_is_noticed() {
     assert_eq!(witness(&events), Some((1, 26, 50)));
 }
 
+/// GUN-455 review: a dismissed folder brought back by a restore, then deleted again and purged
+/// before this device builds or removes anything. The restore ended the dismissal, so the
+/// removals, of nodes R holds no record of, are noticed with all 40 files of p/f. The model leaves
+/// such removals out, so only the engine counts them.
 #[test]
 fn a_new_delete_of_a_dismissed_folder_purged_before_its_removal_is_noticed() {
     let mut world = World::new(Groups::Commit);

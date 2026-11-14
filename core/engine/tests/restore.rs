@@ -447,6 +447,8 @@ fn a_restore_waits_while_its_node_is_left_out_of_planning() {
     acknowledge(&mut commits, &mut trees, vec![rejected("LATER_REASON")]);
     assert!(commits.problems().contains(&n));
 
+    // The edit is not planned while the file is a problem. A restore sent now would reach the
+    // server before the edit, and the edit would replace the restored version later.
     let intent = version(&n, &v);
     commits.restore(id(100), intent.clone());
     commits.restore(id(101), from_trash(&id(2)));
@@ -495,6 +497,8 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
     trees.settle();
     assert_eq!(trees.synced().live(&n), Some(&file(&root(), "f", 1)));
 
+    // A restore sent now would leave L with content S does not show, and the engine would
+    // upload it over the restored version as if the user had written it.
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let intent = version(&n, &v);
     commits.restore(id(100), intent.clone());
@@ -791,6 +795,8 @@ fn a_lost_response_resends_the_same_restore_once() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
+/// A commit with a `Restore` op has an unknown outcome when the history changes. The commit and the
+/// restore are kept as the evidence recovery needs, and nothing sends the restore again.
 #[test]
 fn restore_intent_in_flight() {
     let (n, v) = (id(1), id(50));
@@ -881,6 +887,8 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
         [ended(&id(100), &first, refused.clone())]
     );
 
+    // A commit whose response was lost may have been applied, so its restore waits for the
+    // result. One that was never sent ends.
     let mut commits = Commits::default();
     commits.restore(id(100), first.clone());
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
