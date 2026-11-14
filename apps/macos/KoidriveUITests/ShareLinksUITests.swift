@@ -35,6 +35,9 @@ final class ShareLinksUITests: XCTestCase {
         let added = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in revokes.count == before + 1 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [added], timeout: 10), .completed)
         XCTAssertFalse(text("Revoked", in: list).exists)
+
+        share.buttons["Done"].click()
+        XCTAssert(share.waitForNonExistence(timeout: 10))
         list.buttons["Revoke…"].firstMatch.click()
 
         let confirm = list.sheets.firstMatch.buttons["Revoke"]
