@@ -393,6 +393,7 @@ pub struct Terminal {
 pub struct Progress<'a> {
     terminal: &'a Terminal,
     bar: Option<cliclack::ProgressBar>,
+    message: String,
 }
 
 impl Progress<'_> {
@@ -409,6 +410,12 @@ impl Progress<'_> {
             bar.clear();
         }
         self.terminal.complete(message);
+    }
+
+    pub fn fail(mut self) {
+        if let Some(bar) = self.bar.take() {
+            bar.error(&self.message);
+        }
     }
 }
 
@@ -536,6 +543,15 @@ impl Terminal {
         self.start_progress(message, false)
     }
 
+    pub fn still_progress(&self, message: &str) -> Progress<'_> {
+        self.message(message);
+        Progress {
+            terminal: self,
+            bar: None,
+            message: crate::printable(message),
+        }
+    }
+
     fn start_progress(&self, message: &str, announce: bool) -> Progress<'_> {
         let bar = (self.interaction == Interaction::Rich).then(cliclack::spinner);
         match &bar {
@@ -546,6 +562,7 @@ impl Terminal {
         Progress {
             terminal: self,
             bar,
+            message: crate::printable(message),
         }
     }
 

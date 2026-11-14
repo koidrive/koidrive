@@ -187,7 +187,11 @@ enum Command {
         action: telemetry::TelemetryAction,
     },
     /// Upgrade Koidrive to the newest release.
-    Update,
+    Update {
+        /// Print each step's full output, such as the installer's download checks and Homebrew's log.
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Write a file for a report of a problem: the version, the system, the status and the daemon's log, with your
     /// paths, file names, space and device names, server address and tokens replaced.
     Diagnose,
@@ -549,7 +553,7 @@ fn telemetry_of(
         Command::Share { .. } => (Name::Share, None, None),
         Command::Telemetry { .. } => (Name::Telemetry, None, None),
         Command::Diagnose => (Name::Diagnose, None, None),
-        Command::Update => (Name::Update, None, None),
+        Command::Update { .. } => (Name::Update, None, None),
         Command::Daemon { .. } => (Name::Daemon, None, None),
     }
 }
@@ -859,7 +863,7 @@ async fn execute(
         Command::Daemon { .. } => daemon(paths, json).await,
         Command::Status { check } => status(&paths, check).await,
         Command::Diagnose => diagnose::run(&paths).await,
-        Command::Update => update::run(&paths, json).await,
+        Command::Update { verbose } => update::run(&paths, json, verbose).await,
         Command::Resolve { id, answer } => resolve(&paths, id, answer).await,
         Command::Setup {
             device,

@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use url::Url;
 use crate::error::CliError;
 use crate::report::{Done, UpdateNoticeData, UpdateResult, UpdatedData, Via};
 use crate::service;
+use crate::terminal::{Progress, Terminal};
 
 const INSTALLER: Duration = Duration::from_secs(5 * 60);
 const TAP_REFRESH: Duration = Duration::from_secs(60);
@@ -373,8 +374,12 @@ fn refuse_root(root: bool) -> Result<(), CliError> {
 
 struct Echo {
     json: bool,
+    quiet: bool,
+    held: Vec<String>,
     log: Option<File>,
 }
+
+struct Steps(Option<Terminal>);
 
 #[derive(Clone, Copy)]
 enum Child {
@@ -383,20 +388,49 @@ enum Child {
 }
 
 impl Echo {
-    fn open(path: &Path, json: bool) -> Echo {
+    fn open(path: &Path, json: bool, verbose: bool) -> Echo {
         let log = (path.parent().map(fs::create_dir_all).transpose().ok())
             .and_then(|_| File::create(path).ok());
-        Echo { json, log }
+        Echo {
+            json,
+            quiet: !json && !verbose,
+            held: Vec::new(),
+            log,
+        }
     }
 
     fn line(&mut self, line: &str, stderr: bool) {
+        if let Some(log) = &mut self.log {
+            let _ = writeln!(log, "{line}");
+        }
+        if self.quiet {
+            self.held.push(line.to_owned());
+            return;
+        }
         match self.json || stderr {
             true => eprintln!("{line}"),
             false => println!("{line}"),
         }
-        if let Some(log) = &mut self.log {
-            let _ = writeln!(log, "{line}");
+    }
+
+    fn replay(&mut self) {
+        for line in self.held.drain(..) {
+            eprintln!("{line}");
         }
+    }
+
+    fn finish(&mut self, step: Option<Progress<'_>>, message: &str) {
+        self.held.clear();
+        if let Some(step) = step {
+            step.finish(message);
+        }
+    }
+
+    fn fail(&mut self, step: Option<Progress<'_>>) {
+        if let Some(step) = step {
+            step.fail();
+        }
+        self.replay();
     }
 
     async fn run(
@@ -467,6 +501,22 @@ impl Echo {
                 Ok(None)
             }
         }
+    }
+}
+
+impl Steps {
+    fn new(json: bool, verbose: bool) -> Steps {
+        Steps((!json).then(|| Terminal::new(verbose, io::stderr().is_terminal())))
+    }
+
+    fn start(&self, message: &str) -> Option<Progress<'_>> {
+        self.0.as_ref().map(|terminal| terminal.progress(message))
+    }
+
+    fn still(&self, message: &str) -> Option<Progress<'_>> {
+        self.0
+            .as_ref()
+            .map(|terminal| terminal.still_progress(message))
     }
 }
 
@@ -636,7 +686,7 @@ async fn select_app_helper(
     Ok(None)
 }
 
-pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
+pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliError> {
     refuse_root(rustix::process::geteuid().is_root())?;
     let install = Install::current()?;
     if install.method == Method::Development {
@@ -654,7 +704,7 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
         .unchanged());
     }
     if let Method::Cask { brew } | Method::Formula { brew } = &install.method {
-        return homebrew(paths, &install, brew, json).await;
+        return homebrew(paths, &install, brew, json, verbose).await;
     }
     let release = update::check_now(paths)
         .await
@@ -720,7 +770,8 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
     };
     let upgrading = to.cmp_precedence(&from).is_gt();
     let download = || failed(format!("Download Koidrive {to} from {url}"));
-    let mut echo = Echo::open(&log_path(paths), json);
+    let mut echo = Echo::open(&log_path(paths), json, verbose);
+    let steps = Steps::new(json, verbose);
     let koi = match install.method {
         Method::App => None,
         _ => Some(UpdateBinary::Other(install.binary.clone())),
@@ -732,6 +783,8 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
     let mut prepared_app = prepared_app;
     match install.method {
         Method::App => {
+            #[cfg(target_os = "macos")]
+            let step = steps.start(&format!("Downloading Koidrive {to}"));
             let prepared =
                 crate::app::prepare(&to, crate::app_install::AppLaunch::Preserve, app_deadline)
                     .await;
@@ -771,13 +824,26 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
                     }
                 }
                 prepared_app = Some(prepared);
+                echo.finish(step, &format!("Downloaded and checked Koidrive {to}"));
             }
             #[cfg(not(target_os = "macos"))]
             return Err(app_not_updated(paths, &from, &to, &url, prepared, app_deadline).await);
         }
         Method::Installer if upgrading => {
             let dir = install.binary.parent().ok_or_else(download)?;
-            installer(script_url()?, dir, &to, &mut echo).await?
+            let source = script_url()?;
+            let step = steps.start(&format!("Downloading Koidrive {to}"));
+            let installed = installer(source, dir, &to, &mut echo)
+                .await
+                .and_then(|()| reached(&install.binary, service::version_of(&install.binary), &to));
+            if let Err(error) = installed {
+                echo.fail(step);
+                return Err(error);
+            }
+            echo.finish(
+                step,
+                &format!("Downloaded, checked and installed Koidrive {to}"),
+            );
         }
         Method::Installer => (),
         Method::Cask { .. }
@@ -794,6 +860,7 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
     } else {
         tokio::time::Instant::now() + RECONCILE
     };
+    let step = steps.start(SERVICE_CHECK);
     let reconciled = reconcile_updated(
         &koi,
         &to,
@@ -803,8 +870,10 @@ pub async fn run(paths: &Paths, json: bool) -> Result<Done, CliError> {
         reconcile_deadline,
     )
     .await;
-    let (actual, report, app) =
-        finish_reconciliation(paths, prepared_app, &from, reconciled, app_deadline).await?;
+    let finished =
+        finish_reconciliation(paths, prepared_app, &from, reconciled, app_deadline).await;
+    checked(step, &finished, &mut echo);
+    let (actual, report, app) = finished?;
     updated(
         &from,
         actual,
@@ -823,6 +892,7 @@ async fn homebrew(
     install: &Install,
     brew: &Path,
     json: bool,
+    verbose: bool,
 ) -> Result<Done, CliError> {
     let command = install.command().ok_or_else(|| {
         failed("Homebrew's path cannot be represented as a shell command".to_owned())
@@ -847,7 +917,8 @@ async fn homebrew(
             release.version
         ))
     })?;
-    let mut echo = Echo::open(&log_path(paths), json);
+    let mut echo = Echo::open(&log_path(paths), json, verbose);
+    let steps = Steps::new(json, verbose);
     let (mut refresh, mut failure) = (None, None);
     if to.cmp_precedence(&from).is_gt() {
         if !fs::metadata(brew)
@@ -858,6 +929,7 @@ async fn homebrew(
                 brew.display()
             )));
         }
+        let step = steps.still("Updating Koidrive with Homebrew");
         if let Err(why) = refresh_tap(brew, &mut echo).await {
             echo.line(&why, true);
             refresh = Some(why);
@@ -880,6 +952,12 @@ async fn homebrew(
             }
             Err(error) => failure = Some(format!("{} did not run: {error}", brew.display())),
         }
+        match (&failure, service::version_of(&koi)) {
+            (None, Some(now)) if now.cmp_precedence(&to).is_ge() => {
+                echo.finish(step, &format!("Homebrew installed Koidrive {now}"));
+            }
+            _ => echo.fail(step),
+        }
     }
     if let Some(failure) = &failure
         && service::version_of(&koi).is_none_or(|version| version == from)
@@ -887,6 +965,7 @@ async fn homebrew(
         return Err(failed(format!("{failure}. {guidance}")));
     }
     let deadline = tokio::time::Instant::now() + RECONCILE;
+    let step = steps.start(SERVICE_CHECK);
     let reconciled = reconcile_updated(
         &UpdateBinary::Other(koi),
         &from,
@@ -896,8 +975,9 @@ async fn homebrew(
         deadline,
     )
     .await;
-    let (actual, report, app) =
-        finish_reconciliation(paths, None, &from, reconciled, deadline).await?;
+    let finished = finish_reconciliation(paths, None, &from, reconciled, deadline).await;
+    checked(step, &finished, &mut echo);
+    let (actual, report, app) = finished?;
     let incomplete = actual.cmp_precedence(&to).is_lt();
     let (mut done, service) =
         match updated(&from, actual.clone(), Via::Homebrew, report, app, false) {
@@ -1169,6 +1249,37 @@ async fn app_not_updated(
     }
 }
 
+const SERVICE_CHECK: &str = "Checking the background service";
+
+fn reached(koi: &Path, actual: Option<Version>, target: &Version) -> Result<Version, CliError> {
+    let actual = actual.ok_or_else(|| {
+        failed(format!(
+            "{} is missing or did not report a Koidrive version after the update",
+            koi.display()
+        ))
+    })?;
+    if actual.cmp_precedence(target).is_lt() {
+        return Err(failed(format!(
+            "{} is still Koidrive {actual}; the requested release is {target}. Try koi update again when the install source has that release.",
+            koi.display()
+        )));
+    }
+    Ok(actual)
+}
+
+fn checked(
+    step: Option<Progress<'_>>,
+    finished: &Result<(Version, service::Report, Option<crate::app::Report>), CliError>,
+    echo: &mut Echo,
+) {
+    match finished {
+        Ok((_, report, app)) if update_problem(report, app.as_ref()).is_none() => {
+            echo.finish(step, "Checked the background service");
+        }
+        _ => echo.fail(step),
+    }
+}
+
 async fn reconcile_updated(
     binary: &UpdateBinary,
     target: &Version,
@@ -1181,18 +1292,7 @@ async fn reconcile_updated(
     let koi = binary.path();
     let actual = service::version_of(koi);
     binary.check(deadline).await?;
-    let actual = actual.ok_or_else(|| {
-        failed(format!(
-            "{} is missing or did not report a Koidrive version after the update",
-            koi.display()
-        ))
-    })?;
-    if actual.cmp_precedence(target).is_lt() {
-        return Err(failed(format!(
-            "{} is still Koidrive {actual}; the requested release is {target}. Try koi update again when the install source has that release.",
-            koi.display()
-        )).into());
-    }
+    let actual = reached(koi, actual, target)?;
     let service = service.map_err(failed)?;
     binary.check(deadline).await?;
     let within = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1455,8 +1555,33 @@ mod tests {
         assert!(refuse_root(false).is_ok());
     }
 
+    #[test]
+    fn a_quiet_echo_holds_child_lines_until_a_failure_replays_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("logs/update.log");
+        let mut quiet = Echo::open(&log, false, false);
+        quiet.line("Signature verified for SHA256SUMS", false);
+        quiet.line("SHA256 mismatch", true);
+        assert_eq!(
+            quiet.held,
+            ["Signature verified for SHA256SUMS", "SHA256 mismatch"]
+        );
+        quiet.replay();
+        assert!(quiet.held.is_empty());
+        drop(quiet);
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "Signature verified for SHA256SUMS\nSHA256 mismatch\n"
+        );
+        for (json, verbose) in [(false, true), (true, false)] {
+            let mut shown = Echo::open(&log, json, verbose);
+            shown.line("Signature verified for SHA256SUMS", false);
+            assert!(shown.held.is_empty());
+        }
+    }
+
     fn echo(dir: &Path) -> Echo {
-        Echo::open(&dir.join("logs/update.log"), true)
+        Echo::open(&dir.join("logs/update.log"), true, false)
     }
 
     #[test]

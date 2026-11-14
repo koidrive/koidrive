@@ -31,7 +31,7 @@ struct Theme;
 impl cliclack::Theme for Theme {}
 
 pub fn rich(command: &str) -> bool {
-    !matches!(command, "update" | "_daemon" | "_reconcile")
+    !matches!(command, "_daemon" | "_reconcile")
         && crate::terminal::rich(
             crate::terminal::plain_requested(),
             console::Term::stderr()
