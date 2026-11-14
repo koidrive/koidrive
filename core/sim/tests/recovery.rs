@@ -3008,6 +3008,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         },
         deletes: Default::default(),
         restores: Default::default(),
+        resent: Default::default(),
         result: None,
     });
     engine.commits = Commits::from_state(state).unwrap();

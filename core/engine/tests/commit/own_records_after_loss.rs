@@ -271,3 +271,184 @@ fn an_edit_dropped_in_flight_and_undone_before_the_listing_is_not_sent_over_an_e
         "{built:?}"
     );
 }
+
+fn sent_after_two_losses(record_first: bool, deleted_and_restored: bool) -> Vec<op::Op> {
+    let shape = dir("f", "n");
+    let mut trees = trees(&[synced("f", dir(ROOT, "f")), synced("n", shape.clone())]);
+    let records = trees.remote_records();
+    trees.remove_remote("n");
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], records, 0, 0);
+    trees.settle();
+    assert!(trees.state().resends.contains("n"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(create)] if create.node_id == "n"));
+    assert!(commits.own_record(8, &commit.commit_id));
+    trees.set_remote_made_here("n".into(), RemoteNode { content_rev: 8, edit_rev: 8, ..remote_at(shape, 8) });
+    if record_first {
+        assert!(!commits.acknowledge(&mut trees, 8));
+        trees.settle();
+        assert!(!commits.acknowledge(&mut trees, 8));
+        trees.settle();
+    }
+    let mut last_seq = 8;
+    if deleted_and_restored {
+        let deleted = RemoteNode { content_rev: 8, edit_rev: 8, meta_rev: 9, meta_edit_rev: 9, ..trashed(dir("f", "n")) };
+        trees.set_remote("n".into(), deleted);
+        assert!(!commits.acknowledge(&mut trees, 9));
+        trees.settle();
+        trees.set_remote("n".into(), RemoteNode { content_rev: 8, edit_rev: 8, ..remote_at(dir("f", "n"), 10) });
+        assert!(!commits.acknowledge(&mut trees, 10));
+        trees.settle();
+        last_seq = 10;
+    }
+    commits.received(result(8, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, last_seq));
+    trees.settle();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let moved = trees.moved_here();
+    let taken = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records();
+    trees.remove_remote("n");
+    trees.set_listed_remote("f".into(), RemoteNode { meta_rev: 2, meta_edit_rev: 2, ..trashed(dir(ROOT, "f")) });
+    trees.forget_lost(vec![], vec![], taken, moved, untaken, records, commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle();
+    build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit))
+}
+
+#[test]
+fn a_resend_whose_record_arrives_before_its_result_does_not_recreate_a_deleted_folder_after_a_second_restore() {
+    assert_eq!(sent_after_two_losses(false, false), []);
+    assert_eq!(sent_after_two_losses(true, false), []);
+}
+
+#[test]
+fn a_resend_another_device_deleted_and_restored_before_its_result_does_not_recreate_a_deleted_folder_after_a_second_restore() {
+    assert_eq!(sent_after_two_losses(true, true), []);
+    assert_eq!(sent_after_two_losses(false, true), []);
+}
+
+#[test]
+fn a_resend_left_out_of_a_full_commit_keeps_giving_way_when_its_folder_is_merged() {
+    let children: Vec<&'static str> = (0..MAX_OPS)
+        .map(|i| &*Box::leak(format!("f{i:04}").into_boxed_str()))
+        .collect();
+    let mut rows = vec![synced("d", dir(ROOT, "d"))];
+    rows.extend(children.iter().map(|id| synced(id, file("d", id, 1))));
+    let mut trees = trees(&rows);
+    let records = trees.remote_records();
+    for (id, ..) in &rows {
+        trees.remove_remote(id);
+    }
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], records, 0, 0);
+    trees.settle();
+    assert!(children.iter().all(|id| trees.state().resends.contains(*id)));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent: Vec<op::Op> = ops(&commit);
+    assert!(matches!(&sent[0], op::Op::CreateDir(create) if create.node_id == "d"));
+    let left: Vec<&str> = (children.iter().copied())
+        .filter(|id| sent_for(&sent, id).is_empty())
+        .collect();
+    assert_eq!(left.len(), 1);
+    trees.set_remote("e".into(), remote(dir(ROOT, "d")));
+    for id in &children {
+        if !left.contains(id) {
+            trees.set_remote((*id).into(), remote(file("e", id, 1)));
+        }
+    }
+    let merged = OpResult {
+        node_id: "e".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    let mut results = vec![merged];
+    results.extend(vec![outcome(op_result::Code::Applied); sent.len() - 1]);
+    acknowledge(&mut commits, &mut trees, results);
+    let deleted = |shape| RemoteNode {
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        ..trashed(shape)
+    };
+    trees.set_remote("e".into(), deleted(dir(ROOT, "d")));
+    for id in &children {
+        if !left.contains(id) {
+            trees.set_remote((*id).into(), deleted(file("e", id, 1)));
+        }
+    }
+    trees.settle();
+    let next = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
+    assert_eq!(sent_for(&next, left[0]), Vec::<&op::Op>::new());
+}
+
+fn sent_after_lost_author_move(blocked: bool) -> Vec<op::Op> {
+    let mut rows = vec![synced("f", dir(ROOT, "f")), synced("n", file("f", "n", 1))];
+    if blocked {
+        rows.push(synced("b", file(ROOT, "n", 2)));
+    }
+    let mut trees = trees(&rows);
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            ..remote_at(dir(ROOT, "f"), 3)
+        },
+    );
+    if blocked {
+        trees.set_remote("b".into(), remote_at(file(ROOT, "n", 2), 6));
+    }
+    trees.set_remote("n".into(), remote_at(file("f", "n", 1), 5));
+    trees.record_moved("n", 5);
+    let moved = trees.moved_here();
+    assert_eq!(moved.len(), 1);
+    let taken = trees.taken_from_others(|seq| seq == 5);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.set_listed_remote("n".into(), remote_at(file(ROOT, "n", 1), 1));
+    if blocked {
+        trees.set_listed_remote("b".into(), remote_at(file(ROOT, "b", 2), 1));
+    }
+    trees.forget_lost(vec![], vec![], taken, moved, vec![], records, 1, 1);
+    trees.settle();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 2,
+            edit_rev: 2,
+            ..remote_at(dir(ROOT, "f"), 2)
+        },
+    );
+    trees.settle();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 2,
+            edit_rev: 2,
+            meta_rev: 3,
+            meta_edit_rev: 3,
+            ..trashed(dir(ROOT, "f"))
+        },
+    );
+    trees.settle();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, 1)].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(1);
+    commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, 3u64)
+        .cloned()
+        .map_or_else(Vec::new, |commit| ops(&commit))
+}
+
+#[test]
+fn a_lost_authors_move_with_a_blocked_synced_position_still_beats_an_unseen_delete() {
+    for blocked in [false, true] {
+        let sent = sent_after_lost_author_move(blocked);
+        assert!(sent.iter().any(|op| matches!(op, op::Op::Move(moved) if moved.node_id == "n" && moved.new_parent_id == "f" && moved.from.is_none())), "blocked={blocked}: the author's lost move was suppressed: {sent:?}");
+    }
+}

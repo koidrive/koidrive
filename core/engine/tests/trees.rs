@@ -663,14 +663,48 @@ fn forgetting_what_the_server_lost_keeps_the_rest_of_s() {
     assert_eq!(
         classes,
         [
-            ("albums", Class::Local),
-            ("photos", Class::Concurrent),
+            ("albums", Class::Remote),
+            ("photos", Class::Remote),
             ("one", Class::Local),
             ("two", Class::Concurrent),
             ("old", Class::Remote),
             ("same", Class::InSync),
         ]
     );
+    assert_eq!(
+        trees.waiting().get("albums").map(|waiting| &waiting.shape),
+        Some(&None)
+    );
+}
+
+#[test]
+fn a_node_this_device_changed_below_a_folder_the_server_lost_is_forgotten_with_it() {
+    let mut trees = Trees::new(ROOT);
+    for (ino, (id, shape)) in [
+        ("albums", dir(ROOT, "albums")),
+        ("photos", dir("albums", "photos")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        trees.set_local(id.to_string(), local(shape.clone(), ino as u128));
+        trees.set_synced(id.to_string(), Some(shape));
+    }
+    trees.set_remote("photos".into(), remote(dir(ROOT, "photos")));
+    trees.set_local_changed("photos".into(), local(dir("albums", "pictures"), 1));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.class("albums"), Class::Local);
+    assert_eq!(trees.class("photos"), Class::Concurrent);
 }
 
 /// A node R holds in the trash below a folder the server lost stays a remote delete. S forgets the

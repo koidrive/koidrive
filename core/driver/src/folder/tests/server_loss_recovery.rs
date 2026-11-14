@@ -40,8 +40,6 @@ fn a_commit_the_server_is_behind_for_reads_the_tree_again_and_sends_what_it_lost
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
-/// The server lost the commits that created `albums` and moved `photos` into it, but kept the one that created
-/// `photos`. Device `b` moves `photos` into `albums` again instead of downloading it at its old place.
 #[test]
 fn a_folder_moved_into_a_folder_the_server_lost_is_moved_there_again() {
     let mut remote = Remote::new();
@@ -68,6 +66,16 @@ fn a_folder_moved_into_a_folder_the_server_lost_is_moved_there_again() {
     b.run(&mut remote);
     assert!(site.root.join("albums/photos").is_dir());
     remote = restored;
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(names(&site.root), ["albums", "photos"]);
+    assert_eq!(remote.names(), ["albums", "photos"]);
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
     b.pull(&remote);
     b.run(&mut remote);
     b.settle();

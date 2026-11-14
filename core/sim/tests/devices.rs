@@ -297,7 +297,6 @@ proptest! {
     }
 
     #[test]
-    #[ignore = "after a server restore, a device sends its lost creates again under a folder another device deleted (GUN-700)"]
     fn devices_lose_no_write_around_an_owed_rename_across_server_restores(devices in 2..=3usize, phases in owing_a_rename(Losses::Restores)) {
         keep(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
     }
@@ -5724,4 +5723,2194 @@ fn a_file_edited_after_another_device_deleted_it_converges() {
         (0, folder("a")),
     ]);
     converge(3, &[vec![(0, file("a"))], steps]).unwrap();
+}
+
+#[test]
+fn a_move_another_device_undid_is_not_sent_again_after_a_restore() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (2, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (0, Backup),
+            ],
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 5081002379085051634,
+                        parent: 10445469095245259713,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (1, Scan),
+                (1, Commit(Served)),
+                (1, Commit(Served)),
+                (1, Deliver(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 5081002379085051634,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Scan),
+                (1, Commit(Served)),
+                (1, Commit(Served)),
+                (0, Work(6179022795745983680)),
+                (1, Restore),
+                (0, Work(0)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_move_taken_below_a_lost_folder_is_not_sent_again_by_an_observer() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        2,
+        &[
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 6,
+                        text: 1,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 1,
+                    }),
+                ),
+                (0, Work(0)),
+                (2, Work(0)),
+                (0, Commit(Served)),
+                (0, Backup),
+            ],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 975537330034529539,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Scan),
+                (0, Commit(Served)),
+                (0, Commit(Served)),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 975537330034529539,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Deliver(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 10589478847179512,
+                        parent: 1109812895041444432,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+            ],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 6993669166090222765,
+                        parent: 3312654626791366473,
+                        name: 6,
+                        text: 0,
+                    }),
+                ),
+                (2, Scan),
+                (2, Commit(Served)),
+                (2, Commit(Served)),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 6993669166090222765,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Restore),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_download_into_a_lost_folder_does_not_undo_a_later_rename() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        2,
+        &[
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 6560951180886229457,
+                        parent: 1779682499336723615,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Scan),
+                (2, Commit(Served)),
+                (2, Commit(Served)),
+                (2, Deliver(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 6560951180886229457,
+                        parent: 4059720828635098399,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (2, Scan),
+                (2, Commit(Served)),
+                (2, Commit(Served)),
+                (1, Work(7110269274115948800)),
+                (1, Work(4315326288388191509)),
+                (2, Restore),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_download_planned_before_a_restore_does_not_undo_a_later_rename() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (0, Backup),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Scan),
+                (0, Commit(Served)),
+                (0, Commit(Served)),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+            ],
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 6131698339467033312,
+                        parent: 1785635618050119337,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (1, Scan),
+                (1, Commit(Served)),
+                (1, Commit(Served)),
+                (1, Deliver(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 6131698339467033312,
+                        parent: 4361431265489972153,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Scan),
+                (1, Commit(Served)),
+                (1, Commit(Served)),
+                (0, Work(13554821012677720648)),
+                (1, Restore),
+                (0, Work(0)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_folder_taken_inside_a_lost_folder_follows_its_delete_across_a_second_listing() {
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 7934354642336312327,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (2, Step::Work(0)),
+                (2, Step::Work(0)),
+                (1, Step::Deliver(0)),
+                (
+                    1,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 3868111093665662065,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Step::Work(0)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 4,
+                        target: 12756234576234242350,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Step::Work(0)),
+                (1, Step::Commit(Reply::Served)),
+                (2, Step::Deliver(0)),
+                (0, Step::Restore),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_resend_the_server_lost_again_follows_a_later_delete() {
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![(
+            0,
+            Step::User(Action {
+                kind: 1,
+                target: 0,
+                parent: 0,
+                name: 0,
+                text: 0,
+            }),
+        )],
+        vec![
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 3,
+                    target: 0,
+                    parent: 1,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (
+                1,
+                Step::User(Action {
+                    kind: 4,
+                    target: 1,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 2,
+                    target: 1934276824890113064,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Work(0)),
+            (2, Step::Work(0)),
+            (2, Step::Work(0)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 4343709506816564821,
+                    name: 2,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 1221844793603118989,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Work(768835355417741728)),
+            (0, Step::Backup),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 3725137833088,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 1121403549861574470,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+        ],
+        vec![
+            (
+                2,
+                Step::User(Action {
+                    kind: 4,
+                    target: 1273538121692816,
+                    parent: 11612553768879124047,
+                    name: 5,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Restore),
+        ],
+        vec![
+            (0, Step::Drop),
+            (2, Step::Scan),
+            (0, Step::Work(15956061729377195616)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 3,
+                    target: 1334568582162556052,
+                    parent: 17288264333491804233,
+                    name: 5,
+                    text: 0,
+                }),
+            ),
+            (1, Step::Work(15095363182340914765)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 16045337111336874108,
+                    parent: 3356759961585883128,
+                    name: 6,
+                    text: 2,
+                }),
+            ),
+            (0, Step::Restore),
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 16007596676117737210,
+                    parent: 14525216138510154006,
+                    name: 3,
+                    text: 1,
+                }),
+            ),
+            (2, Step::Work(5662115134855863366)),
+            (
+                2,
+                Step::User(Action {
+                    kind: 4,
+                    target: 8453761204565451729,
+                    parent: 1883774176777694464,
+                    name: 6,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Commit(Reply::Served)),
+            (2, Step::Work(5707444404606408271)),
+            (1, Step::Effect(Outcome::Run)),
+            (0, Step::Backup),
+            (0, Step::Effect(Outcome::Crash(Cut::Done))),
+            (1, Step::Work(13429887249665893642)),
+            (2, Step::Scan),
+            (0, Step::Commit(Reply::Served)),
+            (1, Step::Effect(Outcome::Run)),
+            (0, Step::Deliver(7892733645070721056)),
+            (2, Step::Work(12776573086200831588)),
+            (
+                2,
+                Step::User(Action {
+                    kind: 2,
+                    target: 10803556742394328656,
+                    parent: 8193543232996429275,
+                    name: 4,
+                    text: 2,
+                }),
+            ),
+            (1, Step::Work(10283563071980364009)),
+            (0, Step::Backup),
+        ],
+    ];
+    keep(2, &phases).unwrap();
+}
+
+#[test]
+fn a_file_taken_in_a_folder_the_server_lost_follows_its_delete() {
+    use koidrive_sim::world::{Outcome::Run, Reply::*, Step::*};
+    converge(
+        2,
+        &[
+            vec![
+                (0, Backup),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 1636583242079520281,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 3518107070971863931,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 8092526163,
+                        parent: 1769104373671187948,
+                        name: 2,
+                        text: 1,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 310262556722473901,
+                        parent: 17505825998317775105,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (0, Scan),
+                (0, Commit(Refused(error::Code::LimitExceeded))),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 8997660674761815569,
+                        parent: 9319930253606323216,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(8822110421909567941)),
+                (1, Crash),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 16121305983028408640,
+                        parent: 2793758280582065829,
+                        name: 6,
+                        text: 3,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 14799615285468185456,
+                        parent: 1899003323694780790,
+                        name: 4,
+                        text: 3,
+                    }),
+                ),
+                (2, Crash),
+                (2, Work(14881274073053776494)),
+                (2, Deliver(9082653325870504160)),
+                (1, Work(6380518504943320306)),
+                (0, Work(5993694899573995388)),
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 14102350918516441360,
+                        parent: 5071458612381323012,
+                        name: 5,
+                        text: 2,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 14775042452944324935,
+                        parent: 1616749948966732267,
+                        name: 0,
+                        text: 3,
+                    }),
+                ),
+                (1, Work(4769928786587018333)),
+                (1, Effect(Run)),
+                (1, Restore),
+                (1, Effect(Run)),
+                (0, Deliver(7045561815161789942)),
+                (2, Connect),
+                (2, Work(14841977687381249379)),
+                (1, Connect),
+                (1, Work(2740224587636546334)),
+                (2, Work(10853720041835811675)),
+                (2, Work(12075017704191425118)),
+                (0, Work(7885783632458259581)),
+                (2, Commit(Served)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 2797476466717143509,
+                        parent: 13844243188932478075,
+                        name: 5,
+                        text: 3,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 4,
+                        target: 1719124081197435391,
+                        parent: 2689542517118725387,
+                        name: 4,
+                        text: 2,
+                    }),
+                ),
+                (0, Commit(Served)),
+                (2, Deliver(1258402182060346387)),
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 10510066208307914740,
+                        parent: 2195909993754542936,
+                        name: 6,
+                        text: 3,
+                    }),
+                ),
+                (0, Commit(Served)),
+                (2, Work(4559746182307572682)),
+                (1, Deliver(9233249061225982087)),
+                (1, Deliver(8876117675272352115)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 14992360275104490154,
+                        parent: 5142142777498761394,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Deliver(6027677611617751881)),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 9912238245839625461,
+                        parent: 2642817362365074312,
+                        name: 4,
+                        text: 1,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 16523326391113847340,
+                        parent: 17456269873709538385,
+                        name: 2,
+                        text: 1,
+                    }),
+                ),
+                (0, Deliver(6320836658445821622)),
+                (1, Commit(Served)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+#[test]
+fn an_edit_resent_for_another_device_and_lost_again_follows_a_later_delete() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    keep(
+        2,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 1,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (1, Deliver(0)),
+                (0, Work(0)),
+                (1, Scan),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 1004652672185602873,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 436249758099889346,
+                        name: 0,
+                        text: 1,
+                    }),
+                ),
+                (2, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 1875674299939329889,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Commit(Served)),
+                (1, Work(376464676239633328)),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 11918530787164818716,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 48984384824364599,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Duplicate(0)),
+            ],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 5261596641678574802,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 883337998003236660,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 5062207495963658171,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 7328403164219661217,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 12565473343688016313,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 2,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 4762555196163560358,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 16262393009851784680,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Restore),
+                (2, Connect),
+                (0, Work(0)),
+                (0, Work(7210780503767576177)),
+                (0, Commit(Served)),
+                (2, Drop),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (2, Connect),
+                (2, Work(0)),
+                (0, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 8575784304470821187,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+            ],
+        ],
+    )
+    .unwrap();
+}
+#[test]
+fn a_write_whose_resend_another_device_landed_first_survives_a_second_restore() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let user = |kind, parent, name| {
+        User(Action {
+            kind,
+            target: 0,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    let work = |d: usize, n: usize| std::iter::repeat_n((d, Work(0)), n);
+    let phase: Vec<(usize, Step)> = [(2, Drop), (0, Backup), (0, user(1, 1, 0)), (0, Scan)]
+        .into_iter()
+        .chain([(0, Commit(Served)), (0, Commit(Served))])
+        .chain(work(0, 4))
+        .chain(work(1, 8))
+        .chain([(0, Restore), (1, Connect)])
+        .chain(work(1, 12))
+        .chain([(0, Connect)])
+        .chain(work(0, 12))
+        .chain([(0, Restore), (2, Connect)])
+        .chain(work(2, 6))
+        .chain([(2, user(4, 0, 0)), (2, Scan)])
+        .chain(work(2, 6))
+        .collect();
+    keep(3, &[vec![(0, user(0, 0, 2))], phase]).unwrap();
+}
+
+#[test]
+fn a_create_into_a_folder_deleted_across_restores_does_not_bring_it_back() {
+    use koidrive_sim::world::Step::*;
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 1777408746733460093,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+                (2, Work(0)),
+                (2, Work(0)),
+                (2, Work(0)),
+                (1, Work(0)),
+                (0, Restore),
+                (1, Work(0)),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 632960178675560526,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}
+#[test]
+fn a_write_the_server_kept_as_a_conflict_copy_survives_a_restore_over_a_deleted_folder() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    keep(
+        2,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 1,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 229718348945879965,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 2023046426434088761,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (1, Commit(Served)),
+                (0, Backup),
+            ],
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 5452705308042145952,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 8178958935839280026,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Commit(Served)),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}
+#[test]
+fn a_write_the_server_kept_as_a_conflict_copy_survives_a_restore_with_three_devices() {
+    use koidrive_sim::world::{Outcome::Run, Reply::*, Step::*};
+    keep(
+        3,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 1,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 367829402157426919,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Commit(Served)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Effect(Run)),
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Scan),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(1642913677580113908)),
+                (2, Work(2186272042545824813)),
+                (1, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 4128064577124752670,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+                (0, Backup),
+            ],
+            vec![(0, Restore)],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_folder_another_device_moved_follows_its_delete_after_a_restore_when_a_file_moved_out_of_it() {
+    use koidrive_sim::world::Step::*;
+    keep(
+        2,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 1,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 2178339583268831768,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 8562563489493896556,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 158745160718821128,
+                        parent: 0,
+                        name: 2,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 3,
+                        target: 14936868272043736574,
+                        parent: 168770293824406421,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 4994303686635574257,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 1101415103360796392,
+                        parent: 5604301365614506185,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_resend_the_server_renamed_follows_a_later_delete() {
+    use koidrive_sim::world::{Outcome::Run, Reply::*, Step::*};
+    keep(
+        2,
+        &[
+            vec![(
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 0,
+                        parent: 1,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 4,
+                        target: 1,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 4028288683231967244,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(889170316966745164)),
+                (1, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(1906506745943053365)),
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 6309478032100375087,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 283772666068832105,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(668979968175553036)),
+                (0, Work(1133683309323919412)),
+                (0, Work(0)),
+                (
+                    1,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 1395467983053587005,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (0, Effect(Run)),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(0)),
+                (0, Work(0)),
+                (0, Backup),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    2,
+                    User(Action {
+                        kind: 2,
+                        target: 13853671269895691561,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 12775374516776766043,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (0, Restore),
+                (2, Connect),
+                (0, Deliver(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(10228150632354547258)),
+                (2, Commit(Served)),
+                (0, Work(997530650247626697)),
+                (2, Work(3896236271627724876)),
+                (
+                    2,
+                    User(Action {
+                        kind: 4,
+                        target: 2716074346879409190,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_resend_under_a_conflict_name_follows_a_later_delete_without_an_owed_rename() {
+    use koidrive_sim::world::Step::*;
+    keep(
+        2,
+        &[
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 5408699598664596287,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 14417065657852879405,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (0, Restore),
+                (2, Connect),
+                (0, Work(0)),
+                (0, Work(3519551224864932789)),
+                (0, Work(3778035167789172589)),
+                (
+                    2,
+                    User(Action {
+                        kind: 4,
+                        target: 15406873215894870173,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Work(216736747441)),
+                (2, Work(4871028470400689252)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_resent_copy_built_again_after_the_head_moved_stays_a_recovery_copy() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+                (1, Commit(Served)),
+                (1, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (2, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 69430148313295,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (0, Restore),
+                (1, Connect),
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 13065051882272585844,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(49072026476416821)),
+                (1, Work(0)),
+                (1, Work(7927163743507333597)),
+                (1, Commit(Served)),
+                (2, Connect),
+                (2, Work(0)),
+                (2, Work(3974513746494623661)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_lost_move_gives_way_to_a_delete_by_a_user_who_saw_it() {
+    use koidrive_sim::world::Step::*;
+    keep(
+        3,
+        &[
+            vec![
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (2, Work(0)),
+                (2, Work(0)),
+                (0, Backup),
+            ],
+            vec![
+                (0, Work(0)),
+                (
+                    2,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    User(Action {
+                        kind: 3,
+                        target: 9147435507812817714,
+                        parent: 3624704759994967921,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 3,
+                        target: 3308041641307549115,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (0, Restore),
+                (
+                    0,
+                    User(Action {
+                        kind: 4,
+                        target: 2351286885031503325,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Connect),
+                (2, Work(0)),
+                (2, Work(12987620630431271609)),
+                (2, Work(677365974987200861)),
+            ],
+        ],
+    )
+    .unwrap();
 }

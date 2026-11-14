@@ -582,6 +582,7 @@ impl Trees {
     fn place_remote(&mut self, id: NodeId, node: RemoteNode) {
         let sent_by_another = !node.trashed
             && self.resends.contains(&id)
+            && !self.watched_positions.contains_key(&id)
             && (self.l.live(&id)).is_some_and(|local| {
                 let holds_local = |remote: &Shape| {
                     let at = Shape {
@@ -657,6 +658,10 @@ impl Trees {
         }
     }
 
+    pub(crate) fn resend(&mut self, id: NodeId) {
+        self.resends.insert(id);
+    }
+
     pub(crate) fn resends(&self) -> &BTreeSet<NodeId> {
         &self.resends
     }
@@ -712,6 +717,22 @@ impl Trees {
     }
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
+        let emptied = |id: &str| {
+            self.r.get(id).is_none()
+                && (self.waiting.get(id)).is_some_and(|waiting| waiting.shape.is_none())
+        };
+        let mut below_emptied: Vec<NodeId> = Vec::new();
+        for id in self.changes() {
+            let chain: Vec<&str> = self.local_chain(id).collect();
+            if let Some(at) = chain.iter().skip(1).position(|parent| emptied(parent)) {
+                below_emptied.extend(chain[..=at].iter().map(|id| (*id).to_owned()));
+            }
+        }
+        for id in below_emptied {
+            if self.s.get(&id).is_some() && !self.set_synced_if_valid(id.clone(), None) {
+                self.wait(id, None, Origin::Other);
+            }
+        }
         let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
         let released: Vec<NodeId> = (self.changes().into_iter())
             .filter(|id| !self.held(id))
@@ -1726,9 +1747,11 @@ impl Trees {
     }
 
     /// The nodes whose content L and S hold as R holds it, live or in the trash, a folder's as any
-    /// folder's, where no commit of this device that the server lost set R's content and L holds no
-    /// unsent edit ([`Trees::unsent_edits`]): `lost_here` tells whether a seq is one of those
-    /// commits. For [`Trees::forget_lost`] once a bootstrap has replaced R.
+    /// folder's, where no commit of this device that the server lost set R's edit revision and L
+    /// holds no unsent edit ([`Trees::unsent_edits`]): `lost_here` tells whether a seq is one of
+    /// those commits. A resend moves only the content revision, so content this device sent again
+    /// for another device stays that device's. For [`Trees::forget_lost`] once a bootstrap has
+    /// replaced R.
     pub fn taken_from_others(&self, lost_here: impl Fn(u64) -> bool) -> Vec<NodeId> {
         (self.s.iter())
             .filter(|(id, _)| !self.unsent_edits.contains(*id))
@@ -1739,8 +1762,7 @@ impl Trees {
                         (held, synced) => held.is_none() && synced.is_none(),
                     })
                 };
-                let remote = (self.r.get(id))
-                    .filter(|remote| !lost_here(remote.content_rev.max(remote.edit_rev)));
+                let remote = (self.r.get(id)).filter(|remote| !lost_here(remote.edit_rev));
                 holds(remote.map(|remote| &remote.shape)) && holds(self.l.live(id))
             })
             .map(|(id, _)| id.clone())
@@ -1815,7 +1837,10 @@ impl Trees {
 
     /// Forgets what the server may have lost, after a bootstrap from a server that is behind what
     /// this device applied (design §4.4). S forgets every node that R does not hold at all or holds
-    /// live with another shape, and every node S holds below one. A node L still holds is then
+    /// live with another shape, and every node S holds below one, except one below that R holds
+    /// live, that L holds as S does, and that holds no change of this device's user or of another
+    /// device this device had not taken: it keeps S, so R's position is a remote move, and the
+    /// device that made the change sends it again. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
     /// position L holds: a node R does not hold at all is no longer reverted, since the server's
     /// rename or merge that reverted it was lost too. One whose content differs from
@@ -2206,7 +2231,13 @@ impl Trees {
         while let Some(id) = below.pop() {
             for &child in children.get(id).into_iter().flatten() {
                 let trashed = self.r.get(child).is_some_and(|remote| remote.trashed);
-                if trashed || deleted.contains(child) || !lost.insert(child) {
+                let taken_elsewhere = self.r.live(child).is_some()
+                    && !untaken.contains_key(child)
+                    && !self.local_changes.contains(child)
+                    && (self.l.get(child)).is_some_and(|local| {
+                        (self.s.get(child)).is_some_and(|synced| synced.same(&local.shape))
+                    });
+                if trashed || taken_elsewhere || deleted.contains(child) || !lost.insert(child) {
                     continue;
                 }
                 below.push(child);
@@ -2252,7 +2283,12 @@ impl Trees {
         for (id, waits) in lost {
             let unchanged = (self.l.get(&id))
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
-            if unchanged && (synced.contains(&id) || taken_late.contains(&id)) {
+            if unchanged
+                && !self.local_changes.contains(&id)
+                && (synced.contains(&id)
+                    || taken_late.contains(&id)
+                    || !self.unsent_edits.contains(&id))
+            {
                 self.resends.insert(id.clone());
             }
             if self.r.get(&id).is_none() {

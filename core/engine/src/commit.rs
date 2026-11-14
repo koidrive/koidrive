@@ -68,6 +68,9 @@ pub struct InFlight {
     /// For each `Restore` op, by its index in the commit, the nodes this device's user removed that
     /// it brings back. When the restore is applied, they are downloaded instead of deleted again.
     pub restores: BTreeMap<usize, Vec<NodeId>>,
+    /// The nodes whose ops send again what the server lost with no change of this device's user in
+    /// them, as [`Trees::resends`] held them when the commit was built.
+    pub resent: BTreeSet<NodeId>,
     /// The result once it has arrived, kept until R holds its records.
     pub result: Option<proto::CommitResult>,
 }
@@ -1143,9 +1146,12 @@ impl Commits {
             .map(ToOwned::to_owned),
         );
 
-        let require_head = !released.is_empty()
-            || (ops.iter().filter_map(|op| op.op.as_ref()))
-                .any(|op| trees.resends().contains(op_node(op)));
+        let resent: BTreeSet<NodeId> = (ops.iter().filter_map(|op| op.op.as_ref()))
+            .map(op_node)
+            .filter(|id| trees.resends().contains(*id))
+            .map(ToOwned::to_owned)
+            .collect();
+        let require_head = !released.is_empty() || !resent.is_empty();
         let restores = (ops.iter().enumerate())
             .filter_map(|(index, op)| match &op.op {
                 Some(op::Op::Restore(restore)) => Some((index, restore)),
@@ -1185,6 +1191,7 @@ impl Commits {
             },
             deletes,
             restores,
+            resent,
             result: None,
         }));
         self.in_flight.as_ref().map(|flight| &flight.commit)
@@ -1469,7 +1476,9 @@ impl Commits {
                     }
                 }
                 op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
-                    trees.record_moved(op_node(op), seq);
+                    if !flight.resent.contains(op_node(op)) {
+                        trees.record_moved(op_node(op), seq);
+                    }
                 }
                 op::Op::UpdateContent(_) | op::Op::Restore(_) => {}
             }
@@ -1637,6 +1646,9 @@ impl Commits {
                         synced.set(id, None);
                         rekey(trees, id, &outcome.node_id);
                         trees.sent_edit(&outcome.node_id, update.content.as_ref());
+                        if !update.resend {
+                            trees.record_edited(&outcome.node_id, update.content.as_ref());
+                        }
                     }
                     if applied && !update.resend {
                         trees.record_edited(id, update.content.as_ref());
@@ -1653,17 +1665,38 @@ impl Commits {
                     let id = &moved.node_id;
                     let cycle = code == Code::Rejected && outcome.reject_reason == "CYCLE";
                     let target = parent(&moved.new_parent_id);
-                    if let Some(shape) = synced.get(trees, id)
-                        && applied
-                        && target != *id
-                    {
-                        let shape = Shape {
-                            parent: target.clone(),
-                            name: name(&moved.new_name),
-                            ..shape
-                        };
-                        agreed.extend(agree(trees, id, result.seq));
-                        synced.set(id, Some(shape));
+                    if applied && target != *id {
+                        match synced.get(trees, id) {
+                            Some(shape) => {
+                                let shape = Shape {
+                                    parent: target.clone(),
+                                    name: name(&moved.new_name),
+                                    ..shape
+                                };
+                                agreed.extend(agree(trees, id, result.seq));
+                                synced.set(id, Some(shape));
+                            }
+                            None => {
+                                let taken = (trees.local().get(id))
+                                    .map(|local| local.shape.clone())
+                                    .filter(|local| {
+                                        local.parent == target
+                                            && nfc(&local.name) == nfc(&moved.new_name)
+                                            && trees.remote().get(id).is_some_and(|remote| {
+                                                let at = Shape {
+                                                    parent: local.parent.clone(),
+                                                    name: local.name.clone(),
+                                                    ..remote.shape.clone()
+                                                };
+                                                at.same(local)
+                                            })
+                                    });
+                                if let Some(local) = taken {
+                                    trees.sent_edit(id, local.content.as_ref());
+                                    synced.set(id, Some(local));
+                                }
+                            }
+                        }
                     }
                     let owed = sent_under.get(id).is_some_and(|pending| {
                         nfc(&moved.new_name) == nfc(&pending.name)
@@ -1736,7 +1769,11 @@ impl Commits {
                 _ => continue,
             };
             if applied && sent.is_some() {
-                trees.record_moved(node, result.seq);
+                if flight.resent.contains(node) {
+                    trees.end_resend(node);
+                } else {
+                    trees.record_moved(node, result.seq);
+                }
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created
@@ -2364,9 +2401,15 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
         .collect();
     let parked_name = trees.parked_name(from).to_owned();
     let parked = node.parked;
+    let resent = trees.resends().contains(from);
     trees.rekey_discarded(from, to);
     trees.remove_local(from);
-    trees.set_local_changed(to.to_owned(), node);
+    if resent {
+        trees.set_local(to.to_owned(), node);
+        trees.resend(to.to_owned());
+    } else {
+        trees.set_local_changed(to.to_owned(), node);
+    }
     if parked {
         trees.park_as(to.to_owned(), parked_name);
     }
@@ -2376,7 +2419,12 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     for id in children {
         let mut child = trees.local().get(&id).cloned().expect("listed above");
         child.shape.parent = to.to_owned();
-        trees.set_local(id, child);
+        let resent = trees.resends().contains(&id);
+        trees.end_resend(&id);
+        trees.set_local(id.clone(), child);
+        if resent {
+            trees.resend(id);
+        }
     }
     let waiting: Vec<(NodeId, Shape, Origin)> = (trees.waiting().iter())
         .filter_map(|(id, waiting)| {
