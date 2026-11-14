@@ -312,7 +312,7 @@ impl Tx<'_> {
             .0
             .query_row(
                 "SELECT accepted, halt, policy_code, recovery_trigger, restore_seq, restore_point_ms,
-                        cap
+                        cap, policy_since_ms
                  FROM commit_state WHERE id = 1",
                 [],
                 |row| {
@@ -322,6 +322,7 @@ impl Tx<'_> {
                         recovery_trigger: row.get(3)?,
                         restore_seq: row.get(4)?,
                         restore_point_ms: row.get(5)?,
+                        policy_since_ms: row.get(7)?,
                     };
                     Ok((row.get::<_, u64>(0)?, halt, row.get::<_, Option<usize>>(6)?))
                 },
@@ -712,14 +713,15 @@ impl Tx<'_> {
             self.0.execute(
                 "UPDATE commit_state
                  SET halt = ?1, policy_code = ?2, recovery_trigger = ?3, restore_seq = ?4,
-                     restore_point_ms = ?5
+                     restore_point_ms = ?5, policy_since_ms = ?6
                  WHERE id = 1",
                 params![
                     halt.halt,
                     halt.policy_code,
                     halt.recovery_trigger,
                     halt.restore_seq,
-                    halt.restore_point_ms
+                    halt.restore_point_ms,
+                    halt.policy_since_ms
                 ],
             )?;
         }
@@ -961,6 +963,7 @@ struct HaltRow {
     recovery_trigger: Option<String>,
     restore_seq: Option<u64>,
     restore_point_ms: Option<i64>,
+    policy_since_ms: Option<u64>,
 }
 
 impl HaltRow {
@@ -972,9 +975,10 @@ impl HaltRow {
                 halt: named("read_only"),
                 ..HaltRow::default()
             },
-            Some(Halt::Policy { code }) => HaltRow {
+            Some(Halt::Policy { code, since_ms }) => HaltRow {
                 halt: named("policy"),
                 policy_code: Some(code),
+                policy_since_ms: Some(since_ms),
                 ..HaltRow::default()
             },
             Some(Halt::Recovery(cause)) => HaltRow {
@@ -998,6 +1002,7 @@ impl HaltRow {
             recovery_trigger,
             restore_seq,
             restore_point_ms,
+            policy_since_ms,
         } = self;
         let trigger = match recovery_trigger.as_deref() {
             None => None,
@@ -1006,18 +1011,20 @@ impl HaltRow {
             Some("store_older_than_disk") => Some(RecoveryTrigger::StoreOlderThanDisk),
             Some(other) => return Err(invalid(format!("recovery trigger {other:?}"))),
         };
-        Ok(match (halt.as_deref(), policy_code, trigger) {
-            (None, None, None) => None,
-            (Some("read_only"), None, None) => Some(Halt::ReadOnly),
-            (Some("recovery"), None, Some(trigger)) => Some(Halt::Recovery(RecoveryCause {
+        Ok(match (halt.as_deref(), policy_code, policy_since_ms, trigger) {
+            (None, None, None, None) => None,
+            (Some("read_only"), None, None, None) => Some(Halt::ReadOnly),
+            (Some("recovery"), None, None, Some(trigger)) => Some(Halt::Recovery(RecoveryCause {
                 trigger,
                 restore_seq,
                 restore_point_ms,
             })),
-            (Some("policy"), Some(code), None) => Some(Halt::Policy { code }),
+            (Some("policy"), Some(code), Some(since_ms), None) => {
+                Some(Halt::Policy { code, since_ms })
+            }
             _ => {
                 return Err(invalid(format!(
-                    "halt {halt:?} with code {policy_code:?} and trigger {trigger:?}"
+                    "halt {halt:?} with code {policy_code:?} since {policy_since_ms:?} and trigger {trigger:?}"
                 )));
             }
         })

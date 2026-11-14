@@ -90,8 +90,9 @@ pub enum Halt {
     /// A policy halt (RFC 0006 section 1): the server refused the commit with `code`, which only
     /// the user or a client update can resolve. The commit in flight is kept with its slot and
     /// never resent, nothing more is planned, and downloads continue. No `Welcome` lifts it, and
-    /// it is part of the stored state (section 2.8), so it outlasts a restart.
-    Policy { code: i32 },
+    /// it is part of the stored state (section 2.8), so it outlasts a restart, and so does
+    /// `since_ms`, when the server refused the commit.
+    Policy { code: i32, since_ms: u64 },
 }
 
 /// What to do with the commit in flight after connecting (section 2.8, RFC 0002 section 2).
@@ -452,7 +453,7 @@ impl Commits {
     /// [`Lift::Replan`] it is forgotten, and its restores stay queued for the next commit, as when
     /// a refusal forgets a commit. Nothing else changes.
     pub fn lift(&mut self, lift: Lift) -> Result<(), LiftError> {
-        let Some(Halt::Policy { code }) = *self.halted else {
+        let Some(Halt::Policy { code, .. }) = *self.halted else {
             return Err(LiftError::NotHalted);
         };
         if code == error::Code::ConfirmationRequired as i32 {
@@ -2035,7 +2036,8 @@ impl Commits {
     /// applied forgets the commit; one that leaves the outcome unknown keeps it to resend; a
     /// history mismatch or a stale device state keeps it as evidence and stops committing; and
     /// every other code, known or not, is a policy halt ([`Halt::Policy`], RFC 0006 section 1).
-    /// `QUOTA_EXCEEDED` is resent only when it names a retry time, after that wait.
+    /// `QUOTA_EXCEEDED` is resent only when it names a retry time, after that wait. A policy halt
+    /// holds `now_ms` as the time of the refusal.
     ///
     /// The restores of a forgotten commit stay queued and go into the next commit, except on a
     /// device that is now read-only, where they end as rejected. A halt keeps them queued.
@@ -2043,6 +2045,7 @@ impl Commits {
         &mut self,
         trees: &mut Trees,
         error: &proto::Error,
+        now_ms: u64,
     ) -> Result<Failure, CommitError> {
         use error::Code;
         let Some(flight) = &*self.in_flight else {
@@ -2064,7 +2067,10 @@ impl Commits {
             Ok(Code::MissingChunks | Code::RetryLater | Code::Unauthenticated | Code::Internal) => {
                 Failure::Resend
             }
-            _ => Failure::Halted(Halt::Policy { code: error.code }),
+            _ => Failure::Halted(Halt::Policy {
+                code: error.code,
+                since_ms: now_ms,
+            }),
         };
         match failure {
             Failure::Halted(halt @ (Halt::Recovery(_) | Halt::Policy { .. })) => {

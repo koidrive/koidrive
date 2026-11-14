@@ -1324,7 +1324,11 @@ mod tests {
     }
 
     fn folder(path: &str, state: FolderState) -> FolderStatus {
+        halt: None,
+        read_only: false,
         FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: format!("space-{path}"),
             space_name: path.to_owned(),
@@ -1776,6 +1780,8 @@ mod tests {
     #[test]
     fn a_quota_or_retry_wait_exits_unavailable_from_the_typed_field_alone() {
         let waiting = |kind| FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             problem: Some("no words here decide the exit".into()),
             wait: Some(Wait {

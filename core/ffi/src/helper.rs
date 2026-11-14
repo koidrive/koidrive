@@ -331,7 +331,11 @@ pub(crate) struct FolderData {
 
 impl FolderData {
     fn driver(self) -> driver::FolderStatus {
+        halt: None,
+        read_only: false,
         driver::FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: self.space_id,
             space_name: self.space_name,

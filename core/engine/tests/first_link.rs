@@ -589,7 +589,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         ..Default::default()
     };
     assert_eq!(
-        commits.failed(&mut trees, &head_moved),
+        commits.failed(&mut trees, &head_moved, 0),
         Ok(Failure::Abandoned)
     );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), created);

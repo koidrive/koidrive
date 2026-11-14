@@ -180,7 +180,7 @@ fn refuse(commits: &mut Commits, trees: &mut Trees, code: error::Code) -> Failur
         code: code as i32,
         ..Default::default()
     };
-    commits.failed(trees, &error).unwrap()
+    commits.failed(trees, &error, 0).unwrap()
 }
 
 fn welcome(device_seq: u64) -> Welcome {
@@ -860,7 +860,7 @@ fn a_policy_halt_keeps_queued_restores() {
     let code = error::Code::InvalidArgument as i32;
     assert_eq!(
         refuse(&mut commits, &mut trees, error::Code::InvalidArgument),
-        Failure::Halted(Halt::Policy { code })
+        Failure::Halted(Halt::Policy { code, since_ms: 0 })
     );
     assert!(commits.restore(id(101), from_trash(&id(2))));
     let mut commits = reload(&commits);

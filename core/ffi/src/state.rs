@@ -465,7 +465,11 @@ mod tests {
     }
 
     fn folder_in(state: DriverFolderState, problem: Option<&str>) -> driver::FolderStatus {
+        halt: None,
+        read_only: false,
         driver::FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: "0190a5b0-0000-7000-8000-000000000001".into(),
             space_name: "Documents".into(),

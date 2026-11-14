@@ -599,6 +599,8 @@ mod tests {
     fn the_daemon_records_what_was_synced_since_its_last_tick() {
         let recorder = Recorder::on();
         let folder = |remote_nodes| koidrive_driver::FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: "s".into(),
             space_name: "Alice Notes".into(),

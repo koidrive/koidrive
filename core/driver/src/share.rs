@@ -696,7 +696,11 @@ mod tests {
     }
 
     fn folder(path: &Path) -> FolderStatus {
+        halt: None,
+        read_only: false,
         FolderStatus {
+            halt: None,
+            read_only: false,
             space_id: SPACE.into(),
             space_name: "Team".into(),
             path: path.to_str().unwrap().into(),

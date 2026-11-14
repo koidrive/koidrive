@@ -2026,7 +2026,11 @@ fn folder_status(
     nodes: u64,
     questions: u64,
 ) -> FolderStatus {
+    halt: None,
+    read_only: false,
     FolderStatus {
+        halt: None,
+        read_only: false,
         recovery: None,
         space_id: link.space_id.clone(),
         space_name: link.space_name.clone(),

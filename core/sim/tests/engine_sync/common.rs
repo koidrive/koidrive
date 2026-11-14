@@ -1290,7 +1290,7 @@ fn run_ignoring(
                     &Error {
                         code: error::Code::LimitExceeded as i32,
                         ..Default::default()
-                    }
+                    }, 0
                 ),
                 Ok(Failure::Split)
             );

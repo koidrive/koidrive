@@ -359,7 +359,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
         .filter_map(|code| Code::try_from(code).ok())
         .map(|code| {
             let exit: Exit = Box::new(move |commits: &mut Commits, trees: &mut Trees| {
-                commits.failed(trees, &refusal(code, 0)).unwrap();
+                commits.failed(trees, &refusal(code, 0), 0).unwrap();
             });
             (format!("{code:?}"), true, exit)
         })
@@ -370,7 +370,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             true,
             Box::new(|commits, trees| {
                 commits
-                    .failed(trees, &refusal(Code::QuotaExceeded, 1))
+                    .failed(trees, &refusal(Code::QuotaExceeded, 1), 0)
                     .unwrap();
             }),
         ),
@@ -383,7 +383,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             "lifted to resend",
             true,
             Box::new(|commits, trees| {
-                commits.failed(trees, &refusal(Code::Forbidden, 0)).unwrap();
+                commits.failed(trees, &refusal(Code::Forbidden, 0), 0).unwrap();
                 commits.lift(Lift::Resend).unwrap();
             }),
         ),
@@ -391,7 +391,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             "lifted to replan",
             true,
             Box::new(|commits, trees| {
-                commits.failed(trees, &refusal(Code::Forbidden, 0)).unwrap();
+                commits.failed(trees, &refusal(Code::Forbidden, 0), 0).unwrap();
                 commits.lift(Lift::Replan).unwrap();
             }),
         ),
@@ -794,7 +794,7 @@ fn a_size_refusal_releases_the_finishes_its_commit_carried() {
     assert_eq!(ops(&first), [owed_mv("a", ROOT, "a", "a (pending)"), owed_mv("c", ROOT, "c", "c (pending)")]);
     assert!(!first.require_head);
     commits
-        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
+        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0), 0)
         .unwrap();
     assert!(commits.problems().is_empty());
     let next = build(&mut commits, &mut trees, &mut ids);
@@ -818,7 +818,7 @@ fn only_head_moved_holds_a_finish_until_a_newer_head() {
         ]);
         let first = build(&mut commits, &mut trees, &mut ids).unwrap();
         assert_eq!(ops(&first), [owed_mv("a", ROOT, "a", "a (pending)")]);
-        commits.failed(&mut trees, &refusal(code, 0)).unwrap();
+        commits.failed(&mut trees, &refusal(code, 0), 0).unwrap();
         let again = build(&mut commits, &mut trees, &mut ids);
         assert_eq!(again.is_none(), code == Code::HeadMoved, "{code:?}");
         if again.is_none() {
@@ -1045,7 +1045,7 @@ fn the_setters_owed_rename_its_disk_already_holds_is_a_finish_that_a_delete_reti
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     assert!(!sent.require_head);
     commits
-        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0), 0)
         .unwrap();
     let mut deleted = trees.remote().get("a").unwrap().clone();
     deleted.trashed = true;
@@ -1390,7 +1390,7 @@ fn a_finish_refused_then_taken_on_disk_sends_the_users_move_back_after_it() {
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [owed_mv("a", ROOT, "a", "a (pending)")]);
     commits
-        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0), 0)
         .unwrap();
     trees.set_remote("b".into(), remote_at(dir(ROOT, "b"), 8));
     assert!(!commits.acknowledge(&mut trees, 8));
@@ -2062,7 +2062,7 @@ fn a_size_refusal_leaves_the_finishes_of_its_commit_due() {
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [owed_mv("a", ROOT, "a", "a (pending)"), owed_mv("c", ROOT, "c", "c (pending)")]);
     commits
-        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0))
+        .failed(&mut trees, &refusal(error::Code::LimitExceeded, 0), 0)
         .unwrap();
     assert!(commits.due(&trees, "me"));
 }
@@ -2182,7 +2182,7 @@ fn a_folder_named_like_the_pending_name_of_a_held_finish_is_created_under_a_pend
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     commits
-        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0), 0)
         .unwrap();
     trees.set_local("n".into(), local(dir(ROOT, "a (pending)"), 50));
     trees.settle();

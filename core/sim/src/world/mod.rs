@@ -1833,7 +1833,7 @@ impl World {
                     Err(error) => match device
                         .engine
                         .commits
-                        .failed(&mut device.engine.trees, &error)
+                        .failed(&mut device.engine.trees, &error, 0)
                         .map_err(refused)?
                     {
                         commit::Failure::Resend => {

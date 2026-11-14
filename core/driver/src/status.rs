@@ -71,6 +71,12 @@ pub struct FolderStatus {
     /// Why the folder is recovering (design §6.4), while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoveryCause>,
+    /// Why the folder stopped syncing, or sends nothing while the server refuses its changes, and since when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halt: Option<FolderHalt>,
+    /// The server takes no changes from this device. Downloads continue, and nothing is sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     /// How far the folder's transfers have got, while it has files to send or fetch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
@@ -143,6 +149,146 @@ pub struct Wait {
     pub kind: WaitKind,
     /// When the call is sent again, in Unix milliseconds.
     pub until_ms: i64,
+    /// The changes made here that the server does not hold yet.
+    #[serde(default)]
+    pub changes: u64,
+}
+
+/// Why a folder stopped syncing, or stopped sending while the server refuses its changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderHalt {
+    pub cause: HaltCause,
+    /// When the folder halted for `cause`, in Unix milliseconds. A refusal keeps the time the server refused the
+    /// commit, also across restarts.
+    pub since_ms: i64,
+    /// For a refusal, the changes of the refused commit; otherwise the changes made here that the server did not
+    /// hold when the folder halted.
+    pub changes: u64,
+    /// For a refusal, whether the refused commit is still held, so that it can be sent again as it was.
+    #[serde(default)]
+    pub can_resend: bool,
+}
+
+/// How a person lifts a [`FolderHalt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remedy {
+    /// A restart syncs the folder again once its cause is fixed. A cause that [`HaltCause::clears_itself`] needs
+    /// none.
+    Restart,
+    /// `koi folder retry` sends the refused changes again, or plans them again.
+    Retry,
+    /// Only the space's owner can confirm the refused changes, and Koidrive cannot ask for that yet.
+    OwnerConfirms,
+}
+
+/// Why a folder halted. Each way the driver halts a folder has its own cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HaltCause {
+    /// The folder is missing, for example on a disk that is not connected.
+    FolderMissing,
+    /// The linked path is no longer a folder.
+    FolderNotAFolder,
+    /// The folder cannot be read.
+    FolderUnreadable,
+    /// Another disk is mounted at the folder's path.
+    FolderOnOtherVolume,
+    /// The folder's marker `.koidrive/space.json` is missing.
+    MarkerMissing,
+    /// The folder's marker cannot be read.
+    MarkerUnreadable,
+    /// The folder's marker names another space.
+    MarkerOfOtherSpace,
+    /// The folder was moved away from its path, or another folder took its place while it synced.
+    FolderMoved,
+    /// The folder at the path is not the one this device synced before. A restart syncs the one there now.
+    FolderReplaced,
+    /// The folder is inside another linked folder or a folder Koidrive keeps its own files in.
+    FolderInsideOther,
+    /// Another Koidrive process syncs the folder.
+    FolderInUse,
+    /// Another device linked the folder.
+    LinkedByOtherDevice,
+    /// The folder holds files older than this device's sync state: the disk was restored from a backup.
+    DiskOlderThanSyncState,
+    /// The folder's file system cannot rename without replacing, so files cannot be applied safely.
+    UnsupportedFileSystem,
+    /// A change from the server cannot be made in the folder.
+    ChangeNotApplied,
+    /// This device's sync state of the folder cannot be read or written.
+    SyncStateUnusable,
+    /// Reading or writing the folder failed.
+    DiskError,
+    /// The server no longer accepts this device, or the device is signed out.
+    SignInRequired,
+    /// The server needs a newer Koidrive.
+    AppOutdated,
+    /// This device's user is not a member of the space.
+    NotAMember,
+    /// The server does not know the space.
+    SpaceNotFound,
+    /// The connection to the server cannot start or was refused for good.
+    ConnectionFailed,
+    /// The server refused a call for good.
+    ServerRefused,
+    /// The server sent something this Koidrive cannot apply.
+    ProtocolError,
+    /// Unlinking the folder did not finish. Unlinking it again finishes.
+    UnlinkUnfinished,
+    /// The server refused this device's changes: it takes no changes from this user in the space.
+    ChangesForbidden,
+    /// The server refused this device's changes as invalid.
+    ChangesInvalid,
+    /// The server refused this device's changes because the space's storage is full.
+    StorageFull,
+    /// The server refused this device's changes until the space's owner confirms them.
+    ConfirmationRequired,
+    /// The server refused this device's changes for another reason.
+    ChangesRefused,
+    /// A cause this Koidrive does not know, from a newer one, or a halt an older one recorded.
+    #[serde(other)]
+    Other,
+}
+
+impl HaltCause {
+    /// The cause of a policy halt for a refusal with `code` (RFC 0006 section 1).
+    pub fn of_refusal(code: i32) -> HaltCause {
+        use koidrive_proto::v1::error::Code;
+        match Code::try_from(code) {
+            Ok(Code::Forbidden) => HaltCause::ChangesForbidden,
+            Ok(Code::InvalidArgument) => HaltCause::ChangesInvalid,
+            Ok(Code::QuotaExceeded) => HaltCause::StorageFull,
+            Ok(Code::ConfirmationRequired) => HaltCause::ConfirmationRequired,
+            _ => HaltCause::ChangesRefused,
+        }
+    }
+
+    /// Whether the folder syncs again on its own once the cause is gone, as a folder moved away does once it is back.
+    pub fn clears_itself(self) -> bool {
+        matches!(
+            self,
+            HaltCause::FolderMissing
+                | HaltCause::FolderNotAFolder
+                | HaltCause::FolderUnreadable
+                | HaltCause::FolderOnOtherVolume
+                | HaltCause::MarkerMissing
+                | HaltCause::MarkerUnreadable
+                | HaltCause::MarkerOfOtherSpace
+                | HaltCause::FolderMoved
+        )
+    }
+
+    /// How a person lifts a halt for this cause.
+    pub fn remedy(self) -> Remedy {
+        match self {
+            HaltCause::ConfirmationRequired => Remedy::OwnerConfirms,
+            HaltCause::ChangesForbidden
+            | HaltCause::ChangesInvalid
+            | HaltCause::StorageFull
+            | HaltCause::ChangesRefused => Remedy::Retry,
+            _ => Remedy::Restart,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

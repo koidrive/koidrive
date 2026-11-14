@@ -1846,6 +1846,8 @@ mod tests {
             ]
         );
         let linked = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             path: "/home/ada/Koidrive".into(),
             ..serde_json::from_value(serde_json::json!({
@@ -1864,6 +1866,8 @@ mod tests {
             "Nothing from /home/ada/Koidrive is in the trash.\n"
         );
         let forged = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             path: "/home/ada/Docs\u{1b}[31m\nFORGED".into(),
             ..linked
@@ -1936,7 +1940,11 @@ mod tests {
     }
 
     fn linked() -> FolderStatus {
+        halt: None,
+        read_only: false,
         FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             path: "/home/ada/Koidrive".into(),
             ..serde_json::from_value(serde_json::json!({
@@ -1977,6 +1985,8 @@ mod tests {
             },
         ];
         let folder = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             state: FolderState::Stopped,
             questions: 1,
@@ -1998,6 +2008,8 @@ mod tests {
             )
         );
         let two = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             questions: 2,
             ..linked()

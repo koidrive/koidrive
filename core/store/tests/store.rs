@@ -1331,7 +1331,10 @@ fn engine_state() -> EngineState {
                 }),
             }),
             problems: nodes(["rejected"]),
-            halted: Some(Halt::Policy { code: 42 }),
+            halted: Some(Halt::Policy {
+                code: 42,
+                since_ms: 1_700_000_000_000,
+            }),
             cap: Some(8),
             split: nodes(["big"]),
             aliases: BTreeMap::from([("twin".into(), "kept".into())]),
@@ -1703,7 +1706,10 @@ fn engine_state_updates_store_every_part() {
     let mut store = Store::open(dir.path().join("state.db")).unwrap();
     let full = engine_state();
     let mut changed = full.clone();
-    changed.commits.halted = Some(Halt::Policy { code: 3 });
+    changed.commits.halted = Some(Halt::Policy {
+        code: 3,
+        since_ms: 1_700_000_000_001,
+    });
     changed.commits.cap = Some(2);
     changed.commits.in_flight.as_mut().unwrap().result = None;
     changed.commits.restores.clear();
@@ -1745,7 +1751,10 @@ fn a_halt_survives_a_reopen_with_its_commit() {
         Some(Halt::Recovery(RecoveryCause::of(
             RecoveryTrigger::StoreOlderThanDisk,
         ))),
-        Some(Halt::Policy { code: 7 }),
+        Some(Halt::Policy {
+            code: 7,
+            since_ms: 1_700_000_000_000,
+        }),
     ] {
         let mut state = engine_state();
         state.commits.halted = halted;
@@ -1766,7 +1775,10 @@ fn a_halt_survives_a_reopen_with_its_commit() {
 fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let halt = Halt::Policy { code: 42 };
+    let halt = Halt::Policy {
+        code: 42,
+        since_ms: 1_700_000_000_000,
+    };
     let state = EngineState {
         commits: CommitsState {
             accepted: 4,
@@ -3049,6 +3061,42 @@ fn a_recovery_stored_before_its_cause_was_opens_as_a_rolled_back_store() {
         RecoveryTrigger::StoreRolledBack,
     )));
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
+}
+
+#[test]
+fn a_policy_halt_stored_before_its_time_was_opens_as_refused_when_the_store_was_upgraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut state = engine_state();
+    state.commits.halted = Some(Halt::Policy {
+        code: 7,
+        since_ms: 1,
+    });
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&state))
+        .unwrap();
+    store_before(&path, "policy_since");
+
+    let now = || {
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        since.unwrap().as_millis() as u64
+    };
+    let before = now();
+    let mut store = Store::open(&path).unwrap();
+    let after = now();
+    assert_eq!(applied(&path), all_migrations());
+    let stored = store.transaction(|tx| tx.engine_state()).unwrap();
+    let Some(Halt::Policy { code, since_ms }) = stored.commits.halted else {
+        panic!("{:?}", stored.commits.halted);
+    };
+    assert_eq!(code, 7);
+    assert!(
+        (before - 1..=after).contains(&since_ms),
+        "{before} {since_ms} {after}"
+    );
+    state.commits.halted = stored.commits.halted;
+    assert_eq!(stored, state);
 }
 
 #[test]

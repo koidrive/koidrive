@@ -425,7 +425,11 @@ fn space(index: usize, name: &str) -> SpaceInfo {
 }
 
 fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
+    halt: None,
+    read_only: false,
     FolderStatus {
+        halt: None,
+        read_only: false,
         space_id: space.space_id.clone(),
         space_name: space.name.clone(),
         path: folder.display().to_string(),

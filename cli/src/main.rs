@@ -2800,6 +2800,8 @@ mod tests {
     #[test]
     fn the_status_text_escapes_every_name_path_and_problem() {
         let folder = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: "s\u{1b}[2J".into(),
             space_name: "Home\u{202e}gpj.exe".into(),
@@ -2844,6 +2846,8 @@ mod tests {
     #[test]
     fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         let folder = FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: Some(koidrive_engine::question::RecoveryCause::rewind(
                 7,
                 1_794_442_424_000,
@@ -2877,6 +2881,8 @@ mod tests {
         let rewound =
             "the space was rewound on the server to seq 7 (requested 2026-11-12 00:13 UTC)";
         let folder = |problem: &str| FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: Some(cause),
             progress: None,
             space_id: "s1".into(),
@@ -2912,6 +2918,8 @@ mod tests {
     #[test]
     fn the_restart_report_escapes_the_folder_and_its_problem() {
         let folder = |state, problem: Option<&str>| FolderStatus {
+            halt: None,
+            read_only: false,
             recovery: None,
             space_id: "s1".into(),
             space_name: "Home".into(),

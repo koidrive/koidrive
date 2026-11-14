@@ -259,7 +259,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved, 0), Ok(Failure::Abandoned));
     trees.set_remote(
         "n".into(),
         RemoteNode {
@@ -310,7 +310,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved, 0), Ok(Failure::Abandoned));
     trees.set_remote(
         "n".into(),
         RemoteNode {
@@ -1086,7 +1086,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
         code: error::Code::HeadMoved as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
+    assert_eq!(commits.failed(&mut trees, &moved, 0), Ok(Failure::Abandoned));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
     assert_eq!(again.answer, None);
@@ -1135,7 +1135,7 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
         code: error::Code::LimitExceeded as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
+    assert_eq!(commits.failed(&mut trees, &limit, 0), Ok(Failure::Split));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
     assert!(commits.decide(&question.id, Answer::Publish));
@@ -1469,7 +1469,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
         code: error::Code::LimitExceeded as i32,
         ..Default::default()
     };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
+    assert_eq!(commits.failed(&mut trees, &limit, 0), Ok(Failure::Split));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
     assert!(commits.decide(&question.id, Answer::Publish));
@@ -1531,7 +1531,7 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
         ..Default::default()
     };
     assert!(matches!(
-        commits.failed(&mut trees, &mismatch),
+        commits.failed(&mut trees, &mismatch, 0),
         Ok(Failure::Halted(Halt::Recovery(_)))
     ));
     let welcome = Welcome {
