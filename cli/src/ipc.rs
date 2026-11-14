@@ -11,7 +11,9 @@ use koidrive_driver::{
     Status, Update,
 };
 use koidrive_engine::commit::Lift;
-use koidrive_ipc::{Blocked, Key, Request, RequestId, Response, read_line, write_json, write_line};
+use koidrive_ipc::{
+    Blocked, Code, Key, Request, RequestId, Response, read_line, write_json, write_line,
+};
 use rustix::io::Errno;
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -319,11 +321,42 @@ async fn watch(
     }
 }
 
-pub fn busy(paths: &Paths) -> String {
-    format!(
-        "a Koidrive process holds this profile, but its socket {} does not answer",
-        paths.socket().display()
-    )
+pub const STARTING: Duration = Duration::from_secs(15);
+
+pub enum Reached<T> {
+    Daemon(Box<Response>),
+    Profile(T),
+}
+
+pub async fn reach<T>(
+    paths: &Paths,
+    request: &Request,
+    within: Duration,
+    open: impl Fn() -> Result<T, DriverError>,
+) -> Result<Reached<T>, CliError> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match open() {
+            Ok(opened) => return Ok(Reached::Profile(opened)),
+            Err(DriverError::Busy(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(DriverError::Busy(_)) => {
+                return Err(CliError::new(
+                    Code::Unavailable,
+                    format!(
+                        "a Koidrive process holds this profile, but its socket {} did not answer within {} seconds",
+                        paths.socket().display(),
+                        within.as_secs()
+                    ),
+                ));
+            }
+            Err(other) => return Err(CliError::from(other)),
+        }
+        if let Some(response) = koidrive_ipc::ask(paths, request).await? {
+            return Ok(Reached::Daemon(Box::new(response)));
+        }
+    }
 }
 
 pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> {
@@ -354,14 +387,14 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
         None if matches!(request, Request::Resume) && !paths.state_dir.exists() => {
             Response::NotPaused
         }
-        None => {
-            let driver = Driver::open_with_telemetry(paths.clone(), crate::telemetry::recorder())
-                .map_err(|error| match error {
-                DriverError::Busy(_) => CliError::from(busy(paths)),
-                other => CliError::from(other),
-            })?;
-            handle(&driver, request).await
-        }
+        None => match reach(paths, &request, STARTING, || {
+            Driver::open_with_telemetry(paths.clone(), crate::telemetry::recorder())
+        })
+        .await?
+        {
+            Reached::Daemon(response) => *response,
+            Reached::Profile(driver) => handle(&driver, request).await,
+        },
     };
     match response {
         Response::Error {
@@ -508,10 +541,46 @@ pub(crate) mod tests {
         let paths = Paths::under(dir.path());
         let response = run(&paths, Request::Questions).await.unwrap();
         assert_eq!(response, Response::Questions { questions: vec![] });
+    }
 
+    #[tokio::test]
+    async fn a_command_waits_for_a_daemon_that_holds_the_profile_before_its_socket_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let socket = paths.socket();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            serve(bind(&socket).unwrap(), driver).await;
+        });
+        let response = run(&paths, Request::Status).await.unwrap();
+        assert!(matches!(response, Response::Status { .. }), "{response:?}");
+        daemon.abort();
+    }
+
+    #[tokio::test]
+    async fn a_profile_held_by_a_daemon_that_never_answers_is_a_retryable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
         let _held = Driver::open(paths.clone()).unwrap();
-        let error = run(&paths, Request::Status).await.unwrap_err();
-        assert!(error.message.contains("does not answer"), "{error:?}");
+        let started = tokio::time::Instant::now();
+        let Err(error) = reach(&paths, &Request::Status, Duration::from_secs(1), || {
+            Driver::open(paths.clone())
+        })
+        .await
+        else {
+            panic!("a held profile was opened");
+        };
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(error.code, Code::Unavailable);
+        assert!(error.code.retryable());
+        assert_eq!(
+            error.message,
+            format!(
+                "a Koidrive process holds this profile, but its socket {} did not answer within 1 seconds",
+                paths.socket().display()
+            )
+        );
     }
 
     pub(crate) const SPACE: &str = "0190f0a0-0000-7000-8000-000000000001";

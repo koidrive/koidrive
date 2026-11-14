@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Config, Flock, Paths};
+use koidrive_driver::{Config, Flock, Paths, Status};
 use koidrive_ipc::{Blocked, Request, Response};
 use schemars::JsonSchema;
 use semver::Version;
@@ -325,6 +325,22 @@ impl Report {
         }
     }
 
+    fn troubled(manager: &dyn Manager, service: Option<&Service>, problem: String) -> Self {
+        let Some(service) = service else {
+            return Report::unavailable(manager, problem);
+        };
+        let state = manager.state(service).unwrap_or(State::Unavailable);
+        Report {
+            problem: Some(problem),
+            log: service.log(manager.kind()),
+            ..Report::new(manager, manager.name(service), state)
+        }
+    }
+
+    pub fn retryable(&self) -> bool {
+        self.state == State::Running && self.problem.is_some()
+    }
+
     pub fn text(&self) -> String {
         let mut text = String::new();
         let launchd = self.manager == ServiceManager::Launchd;
@@ -583,7 +599,7 @@ pub fn delegated_report(
             binary.display(),
             args[..args.len() - 1].join(" ")
         );
-        Report::unavailable(manager, problem)
+        Report::troubled(manager, Some(service), problem)
     };
     let (status, printed) = match output {
         Ok(Some(output)) => output,
@@ -726,9 +742,10 @@ async fn reconcile_with(
     paths: &Paths,
     asked: bool,
 ) -> Report {
+    let troubled = |problem| Report::troubled(manager, service.as_ref().ok(), problem);
     let lock = match lock_service(paths, LOCK_WAIT).await {
         Ok(lock) => lock,
-        Err(problem) => return Report::unavailable(manager, problem),
+        Err(problem) => return troubled(problem),
     };
     if let Ok(service) = &service
         && let Some(newer) = newer_installed(manager, service)
@@ -736,17 +753,9 @@ async fn reconcile_with(
         drop(lock);
         return delegated(manager, service, &newer, asked, DELEGATED).await;
     }
-    let status = match tokio::time::timeout(PROBE, ipc::run(paths, Request::Status)).await {
-        Ok(Ok(Response::Status { status })) => status,
-        Ok(Ok(_)) => return Report::unavailable(manager, "the daemon sent no status".into()),
-        Ok(Err(error)) => return Report::unavailable(manager, error.message),
-        Err(_) => {
-            let problem = format!(
-                "the daemon did not answer within {} seconds",
-                PROBE.as_secs()
-            );
-            return Report::unavailable(manager, problem);
-        }
+    let status = match daemon_status(paths).await {
+        Ok(status) => status,
+        Err(problem) => return troubled(problem),
     };
     let daemon = match status.running {
         true => Daemon::Running(
@@ -755,17 +764,23 @@ async fn reconcile_with(
         false => Daemon::Absent,
     };
     let folders = status.folders.len();
-    let unavailable = |problem| Report {
-        folders: Some(folders),
-        ..Report::unavailable(manager, problem)
+    let off = match background_off(paths) {
+        Ok(off) => off,
+        Err(problem) => {
+            return Report {
+                folders: Some(folders),
+                ..troubled(problem)
+            };
+        }
     };
     let service = match service {
         Ok(service) => service,
-        Err(problem) => return unavailable(problem),
-    };
-    let off = match background_off(paths) {
-        Ok(off) => off,
-        Err(problem) => return unavailable(problem),
+        Err(problem) => {
+            return Report {
+                folders: Some(folders),
+                ..Report::unavailable(manager, problem)
+            };
+        }
     };
     let mut report = converge(manager, &service, folders, off, asked, &daemon).await;
     drop(lock);
@@ -782,6 +797,33 @@ async fn reconcile_with(
     }
     report.blocked = blocked(paths).await;
     report
+}
+
+async fn daemon_status(paths: &Paths) -> Result<Status, String> {
+    let silent = |within: Duration| {
+        format!(
+            "the daemon did not answer within {} seconds",
+            within.as_secs()
+        )
+    };
+    let answer = tokio::time::timeout(PROBE, koidrive_ipc::ask(paths, &Request::Status))
+        .await
+        .map_err(|_| silent(PROBE))??;
+    let response = match answer {
+        Some(response) => response,
+        None => {
+            let starting = PROBE + ipc::STARTING;
+            tokio::time::timeout(starting, ipc::run(paths, Request::Status))
+                .await
+                .map_err(|_| silent(starting))?
+                .map_err(|error| error.message)?
+        }
+    };
+    match response {
+        Response::Status { status } => Ok(status),
+        Response::Error { message, .. } => Err(message),
+        _ => Err("the daemon sent no status".into()),
+    }
 }
 
 async fn lock_service(paths: &Paths, within: Duration) -> Result<Option<Flock>, String> {
@@ -2179,7 +2221,8 @@ mod tests {
         let silent = koi_printing(dir.path(), "silent-koi", "koi 99.0.0\n", 0);
         running_on(&fake, &silent);
         let report = reconcile_with(&fake, Ok(service(&[])), &paths, true).await;
-        assert_eq!(report.state, State::Unavailable);
+        assert_eq!(report.state, State::Running);
+        assert!(!report.text().contains("Log in"), "{}", report.text());
         let problem = report.problem.unwrap();
         assert!(
             problem.contains("silent-koi service start reported no service"),
@@ -2589,12 +2632,43 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
         let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
         assert!(began.elapsed() < PROBE + Duration::from_secs(2));
         assert_eq!(
-            (report.state, report.problem.as_deref()),
-            (
-                State::Unavailable,
-                Some("the daemon did not answer within 5 seconds")
-            )
+            report.problem.as_deref(),
+            Some("the daemon did not answer within 5 seconds")
         );
+        assert_ne!(report.state, State::Unavailable);
+        assert!(!report.text().contains("Log in"), "{}", report.text());
+        daemon.abort();
+    }
+
+    #[test]
+    fn only_a_running_service_whose_daemon_has_a_problem_is_worth_retrying() {
+        let fake = Fake::default();
+        let problem = |state| Report {
+            problem: Some("the daemon did not answer within 5 seconds".into()),
+            ..Report::new(&fake, String::new(), state)
+        };
+        assert!(problem(State::Running).retryable());
+        assert!(!problem(State::Stopped).retryable());
+        assert!(!problem(State::Unavailable).retryable());
+        assert!(!Report::new(&fake, String::new(), State::Running).retryable());
+    }
+
+    #[tokio::test]
+    async fn a_daemon_still_starting_after_a_restart_is_waited_for_and_not_a_problem() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let driver = koidrive_driver::Driver::open(paths.clone()).unwrap();
+        let socket = paths.socket();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            ipc::serve(koidrive_ipc::bind(&socket).unwrap(), driver).await;
+        });
+        let fake = Fake::default();
+        let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
+        assert_eq!(
+            (report.state, report.problem.as_deref()),
+            (State::Running, None)
+        );
+        assert!(!report.failed());
         daemon.abort();
     }
 

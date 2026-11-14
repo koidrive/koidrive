@@ -860,6 +860,10 @@ fn updated(
         text.push_str(&app.text());
     }
     let problem = update_problem(&report, app.as_ref());
+    let code = match report.retryable() {
+        true => Code::Unavailable,
+        false => Code::Failed,
+    };
     let done = Done::ok(
         UpdatedData {
             from: from.to_string(),
@@ -879,7 +883,7 @@ fn updated(
     if let Some(reason) = problem {
         return Err(CliError {
             partial: Some(Box::new(done)),
-            ..CliError::new(Code::Failed, reason)
+            ..CliError::new(code, reason)
         });
     }
     Ok(done)
