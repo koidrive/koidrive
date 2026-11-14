@@ -3508,7 +3508,13 @@ fn plan(
             shape, pending_for, ..
         }) = slot.as_mut()
             && shape.kind == Kind::Dir
-            && (scratch.holders(&shape.parent, &shape.name)).any(|other| moving.contains(other))
+            && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
+                moving.contains(other)
+                    || (trees.local().get(other)).is_some_and(|node| {
+                        node.shape.parent != shape.parent
+                            || name_key(&node.shape.name) != name_key(&shape.name)
+                    })
+            })
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
             pending_for.get_or_insert_with(|| shape.name.clone());
