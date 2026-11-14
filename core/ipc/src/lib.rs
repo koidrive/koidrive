@@ -440,15 +440,25 @@ pub async fn send(socket: &Path, request: &Request, owner: u32) -> io::Result<Op
         return Ok(None);
     };
     let (reader, mut writer) = stream.into_split();
-    write_line(&mut writer, request).await?;
-    let line = read_line(reader).await?;
-    if line.is_empty() {
-        return Err(io::Error::new(
+    let answer = async {
+        write_line(&mut writer, request).await?;
+        read_line(reader).await
+    };
+    match answer.await {
+        Ok(line) if !line.is_empty() => parse(&line).map(Some),
+        Err(error)
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Err(error)
+        }
+        _ => Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "the daemon closed the connection without answering",
-        ));
+        )),
     }
-    parse(&line).map(Some)
 }
 
 /// The daemon's state as [`watch`] receives it, line by line. Dropping it closes the connection.
@@ -721,13 +731,17 @@ mod tests {
         let socket = dir.path().join("daemon.sock");
         let daemon = UnixListener::bind(&socket).unwrap();
         let closed = tokio::spawn(async move {
-            let (stream, _) = daemon.accept().await.unwrap();
-            drop(stream);
+            let (unread, _) = daemon.accept().await.unwrap();
+            drop(unread);
+            let (mut read, _) = daemon.accept().await.unwrap();
+            read_line(&mut read).await.unwrap();
         });
         let owner = rustix::process::getuid().as_raw();
-        let error = send(&socket, &Request::Pause, owner).await.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
-        assert!(error.to_string().contains("without answering"), "{error}");
+        for _ in 0..2 {
+            let error = send(&socket, &Request::Pause, owner).await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+            assert!(error.to_string().contains("without answering"), "{error}");
+        }
         closed.await.unwrap();
     }
 
