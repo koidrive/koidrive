@@ -1574,6 +1574,7 @@ fn run_ignoring_answering_after(
             continue;
         };
         let mut sending = Vec::new();
+        let mut positioned = Vec::new();
         for op in &commit.ops {
             let id = match &op.op {
                 Some(op::Op::Delete(delete)) => &delete.node_id,
@@ -1584,6 +1585,9 @@ fn run_ignoring_answering_after(
                 _ => continue,
             };
             sending.push(id.clone());
+            if !matches!(op.op, Some(op::Op::UpdateContent(_))) {
+                positioned.push(id.clone());
+            }
             // A discarded entry the user changed, or a discarded folder the user put an entry in,
             // before the effects moved it to the local trash is the user's new change, which syncs
             // like any other from then on (section 5.2).
@@ -1632,7 +1636,7 @@ fn run_ignoring_answering_after(
         let bringing = restorable(&space, &commit);
         let before = stored(&space);
         let mut committed = space.commit(&me, NOW, &request).map_err(failed)?;
-        placed.retain(|id, _| !sending.contains(id));
+        placed.retain(|id, _| !positioned.contains(id));
         sent_nodes.extend(sending);
         let after = stored(&space);
         if cut == Cut::Applied {

@@ -180,3 +180,43 @@ fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_l
         "checking 50,000 discarded server copies took {fifty_thousand:?}, and 5,000 took {five_thousand:?}"
     );
 }
+
+#[test]
+fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
+    let mut trees = Trees::new("root");
+    let mut ino = 0;
+    let mut place = |trees: &mut Trees, id: &str, shape: Shape, server: bool| {
+        ino += 1;
+        if server {
+            trees.set_remote(id.into(), remote(shape.clone()));
+        }
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        let local = LocalNode {
+            shape,
+            identity,
+            parked: false,
+        };
+        trees.set_local(id.into(), local);
+    };
+    place(&mut trees, "f", dir("root", "new"), false);
+    for (id, shape) in [
+        ("x", dir("f", "ignored")),
+        ("y", dir("x", "y")),
+        ("z", dir("y", "z")),
+    ] {
+        place(&mut trees, id, shape.clone(), true);
+        trees.set_synced(id.into(), Some(shape));
+    }
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    let shown = BTreeMap::from([("f".into(), dir("root", "new"))]);
+    trees.discard_server_entries_below(&shown);
+    trees.discard(["f".to_string()], &shown);
+    place(&mut trees, "z", dir("x", "z"), true);
+    place(&mut trees, "y", dir("z", "y"), true);
+    assert!(["x", "y", "z"].iter().all(|id| trees.is_discarded(id)));
+    assert!(trees.discard_state("f") == Some(Discard::Kept));
+}

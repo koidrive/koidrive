@@ -1651,23 +1651,27 @@ impl Trees {
         let unchanged = (self.l.get(id)).is_some_and(|local| {
             (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
         });
+        let mut seen = BTreeSet::new();
         unchanged
             && (self.discarded.children(id))
-                .all(|child| self.is_discarded(child) || self.as_the_server_holds(child))
+                .all(|child| self.is_discarded(child) || self.as_the_server_holds(child, &mut seen))
             && (self.local_children_placed_or_parked(id)).all(|child| {
                 (self.discarded.get(child)).is_some_and(|shape| shape.parent == id)
-                    || self.as_the_server_holds(child)
+                    || self.as_the_server_holds(child, &mut seen)
             })
-            && self.keeps_the_synced_children(id)
+            && self.keeps_the_synced_children(id, &mut seen)
     }
 
-    fn as_the_server_holds(&self, id: &str) -> bool {
+    fn as_the_server_holds<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
+        if !seen.insert(id) {
+            return true;
+        }
         match (self.l.get(id), self.r.live(id)) {
             (Some(local), Some(remote)) => {
                 local.shape.same(remote)
                     && (self.local_children_placed_or_parked(id))
-                        .all(|child| self.as_the_server_holds(child))
-                    && self.keeps_the_synced_children(id)
+                        .all(|child| self.as_the_server_holds(child, seen))
+                    && self.keeps_the_synced_children(id, seen)
             }
             (local, remote) => local.is_none() && remote.is_none(),
         }
@@ -1680,10 +1684,10 @@ impl Trees {
         self.local_children(id).chain(self.l_parked.children(id))
     }
 
-    fn keeps_the_synced_children(&self, id: &str) -> bool {
+    fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
         (self.synced_children(id)).all(|child| {
             (self.l.get(child)).is_some_and(|node| node.shape.parent == id)
-                || self.as_the_server_holds(child)
+                || self.as_the_server_holds(child, seen)
         })
     }
 
