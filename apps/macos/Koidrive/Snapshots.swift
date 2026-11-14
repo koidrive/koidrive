@@ -67,11 +67,26 @@ enum Snapshots {
                 await capture(view.frame(width: 720, height: 480), width: 720, height: 480, titled: "Version History", dark: dark,
                               to: directory.appending(path: "version-history-\(name)-\(suffix).png"))
             }
-            for (name, targeted) in [("1-drop", DropTarget?.none), ("2-drop-on-version-history", .versionHistory)] {
+            for (name, view) in await shareLinkStates() {
+                await capture(view, width: 560, titled: "Share Link", dark: dark,
+                              to: directory.appending(path: "share-link-\(name)-\(suffix).png"))
+            }
+            for (name, view) in await sharedLinksStates() {
+                await capture(view.frame(width: 760, height: 516), width: 760, height: 516, titled: "Shared Links", dark: dark,
+                              to: directory.appending(path: "shared-links-\(name)-\(suffix).png"))
+            }
+            if let budget = await sharedLink("link-budget") {
+                await capture(ConfirmSheet(title: budget.revokeTitle, message: budget.revokeMessage, action: String(localized: "Revoke"),
+                                           confirm: {}, cancel: {}),
+                              width: 280, titled: nil, dark: dark, to: directory.appending(path: "shared-links-3-revoke-confirm-\(suffix).png"))
+            }
+            for (name, targeted) in [("1-drop", DropTarget?.none), ("2-drop-on-version-history", .versionHistory),
+                                     ("3-drop-on-share-link", .shareLink)] {
                 await capture(DropPanel(targets: DropTarget.allCases, targeted: targeted) { _, _ in }.padding(12), width: 354, titled: nil,
                               dark: dark, to: directory.appending(path: "drop-panel-\(name)-\(suffix).png"))
             }
-            await captureOpenPanel(dark: dark, to: directory.appending(path: "version-history-0-file-picker-\(suffix).png"))
+            await captureOpenPanel(.versionHistory, dark: dark, to: directory.appending(path: "version-history-0-file-picker-\(suffix).png"))
+            await captureOpenPanel(.shareLink, dark: dark, to: directory.appending(path: "share-link-0-file-picker-\(suffix).png"))
         }
     }
 
@@ -254,7 +269,139 @@ enum Snapshots {
         ]
     }
 
-    private static func captureOpenPanel(dark: Bool, to url: URL) async {
+    private static func shareLinkStates() async -> [(String, AnyView)] {
+        func make(_ path: String = "Finance/Budget 2026.numbers", in folder: String = "Documents", step: ShareLinkModel.Step? = nil)
+            -> (AppModel, ShareLinkModel) {
+            let app = AppModel.preview(.upToDate)
+            let root = app.state.folders.first { $0.spaceName == folder }?.url ?? URL(filePath: "/")
+            let item = root.appending(path: path, directoryHint: path.contains(".") ? .notDirectory : .isDirectory)
+            return (app, step.map { ShareLinkModel(app: app, item: item, showing: $0) } ?? ShareLinkModel(app: app, item: item))
+        }
+        func view(_ app: AppModel, _ share: ShareLinkModel) -> AnyView {
+            AnyView(ShareLinkView(share: share).environment(app))
+        }
+
+        let (options, optionsShare) = make()
+
+        let (password, passwordShare) = make()
+        passwordShare.requiresPassword = true
+        passwordShare.password = "horse staple"
+
+        let (short, shortShare) = make()
+        shortShare.requiresPassword = true
+        shortShare.password = "horse"
+        await shortShare.create()
+
+        let (checking, checkingShare) = make(step: .checking)
+
+        let (created, createdShare) = make()
+        createdShare.requiresPassword = true
+        createdShare.password = "horse staple"
+        await createdShare.create()
+
+        let (folder, folderShare) = make("2026/Trip drafts", in: "Photos")
+
+        let (notSynced, notSyncedShare) = make("Contract draft.pdf")
+        if let fake = notSynced.session.fakeCore(), let documents = notSynced.state.folders.first {
+            _ = try? fake.setFolderState(spaceId: documents.spaceId, folderState: .syncing)
+            fake.failNext(error: .NotOnServer)
+        }
+        await notSyncedShare.create()
+
+        let (failed, failedShare) = make()
+        failed.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+        await failedShare.create()
+
+        let (offline, offlineShare) = make()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-options", view(options, optionsShare)), ("2-password", view(password, passwordShare)),
+            ("3-too-short", view(short, shortShare)), ("4-checking", view(checking, checkingShare)),
+            ("5-created", view(created, createdShare)), ("6-folder", view(folder, folderShare)),
+            ("7-not-synced-yet", view(notSynced, notSyncedShare)), ("8-couldnt-create", view(failed, failedShare)),
+            ("9-offline", view(offline, offlineShare)),
+        ]
+    }
+
+    private static func linksApp(_ scenario: FakeScenario = .upToDate) -> (AppModel, SharedLinksModel) {
+        let app = AppModel.preview(scenario)
+        if let fake = app.session.fakeCore(), let documents = app.state.folders.first?.path, let photos = app.state.folders.last?.path {
+            let now = Int64(Date.now.timeIntervalSince1970 * 1000)
+            let hour: Int64 = 3_600_000
+            let day = 24 * hour
+            func link(_ id: String, _ folder: String, _ path: String?, _ kind: NodeKind?, created: Int64, expires: Int64?,
+                      password: Bool = false, _ state: ShareState = .active) -> KoidriveFFI.ShareLink {
+                KoidriveFFI.ShareLink(id: id, folder: folder, path: path, kind: kind, createdAtMs: created, expiresAtMs: expires,
+                                      hasPassword: password, state: state)
+            }
+            _ = try? fake.setShareLinks(links: [
+                link("link-plan", documents, "Launch plan.key", .file, created: Self.day(0, 9, 20), expires: now + 23 * hour + 10 * 60_000),
+                link("link-budget", documents, "Finance/Budget 2026.numbers", .file, created: Self.day(-5, 10, 4),
+                     expires: now + 6 * day + 2 * hour, password: true),
+                link("link-gone", photos, nil, nil, created: Self.day(-2, 16, 40), expires: now + 4 * day + 2 * hour),
+                link("link-trip", photos, "2026/Trip drafts", .folder, created: Self.day(-30, 11, 15), expires: now + 29 * day + 2 * hour),
+                link("link-contract", documents, "Contract draft.pdf", .file, created: Self.day(-11, 9, 0), expires: Self.day(-1, 9, 0),
+                     .revoked),
+                link("link-notes", documents, "Notes/Notes.md", .file, created: Self.day(-11, 8, 30), expires: Self.day(-4, 8, 30),
+                     password: true, .expired),
+            ])
+        }
+        return (app, SharedLinksModel(app: app))
+    }
+
+    private static func sharedLink(_ id: String) async -> SharedLink? {
+        let (_, links) = linksApp()
+        await links.load()
+        return links.activeLinks.first { $0.id == id }
+    }
+
+    private static func sharedLinksStates() async -> [(String, AnyView)] {
+        func view(_ app: AppModel, _ links: SharedLinksModel, loads: Bool = true, drop: DropHover? = nil) -> AnyView {
+            AnyView(SharedLinksView(links: links, loadsOnAppear: loads, drop: drop).environment(app))
+        }
+
+        let (active, activeLinks) = linksApp()
+        await activeLinks.load()
+
+        let (ended, endedLinks) = linksApp()
+        await endedLinks.load()
+        endedLinks.showsEndedLinks = true
+
+        let (revoked, revokedLinks) = linksApp()
+        await revokedLinks.load()
+        if let budget = revokedLinks.activeLinks.first(where: { $0.id == "link-budget" }) {
+            await revokedLinks.revoke(budget.link)
+        }
+
+        let (dropping, droppingLinks) = linksApp()
+        await droppingLinks.load()
+
+        let empty = AppModel.preview(.upToDate)
+        _ = try? empty.session.fakeCore()?.setShareLinks(links: [])
+        let emptyLinks = SharedLinksModel(app: empty)
+
+        let (loading, loadingLinks) = linksApp()
+
+        let (error, errorLinks) = linksApp()
+        error.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+
+        let (offline, offlineLinks) = linksApp()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+        offline.session.fakeCore()?.failNext(error: .ServerUnreachable(reason: "offline"))
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-active", view(active, activeLinks)), ("2-ended-links", view(ended, endedLinks)),
+            ("3-revoked", view(revoked, revokedLinks)),
+            ("4-drop-to-share", view(dropping, droppingLinks, drop: DropHover(name: "Budget 2026.numbers"))),
+            ("5-empty", view(empty, emptyLinks)), ("6-loading", view(loading, loadingLinks, loads: false)),
+            ("7-error", view(error, errorLinks)), ("8-offline", view(offline, offlineLinks)),
+        ]
+    }
+
+    private static func captureOpenPanel(_ picker: FilePicker, dark: Bool, to url: URL) async {
         let root = FileManager.default.temporaryDirectory.appending(path: "Koidrive Snapshots", directoryHint: .isDirectory)
         let folders = ["Documents", "Photos"].map { name in
             LinkedFolder(spaceId: "space-\(name)", spaceName: name, path: root.appending(path: name).path(percentEncoded: false), state: .upToDate)
@@ -265,7 +412,7 @@ enum Snapshots {
         for path in ["Documents/Launch plan.key", "Documents/Contract draft.pdf", "Documents/Budget 2026.numbers", "Documents/Notes.md"] {
             FileManager.default.createFile(atPath: root.appending(path: path).path(percentEncoded: false), contents: Data(path.utf8))
         }
-        let (panel, filter) = VersionHistoryPicker.makePanel(in: folders)
+        let (panel, filter) = picker.makePanel(in: folders)
         panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         panel.setContentSize(NSSize(width: 720, height: 420))
         panel.begin { _ in withExtendedLifetime(filter) {} }

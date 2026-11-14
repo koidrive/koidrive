@@ -152,11 +152,15 @@ struct VersionHistoryView: View {
     }
 
     private func restoredText(_ version: FileVersion, _ state: RestoreState) -> String {
-        if case .restoredAsCopy(_, let name) = state {
-            return String(localized: "Restored as a copy, \(name). Another device changed the file.")
-        }
         let time = history.day(of: version).time(of: Date(milliseconds: version.savedAtMs))
-        return String(localized: "Restored. The \(time) version is current on every device.")
+        switch state {
+        case .restoredAsCopy(_, let name):
+            return String(localized: "Restored as a copy, \(name). Another device changed the file.")
+        case .restoredAs(let name):
+            return String(localized: "Restored as \(name). The \(time) version is current on every device.")
+        case .restored, .pending, .refused, .tooLarge:
+            return String(localized: "Restored. The \(time) version is current on every device.")
+        }
     }
 }
 

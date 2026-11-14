@@ -98,6 +98,10 @@ public final class DeletedFilesModel {
                     let trash = try await app.trash(in: folder.url)
                     histories.append(FolderHistory(folder: folder, trash: trash, requests: requests))
                 }
+                let linked = Set(histories.map(\.folder.spaceId))
+                if case .folder(let spaceID) = scope, !linked.contains(spaceID) { scope = .all }
+                unlisted = unlisted.filter { linked.contains($0.value.spaceID) }
+                staleTrash.formIntersection(linked)
                 remember(histories)
                 content = .loaded(histories)
             } catch {

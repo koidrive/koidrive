@@ -5,93 +5,6 @@ import KoidriveFFI
 import KoidriveModel
 import Testing
 
-private final class ScriptedSession: SyncSession, @unchecked Sendable {
-    let base: SyncSession
-    let release = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private var failRequestsAfterRestore = false
-    private var failRequests = false
-    private var failTrash = false
-    private var holdRequests = false
-    private var holdVersions = false
-    private var held = false
-
-    init(base: SyncSession) {
-        self.base = base
-        super.init(noHandle: .init())
-    }
-
-    required init(unsafeFromHandle handle: UInt64) { fatalError("unused") }
-
-    func failFirstRequestsReadAfterRestore() { lock.withLock { failRequestsAfterRestore = true } }
-    func failNextTrashRead() { lock.withLock { failTrash = true } }
-    func holdNextRequestsRead() { lock.withLock { holdRequests = true; held = false } }
-    func holdNextVersionsRead() { lock.withLock { holdVersions = true; held = false } }
-    var isHolding: Bool { lock.withLock { held } }
-
-    override func state() -> SessionState { base.state() }
-    override func telemetry() -> TelemetrySetting { base.telemetry() }
-    override func fakeCore() -> FakeCore? { base.fakeCore() }
-
-    override func restoreDeleted(path: String, nodeId: String) throws -> RestoreAsked {
-        let asked = try base.restoreDeleted(path: path, nodeId: nodeId)
-        lock.withLock {
-            failRequests = failRequestsAfterRestore
-            failRequestsAfterRestore = false
-        }
-        return asked
-    }
-
-    override func restoreVersion(path: String, versionId: String) throws -> RestoreAsked {
-        try base.restoreVersion(path: path, versionId: versionId)
-    }
-
-    override func restoreRequests(path: String) throws -> [RestoreRequest] {
-        if lock.withLock({ defer { failRequests = false }; return failRequests }) {
-            throw SessionError.ServerUnreachable(reason: "scripted")
-        }
-        let requests = try base.restoreRequests(path: path)
-        hold(\.holdRequests)
-        return requests
-    }
-
-    override func trash(path: String) throws -> Trash {
-        if lock.withLock({ defer { failTrash = false }; return failTrash }) {
-            throw SessionError.ServerUnreachable(reason: "scripted")
-        }
-        return try base.trash(path: path)
-    }
-
-    override func versions(path: String) throws -> FileVersions {
-        let versions = try base.versions(path: path)
-        hold(\.holdVersions)
-        return versions
-    }
-
-    private func hold(_ flag: ReferenceWritableKeyPath<ScriptedSession, Bool>) {
-        let holds = lock.withLock {
-            defer { self[keyPath: flag] = false }
-            if self[keyPath: flag] { held = true }
-            return self[keyPath: flag]
-        }
-        if holds { _ = release.wait(timeout: .now() + 5) }
-    }
-}
-
-@MainActor
-private func scripted() -> (AppModel, ScriptedSession) {
-    let session = ScriptedSession(base: AppModel.fake(scenario: .upToDate).session)
-    return (AppModel(session: session, events: AsyncStream { $0.finish() }), session)
-}
-
-@MainActor
-private func untilHeld(_ session: ScriptedSession) async throws {
-    for _ in 0..<1000 where !session.isHolding {
-        try await Task.sleep(for: .milliseconds(2))
-    }
-    try #require(session.isHolding)
-}
-
 @MainActor
 private func history(_ app: AppModel, _ versions: [FileVersion]) throws -> VersionHistoryModel {
     let folder = try #require(app.state.folders.first)
@@ -113,7 +26,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         await files.load()
         let entry = try #require(files.sections.flatMap(\.entries).first)
         files.selection = entry.id
-        session.failFirstRequestsReadAfterRestore()
+        session.failNextAfterRestore(.restoreRequests)
 
         await files.restoreSelected()
         #expect(files.restoreError == nil)
@@ -124,7 +37,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         #expect(requests.count == 1)
 
         try #require(session.fakeCore()).finishRestore(requestId: requests[0].id, state: .restored)
-        session.failNextTrashRead()
+        session.failNext(.trash)
         await files.refreshRequests()
         #expect(files.hasPendingRestores)
         #expect(files.sections.flatMap(\.entries).contains { $0.id == entry.id })
@@ -140,7 +53,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         let folder = try #require(app.state.folders.first)
         #expect(!files.sections.isEmpty)
 
-        session.holdNextRequestsRead()
+        session.holdNext(.restoreRequests)
         let refresh = Task { await files.refreshRequests() }
         defer { session.release.signal() }
         try await untilHeld(session)
@@ -165,7 +78,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         guard case .requested(_, let first) = history.restore else { Issue.record("not requested"); return }
         try #require(session.fakeCore()).finishRestore(requestId: first, state: .refused(reason: .gone))
 
-        session.holdNextRequestsRead()
+        session.holdNext(.restoreRequests)
         let late = Task { await history.refreshRestore() }
         defer { session.release.signal() }
         try await untilHeld(session)
@@ -181,7 +94,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
     @Test func anOlderLoadDoesNotReplaceANewerOne() async throws {
         let (app, session) = scripted()
         let history = try history(app, [saved("v1", at: 1000, current: true)])
-        session.holdNextVersionsRead()
+        session.holdNext(.versions)
         let late = Task { await history.load() }
         defer { session.release.signal() }
         try await untilHeld(session)
@@ -193,5 +106,23 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         session.release.signal()
         await late.value
         #expect(history.versions.map(\.versionId) == ["v2", "v1"])
+    }
+
+    @Test func unlinkingAFolderDropsItsScopeAndItsRestoreTracking() async throws {
+        let (app, session) = scripted()
+        let files = DeletedFilesModel(app: app)
+        await files.load()
+        let entry = try #require(files.sections.flatMap(\.entries).first)
+        files.scope = .folder(spaceID: entry.id.spaceID)
+        files.selection = entry.id
+        session.failNextAfterRestore(.restoreRequests)
+        await files.restoreSelected()
+        #expect(files.hasPendingRestores)
+
+        try await app.unlinkFolder(spaceID: entry.id.spaceID)
+        await files.load()
+        #expect(files.scope == .all)
+        #expect(!files.scopedFolders.isEmpty)
+        #expect(!files.hasPendingRestores)
     }
 }

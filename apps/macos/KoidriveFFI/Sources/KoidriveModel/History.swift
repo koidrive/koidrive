@@ -79,16 +79,30 @@ public enum LaunchWindow: Equatable, Sendable {
     case deletedFiles
     /// The Version History of the file at `path`, which starts with its linked folder's name.
     case versionHistory(path: String)
+    /// The Share Link window of the item at `path`, which starts with its linked folder's name.
+    case shareLink(path: String)
 }
 
 extension AppModel {
-    /// The window that the `OpenDeletedFiles` or `OpenVersionHistory` preference names. Only a debug build reads them.
+    /// The window that the `OpenDeletedFiles`, `OpenVersionHistory` or `OpenShareLink` preference names.
+    /// Only a debug build reads them.
     public static func launchWindow(in defaults: UserDefaults) -> LaunchWindow? {
         #if DEBUG
         if let path = defaults.string(forKey: "OpenVersionHistory") { return .versionHistory(path: path) }
+        if let path = defaults.string(forKey: "OpenShareLink") { return .shareLink(path: path) }
         if defaults.bool(forKey: "OpenDeletedFiles") { return .deletedFiles }
         #endif
         return nil
+    }
+
+    /// True when the `OpenSharedLinks` preference opens the Shared Links window, beside any launch window.
+    /// Only a debug build reads it.
+    public static func launchesSharedLinks(in defaults: UserDefaults) -> Bool {
+        #if DEBUG
+        return defaults.bool(forKey: "OpenSharedLinks")
+        #else
+        return false
+        #endif
     }
 
     /// The file at `path` in a linked folder, where `path` starts with the folder's name.
