@@ -537,3 +537,55 @@ fn a_recovery_keeps_its_cause_across_a_restart() {
     a.connect(&remote);
     assert_eq!(a.folder.view().recovery, older_than_disk);
 }
+
+#[test]
+fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is_downloaded() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("mine.txt"), b"mine");
+    let held_through = a.folder.engine.commits.held_through();
+    remote.space.rewind(&backup, NOW);
+    let revive = Commit {
+        commit_id: "01890a5d-ac96-774b-bcce-b302099a8057".into(),
+        base_seq: remote.space.head_seq(),
+        ops: vec![Op {
+            op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
+                node_id: notes.clone(),
+                ..Default::default()
+            })),
+        }],
+        history_id: remote.space.history_id().into(),
+        device_seq: remote.space.welcome(&b.caller).device_seq + 1,
+        ..Default::default()
+    };
+    assert_eq!(remote.commit(&b.caller, &revive).unwrap().seq, held_through);
+
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let held: Vec<_> = (a.folder.engine.commits.questions().iter())
+        .flat_map(|question| question.held.keys())
+        .collect();
+    assert!(!held.contains(&&notes), "held: {held:?}");
+    assert_eq!(names(&site.root), ["mine.txt", "notes.txt"]);
+    assert_eq!(remote.names(), ["notes.txt"]);
+    let deletes = (a.sent.iter().flat_map(|commit| &commit.ops))
+        .filter(|op| matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == notes))
+        .count();
+    assert_eq!(deletes, 0);
+}

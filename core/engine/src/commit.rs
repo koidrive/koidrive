@@ -402,7 +402,12 @@ impl Commits {
 
     /// Whether a listed node at revision `seq` was placed there by this device: by a commit of
     /// this device that the server kept, or by the commit in flight, whose result has that seq.
+    /// Never during a recovery: its listing may reuse the seqs of the slots and of the commit in
+    /// flight for other commits, and [`Commits::recover`] drops both.
     pub fn listed_here(&self, seq: u64) -> bool {
+        if matches!(*self.halted, Some(Halt::Recovery(_))) {
+            return false;
+        }
         (self.made_here(seq) && !self.lost_here(seq))
             || (self.in_flight.as_ref())
                 .and_then(|flight| flight.result.as_ref())
