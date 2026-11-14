@@ -570,6 +570,7 @@ pub struct World {
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
+    merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, u128>>,
     scanned: Vec<u64>,
     built: Vec<u64>,
@@ -653,6 +654,7 @@ impl World {
             clock: 0,
             touches: vec![BTreeMap::new(); count],
             touched_nodes: vec![BTreeMap::new(); count],
+            merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
             scanned: vec![0; count],
             built: vec![0; count],
@@ -2196,10 +2198,24 @@ impl World {
                                     _ => None,
                                 })
                                 .collect();
+                            let merges: Vec<(NodeId, u128)> = (sent.ops.iter())
+                                .zip(&committed.result.results)
+                                .filter(|(_, outcome)| {
+                                    outcome.code == op_result::Code::MergedInto as i32
+                                })
+                                .filter_map(|(op, outcome)| match &op.op {
+                                    Some(op::Op::CreateDir(create)) => {
+                                        Some((outcome.node_id.clone(), ino(&create.node_id)?))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
                             let touched = |node: &str| {
+                                let merged = self.merged[d].get(node).into_iter().flatten();
                                 restored.contains(node)
-                                    || (ino(node).and_then(|ino| self.touches[d].get(&ino)))
-                                        .is_some_and(|at| at.first().is_some_and(|at| *at <= built))
+                                    || (ino(node).into_iter().chain(merged.copied()))
+                                        .filter_map(|ino| self.touches[d].get(&ino))
+                                        .any(|at| at.first().is_some_and(|at| *at <= built))
                             };
                             let asked = |node: &str| {
                                 touched(node)
@@ -2268,7 +2284,11 @@ impl World {
                                     })
                                 })
                                 .filter_map(|node| ino(node))
+                                .chain(merges.iter().map(|(_, ino)| *ino))
                                 .collect();
+                            for (into, ino) in merges {
+                                self.merged[d].entry(into).or_default().insert(ino);
+                            }
                             for ino in &inos {
                                 self.approved[d].remove(ino);
                             }
