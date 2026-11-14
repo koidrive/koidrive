@@ -402,18 +402,7 @@ impl Commits {
 
     /// Whether a listed node at revision `seq` was placed there by this device: by a commit of
     /// this device that the server kept, or by the commit in flight, whose result has that seq.
-    /// `device_seq` is the server's count of this device's commits in the listed history. During a
-    /// recovery only a slot at or below it counts, and after a rewind only one whose seq the rewind
-    /// kept, at or below its `restore_seq`: the listing may reuse the seqs of the other slots and of
-    /// the commit in flight for other commits, also for those of another store of this device.
-    pub fn listed_here(&self, seq: u64, device_seq: u64) -> bool {
-        if let Some(Halt::Recovery(cause)) = *self.halted {
-            let kept = match cause.trigger {
-                RecoveryTrigger::SpaceRewound => cause.restore_seq.unwrap_or(0),
-                RecoveryTrigger::StoreRolledBack | RecoveryTrigger::StoreOlderThanDisk => u64::MAX,
-            };
-            return seq <= kept && (self.slots.range(..=device_seq)).any(|(_, &made)| made == seq);
-        }
+    pub fn listed_here(&self, seq: u64) -> bool {
         (self.made_here(seq) && !self.lost_here(seq))
             || (self.in_flight.as_ref())
                 .and_then(|flight| flight.result.as_ref())

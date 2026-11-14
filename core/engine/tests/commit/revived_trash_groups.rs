@@ -131,7 +131,7 @@ fn listed_while_renaming_out_of_the_trash(listed_rename: &str, results: Vec<OpRe
     let removed = trees.removed_here();
     trees.set_listed_remote("t".into(), remote_at(dir(ROOT, listed_rename), 2));
     trees.set_listed_remote("g".into(), remote_at(file("t", "g", 1), 2));
-    trees.listed_removals(removed, |seq| commits.listed_here(seq, commits.accepted()));
+    trees.listed_removals(removed, |seq| commits.listed_here(seq));
     if let Some(answer) = answer {
         commits.received(answer).unwrap();
     }
@@ -178,7 +178,7 @@ fn a_listing_of_a_member_another_device_edited_after_this_devices_rename_downloa
         ..remote_at(file("t", "g", 2), 2)
     };
     trees.set_listed_remote("g".into(), edited);
-    trees.listed_removals(removed, |seq| commits.listed_here(seq, commits.accepted()));
+    trees.listed_removals(removed, |seq| commits.listed_here(seq));
     commits.acknowledge(&mut trees, 3);
     trees.settle();
     assert_eq!(trees.class("g"), Class::Remote);
@@ -242,7 +242,7 @@ fn a_listing_keeps_an_edit_another_device_made_before_this_devices_rename_out_of
         ..remote_at(file("t", "g", 2), 10)
     };
     trees.set_listed_remote("g".into(), edited);
-    trees.listed_removals(removed, |seq| commits.listed_here(seq, commits.accepted()));
+    trees.listed_removals(removed, |seq| commits.listed_here(seq));
     assert!(commits.acknowledge(&mut trees, 10));
     trees.settle();
     assert_eq!(trees.class("g"), Class::Remote);

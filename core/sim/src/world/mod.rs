@@ -937,7 +937,7 @@ impl World {
         }
     }
 
-    fn recover(&mut self, d: usize, cause: RecoveryCause, why: String) -> Result<(), Failure> {
+    fn recover(&mut self, d: usize, trigger: RecoveryTrigger, why: String) -> Result<(), Failure> {
         let device = &mut self.devices[d];
         if device.engine.history == self.space.history_id() && !device.rolled_back {
             return Err(Failure::Broken(format!(
@@ -954,7 +954,10 @@ impl World {
         let history = self.space.history_id().to_owned();
         let device = &mut self.devices[d];
         device.recovery = Some(why);
-        device.engine.commits.enter_recovery(cause);
+        device
+            .engine
+            .commits
+            .enter_recovery(RecoveryCause::of(trigger));
         device.engine.history = history;
         device.engine.behind = true;
         let listed = listing(&self.space);
@@ -1438,7 +1441,7 @@ impl World {
             device.engine.effects.catch_up(marker);
             self.recover(
                 d,
-                RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk),
+                RecoveryTrigger::StoreOlderThanDisk,
                 format!("the root marker counts {marker} effects, more than the store"),
             )?;
         }
@@ -1611,7 +1614,7 @@ impl World {
         if self.devices[d].engine.history != welcome.history_id {
             self.recover(
                 d,
-                RecoveryCause::rewind(welcome.restore_seq, 0),
+                RecoveryTrigger::SpaceRewound,
                 "the server's history changed".into(),
             )?;
         }
@@ -1625,7 +1628,7 @@ impl World {
             Reconnect::Recovery => {
                 self.recover(
                     d,
-                    RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
+                    RecoveryTrigger::StoreRolledBack,
                     format!(
                         "the server counts {} commits of this device, which the store cannot account for",
                         welcome.device_seq
@@ -1682,7 +1685,6 @@ impl World {
             }
             Message::Listing { nodes, head } => {
                 note(&mut self.seen, "listing replaces R");
-                let device_seq = self.space.welcome(&self.devices[d].session).device_seq;
                 let Engine {
                     trees,
                     commits,
@@ -1722,7 +1724,9 @@ impl World {
                         trees.set_listed_remote(id, node);
                     }
                 }
-                trees.listed_removals(removed, |seq| commits.listed_here(seq, device_seq));
+                if recovering.is_none() {
+                    trees.listed_removals(removed, |seq| commits.listed_here(seq));
+                }
                 if *behind && recovering.is_none() {
                     trees.forget_lost(
                         trashed,
@@ -1742,6 +1746,7 @@ impl World {
                 link.listing = false;
                 if let Some(cause) = recovering {
                     note(&mut self.seen, "recovery classifies the trees");
+                    let device_seq = self.space.welcome(&self.devices[d].session).device_seq;
                     let device = &mut self.devices[d];
                     device.engine.scan(&device.disk);
                     self.scanned[d] = self.clock;
@@ -1872,7 +1877,7 @@ impl World {
                             return self
                                 .recover(
                                     d,
-                                    cause,
+                                    cause.trigger,
                                     format!("the server refused a commit with {code:?}"),
                                 )
                                 .map(|()| true);
@@ -3316,7 +3321,7 @@ mod tests {
         assert!(matches!(
             world.recover(
                 0,
-                RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
+                RecoveryTrigger::StoreRolledBack,
                 "spurious recovery".into()
             ),
             Err(Failure::Broken(_))

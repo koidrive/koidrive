@@ -524,7 +524,6 @@ impl SpaceDo {
             log_floor_seq: self.log_floor_seq,
             read_only: session.role == Role::Viewer || session.max_format < self.format_version,
             device_seq: self.device_seq(&session.device_id),
-            restore_seq: self.restore_seq,
             ..Default::default()
         }
     }
