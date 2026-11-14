@@ -15,6 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
+use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question as engine;
 use koidrive_engine::tree::{
@@ -1315,6 +1316,7 @@ pub(crate) struct Staging {
     /// The head of the last `CaughtUp`.
     caught_up: Option<u64>,
     nodes: BTreeMap<String, NodeState>,
+    history: Option<(u64, History)>,
 }
 
 fn edit_revs(node: &NodeState) -> (u64, u64) {
@@ -1340,6 +1342,7 @@ impl Staging {
             }),
             highest_page_seq: pages.iter().map(|page| page.head_seq).max().unwrap_or(0),
             caught_up: None,
+            history: None,
             nodes: pages
                 .into_iter()
                 .flat_map(|page| page.nodes)
@@ -1380,11 +1383,49 @@ impl Staging {
         &self.last
     }
 
+    pub fn read_history_since(&mut self, since: Base) -> Base {
+        self.history = Some((since.seq, History::new()));
+        since
+    }
+
+    pub fn forget_history(&mut self) -> Option<&Base> {
+        self.history.take().map(|_| &self.last)
+    }
+
+    pub fn take_history(&mut self) -> History {
+        self.history
+            .take()
+            .map(|(_, history)| history)
+            .unwrap_or_default()
+    }
+
+    pub fn remember(&mut self, seq: u64, changes: &[ChangeRecord]) {
+        let Some((through, history)) = &mut self.history else {
+            return;
+        };
+        if seq <= *through {
+            return;
+        }
+        if seq != *through + 1 {
+            self.history = None;
+            return;
+        }
+        *through = seq;
+        for change in changes {
+            if let Some(change_record::Change::Node(state)) = &change.change
+                && let Ok((id, node)) = RemoteNode::from_state(state)
+            {
+                history.entry(id).or_default().push(node.shape);
+            }
+        }
+    }
+
     /// Replays commits of the log in seq order. A node state replaces the listed node only when it is newer, since a
     /// page read later can already hold the result of a commit replayed now.
     pub fn replay(&mut self, records: &[CommitRecord]) -> Result<Applied, Stop> {
         for record in records {
             if record.seq <= self.last.seq {
+                self.remember(record.seq, &record.changes);
                 continue;
             }
             if record.seq != self.last.seq + 1 {
@@ -1403,6 +1444,7 @@ impl Staging {
                 at.seq
             )));
         }
+        self.remember(at.seq, changes);
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(state)) => self.take(state.clone()),

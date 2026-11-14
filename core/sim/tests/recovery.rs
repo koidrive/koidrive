@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use koidrive_engine::commit::{Commits, InFlight};
+use koidrive_engine::first_link::History;
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
 use koidrive_sim::world::disk::{Disk, Place};
@@ -70,6 +71,20 @@ fn refusal(world: &World, d: usize, commit: &Commit) -> Option<error::Code> {
     let mut space = world.space().clone();
     let refused = space.commit(&world.devices[d].session, 0, commit).err()?;
     error::Code::try_from(refused.code).ok()
+}
+
+fn only_entry(world: &World, d: usize, name: &str) -> u128 {
+    let entries = world.devices[d].disk.entries();
+    assert_eq!(entries.len(), 1, "device {d} holds {entries:?}");
+    let (ino, entry) = entries.iter().next().unwrap();
+    assert_eq!(entry.name, name);
+    *ino
+}
+
+fn answered(world: &World) -> Vec<&str> {
+    (world.seen.keys().copied())
+        .filter(|seen| seen.starts_with("recovery answer"))
+        .collect()
 }
 
 fn recovering(world: &World, d: usize) -> &str {
@@ -1419,6 +1434,102 @@ fn a_write_of_the_bytes_a_rewind_brought_back_to_the_server_is_in_sync() {
     for (phase, schedule) in phases.iter().enumerate() {
         world.phase(phase, schedule).unwrap();
     }
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_follows_the_servers_rename() {
+    let mut world = World::new(2);
+    world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world
+        .run(0, &[(1, Step::CopyStore), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
+        .unwrap();
+    let downloaded = only_entry(&world, 1, "a");
+    world.run(0, &[(0, rename(0, "b"))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
+        .unwrap();
+    assert!(recovering(&world, 1).contains("root marker"));
+    world.phase(1, &[]).unwrap();
+    assert_eq!(live(&world), ["b"]);
+    assert_eq!(only_entry(&world, 1, "b"), downloaded);
+    assert_eq!(answered(&world), Vec::<&str>::new());
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_follows_the_servers_rename_and_delete() {
+    let mut world = World::new(2);
+    world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world
+        .run(0, &[(1, Step::CopyStore), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
+        .unwrap();
+    world.run(0, &[(0, rename(0, "b"))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world.run(0, &[(0, delete(0))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
+        .unwrap();
+    world.phase(1, &[]).unwrap();
+    assert!(live(&world).is_empty());
+    assert!(world.devices[1].disk.entries().is_empty());
+    assert_eq!(answered(&world), Vec::<&str>::new());
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_is_asked_about_once_the_log_no_longer_reaches_the_store() {
+    let mut world = World::new(2);
+    world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world
+        .run(0, &[(1, Step::CopyStore), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
+        .unwrap();
+    world.run(0, &[(0, rename(0, "b"))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world.truncate_log();
+    world
+        .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
+        .unwrap();
+    world.phase(1, &[]).unwrap();
+    assert_ne!(answered(&world), Vec::<&str>::new());
+}
+
+#[test]
+fn a_folder_a_store_rollback_forgot_under_its_pending_name_follows_the_servers_rename() {
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![(0, user(1, 0, 0, "a"))],
+        vec![
+            (0, user(0, 0, 0, "A")),
+            (0, user(0, 0, 0, "b")),
+            (0, user(4, 6095279261125277768, 0, "a")),
+            (0, user(1, 0, 9439866358580140835, "a")),
+            (0, user(3, 6102070474357604457, 8626648223826975991, "A")),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, Step::CopyStore),
+            (0, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, COMMIT),
+            (1, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, Step::RollBack),
+        ],
+    ];
+    let world = synced(2, &phases);
+    assert_eq!(answered(&world), Vec::<&str>::new());
 }
 
 #[test]
@@ -3056,6 +3167,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
         &mut engine.trees,
         seq,
         &cause,
+        &History::new(),
         &mut engine.ids,
         1_794_268_740_020,
     );

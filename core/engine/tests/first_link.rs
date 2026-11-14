@@ -103,7 +103,7 @@ fn an_entry_the_server_holds_with_the_same_name_and_bytes_is_adopted() {
             ("r-a", file("r-docs", "a", 1)),
         ],
     );
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert_eq!(
         local(&trees),
         [
@@ -151,7 +151,7 @@ fn a_folder_is_adopted_under_its_pending_name_when_a_file_holds_its_name() {
             ("r-docs", dir(ROOT, "docs (pending)")),
         ],
     );
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert_eq!(
         local(&trees),
         [("r-docs".into(), ROOT.into(), "docs".into())]
@@ -168,7 +168,7 @@ fn a_folder_is_not_adopted_under_a_name_the_engine_never_gives_as_pending() {
                 ("r-docs", dir(ROOT, name)),
             ],
         );
-        assert_eq!(adopt(&mut trees, false), ["l-docs"], "{name}");
+        assert_eq!(adopt(&mut trees, None), ["l-docs"], "{name}");
     }
 }
 
@@ -181,7 +181,7 @@ fn a_folder_two_pending_names_could_belong_to_is_held() {
             ("r-two", dir(ROOT, "docs (pending 2)")),
         ],
     );
-    assert_eq!(adopt(&mut trees, false), ["l-docs"]);
+    assert_eq!(adopt(&mut trees, None), ["l-docs"]);
     assert_eq!(
         local(&trees),
         [("l-docs".into(), ROOT.into(), "docs".into())]
@@ -207,7 +207,7 @@ fn a_shared_folder_is_adopted_and_its_children_are_matched_one_by_one() {
             ("r-theirs", file("r-docs", "theirs", 4)),
         ],
     );
-    let mut held = adopt(&mut trees, false);
+    let mut held = adopt(&mut trees, None);
     held.sort();
     assert_eq!(held, ["l-edited", "l-mine"]);
     assert!(trees.local().get("r-docs").is_some());
@@ -235,7 +235,7 @@ fn a_new_folder_a_name_that_only_folds_alike_and_another_kind_are_held() {
             ("r-notes", dir(ROOT, "notes")),
         ],
     );
-    let mut held = adopt(&mut trees, false);
+    let mut held = adopt(&mut trees, None);
     held.sort();
     assert_eq!(held, ["l-new", "l-notes", "l-report"]);
     assert!(trees.synced().iter().next().is_none());
@@ -254,7 +254,7 @@ fn an_excluded_entry_is_neither_adopted_nor_held() {
         &[("r-logs", dir(ROOT, "logs"))],
     );
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.log\n")));
-    assert_eq!(adopt(&mut trees, false), Vec::<String>::new());
+    assert_eq!(adopt(&mut trees, None), Vec::<String>::new());
     assert!(trees.local().get("r-logs").is_some());
     assert!(trees.local().get("l-cache").is_some());
     assert!(trees.synced().get("l-cache").is_none());

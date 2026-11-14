@@ -3,6 +3,7 @@
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects};
+use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup};
@@ -92,7 +93,7 @@ fn recovered(trees: &mut Trees, device_seq: u64) -> (Commits, IdGen) {
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     assert_eq!(commits.build(trees, &mut ids, NOW, OLD, 9), None);
-    commits.recover(trees, device_seq, &rewind(), &mut ids, NOW);
+    commits.recover(trees, device_seq, &rewind(), &History::new(), &mut ids, NOW);
     trees.settle();
     (commits, ids)
 }
@@ -494,7 +495,14 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
     }
     let mut commits = Commits::default();
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &mut IdGen::new(7), NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &mut IdGen::new(7),
+        NOW,
+    );
     let mut synced = Trees::new(ROOT);
     for (id, shape) in trees.synced().iter() {
         synced.set_synced(id.clone(), Some(shape.clone()));
@@ -582,7 +590,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
         ..Default::default()
     };
     assert_eq!(commits.connected(&welcome), Reconnect::Recovery);
-    commits.recover(&mut trees, 4, &rewind(), &mut ids, NOW);
+    commits.recover(&mut trees, 4, &rewind(), &History::new(), &mut ids, NOW);
     trees.settle();
     assert_eq!(commits.in_flight(), None);
     assert_eq!(commits.accepted(), 4);
@@ -616,7 +624,7 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
     };
     commits.received(result).unwrap();
     commits.acknowledge(&mut trees, 2);
-    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
     trees.settle();
     asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
 }
@@ -636,7 +644,7 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
         let sent = ops(&mut commits, &mut trees, &mut ids);
         assert_eq!(sent, [("restore", NODE.to_owned())]);
         commits.enter_recovery(rewind());
-        commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+        commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
         trees.settle();
         let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -672,7 +680,7 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("before".into(), intent.clone()));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
     trees.settle();
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["before"]);
     assert!(commits.restore("later".into(), intent));
@@ -715,7 +723,7 @@ fn a_restore_the_rewound_tree_already_shows_is_done() {
     let intent = RestoreIntent::from_trash(NODE.into(), None, None).unwrap();
     assert!(commits.restore("request".into(), intent));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
     assert!(commits.questions().is_empty(), "{:?}", commits.questions());
     let [ended] = commits.resolved() else {
         panic!("{:?}", commits.resolved());
@@ -1028,7 +1036,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("request".into(), intent));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
     assert!(commits.decide(&question.id, Answer::Repeat));
     assert_eq!(
