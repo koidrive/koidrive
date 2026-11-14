@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `koi uninstall` in a temporary home, with every install location, Homebrew prefix and service label of its own.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
