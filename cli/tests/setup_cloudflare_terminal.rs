@@ -44,6 +44,7 @@ enum Failure {
     OauthProtocol,
     CloudflareRefused,
     CloudflareProtocol,
+    UninstallScan,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,6 +224,21 @@ esac
         .unwrap();
         credential.server = self.base.as_str().trim_end_matches('/').to_owned();
         credential.save_new(&self.paths().credential()).unwrap();
+    }
+
+    fn save_uninstall(&self) {
+        self.state.lock().unwrap().failure = Some(Failure::UninstallScan);
+        fs::write(
+            self.paths().state_dir.join("setup-state.json"),
+            json!({
+                "account": ACCOUNT, "script": "koidrive", "bucket": "synthetic-bucket",
+                "step": "uninstalling", "secret_set": false, "setup_attempt": null,
+                "script_created_on": "2026-11-10T01:02:03.456789Z", "jurisdiction": "eu",
+                "bucket_created_on": "2026-11-10T01:02:00.000Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
     }
 
     fn command(&self) -> Command {
@@ -531,7 +547,18 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                         cf(json!({}))
                     }
                 }
-                ("GET", "/workers/scripts") => cf(json!(state.scripts.iter().map(|name| json!({"id":name,"tags":["koidrive-server"],"has_assets":true})).collect::<Vec<_>>())),
+                ("GET", "/workers/scripts") => cf(json!(state.scripts.iter().map(|name| json!({"id":name,"tags":["koidrive-server"],"has_assets":true,"created_on":"2026-11-10T01:02:03.456789Z"})).collect::<Vec<_>>())),
+                ("DELETE", "/workers/scripts/koidrive") if state.failure == Some(Failure::UninstallScan) => {
+                    state.scripts.retain(|name| name != "koidrive");
+                    cf(Value::Null)
+                },
+                ("GET", "/r2/buckets/synthetic-bucket") if state.failure == Some(Failure::UninstallScan) => {
+                    cf(json!({"name":"synthetic-bucket","creation_date":"2026-11-10T01:02:00.000Z","jurisdiction":"eu"}))
+                },
+                ("GET", "/r2/buckets/synthetic-bucket/objects") if state.failure == Some(Failure::UninstallScan) => {
+                    status = "503 Service Unavailable";
+                    ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Listing unavailable"}],"result":null}).to_string().into_bytes())
+                },
                 ("GET", "/workers/subdomain") => cf(json!({"subdomain":"synthetic"})),
                 ("GET", _) if suffix.ends_with("/settings") => cf(json!({"bindings":[{"type":"r2_bucket","name":"BUCKET","bucket_name":"synthetic-bucket"}]})),
                 ("POST", _) if suffix.ends_with("/assets-upload-session") => cf(json!({"jwt":"synthetic-upload-token","buckets":[]})),
@@ -839,6 +866,92 @@ fn stopped_login_messages_follow_effective_output_detail() {
             }
         }
     }
+}
+
+#[test]
+fn failed_uninstall_scans_report_partial_progress_in_raw_output() {
+    for mode in [ErrorMode::Verbose, ErrorMode::Redirected] {
+        let home = Home::new(&["koidrive"], &[]);
+        home.save_uninstall();
+        executable(
+            &home.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = home.command();
+        command.args(["server", "delete", "--interactive", "--yes"]);
+        if matches!(mode, ErrorMode::Verbose) {
+            command.arg("--verbose");
+        }
+        let output = terminal_with_stdout(
+            command,
+            &[],
+            Some(home.path()),
+            matches!(mode, ErrorMode::Redirected),
+            None,
+        );
+        let raw = String::from_utf8(output.stdout).unwrap();
+        let text = console::strip_ansi_codes(&raw);
+        assert_eq!(output.status.code(), Some(6), "{mode:?}: {text}");
+        assert!(text.contains("Deleting the Worker koidrive"), "{text}");
+        assert!(
+            text.contains("; this scan did not delete any bucket objects"),
+            "{mode:?}: {text}"
+        );
+        assert!(!text.contains("; deleted nothing"), "{text}");
+        let state = home.state.lock().unwrap();
+        assert!(state.scripts.is_empty());
+        let deletes: Vec<_> = state
+            .requests
+            .iter()
+            .filter(|request| request.starts_with("DELETE "))
+            .collect();
+        assert_eq!(
+            deletes,
+            [&format!(
+                "DELETE /client/v4/accounts/{ACCOUNT}/workers/scripts/koidrive"
+            )]
+        );
+        let saved: Value = serde_json::from_slice(
+            &fs::read(home.paths().state_dir.join("setup-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["script"], "");
+        assert_eq!(saved["step"], "uninstalling");
+    }
+}
+
+#[test]
+fn json_delete_stops_before_saved_uninstall_progress_can_change() {
+    let home = Home::new(&["koidrive"], &[]);
+    home.save_uninstall();
+    let path = home.paths().state_dir.join("setup-state.json");
+    let before = fs::read(&path).unwrap();
+    let output = home
+        .command()
+        .args(["server", "delete", "--interactive", "--json", "--yes"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "usage");
+    assert_eq!(
+        envelope["error"]["message"],
+        "--interactive cannot be used with --json"
+    );
+    assert_eq!(fs::read(path).unwrap(), before);
+    assert_eq!(home.state.lock().unwrap().scripts, ["koidrive"]);
+    assert!(
+        home.state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .all(|request| !request.contains("/client/v4/"))
+    );
 }
 
 #[test]

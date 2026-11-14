@@ -226,7 +226,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
             Ok(())
         }
         _ => Err(format!(
-            "Cloudflare did not say when the Worker {} was created, so it cannot be told apart from a new Worker with that name; deleted nothing",
+            "Cloudflare did not say when the Worker {} was created, so it cannot be told apart from a new Worker with that name; did not delete this Worker",
             state.script
         ).into()),
     }
@@ -292,7 +292,9 @@ async fn scan(
             Err(error) if error.status() == Some(404) => return Ok(None),
             Err(error) => {
                 let error = CliError::caused(
-                    format!("cannot list the bucket {bucket}: {error}; deleted nothing"),
+                    format!(
+                        "cannot list the bucket {bucket}: {error}; this scan did not delete any bucket objects"
+                    ),
                     error,
                 );
                 let human = format!(
@@ -631,14 +633,30 @@ mod tests {
             )]
         );
         assert_eq!(file.load().unwrap(), Some(recorded("")));
-        assert!(error.message.ends_with("; deleted nothing"), "{error:?}");
-        let human = error.human.unwrap();
+        assert!(
+            error
+                .message
+                .ends_with("; this scan did not delete any bucket objects"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("; deleted nothing"), "{error:?}");
+        let human = error.human.as_ref().unwrap();
         assert!(human.contains("Listing unavailable"), "{human}");
         assert!(
             human.ends_with("This scan did not delete any bucket objects."),
             "{human}"
         );
         assert!(!human.contains("Nothing was deleted."), "{human}");
+        let raw = error.message.clone();
+        let envelope = serde_json::to_value(crate::report::Envelope::failed(
+            "server delete",
+            error,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(envelope["error"]["message"], raw);
+        assert_eq!(envelope["error"]["code"], "unavailable");
+        assert!(envelope["error"].get("human").is_none());
     }
 
     #[tokio::test]
@@ -657,7 +675,7 @@ mod tests {
             .unwrap_err()
             .message;
 
-        assert!(error.ends_with("deleted nothing"), "{error}");
+        assert!(error.ends_with("did not delete this Worker"), "{error}");
         assert!(!fake.sent(&["DELETE"]));
         assert_eq!(file.load().unwrap(), Some(recorded("koidrive")));
     }
