@@ -89,8 +89,27 @@ impl Uploader {
 }
 
 /// Sends what the queue holds for hours before `hour`, with every event. A failure to send leaves it in the queue,
-/// and so does cancelling the send before an answer; only a failure to read or write the queue is an error.
+/// and so does cancelling the send before an answer; only a failure to read or write the queue is an error. A batch
+/// that went again after a failure is followed by one with what was queued meanwhile.
 pub async fn send(
+    store: &Store,
+    uploader: Option<&Uploader>,
+    environment: &Environment,
+    mode: Mode,
+    hour: u32,
+) -> io::Result<Sent> {
+    let mut sent = Sent::Nothing;
+    for _ in 0..2 {
+        match send_one(store, uploader, environment, mode, hour).await? {
+            Sent::Nothing => break,
+            next @ (Sent::Accepted | Sent::Printed) => sent = next,
+            failed => return Ok(failed),
+        }
+    }
+    Ok(sent)
+}
+
+async fn send_one(
     store: &Store,
     uploader: Option<&Uploader>,
     environment: &Environment,
@@ -574,6 +593,44 @@ mod tests {
             }),
             _ => {}
         }
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_goes_through_also_sends_what_was_queued_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        queued(&store, HOUR);
+        let (down, tried) = server(503).await;
+        let down = uploader(&down);
+        let sent = send(&store, Some(&down), &environment(), Mode::On, HOUR + 1).await;
+        assert_eq!(sent.unwrap(), Sent::Later);
+        let recorder = Recorder::on();
+        recorder.count_on(HOUR, Counter::Sync(Synced::BytesUploaded), 7);
+        recorder.event(Event::Panic {
+            at: u64::from(HOUR) * 3600 + 126,
+            file: SourceFile::from_location("cli/src/main.rs"),
+            line: 9,
+        });
+        store.absorb_at(recorder.take(), HOUR + 1, true).unwrap();
+
+        let (up, bodies) = server(200).await;
+        let up = uploader(&up);
+        let sent = send(&store, Some(&up), &environment(), Mode::On, HOUR + 1).await;
+        assert_eq!(sent.unwrap(), Sent::Accepted);
+        assert!(store.peek().unwrap().is_empty());
+        let uuids = |body: &Value| {
+            (body["batch"].as_array().unwrap().iter())
+                .map(|event| event["uuid"].clone())
+                .collect::<Vec<_>>()
+        };
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(uuids(&bodies[0]), uuids(&tried.lock().unwrap()[0]));
+        assert_eq!(
+            bodies[1]["batch"][0]["properties"]["c.sync.bytes_uploaded"],
+            7
+        );
+        assert_eq!(bodies[1]["batch"][1]["properties"]["line"], 9);
     }
 
     async fn server(status: u16) -> (String, Arc<Mutex<Vec<Value>>>) {

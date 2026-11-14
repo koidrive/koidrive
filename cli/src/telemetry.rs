@@ -360,14 +360,16 @@ async fn every<W: Future>(
     mut tick: impl FnMut(),
     mut work: impl FnMut() -> W,
 ) {
+    let mut ticks = tokio::time::interval(period);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = &mut stop => break,
+        }
         tick();
         tokio::select! {
             _ = work() => {}
-            _ = &mut stop => break,
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(period) => {}
             _ = &mut stop => break,
         }
     }
@@ -778,6 +780,31 @@ mod tests {
             assert_eq!(waiting(), (vec![], 0), "a restart waited for a tick");
             stop_second.send(()).unwrap();
         });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ticks_start_a_tick_apart_however_long_a_send_takes() {
+        let (stop_daemon, stop) = tokio::sync::oneshot::channel();
+        let ticks = Cell::new(0);
+        let looping = every(
+            TICK,
+            stop,
+            || ticks.set(ticks.get() + 1),
+            || tokio::time::sleep(Duration::from_secs(10)),
+        );
+        let settle = || async {
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        };
+        let observer = async {
+            settle().await;
+            tokio::time::advance(TICK).await;
+            settle().await;
+            assert_eq!(ticks.get(), 2, "the second tick waited for the send");
+            stop_daemon.send(()).unwrap();
+        };
+        tokio::join!(looping, observer);
     }
 
     #[tokio::test]
