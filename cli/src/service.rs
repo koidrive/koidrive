@@ -285,6 +285,8 @@ pub struct Report {
     /// Why the service cannot run, or did not change as it should.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    #[serde(skip)]
+    summary_problem: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lingers: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -307,12 +309,35 @@ fn no_folders(folders: &Option<usize>) -> bool {
 }
 
 impl Report {
+    pub fn summary(&self) -> String {
+        let mut text = match self.state {
+            State::Running if self.problem.is_some() => "Background sync needs attention.\n".to_owned(),
+            State::Running => "Koidrive is running in the background.\n".to_owned(),
+            State::Starting => "Background sync is starting.\n".to_owned(),
+            State::Stopped => "Background sync is stopped. Run koi service start.\n".to_owned(),
+            State::SwitchedOff => SWITCHED_OFF.to_owned(),
+            State::NotInstalled if self.removed => "Stopped and removed the background service.\n".to_owned(),
+            State::NotInstalled => "Background sync starts when you link a folder.\n".to_owned(),
+            State::Unavailable => "Background sync is unavailable.\n".to_owned(),
+            State::Off => "Background sync is off in config.toml. Set service.background to true, then run koi service start.\n".to_owned(),
+        };
+        if let Some(problem) = self.summary_problem.as_ref().or(self.problem.as_ref()) {
+            text.push_str(&format!("Reason: {}\nUse --verbose for service details. After fixing the problem, run koi service start.\n", crate::printable(problem)));
+        }
+        if self.lingers == Some(false) {
+            text.push_str("It stops when you log out. To keep it running, run: sudo loginctl enable-linger \"$USER\"\n");
+        }
+        text.push_str(&blocked_text(&self.blocked));
+        text
+    }
+
     fn new(manager: &dyn Manager, name: String, state: State) -> Self {
         Report {
             manager: manager.kind(),
             name,
             state,
             problem: None,
+            summary_problem: None,
             lingers: None,
             blocked: Vec::new(),
             started: false,
@@ -821,11 +846,16 @@ async fn reconcile_with(
     }
     if let Some(exit) = manager.crashed(&service) {
         report.state = State::Stopped;
+        report.summary_problem = Some(format!("its daemon keeps exiting ({exit})"));
         report.problem = Some(format!(
             "its daemon keeps exiting ({exit}); its log: {}",
             report.log
         ));
     } else if !stopped {
+        report.summary_problem = Some(format!(
+            "it started, but its daemon did not answer within {} seconds",
+            ipc::STARTING.as_secs()
+        ));
         report.problem = Some(format!(
             "it started, but its daemon did not answer within {} seconds; its log: {}",
             ipc::STARTING.as_secs(),
@@ -1216,10 +1246,54 @@ fn launchd_disabled(disabled: &str, label: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn concise_starting_service_does_not_claim_sync_is_running() {
+        let report = Report::new(&Fake::default(), "fixture".into(), State::Starting);
+        assert_eq!(report.summary(), "Background sync is starting.\n");
+    }
+
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
 
     use super::*;
+
+    #[test]
+    fn concise_service_keeps_the_specific_problem() {
+        for state in ["unavailable", "running"] {
+            let report: Report = serde_json::from_value(serde_json::json!({
+                "manager":"launchd", "name":"dev.koidrive.internal", "state":state,
+                "problem":"the daemon did not answer within 5 seconds"
+            }))
+            .unwrap();
+            let summary = report.summary();
+            assert!(
+                summary.contains("the daemon did not answer within 5 seconds"),
+                "{summary}"
+            );
+            assert!(!summary.contains("dev.koidrive.internal"));
+        }
+    }
+
+    #[test]
+    fn concise_startup_problem_keeps_log_details_in_the_legacy_report() {
+        let mut report: Report = serde_json::from_value(serde_json::json!({
+            "manager":"launchd", "name":"dev.koidrive.internal", "state":"running",
+            "problem":"it started, but its daemon did not answer within 5 seconds; its log: /internal/daemon.log"
+        })).unwrap();
+        report.summary_problem =
+            Some("it started, but its daemon did not answer within 5 seconds".into());
+        assert!(report.summary().contains("did not answer within 5 seconds"));
+        assert!(!report.summary().contains("/internal/daemon.log"));
+        assert!(report.text().contains("/internal/daemon.log"));
+        let data = serde_json::to_value(report).unwrap();
+        assert!(
+            data["problem"]
+                .as_str()
+                .unwrap()
+                .contains("/internal/daemon.log")
+        );
+        assert!(data.get("summary_problem").is_none());
+    }
 
     #[test]
     fn a_disabled_launch_agent_is_distinct_from_an_unloaded_one() {
@@ -2847,6 +2921,12 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
             problem.starts_with("its daemon keeps exiting (exit code 1); its log: "),
             "{problem}"
         );
+        let summary = report.summary();
+        assert!(
+            summary.contains("its daemon keeps exiting (exit code 1)"),
+            "{summary}"
+        );
+        assert!(!summary.contains("its log:"), "{summary}");
         assert!(report.failed());
         assert!(!report.retryable());
     }

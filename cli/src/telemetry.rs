@@ -505,27 +505,38 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
             let old = store.peek_old().map_err(failed)?;
             let sends = Uploader::from_env(var).ok().flatten().is_some();
             let mut text = format!("Usage reports: {shown} ({why})\n");
+            let mut summary = text.clone();
             if let Some(id) = &settings.install_id {
                 text.push_str(&format!("Install id: {id}\n"));
             }
             let events = queued.events.len() + old.events.len();
-            text.push_str(&match old.days.len() {
-                0 => format!("Waiting to send: {} hours, {events} events\n", queued.hours.len()),
+            let waiting = match old.days.len() {
+                0 => format!(
+                    "Waiting to send: {} hours, {events} events\n",
+                    queued.hours.len()
+                ),
                 days => format!(
                     "Waiting to send: {} hours, {days} days from an earlier version, {events} events\n",
                     queued.hours.len()
                 ),
-            });
+            };
+            text.push_str(&waiting);
+            summary.push_str(&waiting);
             if status.mode == Mode::On && !sends {
                 text.push_str(
                     "This build has no project token, so reports wait on this machine and are not sent.\n",
                 );
+                summary.push_str(
+                    "This build cannot send usage reports. Unsent reports stay on this device.\n",
+                );
             }
-            text.push_str(if on {
+            let action = if on {
                 "Turn off: koi telemetry off\n"
             } else {
                 "Turn on: koi telemetry on\n"
-            });
+            };
+            text.push_str(action);
+            summary.push_str(action);
             let data = TelemetryStatusData {
                 mode,
                 source,
@@ -535,7 +546,7 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 waiting_events: events,
                 sends,
             };
-            Ok(Done::ok(data, text))
+            Ok(Done::ok(data, text).human(summary, ""))
         }
         TelemetryAction::On => {
             let settings = store.set(true).map_err(failed)?;
@@ -543,11 +554,19 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 enabled: true,
                 install_id: settings.install_id,
             };
+            let override_note = overridden(true)?;
             let text = format!(
                 "Usage reports are on. See what is sent with koi telemetry preview.\n{}",
-                overridden(true)?
+                override_note
             );
-            Ok(Done::ok(data, text).then(&["koi", "telemetry", "preview"]))
+            let summary = if override_note.is_empty() {
+                "Usage reports are on. Preview them with koi telemetry preview.\n".to_owned()
+            } else {
+                format!("Saved your choice to send usage reports.\n{override_note}")
+            };
+            Ok(Done::ok(data, text)
+                .human(summary, "")
+                .then(&["koi", "telemetry", "preview"]))
         }
         TelemetryAction::Off => {
             store.set(false).map_err(failed)?;
@@ -555,11 +574,19 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 enabled: false,
                 install_id: None,
             };
+            let override_note = overridden(false)?;
             let text = format!(
                 "Usage reports are off. The install id and the reports not sent yet are deleted.\n{}",
-                overridden(false)?
+                override_note
             );
-            Ok(Done::ok(data, text))
+            let summary = if override_note.is_empty() {
+                "Usage reports are off. Unsent reports were deleted.\n".to_owned()
+            } else {
+                format!(
+                    "Saved your choice not to send usage reports. Unsent reports were deleted.\n{override_note}"
+                )
+            };
+            Ok(Done::ok(data, text).human(summary, ""))
         }
         TelemetryAction::Preview => {
             let queued = store.peek().map_err(failed)?;
@@ -600,7 +627,8 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                     enabled: true,
                     install_id: Some(id),
                 };
-                Ok(Done::ok(data, text))
+                Ok(Done::ok(data, text)
+                    .human("Usage report ID reset. Unsent reports were deleted.\n", ""))
             }
             None => {
                 let data = ChoiceData {
