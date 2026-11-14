@@ -107,6 +107,7 @@ pub async fn run(paths: &Paths) -> Result<Done, CliError> {
     file.write_all(text.as_bytes())
         .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
     Ok(Done {
+        presentation: crate::output::Presentation::Value,
         note: format!("To report a problem, attach this file to an issue at {ISSUES}\n"),
         ..Done::ok(
             DiagnosticsData { path: path.clone() },

@@ -15,6 +15,7 @@ mod ipc;
 mod logfile;
 mod manifest;
 mod notify;
+mod output;
 mod pairing;
 mod report;
 mod request;
@@ -927,22 +928,37 @@ fn finish(
     outcome: Result<Done, CliError>,
     pending: Vec<Question>,
 ) -> ExitCode {
-    let (exit, envelope, text, stderr) = match outcome {
+    let (exit, envelope, text, stderr, presentation, outcome, tone) = match outcome {
         Ok(done) => {
             let exit = done.exit;
             let (text, note) = (done.text.clone(), done.note.clone());
-            (exit, Envelope::of(command, done), text, note)
+            let (presentation, outcome, tone) = (done.presentation, done.outcome, done.tone);
+            (
+                exit,
+                Envelope::of(command, done),
+                text,
+                note,
+                presentation,
+                outcome,
+                tone,
+            )
         }
         Err(mut error) => {
             let partial = error.partial.take().map(|partial| *partial);
             let text = (partial.as_ref()).map_or_else(String::new, |done| done.text.clone());
-            let message = format!("koi: {}\n", printable(&error.message));
+            let presentation = partial
+                .as_ref()
+                .map_or(output::Presentation::Text, |done| done.presentation);
+            let message = format!("{}\n", printable(&error.message));
             let exit = error.code.exit();
             (
                 exit,
                 Envelope::failed(command, error, partial),
                 text,
                 message,
+                presentation,
+                report::Outcome::Error,
+                output::Tone::Attention,
             )
         }
     };
@@ -964,11 +980,17 @@ fn finish(
         );
         return ExitCode::from(exit);
     }
-    print!("{text}");
-    eprint!("{stderr}");
-    if let Some(banner) = banner(&pending) {
-        eprintln!("{banner}");
-    }
+    output::print(
+        command,
+        presentation,
+        tone,
+        &text,
+        match outcome {
+            report::Outcome::Error => output::Note::Error(&stderr),
+            _ => output::Note::Information(&stderr),
+        },
+        banner(&pending).as_deref(),
+    );
     ExitCode::from(exit)
 }
 
@@ -987,7 +1009,14 @@ fn parse_failure(error: clap::Error, args: &[OsString], command: &str, json: boo
     }
     let rendered = escape_echoed(&error, args);
     if !json && !bare_group {
-        eprint!("{rendered}");
+        output::print(
+            command,
+            output::Presentation::Text,
+            output::Tone::Attention,
+            "",
+            output::Note::Usage(&rendered),
+            None,
+        );
         return ExitCode::from(2);
     }
     let outcome = match kind {
@@ -1064,7 +1093,10 @@ fn help_done(help: String, command: &str) -> Done {
         help: help.clone(),
         commands: manifest::commands(command),
     };
-    Done::ok(data, help)
+    Done {
+        presentation: output::Presentation::Literal,
+        ..Done::ok(data, help)
+    }
 }
 
 /// Whether the arguments ask for JSON, read before clap parses them so that a usage error is JSON too.
@@ -1334,6 +1366,11 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
         false => Vec::new(),
     };
     let conditions = report::conditions(&status, &questions);
+    let tone = if conditions.is_empty() {
+        output::Tone::Neutral
+    } else {
+        output::Tone::Attention
+    };
     let exit = if check {
         report::check_exit(&conditions)
     } else {
@@ -1358,6 +1395,7 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
     let mut done = Done::ok(data, text);
     done.decisions = questions.iter().map(Decision::of).collect();
     done.exit = exit;
+    done.tone = tone;
     if status.account.is_none() {
         done = done.then(&["koi", "setup"]);
     }
@@ -1369,10 +1407,10 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
 
 async fn pause(paths: &Paths) -> Result<Done, CliError> {
     match ipc::run(paths, Request::Pause).await? {
-        Response::Paused => Ok(Done::ok(
-            Empty {},
-            "Paused sync. To sync again, run: koi resume\n",
-        )),
+        Response::Paused => Ok(Done {
+            tone: output::Tone::Completed,
+            ..Done::ok(Empty {}, "Paused sync. To sync again, run: koi resume\n")
+        }),
         Response::AlreadyPaused => Ok(Done::ok(Empty {}, "Sync is already paused.\n").unchanged()),
         other => Err(unexpected(other)),
     }
@@ -1380,7 +1418,10 @@ async fn pause(paths: &Paths) -> Result<Done, CliError> {
 
 async fn resume(paths: &Paths) -> Result<Done, CliError> {
     match ipc::run(paths, Request::Resume).await? {
-        Response::Resumed => Ok(Done::ok(Empty {}, "Resumed sync.\n")),
+        Response::Resumed => Ok(Done {
+            tone: output::Tone::Completed,
+            ..Done::ok(Empty {}, "Resumed sync.\n")
+        }),
         Response::NotPaused => Ok(Done::ok(Empty {}, "Sync is not paused.\n").unchanged()),
         other => Err(unexpected(other)),
     }
@@ -2507,7 +2548,7 @@ fn question_notice(question: &Question) -> String {
 /// The line every command but `status`, `resolve` and `daemon` prints on stderr while decisions are pending.
 fn banner(questions: &[Question]) -> Option<String> {
     let n = questions.len() as u64;
-    (n > 0).then(|| format!("koi: {}; run {RESOLVE}", need_you(n)))
+    (n > 0).then(|| format!("{}; run {RESOLVE}", need_you(n)))
 }
 
 /// The decisions pending in the profile, asked of the daemon. Without a daemon there are none to report, because a
@@ -4084,7 +4125,7 @@ mod tests {
         assert_eq!(banner(&[]), None);
         assert_eq!(
             banner(&[held((30, 30, 40), &[Limit::Share], 1)]).as_deref(),
-            Some("koi: 1 needs you; run koi resolve")
+            Some("1 needs you; run koi resolve")
         );
         assert_eq!(
             banner(&[
@@ -4092,7 +4133,7 @@ mod tests {
                 held((2_000, 2_000, 9_000), &[Limit::Deletions], 1)
             ])
             .as_deref(),
-            Some("koi: 2 need you; run koi resolve")
+            Some("2 need you; run koi resolve")
         );
     }
 

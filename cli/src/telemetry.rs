@@ -521,7 +521,10 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 "{}\n",
                 serde_json::to_string_pretty(&body).map_err(|error| error.to_string())?
             );
-            Ok(Done::ok(body, text))
+            Ok(Done {
+                presentation: crate::output::Presentation::Literal,
+                ..Done::ok(body, text)
+            })
         }
         TelemetryAction::Reset => match store.reset().map_err(failed)? {
             Some(id) => {

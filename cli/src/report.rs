@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::CliError;
+use crate::output::{Presentation, Tone};
 
 /// The only schema `--json` speaks.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -43,6 +44,8 @@ pub struct Done {
     /// What it prints on stdout. A command whose result is one value, such as a new ID, prints only that value, so that
     /// `id=$(koi space create Notes)` works.
     pub text: String,
+    pub presentation: Presentation,
+    pub tone: Tone,
     /// What it prints on stderr after the text without `--json`: what the value is and what to do with it.
     pub note: String,
     pub decisions: Vec<Decision>,
@@ -56,6 +59,8 @@ impl Done {
             exit: 0,
             data: serde_json::to_value(data).expect("the CLI's own types serialize"),
             text: text.into(),
+            presentation: Presentation::Text,
+            tone: Tone::Neutral,
             note: String::new(),
             decisions: Vec::new(),
             next: Vec::new(),
@@ -66,6 +71,7 @@ impl Done {
     pub fn value(data: impl Serialize, value: &str, note: impl Into<String>) -> Self {
         Done {
             note: note.into(),
+            presentation: Presentation::Value,
             ..Done::ok(data, format!("{value}\n"))
         }
     }
