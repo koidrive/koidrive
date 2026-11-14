@@ -124,6 +124,7 @@ fn signed_in() -> Saved {
         paused: false,
         next_id: 100,
         history: BTreeMap::new(),
+        share_links: Vec::new(),
     }
 }
 
@@ -372,6 +373,63 @@ fn history(saved: &mut Saved, now: i64) {
     saved.history.insert(DOCUMENTS.to_owned(), documents);
 }
 
+fn share_links(saved: &mut Saved, now: i64) {
+    let folder = |space_id: &str| {
+        (saved.folders.iter())
+            .find(|folder| folder.space_id == space_id)
+            .map(|folder| folder.path.clone())
+    };
+    let link = |id: &str, folder: Option<String>, target: Option<(&str, NodeKind)>| ShareLink {
+        id: id.to_owned(),
+        folder,
+        path: target.map(|(path, _)| path.to_owned()),
+        kind: target.map(|(_, kind)| kind),
+        created_at_ms: now,
+        expires_at_ms: None,
+        has_password: false,
+        state: ShareState::Active,
+    };
+    let report = ("Reports/Annual Report.docx", NodeKind::File);
+    saved.share_links = vec![
+        ShareLink {
+            created_at_ms: now - 2 * 3_600_000,
+            expires_at_ms: Some(now + 7 * DAY_MS - 2 * 3_600_000),
+            has_password: true,
+            ..link("link-report", folder(DOCUMENTS), Some(report))
+        },
+        ShareLink {
+            created_at_ms: now - 3 * DAY_MS,
+            expires_at_ms: Some(now + 27 * DAY_MS),
+            ..link(
+                "link-seoul",
+                folder(PHOTOS),
+                Some(("2026/Seoul", NodeKind::Folder)),
+            )
+        },
+        ShareLink {
+            created_at_ms: now - 5 * DAY_MS,
+            expires_at_ms: Some(now + 2 * DAY_MS),
+            ..link("link-gone", folder(DOCUMENTS), None)
+        },
+        ShareLink {
+            created_at_ms: now - 10 * DAY_MS,
+            expires_at_ms: Some(now - 3 * DAY_MS),
+            state: ShareState::Expired,
+            ..link(
+                "link-minutes",
+                folder(DOCUMENTS),
+                Some(("Reports/Board Minutes.docx", NodeKind::File)),
+            )
+        },
+        ShareLink {
+            created_at_ms: now - 20 * DAY_MS,
+            expires_at_ms: Some(now + 10 * DAY_MS),
+            state: ShareState::Revoked,
+            ..link("link-report-old", folder(DOCUMENTS), Some(report))
+        },
+    ];
+}
+
 pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
     let mut script = Script {
         saved: signed_in(),
@@ -385,7 +443,10 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
             script.saved = Saved::default();
             script.recent.clear();
         }
-        FakeScenario::UpToDate => history(saved, now),
+        FakeScenario::UpToDate => {
+            history(saved, now);
+            share_links(saved, now);
+        }
         FakeScenario::Syncing => {
             script.activity = FakeActivity::Syncing;
             script.progress = Some(SyncProgress {

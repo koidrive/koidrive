@@ -331,6 +331,24 @@ public final class AppModel {
         let path = folder.path(percentEncoded: false)
         return try await run { try $0.restoreRequests(path: path) }
     }
+
+    /// Every share link of the spaces this person owns, newest first, ended ones included. No link carries its URL.
+    public func shareLinks() async throws -> [ShareLink] {
+        try await run { try $0.shareLinks() }
+    }
+
+    /// Makes a link to `item`, a file or folder in a linked folder, that works for `expiry` and, with `password`,
+    /// only after that password is given. The result is the only place the link's URL appears.
+    public func createShareLink(for item: URL, expiry: ShareExpiry, password: String?) async throws -> NewShareLink {
+        let path = item.path(percentEncoded: false)
+        return try await run { try $0.createShareLink(path: path, expiry: expiry, password: password) }
+    }
+
+    /// Ends `link` at once. A link that was revoked already comes back as it is.
+    public func revoke(_ link: ShareLink) async throws -> ShareLink {
+        let linkID = link.id
+        return try await run { try $0.revokeShareLink(linkId: linkID) }
+    }
 }
 
 public enum Headline: Equatable, Sendable {
@@ -421,6 +439,15 @@ extension Trash {
     public func url(of item: DeletedItem) -> URL {
         URL(filePath: folder, directoryHint: .isDirectory)
             .appending(path: item.path, directoryHint: item.kind == .folder ? .isDirectory : .notDirectory)
+    }
+}
+
+extension ShareLink: Identifiable {
+    /// Where the shared item is now, when a linked folder on this Mac syncs it and the item is not gone.
+    public var itemURL: URL? {
+        guard let folder, let path else { return nil }
+        let root = URL(filePath: folder, directoryHint: .isDirectory)
+        return path.isEmpty ? root : root.appending(path: path, directoryHint: kind == .folder ? .isDirectory : .notDirectory)
     }
 }
 

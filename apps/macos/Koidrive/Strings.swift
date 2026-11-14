@@ -322,6 +322,9 @@ extension SessionError {
         case .DeletedItemNotFound: String(localized: "This item is no longer in the trash.")
         case .VersionNotFound: String(localized: "This version no longer exists.")
         case .VersionIsCurrent: String(localized: "This is already the current version.")
+        case .NotOnServer: String(localized: "This item hasn't synced yet. Try again once it's uploaded.")
+        case .PasswordLength: String(localized: "Use a password of 8 to 256 characters.")
+        case .ShareLinkNotFound: String(localized: "This link no longer exists.")
         case .Failed(let reason): reason
         }
     }

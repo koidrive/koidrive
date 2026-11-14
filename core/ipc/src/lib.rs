@@ -222,6 +222,12 @@ pub enum Response {
         message: String,
         #[serde(default)]
         code: Code,
+        #[serde(
+            default,
+            deserialize_with = "Reason::known",
+            skip_serializing_if = "Option::is_none"
+        )]
+        reason: Option<Reason>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         next: Vec<Next>,
     },
@@ -297,6 +303,21 @@ pub enum Reason {
     SeveralDeletions,
     /// None of the deletions at the path is the node asked for.
     NotInTrash,
+    /// The path is on disk but not on the server: it has not synced yet, or the folder's rules leave it out.
+    NotOnServer,
+    /// A share link's password does not have 8 to 256 characters.
+    PasswordLength,
+    /// No share link of the account matches the ID or URL.
+    NoSuchLink,
+}
+
+impl Reason {
+    /// Reads an optional reason, and a reason this version does not know as none, so a newer peer's refusal still
+    /// reads by its code.
+    pub fn known<'de, D: serde::Deserializer<'de>>(reason: D) -> Result<Option<Reason>, D::Error> {
+        Ok(Option::<Value>::deserialize(reason)?
+            .and_then(|reason| Reason::deserialize(reason).ok()))
+    }
 }
 
 /// A command to run next, as the arguments to pass.
@@ -604,6 +625,20 @@ mod tests {
             Response::Error {
                 message: "it failed".into(),
                 code: Code::Failed,
+                reason: None,
+                next: Vec::new(),
+            }
+        );
+        let response: Response = serde_json::from_str(
+            r#"{"response":"error","message":"it failed","code":"usage","reason":"a_reason_from_later"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            response,
+            Response::Error {
+                message: "it failed".into(),
+                code: Code::Usage,
+                reason: None,
                 next: Vec::new(),
             }
         );
@@ -898,6 +933,7 @@ mod tests {
             Response::Error {
                 message: "no unanswered question has the id \"q1\"".into(),
                 code: Code::StaleDecision,
+                reason: None,
                 next: vec![Next::of(&["koi", "resolve", "--json"])],
             },
             r#"{"response":"error","message":"no unanswered question has the id \"q1\"","code":"stale_decision","next":[{"argv":["koi","resolve","--json"]}]}"#,
@@ -906,9 +942,19 @@ mod tests {
             Response::Error {
                 message: "it failed".into(),
                 code: Code::Failed,
+                reason: None,
                 next: Vec::new(),
             },
             r#"{"response":"error","message":"it failed","code":"failed"}"#,
+        );
+        pinned(
+            Response::Error {
+                message: "a link's password has 8 to 256 characters".into(),
+                code: Code::Usage,
+                reason: Some(Reason::PasswordLength),
+                next: Vec::new(),
+            },
+            r#"{"response":"error","message":"a link's password has 8 to 256 characters","code":"usage","reason":"password_length"}"#,
         );
     }
 

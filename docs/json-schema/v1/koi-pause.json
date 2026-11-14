@@ -663,6 +663,21 @@
           "const": "not_in_trash",
           "description": "None of the deletions at the path is the node asked for.",
           "type": "string"
+        },
+        {
+          "const": "not_on_server",
+          "description": "The path is on disk but not on the server: it has not synced yet, or the folder's rules leave it out.",
+          "type": "string"
+        },
+        {
+          "const": "password_length",
+          "description": "A share link's password does not have 8 to 256 characters.",
+          "type": "string"
+        },
+        {
+          "const": "no_such_link",
+          "description": "No share link of the account matches the ID or URL.",
+          "type": "string"
         }
       ]
     },

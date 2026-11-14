@@ -318,6 +318,7 @@ impl Home {
                             None => Response::Error {
                                 message: format!("no space is named {wanted}"),
                                 code: Code::Usage,
+                                reason: None,
                                 next: Vec::new(),
                             },
                         };

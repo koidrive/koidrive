@@ -16,7 +16,7 @@ use super::*;
 use crate::core::SessionListener;
 use crate::types::{
     FolderState, MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question,
-    QuestionKind, RecoveryGroup, RestoreState, RestoreTarget,
+    QuestionKind, RecoveryGroup, RestoreState, RestoreTarget, ShareState,
 };
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -298,6 +298,29 @@ fn eventually<T>(what: &str, mut done: impl FnMut() -> Option<T>) -> T {
     }
 }
 
+fn share_api(link_id: &str, unlock: Option<&str>, cookie: Option<&str>) -> (u16, String, String) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/share/{link_id}", server_url());
+    let request = match unlock {
+        Some(password) => (client.post(format!("{url}/unlock")))
+            .header("Content-Type", "application/json")
+            .body(serde_json::json!({ "password": password }).to_string()),
+        None => client.get(url).header("Accept", "application/json"),
+    };
+    let request = match cookie {
+        Some(cookie) => request.header("Cookie", cookie),
+        None => request,
+    };
+    runtime.block_on(async {
+        let reply = request.send().await.unwrap();
+        let cookie = (reply.headers().get("Set-Cookie"))
+            .and_then(|cookie| cookie.to_str().ok()?.split(';').next().map(str::to_owned))
+            .unwrap_or_default();
+        (reply.status().as_u16(), cookie, reply.text().await.unwrap())
+    })
+}
+
 #[test]
 #[ignore = "needs the Worker and koi; run core/ffi/scripts/integration-test.sh"]
 fn the_app_claims_pairs_links_and_follows_the_daemon() {
@@ -471,8 +494,98 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
         (fs::read(&report).ok()? == b"first draft").then_some(())
     });
 
+    let password = "correct horse";
+    let new = (mac.session())
+        .create_share_link(&path_str(&budget), ShareExpiry::Day, Some(password.into()))
+        .unwrap();
+    assert!(new.url.starts_with(&format!("{server}/s/")), "{}", new.url);
+    let link_id = new.url.rsplit_once("/s/").unwrap().1;
+    assert_eq!(
+        (
+            new.link.folder.as_deref(),
+            new.link.path.as_deref(),
+            new.link.kind,
+            new.link.has_password,
+            new.link.state,
+        ),
+        (
+            Some(linked.path.as_str()),
+            Some("budget.xlsx"),
+            Some(NodeKind::File),
+            true,
+            ShareState::Active,
+        )
+    );
+    let day = new.link.expires_at_ms.unwrap() - new.link.created_at_ms;
+    assert!((86_340_000..=86_400_000).contains(&day), "{day}");
+    let page = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(reqwest::get(&new.url))
+        .unwrap();
+    assert_eq!(page.status().as_u16(), 200);
+    let (status, _, locked) = share_api(link_id, None, None);
+    assert_eq!(status, 401, "{locked}");
+    assert!(locked.contains("passwordRequired"), "{locked}");
+    assert_eq!(share_api(link_id, Some("wrong horse"), None).0, 401);
+    let (status, cookie, _) = share_api(link_id, Some(password), None);
+    assert_eq!(status, 204);
+    let (status, _, info) = share_api(link_id, None, Some(&cookie));
+    assert_eq!(status, 200, "{info}");
+    assert!(info.contains("budget.xlsx"), "{info}");
+    let listed = |id: &str| {
+        (mac.session().share_links().unwrap().into_iter())
+            .find(|link| link.id == id)
+            .unwrap()
+    };
+    assert_eq!(listed(&new.link.id), new.link);
+
+    let revoked = mac.session().revoke_share_link(&new.link.id).unwrap();
+    assert_eq!(
+        revoked,
+        ShareLink {
+            state: ShareState::Revoked,
+            ..new.link.clone()
+        }
+    );
+    assert_eq!(share_api(link_id, None, Some(&cookie)).0, 404);
+    assert_eq!(listed(&new.link.id).state, ShareState::Revoked);
+    assert_eq!(
+        mac.session().revoke_share_link(&new.link.id).unwrap().state,
+        ShareState::Revoked
+    );
+    assert_eq!(
+        mac.session().revoke_share_link("0123456789"),
+        Err(SessionError::ShareLinkNotFound)
+    );
+    let elsewhere = mac.path("Elsewhere/budget.xlsx");
+    let share = |path: &Path, password: Option<&str>| {
+        (mac.session()).create_share_link(
+            &path_str(path),
+            ShareExpiry::Week,
+            password.map(str::to_owned),
+        )
+    };
+    assert_eq!(
+        share(&elsewhere, None),
+        Err(SessionError::PathNotInLinkedFolder {
+            path: path_str(&elsewhere)
+        })
+    );
+    assert_eq!(
+        share(&folder.join("missing.docx"), None),
+        Err(SessionError::NothingAtPath)
+    );
+    assert_eq!(
+        share(&budget, Some("short")),
+        Err(SessionError::PasswordLength)
+    );
+
     mac.session().pause().unwrap();
     mac.until("the pause", |m| m.status == SyncStatus::Paused);
+    let draft = folder.join("draft.docx");
+    fs::write(&draft, b"not uploaded").unwrap();
+    assert_eq!(share(&draft, None), Err(SessionError::NotOnServer));
+    fs::remove_file(&draft).unwrap();
     mac.reopen();
     assert_eq!(mac.session().state().status, SyncStatus::Stopped);
     mac.session().start();

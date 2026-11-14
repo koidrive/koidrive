@@ -369,6 +369,7 @@ mod tests {
             let refusal = Response::Error {
                 message: "the disk is full".into(),
                 code: koidrive_ipc::Code::Failed,
+                reason: None,
                 next: Vec::new(),
             };
             let line = format!("{}\n", serde_json::to_string(&refusal).unwrap());

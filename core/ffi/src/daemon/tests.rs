@@ -13,7 +13,7 @@ use super::*;
 use crate::core::SessionListener;
 use crate::types::{
     DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState, RestoreTarget,
-    SyncProgress,
+    ShareState, SyncProgress,
 };
 
 const KOI: &str = r#"#!/bin/sh
@@ -22,7 +22,7 @@ shift
 printf '%s\n' "$*" >> "$dir/calls"
 printf '%s %s %s\n' "$HOME" "$XDG_STATE_HOME" "${XDG_RUNTIME_DIR-unset}" > "$dir/env"
 case "$1-$2" in
-  join-*|server-claim) cat > "$dir/stdin-$1" ;;
+  join-*|server-claim|share-create) cat > "$dir/stdin-$1" ;;
 esac
 if [ "$1" = status ] && [ -e "$dir/snapshot-next-status" ] && mv "$dir/snapshot-next-status" "$dir/snapshot-status-taken" 2>/dev/null; then
   cat "$dir/status.json" > "$dir/status-snapshot.json"
@@ -1236,4 +1236,241 @@ fn a_restore_reloads_the_state_and_a_history_read_does_not() {
         .restore_deleted(&format!("{folder}/a.txt"), "n1")
         .unwrap();
     assert_eq!(name(), "Papers");
+}
+
+fn share_link(id: &str, path: Value, kind: Value, state: &str) -> Value {
+    json!({
+        "id": id,
+        "space_id": "s1",
+        "space_name": "Documents",
+        "folder": "/Users/ada/Documents",
+        "node_id": "n1",
+        "path": path,
+        "kind": kind,
+        "created_at_ms": 10,
+        "expires_at_ms": 86_400_010,
+        "revoked_at_ms": if state == "revoked" { json!(20) } else { Value::Null },
+        "has_password": false,
+        "state": state,
+    })
+}
+
+#[test]
+fn share_links_read_what_koi_prints_and_the_password_goes_only_to_stdin() {
+    let koi = Koi::new(signed_in(false));
+    let password = "correct horse battery";
+    let mut created = share_link(
+        "0123456789",
+        json!("Reports/Q3.docx"),
+        json!("file"),
+        "active",
+    );
+    created["url"] = json!("https://files.example.com/s/AAAAAAAAAAAAAAAAAAAAAA");
+    created["has_password"] = json!(true);
+    koi.answer("share-create", printed("share create", "ok", created));
+    koi.answer(
+        "share-list",
+        printed(
+            "share list",
+            "ok",
+            json!({ "links": [
+                share_link("0123456789", json!("Reports/Q3.docx"), json!("file"), "active"),
+                share_link("abcdefabcd", json!(""), json!("folder"), "expired"),
+                share_link("1111111111", json!("Slides.lnk"), json!("symlink"), "active"),
+                share_link("2222222222", Value::Null, Value::Null, "revoked"),
+            ] }),
+        ),
+    );
+    koi.answer(
+        "share-revoke",
+        printed(
+            "share revoke",
+            "ok",
+            share_link(
+                "0123456789",
+                json!("Reports/Q3.docx"),
+                json!("file"),
+                "revoked",
+            ),
+        ),
+    );
+
+    let new = koi
+        .core
+        .create_share_link(
+            "/Users/ada/Documents/Reports/Q3.docx",
+            ShareExpiry::Day,
+            Some(password.into()),
+        )
+        .unwrap();
+    let stdin = fs::read_to_string(koi.dir.path().join("stdin-share")).unwrap();
+    assert_eq!(stdin, format!("{password}\n"));
+    koi.core
+        .create_share_link("/Users/ada/Documents", ShareExpiry::Week, None)
+        .unwrap();
+    let stdin = fs::read_to_string(koi.dir.path().join("stdin-share")).unwrap();
+    assert_eq!(stdin, "");
+    (koi.core)
+        .create_share_link("/Users/ada/Documents", ShareExpiry::Month, None)
+        .unwrap();
+    let links = koi.core.share_links().unwrap();
+    let revoked = koi.core.revoke_share_link("0123456789").unwrap();
+
+    let link = |id: &str, path: Option<&str>, kind: Option<NodeKind>, state| ShareLink {
+        id: id.into(),
+        folder: Some("/Users/ada/Documents".into()),
+        path: path.map(str::to_owned),
+        kind,
+        created_at_ms: 10,
+        expires_at_ms: Some(86_400_010),
+        has_password: false,
+        state,
+    };
+    let report = Some("Reports/Q3.docx");
+    assert_eq!(
+        new,
+        NewShareLink {
+            url: "https://files.example.com/s/AAAAAAAAAAAAAAAAAAAAAA".into(),
+            link: ShareLink {
+                has_password: true,
+                ..link(
+                    "0123456789",
+                    report,
+                    Some(NodeKind::File),
+                    ShareState::Active
+                )
+            },
+        }
+    );
+    assert_eq!(
+        links,
+        [
+            link(
+                "0123456789",
+                report,
+                Some(NodeKind::File),
+                ShareState::Active
+            ),
+            link(
+                "abcdefabcd",
+                Some(""),
+                Some(NodeKind::Folder),
+                ShareState::Expired
+            ),
+            link(
+                "1111111111",
+                Some("Slides.lnk"),
+                Some(NodeKind::File),
+                ShareState::Active
+            ),
+            link("2222222222", None, None, ShareState::Revoked),
+        ]
+    );
+    assert_eq!(
+        revoked,
+        link(
+            "0123456789",
+            report,
+            Some(NodeKind::File),
+            ShareState::Revoked
+        )
+    );
+    assert_eq!(
+        koi.calls_of("share"),
+        [
+            "share create --expires 1d --password -- /Users/ada/Documents/Reports/Q3.docx",
+            "share create --expires 7d -- /Users/ada/Documents",
+            "share create --expires 30d -- /Users/ada/Documents",
+            "share list --all",
+            "share revoke -- 0123456789",
+        ]
+    );
+    assert!(
+        !(koi.calls().iter()).any(|call| call.contains(password)),
+        "{:?}",
+        koi.calls()
+    );
+}
+
+#[test]
+fn revoking_a_link_that_was_revoked_already_returns_it() {
+    let koi = Koi::new(signed_in(false));
+    let link = share_link(
+        "0123456789",
+        json!("Reports/Q3.docx"),
+        json!("file"),
+        "revoked",
+    );
+    koi.answer("share-revoke", printed("share revoke", "unchanged", link));
+    assert_eq!(
+        koi.core.revoke_share_link("0123456789").unwrap().state,
+        ShareState::Revoked
+    );
+}
+
+#[test]
+fn each_reason_koi_gives_for_a_share_refusal_names_its_error() {
+    let koi = Koi::new(signed_in(false));
+    let path = "/Users/ada/Elsewhere/report.docx";
+    let cases = [
+        (
+            "not_in_linked_folder",
+            SessionError::PathNotInLinkedFolder { path: path.into() },
+        ),
+        ("not_found", SessionError::NothingAtPath),
+        ("not_on_server", SessionError::NotOnServer),
+        ("password_length", SessionError::PasswordLength),
+    ];
+    for (reason, expected) in cases {
+        let envelope = refused_because("share create", reason);
+        published("share create", &envelope);
+        koi.answer("share-create", envelope);
+        assert_eq!(
+            koi.core
+                .create_share_link(path, ShareExpiry::Week, Some("a password".into())),
+            Err(expected),
+            "{reason}"
+        );
+    }
+
+    let envelope = refused_because("share revoke", "no_such_link");
+    published("share revoke", &envelope);
+    koi.answer("share-revoke", envelope);
+    assert_eq!(
+        koi.core.revoke_share_link("0123456789"),
+        Err(SessionError::ShareLinkNotFound)
+    );
+    koi.answer(
+        "share-list",
+        refused("unavailable", "the server is busy", &[]),
+    );
+    assert_eq!(
+        koi.core.share_links(),
+        Err(SessionError::ServerUnreachable {
+            reason: "the server is busy".into(),
+        })
+    );
+}
+
+#[test]
+fn a_relative_share_path_or_a_password_with_a_line_break_is_refused_without_running_koi() {
+    let koi = Koi::new(signed_in(false));
+    let relative = "Documents/report.docx";
+    assert_eq!(
+        koi.core.create_share_link(relative, ShareExpiry::Day, None),
+        Err(SessionError::PathNotInLinkedFolder {
+            path: relative.into(),
+        })
+    );
+    for password in ["first line\nsecond line", "a password\r"] {
+        assert!(matches!(
+            koi.core.create_share_link(
+                "/Users/ada/Documents/report.docx",
+                ShareExpiry::Day,
+                Some(password.into())
+            ),
+            Err(SessionError::Failed { .. })
+        ));
+    }
+    assert!(koi.calls_of("share").is_empty(), "{:?}", koi.calls());
 }

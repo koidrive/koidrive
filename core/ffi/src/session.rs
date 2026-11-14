@@ -7,8 +7,9 @@ use crate::daemon::DaemonCore;
 use crate::fake::FakeCore;
 use crate::profile::Profile;
 use crate::types::{
-    Account, Answer, Device, FileVersions, LinkedFolder, PairingCode, RestoreAsked, RestoreRequest,
-    ServerInfo, SessionError, SessionState, Space, SpaceUsage, TelemetrySetting, Trash,
+    Account, Answer, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode, RestoreAsked,
+    RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink, Space,
+    SpaceUsage, TelemetrySetting, Trash,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -169,6 +170,23 @@ impl SyncSession {
 
     pub fn restore_requests(&self, path: String) -> Result<Vec<RestoreRequest>, SessionError> {
         self.core.restore_requests(&path)
+    }
+
+    pub fn share_links(&self) -> Result<Vec<ShareLink>, SessionError> {
+        self.core.share_links()
+    }
+
+    pub fn create_share_link(
+        &self,
+        path: String,
+        expiry: ShareExpiry,
+        password: Option<String>,
+    ) -> Result<NewShareLink, SessionError> {
+        self.core.create_share_link(&path, expiry, password)
+    }
+
+    pub fn revoke_share_link(&self, link_id: String) -> Result<ShareLink, SessionError> {
+        self.core.revoke_share_link(&link_id)
     }
 
     pub fn answer(&self, question_id: String, answer: Answer) -> Result<(), SessionError> {
