@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_driver::{
-    Driver, DriverError, FolderState, FolderStatus, Paths, RestoreRejection, RestoreRequest,
-    RestoreState, RestoreStatus, RestoreWait,
+    Driver, FolderState, FolderStatus, Paths, RestoreRejection, RestoreRequest, RestoreState,
+    RestoreStatus, RestoreWait,
 };
 use koidrive_engine::names::name_key;
 use koidrive_ipc::{Key, Reason, Request, RequestId, Response};
@@ -452,13 +452,21 @@ fn trashed_at<'a>(
 /// The folders the profile links, from the daemon, or from the profile's stores read without writing anything when no
 /// daemon runs.
 async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
-    match koidrive_ipc::ask(paths, &Request::Status).await? {
-        Some(Response::Status { status }) => Ok(status.folders),
-        Some(other) => Err(unexpected(other)),
-        None => Driver::linked_folders(paths).map_err(|error| match error {
-            DriverError::Busy(_) => CliError::from(ipc::busy(paths)),
-            other => CliError::from(other),
-        }),
+    let reached = match ipc::ask(paths, &Request::Status).await? {
+        Some(response) => ipc::Reached::Daemon(Box::new(response)),
+        None => {
+            ipc::reach(paths, &Request::Status, ipc::STARTING, || {
+                Driver::linked_folders(paths)
+            })
+            .await?
+        }
+    };
+    match reached {
+        ipc::Reached::Daemon(response) => match *response {
+            Response::Status { status } => Ok(status.folders),
+            other => Err(unexpected(other)),
+        },
+        ipc::Reached::Profile(folders) => Ok(folders),
     }
 }
 
@@ -972,6 +980,20 @@ mod tests {
     use super::*;
     use crate::report::RequestedData;
     use crate::setup::fake::{Fake, proto};
+
+    #[tokio::test]
+    async fn history_waits_for_a_daemon_that_holds_the_profile_before_its_socket_answers() {
+        let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let socket = paths.socket();
+        let daemon = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            ipc::serve(koidrive_ipc::bind(&socket).unwrap(), driver).await;
+        });
+        let folders = linked_folders(&paths).await.unwrap();
+        daemon.abort();
+        assert_eq!(folders.len(), 1);
+    }
 
     const SPACE: &str = "0194f8a2-0000-7000-8000-00000000000a";
 

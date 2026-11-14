@@ -295,8 +295,8 @@ fn reconcile_unavailability_fails_with_its_service_report_but_config_off_succeed
     let (output, envelope) = profile.json(&["_reconcile", "--json"]);
     assert_eq!(output.status.code(), Some(1), "{envelope:#}");
     assert_eq!(envelope["outcome"], "error");
-    assert_eq!(envelope["data"]["service"]["state"], "unavailable");
-    assert!(envelope["data"]["service"]["problem"].is_string());
+    let problem = envelope["data"]["service"]["problem"].as_str().unwrap();
+    assert!(problem.contains("config.toml"), "{problem}");
     assert_eq!(envelope["error"]["code"], "failed");
 
     std::fs::write(

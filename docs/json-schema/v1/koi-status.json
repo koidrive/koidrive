@@ -1094,6 +1094,11 @@
           "type": "string"
         },
         {
+          "const": "starting",
+          "description": "The service manager is about to start the daemon again, such as launchd waiting out its restart throttle.",
+          "type": "string"
+        },
+        {
           "const": "stopped",
           "description": "Installed, but not running: it failed.",
           "type": "string"

@@ -1026,6 +1026,10 @@ fn updated(
         text.push_str(&app.text());
     }
     let problem = update_problem(&report, app.as_ref());
+    let code = match report.retryable() {
+        true => Code::Unavailable,
+        false => Code::Failed,
+    };
     let done = Done::ok(
         UpdatedData {
             from: from.to_string(),
@@ -1045,7 +1049,7 @@ fn updated(
     if let Some(reason) = problem {
         return Err(CliError {
             partial: Some(Box::new(done)),
-            ..CliError::new(Code::Failed, reason)
+            ..CliError::new(code, reason)
         });
     }
     Ok(done)
@@ -1055,7 +1059,7 @@ fn update_problem(report: &service::Report, app: Option<&crate::app::Report>) ->
     if report.problem.is_some()
         || matches!(
             report.state,
-            service::State::Stopped | service::State::Unavailable
+            service::State::Stopped | service::State::Starting | service::State::Unavailable
         )
     {
         return Some(report.failure_message());
@@ -1477,6 +1481,25 @@ mod tests {
         let no_home = Installs::under(None, None);
         assert_eq!(no_home.apps.len(), 1);
         assert!(no_home.apps[0].is_absolute());
+    }
+
+    #[test]
+    fn update_does_not_succeed_while_the_service_is_still_starting() {
+        let report: service::Report = serde_json::from_value(serde_json::json!({
+            "manager": "launchd", "name": "fixture", "state": "starting"
+        }))
+        .unwrap();
+        let result = updated(
+            &Version::new(1, 0, 0),
+            Version::new(1, 0, 1),
+            Via::Installer,
+            report,
+            None,
+            true,
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, Code::Unavailable);
+        assert!(error.partial.is_some());
     }
 
     #[test]
