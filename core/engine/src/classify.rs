@@ -1138,7 +1138,7 @@ impl Trees {
         }
         let released = |id: &NodeId| reclaimed.contains(id) && !left.contains(id);
         let kept_with_released: Vec<NodeId> = (self.discarded.iter())
-            .filter(|(id, _)| self.r.get(*id).is_some())
+            .filter(|(id, _)| self.r.get(id).is_some())
             .filter(|(_, shape)| {
                 let mut parent = Some(&shape.parent);
                 for _ in 0..=self.discarded.len() {
