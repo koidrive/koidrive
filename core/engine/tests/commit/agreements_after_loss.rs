@@ -836,3 +836,50 @@ fn a_resend_another_device_trashes_and_restores_before_its_acknowledgement_takes
     assert_eq!(trees.local().live("f"), Some(&file(ROOT, "c", 1)));
     assert!(trees.state().lost_positions.is_empty());
 }
+
+#[test]
+fn a_file_edited_here_before_a_loss_is_created_where_another_device_renamed_it() {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
+    trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 2));
+    trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
+    let synced = trees.taken_from_others(|_| false);
+    let untaken = trees.untaken_changes(|_| false);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 2)]);
+    trees.set_remote_made_here("f".into(), remote(file(ROOT, "b", 2)));
+    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied)]);
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+    assert!(trees.state().lost_positions.is_empty());
+}
+
+#[test]
+fn a_file_whose_lost_edit_another_device_renamed_is_created_at_that_name() {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 2))]);
+    let renamed = RemoteNode { content_rev: 5, edit_rev: 5, ..remote_at(file(ROOT, "b", 2), 6) };
+    trees.set_remote("f".into(), renamed);
+    let synced = trees.taken_from_others(|seq| seq == 5);
+    let untaken = trees.untaken_changes(|seq| seq == 5);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), vec![("f".into(), 5)], synced, Vec::new(), untaken, records, 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(created_at(&commit), [("b".to_owned(), 2)]);
+    trees.set_remote_made_here("f".into(), remote(file(ROOT, "b", 2)));
+    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied)]);
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+    assert!(trees.state().lost_positions.is_empty());
+    assert!(trees.state().lost_creates.is_empty());
+}
