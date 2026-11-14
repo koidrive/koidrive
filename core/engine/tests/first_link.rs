@@ -6,7 +6,7 @@
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Failure, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
-use koidrive_engine::first_link::adopt;
+use koidrive_engine::first_link::{History, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
@@ -89,6 +89,33 @@ fn local(trees: &Trees) -> Vec<(String, String, String)> {
             )
         })
         .collect()
+}
+
+#[test]
+fn an_entry_a_store_lost_track_of_is_adopted_by_a_place_the_log_shows_its_node_left() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "b", 1))],
+    );
+    let history = History::from([("r-a".into(), vec![file(ROOT, "a", 1)])]);
+    assert_eq!(adopt(&mut trees, Some(&history)), Vec::<String>::new());
+    assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+    assert_eq!(trees.synced().live("r-a"), Some(&file(ROOT, "a", 1)));
+}
+
+#[test]
+fn a_place_the_log_shows_two_nodes_left_with_the_same_bytes_adopts_neither() {
+    for remote in [
+        &[("r-b", file(ROOT, "c", 2))][..],
+        &[("r-a", file(ROOT, "b", 1)), ("r-b", file(ROOT, "c", 2))],
+    ] {
+        let mut trees = trees(&[("l-a", file(ROOT, "a", 1))], remote);
+        let history = History::from([
+            ("r-a".into(), vec![file(ROOT, "a", 1)]),
+            ("r-b".into(), vec![file(ROOT, "a", 1)]),
+        ]);
+        assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"], "{remote:?}");
+    }
 }
 
 #[test]
