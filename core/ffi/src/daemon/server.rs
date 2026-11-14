@@ -15,8 +15,8 @@ use koidrive_store::{Store, StoredQuestion};
 use super::*;
 use crate::core::SessionListener;
 use crate::types::{
-    FolderState, MassDeleteLimit, Notice, NoticeKind, Problem, ProblemKind, Question, QuestionKind,
-    RecoveryGroup,
+    FolderState, MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question,
+    QuestionKind, RecoveryGroup, RestoreState, RestoreTarget,
 };
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -287,6 +287,17 @@ fn path_str(path: &Path) -> String {
     path.to_str().unwrap().to_owned()
 }
 
+fn eventually<T>(what: &str, mut done: impl FnMut() -> Option<T>) -> T {
+    let started = Instant::now();
+    loop {
+        if let Some(value) = done() {
+            return value;
+        }
+        assert!(started.elapsed() < WAIT, "{what} did not happen");
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
 #[test]
 #[ignore = "needs the Worker and koi; run core/ffi/scripts/integration-test.sh"]
 fn the_app_claims_pairs_links_and_follows_the_daemon() {
@@ -347,6 +358,118 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
             && m.folders[0].state == FolderState::UpToDate
     });
     assert!(synced.problems.is_empty());
+
+    let budget = folder.join("budget.xlsx");
+    fs::write(&budget, b"q3 budget").unwrap();
+    eventually("the budget's upload", || {
+        mac.session().versions(&path_str(&budget)).ok()
+    });
+    fs::remove_file(&budget).unwrap();
+    let trash = eventually("the budget in the trash", || {
+        let trash = mac.session().trash(&path_str(&folder)).unwrap();
+        trash
+            .items
+            .iter()
+            .any(|item| item.path == "budget.xlsx")
+            .then_some(trash)
+    });
+    assert_eq!(trash.folder, linked.path);
+    let deleted = &trash.items[0];
+    assert_eq!(
+        (deleted.kind, deleted.files, deleted.bytes),
+        (NodeKind::File, 1, 9)
+    );
+    assert!(deleted.modified_at_ms.is_some());
+    assert!(deleted.deleted_at_ms >= deleted.modified_at_ms);
+    assert_eq!(
+        (
+            deleted.deleted_by_device_id.as_deref(),
+            deleted.deleted_by_device_name.as_deref()
+        ),
+        (
+            Some(owner.device_id.as_str()),
+            Some(owner.device_name.as_str())
+        )
+    );
+    assert_eq!(
+        mac.session()
+            .restore_deleted(&path_str(&budget), "not-a-node"),
+        Err(SessionError::DeletedItemNotFound)
+    );
+    let asked = mac
+        .session()
+        .restore_deleted(&path_str(&budget), &deleted.node_id)
+        .unwrap();
+    assert_eq!(asked.path, "budget.xlsx");
+    let restored = eventually("the budget's restore", || {
+        let requests = mac.session().restore_requests(&path_str(&folder)).unwrap();
+        let request = requests
+            .into_iter()
+            .find(|request| request.id == asked.request_id)?;
+        (request.state == RestoreState::Restored).then_some(request)
+    });
+    assert_eq!(restored.path.as_deref(), Some("budget.xlsx"));
+    assert_eq!(
+        restored.target,
+        RestoreTarget::Deleted {
+            node_id: deleted.node_id.clone()
+        }
+    );
+    eventually("the budget back on disk", || fs::read(&budget).ok());
+    assert_eq!(fs::read(&budget).unwrap(), b"q3 budget");
+
+    let report = folder.join("report.txt");
+    let saved = |count: usize| {
+        eventually("a version of the report", || {
+            let versions = mac.session().versions(&path_str(&report)).ok()?;
+            (versions.versions.len() == count).then_some(versions)
+        })
+    };
+    fs::write(&report, b"first draft").unwrap();
+    saved(1);
+    fs::write(&report, b"second draft, longer").unwrap();
+    let versions = saved(2);
+    let listed: Vec<(u64, bool, Option<&str>)> = (versions.versions.iter())
+        .map(|version| {
+            (
+                version.size,
+                version.current,
+                version.device_name.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (20, true, Some("Ada's Mac")),
+            (11, false, Some("Ada's Mac"))
+        ]
+    );
+    assert_eq!(
+        mac.session()
+            .restore_version(&path_str(&report), &versions.versions[0].version_id),
+        Err(SessionError::VersionIsCurrent)
+    );
+    assert_eq!(
+        mac.session().versions(&path_str(&folder)),
+        Err(SessionError::PathIsLinkedFolder)
+    );
+    mac.session()
+        .restore_version(&path_str(&report), &versions.versions[1].version_id)
+        .unwrap();
+    let first_draft = RestoreTarget::Version {
+        node_id: versions.node_id.clone(),
+        version_id: versions.versions[1].version_id.clone(),
+        saved_at_ms: Some(versions.versions[1].saved_at_ms),
+    };
+    let asked = mac.session().restore_requests(&path_str(&folder)).unwrap();
+    assert!(
+        asked.iter().any(|request| request.target == first_draft),
+        "{asked:?}"
+    );
+    eventually("the first draft back on disk", || {
+        (fs::read(&report).ok()? == b"first draft").then_some(())
+    });
 
     mac.session().pause().unwrap();
     mac.until("the pause", |m| m.status == SyncStatus::Paused);

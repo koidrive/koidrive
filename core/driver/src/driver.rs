@@ -16,7 +16,7 @@ use koidrive_fs::{Marker, probe_no_replace, read_marker, write_marker};
 use koidrive_ignore::LocalRulesError;
 use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
-use koidrive_store::{EngineState, GivenAnswer, Link, Store, StoredQuestion};
+use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, watch};
 
@@ -1510,13 +1510,28 @@ impl Driver {
     ///
     /// A malformed ID is refused here, because the server refuses a whole commit for one. Whether the node or the
     /// version still exists is the server's answer.
-    pub fn restore(&self, space_id: &str, request: RestoreRequest) -> Result<String, DriverError> {
+    ///
+    /// `path` is where the person saw the item, relative to the folder's root. [`Driver::restores`] shows it while
+    /// the folder's copy of the server's tree cannot place the node, as for one deleted before the folder first synced.
+    pub fn restore(
+        &self,
+        space_id: &str,
+        request: RestoreRequest,
+        path: Option<&str>,
+    ) -> Result<String, DriverError> {
+        let asked = AskedRestore {
+            path: path.map(str::to_owned),
+            version_saved_at_ms: request.saved_at_ms(),
+        };
         let intent = request
             .intent()
             .map_err(|malformed| DriverError::InvalidRestore(malformed.0))?;
         let id = restore::new_id(now_ms() as u64);
         self.read_store(space_id, |store| {
-            store.transaction(|tx| tx.request_restore(&id, &intent))
+            store.transaction(|tx| {
+                tx.request_restore(&id, &intent)?;
+                tx.note_asked_restore(&id, &asked)
+            })
         })?
         .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         tracing::info!(space_id, restore_id = %id, "recorded a restore request");
@@ -1534,8 +1549,10 @@ impl Driver {
     /// that wait, in request order. A waiting restore whose node has a problem says so, because it stays pending
     /// until the problem is cleared. The store keeps the last 1,000 that ended and drops older ones.
     pub fn restores(&self, space_id: &str) -> Result<Vec<RestoreStatus>, DriverError> {
-        self.read_store(space_id, |store| store.transaction(restore::list))?
-            .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))
+        self.read_store(space_id, |store| {
+            store.transaction(|tx| restore::list(tx, space_id))
+        })?
+        .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))
     }
 
     /// Starts syncing every linked folder, each in a task on the current Tokio runtime, unless sync is paused: then
@@ -6912,12 +6929,13 @@ mod tests {
         let version = RestoreRequest::Version {
             node_id: server_id(3),
             version_id: server_id(4),
+            saved_at_ms: Some(1_794_000_000_000),
         };
         assert_eq!(driver.restores(SPACE).unwrap(), []);
-        let first = driver.restore(SPACE, placed.clone()).unwrap();
+        let first = driver.restore(SPACE, placed.clone(), None).unwrap();
         assert!(watch.has_changed().unwrap());
         std::thread::sleep(Duration::from_millis(2));
-        let second = driver.restore(SPACE, version.clone()).unwrap();
+        let second = driver.restore(SPACE, version.clone(), None).unwrap();
         assert!(first < second, "the IDs sort in request order");
         drop(driver);
 
@@ -6925,6 +6943,8 @@ mod tests {
         let driver = Driver::open(paths).unwrap();
         let pending = |id: &str, request: &RestoreRequest| RestoreStatus {
             id: id.to_owned(),
+            path: None,
+            asked_at_ms: koidrive_engine::ids::unix_ms(id).unwrap() as i64,
             request: request.clone(),
             state: RestoreState::Pending { waits_for: None },
         };
@@ -6940,7 +6960,7 @@ mod tests {
         let driver = Driver::open(paths).unwrap();
         let other_space = "0190f0a0-0000-7000-8000-000000000002";
         assert!(matches!(
-            driver.restore(other_space, from_trash(1)),
+            driver.restore(other_space, from_trash(1), None),
             Err(DriverError::SpaceNotLinked(space)) if space == other_space
         ));
         assert!(matches!(
@@ -6950,6 +6970,7 @@ mod tests {
         let version = |node_id: &str, version_id: &str| RestoreRequest::Version {
             node_id: node_id.into(),
             version_id: version_id.into(),
+            saved_at_ms: None,
         };
         let placed = |parent_id: &str| RestoreRequest::FromTrash {
             node_id: server_id(1),
@@ -6967,7 +6988,7 @@ mod tests {
         ];
         for (request, field) in cases {
             assert!(matches!(
-                driver.restore(SPACE, request),
+                driver.restore(SPACE, request, None),
                 Err(DriverError::InvalidRestore(found)) if found == field
             ));
         }
@@ -6984,7 +7005,7 @@ mod tests {
 
         let (_dir, paths, _root) = profile(&[]);
         let driver = Driver::open(paths.clone()).unwrap();
-        let in_inbox = driver.restore(SPACE, from_trash(9)).unwrap();
+        let in_inbox = driver.restore(SPACE, from_trash(9), None).unwrap();
         let intent = |node: u128| RestoreIntent::from_trash(server_id(node), None, None).unwrap();
         let outcomes = [
             (Outcome::Restored, RestoreState::Restored),
@@ -7053,6 +7074,88 @@ mod tests {
         }
     }
 
+    #[test]
+    fn restores_name_the_path_of_their_node_and_when_they_were_asked_for() {
+        use koidrive_proto::v1::{Content, NodeKind, NodeState, NodeStatus, VersionInfo};
+
+        let (_dir, paths, _root) = profile(&[]);
+        let node =
+            |id: u128, parent: &str, name: &str, kind: NodeKind, status: NodeStatus| NodeState {
+                node_id: server_id(id),
+                parent_id: parent.to_owned(),
+                name: name.to_owned(),
+                kind: kind as i32,
+                status: status as i32,
+                trash_group: match status {
+                    NodeStatus::Trashed => "group".into(),
+                    _ => String::new(),
+                },
+                current: Some(VersionInfo {
+                    version_id: server_id(100 + id),
+                    content: Some(Content::default()),
+                    ..VersionInfo::default()
+                }),
+                ..NodeState::default()
+            };
+        let docs = server_id(1);
+        let nodes = [
+            node(1, SPACE, "Docs", NodeKind::Dir, NodeStatus::Live),
+            node(2, &docs, "report.docx", NodeKind::File, NodeStatus::Live),
+            node(3, &docs, "old.pptx", NodeKind::File, NodeStatus::Trashed),
+            node(
+                4,
+                &server_id(5),
+                "orphan.txt",
+                NodeKind::File,
+                NodeStatus::Trashed,
+            ),
+        ];
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| nodes.iter().try_for_each(|node| tx.put_remote_node(node)))
+            .unwrap();
+        let driver = Driver::open(paths).unwrap();
+        let before = now_ms();
+        let version = RestoreRequest::Version {
+            node_id: server_id(2),
+            version_id: server_id(200),
+            saved_at_ms: None,
+        };
+        let asked: Vec<String> = [
+            (version, Some("Earlier/report.docx")),
+            (from_trash(3), None),
+            (from_trash(4), Some("Before the first sync/orphan.txt")),
+            (from_trash(9), None),
+        ]
+        .into_iter()
+        .map(|(request, path)| driver.restore(SPACE, request, path).unwrap())
+        .collect();
+        let after = now_ms();
+
+        let listed = driver.restores(SPACE).unwrap();
+        let found: Vec<Option<&str>> = (asked.iter())
+            .map(|id| {
+                let restore = listed.iter().find(|restore| &restore.id == id).unwrap();
+                restore.path.as_deref()
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                Some("Docs/report.docx"),
+                Some("Docs/old.pptx"),
+                Some("Before the first sync/orphan.txt"),
+                None
+            ]
+        );
+        for restore in &listed {
+            assert!(
+                (before..=after).contains(&restore.asked_at_ms),
+                "{restore:?} was asked for between {before} and {after}"
+            );
+        }
+    }
+
     /// A running folder takes a request when it is recorded, without a restart. Nothing listens at the server's
     /// address, so the folder stays offline, and the request is then queued in the engine and no longer in the
     /// inbox.
@@ -7069,7 +7172,7 @@ mod tests {
         })
         .await;
 
-        let id = driver.restore(SPACE, from_trash(1)).unwrap();
+        let id = driver.restore(SPACE, from_trash(1), None).unwrap();
         let path = paths.store(SPACE).unwrap();
         eventually("the engine holds the request", || {
             let (inbox, (queued, _)) = Store::open(&path)
@@ -7107,7 +7210,7 @@ mod tests {
             .transaction(|tx| tx.set_engine_state(&state))
             .unwrap();
         // A request the engine has not taken yet waits for the same reason.
-        let asked = driver.restore(SPACE, from_trash(1)).unwrap();
+        let asked = driver.restore(SPACE, from_trash(1), None).unwrap();
 
         let listed = driver.restores(SPACE).unwrap();
         let states: Vec<_> = listed.iter().map(|r| (r.id.as_str(), &r.state)).collect();

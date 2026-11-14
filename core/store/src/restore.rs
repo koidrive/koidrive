@@ -18,6 +18,15 @@ use rusqlite::params;
 
 use crate::{Error, Result, Tx};
 
+/// What a person saw when they asked for a restore: the item's path in the space then, and for a
+/// version restore when that version was saved. A restore of a node the folder's copy of the
+/// server's tree never held still shows where it was.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AskedRestore {
+    pub path: Option<String>,
+    pub version_saved_at_ms: Option<i64>,
+}
+
 /// The four columns both tables keep an intent in.
 const INTENT: &str = "node_id, version_id, target_parent_id, name";
 
@@ -39,6 +48,37 @@ impl Tx<'_> {
             ],
         )?;
         Ok(())
+    }
+
+    /// Records what the person saw when they asked for the restore `id`, for
+    /// [`Tx::asked_restores`], and forgets what it recorded for restores the store no longer holds.
+    pub fn note_asked_restore(&self, id: &str, asked: &AskedRestore) -> Result<()> {
+        self.0.execute(
+            "DELETE FROM restore_asked WHERE restore_id NOT IN
+             (SELECT restore_id FROM restore_requests UNION SELECT restore_id FROM restore_intents)",
+            [],
+        )?;
+        self.0.execute(
+            "INSERT OR REPLACE INTO restore_asked (restore_id, path, version_saved_at_ms)
+             VALUES (?1, ?2, ?3)",
+            params![id, asked.path, asked.version_saved_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// What [`Tx::note_asked_restore`] recorded, by restore ID.
+    pub fn asked_restores(&self) -> Result<BTreeMap<RestoreId, AskedRestore>> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT restore_id, path, version_saved_at_ms FROM restore_asked")?;
+        let rows = stmt.query_map([], |row| {
+            let asked = AskedRestore {
+                path: row.get(1)?,
+                version_saved_at_ms: row.get(2)?,
+            };
+            Ok((row.get(0)?, asked))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// The requests the engine has not taken yet, in request order.

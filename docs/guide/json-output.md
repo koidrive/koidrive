@@ -18,7 +18,7 @@ Without `--json`, a command whose result is one value prints only that value on 
 | `command` | The subcommand, such as `folder link`. Empty for `koi` alone |
 | `outcome` | `ok`, `accepted`, `unchanged` or `error` |
 | `data` | The command's result. Its shape depends on the command. `null` when there is none |
-| `error` | `null` on success. Otherwise `code`, `message` and `retryable` |
+| `error` | `null` on success. Otherwise `code`, `message`, `retryable` and, for some refusals, `reason` |
 | `decisions` | The sync decisions waiting on this device, described below |
 | `next_commands` | Commands to run next, each as an `argv` array. Present only when there is a real next step |
 
@@ -96,7 +96,7 @@ The records are in `requests/` in the profile's state directory (`~/.local/state
 | 8 | `koi join` or `koi server claim` got a claim or pairing code that is wrong or has expired | Ask the person for the code again |
 | 130 | Ctrl-C stopped the command, or an earlier run with the same request ID has no recorded outcome | Read the state before you run a change again |
 
-The `error.code` values match these: `failed`, `usage`, `decision_required`, `auth_required`, `halted`, `unavailable`, `stale_decision`, `wrong_code` and `interrupted`.
+The `error.code` values match these: `failed`, `usage`, `decision_required`, `auth_required`, `halted`, `unavailable`, `stale_decision`, `wrong_code` and `interrupted`. A `koi history` refusal also names its `error.reason`, such as `not_in_linked_folder` or `no_such_version`; the schema lists every reason.
 
 ## status --check reports the most urgent condition
 

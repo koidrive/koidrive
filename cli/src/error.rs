@@ -6,7 +6,7 @@
 
 use koidrive_cloudflare::{ApiError as CloudflareError, OauthError};
 use koidrive_driver::{ConfigError, DriverError, PathsError, SET_UP_AGAIN};
-use koidrive_ipc::{Code, Next};
+use koidrive_ipc::{Code, Next, Reason};
 use koidrive_net::{ApiError, Resend, ServerError};
 use koidrive_proto::v1::{Error as ProtoError, error::Code as ServerCode};
 
@@ -18,6 +18,7 @@ const WRONG_CODE: [&str; 2] = ["wrong claim code", "invalid or expired pairing c
 #[derive(Debug)]
 pub struct CliError {
     pub code: Code,
+    pub reason: Option<Reason>,
     pub message: String,
     pub next: Vec<Next>,
     /// What the command read before it failed, such as the spaces that answered when another one refused.
@@ -28,6 +29,7 @@ impl CliError {
     pub fn new(code: Code, message: impl Into<String>) -> Self {
         CliError {
             code,
+            reason: None,
             message: message.into(),
             next: Vec::new(),
             partial: None,
@@ -50,6 +52,14 @@ impl CliError {
     pub fn context(mut self, context: impl std::fmt::Display) -> Self {
         self.message = format!("{context}: {}", self.message);
         self
+    }
+
+    /// The same error, saying what it is about with `reason`.
+    pub fn because(self, reason: Reason) -> Self {
+        CliError {
+            reason: Some(reason),
+            ..self
+        }
     }
 
     /// The same error with `argv` as a next command.

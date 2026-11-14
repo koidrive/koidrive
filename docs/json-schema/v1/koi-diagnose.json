@@ -402,6 +402,16 @@
         "message": {
           "type": "string"
         },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "retryable": {
           "type": "boolean"
         }
@@ -610,6 +620,56 @@
         {
           "const": "lines",
           "description": "One JSON object per line while it runs.",
+          "type": "string"
+        }
+      ]
+    },
+    "Reason": {
+      "description": "What a refusal is about, beside its [`Code`], for a surface that says it in its own words. A refusal without one\nis only as specific as its code.",
+      "oneOf": [
+        {
+          "const": "not_in_linked_folder",
+          "description": "The path is not in a linked folder.",
+          "type": "string"
+        },
+        {
+          "const": "linked_folder_itself",
+          "description": "The path is a linked folder, and the command needs a file or folder in one.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The server has nothing at the path: no live file, or no deletion in the trash.",
+          "type": "string"
+        },
+        {
+          "const": "not_deleted",
+          "description": "The path is live, so there is nothing to bring back from the trash.",
+          "type": "string"
+        },
+        {
+          "const": "is_folder",
+          "description": "The path is a folder, and the command needs a file.",
+          "type": "string"
+        },
+        {
+          "const": "no_such_version",
+          "description": "The file has no such version.",
+          "type": "string"
+        },
+        {
+          "const": "already_current",
+          "description": "The version is the file's current one already.",
+          "type": "string"
+        },
+        {
+          "const": "several_deletions",
+          "description": "Several deletions had the path, and none was picked.",
+          "type": "string"
+        },
+        {
+          "const": "not_in_trash",
+          "description": "None of the deletions at the path is the node asked for.",
           "type": "string"
         }
       ]

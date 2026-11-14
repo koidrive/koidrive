@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -15,13 +15,14 @@ use tokio::sync::{Notify, watch};
 use crate::core::{Core, Events, pairing_code};
 use crate::helper::{
     AccountData, DevicesData, Done, FolderData, Helper, InvitationData, Outcome, Refusal,
-    SpaceData, SpacesData, UsagesData,
+    RequestsData, RestoreAskedData, SpaceData, SpacesData, TrashData, UsagesData, VersionsData,
 };
 use crate::profile::Profile;
 use crate::state::{self, Halted};
 use crate::types::{
-    Account, Answer, Device, LinkedFolder, PairingCode, ServerInfo, SessionError, SessionEvent,
-    SessionState, Space, SpaceUsage, SyncStatus, TelemetrySetting,
+    Account, Answer, Device, FileVersions, LinkedFolder, PairingCode, RestoreAsked, RestoreRequest,
+    ServerInfo, SessionError, SessionEvent, SessionState, Space, SpaceUsage, SyncStatus,
+    TelemetrySetting, Trash,
 };
 
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -597,6 +598,56 @@ impl Core for DaemonCore {
         }
     }
 
+    fn trash(&self, path: &str) -> Result<Trash, SessionError> {
+        let done = (self
+            .helper
+            .run(&["history", "trash", "--", absolute(path)?]))
+        .map_err(|refusal| refusal.at(path))?;
+        Ok(done.data::<TrashData>()?.trash())
+    }
+
+    fn versions(&self, path: &str) -> Result<FileVersions, SessionError> {
+        let done = (self
+            .helper
+            .run(&["history", "versions", "--", absolute(path)?]))
+        .map_err(|refusal| refusal.at(path))?;
+        Ok(done.data::<VersionsData>()?.versions())
+    }
+
+    fn restore_deleted(&self, path: &str, node_id: &str) -> Result<RestoreAsked, SessionError> {
+        let args = [
+            "history",
+            "restore",
+            "--node",
+            node_id,
+            "--",
+            absolute(path)?,
+        ];
+        let done = self.change(&args).map_err(|refusal| refusal.at(path))?;
+        Ok(done.data::<RestoreAskedData>()?.asked())
+    }
+
+    fn restore_version(&self, path: &str, version_id: &str) -> Result<RestoreAsked, SessionError> {
+        let args = [
+            "history",
+            "restore",
+            "--version",
+            version_id,
+            "--",
+            absolute(path)?,
+        ];
+        let done = self.change(&args).map_err(|refusal| refusal.at(path))?;
+        Ok(done.data::<RestoreAskedData>()?.asked())
+    }
+
+    fn restore_requests(&self, path: &str) -> Result<Vec<RestoreRequest>, SessionError> {
+        let done = (self
+            .helper
+            .run(&["history", "requests", "--", absolute(path)?]))
+        .map_err(|refusal| refusal.at(path))?;
+        Ok(done.data::<RequestsData>()?.requests())
+    }
+
     fn answer(&self, question_id: &str, answer: Answer) -> Result<(), SessionError> {
         let done = (self.change(&["resolve", "--", question_id, state::word(answer)])).map_err(
             |refusal| match refusal.code {
@@ -655,6 +706,15 @@ impl Core for DaemonCore {
 
     fn close(&self) {
         self.unwatch();
+    }
+}
+
+fn absolute(path: &str) -> Result<&str, SessionError> {
+    match Path::new(path).is_absolute() {
+        true => Ok(path),
+        false => Err(SessionError::PathNotInLinkedFolder {
+            path: path.to_owned(),
+        }),
     }
 }
 

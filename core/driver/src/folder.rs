@@ -27,7 +27,7 @@ use koidrive_engine::classify::Class;
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::ignore::LocalRules;
-use koidrive_engine::tree::{Content, Kind, RemoteNode, Shape, Tree, same_content};
+use koidrive_engine::tree::{Content, Kind, Shape, same_content};
 use koidrive_fs::{Snapshot, check_root};
 use koidrive_net::{
     Auth, Backoff, CallError, ChunkError, Event, NotResent, ServerError, Session, SessionConfig,
@@ -1036,7 +1036,7 @@ impl Folder {
     /// The path of a node relative to the root: where L holds it, or else where R does, as for a file whose download
     /// failed or that this device deleted.
     fn item_path(&self, id: &str) -> Option<PathBuf> {
-        (self.engine.path_of(id)).or_else(|| remote_path(self.engine.trees.remote(), id))
+        (self.engine.path_of(id)).or_else(|| self.engine.trees.remote().path(id))
     }
 
     /// True when nothing is left to move: R holds the server's head, the folder was scanned, no effect and no
@@ -1611,7 +1611,7 @@ impl Folder {
         let remote = self.engine.trees.remote();
         let writes = (self.engine.effects.in_flight().iter())
             .filter(|record| matches!(record.effect, EngineEffect::WriteFile { .. }))
-            .filter_map(|record| Some((record.node.as_str(), remote_path(remote, &record.node)?)));
+            .filter_map(|record| Some((record.node.as_str(), remote.path(&record.node)?)));
         pending.credit = Credit::download(&self.progress, writes);
         if self.timing.is_on() {
             let at = Time::now();
@@ -1764,21 +1764,6 @@ fn lift_hint(code: i32) -> &'static str {
         "; once the cause is fixed, run koi folder retry <folder> --resend to send them again, or --replan to plan them \
          again"
     }
-}
-
-/// The path of a node R holds, relative to the root, for a node L does not hold, such as one whose download failed.
-fn remote_path(remote: &Tree<RemoteNode>, id: &str) -> Option<PathBuf> {
-    let mut names = Vec::new();
-    let mut current = id;
-    while current != remote.root {
-        let node = remote.get(current)?;
-        names.push(node.shape.name.as_str());
-        current = &node.shape.parent;
-        if names.len() > remote.len() {
-            return None;
-        }
-    }
-    Some(names.into_iter().rev().collect())
 }
 
 /// The node of each op of `commit` that `result` says the server did not apply, with why. A `Restore` op is left out:

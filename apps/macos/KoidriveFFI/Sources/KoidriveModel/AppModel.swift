@@ -299,6 +299,38 @@ public final class AppModel {
     public func unlinkFolder(spaceID: String) async throws {
         try await run { try $0.unlinkFolder(spaceId: spaceID) }
     }
+
+    /// What was deleted in `folder`, a linked folder or a folder inside one, and is still in its space's trash.
+    public func trash(in folder: URL) async throws -> Trash {
+        let path = folder.path(percentEncoded: false)
+        return try await run { try $0.trash(path: path) }
+    }
+
+    /// The versions the server keeps of `file`, newest first.
+    public func versions(of file: URL) async throws -> FileVersions {
+        let path = file.path(percentEncoded: false)
+        return try await run { try $0.versions(path: path) }
+    }
+
+    /// Asks to bring `item` back to where it was. `restoreRequests(in:)` says how it went.
+    public func restore(_ item: DeletedItem, from trash: Trash) async throws -> RestoreAsked {
+        let path = trash.url(of: item).path(percentEncoded: false)
+        let nodeID = item.nodeId
+        return try await run { try $0.restoreDeleted(path: path, nodeId: nodeID) }
+    }
+
+    /// Asks to make `version` the content of `file` again, as a new version. `restoreRequests(in:)` says how it went.
+    public func restore(_ version: FileVersion, of file: URL) async throws -> RestoreAsked {
+        let path = file.path(percentEncoded: false)
+        let versionID = version.versionId
+        return try await run { try $0.restoreVersion(path: path, versionId: versionID) }
+    }
+
+    /// The restores asked for in the linked folder that holds `folder`: those that ended first, then those that wait.
+    public func restoreRequests(in folder: URL) async throws -> [RestoreRequest] {
+        let path = folder.path(percentEncoded: false)
+        return try await run { try $0.restoreRequests(path: path) }
+    }
 }
 
 public enum Headline: Equatable, Sendable {
@@ -373,6 +405,31 @@ extension Question: Identifiable {
 }
 
 extension Problem: Identifiable {}
+
+extension DeletedItem: Identifiable {
+    public var id: String { nodeId }
+}
+
+extension FileVersion: Identifiable {
+    public var id: String { versionId }
+}
+
+extension RestoreRequest: Identifiable {}
+
+extension Trash {
+    /// Where `item` was.
+    public func url(of item: DeletedItem) -> URL {
+        URL(filePath: folder, directoryHint: .isDirectory)
+            .appending(path: item.path, directoryHint: item.kind == .folder ? .isDirectory : .notDirectory)
+    }
+}
+
+extension RestoreState {
+    /// True until the folder has sent the restore and the server has answered it.
+    public var isPending: Bool {
+        if case .pending = self { true } else { false }
+    }
+}
 
 extension Notice: Identifiable {}
 

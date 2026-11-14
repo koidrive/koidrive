@@ -606,18 +606,7 @@ impl Engine {
     /// The path of a node L holds, relative to the root. `None` for a node L does not hold under the root, such as
     /// a parked one.
     pub fn path_of(&self, id: &str) -> Option<PathBuf> {
-        let local = self.trees.local();
-        let mut names = Vec::new();
-        let mut current = id;
-        while current != local.root {
-            let node = local.get(current).filter(|node| !node.parked)?;
-            names.push(node.shape.name.as_str());
-            current = &node.shape.parent;
-            if names.len() > local.len() {
-                return None;
-            }
-        }
-        Some(names.into_iter().rev().collect())
+        self.trees.local().path(id)
     }
 
     /// Gives the trees the rules files a batch lists, before the changes of that batch. An observer's first batch

@@ -7,8 +7,8 @@ use crate::daemon::DaemonCore;
 use crate::fake::FakeCore;
 use crate::profile::Profile;
 use crate::types::{
-    Account, Answer, Device, LinkedFolder, PairingCode, ServerInfo, SessionError, SessionState,
-    Space, SpaceUsage, TelemetrySetting,
+    Account, Answer, Device, FileVersions, LinkedFolder, PairingCode, RestoreAsked, RestoreRequest,
+    ServerInfo, SessionError, SessionState, Space, SpaceUsage, TelemetrySetting, Trash,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -141,6 +141,34 @@ impl SyncSession {
 
     pub fn unlink_folder(&self, space_id: String) -> Result<(), SessionError> {
         self.core.unlink_folder(&space_id)
+    }
+
+    pub fn trash(&self, path: String) -> Result<Trash, SessionError> {
+        self.core.trash(&path)
+    }
+
+    pub fn versions(&self, path: String) -> Result<FileVersions, SessionError> {
+        self.core.versions(&path)
+    }
+
+    pub fn restore_deleted(
+        &self,
+        path: String,
+        node_id: String,
+    ) -> Result<RestoreAsked, SessionError> {
+        self.core.restore_deleted(&path, &node_id)
+    }
+
+    pub fn restore_version(
+        &self,
+        path: String,
+        version_id: String,
+    ) -> Result<RestoreAsked, SessionError> {
+        self.core.restore_version(&path, &version_id)
+    }
+
+    pub fn restore_requests(&self, path: String) -> Result<Vec<RestoreRequest>, SessionError> {
+        self.core.restore_requests(&path)
     }
 
     pub fn answer(&self, question_id: String, answer: Answer) -> Result<(), SessionError> {

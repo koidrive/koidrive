@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::SessionListener;
-use crate::types::{FolderPath, QuestionKind, SyncProgress};
+use crate::types::{
+    DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState, RestoreTarget,
+    SyncProgress,
+};
 
 const KOI: &str = r#"#!/bin/sh
 dir="$(dirname "$0")"
@@ -891,4 +894,346 @@ fn the_session_sends_the_progress_the_daemon_reports_while_it_syncs_and_none_aft
     koi.core.stop();
     drop(send);
     daemon.join().unwrap();
+}
+
+fn printed(command: &str, outcome: &str, data: Value) -> Value {
+    let envelope = json!({
+        "schema_version": 1,
+        "command": command,
+        "outcome": outcome,
+        "data": data,
+        "error": null,
+        "decisions": [],
+        "next_commands": [],
+    });
+    published(command, &envelope);
+    envelope
+}
+
+fn refused_because(command: &str, reason: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "command": command,
+        "outcome": "error",
+        "data": null,
+        "error": { "code": "usage", "reason": reason, "message": format!("refused: {reason}"), "retryable": false },
+        "decisions": [],
+        "next_commands": [],
+    })
+}
+
+fn published(command: &str, envelope: &Value) {
+    let file = format!(
+        "{}/../../docs/json-schema/v1/koi-{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        command.replace(' ', "-")
+    );
+    let schema: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let errors: Vec<String> = (validator.iter_errors(envelope))
+        .map(|error| error.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{file}: {errors:?}");
+}
+
+#[test]
+fn history_reads_what_koi_prints_and_passes_the_path_after_dashes() {
+    let koi = Koi::new(signed_in(false));
+    let folder = "/Users/ada/Documents";
+    koi.answer(
+        "history-trash",
+        printed(
+            "history trash",
+            "ok",
+            json!({
+                "folder": folder,
+                "entries": [
+                    { "node_id": "n1", "path": "Old Slides", "kind": "folder", "trash_group": "g1", "files": 12, "bytes": 84_000_000, "modified_at_ms": null, "deleted_at_ms": 9, "deleted_by_device_id": "desk", "deleted_by_device_name": "Ada's Desk" },
+                    { "node_id": "n2", "path": "Old Slides.lnk", "kind": "symlink", "trash_group": "g2", "files": 1, "bytes": 4, "modified_at_ms": 7, "deleted_at_ms": null, "deleted_by_device_id": null, "deleted_by_device_name": null },
+                ],
+            }),
+        ),
+    );
+    koi.answer(
+        "history-versions",
+        printed(
+            "history versions",
+            "ok",
+            json!({
+                "path": "Reports/Annual Report.docx",
+                "node_id": "n3",
+                "versions": [
+                    { "version_id": "v2", "seq": 2, "size": 10, "device_id": THIS, "device_name": "Ada's Mac", "created_at_ms": 20, "current": true },
+                    { "version_id": "v1", "seq": 1, "size": 8, "device_id": OTHER, "device_name": null, "created_at_ms": 10, "current": false },
+                ],
+            }),
+        ),
+    );
+    koi.answer(
+        "history-restore",
+        printed(
+            "history restore",
+            "accepted",
+            json!({ "request_id": "r1", "folder": folder, "path": "Old Slides" }),
+        ),
+    );
+    let request = |id: &str, path: Value, request: Value, state: Value| json!({ "id": id, "path": path, "asked_at_ms": 5, "request": request, "state": state });
+    let version =
+        json!({ "type": "version", "node_id": "n3", "version_id": "v1", "saved_at_ms": 7 });
+    let deleted = json!({ "type": "from_trash", "node_id": "n1", "parent_id": null, "name": null });
+    koi.answer(
+        "history-requests",
+        printed(
+            "history requests",
+            "ok",
+            json!({
+                "folder": folder,
+                "requests": [
+                    request("r1", json!("Old Slides"), deleted.clone(), json!({ "type": "restored" })),
+                    request("r2", json!("Old Slides"), deleted.clone(), json!({ "type": "renamed", "name": "Old Slides 2" })),
+                    request("r3", json!("Reports/Annual Report.docx"), version.clone(), json!({ "type": "copied", "node_id": "n9", "name": "Annual Report (2).docx" })),
+                    request("r4", Value::Null, deleted.clone(), json!({ "type": "rejected", "reason": "not_found" })),
+                    request("r5", Value::Null, version.clone(), json!({ "type": "rejected", "reason": "parent_not_dir" })),
+                    request("r6", Value::Null, version.clone(), json!({ "type": "rejected", "reason": "SPACE_FROZEN" })),
+                    request("r7", Value::Null, deleted.clone(), json!({ "type": "does_not_fit" })),
+                    request("r8", json!("Old Slides"), deleted.clone(), json!({ "type": "pending", "waits_for": "node_problem" })),
+                    request("r9", json!("Old Slides"), deleted, json!({ "type": "pending", "waits_for": null })),
+                ],
+            }),
+        ),
+    );
+
+    let trash = koi.core.trash(folder).unwrap();
+    let versions = (koi.core)
+        .versions(&format!("{folder}/Reports/Annual Report.docx"))
+        .unwrap();
+    let from_trash = (koi.core)
+        .restore_deleted(&format!("{folder}/Old Slides"), "n1")
+        .unwrap();
+    let of_version = (koi.core)
+        .restore_version(&format!("{folder}/Reports/Annual Report.docx"), "v1")
+        .unwrap();
+    let requests = koi
+        .core
+        .restore_requests(&format!("{folder}/Reports"))
+        .unwrap();
+
+    assert_eq!(
+        trash,
+        Trash {
+            folder: folder.into(),
+            items: vec![
+                DeletedItem {
+                    node_id: "n1".into(),
+                    path: "Old Slides".into(),
+                    kind: NodeKind::Folder,
+                    files: 12,
+                    bytes: 84_000_000,
+                    modified_at_ms: None,
+                    deleted_at_ms: Some(9),
+                    deleted_by_device_id: Some("desk".into()),
+                    deleted_by_device_name: Some("Ada's Desk".into()),
+                },
+                DeletedItem {
+                    node_id: "n2".into(),
+                    path: "Old Slides.lnk".into(),
+                    kind: NodeKind::File,
+                    files: 1,
+                    bytes: 4,
+                    modified_at_ms: Some(7),
+                    deleted_at_ms: None,
+                    deleted_by_device_id: None,
+                    deleted_by_device_name: None,
+                },
+            ],
+        }
+    );
+    let saved: Vec<_> = (versions.versions.iter())
+        .map(|version| {
+            (
+                version.version_id.as_str(),
+                version.saved_at_ms,
+                version.device_name.as_deref(),
+                version.current,
+            )
+        })
+        .collect();
+    assert_eq!(
+        (versions.path.as_str(), versions.node_id.as_str()),
+        ("Reports/Annual Report.docx", "n3")
+    );
+    assert_eq!(
+        saved,
+        [("v2", 20, Some("Ada's Mac"), true), ("v1", 10, None, false)]
+    );
+    assert_eq!(versions.versions[1].device_id, OTHER);
+    assert_eq!(
+        from_trash,
+        RestoreAsked {
+            request_id: "r1".into(),
+            folder: folder.into(),
+            path: "Old Slides".into(),
+        }
+    );
+    assert_eq!(of_version, from_trash);
+    let deleted = RestoreTarget::Deleted {
+        node_id: "n1".into(),
+    };
+    assert_eq!(
+        (
+            &requests[0].path,
+            requests[0].asked_at_ms,
+            &requests[0].target
+        ),
+        (&Some("Old Slides".to_owned()), 5, &deleted)
+    );
+    assert_eq!(
+        requests[2].target,
+        RestoreTarget::Version {
+            node_id: "n3".into(),
+            version_id: "v1".into(),
+            saved_at_ms: Some(7),
+        }
+    );
+    assert_eq!(requests[3].path, None);
+    let states: Vec<RestoreState> = requests.into_iter().map(|request| request.state).collect();
+    assert_eq!(
+        states,
+        [
+            RestoreState::Restored,
+            RestoreState::RestoredAs {
+                name: "Old Slides 2".into()
+            },
+            RestoreState::RestoredAsCopy {
+                node_id: "n9".into(),
+                name: "Annual Report (2).docx".into(),
+            },
+            RestoreState::Refused {
+                reason: RestoreRefusal::Gone
+            },
+            RestoreState::Refused {
+                reason: RestoreRefusal::DestinationNotAFolder
+            },
+            RestoreState::Refused {
+                reason: RestoreRefusal::Other {
+                    reason: "SPACE_FROZEN".into()
+                },
+            },
+            RestoreState::TooLarge,
+            RestoreState::Pending {
+                held_by_problem: true
+            },
+            RestoreState::Pending {
+                held_by_problem: false
+            },
+        ]
+    );
+    assert_eq!(
+        koi.calls_of("history"),
+        [
+            "history trash -- /Users/ada/Documents",
+            "history versions -- /Users/ada/Documents/Reports/Annual Report.docx",
+            "history restore --node n1 -- /Users/ada/Documents/Old Slides",
+            "history restore --version v1 -- /Users/ada/Documents/Reports/Annual Report.docx",
+            "history requests -- /Users/ada/Documents/Reports",
+        ]
+    );
+}
+
+#[test]
+fn each_reason_koi_gives_for_a_history_refusal_names_its_error() {
+    let koi = Koi::new(signed_in(false));
+    let path = "/Users/ada/Elsewhere/report.docx";
+    let failed = |reason: &str| SessionError::Failed {
+        reason: format!("refused: {reason}"),
+    };
+    let cases = [
+        (
+            "not_in_linked_folder",
+            SessionError::PathNotInLinkedFolder { path: path.into() },
+        ),
+        ("linked_folder_itself", SessionError::PathIsLinkedFolder),
+        ("not_found", SessionError::NothingAtPath),
+        ("not_deleted", SessionError::NotDeleted),
+        ("is_folder", SessionError::PathIsFolder),
+        ("no_such_version", SessionError::VersionNotFound),
+        ("already_current", SessionError::VersionIsCurrent),
+        ("several_deletions", failed("several_deletions")),
+        ("not_in_trash", SessionError::DeletedItemNotFound),
+    ];
+    for (reason, expected) in cases {
+        let envelope = refused_because("history restore", reason);
+        published("history restore", &envelope);
+        koi.answer("history-restore", envelope);
+        assert_eq!(
+            koi.core.restore_deleted(path, "n1"),
+            Err(expected),
+            "{reason}"
+        );
+    }
+
+    koi.answer(
+        "history-versions",
+        refused_because("history versions", "a_reason_from_later"),
+    );
+    assert_eq!(koi.core.versions(path), Err(failed("a_reason_from_later")));
+    koi.answer(
+        "history-trash",
+        refused("unavailable", "the server is busy", &[]),
+    );
+    assert_eq!(
+        koi.core.trash(path),
+        Err(SessionError::ServerUnreachable {
+            reason: "the server is busy".into(),
+        })
+    );
+}
+
+#[test]
+fn a_relative_history_path_is_refused_without_running_koi() {
+    let koi = Koi::new(signed_in(false));
+    let relative = "Documents/report.docx";
+    let refused = Err::<(), _>(SessionError::PathNotInLinkedFolder {
+        path: relative.into(),
+    });
+
+    assert_eq!(koi.core.trash(relative).map(drop), refused);
+    assert_eq!(koi.core.versions(relative).map(drop), refused);
+    assert_eq!(koi.core.restore_deleted(relative, "n1").map(drop), refused);
+    assert_eq!(koi.core.restore_version(relative, "v1").map(drop), refused);
+    assert_eq!(koi.core.restore_requests(relative).map(drop), refused);
+    assert!(koi.calls_of("history").is_empty(), "{:?}", koi.calls());
+}
+
+#[test]
+fn a_restore_reloads_the_state_and_a_history_read_does_not() {
+    let koi = Koi::new(signed_in(false));
+    let folder = "/Users/ada/Documents";
+    koi.answer(
+        "history-requests",
+        printed(
+            "history requests",
+            "ok",
+            json!({ "folder": folder, "requests": [] }),
+        ),
+    );
+    koi.answer(
+        "history-restore",
+        printed(
+            "history restore",
+            "accepted",
+            json!({ "request_id": "r1", "folder": folder, "path": "a.txt" }),
+        ),
+    );
+    let mut renamed = signed_in(false);
+    renamed["folders"][0]["space_name"] = json!("Papers");
+    koi.answer("status", ok(renamed));
+    let name = || koi.core.state().folders[0].space_name.clone();
+
+    koi.core.restore_requests(folder).unwrap();
+    assert_eq!(name(), "Documents");
+    koi.core
+        .restore_deleted(&format!("{folder}/a.txt"), "n1")
+        .unwrap();
+    assert_eq!(name(), "Papers");
 }
