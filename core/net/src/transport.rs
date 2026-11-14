@@ -37,8 +37,10 @@ pub enum Cause {
     Dns,
     /// Nothing listens at the server's address, or something there turned the connection away.
     Refused,
-    /// No route to the server: this device is offline, or the network or the host is unreachable.
+    /// No route to the server: the network or the host is unreachable.
     Unreachable,
+    /// This device has no network connection at all.
+    NoInternet,
     /// The network did not answer in time.
     TimedOut,
     /// The connection was reset or closed without a WebSocket close.
@@ -97,6 +99,15 @@ fn cause_of(error: &(dyn Error + 'static)) -> Option<Cause> {
     (error.to_string() == "dns error").then_some(Cause::Dns)
 }
 
+fn has_default_route() -> bool {
+    let route = |local: &str, remote: &str| {
+        std::net::UdpSocket::bind(local)
+            .and_then(|socket| socket.connect(remote))
+            .is_ok()
+    };
+    route("0.0.0.0:0", "192.0.2.1:9") || route("[::]:0", "[2001:db8::1]:9")
+}
+
 fn io_cause(kind: io::ErrorKind) -> Option<Cause> {
     use io::ErrorKind::*;
     match kind {
@@ -123,6 +134,10 @@ impl Cause {
     /// The kind of the first error in `error`'s chain whose kind is known, and the chain, outermost first, joined
     /// with `: `.
     pub fn of(error: &(dyn Error + 'static)) -> (Cause, String) {
+        Cause::seen(error, has_default_route)
+    }
+
+    fn seen(error: &(dyn Error + 'static), online: impl Fn() -> bool) -> (Cause, String) {
         let mut detail = String::new();
         let mut cause = None;
         let mut next = Some(error);
@@ -137,7 +152,11 @@ impl Cause {
             cause = cause.or_else(|| cause_of(error));
             next = error.source();
         }
-        (cause.unwrap_or(Cause::Other), detail)
+        let cause = match cause.unwrap_or(Cause::Other) {
+            Cause::Dns | Cause::Unreachable if !online() => Cause::NoInternet,
+            cause => cause,
+        };
+        (cause, detail)
     }
 
     /// Whether the failure means the server or its storage cannot be reached, rather than that it answered.
@@ -151,6 +170,7 @@ impl Cause {
             Cause::Dns => "dns".into(),
             Cause::Refused => "refused".into(),
             Cause::Unreachable => "unreachable".into(),
+            Cause::NoInternet => "no_internet".into(),
             Cause::TimedOut => "timed_out".into(),
             Cause::Reset => "reset".into(),
             Cause::Certificate => "certificate".into(),
@@ -180,6 +200,7 @@ impl fmt::Display for Cause {
             Cause::Dns => f.write_str("the server's address could not be found"),
             Cause::Refused => f.write_str("the server refused the connection"),
             Cause::Unreachable => f.write_str("the network or the server is unreachable"),
+            Cause::NoInternet => f.write_str("there is no internet connection"),
             Cause::TimedOut => f.write_str("the connection timed out"),
             Cause::Reset => f.write_str("the connection was cut"),
             Cause::Certificate => f.write_str("the server's certificate is not trusted"),
@@ -187,5 +208,32 @@ impl fmt::Display for Cause {
             Cause::Status(status) => write!(f, "the server answered HTTP {status}"),
             Cause::Other => f.write_str("the connection failed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Dns;
+
+    impl fmt::Display for Dns {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("dns error")
+        }
+    }
+
+    impl Error for Dns {}
+
+    #[test]
+    fn a_lookup_or_route_failure_without_any_network_is_no_internet() {
+        let unreachable = io::Error::from(io::ErrorKind::NetworkUnreachable);
+        assert_eq!(Cause::seen(&Dns, || false).0, Cause::NoInternet);
+        assert_eq!(Cause::seen(&Dns, || true).0, Cause::Dns);
+        assert_eq!(Cause::seen(&unreachable, || false).0, Cause::NoInternet);
+        assert_eq!(Cause::seen(&unreachable, || true).0, Cause::Unreachable);
+        let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert_eq!(Cause::seen(&refused, || false).0, Cause::Refused);
     }
 }

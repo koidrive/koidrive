@@ -529,7 +529,7 @@ pub struct WaitData {
 }
 
 impl WaitData {
-    fn of(wait: Wait) -> Self {
+    fn of(wait: &Wait) -> Self {
         WaitData {
             kind: match wait.kind {
                 WaitKind::Quota => WaitReason::Quota,
@@ -562,7 +562,7 @@ impl FolderData {
             local_entries: folder.local_entries,
             questions: folder.questions,
             problem: folder.problem.clone(),
-            wait: folder.wait.map(WaitData::of),
+            wait: folder.wait.as_ref().map(WaitData::of),
             progress: (folder.progress.as_ref()).map(|progress| ProgressData {
                 files_to_upload: progress.files_to_upload,
                 files_to_download: progress.files_to_download,
@@ -754,7 +754,7 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
             | FolderState::CatchingUp
             | FolderState::UpToDate => {}
         }
-        if let Some(wait) = folder.wait {
+        if let Some(wait) = &folder.wait {
             found.push(Condition::Waiting {
                 folder: folder.path.clone(),
                 wait: WaitData::of(wait),
@@ -1339,7 +1339,6 @@ mod tests {
             problem: None,
             progress: None,
             wait: None,
-            unreachable: None,
         }
     }
 
@@ -1782,6 +1781,7 @@ mod tests {
             wait: Some(Wait {
                 kind,
                 until_ms: 1_700_000_000_000,
+                unreachable: None,
             }),
             ..folder("Work", FolderState::CatchingUp)
         };

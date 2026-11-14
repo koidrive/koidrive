@@ -237,3 +237,32 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::*;
+
+    #[test]
+    fn a_halted_or_restarted_folder_no_longer_says_it_cannot_reach_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let status: FolderStatus = serde_json::from_value(serde_json::json!({
+            "space_id":"abc", "space_name":"Work", "path":"/Work",
+            "state":"offline", "history_id":null, "last_seq":null,
+            "head_seq":null, "remote_nodes":0, "local_entries":null,
+            "questions":0, "problem":"can't connect to the server: the server's address could not be found",
+            "wait": {"kind": "retry", "until_ms": 1, "unreachable": {"why": "the server's address could not be found"}},
+        }))
+        .unwrap();
+        let lifecycle = Lifecycle::open(&store, status).unwrap();
+        lifecycle.halt(Halted::Io, "the folder is missing".into(), Recovery::Root);
+        {
+            let status = lifecycle.lock().unwrap();
+            assert_eq!(status.state, FolderState::Halted);
+            assert_eq!(status.wait, None, "halted: {status:?}");
+        }
+        lifecycle.restart().unwrap();
+        let status = lifecycle.lock().unwrap();
+        assert_eq!(status.wait, None, "restarted: {status:?}");
+    }
+}

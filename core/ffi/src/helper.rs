@@ -345,7 +345,6 @@ impl FolderData {
             questions: 0,
             problem: self.problem,
             wait: None,
-            unreachable: None,
             progress: None,
         }
     }

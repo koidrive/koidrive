@@ -459,6 +459,11 @@ fn unreachable_server() -> koidrive_net::DisconnectReason {
     })
 }
 
+fn offline_cause(view: &View) -> Option<(Unreachable, i64)> {
+    let wait = (view.wait.as_ref()).filter(|_| view.state == FolderState::Offline)?;
+    Some((wait.unreachable.clone()?, wait.until_ms))
+}
+
 #[test]
 fn a_server_that_cannot_be_reached_shows_offline_with_the_cause_and_the_next_try() {
     let mut remote = Remote::new();
@@ -470,19 +475,19 @@ fn a_server_that_cannot_be_reached_shows_offline_with_the_cause_and_the_next_try
     .unwrap();
     let view = a.folder.view();
     assert_eq!(view.state, FolderState::Offline);
-    let unreachable = view.unreachable.expect("the status says why");
+    let (unreachable, _) = offline_cause(&view).expect("the status says why");
     assert_eq!(unreachable.why, "the server's address could not be found");
+    assert!(!unreachable.no_internet);
     let problem = view.problem.unwrap_or_default();
     assert!(
         problem.starts_with("can't connect to the server: the server's address could not be found; trying again at "),
         "{problem}"
     );
-    assert_eq!(view.wait.map(|wait| wait.until_ms), Some(unreachable.retry_at_ms));
 
     a.connect(&remote);
     let view = a.folder.view();
     assert_ne!(view.state, FolderState::Offline);
-    assert_eq!(view.unreachable, None);
+    assert_eq!(view.wait, None);
     assert_eq!(view.problem, None);
 }
 
@@ -497,29 +502,10 @@ fn a_quick_reconnect_shows_connecting_until_it_fails_again() {
     a.event(disconnected()).unwrap();
     let view = a.folder.view();
     assert_eq!(view.state, FolderState::Connecting);
-    assert_eq!(view.unreachable, None);
+    assert_eq!(offline_cause(&view), None);
 
     a.event(disconnected()).unwrap();
     assert_eq!(a.folder.view().state, FolderState::Offline);
-}
-
-#[test]
-fn a_quick_reconnect_that_takes_longer_than_a_moment_shows_offline() {
-    let mut remote = Remote::new();
-    let (_site, mut a) = linked(&mut remote, "a");
-    a.event(Event::Disconnected {
-        reason: unreachable_server(),
-        retry_in: Duration::from_millis(1),
-    })
-    .unwrap();
-    assert_eq!(a.folder.view().state, FolderState::Connecting);
-    std::thread::sleep(QUICK_RECONNECT + Duration::from_millis(100));
-    let view = a.folder.view();
-    assert_eq!(view.state, FolderState::Offline);
-    assert_eq!(
-        view.unreachable.map(|unreachable| unreachable.why),
-        Some("the server's address could not be found".to_owned())
-    );
 }
 
 #[test]
@@ -545,7 +531,7 @@ fn a_transfer_that_cannot_reach_the_server_shows_offline() {
         let view = a.folder.view();
         assert_eq!(view.state == FolderState::Offline, offline, "{cause:?}");
         assert_eq!(
-            view.unreachable.map(|unreachable| unreachable.why),
+            offline_cause(&view).map(|(unreachable, _)| unreachable.why),
             offline.then(|| "the network or the server is unreachable".to_owned()),
             "{cause:?}"
         );
@@ -558,3 +544,126 @@ fn a_transfer_that_cannot_reach_the_server_shows_offline() {
         }
     }
 }
+
+#[test]
+fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happened() {
+    use koidrive_net::DisconnectReason;
+
+    for (reason, said) in [
+        (
+            DisconnectReason::Refused { status: 503 },
+            "the server answered HTTP 503; trying again at ",
+        ),
+        (
+            DisconnectReason::Closed {
+                code: Some(1011),
+                reason: "internal error".into(),
+            },
+            "the server closed the connection (code 1011); trying again at ",
+        ),
+        (
+            DisconnectReason::ProtocolViolation("an unknown message".into()),
+            "the server broke the protocol: an unknown message; trying again at ",
+        ),
+    ] {
+        let mut remote = Remote::new();
+        let (_site, mut a) = linked(&mut remote, "a");
+        a.event(Event::Disconnected {
+            reason: reason.clone(),
+            retry_in: Duration::from_secs(30),
+        })
+        .unwrap();
+        let view = a.folder.view();
+        assert_eq!(view.state, FolderState::Connecting, "{reason:?}");
+        assert_eq!(offline_cause(&view), None, "{reason:?}");
+        let problem = view.problem.unwrap_or_default();
+        assert!(problem.starts_with(said), "{problem}");
+    }
+}
+
+#[test]
+fn a_device_without_internet_says_so() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    a.event(Event::Disconnected {
+        reason: koidrive_net::DisconnectReason::Transport(koidrive_net::Transport {
+            step: koidrive_net::Step::Connect,
+            cause: koidrive_net::Cause::NoInternet,
+            detail: "failed to lookup address information".into(),
+        }),
+        retry_in: Duration::from_secs(30),
+    })
+    .unwrap();
+    let view = a.folder.view();
+    assert_eq!(view.state, FolderState::Offline);
+    let (unreachable, _) = offline_cause(&view).expect("the status says why");
+    assert!(unreachable.no_internet);
+    let problem = view.problem.unwrap_or_default();
+    assert!(problem.starts_with("no internet connection; trying again at "), "{problem}");
+}
+
+#[test]
+fn an_upload_sent_again_is_not_shown_offline_while_it_runs() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    let Some(Work::Upload(upload)) = a.work.pop_front() else {
+        panic!("the new file is uploaded");
+    };
+    let error = ChunkError::Unavailable {
+        hash: upload.chunks[0].hash.clone(),
+        message: "error sending request".into(),
+        cause: Some(koidrive_net::Cause::Unreachable),
+    };
+    let step = a.folder.uploaded(Err(error));
+    a.take(step).unwrap();
+    assert_eq!(a.folder.view().state, FolderState::Offline);
+    while !matches!(a.work.front(), Some(Work::ResendAfter(_)) | None) {
+        a.work.pop_front();
+    }
+    assert!(matches!(a.work.pop_front(), Some(Work::ResendAfter(_))), "the upload waits");
+    let step = a.folder.resend();
+    a.take(step).unwrap();
+    assert!(
+        a.work.iter().any(|work| matches!(work, Work::Upload(_))),
+        "the wait is over and the upload runs again"
+    );
+    let view = a.folder.view();
+    assert_ne!(
+        view.state,
+        FolderState::Offline,
+        "the upload is under way again, yet the folder reads {:?}: {:?}",
+        view.state,
+        view.problem
+    );
+}
+
+#[test]
+fn a_next_try_that_has_passed_is_not_shown_as_the_next_try() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = linked(&mut remote, "a");
+    for _ in 0..2 {
+        a.event(Event::Disconnected {
+            reason: koidrive_net::DisconnectReason::Timeout,
+            retry_in: Duration::from_millis(300),
+        })
+        .unwrap();
+    }
+    assert_eq!(a.folder.view().state, FolderState::Offline);
+    std::thread::sleep(Duration::from_millis(600));
+    let view = a.folder.view();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let next = offline_cause(&view).map(|(_, retry_at_ms)| retry_at_ms);
+    assert!(
+        view.state != FolderState::Offline || next.is_some_and(|at| at >= now_ms),
+        "the attempt is under way, yet the folder reads {:?} with its next try {:?} ms in the past: {:?}",
+        view.state,
+        next.map(|at| now_ms - at),
+        view.problem
+    );
+}
+

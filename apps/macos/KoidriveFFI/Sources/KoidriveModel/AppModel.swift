@@ -461,7 +461,10 @@ extension RestoreState {
 
 extension ProblemKind {
     var isServerUnreachable: Bool {
-        if case .serverUnreachable = self { true } else { false }
+        switch self {
+        case .serverUnreachable, .noInternet: true
+        default: false
+        }
     }
 }
 

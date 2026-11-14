@@ -132,7 +132,7 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 },
             ));
         }
-        if let Some(unreachable) = &folder.unreachable {
+        if let Some((unreachable, retry_at_ms)) = folder.unreachable() {
             found.push((
                 format!("offline-{space}"),
                 String::new(),
@@ -140,9 +140,12 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                     id: String::new(),
                     space_id: space_id.clone(),
                     path: None,
-                    kind: ProblemKind::ServerUnreachable {
-                        reason: unreachable.why.clone(),
-                        retry_at_ms: unreachable.retry_at_ms,
+                    kind: match unreachable.no_internet {
+                        true => ProblemKind::NoInternet { retry_at_ms },
+                        false => ProblemKind::ServerUnreachable {
+                            reason: unreachable.why.clone(),
+                            retry_at_ms,
+                        },
                     },
                     since_ms: 0,
                 },
@@ -494,7 +497,6 @@ mod tests {
             space_name: "Documents".into(),
             path: "/Users/ada/Documents".into(),
             wait: None,
-            unreachable: None,
             state,
             history_id: None,
             last_seq: None,
@@ -585,11 +587,18 @@ mod tests {
     fn a_folder_that_cannot_reach_the_server_is_a_problem_dated_when_it_first_appeared() {
         let mut seen = Seen::new();
         let mut status = status_of(&[]);
+        let waiting = |why: &str, until_ms| {
+            Some(driver::Wait {
+                kind: driver::WaitKind::Retry,
+                until_ms,
+                unreachable: Some(driver::Unreachable {
+                    why: why.into(),
+                    no_internet: false,
+                }),
+            })
+        };
         status.folders = vec![driver::FolderStatus {
-            unreachable: Some(driver::Unreachable {
-                why: "the server's address could not be found".into(),
-                retry_at_ms: 1_000,
-            }),
+            wait: waiting("the server's address could not be found", 1_000),
             ..folder_in(DriverFolderState::Offline, None)
         }];
         let first = problems(&status, &mut seen);
@@ -608,14 +617,11 @@ mod tests {
         );
 
         std::thread::sleep(Duration::from_millis(5));
-        status.folders[0].unreachable = Some(driver::Unreachable {
-            why: "the connection timed out".into(),
-            retry_at_ms: 3_000,
-        });
+        status.folders[0].wait = waiting("the connection timed out", 3_000);
         let later = problems(&status, &mut seen);
         assert_eq!(later[0].since_ms, first[0].since_ms);
 
-        status.folders[0].unreachable = None;
+        status.folders[0].wait = None;
         assert!(problems(&status, &mut seen).is_empty());
         assert!(seen.is_empty());
     }
@@ -771,6 +777,85 @@ mod tests {
             (Answer::Delete, "delete"),
         ] {
             assert_eq!(word(answer, Some(&conflict)).as_deref(), Some(expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::*;
+
+    #[test]
+    fn a_device_without_internet_is_its_own_problem() {
+        let status = Status {
+            folders: vec![driver::FolderStatus {
+                space_id: "abc".into(),
+                space_name: "Documents".into(),
+                path: "/Users/ada/Documents".into(),
+                state: DriverFolderState::Offline,
+                history_id: None,
+                last_seq: None,
+                head_seq: None,
+                remote_nodes: 0,
+                local_entries: None,
+                questions: 0,
+                problem: Some(
+                    "no internet connection; trying again at 2026-11-14 12:00 UTC".into(),
+                ),
+                progress: None,
+                wait: Some(driver::Wait {
+                    kind: driver::WaitKind::Retry,
+                    until_ms: 7,
+                    unreachable: Some(driver::Unreachable {
+                        why: "there is no internet connection".into(),
+                        no_internet: true,
+                    }),
+                }),
+                recovery: None,
+            }],
+            ..Status::default()
+        };
+        let listed = problems(&status, &mut Seen::new());
+        let kinds: Vec<_> = listed.iter().map(|problem| problem.kind.clone()).collect();
+        assert_eq!(kinds, [ProblemKind::NoInternet { retry_at_ms: 7 }]);
+    }
+
+    #[test]
+    fn a_stopped_or_halted_folder_is_not_a_server_unreachable_problem() {
+        for state in [DriverFolderState::Stopped, DriverFolderState::Halted] {
+            let status = Status {
+                folders: vec![driver::FolderStatus {
+                    space_id: "abc".into(),
+                    space_name: "Documents".into(),
+                    path: "/Users/ada/Documents".into(),
+                    state,
+                    history_id: None,
+                    last_seq: None,
+                    head_seq: None,
+                    remote_nodes: 0,
+                    local_entries: None,
+                    questions: 0,
+                    problem: Some("the folder is missing".into()),
+                    progress: None,
+                    wait: Some(driver::Wait {
+                        kind: driver::WaitKind::Retry,
+                        until_ms: 1,
+                        unreachable: Some(driver::Unreachable {
+                            why: "the server's address could not be found".into(),
+                            no_internet: false,
+                        }),
+                    }),
+                    recovery: None,
+                }],
+                ..Status::default()
+            };
+            let listed = problems(&status, &mut Seen::new());
+            assert!(
+                !listed
+                    .iter()
+                    .any(|problem| matches!(problem.kind, ProblemKind::ServerUnreachable { .. })),
+                "{state:?}: {listed:?}"
+            );
         }
     }
 }

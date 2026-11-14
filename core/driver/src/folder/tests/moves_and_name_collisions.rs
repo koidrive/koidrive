@@ -123,7 +123,7 @@ fn a_refusal_handled_after_a_disconnect_does_not_hold_a_remote_rename() {
     }))));
     a.take(step).unwrap();
     assert!(a.folder.engine.commits.in_flight().is_none());
-    assert!(a.folder.offline.is_some());
+    assert!(a.folder.disconnected.is_some());
     a.run(&mut remote);
     assert_eq!(names(&site.root), ["remote"]);
 }
@@ -164,7 +164,7 @@ fn an_upload_abandoned_after_a_disconnect_does_not_hold_a_remote_rename() {
         .uploaded(Err(ChunkError::SourceChanged { hash: vec![0; 32] }));
     a.take(step).unwrap();
     assert!(a.folder.engine.commits.in_flight().is_none());
-    assert!(a.folder.offline.is_some());
+    assert!(a.folder.disconnected.is_some());
     a.run(&mut remote);
     assert_eq!(names(&site.root), ["other", "remote"]);
 }

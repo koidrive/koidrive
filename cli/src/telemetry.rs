@@ -613,7 +613,6 @@ mod tests {
             problem: None,
             progress: None,
             wait: None,
-            unreachable: None,
         };
         let status = Status {
             account: None,

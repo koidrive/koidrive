@@ -113,7 +113,7 @@ pub(crate) struct Folder {
     /// The observer has scanned the folder once. Nothing is planned before, because L does not describe the disk
     /// until then.
     scanned: bool,
-    offline: Option<Offline>,
+    disconnected: Option<Disconnected>,
     /// The history the server reported in its last `Welcome`.
     history_id: String,
     /// The server's count of this device's commits in that history, from the same `Welcome`.
@@ -286,10 +286,9 @@ struct Retrying {
     unreachable: Option<Cause>,
 }
 
-struct Offline {
+struct Disconnected {
     reason: DisconnectReason,
     retry_at: SystemTime,
-    since: Instant,
     shown: bool,
 }
 
@@ -304,7 +303,6 @@ pub(crate) struct View {
     pub local_entries: Option<u64>,
     pub problem: Option<String>,
     pub wait: Option<Wait>,
-    pub unreachable: Option<Unreachable>,
     pub questions: u64,
     pub recovery: Option<RecoveryCause>,
 }
@@ -350,7 +348,7 @@ impl Folder {
             flight,
             sent_commit,
             scanned: false,
-            offline: None,
+            disconnected: None,
             history_id: String::new(),
             device_seq: 0,
             head_seq: None,
@@ -474,15 +472,12 @@ impl Folder {
                     ?retry_in,
                     "disconnected from the server"
                 );
-                let shown = self.offline.is_some()
+                let shown = self.disconnected.is_some()
                     || matches!(self.stream, Stream::Connecting)
                     || retry_in >= QUICK_RECONNECT;
-                let since =
-                    (self.offline.as_ref()).map_or_else(Instant::now, |offline| offline.since);
-                self.offline = Some(Offline {
+                self.disconnected = Some(Disconnected {
                     reason,
                     retry_at: SystemTime::now() + retry_in,
-                    since,
                     shown,
                 });
             }
@@ -1020,6 +1015,12 @@ impl Folder {
 
     /// A wait is over: upload or send the commit again, or build the next one.
     pub fn resend(&mut self) -> Result<Vec<Work>, Stop> {
+        let now = SystemTime::now();
+        for call in [Call::Upload, Call::Commit] {
+            if let Some(retrying) = self.retrying.get_mut(&call) {
+                retrying.at = retrying.at.min(now);
+            }
+        }
         let mut work = Vec::new();
         match std::mem::replace(&mut self.flight, Flight::Idle) {
             Flight::Waiting(Next::Send(commit)) => {
@@ -1089,13 +1090,20 @@ impl Folder {
     pub fn view(&self) -> View {
         let trees = &self.engine.trees;
         let held = self.held();
-        let offline = (self.offline.as_ref())
-            .filter(|offline| offline.shown || offline.since.elapsed() >= QUICK_RECONNECT);
-        let unreachable = (self.retrying.values())
-            .find_map(|retrying| (retrying.unreachable).map(|cause| (cause, retrying.at)));
+        let now = SystemTime::now();
+        let reconnect = (self.disconnected.as_ref())
+            .filter(|disconnected| disconnected.shown && disconnected.retry_at > now);
+        let waiting: Vec<&Retrying> = (self.retrying.values())
+            .filter(|retrying| retrying.at > now)
+            .collect();
+        let unreachable_call = (waiting.iter()).find(|retrying| retrying.unreachable.is_some());
         let state = match &self.stream {
-            _ if offline.is_some() || unreachable.is_some() => FolderState::Offline,
-            _ if self.offline.is_some() => FolderState::Connecting,
+            _ if reconnect.is_some_and(|disconnected| disconnected.reason.unreachable())
+                || unreachable_call.is_some() =>
+            {
+                FolderState::Offline
+            }
+            _ if self.disconnected.is_some() => FolderState::Connecting,
             Stream::Connecting => FolderState::Connecting,
             Stream::Listing { .. } | Stream::Replaying(_) => FolderState::Bootstrapping,
             Stream::Following { .. } if self.settled(&held) => FolderState::UpToDate,
@@ -1174,36 +1182,59 @@ impl Folder {
             .map(|(id, whys)| format!("{} ({})", quoted_item(id), whys.join("; ")))
             .collect();
         stuck.sort();
-        let shown = (self.retrying.values()).find(|retrying| {
+        let shown = (waiting.iter()).find(|retrying| {
             retrying.wait >= RETRY_SHOWN || retrying.since.elapsed() >= RETRY_SHOWN
         });
         let unix_ms =
             |at: SystemTime| (at.duration_since(UNIX_EPOCH)).map_or(0, |at| at.as_millis() as i64);
-        let wait = match offline {
-            Some(offline) => Some(Wait {
-                kind: WaitKind::Retry,
-                until_ms: unix_ms(offline.retry_at),
+        let wait = match reconnect {
+            Some(disconnected) => Some((
+                WaitKind::Retry,
+                disconnected.retry_at,
+                disconnected_unreachable(&disconnected.reason),
+            )),
+            None => (unreachable_call
+                .or_else(|| waiting.iter().max_by_key(|retrying| retrying.at)))
+            .map(|retrying| {
+                let unreachable = (retrying.unreachable).map(|cause| Unreachable {
+                    why: cause.to_string(),
+                    no_internet: cause == Cause::NoInternet,
+                });
+                (retrying.kind, retrying.at, unreachable)
             }),
-            None => (self.retrying.values())
-                .max_by_key(|retrying| retrying.at)
-                .map(|retrying| Wait {
-                    kind: retrying.kind,
-                    until_ms: unix_ms(retrying.at),
-                }),
         };
-        let cause = match offline {
-            Some(offline) => Some((offline.reason.to_string(), offline.retry_at)),
-            None => unreachable.map(|(cause, at)| (cause.to_string(), at)),
-        };
+        let offline = (wait.as_ref())
+            .filter(|_| state == FolderState::Offline)
+            .and_then(|(_, at, unreachable)| {
+                let unreachable = unreachable.as_ref()?;
+                Some(match unreachable.no_internet {
+                    true => format!("no internet connection; trying again at {}", utc(*at)),
+                    false => format!(
+                        "can't connect to the server: {}; trying again at {}",
+                        unreachable.why,
+                        utc(*at)
+                    ),
+                })
+            });
+        let refused = reconnect
+            .filter(|disconnected| !disconnected.reason.unreachable())
+            .map(|disconnected| {
+                format!(
+                    "{}; trying again at {}",
+                    disconnected.reason,
+                    utc(disconnected.retry_at)
+                )
+            });
+        let wait = wait.map(|(kind, at, unreachable)| Wait {
+            kind,
+            until_ms: unix_ms(at),
+            unreachable,
+        });
         let retrying =
             shown.map(|retrying| format!("{}; trying again at {}", retrying.why, utc(retrying.at)));
         let problem = match self.engine.commits.halted() {
-            _ if state == FolderState::Offline => (cause.as_ref()).map(|(why, at)| {
-                format!(
-                    "can't connect to the server: {why}; trying again at {}",
-                    utc(*at)
-                )
-            }),
+            _ if offline.is_some() => offline,
+            _ if refused.is_some() => refused,
             _ if retrying.is_some() => retrying,
             Some(CommitHalt::ReadOnly) => {
                 Some("the server takes no changes from this device".into())
@@ -1253,15 +1284,20 @@ impl Folder {
             local_entries: self.local_entries,
             problem,
             wait,
-            unreachable: (state == FolderState::Offline)
-                .then_some(cause)
-                .flatten()
-                .map(|(why, at)| Unreachable {
-                    why,
-                    retry_at_ms: unix_ms(at),
-                }),
             questions: self.questions,
         }
+    }
+
+    /// How long until a wait the status shows ends, so the status can be shown again then.
+    pub fn next_change(&self) -> Option<Duration> {
+        let now = SystemTime::now();
+        (self
+            .disconnected
+            .iter()
+            .map(|disconnected| disconnected.retry_at))
+        .chain(self.retrying.values().map(|retrying| retrying.at))
+        .filter_map(|at| at.duration_since(now).ok())
+        .min()
     }
 
     fn held(&self) -> BTreeMap<String, Stuck> {
@@ -1432,7 +1468,7 @@ impl Folder {
     /// the commit in flight, and lists the tree again as for `AHEAD_OF_SERVER`, so that what the server lost is sent
     /// again.
     fn connected(&mut self, welcome: &Welcome, work: &mut Vec<Work>) -> Result<(), Stop> {
-        self.offline = None;
+        self.disconnected = None;
         self.head_seq = Some(welcome.head_seq);
         self.history_id.clone_from(&welcome.history_id);
         self.device_seq = welcome.device_seq;
@@ -1876,7 +1912,7 @@ impl Folder {
             && !self.disk.awaits_rescan()
             && self.engine.commits.in_flight().is_none()
             && self.caught_up()
-            && self.offline.is_none()
+            && self.disconnected.is_none()
             && self
                 .engine
                 .commits
@@ -2274,6 +2310,7 @@ impl FolderTask {
             let mut send: Slot<'_, Result<CommitResult, CallError>> = None;
             let mut wait: Slot<'_, ()> = None;
             let mut retry: Slot<'_, ()> = None;
+            let mut expire: Slot<'_, ()> = None;
             let mut recheck = tokio::time::interval(CLAIM_RECHECK);
             let mut reclaim = tokio::time::interval(RECLAIM_TRASH);
             reclaim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2306,6 +2343,7 @@ impl FolderTask {
                     }
                     () = finished(&mut wait) => folder.resend(),
                     () = finished(&mut retry) => folder.retry(),
+                    () = finished(&mut expire) => Ok(Vec::new()),
                     () = self.requests.notified() => folder.requested(),
                     _ = reclaim.tick() => {
                         folder.reclaim_trash(self.trash_cap);
@@ -2370,6 +2408,10 @@ impl FolderTask {
                     }
                 }
                 self.publish(&mut folder);
+                expire = match folder.next_change() {
+                    Some(after) => Some(Box::pin(tokio::time::sleep(after))),
+                    None => None,
+                };
             }
         };
         session.close().await;
@@ -2531,8 +2573,7 @@ impl FolderTask {
             remote_nodes: status.remote_nodes,
             local_entries: status.local_entries,
             problem: status.problem.clone(),
-            wait: status.wait,
-            unreachable: status.unreachable.clone(),
+            wait: status.wait.clone(),
             questions: status.questions,
             recovery: status.recovery,
         };
@@ -2547,7 +2588,6 @@ impl FolderTask {
         status.local_entries = view.local_entries;
         status.problem = view.problem;
         status.wait = view.wait;
-        status.unreachable = view.unreachable;
         status.questions = view.questions;
         status.recovery = view.recovery;
         drop(status);
@@ -2697,3 +2737,10 @@ async fn upload_counted(
 
 #[cfg(test)]
 mod tests;
+
+fn disconnected_unreachable(reason: &DisconnectReason) -> Option<Unreachable> {
+    reason.unreachable().then(|| Unreachable {
+        why: reason.to_string(),
+        no_internet: matches!(reason, DisconnectReason::Transport(transport) if transport.cause == Cause::NoInternet),
+    })
+}

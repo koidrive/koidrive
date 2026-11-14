@@ -2040,7 +2040,6 @@ fn folder_status(
         questions,
         problem: None,
         wait: None,
-        unreachable: None,
         progress: None,
     }
 }
@@ -3875,14 +3874,18 @@ mod tests {
         let wait = crate::status::Wait {
             kind: crate::status::WaitKind::Retry,
             until_ms: i64::MAX,
+            unreachable: None,
         };
         for folder in driver.inner.folders.lock().unwrap().values() {
-            folder.status.lock().unwrap().wait = Some(wait);
+            folder.status.lock().unwrap().wait = Some(wait.clone());
         }
         assert_eq!(driver.status().folders[0].wait, Some(wait));
         assert!(driver.pause().await.unwrap());
         let folder = &driver.status().folders[0];
-        assert_eq!((folder.state, folder.wait), (FolderState::Stopped, None));
+        assert_eq!(
+            (folder.state, folder.wait.clone()),
+            (FolderState::Stopped, None)
+        );
     }
 
     #[tokio::test]
@@ -7277,6 +7280,26 @@ mod tests {
         let listed = driver.restores(SPACE).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, RestoreState::Pending { waits_for: None });
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_paused_folder_no_longer_says_it_cannot_reach_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        eventually("the folder shows that it cannot reach the server", || {
+            let folder = &driver.status().folders[0];
+            folder.unreachable().is_some()
+        })
+        .await;
+        assert!(driver.pause().await.unwrap());
+        let folder = driver.status().folders[0].clone();
+        assert_eq!(folder.state, FolderState::Stopped);
+        assert_eq!(folder.wait, None, "paused: {folder:?}");
         driver.stop().await;
     }
 
