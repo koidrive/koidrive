@@ -101,7 +101,7 @@ pub async fn finish(
         Ok(found) => found,
         Err(error) if error.status() == Some(404) => return gone(file, &bucket),
         Err(error) => {
-            return Err(CliError::caused(
+            return Err(CliError::known_outcome(
                 format!("cannot read the bucket {bucket}: {error}; run the command again"),
                 error,
             ));
@@ -144,7 +144,7 @@ pub async fn finish(
             Ok(page) => page,
             Err(error) if error.status() == Some(404) => return gone(file, &bucket),
             Err(error) => {
-                return Err(CliError::caused(
+                return Err(CliError::known_outcome(
                     format!("cannot list the bucket {bucket}: {error}; run the command again"),
                     error,
                 ));
@@ -162,7 +162,7 @@ pub async fn finish(
             api.delete_object(&account, &bucket, jurisdiction, key)
                 .await
                 .map_err(|error| {
-                    CliError::caused(
+                    CliError::known_outcome(
                         format!(
                             "cannot delete {key} from {bucket}: {error}; run the command again"
                         ),
@@ -177,7 +177,7 @@ pub async fn finish(
         .delete_bucket(&account, &bucket, jurisdiction)
         .await
         .map_err(|error| {
-            CliError::caused(
+            CliError::known_outcome(
                 format!("cannot delete the bucket {bucket}: {error}; run the command again"),
                 error,
             )
@@ -197,7 +197,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
     let account = cloud.account().to_owned();
     let api = cloud.fresh().await?;
     let scripts = api.scripts(&account).await.map_err(|error| {
-        CliError::caused(
+        CliError::known_outcome(
             format!("cannot list the account's Workers: {error}; run the command again"),
             error,
         )
@@ -212,7 +212,7 @@ async fn delete_worker(cloud: &mut impl Cloud, state: &SetupState) -> Result<(),
             api.delete_script(&account, &state.script)
                 .await
                 .map_err(|error| {
-                    CliError::caused(format!(
+                    CliError::known_outcome(format!(
                         "cannot delete the Worker {}: {error}; run the command again",
                         state.script
                     ), error)
@@ -240,7 +240,7 @@ async fn binder(
     let account = cloud.account().to_owned();
     let api = cloud.fresh().await?;
     let scripts = api.scripts(&account).await.map_err(|error| {
-        CliError::caused(
+        CliError::known_outcome(
             format!("cannot list the account's Workers: {error}; run the command again"),
             error,
         )
@@ -250,7 +250,7 @@ async fn binder(
             .script_settings(&account, &script.id)
             .await
             .map_err(|error| {
-                CliError::caused(
+                CliError::known_outcome(
                     format!(
                         "cannot read the settings of {}: {error}; run the command again",
                         script.id

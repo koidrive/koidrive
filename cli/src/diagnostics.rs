@@ -14,18 +14,25 @@ pub struct Human {
 }
 
 #[derive(Default)]
-struct Message(Option<String>);
+struct Message {
+    text: Option<String>,
+    omitted: bool,
+}
 
 impl Visit for Message {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         if field.name() == "message" {
-            self.0 = Some(format!("{value:?}"));
+            self.text = Some(format!("{value:?}"));
+        } else {
+            self.omitted = true;
         }
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.0 = Some(value.to_owned());
+            self.text = Some(value.to_owned());
+        } else {
+            self.omitted = true;
         }
     }
 }
@@ -48,12 +55,16 @@ where
         let error = *event.metadata().level() == Level::ERROR;
         let mut message = Message::default();
         event.record(&mut message);
-        let message = message.0.unwrap_or_else(|| {
-            format!(
+        let message = match message.text {
+            Some(text) if message.omitted => {
+                format!("{text}. Run this command with --verbose for details.")
+            }
+            Some(text) => text,
+            None => format!(
                 "Koidrive reported {}. Run this command with --verbose for details.",
                 if error { "an error" } else { "a warning" }
-            )
-        });
+            ),
+        };
         let message = crate::printable(&message);
         if crate::output::rich(&self.command) {
             crate::terminal::colors(false);
@@ -100,6 +111,39 @@ mod tests {
     }
 
     #[test]
+    fn dropped_error_and_reason_fields_always_offer_verbose_details() {
+        let capture = Capture(Arc::default());
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .event_format(Human {
+                command: "status".into(),
+            })
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(error = %"fixture-only-secret", "Display cause");
+            tracing::warn!(error = ?io::Error::other("fixture-only-secret"), "Debug cause");
+            tracing::warn!(reason = %"fixture-only-secret", "Reason cause");
+            tracing::warn!(attempt = 3, "Numeric field");
+        });
+        let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        for message in [
+            "Display cause",
+            "Debug cause",
+            "Reason cause",
+            "Numeric field",
+        ] {
+            assert!(
+                text.contains(&format!(
+                    "{message}. Run this command with --verbose for details."
+                )),
+                "{text}"
+            );
+        }
+        assert!(!text.contains("fixture-only-secret"), "{text}");
+    }
+
+    #[test]
     fn human_diagnostics_keep_escaped_messages_and_omit_fields_and_metadata() {
         let capture = Capture(Arc::default());
         let writer = capture.clone();
@@ -120,7 +164,7 @@ mod tests {
         let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         assert_eq!(
             text,
-            "warning: Keep the files\\u{a}where they are\\u{1b}[31m\nerror: Koidrive reported an error. Run this command with --verbose for details.\nwarning: Koidrive reported a warning. Run this command with --verbose for details.\n"
+            "warning: Keep the files\\u{a}where they are\\u{1b}[31m. Run this command with --verbose for details.\nerror: Koidrive reported an error. Run this command with --verbose for details.\nwarning: Koidrive reported a warning. Run this command with --verbose for details.\n"
         );
         assert!(!text.contains("fixture-only-secret"));
         assert!(!text.contains("koidrive_cli"));

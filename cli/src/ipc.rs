@@ -74,6 +74,10 @@ async fn once(driver: &Driver, request_id: RequestId, key: Key, request: Request
 }
 
 pub async fn handle(driver: &Driver, request: Request) -> Response {
+    let read_only = matches!(
+        &request,
+        Request::Status | Request::Access | Request::Questions | Request::ShareLinks
+    );
     let outcome: Result<Response, DriverError> = match request {
         Request::Status => Ok(Response::Status {
             status: driver.status(),
@@ -208,7 +212,13 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             run,
         } => return once(driver, request_id, key, *run).await,
     };
-    outcome.unwrap_or_else(|error| Response::from(CliError::from(error)))
+    outcome.unwrap_or_else(|error| {
+        Response::from(if read_only {
+            CliError::retry_safe(error)
+        } else {
+            CliError::from(error)
+        })
+    })
 }
 
 static READING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());

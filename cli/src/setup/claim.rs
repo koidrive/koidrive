@@ -212,7 +212,7 @@ impl<'a> Claim<'a> {
         api.delete_secret(&account, &script, KEY_NAME)
             .await
             .map_err(|error| {
-                CliError::caused(format!(
+                CliError::known_outcome(format!(
                     "cannot delete the one-time key from {script}: {error}; run the command again"
                 ), error)
             })?;
@@ -278,7 +278,7 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                 other => Err(crate::unexpected(other)),
             }
         }
-        Err(error) => Err(CliError::caused(
+        Err(error) => Err(CliError::known_outcome(
             format!(
                 "cannot check this device's saved credential with {}: {error}. Nothing was changed; run the command again",
                 credential.server

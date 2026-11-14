@@ -103,9 +103,10 @@ impl From<PromptFailure> for CliError {
             PromptFailure::Cancelled => {
                 CliError::new(Code::Interrupted, "cancelled on the terminal")
             }
-            PromptFailure::CancelledPresented => {
-                CliError::new(Code::Interrupted, "cancelled on the terminal").human("")
-            }
+            PromptFailure::CancelledPresented => CliError {
+                presented: true,
+                ..CliError::new(Code::Interrupted, "cancelled on the terminal")
+            },
             PromptFailure::Closed => CliError::from("stdin closed before an answer").human(
                 "No answer was received. Run the command again in a terminal when you are ready.",
             ),
@@ -961,7 +962,9 @@ mod tests {
         assert_eq!(unpresented.code, presented.code);
         assert_eq!(presented.code.exit(), 130);
         assert_eq!(unpresented.human, None);
-        assert_eq!(presented.human.as_deref(), Some(""));
+        assert_eq!(presented.human, None);
+        assert!(!unpresented.presented);
+        assert!(presented.presented);
     }
 
     fn open_bridge(raw: bool) -> (OwnedFd, OwnedFd, InputBridge, std::fs::File) {

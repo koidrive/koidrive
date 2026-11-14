@@ -129,6 +129,165 @@ fn old_daemon_errors_and_unknown_causes_remain_readable() {
 }
 
 #[test]
+fn unreadable_telemetry_settings_keep_parser_details_out_of_terminal_output() {
+    for (tty, json_output) in [(true, false), (false, false), (false, true)] {
+        let profile = Profile::new();
+        let directory = profile.0.path().join("state/koidrive/telemetry");
+        fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(
+            directory.parent().unwrap(),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::write(directory.join("settings.json"), "{broken").unwrap();
+        let mut args = vec!["telemetry", "status"];
+        if json_output {
+            args.push("--json");
+        }
+        let output = profile.run(&args, tty, false, &[("NO_COLOR", "1")]);
+        assert_eq!(output.exit, 1);
+        if tty {
+            assert!(
+                output
+                    .terminal
+                    .contains("could not read saved usage-report data"),
+                "{}",
+                output.terminal
+            );
+            assert!(
+                output.terminal.contains("koi diagnose"),
+                "{}",
+                output.terminal
+            );
+            assert!(
+                !output
+                    .terminal
+                    .contains(&profile.0.path().display().to_string()),
+                "{}",
+                output.terminal
+            );
+            assert!(!output.terminal.contains("line 1"), "{}", output.terminal);
+        } else if json_output {
+            let envelope: Value = serde_json::from_str(&output.stdout).unwrap();
+            assert!(
+                envelope["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the telemetry files in")
+            );
+            assert!(envelope["error"].get("human").is_none());
+        } else {
+            assert!(
+                output.stderr.contains("the telemetry files in"),
+                "{}",
+                output.stderr
+            );
+            assert!(output.stderr.contains("line 1"), "{}", output.stderr);
+        }
+    }
+}
+
+#[test]
+fn an_empty_daemon_human_message_cannot_hide_a_failure() {
+    let profile = Profile::new();
+    let server = profile.fixture(1, |_| json!({"response":"error", "message":"raw daemon message", "human":"", "code":"failed"}));
+    let output = profile.run(&["pause"], true, false, &[("NO_COLOR", "1")]);
+    server.join().unwrap();
+    assert_eq!(output.exit, 1);
+    assert!(
+        output.terminal.contains("raw daemon message"),
+        "{}",
+        output.terminal
+    );
+}
+
+#[test]
+fn read_only_lists_offer_retry_without_unknown_mutation_guidance() {
+    for args in [["space", "list"], ["device", "list"], ["share", "list"]] {
+        let profile = Profile::new();
+        let server = profile.http(503, Vec::new());
+        let output = profile.run(&args, true, false, &[("NO_COLOR", "1"), ("NO_PROXY", "*")]);
+        server.join().unwrap();
+        assert_eq!(output.exit, 6);
+        assert!(
+            output
+                .terminal
+                .contains("Wait before trying this command again"),
+            "{}",
+            output.terminal
+        );
+        assert!(!output.terminal.contains("inspect"), "{}", output.terminal);
+    }
+}
+
+#[test]
+fn joining_a_busy_server_offers_retry_without_a_saved_sign_in() {
+    let profile = Profile::new();
+    let fixture = profile.http_responses(vec![("POST /v1/pair/complete ", 503, Vec::new()); 4]);
+    let credential = profile.0.path().join("state/koidrive/credential.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&credential).unwrap()).unwrap();
+    let server = saved["server"].as_str().unwrap();
+    fs::remove_file(&credential).unwrap();
+    let output = profile.run(
+        &["join", "ABCD-EFGH", "--server", server, "--name", "Laptop"],
+        true,
+        false,
+        &[("NO_COLOR", "1"), ("NO_PROXY", "*")],
+    );
+    fixture.join().unwrap();
+    assert_eq!(output.exit, 6);
+    assert!(
+        output
+            .terminal
+            .contains("Wait before trying this command again"),
+        "{}",
+        output.terminal
+    );
+    assert!(!output.terminal.contains("inspect"), "{}", output.terminal);
+    assert!(
+        !output.terminal.contains("koi device list"),
+        "{}",
+        output.terminal
+    );
+    assert!(!credential.exists());
+}
+
+#[test]
+fn joining_an_unreachable_server_does_not_require_a_connected_device() {
+    let profile = Profile::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}/", listener.local_addr().unwrap());
+    drop(listener);
+    let output = profile.run(
+        &["join", "ABCD-EFGH", "--server", &server, "--name", "Laptop"],
+        true,
+        false,
+        &[("NO_COLOR", "1"), ("NO_PROXY", "*")],
+    );
+    assert_eq!(output.exit, 6);
+    assert!(
+        output
+            .terminal
+            .contains("Check your connection and the server address, then try again"),
+        "{}",
+        output.terminal
+    );
+    assert!(!output.terminal.contains("inspect"), "{}", output.terminal);
+    assert!(
+        !output.terminal.contains("koi device list"),
+        "{}",
+        output.terminal
+    );
+    assert!(
+        !profile
+            .0
+            .path()
+            .join("state/koidrive/credential.json")
+            .exists()
+    );
+}
+
+#[test]
 fn stale_choices_keep_their_code_and_offer_current_choices() {
     for (tty, json_output) in [(true, false), (false, false), (false, true)] {
         let profile = Profile::new();
@@ -394,6 +553,12 @@ fn foreground_diagnostics_require_verbose_or_an_explicit_log_filter_on_terminals
             "{text}"
         );
         assert_eq!(text.contains("error="), diagnostic, "{text}");
+        if !diagnostic {
+            assert!(
+                text.contains("Run this command with --verbose for details"),
+                "{text}"
+            );
+        }
     }
 }
 
@@ -425,7 +590,7 @@ fn local_api_fixtures_keep_status_causes_and_unknown_outcome_guidance() {
             }
             .encode_to_vec(),
             "the server answered HTTP 403: CODE_FORBIDDEN: The owner disabled this operation",
-            "The server refused the request. The owner disabled this operation",
+            "The server refused the request: The owner disabled this operation",
             1,
             "failed",
         ),
@@ -452,8 +617,14 @@ fn local_api_fixtures_keep_status_causes_and_unknown_outcome_guidance() {
             if tty && !verbose {
                 assert!(text.contains(concise), "{text}");
                 assert!(!text.contains(raw), "{text}");
-                if status != 403 {
-                    assert!(text.contains("Before repeating a change"), "{text}");
+                assert!(!text.contains("Before repeating a change"), "{text}");
+                if status == 503 {
+                    assert!(
+                        text.contains("Wait before trying this command again"),
+                        "{text}"
+                    );
+                } else if status == 200 {
+                    assert!(text.contains("--verbose for details"), "{text}");
                 }
             } else if json_output {
                 let json: Value = serde_json::from_str(&output.stdout).unwrap();
@@ -487,10 +658,10 @@ fn a_closed_local_server_has_a_connection_action_without_a_blind_mutation_retry(
         let text = format!("{}{}", output.stderr, output.terminal);
         if tty {
             assert!(
-                text.contains("Koidrive could not reach the server. Check your connection."),
+                text.contains("Koidrive could not reach the server. Check your connection and the server address, then try again."),
                 "{text}"
             );
-            assert!(text.contains("Before repeating a change"), "{text}");
+            assert!(!text.contains("Before repeating a change"), "{text}");
             assert!(!text.contains("fixture-only-refresh"), "{text}");
         } else {
             assert_eq!(output.stderr, "koi: could not reach the server\n");
@@ -536,7 +707,7 @@ fn history_rpc_failures_keep_specific_causes_without_protocol_details() {
                 },
             )))],
             "the server refused: History access was removed",
-            "The server refused the request. History access was removed",
+            "The server refused the request: History access was removed",
         ),
     ] {
         for (tty, json_output) in [(true, false), (false, false), (false, true)] {

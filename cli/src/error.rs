@@ -17,6 +17,7 @@ pub struct CliError {
     pub reason: Option<Reason>,
     pub message: String,
     pub human: Option<String>,
+    pub presented: bool,
     pub next: Vec<Next>,
     /// What the command read before it failed, such as the spaces that answered when another one refused.
     pub partial: Option<Box<Done>>,
@@ -29,6 +30,7 @@ impl CliError {
             reason: None,
             message: message.into(),
             human: None,
+            presented: false,
             next: Vec::new(),
             partial: None,
         }
@@ -46,6 +48,15 @@ impl CliError {
     pub fn caused(message: impl Into<String>, cause: impl Into<CliError>) -> Self {
         CliError {
             message: message.into(),
+            ..cause.into()
+        }
+    }
+
+    pub fn known_outcome(message: impl Into<String>, cause: impl Into<CliError>) -> Self {
+        let message = message.into();
+        CliError {
+            human: Some(message.clone()),
+            message,
             ..cause.into()
         }
     }
@@ -101,7 +112,7 @@ impl CliError {
         match refused {
             true => CliError::new(Code::WrongCode, "the code is wrong or has expired")
                 .human("The code is wrong or has expired. Get a new code from the device or server you are joining."),
-            false => CliError::from(error),
+            false => CliError::retry_safe(error),
         }
     }
 
@@ -115,7 +126,7 @@ impl CliError {
             Resend::Never | Resend::ByCode => Code::Failed,
         };
         CliError::new(code, format!("the server refused: {}", error.message())).human(format!(
-            "The server refused the request. {}",
+            "The server refused the request: {}",
             error.message()
         ))
     }
@@ -123,22 +134,79 @@ impl CliError {
 
 impl From<ApiError> for CliError {
     fn from(error: ApiError) -> Self {
+        Self::api(error, RetrySafety::Inspect)
+    }
+}
+
+enum RetrySafety {
+    Safe,
+    Inspect,
+}
+
+impl CliError {
+    pub fn api_retry_safe(error: ApiError) -> Self {
+        Self::api(error, RetrySafety::Safe)
+    }
+
+    pub fn retry_safe(error: DriverError) -> Self {
+        match error {
+            DriverError::Api(error) => Self::api_retry_safe(error),
+            other => Self::from(other),
+        }
+    }
+
+    fn api(error: ApiError, retry: RetrySafety) -> Self {
         if error.is_unauthenticated() {
             return CliError::refused_credential();
         }
-        let human = match &error {
+        let mut human = match &error {
             ApiError::Server { error, .. } => {
-                format!("The server refused the request. {}", error.message())
+                format!("The server refused the request: {}", error.message())
             }
-            ApiError::Transport(_) => "Koidrive could not reach the server. Check your connection. Before repeating a change, inspect koi status and the relevant list, such as koi device list, koi space list, or koi share list, to see whether it took effect.".into(),
+            ApiError::Transport(_) => "Koidrive could not reach the server.".into(),
             ApiError::Status { status } | ApiError::Unreadable { status } => format!(
-                "The server answered HTTP {status} without a readable cause. Before repeating a change, inspect koi status and the relevant list, such as koi device list, koi space list, or koi share list, to see whether it took effect."
+                "The server answered HTTP {status} without a readable cause."
             ),
-            ApiError::TooLarge { .. } | ApiError::Decode(_) => "Koidrive could not read the server's answer. Before repeating a change, inspect koi status and the relevant list, such as koi device list, koi space list, or koi share list, to see whether it took effect.".into(),
+            ApiError::TooLarge { .. } | ApiError::Decode(_) => "Koidrive could not read the server's answer.".into(),
             ApiError::Url(_) => "The server address cannot be used. Check the address you entered or the server used by this device.".into(),
             ApiError::PathSegment(_) => "The request contains an invalid ID. Nothing was sent. Use the ID shown by the command that lists the item.".into(),
             ApiError::Credential(_) => "Koidrive could not read this device's saved sign-in after the server refused it. Run koi diagnose to collect details before changing the device's setup.".into(),
         };
+        let guidance = match (&error, retry) {
+            (ApiError::Transport(_), RetrySafety::Safe) => {
+                " Check your connection and the server address, then try again."
+            }
+            (ApiError::Transport(_), RetrySafety::Inspect) => {
+                " Check your connection and the server address. Before repeating a change, inspect the affected item from a connected device to see whether it took effect."
+            }
+            (ApiError::Status { status: 429 } | ApiError::Unreadable { status: 429 }, _) => {
+                " Wait before trying this command again."
+            }
+            (
+                ApiError::Status { status: 500..=599 } | ApiError::Unreadable { status: 500..=599 },
+                RetrySafety::Safe,
+            ) => " Wait before trying this command again.",
+            (
+                ApiError::Status { status: 500..=599 }
+                | ApiError::Unreadable { status: 500..=599 }
+                | ApiError::TooLarge { .. }
+                | ApiError::Decode(_),
+                RetrySafety::Inspect,
+            ) => {
+                " Before repeating a change, inspect the affected item from a connected device to see whether it took effect."
+            }
+            (
+                ApiError::Status { .. }
+                | ApiError::Unreadable { .. }
+                | ApiError::TooLarge { .. }
+                | ApiError::Decode(_),
+                _,
+            ) => {
+                " Run this command with --verbose for details, or koi diagnose to collect a report."
+            }
+            _ => "",
+        };
+        human.push_str(guidance);
         let busy = match error
             .server()
             .map(|server| (server.code(), server.resend()))
@@ -344,7 +412,7 @@ fn driver_human(error: &DriverError) -> Option<String> {
                 "This device's saved sign-in is damaged or unreadable. Run koi diagnose to collect details before changing the device's setup."
             }
             CredentialError::Exposed { .. } => {
-                "Other users can read this device's saved sign-in, so Koidrive will not use it. Restrict access to this device's Koidrive state to your user account before starting it again."
+                "Other users can read this device's saved sign-in, so Koidrive will not use it. Run this command with --verbose to see the file path, restrict that file with chmod 600, then try again."
             }
             CredentialError::NotOwned { .. } => {
                 "This device's saved sign-in belongs to another system user. Run Koidrive as the user who set it up, without copying their sign-in files."
@@ -598,7 +666,7 @@ mod tests {
         assert!(api.next.is_empty());
         assert_eq!(
             api.human.as_deref(),
-            Some("The server refused the request. this deployment already has an owner")
+            Some("The server refused the request: this deployment already has an owner")
         );
         let rpc = CliError::from(DriverError::Refused(ServerError(ProtoError {
             code: ServerCode::Forbidden as i32,
@@ -609,6 +677,45 @@ mod tests {
         assert_eq!(rpc.message, format!("the server refused: {cause}"));
         assert_eq!(rpc.human, api.human);
         assert!(rpc.next.is_empty());
+    }
+
+    #[test]
+    fn retry_safe_network_guidance_does_not_require_an_existing_sign_in() {
+        for (error, action) in [
+            (
+                ApiError::Transport(reqwest::Client::new().get("not a url").build().unwrap_err()),
+                "Check your connection and the server address, then try again",
+            ),
+            (
+                ApiError::Status { status: 503 },
+                "Wait before trying this command again",
+            ),
+            (
+                ApiError::Unreadable { status: 429 },
+                "Wait before trying this command again",
+            ),
+        ] {
+            let raw = error.to_string();
+            let shown = CliError::api_retry_safe(error);
+            assert_eq!(shown.message, raw);
+            let human = shown.human.unwrap();
+            assert!(human.contains(action), "{human}");
+            assert!(!human.contains("inspect"), "{human}");
+            assert!(!human.contains("koi device list"), "{human}");
+            assert!(!human.contains("koi space list"), "{human}");
+        }
+    }
+
+    #[test]
+    fn known_outer_outcomes_keep_their_own_recovery_guidance() {
+        let message =
+            "The saved sign-in could not be checked. Nothing was changed; run the command again";
+        let cause = CliError::from(ApiError::Status { status: 503 });
+        assert!(cause.human.as_ref().unwrap().contains("Before repeating"));
+        let shown = CliError::known_outcome(message, cause);
+        assert_eq!(shown.message, message);
+        assert_eq!(shown.code, Code::Unavailable);
+        assert_eq!(shown.human.as_deref(), Some(message));
     }
 
     #[test]
@@ -627,7 +734,7 @@ mod tests {
             assert!(shown.next.is_empty());
             let human = shown.human.unwrap();
             assert!(human.contains("Before repeating a change"), "{human}");
-            assert!(human.contains("koi status"), "{human}");
+            assert!(human.contains("inspect the affected item"), "{human}");
             assert!(!human.contains("InternalParserType"), "{human}");
             assert!(!human.contains("Nothing was sent"), "{human}");
         }

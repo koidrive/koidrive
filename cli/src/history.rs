@@ -595,7 +595,7 @@ fn starts_with(names: &[String], prefix: &[String]) -> bool {
 }
 
 async fn call(auth: &Auth, space: &str, call: Call) -> Result<rpc_response::Result, CliError> {
-    match auth.api().rpc(auth, space, call).await?.result {
+    match auth.api().rpc(auth, space, call).await.map_err(CliError::api_retry_safe)?.result {
         Some(rpc_response::Result::Error(error)) => Err(CliError::rpc_refusal(error)),
         Some(result) => Ok(result),
         None => Err(CliError::from("the server sent an empty answer")

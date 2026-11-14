@@ -386,7 +386,12 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
         .ok_or(DriverError::NotPaired)?;
     let auth = crate::reading(paths, &credential)?;
     let mut progress = Some(terminal.progress("Preparing ~/Koidrive..."));
-    let spaces = auth.api().list_spaces(&auth).await?.spaces;
+    let spaces = auth
+        .api()
+        .list_spaces(&auth)
+        .await
+        .map_err(CliError::api_retry_safe)?
+        .spaces;
     let mut target = if spaces.is_empty() {
         Target::Default
     } else {
@@ -406,7 +411,11 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                     terminal.message(&format!(
                         "A shared folder named {DEFAULT_FOLDER} is available. Choose which folder to sync."
                     ));
-                    let now = auth.api().list_spaces(&auth).await?;
+                    let now = auth
+                        .api()
+                        .list_spaces(&auth)
+                        .await
+                        .map_err(CliError::api_retry_safe)?;
                     target = shared_folder(terminal, &now.spaces).await?;
                 }
             },
@@ -414,7 +423,11 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                 Ok(space) => break crate::Named::Created(space),
                 Err(error) if error.status() != Some(409) => return Err(error.into()),
                 Err(error) => {
-                    let now = auth.api().list_spaces(&auth).await?;
+                    let now = auth
+                        .api()
+                        .list_spaces(&auth)
+                        .await
+                        .map_err(CliError::api_retry_safe)?;
                     if !now.spaces.iter().any(|space| space.name == name) {
                         return Err(error.into());
                     }
@@ -1145,7 +1158,19 @@ async fn with_session(
     SESSION.store(false, Ordering::Relaxed);
     if let (Err(error), Some(code)) = (&outcome, status) {
         crate::telemetry::flush();
-        eprintln!("koi: {}", printable(&error.message));
+        let message = if crate::output::concise("setup") {
+            error.human.as_deref().unwrap_or(&error.message)
+        } else {
+            &error.message
+        };
+        crate::output::print(
+            "setup",
+            crate::output::Presentation::Text,
+            crate::output::Tone::Attention,
+            "",
+            crate::output::Note::Error(&format!("{}\n", printable(message))),
+            None,
+        );
         std::process::exit(code);
     }
     outcome
@@ -1160,14 +1185,16 @@ async fn guarded(
 ) -> Result<(), CliError> {
     let mut session = tokio::select! {
         session = login => session?,
-        how = stopped() => return Err(format!("{how} before the login finished").into()),
+        how = stopped() => return Err(CliError::from(format!("{how} before the login finished"))
+            .human("Stopped before sign-in finished. Run this command again when you are ready.")),
     };
     let outcome = tokio::select! {
         outcome = async {
             session.pick_account().await?;
             work(&mut session).await
         } => outcome,
-        how = stopped() => Err(format!("{how}; run the same command again to continue").into()),
+        how = stopped() => Err(CliError::from(format!("{how}; run the same command again to continue"))
+            .human("Stopped. Run the same command again to continue.")),
     };
     let terminal = session.terminal.clone();
     let _progress = terminal
@@ -2374,6 +2401,22 @@ mod tests {
 
     use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
     use super::*;
+
+    #[tokio::test]
+    async fn interrupted_login_preserves_raw_text_and_offers_a_human_next_step() {
+        let error = guarded(
+            std::future::pending::<Result<Session, CliError>>(),
+            async || "stopped",
+            async |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "stopped before the login finished");
+        assert_eq!(
+            error.human.as_deref(),
+            Some("Stopped before sign-in finished. Run this command again when you are ready.")
+        );
+    }
 
     #[test]
     fn a_closed_input_is_not_an_empty_answer() {

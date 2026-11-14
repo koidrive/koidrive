@@ -592,6 +592,7 @@ fn terminal_pair() -> (File, File) {
 
 enum TerminalInput {
     Direct,
+    RedirectedStdout,
     QueuedEnter,
     ControllingProxy,
     FullProxy,
@@ -654,6 +655,9 @@ fn terminal_run(
     command
         .stdin(slave.try_clone().unwrap())
         .stdout(slave.try_clone().unwrap());
+    if matches!(input, TerminalInput::RedirectedStdout) {
+        command.stdout(File::create(home.join("stdout.txt")).unwrap());
+    }
     match &other {
         Some((_, output)) => {
             command.stderr(output.try_clone().unwrap());
@@ -975,6 +979,43 @@ fn signals_reap_helpers_and_restore_each_prompt() {
             }
         }
     }
+}
+
+#[test]
+fn rich_cancellation_is_not_repeated_in_verbose_output() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let output = terminal_run(
+        home.path(),
+        &[step(ROUTE, "\u{3}")],
+        &["setup", "--verbose"],
+        &[],
+        true,
+        None,
+        TerminalInput::Direct,
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(130), "{text}");
+    assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
+    assert!(!text.contains("cancelled on the terminal"), "{text}");
+}
+
+#[test]
+fn rich_cancellation_is_not_repeated_when_stdout_is_redirected() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let output = terminal_run(
+        home.path(),
+        &[step(ROUTE, "\u{3}")],
+        &["setup"],
+        &[],
+        true,
+        None,
+        TerminalInput::RedirectedStdout,
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(130), "{text}");
+    assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
+    assert!(!text.contains("cancelled on the terminal"), "{text}");
+    assert!(fs::read(home.path().join("stdout.txt")).unwrap().is_empty());
 }
 
 #[test]

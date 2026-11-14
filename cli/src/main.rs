@@ -549,7 +549,7 @@ fn main() -> ExitCode {
                 let error = CliError::new(
                     Code::Interrupted,
                     if status == 143 { "stopped by SIGTERM; what the command already did stays done" } else { "interrupted by Ctrl-C; what the command already did stays done" },
-                );
+                ).human(format!("{}. Changes already made were kept. Run koi status to check this device before continuing.", if status == 143 { "Stopped" } else { "Interrupted" }));
                 telemetry::flush();
                 let _ = finish(&command, json, verbose, Err(error), Vec::new());
                 let _ = io::Write::flush(&mut io::stdout());
@@ -1036,10 +1036,15 @@ fn finish(
             let presentation = partial
                 .as_ref()
                 .map_or(output::Presentation::Text, |done| done.presentation);
-            let message = match concise.then_some(error.human.as_deref()).flatten() {
-                Some("") => String::new(),
-                Some(human) => format!("{}\n", printable(human)),
-                None => format!("{}\n", printable(&error.message)),
+            let shown = concise
+                .then_some(error.human.as_deref())
+                .flatten()
+                .filter(|human| !human.is_empty())
+                .unwrap_or(&error.message);
+            let message = if error.presented {
+                String::new()
+            } else {
+                format!("{}\n", printable(shown))
             };
             let exit = error.code.exit();
             (
@@ -1922,7 +1927,11 @@ async fn devices(auth: &Auth) -> Result<Vec<DeviceInfo>, CliError> {
     let mut cursor = String::new();
     let mut seen = std::collections::HashSet::new();
     loop {
-        let page = auth.api().list_devices(auth, &cursor).await?;
+        let page = auth
+            .api()
+            .list_devices(auth, &cursor)
+            .await
+            .map_err(CliError::api_retry_safe)?;
         devices.extend(page.devices);
         if page.next_cursor.is_empty() {
             return Ok(devices);
@@ -1977,7 +1986,12 @@ fn replayed(id: &RequestId, invitation: &Invitation, now_ms: i64) -> Result<Done
 /// same time, since koi folder link names a space by its name and the server keeps names unique.
 async fn space(paths: Paths, action: SpaceAction) -> Result<Done, CliError> {
     let auth = signed_in(&paths)?;
-    let spaces = auth.api().list_spaces(&auth).await?.spaces;
+    let spaces = auth
+        .api()
+        .list_spaces(&auth)
+        .await
+        .map_err(CliError::api_retry_safe)?
+        .spaces;
     match action {
         SpaceAction::List => {
             let data = SpacesData {
@@ -2045,7 +2059,11 @@ async fn named_space(auth: &Auth, spaces: &[SpaceInfo], name: &str) -> Result<Na
     match create_space(auth, name).await {
         Ok(created) => Ok(Named::Created(created)),
         Err(error) if error.status() == Some(409) => {
-            let now = auth.api().list_spaces(auth).await?;
+            let now = auth
+                .api()
+                .list_spaces(auth)
+                .await
+                .map_err(CliError::api_retry_safe)?;
             match existing_space(&now.spaces, name)? {
                 Some(space) => Ok(Named::Existing(space)),
                 None => Err(error.into()),
@@ -2105,13 +2123,13 @@ async fn usage(auth: &Auth, spaces: Vec<SpaceInfo>) -> Result<Done, CliError> {
         match auth.api().space_usage(auth, &space.space_id).await {
             Ok(usage) => usages.push((space, usage)),
             Err(error) if error.is_unauthenticated() => {
-                let mut error = CliError::from(error);
+                let mut error = CliError::api_retry_safe(error);
                 if !(usages.is_empty() && refused.is_empty()) {
                     error.partial = Some(Box::new(usage_read(&usages, &refused)));
                 }
                 return Err(error);
             }
-            Err(error) => refused.push((space, CliError::from(error))),
+            Err(error) => refused.push((space, CliError::api_retry_safe(error))),
         }
     }
     usage_done(&usages, &refused)
