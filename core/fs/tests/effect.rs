@@ -792,6 +792,45 @@ fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
         );
         assert_eq!(listing(&docs), before, "{} {mode:o}", scenario.name);
         assert_eq!(private_names(root, QUARANTINE_DIR), Vec::<String>::new());
+        assert_eq!(
+            private_names(root, STAGING_DIR),
+            Vec::<String>::new(),
+            "{} {mode:o}",
+            scenario.name
+        );
+    }
+}
+
+#[test]
+fn a_quarantine_that_cannot_be_opened_fails_only_the_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let quarantined = ["replace", "remove_file", "remove_dir"];
+    for scenario in SCENARIOS
+        .iter()
+        .filter(|scenario| quarantined.contains(&scenario.name))
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let effect = prepare(scenario, root);
+        let docs = root.join("docs");
+        let before = listing(&docs);
+        let quarantine = root.join(PRIVATE_DIR).join(QUARANTINE_DIR);
+        fs::create_dir_all(&quarantine).unwrap();
+        fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o000)).unwrap();
+        let outcome = apply_one(&bind(root), &effect, &mut |_| {});
+        fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            outcome.unwrap(),
+            failed(Reason::Denied),
+            "{}",
+            scenario.name
+        );
+        assert_eq!(listing(&docs), before, "{}", scenario.name);
+        assert_eq!(private_names(root, STAGING_DIR), Vec::<String>::new());
     }
 }
 

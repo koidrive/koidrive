@@ -26,6 +26,9 @@ proptest::proptest! {
 fn every_file_but_the_unreadable_ones_is_uploaded(unreadable: &[bool]) {
     use std::os::unix::fs::PermissionsExt;
 
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     fs::create_dir(site.root.join("folder")).unwrap();

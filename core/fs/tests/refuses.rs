@@ -2,13 +2,16 @@
 
 mod common;
 
-use common::{SCENARIOS, bind, prepare};
+use common::{SCENARIOS, bind, entries, prepare};
 use koidrive_fs::{PRIVATE_DIR, QUARANTINE_DIR, Refusal, STAGING_DIR};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn a_target_that_cannot_be_opened_still_refuses_a_write() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let effect = prepare(&SCENARIOS[1], root);
@@ -24,6 +27,9 @@ fn a_target_that_cannot_be_opened_still_refuses_a_write() {
 
 #[test]
 fn a_private_folder_that_cannot_be_opened_is_named_as_refused() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let effect = prepare(&SCENARIOS[1], root);
@@ -90,4 +96,37 @@ fn a_delete_acl_that_denies_replacement_is_a_refusal() {
         })
     ));
     assert_eq!(refusal.unwrap(), Some(Refusal::Here));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_that_denies_only_new_folders_still_takes_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let write = prepare(&SCENARIOS[1], root);
+    let create = (SCENARIOS[2].build)(&entries(root, SCENARIOS[2].paths));
+    let space = bind(root);
+    let docs = root.join("docs");
+    let acl = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("chmod")
+                .args(args)
+                .arg(&docs)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    acl(&["+a", "everyone deny add_subdirectory"]);
+    let refusals = (
+        space.refuses(&write.action).unwrap(),
+        space.refuses(&create.action).unwrap(),
+    );
+    let applied = common::apply_one(&space, &write, &mut |_| {});
+    acl(&["-N"]);
+    assert_eq!(refusals, (None, Some(Refusal::Here)));
+    assert!(
+        matches!(applied, Ok(koidrive_fs::Outcome::Done { .. })),
+        "{applied:?}"
+    );
 }

@@ -238,9 +238,31 @@ fn is_denied(outcome: &Outcome) -> bool {
     )
 }
 
-fn writable(folder: BorrowedFd) -> io::Result<bool> {
-    let access = Access::WRITE_OK | Access::EXEC_OK;
-    match rustix::fs::accessat(folder, c".", access, AtFlags::EACCESS) {
+#[derive(Clone, Copy, PartialEq)]
+enum Change {
+    AddsFile,
+    AddsFolder,
+    Removes,
+}
+
+#[cfg(target_os = "macos")]
+fn access(change: Change) -> Access {
+    let bit = |shift: u32| Access::from_bits_retain(1 << shift);
+    let (write_ok, execute_ok, append_ok) = (bit(10), bit(11), bit(13));
+    match change {
+        Change::AddsFile => write_ok | execute_ok,
+        Change::AddsFolder => append_ok | execute_ok,
+        Change::Removes => execute_ok,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn access(_: Change) -> Access {
+    Access::WRITE_OK | Access::EXEC_OK
+}
+
+fn allows(folder: BorrowedFd, change: Change) -> io::Result<bool> {
+    match rustix::fs::accessat(folder, c".", access(change), AtFlags::EACCESS) {
         Ok(()) | Err(Errno::NOENT) => Ok(true),
         Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => Ok(false),
         Err(err) => Err(err.into()),
@@ -291,6 +313,16 @@ fn unresolved(err: Unresolved) -> io::Result<Outcome> {
     }
 }
 
+macro_rules! open {
+    ($opened:expr) => {
+        match $opened {
+            Ok(opened) => opened,
+            Err(Unresolved::Io { err, .. }) if refused(&err) => return Ok(failed(Reason::Denied)),
+            Err(err) => return Err(err.into()),
+        }
+    };
+}
+
 macro_rules! resolve {
     ($resolved:expr) => {
         match $resolved {
@@ -306,19 +338,26 @@ impl Space {
     /// without changing anything. A place that cannot be found is no refusal:
     /// applying the action reports it.
     pub fn refuses(&self, action: &Action) -> io::Result<Option<Refusal>> {
-        let private: &[&str] = match action {
-            Action::WriteFile { replaces: None, .. } => &[STAGING_DIR],
+        let private: &[(&str, Change)] = match action {
+            Action::WriteFile { replaces: None, .. } => &[(STAGING_DIR, Change::AddsFile)],
             Action::WriteFile {
                 replaces: Some(_), ..
-            } => &[STAGING_DIR, QUARANTINE_DIR],
-            Action::RemoveFile { .. } | Action::RemoveDir { .. } => &[QUARANTINE_DIR],
+            } => &[
+                (STAGING_DIR, Change::AddsFile),
+                (QUARANTINE_DIR, Change::AddsFile),
+            ],
+            Action::RemoveFile { .. } => &[(QUARANTINE_DIR, Change::AddsFile)],
+            Action::RemoveDir { .. } => &[(QUARANTINE_DIR, Change::AddsFolder)],
             Action::CreateDir { .. } | Action::Move { .. } => &[],
         };
-        for dir in private {
+        for (dir, change) in private {
             let refused = match self.private_present(&[dir]) {
-                Ok(folder) => (!writable(folder.fd())?).then(|| Path::new(PRIVATE_DIR).join(dir)),
+                Ok(folder) => {
+                    (!allows(folder.fd(), *change)?).then(|| Path::new(PRIVATE_DIR).join(dir))
+                }
                 Err(Unresolved::Missing(_)) => match self.private_present(&[]) {
-                    Ok(folder) => (!writable(folder.fd())?).then(|| PathBuf::from(PRIVATE_DIR)),
+                    Ok(folder) => (!allows(folder.fd(), Change::AddsFolder)?)
+                        .then(|| PathBuf::from(PRIVATE_DIR)),
                     Err(unresolved) => refused_at(unresolved),
                 },
                 Err(unresolved) => refused_at(unresolved),
@@ -327,16 +366,29 @@ impl Space {
                 return Ok(Some(Refusal::Private(path)));
             }
         }
-        let changed: Vec<(&Location, bool)> = match action {
-            Action::CreateDir { at } => vec![(at, false)],
-            Action::WriteFile { at, replaces } => std::iter::once((at, false))
-                .chain(replaces.iter().map(|displaced| (&displaced.at, true)))
+        let changed: Vec<(&Location, Change)> = match action {
+            Action::CreateDir { at } => vec![(at, Change::AddsFolder)],
+            Action::WriteFile { at, replaces } => std::iter::once((at, Change::AddsFile))
+                .chain(
+                    replaces
+                        .iter()
+                        .map(|displaced| (&displaced.at, Change::Removes)),
+                )
                 .collect(),
-            Action::Move { from, to, .. } => vec![(to, false), (from, true)],
-            Action::RemoveFile { displaced } => vec![(&displaced.at, true)],
-            Action::RemoveDir { at, .. } => vec![(at, true)],
+            Action::Move { from, to, .. } => {
+                let folder = (self.parent_present(from).ok())
+                    .and_then(|(source, name)| lookup(source.fd(), name).ok().flatten())
+                    .is_some_and(|stat| stat.file_type == FileType::Directory);
+                let adds = match folder {
+                    true => Change::AddsFolder,
+                    false => Change::AddsFile,
+                };
+                vec![(to, adds), (from, Change::Removes)]
+            }
+            Action::RemoveFile { displaced } => vec![(&displaced.at, Change::Removes)],
+            Action::RemoveDir { at, .. } => vec![(at, Change::Removes)],
         };
-        for (at, displaced) in changed {
+        for (at, change) in changed {
             let (parent, name) = match self.parent_present(at) {
                 Ok(found) => found,
                 Err(unresolved) => match refused_at(unresolved) {
@@ -344,7 +396,9 @@ impl Space {
                     None => continue,
                 },
             };
-            if !writable(parent.fd())? || (displaced && locked(parent.fd(), name)) {
+            if !allows(parent.fd(), change)?
+                || (change == Change::Removes && locked(parent.fd(), name))
+            {
                 return Ok(Some(Refusal::Here));
             }
         }
@@ -466,6 +520,20 @@ impl Space {
         now: SystemTime,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
+        let outcome = self.attempt(effect, contents, now, hook)?;
+        if !matches!(outcome, Outcome::Done { .. }) {
+            self.drop_staged(&effect.id)?;
+        }
+        Ok(outcome)
+    }
+
+    fn attempt(
+        &self,
+        effect: &Effect,
+        contents: &mut dyn Contents,
+        now: SystemTime,
+        hook: &mut dyn FnMut(Step),
+    ) -> io::Result<Outcome> {
         check_name(OsStr::new(&effect.id))?;
         self.check_held()?;
         let outcome = match &effect.action {
@@ -485,7 +553,7 @@ impl Space {
                 }
             }
             Action::WriteFile { at, replaces: None } => {
-                let staging = self.private(&[STAGING_DIR])?;
+                let staging = open!(self.private(&[STAGING_DIR]));
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
                 self.place(&staging, &effect.id, &parent, name, hook)?
@@ -532,9 +600,6 @@ impl Space {
                 Outcome::Done { identity: None }
             }
         };
-        if !matches!(outcome, Outcome::Done { .. }) {
-            self.drop_staged(&effect.id)?;
-        }
         Ok(outcome)
     }
 
@@ -551,7 +616,7 @@ impl Space {
         let target = match place {
             Some(at) => {
                 let target = resolve!(self.parent(at));
-                let staging = self.private(&[STAGING_DIR])?;
+                let staging = open!(self.private(&[STAGING_DIR]));
                 if lookup(staging.fd(), OsStr::new(&effect.id))?.is_none() {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
@@ -562,7 +627,7 @@ impl Space {
             }
             None => None,
         };
-        let quarantine = self.private(&[QUARANTINE_DIR])?;
+        let quarantine = open!(self.private(&[QUARANTINE_DIR]));
         match lookup(parent.fd(), name) {
             Err(err) => return denied(err),
             Ok(None) => return Ok(failed(Reason::Missing)),
@@ -574,7 +639,7 @@ impl Space {
         hook(Step::Checked);
 
         resolve!(self.recheck(&parent));
-        self.recheck(&quarantine)?;
+        open!(self.recheck(&quarantine));
         let id = OsStr::new(&effect.id);
         match rename_no_replace(parent.fd(), name, quarantine.fd(), id) {
             Ok(()) => {}
