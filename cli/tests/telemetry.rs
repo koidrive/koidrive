@@ -621,6 +621,9 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
                 !text.contains("alice") && !text.contains("confidential"),
                 "{body}"
             );
+            for event in body["batch"].as_array().unwrap() {
+                assert!(event["uuid"].is_string(), "{event}");
+            }
         }
         requests
     };
