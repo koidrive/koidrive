@@ -28,6 +28,8 @@ cleanup() {
 }
 trap cleanup EXIT
 export XDG_CONFIG_HOME=$tmp/config
+mkdir -p "$tmp/cache"
+[ ! -d "$(brew --cache)/api" ] || cp -Rp "$(brew --cache)/api" "$tmp/cache/api"
 export HOMEBREW_CACHE=$tmp/cache HOMEBREW_LOGS=$tmp/logs
 releases=$tmp/github.com/koidrive/koidrive/releases
 mkdir -p "$tmp/Applications" "$tmp/image/Koidrive.app/Contents/Helpers"
