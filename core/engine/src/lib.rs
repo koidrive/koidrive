@@ -2,6 +2,7 @@
 
 //! Sync state machine and conflict rules, free of I/O.
 
+pub mod authors;
 mod casefold_data;
 pub mod classify;
 pub mod commit;
