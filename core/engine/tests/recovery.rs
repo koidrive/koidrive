@@ -1262,6 +1262,31 @@ fn a_restore_of_a_child_an_answer_trashes_again_waits_while_the_child_is_unsettl
 }
 
 #[test]
+fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rewind() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "d")), (NODE, file("d", "new", 2))],
+        &[("d", dir(ROOT, "d")), ("k", file("d", "kept", 1))],
+        &[],
+    );
+    let mut state = trees.state();
+    let waiting = Waiting {
+        shape: None,
+        origin: Origin::Other,
+    };
+    state.waiting.insert("d".into(), waiting);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    assert!(trees.waiting().contains_key("d"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &mut ids, NOW);
+    trees.settle();
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[NODE, "d"]);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
 fn a_commit_counts_the_nodes_a_published_folder_brings_back_from_the_trash() {
     let folders: Vec<(String, String)> = (0..900)
         .map(|n| (format!("s{n}"), format!("g{n}")))

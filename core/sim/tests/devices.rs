@@ -7154,6 +7154,37 @@ fn a_rename_back_to_the_pending_name_racing_a_delete_does_not_bring_back_the_fol
 }
 
 #[test]
+fn a_folder_kept_before_a_second_rewind_is_asked_about_again_with_the_file_moved_into_it() {
+    use Step::*;
+    let phases = vec![
+        vec![
+            (0, act(1, 0, 0, "a", 0)),
+            (2, act(0, 0, 0, "ß", 0)),
+            (0, act(0, 0, 0, "A", 0)),
+            (1, act(1, 0, 0, "a", 0)),
+            (0, act(1, 0, 10946984146616059648, "a", 0)),
+            (0, Backup),
+        ],
+        vec![
+            (0, Rewind),
+            (0, act(2, 584749217343519893, 0, "a", 0)),
+            (0, Connect),
+            (2, Work(0)),
+            (0, Work(0)),
+            (0, act(4, 7060515144603055748, 0, "a", 0)),
+            (0, Answer(0)),
+            (0, act(0, 0, 0, "A", 0)),
+            (0, Work(248128602350464)),
+            (0, Work(0)),
+            (0, act(2, 2677073389278261, 0, "a", 0)),
+            (0, Rewind),
+            (2, act(3, 13714120292099792963, 8654499468257011757, "a", 0)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
 fn a_folder_keeps_no_pending_name_through_rewinds_and_store_rollbacks() {
     use Reply::*;
     use Step::*;

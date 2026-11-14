@@ -197,7 +197,7 @@ fn unsynced(trees: &Trees, top: &str) -> BTreeMap<NodeId, Shape> {
         let Some(node) = trees.local().get(&id) else {
             continue;
         };
-        let known = trees.synced().get(&id).is_some() || trees.remote().get(&id).is_some();
+        let known = trees.acknowledged(&id).is_some() || trees.remote().get(&id).is_some();
         if known || (id != top && trees.excluded(&id)) {
             continue;
         }
