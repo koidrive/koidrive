@@ -4,6 +4,7 @@ import errno
 import hashlib
 import os
 import platform
+import plistlib
 from pathlib import Path
 import pty
 import select
@@ -547,6 +548,77 @@ exec /bin/mv "$@"''')
             with self.subTest(koi=koi.name):
                 self.publish(koi)
                 self.refused_install("not signed with Koidrive's Developer ID")
+
+    @unittest.skipUnless(platform.system() == "Darwin", "launchd runs only on macOS")
+    def test_install_leaves_a_running_launch_agent_of_another_koi_alone(self):
+        domain = f"gui/{os.getuid()}"
+        if subprocess.run(["launchctl", "print", domain], capture_output=True).returncode != 0:
+            self.skipTest("this session has no launchd GUI domain")
+        other = self.dir / "other install"
+        other.mkdir()
+        (other / "koi").symlink_to("/bin/sleep")
+        label = f"dev.koidrive.koi.{os.urandom(4).hex()}"
+        plist = self.dir / f"{label}.plist"
+        plist.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": [str(other / "koi"), "600"], "RunAtLoad": True}))
+        subprocess.run(["launchctl", "bootstrap", domain, str(plist)], check=True, capture_output=True)
+        self.addCleanup(subprocess.run, ["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+
+        def agent_pid():
+            listing = subprocess.run(["launchctl", "print", f"{domain}/{label}"], capture_output=True, text=True).stdout
+            return next((line.split("=", 1)[1].strip() for line in listing.splitlines() if line.strip().startswith("pid =")), None)
+
+        deadline = time.monotonic() + 10
+        while (pid := agent_pid()) is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertIsNotNone(pid, "the launch agent did not start")
+        for tool in ("launchctl", "ps"):
+            (self.bin / tool).unlink()
+        output = self.successful_install(terminal=False)
+        self.assertNotIn(label, output)
+        self.assertEqual(agent_pid(), pid)
+
+    @unittest.skipUnless(platform.system() == "Darwin", "launchd runs only on macOS")
+    def test_install_restarts_its_own_launch_agent_in_a_folder_with_format_characters(self):
+        domain = f"gui/{os.getuid()}"
+        if subprocess.run(["launchctl", "print", domain], capture_output=True).returncode != 0:
+            self.skipTest("this session has no launchd GUI domain")
+        folder = self.dir / "Tools \U0001F468\u200D\U0001F4BB \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645"
+        folder.mkdir()
+        self.fixture.write_text(textwrap.dedent("""\
+            #!/bin/sh
+            if [ "${1:-}" = --version ]; then
+                echo 'koi 0.0.0 Koidrive sync client'
+                exit
+            fi
+            exec /bin/sleep 600
+        """))
+        self.publish(self.fixture)
+        (folder / "koi").write_text("#!/bin/sh\n: Koidrive sync client\nexec /bin/sleep 600\n")
+        (folder / "koi").chmod(0o755)
+        label = f"dev.koidrive.koi.{os.urandom(4).hex()}"
+        plist = self.dir / f"{label}.plist"
+        plist.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": [str(folder / "koi"), "_daemon"], "RunAtLoad": True}))
+        subprocess.run(["launchctl", "bootstrap", domain, str(plist)], check=True, capture_output=True)
+        self.addCleanup(subprocess.run, ["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+
+        def agent_pid():
+            listing = subprocess.run(["launchctl", "print", f"{domain}/{label}"], capture_output=True, text=True).stdout
+            return next((line.split("=", 1)[1].strip() for line in listing.splitlines() if line.strip().startswith("pid =")), None)
+
+        deadline = time.monotonic() + 10
+        while (old := agent_pid()) is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertIsNotNone(old, "the launch agent did not start")
+        for tool in ("launchctl", "ps"):
+            (self.bin / tool).unlink()
+        code, output = self.install(terminal=False, env={"KOIDRIVE_INSTALL_DIR": str(folder), "LC_ALL": "C"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual((folder / "koi").read_bytes(), self.fixture.read_bytes())
+        self.assertIn(f"Restarted the background service {label}", output)
+        deadline = time.monotonic() + 10
+        while agent_pid() in (None, old) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertNotIn(agent_pid(), (None, old))
 
     def test_update_style_captured_child_never_starts_setup(self):
         self.successful_install(terminal=False, piped=False)
