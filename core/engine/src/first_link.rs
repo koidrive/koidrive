@@ -61,9 +61,6 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     }
     let mut left: BTreeMap<(NodeId, String), Vec<(NodeId, Shape)>> = BTreeMap::new();
     for (id, shapes) in history.into_iter().flatten() {
-        if trees.remote().get(id).is_none() {
-            continue;
-        }
         for shape in shapes {
             let key = (shape.parent.clone(), shape.name.clone());
             left.entry(key)
@@ -124,9 +121,8 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 let mut matching =
                     (left.get(&key)?.iter()).filter(|(remote_id, shape)| matches(remote_id, shape));
                 let first = matching.next()?;
-                matching
-                    .all(|(other, _)| *other == first.0)
-                    .then(|| first.clone())
+                let unique = matching.all(|(other, _)| *other == first.0);
+                (unique && trees.remote().get(&first.0).is_some()).then(|| first.clone())
             };
             let Some((remote_id, shape)) = found.or_else(earlier) else {
                 held.push(id);
