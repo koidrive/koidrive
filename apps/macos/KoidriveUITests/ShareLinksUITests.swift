@@ -8,7 +8,7 @@ final class ShareLinksUITests: XCTestCase {
     }
 
     @MainActor
-    func testAFileIsSharedAndItsLinkRevoked() {
+    func testAFileSharedWhileTheListIsOpenAppearsThereAndIsRevoked() {
         let app = XCUIApplication()
         app.launchArguments = ["-FakeScenario", "upToDate", "-OpenShareLink", "Documents/Reports/Annual Report.docx"]
         app.launch()
@@ -17,6 +17,14 @@ final class ShareLinksUITests: XCTestCase {
         let share = app.windows["Share Link"]
         XCTAssert(share.waitForExistence(timeout: 20))
         XCTAssert(text("Anyone with the link can download this file.", in: share).waitForExistence(timeout: 10))
+
+        share.buttons["Shared Links…"].click()
+        let list = app.windows["Shared Links"]
+        XCTAssert(list.waitForExistence(timeout: 10))
+        let revokes = list.buttons.matching(identifier: "Revoke…")
+        XCTAssert(revokes.firstMatch.waitForExistence(timeout: 20))
+        let before = revokes.count
+
         share.buttons["Create Link"].click()
 
         let url = share.staticTexts["share-url"]
@@ -25,13 +33,10 @@ final class ShareLinksUITests: XCTestCase {
         XCTAssert(share.buttons["Copy"].exists)
         XCTAssert(text("Copy it now. Koidrive won’t show this link again.", in: share).exists)
 
-        share.buttons["Shared Links…"].click()
-        let list = app.windows["Shared Links"]
-        XCTAssert(list.waitForExistence(timeout: 10))
-        let revoke = list.buttons["Revoke…"].firstMatch
-        XCTAssert(revoke.waitForExistence(timeout: 20))
+        let added = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in revokes.count == before + 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [added], timeout: 10), .completed)
         XCTAssertFalse(text("Revoked", in: list).exists)
-        revoke.click()
+        list.buttons["Revoke…"].firstMatch.click()
 
         let confirm = list.sheets.firstMatch.buttons["Revoke"]
         XCTAssert(confirm.waitForExistence(timeout: 10))

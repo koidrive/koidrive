@@ -15,10 +15,19 @@ public final class SharedLinksModel {
     private var revokedHere: Set<ShareLink.ID> = []
     private let app: AppModel
     private let clock: HistoryClock
+    @ObservationIgnored nonisolated(unsafe) private var creations: (any NSObjectProtocol)?
 
     public init(app: AppModel, clock: HistoryClock = HistoryClock()) {
         self.app = app
         self.clock = clock
+        creations = NotificationCenter.default.addObserver(forName: ShareLinkModel.linkCreated, object: app, queue: nil) { [weak self] note in
+            guard let link = note.userInfo?[ShareLinkModel.linkKey] as? ShareLink else { return }
+            MainActor.assumeIsolated { self?.add(link) }
+        }
+    }
+
+    deinit {
+        if let creations { NotificationCenter.default.removeObserver(creations) }
     }
 
     /// The names of the linked folders, which items can be shared from.
@@ -75,6 +84,11 @@ public final class SharedLinksModel {
         } catch {
             revokeError = sessionError(error)
         }
+    }
+
+    private func add(_ link: ShareLink) {
+        guard case .loaded(let links) = content, !links.contains(where: { $0.id == link.id }) else { return }
+        content = .loaded([link] + links)
     }
 
     private var links: [ShareLink] {
