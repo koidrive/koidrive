@@ -382,3 +382,73 @@ fn a_resend_left_out_of_a_full_commit_keeps_giving_way_when_its_folder_is_merged
     assert_eq!(sent_for(&next, left[0]), Vec::<&op::Op>::new());
 }
 
+fn sent_after_lost_author_move(blocked: bool) -> Vec<op::Op> {
+    let mut rows = vec![synced("f", dir(ROOT, "f")), synced("n", file("f", "n", 1))];
+    if blocked {
+        rows.push(synced("b", file(ROOT, "n", 2)));
+    }
+    let mut trees = trees(&rows);
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            ..remote_at(dir(ROOT, "f"), 3)
+        },
+    );
+    if blocked {
+        trees.set_remote("b".into(), remote_at(file(ROOT, "n", 2), 6));
+    }
+    trees.set_remote("n".into(), remote_at(file("f", "n", 1), 5));
+    trees.record_moved("n", 5);
+    let moved = trees.moved_here();
+    assert_eq!(moved.len(), 1);
+    let taken = trees.taken_from_others(|seq| seq == 5);
+    let records = trees.remote_records();
+    trees.remove_remote("f");
+    trees.set_listed_remote("n".into(), remote_at(file(ROOT, "n", 1), 1));
+    if blocked {
+        trees.set_listed_remote("b".into(), remote_at(file(ROOT, "b", 2), 1));
+    }
+    trees.forget_lost(vec![], vec![], taken, moved, vec![], records, 1, 1);
+    trees.settle();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 2,
+            edit_rev: 2,
+            ..remote_at(dir(ROOT, "f"), 2)
+        },
+    );
+    trees.settle();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 2,
+            edit_rev: 2,
+            meta_rev: 3,
+            meta_edit_rev: 3,
+            ..trashed(dir(ROOT, "f"))
+        },
+    );
+    trees.settle();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, 1)].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(1);
+    commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, 3u64)
+        .cloned()
+        .map_or_else(Vec::new, |commit| ops(&commit))
+}
+
+#[test]
+fn a_lost_authors_move_with_a_blocked_synced_position_still_beats_an_unseen_delete() {
+    for blocked in [false, true] {
+        let sent = sent_after_lost_author_move(blocked);
+        assert!(sent.iter().any(|op| matches!(op, op::Op::Move(moved) if moved.node_id == "n" && moved.new_parent_id == "f" && moved.from.is_none())), "blocked={blocked}: the author's lost move was suppressed: {sent:?}");
+    }
+}

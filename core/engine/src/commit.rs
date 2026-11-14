@@ -1665,17 +1665,38 @@ impl Commits {
                     let id = &moved.node_id;
                     let cycle = code == Code::Rejected && outcome.reject_reason == "CYCLE";
                     let target = parent(&moved.new_parent_id);
-                    if let Some(shape) = synced.get(trees, id)
-                        && applied
-                        && target != *id
-                    {
-                        let shape = Shape {
-                            parent: target.clone(),
-                            name: name(&moved.new_name),
-                            ..shape
-                        };
-                        agreed.extend(agree(trees, id, result.seq));
-                        synced.set(id, Some(shape));
+                    if applied && target != *id {
+                        match synced.get(trees, id) {
+                            Some(shape) => {
+                                let shape = Shape {
+                                    parent: target.clone(),
+                                    name: name(&moved.new_name),
+                                    ..shape
+                                };
+                                agreed.extend(agree(trees, id, result.seq));
+                                synced.set(id, Some(shape));
+                            }
+                            None => {
+                                let taken = (trees.local().get(id))
+                                    .map(|local| local.shape.clone())
+                                    .filter(|local| {
+                                        local.parent == target
+                                            && nfc(&local.name) == nfc(&moved.new_name)
+                                            && trees.remote().get(id).is_some_and(|remote| {
+                                                let at = Shape {
+                                                    parent: local.parent.clone(),
+                                                    name: local.name.clone(),
+                                                    ..remote.shape.clone()
+                                                };
+                                                at.same(local)
+                                            })
+                                    });
+                                if let Some(local) = taken {
+                                    trees.sent_edit(id, local.content.as_ref());
+                                    synced.set(id, Some(local));
+                                }
+                            }
+                        }
                     }
                     let owed = sent_under.get(id).is_some_and(|pending| {
                         nfc(&moved.new_name) == nfc(&pending.name)

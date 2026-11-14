@@ -2260,15 +2260,8 @@ impl Trees {
         for (id, waits) in lost {
             let unchanged = (self.l.get(&id))
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
-            let held = match (self.r.live(&id), self.l.get(&id)) {
-                (Some(remote), Some(local)) => match (&remote.content, &local.shape.content) {
-                    (Some(remote), Some(local)) => same_content(remote, local),
-                    (remote, local) => remote.is_none() && local.is_none(),
-                },
-                _ => false,
-            };
             if unchanged
-                && (held || !self.local_changes.contains(&id))
+                && !self.local_changes.contains(&id)
                 && (synced.contains(&id)
                     || taken_late.contains(&id)
                     || !self.unsent_edits.contains(&id))
