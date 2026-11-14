@@ -1899,11 +1899,17 @@ impl World {
                     let Some(op::Op::CreateFile(create)) = &op.op else {
                         continue;
                     };
-                    self.planned_copies[d].remove(&create.node_id);
+                    let planned = (self.planned_copies[d].remove(&create.node_id)).filter(|copy| {
+                        (create.content.as_ref())
+                            .is_some_and(|content| content.mtime_ns == copy.write)
+                    });
                     let source = (trees.local().get(&create.node_id))
                         .and_then(|node| inos.get(&node.identity.ino))
                         .filter(|source| **source != create.node_id);
                     let (Some(source), Some(content)) = (source, &create.content) else {
+                        if let Some(copy) = planned {
+                            self.planned_copies[d].insert(create.node_id.clone(), copy);
+                        }
                         continue;
                     };
                     let versions = self.space.list_versions(&ListVersions {

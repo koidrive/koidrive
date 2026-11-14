@@ -7717,3 +7717,103 @@ fn a_resend_under_a_conflict_name_follows_a_later_delete_without_an_owed_rename(
     )
     .unwrap();
 }
+
+#[test]
+fn a_resent_copy_built_again_after_the_head_moved_stays_a_recovery_copy() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    converge(
+        3,
+        &[
+            vec![
+                (
+                    1,
+                    User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(0)),
+                (1, Commit(Served)),
+                (1, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (2, Work(0)),
+                (2, Work(0)),
+                (
+                    0,
+                    User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 69430148313295,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (0, Backup),
+            ],
+            vec![
+                (0, Restore),
+                (1, Connect),
+                (
+                    1,
+                    User(Action {
+                        kind: 2,
+                        target: 13065051882272585844,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (1, Work(49072026476416821)),
+                (1, Work(0)),
+                (1, Work(7927163743507333597)),
+                (1, Commit(Served)),
+                (2, Connect),
+                (2, Work(0)),
+                (2, Work(3974513746494623661)),
+            ],
+        ],
+    )
+    .unwrap();
+}
