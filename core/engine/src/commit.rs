@@ -2398,7 +2398,12 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     for id in children {
         let mut child = trees.local().get(&id).cloned().expect("listed above");
         child.shape.parent = to.to_owned();
-        trees.set_local(id, child);
+        let resent = trees.resends().contains(&id);
+        trees.end_resend(&id);
+        trees.set_local(id.clone(), child);
+        if resent {
+            trees.resend(id);
+        }
     }
     let waiting: Vec<(NodeId, Shape, Origin)> = (trees.waiting().iter())
         .filter_map(|(id, waiting)| {

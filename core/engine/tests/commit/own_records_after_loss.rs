@@ -329,3 +329,56 @@ fn a_resend_another_device_deleted_and_restored_before_its_result_does_not_recre
     assert_eq!(sent_after_two_losses(true, true), []);
     assert_eq!(sent_after_two_losses(false, true), []);
 }
+
+#[test]
+fn a_resend_left_out_of_a_full_commit_keeps_giving_way_when_its_folder_is_merged() {
+    let children: Vec<&'static str> = (0..MAX_OPS)
+        .map(|i| &*Box::leak(format!("f{i:04}").into_boxed_str()))
+        .collect();
+    let mut rows = vec![synced("d", dir(ROOT, "d"))];
+    rows.extend(children.iter().map(|id| synced(id, file("d", id, 1))));
+    let mut trees = trees(&rows);
+    let records = trees.remote_records();
+    for (id, ..) in &rows {
+        trees.remove_remote(id);
+    }
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], records, 0, 0);
+    trees.settle();
+    assert!(children.iter().all(|id| trees.state().resends.contains(*id)));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent: Vec<op::Op> = ops(&commit);
+    assert!(matches!(&sent[0], op::Op::CreateDir(create) if create.node_id == "d"));
+    let left: Vec<&str> = (children.iter().copied())
+        .filter(|id| sent_for(&sent, id).is_empty())
+        .collect();
+    assert_eq!(left.len(), 1);
+    trees.set_remote("e".into(), remote(dir(ROOT, "d")));
+    for id in &children {
+        if !left.contains(id) {
+            trees.set_remote((*id).into(), remote(file("e", id, 1)));
+        }
+    }
+    let merged = OpResult {
+        node_id: "e".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    let mut results = vec![merged];
+    results.extend(vec![outcome(op_result::Code::Applied); sent.len() - 1]);
+    acknowledge(&mut commits, &mut trees, results);
+    let deleted = |shape| RemoteNode {
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        ..trashed(shape)
+    };
+    trees.set_remote("e".into(), deleted(dir(ROOT, "d")));
+    for id in &children {
+        if !left.contains(id) {
+            trees.set_remote((*id).into(), deleted(file("e", id, 1)));
+        }
+    }
+    trees.settle();
+    let next = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
+    assert_eq!(sent_for(&next, left[0]), Vec::<&op::Op>::new());
+}
+
