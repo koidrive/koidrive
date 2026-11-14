@@ -6204,3 +6204,156 @@ fn an_edit_whose_commit_a_restore_took_before_its_result_is_sent_again_where_ano
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_folder_a_restore_loses_and_another_device_resends_at_its_pending_name_takes_its_owed_name() {
+    converge(
+        2,
+        &[
+            vec![
+                (
+                    1,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 4,
+                        target: 15062546961989128223,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Backup),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 0,
+                        parent: 0,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+            vec![
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 3,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 7732960054950755226,
+                        parent: 5715037473979142591,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Work(0)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 0,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Work(913565646028813000)),
+                (0, Step::Work(2675562080131898980)),
+                (1, Step::Work(0)),
+                (0, Step::Restore),
+                (1, Step::Work(0)),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 0,
+                        parent: 0,
+                        name: 1,
+                        text: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 4,
+                        target: 15650650006150013979,
+                        parent: 0,
+                        name: 0,
+                        text: 0,
+                    }),
+                ),
+            ],
+        ],
+    )
+    .unwrap();
+}
