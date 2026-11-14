@@ -2317,3 +2317,150 @@ fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_se
     run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 300);
     assert!(trees.local().get("x").is_none());
 }
+
+#[test]
+fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_path_and_the_folder_is_sent()
+ {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("c", file("x", "child", 9)),
+        ],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(commits.questions().is_empty());
+    trees.set_local_changed(
+        "later".into(),
+        LocalNode {
+            shape: file("x", "later", 8),
+            identity: FileIdentity {
+                dev: 1,
+                ino: 99,
+                birth_ns: Some(0),
+            },
+            parked: false,
+        },
+    );
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let mut effects = Effects::default();
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        planned.iter().all(|record| record.node != "x"
+            || record
+                .after
+                .as_ref()
+                .is_none_or(|shape| shape.parent != ROOT)),
+        "a post-Discard file is moved away from the path the user gave it: {planned:?}"
+    );
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(
+        sent.contains(&("create dir", "f".into())),
+        "the changed subtree's folder was not reclaimed: {sent:?}"
+    );
+}
+
+fn a_server_folder_in_a_discarded_folder_changed_after_the_answer(
+    change: impl FnOnce(&mut Trees),
+) -> (Vec<(&'static str, String)>, Trees) {
+    let server = [
+        ("x", dir(ROOT, "server")),
+        ("c", file("x", "child", 9)),
+        ("d", file("x", "other", 7)),
+    ];
+    let mut trees = trees(&[&[("f", dir(ROOT, "new"))], &server[..]].concat(), &server);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW);
+    let asked = question(&commits);
+    trees.set_rules(
+        &[] as &[&str],
+        Some(RuleFile::parse(
+            b"ignored/
+",
+        )),
+    );
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    change(&mut trees);
+    trees.set_rules(&[] as &[&str], None);
+    let mut effects = Effects::default();
+    let mut sent = Vec::new();
+    for ino in 100..150 {
+        trees.settle();
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        effects
+            .done(
+                &mut trees,
+                commits.in_flight(),
+                &record.effect_id,
+                Some(identity),
+            )
+            .unwrap();
+    }
+    assert!(sent.contains(&("create dir", "f".into())), "{sent:?}");
+    assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
+    (sent, trees)
+}
+
+#[test]
+fn a_file_deleted_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        trees.remove_local("c")
+    });
+    assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
+    assert!(trees.local().get("c").is_none());
+}
+
+#[test]
+fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        let mut moved = trees.local().get("c").unwrap().clone();
+        moved.shape.parent = ROOT.into();
+        trees.set_local_changed("c".into(), moved);
+    });
+    assert!(sent.contains(&("move", "c".into())), "{sent:?}");
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "child", 9)
+    );
+}
+
+#[test]
+fn a_file_edited_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        let mut edited = trees.local().get("c").unwrap().clone();
+        edited.shape.content = Some(content(4));
+        trees.set_local_changed("c".into(), edited);
+    });
+    assert!(sent.contains(&("update", "c".into())), "{sent:?}");
+    assert_eq!(trees.local().get("c").unwrap().shape, file("x", "child", 4));
+}
