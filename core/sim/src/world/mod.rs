@@ -1790,7 +1790,9 @@ impl World {
                         trees.set_listed_remote(id, node);
                     }
                 }
-                trees.listed_removals(removed, |seq| commits.listed_here(seq));
+                if recovering.is_none() {
+                    trees.listed_removals(removed, |seq| commits.listed_here(seq));
+                }
                 if *behind && recovering.is_none() {
                     trees.forget_lost(
                         trashed,

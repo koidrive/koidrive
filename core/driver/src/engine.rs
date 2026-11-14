@@ -532,9 +532,11 @@ impl Engine {
                 self.trees.set_listed_remote(id.clone(), node.clone());
             }
         }
-        let commits = &self.commits;
-        (self.trees).listed_removals(removed, |seq| commits.listed_here(seq));
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery(_)));
+        if !recovering {
+            let commits = &self.commits;
+            (self.trees).listed_removals(removed, |seq| commits.listed_here(seq));
+        }
         if behind && !recovering {
             (self.trees).forget_lost(
                 trashed,

@@ -537,3 +537,224 @@ fn a_recovery_keeps_its_cause_across_a_restart() {
     a.connect(&remote);
     assert_eq!(a.folder.view().recovery, older_than_disk);
 }
+
+#[test]
+fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is_downloaded() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("mine.txt"), b"mine");
+    let held_through = a.folder.engine.commits.held_through();
+    remote.space.rewind(&backup, NOW);
+    let revive = Commit {
+        commit_id: "01890a5d-ac96-774b-bcce-b302099a8057".into(),
+        base_seq: remote.space.head_seq(),
+        ops: vec![Op {
+            op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
+                node_id: notes.clone(),
+                ..Default::default()
+            })),
+        }],
+        history_id: remote.space.history_id().into(),
+        device_seq: remote.space.welcome(&b.caller).device_seq + 1,
+        ..Default::default()
+    };
+    assert_eq!(remote.commit(&b.caller, &revive).unwrap().seq, held_through);
+
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let held: Vec<_> = (a.folder.engine.commits.questions().iter())
+        .flat_map(|question| question.held.keys())
+        .collect();
+    assert!(!held.contains(&&notes), "held: {held:?}");
+    assert_eq!(names(&site.root), ["mine.txt", "notes.txt"]);
+    assert_eq!(remote.names(), ["notes.txt"]);
+    let deletes = (a.sent.iter().flat_map(|commit| &commit.ops))
+        .filter(|op| matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == notes))
+        .count();
+    assert_eq!(deletes, 0);
+}
+
+#[test]
+fn a_rewind_that_takes_back_another_devices_delete_of_a_file_this_device_created_downloads_it() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let backup = remote.space.clone();
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    remote.space.rewind(&backup, NOW);
+
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let held: Vec<_> = (a.folder.engine.commits.questions().iter())
+        .flat_map(|question| question.held.keys())
+        .collect();
+    assert!(!held.contains(&&notes), "held: {held:?}");
+    assert_eq!(names(&site.root), ["notes.txt"]);
+    assert_eq!(remote.names(), ["notes.txt"]);
+}
+
+#[test]
+fn a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_of_another_device() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("mine.txt"), b"mine");
+    let held_through = a.folder.engine.commits.held_through();
+    let old_slot = a.folder.engine.commits.accepted();
+    drop(a);
+    remote.space.rewind(&backup, NOW);
+    let revive = Commit {
+        commit_id: "01890a5d-ac96-774b-bcce-b302099a8057".into(),
+        base_seq: remote.space.head_seq(),
+        ops: vec![Op {
+            op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
+                node_id: notes.clone(),
+                ..Default::default()
+            })),
+        }],
+        history_id: remote.space.history_id().into(),
+        device_seq: remote.space.welcome(&b.caller).device_seq + 1,
+        ..Default::default()
+    };
+    assert_eq!(remote.commit(&b.caller, &revive).unwrap().seq, held_through);
+    let (replacement, mut new_a) = linked(&mut remote, "a");
+    new_a.create(&mut remote, &replacement.root.join("replacement.txt"), b"replacement");
+    assert_eq!(remote.space.welcome(&new_a.caller).device_seq, old_slot);
+    drop(new_a);
+
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let question = a.folder.engine.commits.questions().iter()
+        .find(|question| question.holds().any(|id| id == &notes))
+        .cloned();
+    if let Some(question) = question {
+        assert!(matches!(question.kind, koidrive_engine::question::QuestionKind::Recovery {
+            group: koidrive_engine::question::RecoveryGroup::DeletedOnThisDevice, ..
+        }), "{:?}", question.kind);
+        let given = koidrive_store::GivenAnswer {
+            answer: Answer::Delete.as_str().into(),
+            answered_at_ms: NOW,
+        };
+        let mut store = Store::open(&site.db).unwrap();
+        assert!(store.transaction(|tx| tx.answer_question(&question.id, &given)).unwrap());
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        a.run(&mut remote);
+    }
+    assert!(remote.names().contains(&"notes.txt".to_owned()), "server names: {:?}", remote.names());
+    assert_eq!(fs::read(&path).unwrap(), b"written on a");
+}
+
+#[test]
+fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_restore_of_another_device() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let notes = node_named(&a, "notes.txt");
+    let (other, mut b) = linked(&mut remote, "b");
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(other.root.join("notes.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    assert_eq!(b.run(&mut remote), ["send"]);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.trees.is_removed_here(&notes));
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("mine.txt"), b"mine");
+    let held_through = a.folder.engine.commits.held_through();
+    let old_slot = a.folder.engine.commits.accepted();
+    drop(a);
+    remote.space.rewind(&backup, NOW);
+    let revive = Commit {
+        commit_id: "01890a5d-ac96-774b-bcce-b302099a8057".into(),
+        base_seq: remote.space.head_seq(),
+        ops: vec![Op {
+            op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
+                node_id: notes.clone(),
+                ..Default::default()
+            })),
+        }],
+        history_id: remote.space.history_id().into(),
+        device_seq: remote.space.welcome(&b.caller).device_seq + 1,
+        ..Default::default()
+    };
+    assert_eq!(remote.commit(&b.caller, &revive).unwrap().seq, held_through);
+    let (replacement, mut new_a) = linked(&mut remote, "a");
+    new_a.create(&mut remote, &replacement.root.join("replacement.txt"), b"replacement");
+    assert_eq!(remote.space.welcome(&new_a.caller).device_seq, old_slot);
+    drop(new_a);
+    let intermediate = remote.space.clone();
+    let (third, mut c) = linked(&mut remote, "c");
+    c.create(&mut remote, &third.root.join("after-second-backup.txt"), b"later");
+    drop(c);
+    remote.space.rewind(&intermediate, NOW + 1);
+
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let question = a.folder.engine.commits.questions().iter()
+        .find(|question| question.holds().any(|id| id == &notes))
+        .cloned();
+    if let Some(question) = question {
+        assert!(matches!(question.kind, koidrive_engine::question::QuestionKind::Recovery {
+            group: koidrive_engine::question::RecoveryGroup::DeletedOnThisDevice, ..
+        }), "{:?}", question.kind);
+        let given = koidrive_store::GivenAnswer {
+            answer: Answer::Delete.as_str().into(),
+            answered_at_ms: NOW,
+        };
+        let mut store = Store::open(&site.db).unwrap();
+        assert!(store.transaction(|tx| tx.answer_question(&question.id, &given)).unwrap());
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        a.run(&mut remote);
+    }
+    assert!(remote.names().contains(&"notes.txt".to_owned()), "server names: {:?}", remote.names());
+    assert_eq!(fs::read(&path).unwrap(), b"written on a");
+}
