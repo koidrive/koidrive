@@ -1069,6 +1069,8 @@ pub enum RequestedData {
     Version {
         node_id: String,
         version_id: String,
+        /// When the version was saved, in Unix milliseconds; null when the folder does not know it.
+        saved_at_ms: Option<i64>,
     },
 }
 
@@ -1102,9 +1104,11 @@ impl RequestData {
                 RestoreRequest::Version {
                     node_id,
                     version_id,
+                    saved_at_ms,
                 } => RequestedData::Version {
                     node_id: node_id.clone(),
                     version_id: version_id.clone(),
+                    saved_at_ms: *saved_at_ms,
                 },
             },
             state: match &restore.state {

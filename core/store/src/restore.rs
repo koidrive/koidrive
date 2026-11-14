@@ -41,6 +41,31 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Records when the version that the version restore `id` brings back was saved, for
+    /// [`Tx::versions_saved_at`], and forgets the times of restores the store no longer holds.
+    pub fn note_version_saved_at(&self, id: &str, saved_at_ms: i64) -> Result<()> {
+        self.0.execute(
+            "DELETE FROM restore_saved_at WHERE restore_id NOT IN
+             (SELECT restore_id FROM restore_requests UNION SELECT restore_id FROM restore_intents)",
+            [],
+        )?;
+        self.0.execute(
+            "INSERT OR REPLACE INTO restore_saved_at (restore_id, saved_at_ms) VALUES (?1, ?2)",
+            params![id, saved_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// When the version each version restore brings back was saved, by restore ID, for the
+    /// restores [`Tx::note_version_saved_at`] recorded.
+    pub fn versions_saved_at(&self) -> Result<BTreeMap<RestoreId, i64>> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT restore_id, saved_at_ms FROM restore_saved_at")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The requests the engine has not taken yet, in request order.
     pub fn restore_requests(&self) -> Result<Vec<(RestoreId, RestoreIntent)>> {
         let mut stmt = self.0.prepare_cached(&format!(

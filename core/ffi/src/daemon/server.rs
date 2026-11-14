@@ -457,6 +457,16 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
     mac.session()
         .restore_version(&path_str(&report), &versions.versions[1].version_id)
         .unwrap();
+    let first_draft = RestoreTarget::Version {
+        node_id: versions.node_id.clone(),
+        version_id: versions.versions[1].version_id.clone(),
+        saved_at_ms: Some(versions.versions[1].saved_at_ms),
+    };
+    let asked = mac.session().restore_requests(&path_str(&folder)).unwrap();
+    assert!(
+        asked.iter().any(|request| request.target == first_draft),
+        "{asked:?}"
+    );
     eventually("the first draft back on disk", || {
         (fs::read(&report).ok()? == b"first draft").then_some(())
     });

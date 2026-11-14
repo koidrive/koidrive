@@ -279,15 +279,19 @@ async fn checked(
                 .because(Reason::AlreadyCurrent));
             }
             let kept = versions_of(&auth, space, &file.node_id).await?;
-            if !kept.iter().any(|kept| kept.version_id == version_id) {
+            let Some(saved_at_ms) = (kept.iter())
+                .find(|kept| kept.version_id == version_id)
+                .map(|kept| kept.created_at_ms)
+            else {
                 return Err(CliError::usage(format!(
                     "{shown} has no version {version_id}; koi history versions lists them"
                 ))
                 .because(Reason::NoSuchVersion));
-            }
+            };
             RestoreRequest::Version {
                 node_id: file.node_id.clone(),
                 version_id,
+                saved_at_ms: Some(saved_at_ms),
             }
         }
         None => {
@@ -831,6 +835,7 @@ fn restores_report(restores: &[RestoreStatus], linked: &FolderStatus) -> String 
             RestoreRequest::Version {
                 node_id,
                 version_id,
+                ..
             } => format!("version {version_id} of node {node_id}"),
         };
         report.push_str(&format!(
@@ -941,6 +946,7 @@ mod tests {
     use prost::Message;
 
     use super::*;
+    use crate::report::RequestedData;
     use crate::setup::fake::{Fake, proto};
 
     const SPACE: &str = "0194f8a2-0000-7000-8000-00000000000a";
@@ -1442,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_names_its_path_and_when_it_was_asked_for() {
+    fn a_request_names_its_path_when_it_was_asked_for_and_when_its_version_was_saved() {
         let restore = |path: Option<&str>| RestoreStatus {
             id: "0194f8a2-0000-7000-8000-000000000001".into(),
             path: path.map(String::from),
@@ -1450,6 +1456,7 @@ mod tests {
             request: RestoreRequest::Version {
                 node_id: "note".into(),
                 version_id: "note-0".into(),
+                saved_at_ms: Some(1_737_000_000_000),
             },
             state: RestoreState::Restored,
         };
@@ -1460,6 +1467,14 @@ mod tests {
         assert_eq!(
             (found.path.as_deref(), found.asked_at_ms),
             (Some("docs/note.txt"), 1_738_000_000_000)
+        );
+        assert_eq!(
+            found.request,
+            RequestedData::Version {
+                node_id: "note".into(),
+                version_id: "note-0".into(),
+                saved_at_ms: Some(1_737_000_000_000),
+            }
         );
         assert_eq!(unknown.path, None);
     }
@@ -1737,6 +1752,7 @@ mod tests {
                 request: RestoreRequest::Version {
                     node_id: "note".into(),
                     version_id: "note-0".into(),
+                    saved_at_ms: None,
                 },
                 state: RestoreState::Pending { waits_for: None },
             },

@@ -748,6 +748,7 @@ mod tests {
             restore: RestoreRequest::Version {
                 node_id: "n1".into(),
                 version_id: "v1".into(),
+                saved_at_ms: Some(1_000),
             },
             folder: "/home/ada/Docs".into(),
             path: "a.txt".into(),
@@ -755,7 +756,7 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(
             json,
-            r#"{"request":"restore","space_id":"s1","restore":{"type":"version","node_id":"n1","version_id":"v1"},"folder":"/home/ada/Docs","path":"a.txt"}"#
+            r#"{"request":"restore","space_id":"s1","restore":{"type":"version","node_id":"n1","version_id":"v1","saved_at_ms":1000},"folder":"/home/ada/Docs","path":"a.txt"}"#
         );
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
     }

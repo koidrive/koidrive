@@ -25,8 +25,14 @@ pub enum RestoreRequest {
         parent_id: Option<String>,
         name: Option<String>,
     },
-    /// Makes an earlier version of a file its current content, as a new version of the same node.
-    Version { node_id: String, version_id: String },
+    /// Makes an earlier version of a file its current content, as a new version of the same node. `saved_at_ms` is
+    /// when that version was saved, from `ListVersions`; none when the store does not know it.
+    Version {
+        node_id: String,
+        version_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        saved_at_ms: Option<i64>,
+    },
 }
 
 impl RestoreRequest {
@@ -40,16 +46,25 @@ impl RestoreRequest {
             Self::Version {
                 node_id,
                 version_id,
+                ..
             } => RestoreIntent::version(node_id, version_id),
         }
     }
 
-    fn of(intent: &RestoreIntent) -> Self {
+    pub(crate) fn saved_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::Version { saved_at_ms, .. } => *saved_at_ms,
+            Self::FromTrash { .. } => None,
+        }
+    }
+
+    fn of(intent: &RestoreIntent, saved_at_ms: Option<i64>) -> Self {
         let node_id = intent.node().to_owned();
         match intent.version_id() {
             Some(version_id) => Self::Version {
                 node_id,
                 version_id: version_id.to_owned(),
+                saved_at_ms,
             },
             None => Self::FromTrash {
                 node_id,
@@ -178,6 +193,7 @@ pub(crate) fn new_id(now_ms: u64) -> String {
 pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidrive_store::Error> {
     let (queued, resolved) = tx.restores()?;
     let problems = tx.problem_nodes()?;
+    let saved_at = tx.versions_saved_at()?;
     let mut remote = Tree::new(root);
     for state in tx.remote_nodes()? {
         if let Ok((id, node)) = RemoteNode::from_state(&state) {
@@ -188,7 +204,7 @@ pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidri
         id: id.to_owned(),
         path: (remote.path(intent.node())).and_then(|path| path.to_str().map(str::to_owned)),
         asked_at_ms: unix_ms(id).map_or(0, |ms| ms as i64),
-        request: RestoreRequest::of(intent),
+        request: RestoreRequest::of(intent, saved_at.get(id).copied()),
         state,
     };
     let ended = (resolved.iter())

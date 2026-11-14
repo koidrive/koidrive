@@ -484,7 +484,7 @@ private final class Fetches {
         let asked = try await model.restore(oldest, of: file)
         #expect(asked.path == "Reports/Annual Report.docx")
         let requests = try await model.restoreRequests(in: file.deletingLastPathComponent())
-        #expect(requests.map(\.target) == [.version(nodeId: versions.nodeId, versionId: oldest.versionId)])
+        #expect(requests.map(\.target) == [.version(nodeId: versions.nodeId, versionId: oldest.versionId, savedAtMs: oldest.savedAtMs)])
         await #expect(throws: SessionError.VersionIsCurrent) { try await model.restore(versions.versions[0], of: file) }
     }
 

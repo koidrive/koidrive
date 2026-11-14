@@ -978,7 +978,8 @@ fn history_reads_what_koi_prints_and_passes_the_path_after_dashes() {
         ),
     );
     let request = |id: &str, path: Value, request: Value, state: Value| json!({ "id": id, "path": path, "asked_at_ms": 5, "request": request, "state": state });
-    let version = json!({ "type": "version", "node_id": "n3", "version_id": "v1" });
+    let version =
+        json!({ "type": "version", "node_id": "n3", "version_id": "v1", "saved_at_ms": 7 });
     let deleted = json!({ "type": "from_trash", "node_id": "n1", "parent_id": null, "name": null });
     koi.answer(
         "history-requests",
@@ -1091,6 +1092,7 @@ fn history_reads_what_koi_prints_and_passes_the_path_after_dashes() {
         RestoreTarget::Version {
             node_id: "n3".into(),
             version_id: "v1".into(),
+            saved_at_ms: Some(7),
         }
     );
     assert_eq!(requests[3].path, None);

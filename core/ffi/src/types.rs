@@ -257,8 +257,13 @@ pub struct RestoreRequest {
 pub enum RestoreTarget {
     /// A deleted file or folder, from the trash.
     Deleted { node_id: String },
-    /// An earlier version of a file, as its content now.
-    Version { node_id: String, version_id: String },
+    /// An earlier version of a file, as its content now. `saved_at_ms` is when that version was saved; none when the
+    /// folder does not know it.
+    Version {
+        node_id: String,
+        version_id: String,
+        saved_at_ms: Option<i64>,
+    },
 }
 
 /// How a [`RestoreRequest`] went.

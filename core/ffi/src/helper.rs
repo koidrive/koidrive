@@ -755,8 +755,15 @@ struct RequestData {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RequestedData {
-    FromTrash { node_id: String },
-    Version { node_id: String, version_id: String },
+    FromTrash {
+        node_id: String,
+    },
+    Version {
+        node_id: String,
+        version_id: String,
+        #[serde(default)]
+        saved_at_ms: Option<i64>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -792,9 +799,11 @@ impl RequestsData {
                     RequestedData::Version {
                         node_id,
                         version_id,
+                        saved_at_ms,
                     } => RestoreTarget::Version {
                         node_id,
                         version_id,
+                        saved_at_ms,
                     },
                 },
                 state: match request.state {

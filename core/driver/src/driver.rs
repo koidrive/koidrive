@@ -1511,12 +1511,19 @@ impl Driver {
     /// A malformed ID is refused here, because the server refuses a whole commit for one. Whether the node or the
     /// version still exists is the server's answer.
     pub fn restore(&self, space_id: &str, request: RestoreRequest) -> Result<String, DriverError> {
+        let saved_at_ms = request.saved_at_ms();
         let intent = request
             .intent()
             .map_err(|malformed| DriverError::InvalidRestore(malformed.0))?;
         let id = restore::new_id(now_ms() as u64);
         self.read_store(space_id, |store| {
-            store.transaction(|tx| tx.request_restore(&id, &intent))
+            store.transaction(|tx| {
+                tx.request_restore(&id, &intent)?;
+                match saved_at_ms {
+                    Some(saved_at_ms) => tx.note_version_saved_at(&id, saved_at_ms),
+                    None => Ok(()),
+                }
+            })
         })?
         .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         tracing::info!(space_id, restore_id = %id, "recorded a restore request");
@@ -6914,6 +6921,7 @@ mod tests {
         let version = RestoreRequest::Version {
             node_id: server_id(3),
             version_id: server_id(4),
+            saved_at_ms: Some(1_794_000_000_000),
         };
         assert_eq!(driver.restores(SPACE).unwrap(), []);
         let first = driver.restore(SPACE, placed.clone()).unwrap();
@@ -6954,6 +6962,7 @@ mod tests {
         let version = |node_id: &str, version_id: &str| RestoreRequest::Version {
             node_id: node_id.into(),
             version_id: version_id.into(),
+            saved_at_ms: None,
         };
         let placed = |parent_id: &str| RestoreRequest::FromTrash {
             node_id: server_id(1),
@@ -7102,6 +7111,7 @@ mod tests {
         let version = RestoreRequest::Version {
             node_id: server_id(2),
             version_id: server_id(200),
+            saved_at_ms: None,
         };
         let asked: Vec<String> = [version, from_trash(3), from_trash(4), from_trash(9)]
             .into_iter()

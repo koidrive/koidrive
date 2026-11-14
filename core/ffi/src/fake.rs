@@ -1007,6 +1007,7 @@ impl Core for FakeCore {
             let target = RestoreTarget::Version {
                 node_id: file.node_id.clone(),
                 version_id: version_id.to_owned(),
+                saved_at_ms: Some(version.saved_at_ms),
             };
             Ok(saved.ask_restore(space_id, folder, below, target))
         })

@@ -129,6 +129,7 @@ fn migrations_apply_from_empty() {
             "resends",
             "restore_intents",
             "restore_requests",
+            "restore_saved_at",
             "synced_nodes",
             "taken_answers",
             "trashed_here",
@@ -1804,6 +1805,36 @@ fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
         assert_eq!(commits.connected(&welcome), Reconnect::Idle);
         assert_eq!(commits.halted(), Some(halt));
     }
+}
+
+#[test]
+fn a_version_restore_keeps_its_version_time_while_the_store_holds_the_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let [_, version] = placed_and_version();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| {
+            tx.request_restore(&id(100), &version)?;
+            tx.note_version_saved_at(&id(100), 1_000)?;
+            tx.request_restore(&id(101), &version)?;
+            tx.note_version_saved_at(&id(101), 2_000)
+        })
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    store
+        .transaction(|tx| {
+            let both = BTreeMap::from([(id(100), 1_000), (id(101), 2_000)]);
+            assert_eq!(tx.versions_saved_at()?, both);
+            tx.take_restore_requests()?;
+            assert_eq!(tx.versions_saved_at()?, both);
+            tx.request_restore(&id(102), &version)?;
+            tx.note_version_saved_at(&id(102), 3_000)?;
+            assert_eq!(tx.versions_saved_at()?, BTreeMap::from([(id(102), 3_000)]));
+            Ok::<_, Error>(())
+        })
+        .unwrap();
 }
 
 #[test]

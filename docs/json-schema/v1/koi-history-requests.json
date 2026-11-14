@@ -870,6 +870,14 @@
             "node_id": {
               "type": "string"
             },
+            "saved_at_ms": {
+              "description": "When the version was saved, in Unix milliseconds; null when the folder does not know it.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
               "const": "version",
               "type": "string"
@@ -881,7 +889,8 @@
           "required": [
             "type",
             "node_id",
-            "version_id"
+            "version_id",
+            "saved_at_ms"
           ],
           "type": "object"
         }
