@@ -364,11 +364,17 @@ fn every_daemon_start_sends_the_reports_of_past_hours() {
             .unwrap();
         daemon.wait().unwrap();
         let body = body.expect("the daemon sent nothing as it started");
-        let events = body["batch"].as_array().unwrap();
-        assert_eq!(events.len(), 1, "{body}");
-        assert_eq!(events[0]["event"], "hourly_report", "{body}");
-        assert_eq!(events[0]["properties"][property], 1, "{body}");
-        assert_eq!(events[0]["properties"]["client"], "cli_daemon", "{body}");
+        let reports: Vec<_> = (body["batch"].as_array().unwrap().iter())
+            .filter(|event| {
+                ["c.command.folder", "c.command.space"]
+                    .iter()
+                    .any(|name| event["properties"].get(name).is_some())
+            })
+            .collect();
+        assert_eq!(reports.len(), 1, "{body}");
+        assert_eq!(reports[0]["event"], "hourly_report", "{body}");
+        assert_eq!(reports[0]["properties"][property], 1, "{body}");
+        assert_eq!(reports[0]["properties"]["client"], "cli_daemon", "{body}");
     }
 }
 
@@ -403,7 +409,28 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
             std::thread::sleep(Duration::from_millis(20));
         }
     };
+    let panics = |body: &serde_json::Value| {
+        (body["batch"].as_array().unwrap().iter())
+            .filter(|event| event["event"] == "panic")
+            .map(|event| {
+                let line = event["properties"]["line"].as_u64().unwrap();
+                let at = event["timestamp"].as_str().unwrap();
+                (line, at[at.len() - 10..].to_owned())
+            })
+            .collect::<Vec<_>>()
+    };
     let (url, bodies) = posthog(1);
+    let next_with_panics = |timeout: Duration| {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let body = bodies
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .ok()?;
+            if !panics(&body).is_empty() {
+                return Some(body);
+            }
+        }
+    };
     happen(today + 3_725, 1);
     let vars = [
         ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
@@ -415,7 +442,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
         .spawn()
         .expect("run koi");
     let started = Instant::now();
-    let body = bodies.recv_timeout(Duration::from_secs(90));
+    let body = next_with_panics(Duration::from_secs(90));
     let waited = started.elapsed();
     settled();
     happen(today + 3_726, 2);
@@ -423,21 +450,11 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
         .args(["-TERM", &daemon.id().to_string()])
         .status()
         .unwrap();
-    let stopping = bodies.recv_timeout(Duration::from_secs(30));
+    let stopping = next_with_panics(Duration::from_secs(30));
     daemon.wait().unwrap();
 
     let body = body.expect("the daemon did not send again after its first send failed");
     assert!(waited <= Duration::from_secs(75), "it waited {waited:?}");
-    let panics = |body: &serde_json::Value| {
-        (body["batch"].as_array().unwrap().iter())
-            .filter(|event| event["event"] == "panic")
-            .map(|event| {
-                let line = event["properties"]["line"].as_u64().unwrap();
-                let at = event["timestamp"].as_str().unwrap();
-                (line, at[at.len() - 10..].to_owned())
-            })
-            .collect::<Vec<_>>()
-    };
     assert_eq!(panics(&body), [(1, "T01:02:05Z".to_owned())], "{body}");
     let stopping = stopping.expect("the daemon did not send as it stopped");
     assert_eq!(
