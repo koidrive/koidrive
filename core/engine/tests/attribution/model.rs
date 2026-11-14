@@ -748,7 +748,7 @@ impl World {
             .collect();
         let saw = |gone: Tok| saws[gone.0 as usize];
         let seen_by_delete = |node: &Node, value: Tok, field: Field| {
-            rules != Rules::SeqDelete
+            !matches!(rules, Rules::SeqDelete | Rules::ResendRevivesSeenValue)
                 && node
                     .trashed
                     .and_then(saw)
