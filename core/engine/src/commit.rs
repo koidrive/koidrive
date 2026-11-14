@@ -2364,9 +2364,15 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
         .collect();
     let parked_name = trees.parked_name(from).to_owned();
     let parked = node.parked;
+    let resent = trees.resends().contains(from);
     trees.rekey_discarded(from, to);
     trees.remove_local(from);
-    trees.set_local_changed(to.to_owned(), node);
+    if resent {
+        trees.set_local(to.to_owned(), node);
+        trees.resend(to.to_owned());
+    } else {
+        trees.set_local_changed(to.to_owned(), node);
+    }
     if parked {
         trees.park_as(to.to_owned(), parked_name);
     }
