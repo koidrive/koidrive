@@ -579,8 +579,8 @@ fn writable_again(site: &Site, folder: &str) {
 fn a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only() {
     let (mut remote, _site_a, _a, site_b, mut b, mut timers, mut stages) = denied_download("locked/file.txt");
     for _ in 0..6 {
-        for due in b.folder.denied_due.values_mut() {
-            *due = Instant::now();
+        for denied in b.folder.denied.values_mut() {
+            denied.due = Instant::now();
         }
         timers.clear();
         let step = b.folder.retry();
@@ -589,6 +589,39 @@ fn a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only() {
     }
     writable_again(&site_b, "locked");
     assert_eq!(stages, 1);
+}
+
+#[test]
+fn a_denied_download_is_not_fetched_again_while_its_folder_cannot_be_opened() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, _site_a, _a, site_b, mut b, mut timers, mut stages) =
+        denied_download("locked/file.txt");
+    fs::set_permissions(site_b.root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    for denied in b.folder.denied.values_mut() {
+        denied.due = Instant::now();
+    }
+    timers.clear();
+    let step = b.folder.retry();
+    b.take(step).unwrap();
+    stages += run_holding_timers(&mut b, &mut remote, &mut timers);
+    writable_again(&site_b, "locked");
+    assert_eq!(stages, 1);
+}
+
+#[test]
+fn a_denial_the_check_did_not_foresee_waits_for_its_own_timer() {
+    let (mut remote, _site_a, _a, site_b, mut b, mut timers, mut stages) =
+        denied_download("locked/file.txt");
+    for denied in b.folder.denied.values_mut() {
+        denied.foreseen = false;
+    }
+    writable_again(&site_b, "locked");
+    for _ in 0..5 {
+        stages += run_holding_timers(&mut b, &mut remote, &mut timers);
+    }
+    assert_eq!(stages, 1);
+    assert_eq!(fs::read_to_string(site_b.root.join("locked/file.txt")).unwrap(), "first");
 }
 
 #[test]

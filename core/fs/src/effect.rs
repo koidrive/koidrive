@@ -247,6 +247,23 @@ fn writable(folder: BorrowedFd) -> io::Result<bool> {
     }
 }
 
+fn refused_at(unresolved: Unresolved) -> Option<PathBuf> {
+    match unresolved {
+        Unresolved::Io { path, err } if refused(&err) => Some(path),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn locked(folder: BorrowedFd, name: &OsStr) -> bool {
+    let delete = Access::from_bits_retain(1 << 12);
+    matches!(
+        rustix::fs::accessat(folder, name, delete, AtFlags::EACCESS),
+        Err(Errno::ACCESS | Errno::PERM)
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
 fn locked(folder: BorrowedFd, name: &OsStr) -> bool {
     rustix::fs::accessat(folder, name, Access::WRITE_OK, AtFlags::EACCESS) == Err(Errno::PERM)
 }
@@ -298,11 +315,16 @@ impl Space {
             Action::CreateDir { .. } | Action::Move { .. } => &[],
         };
         for dir in private {
-            let Ok(folder) = self.private(&[dir]) else {
-                continue;
+            let refused = match self.private_present(&[dir]) {
+                Ok(folder) => (!writable(folder.fd())?).then(|| Path::new(PRIVATE_DIR).join(dir)),
+                Err(Unresolved::Missing(_)) => match self.private_present(&[]) {
+                    Ok(folder) => (!writable(folder.fd())?).then(|| PathBuf::from(PRIVATE_DIR)),
+                    Err(unresolved) => refused_at(unresolved),
+                },
+                Err(unresolved) => refused_at(unresolved),
             };
-            if !writable(folder.fd())? {
-                return Ok(Some(Refusal::Private(Path::new(PRIVATE_DIR).join(dir))));
+            if let Some(path) = refused {
+                return Ok(Some(Refusal::Private(path)));
             }
         }
         let changed: Vec<(&Location, bool)> = match action {
@@ -315,8 +337,12 @@ impl Space {
             Action::RemoveDir { at, .. } => vec![(at, true)],
         };
         for (at, displaced) in changed {
-            let Ok((parent, name)) = self.parent(at) else {
-                continue;
+            let (parent, name) = match self.parent_present(at) {
+                Ok(found) => found,
+                Err(unresolved) => match refused_at(unresolved) {
+                    Some(_) => return Ok(Some(Refusal::Here)),
+                    None => continue,
+                },
             };
             if !writable(parent.fd())? || (displaced && locked(parent.fd(), name)) {
                 return Ok(Some(Refusal::Here));
