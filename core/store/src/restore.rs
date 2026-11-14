@@ -18,6 +18,15 @@ use rusqlite::params;
 
 use crate::{Error, Result, Tx};
 
+/// What a person saw when they asked for a restore: the item's path in the space then, and for a
+/// version restore when that version was saved. A restore of a node the folder's copy of the
+/// server's tree never held still shows where it was.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AskedRestore {
+    pub path: Option<String>,
+    pub version_saved_at_ms: Option<i64>,
+}
+
 /// The four columns both tables keep an intent in.
 const INTENT: &str = "node_id, version_id, target_parent_id, name";
 
@@ -41,28 +50,34 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Records when the version that the version restore `id` brings back was saved, for
-    /// [`Tx::versions_saved_at`], and forgets the times of restores the store no longer holds.
-    pub fn note_version_saved_at(&self, id: &str, saved_at_ms: i64) -> Result<()> {
+    /// Records what the person saw when they asked for the restore `id`, for
+    /// [`Tx::asked_restores`], and forgets what it recorded for restores the store no longer holds.
+    pub fn note_asked_restore(&self, id: &str, asked: &AskedRestore) -> Result<()> {
         self.0.execute(
-            "DELETE FROM restore_saved_at WHERE restore_id NOT IN
+            "DELETE FROM restore_asked WHERE restore_id NOT IN
              (SELECT restore_id FROM restore_requests UNION SELECT restore_id FROM restore_intents)",
             [],
         )?;
         self.0.execute(
-            "INSERT OR REPLACE INTO restore_saved_at (restore_id, saved_at_ms) VALUES (?1, ?2)",
-            params![id, saved_at_ms],
+            "INSERT OR REPLACE INTO restore_asked (restore_id, path, version_saved_at_ms)
+             VALUES (?1, ?2, ?3)",
+            params![id, asked.path, asked.version_saved_at_ms],
         )?;
         Ok(())
     }
 
-    /// When the version each version restore brings back was saved, by restore ID, for the
-    /// restores [`Tx::note_version_saved_at`] recorded.
-    pub fn versions_saved_at(&self) -> Result<BTreeMap<RestoreId, i64>> {
+    /// What [`Tx::note_asked_restore`] recorded, by restore ID.
+    pub fn asked_restores(&self) -> Result<BTreeMap<RestoreId, AskedRestore>> {
         let mut stmt = self
             .0
-            .prepare_cached("SELECT restore_id, saved_at_ms FROM restore_saved_at")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            .prepare_cached("SELECT restore_id, path, version_saved_at_ms FROM restore_asked")?;
+        let rows = stmt.query_map([], |row| {
+            let asked = AskedRestore {
+                path: row.get(1)?,
+                version_saved_at_ms: row.get(2)?,
+            };
+            Ok((row.get(0)?, asked))
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

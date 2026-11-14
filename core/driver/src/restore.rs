@@ -80,8 +80,9 @@ impl RestoreRequest {
 pub struct RestoreStatus {
     /// The ID [`Driver::restore`](crate::Driver::restore) returned.
     pub id: String,
-    /// The node's path in the space: where it is, or where it was while it is in the trash. `None` when the folder's
-    /// copy of the server's tree lacks the node or a folder above it.
+    /// The node's path in the space: where it is, or where it was while it is in the trash. When the folder's copy of
+    /// the server's tree lacks the node or a folder above it, the path the person saw when they asked for the restore,
+    /// and `None` only when that is unknown too.
     #[serde(default)]
     pub path: Option<String>,
     /// When the restore was asked for, from its ID.
@@ -193,19 +194,24 @@ pub(crate) fn new_id(now_ms: u64) -> String {
 pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidrive_store::Error> {
     let (queued, resolved) = tx.restores()?;
     let problems = tx.problem_nodes()?;
-    let saved_at = tx.versions_saved_at()?;
+    let asked = tx.asked_restores()?;
     let mut remote = Tree::new(root);
     for state in tx.remote_nodes()? {
         if let Ok((id, node)) = RemoteNode::from_state(&state) {
             remote.insert(id, node);
         }
     }
-    let status = |id: &str, intent: &RestoreIntent, state| RestoreStatus {
-        id: id.to_owned(),
-        path: (remote.path(intent.node())).and_then(|path| path.to_str().map(str::to_owned)),
-        asked_at_ms: unix_ms(id).map_or(0, |ms| ms as i64),
-        request: RestoreRequest::of(intent, saved_at.get(id).copied()),
-        state,
+    let status = |id: &str, intent: &RestoreIntent, state| {
+        let asked = asked.get(id).cloned().unwrap_or_default();
+        RestoreStatus {
+            id: id.to_owned(),
+            path: (remote.path(intent.node()))
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .or(asked.path),
+            asked_at_ms: unix_ms(id).map_or(0, |ms| ms as i64),
+            request: RestoreRequest::of(intent, asked.version_saved_at_ms),
+            state,
+        }
     };
     let ended = (resolved.iter())
         .map(|ended| status(&ended.id, &ended.intent, RestoreState::from(&ended.outcome)));

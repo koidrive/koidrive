@@ -24,8 +24,8 @@ use koidrive_proto::v1::{
 };
 use koidrive_store::migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use koidrive_store::{
-    CachedChunk, Cursor, Durability, EngineState, Error, GivenAnswer, Link, LocalNode, Shape,
-    Store, StoredQuestion, SyncedNode,
+    AskedRestore, CachedChunk, Cursor, Durability, EngineState, Error, GivenAnswer, Link,
+    LocalNode, Shape, Store, StoredQuestion, SyncedNode,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -127,9 +127,9 @@ fn migrations_apply_from_empty() {
             "removed_here",
             "replaced_versions",
             "resends",
+            "restore_asked",
             "restore_intents",
             "restore_requests",
-            "restore_saved_at",
             "synced_nodes",
             "taken_answers",
             "trashed_here",
@@ -1808,30 +1808,40 @@ fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
 }
 
 #[test]
-fn a_version_restore_keeps_its_version_time_while_the_store_holds_the_restore() {
+fn a_restore_keeps_what_was_asked_for_while_the_store_holds_the_restore() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let [_, version] = placed_and_version();
+    let [placed, version] = placed_and_version();
+    let asked = |path: &str, version_saved_at_ms| AskedRestore {
+        path: Some(path.into()),
+        version_saved_at_ms,
+    };
     Store::open(&path)
         .unwrap()
         .transaction(|tx| {
-            tx.request_restore(&id(100), &version)?;
-            tx.note_version_saved_at(&id(100), 1_000)?;
+            tx.request_restore(&id(100), &placed)?;
+            tx.note_asked_restore(&id(100), &asked("docs/back.txt", None))?;
             tx.request_restore(&id(101), &version)?;
-            tx.note_version_saved_at(&id(101), 2_000)
+            tx.note_asked_restore(&id(101), &asked("docs/report.docx", Some(2_000)))
         })
         .unwrap();
 
     let mut store = Store::open(&path).unwrap();
     store
         .transaction(|tx| {
-            let both = BTreeMap::from([(id(100), 1_000), (id(101), 2_000)]);
-            assert_eq!(tx.versions_saved_at()?, both);
+            let both = BTreeMap::from([
+                (id(100), asked("docs/back.txt", None)),
+                (id(101), asked("docs/report.docx", Some(2_000))),
+            ]);
+            assert_eq!(tx.asked_restores()?, both);
             tx.take_restore_requests()?;
-            assert_eq!(tx.versions_saved_at()?, both);
+            assert_eq!(tx.asked_restores()?, both);
             tx.request_restore(&id(102), &version)?;
-            tx.note_version_saved_at(&id(102), 3_000)?;
-            assert_eq!(tx.versions_saved_at()?, BTreeMap::from([(id(102), 3_000)]));
+            tx.note_asked_restore(&id(102), &asked("notes.txt", Some(3_000)))?;
+            assert_eq!(
+                tx.asked_restores()?,
+                BTreeMap::from([(id(102), asked("notes.txt", Some(3_000)))])
+            );
             Ok::<_, Error>(())
         })
         .unwrap();

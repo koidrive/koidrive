@@ -157,7 +157,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             folder,
             path,
         } => driver
-            .restore(&space_id, restore)
+            .restore(&space_id, restore, Some(&path))
             .map(|id| Response::Restore {
                 id,
                 space_id,

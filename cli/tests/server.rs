@@ -2244,3 +2244,86 @@ async fn refuses_local_replacements_and_edits_that_have_not_synced() {
     machine.data(&["share", "revoke", created["id"].as_str().unwrap()]);
     assert!(stop(daemon).success());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the Worker; run cli/scripts/integration-test.sh"]
+async fn a_restore_of_an_item_deleted_before_the_first_sync_lists_its_path() {
+    let owner = Arc::new(Auth::new(api(), owner().await));
+    let space_name = format!("deleted early {}", uuidv7());
+    let space = owner
+        .api()
+        .create_space(
+            &owner,
+            &CreateSpaceRequest {
+                name: space_name.clone(),
+                request_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let root = space.space_id.clone();
+    let (docs, early) = (uuidv7(), uuidv7());
+    commit_as_owner(
+        &owner,
+        &root,
+        &[b"early"],
+        vec![
+            op::Op::CreateDir(CreateDir {
+                node_id: docs.clone(),
+                parent_id: root.clone(),
+                name: "docs".into(),
+            }),
+            op::Op::CreateFile(CreateFile {
+                node_id: early.clone(),
+                parent_id: docs.clone(),
+                name: "early.txt".into(),
+                content: Some(file_content(b"early")),
+            }),
+        ],
+    )
+    .await;
+    let delete = op::Op::Delete(Delete {
+        node_id: early.clone(),
+        requires: None,
+    });
+    commit_as_owner(&owner, &root, &[], vec![delete]).await;
+
+    let pairing = owner.api().pair_start(&owner).await.unwrap();
+    let server = server_url().to_string();
+    let machine = Machine::new();
+    machine.run(&["join", &pairing.code, "--server", &server, "--name", "desk"]);
+    let folder = machine.path("Sync");
+    fs::create_dir_all(&folder).unwrap();
+    let folder_arg = folder.to_str().unwrap();
+    machine.run(&["folder", "link", folder_arg, "--space", &space_name]);
+    let daemon = machine
+        .command(&["_daemon"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let socket = machine.socket();
+    eventually("the daemon to open its socket", || socket.exists()).await;
+    machine
+        .status_until("the first sync", |s| {
+            s["folders"][0]["state"] == "up_to_date"
+        })
+        .await;
+    assert!(stop(daemon).success());
+
+    let early_path = folder.join("docs/early.txt");
+    machine.data(&[
+        "history",
+        "restore",
+        "--node",
+        &early,
+        early_path.to_str().unwrap(),
+    ]);
+    let requests = machine.data(&["history", "requests", folder_arg])["requests"].clone();
+    assert_eq!(
+        requests[0]["request"]["node_id"],
+        early.as_str(),
+        "{requests:#}"
+    );
+    assert_eq!(requests[0]["path"], "docs/early.txt", "{requests:#}");
+}
