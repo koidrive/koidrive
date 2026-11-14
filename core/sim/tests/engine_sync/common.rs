@@ -1479,6 +1479,7 @@ fn run_ignoring_answering_after(
                 device.touched.remove(id);
                 revived.remove(id);
                 revived_once.remove(id);
+                sent_nodes.remove(id);
             }
             let answered_again: Vec<String> = (kept_with.iter())
                 .filter(|(_, shape)| {
