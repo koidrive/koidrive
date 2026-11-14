@@ -32,6 +32,7 @@ import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
 import { restoreFromR2, serverState } from "./export-reader";
 import { content, op, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
+import { pitrBackend } from "../src/space/pitr";
 import { simulatedPitr } from "./pitr";
 
 simulatedPitr.install();
@@ -743,6 +744,30 @@ describe("space rewind (RFC 0003)", () => {
       accountPrototype.checkSessions = checkSessions;
       spacePrototype.rewindPrepare = prepare;
     }
+  });
+
+  it("refuses every connection while the space's storage holds a history that a rewind replaced", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await createFile(a, spaceId, "notes.txt", "first");
+    const p1 = createdAtMs + MINUTE;
+    const beforeRewind = await snapshot(spaceId, p1);
+    const previous = await a.history();
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+    const done = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: previous });
+    expect(done.status).toBe(200);
+    (await socket(spaceId, token)).ws.close();
+
+    await runInDurableObject(space(spaceId), (_instance, state) => pitrBackend.open(state).restoreOnNextStart(beforeRewind));
+    await runInDurableObject(space(spaceId), (instance: SpaceDO) => instance.restart()).catch(() => undefined);
+    expect(await spaceRows(spaceId, "SELECT value FROM meta WHERE key = 'history_id'")).toEqual([{ value: previous }]);
+
+    const upgrade = await call(`/v1/spaces/${spaceId}/ws`, { token, headers: { Upgrade: "websocket" } }, ErrorSchema);
+    expect([upgrade.status, upgrade.error?.code]).toEqual([409, Error_Code.HISTORY_MISMATCH]);
+    expect(upgrade.error?.message).toContain("RFC 0003 section 4");
+    const listed = await rpc(token, spaceId, { case: "listTree", value: {} });
+    expect(listed.result).toMatchObject({ case: "error", value: { code: Error_Code.HISTORY_MISMATCH } });
   });
 
   it("writes one marker per attempt however often preparing repeats, and removes them when the rewind fails", async () => {

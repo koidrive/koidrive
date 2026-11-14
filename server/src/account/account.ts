@@ -125,6 +125,7 @@ export interface SessionCheck {
   active: boolean;
   revoked: boolean;
   closed: boolean;
+  historyId: string | null;
   kind: string;
   scope: string | null;
   leaseMs: number;
@@ -544,14 +545,23 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         active: device !== undefined,
         revoked,
         closed: spaceId !== undefined && this.heldClosed(spaceId),
+        historyId: spaceId === undefined ? null : this.currentHistory(spaceId),
         kind: device?.kind ?? "",
         scope: device?.scope ?? null,
         leaseMs: Math.min(this.sessionLeaseMs, untilExpiryMs),
       };
     }
 
-    async isSpaceClosed(spaceId: string): Promise<boolean> {
-      return this.heldClosed(spaceId);
+    async isSpaceClosed(spaceId: string, historyId: string): Promise<boolean> {
+      const current = this.currentHistory(spaceId);
+      return this.heldClosed(spaceId) || (current !== null && current !== historyId);
+    }
+
+    private currentHistory(spaceId: string): string | null {
+      const row = this.sql
+        .exec("SELECT history_id FROM rewinds WHERE space_id = ? AND phase = 'completed' ORDER BY rewind_number DESC LIMIT 1", spaceId)
+        .toArray()[0];
+      return row === undefined ? null : String(row.history_id);
     }
 
     private heldClosed(spaceId: string): boolean {

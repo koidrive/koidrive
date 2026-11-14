@@ -290,7 +290,7 @@ describe("upgraded objects keep working", () => {
       );
     });
     await evictDurableObject(stub);
-    expect(await stub.checkSession(deviceId)).toEqual({ active: true, revoked: false, closed: false, kind: "device", scope: null, leaseMs: SESSION_LEASE_MS });
+    expect(await stub.checkSession(deviceId)).toEqual({ active: true, revoked: false, closed: false, historyId: null, kind: "device", scope: null, leaseMs: SESSION_LEASE_MS });
     const row = await inObject(stub, (sql) => sql.exec("SELECT kind, scope, expires_at_ms, issued_by FROM devices WHERE device_id = ?", deviceId).one());
     expect(row).toEqual({ kind: "device", scope: null, expires_at_ms: null, issued_by: null });
   });

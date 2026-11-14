@@ -122,6 +122,8 @@ A closed alarm sets the alarm again for at most ten minutes later. Work that com
 
 The Account DO decides whether the space is closed. The Worker asks it about every request, the Space DO asks it about every request and message or uses a lease that admission drops (RFC 0014 §3), and the alarm handler also asks it before it runs any work. So the restored database cannot run GC before completion has applied §5, and no client reaches the restored state before it carries its new history.
 
+Operators must not restore a Space DO's storage outside the rewind flow. A Space DO whose `history_id` is not the history of the space's last completed rewind refuses every HTTP RPC and WebSocket upgrade with `HISTORY_MISMATCH`, closes every socket with 1013, and runs no alarm work, until its storage holds that history again.
+
 ## 5. Chunks outlive every state a rewind can restore
 
 Two invariants protect chunk objects:

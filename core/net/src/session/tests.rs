@@ -1111,6 +1111,21 @@ async fn a_token_refused_with_an_unknown_code_stops_the_session_without_asking_a
 }
 
 #[tokio::test]
+async fn an_upgrade_refused_for_a_history_a_rewind_replaced_stops_the_session() {
+    let (listener, auth) = listen().await;
+    let (_session, mut events) = Session::start(auth, config()).unwrap();
+    let (mut upgrade, _) = listener.accept().await.unwrap();
+    answer_with_error(&mut upgrade, 409, refusal(Code::HistoryMismatch as i32, 0)).await;
+    let event = next(&mut events).await;
+    assert!(
+        matches!(&event, Event::Stopped(StopReason::Refused(why)) if why == "CODE_HISTORY_MISMATCH: refused"),
+        "{event:?}"
+    );
+    let again = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
+    assert!(again.is_err(), "no second upgrade");
+}
+
+#[tokio::test]
 async fn an_upgrade_refused_with_an_unknown_code_stops_the_session_and_a_known_one_reconnects() {
     let (listener, auth) = listen().await;
     let (_session, mut events) = Session::start(auth.clone(), config()).unwrap();

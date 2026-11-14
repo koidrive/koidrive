@@ -20,7 +20,8 @@ message Error {
     CODE_RETRY_LATER = 8;
     CODE_UNSUPPORTED_VERSION = 9;
     CODE_INTERNAL = 10;
-    // The commit's history_id is not the space's current history.
+    // The commit's history_id is not the space's current history, or the space's storage holds a history that a
+    // rewind replaced, which refuses every connection until the storage is restored (RFC 0003 section 4).
     CODE_HISTORY_MISMATCH = 11;
     // An unknown commit whose device_seq is at or below the device's highest accepted one.
     CODE_STALE_DEVICE_STATE = 12;

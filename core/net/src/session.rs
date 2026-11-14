@@ -668,6 +668,9 @@ impl Task {
     }
 
     fn refused_with(&mut self, server: &ServerError) -> Option<Exit> {
+        if server.code() == koidrive_proto::v1::error::Code::HistoryMismatch {
+            return Some(Exit::Stop(StopReason::Refused(server.to_string())));
+        }
         match server.resend() {
             Resend::Never => Some(Exit::Stop(StopReason::Refused(server.to_string()))),
             Resend::Allowed => {

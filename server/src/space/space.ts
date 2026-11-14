@@ -118,6 +118,9 @@ const EXPORT_RETRY_MS = 60_000;
 
 export type Role = "owner" | "editor" | "viewer";
 
+export const RETIRED_HISTORY =
+  "the space's storage holds a history that a rewind replaced, so it was restored outside a rewind; the server serves it again once its operator restores the storage the rewind left (RFC 0003 section 4)";
+
 const SHARE_CLOSED = { ok: false, code: Error_Code.RETRY_LATER, message: "this link is temporarily unavailable; retry later", status: 503 } as const;
 
 export const CONNECT_HEADER = "X-Koidrive-Connect";
@@ -339,6 +342,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check === undefined) return refuse(Error_Code.RETRY_LATER, "could not check the device; retry later");
       if (!check.active) return refuse(Error_Code.UNAUTHENTICATED, "device revoked");
       if (check.closed) return refuse(Error_Code.RETRY_LATER, "the space is being rewound; retry later");
+      if (this.historyRetired(check)) return refuse(Error_Code.HISTORY_MISMATCH, RETIRED_HISTORY);
       const device = this.sql.exec("SELECT max_format FROM devices WHERE device_id = ?", connect.identity.deviceId).toArray()[0];
       const session = this.sessionOf(connect, role, device ? Number(device.max_format) : FORMAT_VERSION, check);
       const { response, record } = await this.call(session, req);
@@ -368,6 +372,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check === undefined) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
       if (!check.active) return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
       if (check.closed) return this.goodbye(ws, Close.SPACE_REWOUND, "the space is being rewound");
+      if (this.historyRetired(check)) return this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
       if (ws.readyState !== WebSocket.OPEN) return;
       let msg;
       try {
@@ -402,7 +407,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private knownCheck(deviceId: string): SessionCheck | undefined {
-      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, kind: "", scope: null, leaseMs: 0 };
+      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, historyId: null, kind: "", scope: null, leaseMs: 0 };
       const lease = this.leases.get(deviceId);
       if (!lease) return undefined;
       const leftMs = lease.untilMs - this.clock();
@@ -451,6 +456,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         .finally(() => {
           if (this.renewing === renewal) this.renewing = undefined;
         });
+    }
+
+    protected historyRetired(check: SessionCheck): boolean {
+      return check.historyId !== null && check.historyId !== String(getMeta(this.sql, "history_id"));
     }
 
     protected async checkDevice(deviceId: string): Promise<SessionCheck | undefined> {
@@ -566,6 +575,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (!check) this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
         else if (!check.active) this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
         else if (check.closed) this.goodbye(ws, Close.SPACE_REWOUND, "the space is being rewound");
+        else if (this.historyRetired(check)) this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
         else {
           try {
             ws.send(frame);
@@ -659,6 +669,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check === undefined) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
       if (!check.active) return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
       if (check.closed) return this.goodbye(ws, Close.SPACE_REWOUND, "the space is being rewound");
+      if (this.historyRetired(check)) return this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
       const current = ws.deserializeAttachment() as Attachment;
       current.identity = identity;
       ws.serializeAttachment(current);
@@ -1357,7 +1368,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const spaceId = getMeta(this.sql, "space_id");
       if (spaceId === undefined) return false;
       try {
-        return await this.account().isSpaceClosed(String(spaceId));
+        return await this.account().isSpaceClosed(String(spaceId), String(getMeta(this.sql, "history_id")));
       } catch (error) {
         console.error("account rewind check failed", errorText(error));
         return true;
