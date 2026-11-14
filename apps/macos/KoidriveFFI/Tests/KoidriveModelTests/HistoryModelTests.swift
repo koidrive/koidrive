@@ -531,6 +531,37 @@ private let fourVersions = [
         #expect(history.parentPath == "Sync/Docs/")
     }
 
+    @Test func chainsOfSymbolicLinksAndFinderAliasesLeadToTheOriginalItem() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = root.appending(path: "Docs/Plan.key")
+        try Data("plan".utf8).write(to: target)
+        func alias(_ name: String, of item: URL) throws -> URL {
+            let alias = base.appending(path: name)
+            try URL.writeBookmarkData(item.bookmarkData(options: .suitableForBookmarkFile), to: alias)
+            return alias
+        }
+        func link(_ name: String, to item: URL) throws -> URL {
+            let link = base.appending(path: name)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: item)
+            return link
+        }
+        let linkToAlias = try link("Link to alias", to: alias("Plan alias", of: target))
+        let aliasOfLink = try alias("Alias of link", of: link("Plan link", to: target))
+        let folderAlias = try alias("Docs alias", of: root.appending(path: "Docs"))
+        let aliasOfLinkToAlias = try alias("Alias of link to alias", of: linkToAlias)
+
+        for path in [linkToAlias, aliasOfLink, folderAlias.appending(path: "Plan.key"), aliasOfLinkToAlias] {
+            #expect(app.folder(containing: path) == folder, "\(path.lastPathComponent)")
+            #expect(SharedLinksModel(app: app).canShare(path), "\(path.lastPathComponent)")
+            #expect(ShareLinkModel(app: app, item: path).name == "Plan.key", "\(path.lastPathComponent)")
+            let history = VersionHistoryModel(app: app, file: path, clock: halfPastMidnight)
+            #expect(try Data(contentsOf: history.file) == Data("plan".utf8), "\(path.lastPathComponent)")
+            #expect(history.parentPath == "Sync/Docs/", "\(path.lastPathComponent)")
+        }
+        #expect(app.folder(containing: folderAlias.appending(path: "New.key")) == folder)
+    }
+
     @Test func aPathBelongsToTheLinkedFolderThatHoldsItsRealFile() throws {
         let (app, base, root, folder) = try linkedTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: base) }

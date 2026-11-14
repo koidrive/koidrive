@@ -64,9 +64,9 @@ extension AppModel {
     }
 
     func location(of url: URL) -> (folder: LinkedFolder, below: [String])? {
-        let path = url.realItem.path(percentEncoded: false)
+        let path = url.realPath
         return state.folders.flatMap { folder in
-            Set([plainPath(folder.url), resolvedPath(plainPath(folder.url))]).compactMap { root in
+            Set([plainPath(folder.url), folder.url.realPath]).compactMap { root in
                 if path == root { return (folder: folder, root: root, below: [String]()) }
                 guard path.hasPrefix(root + "/") else { return nil }
                 return (folder: folder, root: root, below: path.dropFirst(root.count + 1).split(separator: "/").map(String.init))
@@ -79,29 +79,41 @@ extension AppModel {
 
 extension URL {
     var realItem: URL {
-        URL(filePath: resolvedPath(plainPath(finderAliasResolved)), directoryHint: hasDirectoryPath ? .isDirectory : .checkFileSystem)
+        URL(filePath: realPath, directoryHint: hasDirectoryPath ? .isDirectory : .checkFileSystem)
     }
 
-    private var finderAliasResolved: URL {
-        guard let values = try? resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]),
-              values.isAliasFile == true, values.isSymbolicLink != true else { return self }
-        return (try? URL(resolvingAliasFileAt: self)) ?? self
+    fileprivate var realPath: String {
+        var path = plainPath(self)
+        for _ in 0..<16 {
+            let (existing, rest) = deepestExistingPart(of: path)
+            let item = URL(filePath: existing)
+            guard (try? item.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true,
+                  let target = try? URL(resolvingAliasFileAt: item, options: .withoutUI) else {
+                path = joined(existing, rest)
+                break
+            }
+            path = joined(plainPath(target), rest)
+        }
+        return path
     }
 }
 
-private func resolvedPath(_ path: String) -> String {
+private func deepestExistingPart(of path: String) -> (real: String, rest: [String]) {
     var existing = path
     var rest: [String] = []
     while existing != "/" {
         if let resolved = realpath(existing, nil) {
             defer { free(resolved) }
-            let real = String(cString: resolved)
-            return ([real == "/" ? "" : real] + rest).joined(separator: "/")
+            return (String(cString: resolved), rest)
         }
         rest.insert((existing as NSString).lastPathComponent, at: 0)
         existing = (existing as NSString).deletingLastPathComponent
     }
-    return path
+    return ("/", rest)
+}
+
+private func joined(_ path: String, _ names: [String]) -> String {
+    ([path == "/" ? "" : path] + names).joined(separator: "/")
 }
 
 func plainPath(_ url: URL) -> String {
