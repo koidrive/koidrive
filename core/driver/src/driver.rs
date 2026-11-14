@@ -1905,6 +1905,7 @@ impl Driver {
         self.inner.folders.lock().unwrap().keys().cloned().collect()
     }
 
+    #[cfg(test)]
     fn stored_questions(&self, space_id: &str) -> Result<Option<Vec<StoredQuestion>>, DriverError> {
         self.read_store(space_id, |store| store.transaction(|tx| tx.questions()))
     }
