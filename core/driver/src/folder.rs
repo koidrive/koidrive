@@ -134,7 +134,7 @@ pub(crate) struct Folder {
     /// The disk effects of each node that failed in a row in this task, for [`EFFECT_RETRY`], and why the last one
     /// failed.
     effect_failures: BTreeMap<String, (u32, String)>,
-    effect_due: BTreeMap<String, Instant>,
+    denied_due: BTreeMap<String, Instant>,
     /// The nodes whose last effect ended [`Settled::Stuck`]. A [`Work::RetryAfter`] leaves them blocked.
     stuck_effects: BTreeSet<String>,
     /// Why the server did not take a change of each node, for the nodes it may have left out of commits.
@@ -350,7 +350,7 @@ impl Folder {
             unreadable: BTreeMap::new(),
             retrying: BTreeMap::new(),
             effect_failures: BTreeMap::new(),
-            effect_due: BTreeMap::new(),
+            denied_due: BTreeMap::new(),
             stuck_effects: BTreeSet::new(),
             refused_nodes: BTreeMap::new(),
             asked,
@@ -600,14 +600,14 @@ impl Folder {
         }
         let mut work = Vec::new();
         for (node, settled) in settled {
-            let backoff = match settled {
-                Settled::Denied(_) => PERMISSION_RETRY,
-                _ => EFFECT_RETRY,
+            let (backoff, denied) = match settled {
+                Settled::Denied(_) => (PERMISSION_RETRY, true),
+                _ => (EFFECT_RETRY, false),
             };
             match settled {
                 Settled::Done => {
                     self.effect_failures.remove(&node);
-                    self.effect_due.remove(&node);
+                    self.denied_due.remove(&node);
                     self.stuck_effects.remove(&node);
                 }
                 Settled::Failed(why) | Settled::Denied(why)
@@ -626,7 +626,9 @@ impl Folder {
                          it changes"
                     );
                     let at = Instant::now() + wait;
-                    self.effect_due.insert(node, at);
+                    if denied {
+                        self.denied_due.insert(node, at);
+                    }
                     if self.retry_at.is_none_or(|out| at < out) {
                         self.retry_at = Some(at);
                         work.push(Work::RetryAfter(wait));
@@ -665,11 +667,11 @@ impl Folder {
         let now = Instant::now();
         let timed: Vec<String> = (self.engine.effects.blocked().keys())
             .filter(|node| !self.stuck_effects.contains(*node))
-            .filter(|node| (self.effect_due.get(*node)).is_none_or(|due| *due <= now))
+            .filter(|node| (self.denied_due.get(*node)).is_none_or(|due| *due <= now))
             .cloned()
             .collect();
         for node in &timed {
-            self.effect_due.remove(node);
+            self.denied_due.remove(node);
         }
         let problems = self.engine.commits.problems();
         let due: Vec<String> = (self.unreadable.iter())
@@ -696,7 +698,7 @@ impl Folder {
             .filter_map(|(_, unreadable)| unreadable.left_out.as_ref())
             .map(|left_out| left_out.due)
             .chain(
-                (self.effect_due.iter())
+                (self.denied_due.iter())
                     .filter(|(node, _)| blocked.contains_key(*node))
                     .map(|(_, due)| *due),
             )
