@@ -329,7 +329,10 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
     let done = Done {
         outcome: Outcome::Accepted,
         ..Done::value(data, &value, note)
-    };
+    }.human(
+        format!("{value}\n"),
+        format!("Restore requested for {shown}.\nIt waits for the folder to sync.\nCheck restore: koi history requests {}\n", printable(&crate::pairing::shell_word(folder))),
+    );
     match state {
         Some(_) => done.then(&["koi", "history", "requests", folder]),
         None => done,
@@ -350,7 +353,8 @@ async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         folder: linked.path.clone(),
         requests: restores.iter().map(RequestData::of).collect(),
     };
-    Ok(Done::ok(data, restores_report(&restores, &linked)))
+    Ok(Done::ok(data, restores_report(&restores, &linked))
+        .human(restores_summary(&restores, &linked), ""))
 }
 
 /// Why no single deletion could be picked.
@@ -856,6 +860,42 @@ fn trash_report(
         };
         report.push_str(&line);
         report.push('\n');
+    }
+    report
+}
+
+fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String {
+    if restores.is_empty() {
+        return format!(
+            "No restore requests for {}.\n",
+            crate::output::path(Path::new(&linked.path))
+        );
+    }
+    let mut report = String::new();
+    for restore in restores {
+        let path = restore
+            .path
+            .as_deref()
+            .map(printable)
+            .unwrap_or_else(|| "Item with an unknown path".to_owned());
+        let state = match &restore.state {
+            RestoreState::Pending {
+                waits_for: Some(RestoreWait::NodeProblem),
+            } => "waiting for a sync problem to be fixed; run koi status".to_owned(),
+            RestoreState::DoesNotFit => {
+                "not sent: this restore exceeds the server's limit".to_owned()
+            }
+            state => restore_state(state),
+        };
+        report.push_str(&format!("{path}: {state}\n"));
+    }
+    if restores
+        .iter()
+        .any(|restore| matches!(restore.state, RestoreState::Pending { .. }))
+    {
+        report.push_str(
+            "Pending restores wait for the folder to sync. Check progress with koi status.\n",
+        );
     }
     report
 }

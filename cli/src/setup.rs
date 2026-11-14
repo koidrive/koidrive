@@ -837,7 +837,14 @@ async fn scripted(
             printable(&folder.display().to_string())
         ),
         ..Done::ok(data, crate::linked(&status, outcome))
-    };
+    }
+    .human(
+        crate::linked_summary(&status, outcome),
+        format!(
+            "Add files to {} to sync them.\nCheck sync: koi status\n",
+            crate::output::path(&folder)
+        ),
+    );
     Ok(
         match paired || local == Local::Missing || outcome != Outcome::Unchanged {
             true => done,

@@ -325,7 +325,7 @@ fn status_reports_setup_and_halted_folders_as_needing_attention() {
     assert!(
         output
             .terminal
-            .starts_with("▲  Device: not set up; run koi setup\n")
+            .starts_with("▲  This device is not set up. Run koi setup.\n")
     );
     let profile = Profile::new();
     let path = profile.0.path().join("Work").display().to_string();
@@ -343,11 +343,11 @@ fn status_reports_setup_and_halted_folders_as_needing_attention() {
     server.join().unwrap();
     assert_eq!(output.exit, 0);
     assert!(
-        output.terminal.starts_with("▲  Device: Laptop"),
+        output.terminal.starts_with("▲  Connected as Laptop"),
         "{}",
         output.terminal
     );
-    assert!(output.terminal.contains("Halted"));
+    assert!(output.terminal.contains("Sync stopped"));
     assert!(output.terminal.contains("fixture disk error"));
     assert!(!output.terminal.contains('◇'));
 }
@@ -404,6 +404,176 @@ fn pending_decisions_keep_the_plain_prefix_out_of_rich_output() {
         } else {
             assert_eq!(output.stdout, "Sync is already paused.\n");
             assert_eq!(output.stderr, "koi: 1 needs you; run koi resolve\n");
+        }
+    }
+}
+
+#[test]
+fn status_summarizes_every_state_and_verbose_keeps_engine_details() {
+    for (state, shown) in [
+        ("stopped", "Not syncing"),
+        ("connecting", "Connecting"),
+        ("bootstrapping", "Preparing the first sync"),
+        ("catching_up", "Syncing"),
+        ("up_to_date", "Up to date"),
+        ("offline", "Offline. Check your connection"),
+        ("halted", "Sync stopped. Run koi diagnose for a report"),
+    ] {
+        for (tty, verbose) in [(true, false), (true, true), (false, false)] {
+            let profile = Profile::new();
+            let path = profile.0.path().join("Work").display().to_string();
+            let server = profile.fixture(1, move |request| {
+                assert_eq!(request["request"], "status");
+                json!({"response":"status", "status":{
+                    "account":{"server":"https://files.example.com/", "user_id":"owner",
+                        "device_id":"device-internal", "device_name":"Laptop"},
+                    "running":true, "paused":false,
+                    "folders":[{"space_id":"space-internal", "space_name":"Work", "path":path,
+                        "state":state,"history_id":null,"last_seq":42,"head_seq":50,
+                        "remote_nodes":99,"local_entries":88,"questions":0,"problem":null}]
+                }})
+            });
+            let args = if verbose {
+                vec!["status", "--verbose"]
+            } else {
+                vec!["status"]
+            };
+            let output = profile.run(&args, tty, false, &[("NO_COLOR", "1")]);
+            server.join().unwrap();
+            assert_eq!(output.exit, 0);
+            let text = if tty {
+                &output.terminal
+            } else {
+                &output.stdout
+            };
+            if tty && !verbose {
+                assert!(text.contains(&format!("~/Work: {shown}.")), "{text}");
+                for hidden in [
+                    "device-internal",
+                    "space-internal",
+                    "seq 42",
+                    "99 remote nodes",
+                    "88 local entries",
+                ] {
+                    assert!(!text.contains(hidden), "{text}");
+                }
+                assert!(
+                    !text.contains(&profile.0.path().display().to_string()),
+                    "{text}"
+                );
+            } else {
+                for detail in [
+                    "device-internal",
+                    "space-internal",
+                    "seq 42 of 50",
+                    "99 remote nodes",
+                    "88 local entries",
+                ] {
+                    assert!(text.contains(detail), "{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_saved_choice_does_not_claim_that_sync_finished() {
+    for (tty, verbose) in [(true, false), (true, true), (false, false)] {
+        let profile = Profile::new();
+        let server = profile.fixture(2, |request| match request["request"].as_str().unwrap() {
+            "questions" => json!({"response":"questions", "questions":[{
+                "id":"q1", "space_id":"s1", "asked_at_ms":1000,
+                "kind":{"type":"ambiguous_disappearance"}, "items":[]
+            }]}),
+            "answer" => json!({"response":"answered"}),
+            other => panic!("unexpected fixture request {other}"),
+        });
+        let args = if verbose {
+            vec!["resolve", "q1", "restore", "--verbose"]
+        } else {
+            vec!["resolve", "q1", "restore"]
+        };
+        let output = profile.run(&args, tty, false, &[("NO_COLOR", "1")]);
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        if tty && !verbose {
+            assert_eq!(output.terminal, "●  Choice saved. Sync will apply it.\n");
+        } else if tty {
+            assert_eq!(output.terminal, "●  Resolved.\n");
+        } else {
+            assert_eq!(output.stdout, "Resolved.\n");
+        }
+    }
+}
+
+#[test]
+fn telemetry_keeps_install_ids_in_verbose_and_pipe_output_only() {
+    let profile = Profile::new();
+    assert_eq!(profile.run(&["telemetry", "on"], false, false, &[]).exit, 0);
+    let summary = profile.run(&["telemetry", "status"], true, false, &[("NO_COLOR", "1")]);
+    assert!(summary.terminal.contains("DO_NOT_TRACK is set"));
+    assert!(!summary.terminal.contains("Install id:"));
+    for (tty, args) in [
+        (true, vec!["telemetry", "status", "--verbose"]),
+        (false, vec!["telemetry", "status"]),
+    ] {
+        let output = profile.run(&args, tty, false, &[("NO_COLOR", "1")]);
+        let text = if tty { output.terminal } else { output.stdout };
+        assert!(text.contains("Install id:"), "{text}");
+    }
+    let output = profile.run(&["telemetry", "reset"], true, false, &[("NO_COLOR", "1")]);
+    assert!(
+        output
+            .terminal
+            .contains("Usage report ID reset. Unsent reports were deleted.")
+    );
+    assert!(!output.terminal.contains("New install id:"));
+}
+
+#[test]
+fn restore_requests_show_paths_and_supported_progress_guidance() {
+    for (tty, verbose) in [(true, false), (true, true), (false, false)] {
+        let profile = Profile::new();
+        let folder = profile.0.path().join("Work");
+        fs::create_dir(&folder).unwrap();
+        let path = fs::canonicalize(folder).unwrap().display().to_string();
+        let server = profile.fixture(3, move |request| match request["request"].as_str().unwrap() {
+            "status" => json!({"response":"status", "status":{
+                "account":null, "running":true, "folders":[{"space_id":"s1", "space_name":"Work", "path":path,
+                    "state":"stopped","history_id":null,"last_seq":null,"head_seq":null,
+                    "remote_nodes":0,"local_entries":0,"questions":0,"problem":null}]
+            }}),
+            "restores" => json!({"response":"restores", "restores":[{
+                "id":"restore-internal", "path":"report.docx", "asked_at_ms":1000,
+                "request":{"type":"from_trash", "node_id":"node-internal", "parent_id":null, "name":null},
+                "state":{"type":"pending", "waits_for":null}
+            }]}),
+            "questions" => json!({"response":"questions", "questions":[]}),
+            other => panic!("unexpected fixture request {other}"),
+        });
+        let args = if verbose {
+            vec!["history", "requests", "Work", "--verbose"]
+        } else {
+            vec!["history", "requests", "Work"]
+        };
+        let output = profile.run(&args, tty, false, &[("NO_COLOR", "1")]);
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        let text = if tty { output.terminal } else { output.stdout };
+        if tty && !verbose {
+            assert!(
+                text.contains("report.docx: pending: waits for the folder to sync"),
+                "{text}"
+            );
+            assert!(text.contains("koi status"));
+            assert!(!text.contains("node-internal"));
+            assert!(!text.contains("koi _daemon"));
+        } else {
+            assert!(
+                text.contains("restore-internal  deleted node node-internal"),
+                "{text}"
+            );
+            assert!(text.contains("koi _daemon"));
         }
     }
 }

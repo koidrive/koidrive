@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{self, IsTerminal};
+use std::path::Path;
 
 use cliclack::Theme as _;
 
@@ -29,6 +30,10 @@ pub enum Note<'a> {
 struct Theme;
 
 impl cliclack::Theme for Theme {}
+
+pub fn path(path: &Path) -> String {
+    crate::printable(&crate::setup::shown_folder(path))
+}
 
 pub fn rich(command: &str) -> bool {
     !matches!(command, "_daemon" | "_reconcile")

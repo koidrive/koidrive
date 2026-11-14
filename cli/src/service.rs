@@ -307,6 +307,24 @@ fn no_folders(folders: &Option<usize>) -> bool {
 }
 
 impl Report {
+    pub fn summary(&self) -> String {
+        let mut text = match self.state {
+            State::Running if self.problem.is_some() => "Background sync needs attention. Run koi diagnose.\n".to_owned(),
+            State::Running => "Koidrive is running in the background.\n".to_owned(),
+            State::Stopped => "Background sync is stopped. Run koi service start.\n".to_owned(),
+            State::SwitchedOff => SWITCHED_OFF.to_owned(),
+            State::NotInstalled if self.removed => "Stopped and removed the background service.\n".to_owned(),
+            State::NotInstalled => "Background sync starts when you link a folder.\n".to_owned(),
+            State::Unavailable => "Background sync is unavailable. Run koi diagnose for a report.\n".to_owned(),
+            State::Off => "Background sync is off in config.toml. Set service.background to true, then run koi service start.\n".to_owned(),
+        };
+        if self.lingers == Some(false) {
+            text.push_str("It stops when you log out. To keep it running, run: sudo loginctl enable-linger \"$USER\"\n");
+        }
+        text.push_str(&blocked_text(&self.blocked));
+        text
+    }
+
     fn new(manager: &dyn Manager, name: String, state: State) -> Self {
         Report {
             manager: manager.kind(),

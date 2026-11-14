@@ -87,6 +87,9 @@ struct Cli {
         help = "Use line-oriented output without color or animation"
     )]
     plain: bool,
+    /// Show technical details in terminal results.
+    #[arg(long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -365,24 +368,37 @@ fn main() -> ExitCode {
     }
     let command = command_path(&args);
     if let Some(error) = json_versions(&args).find_map(Result::err) {
-        return finish(&command, true, Err(CliError::usage(error)), Vec::new());
+        return finish(
+            &command,
+            true,
+            false,
+            Err(CliError::usage(error)),
+            Vec::new(),
+        );
     }
     if let Some(names) = help_names(&args).filter(|_| json_requested(&args)) {
         let path = names.join(" ");
         let outcome = help_of(&path)
             .map(|help| help_done(help, &path))
             .ok_or_else(|| CliError::usage(format!("no command is named {}", printable(&path))));
-        return finish(format!("help {path}").trim_end(), true, outcome, Vec::new());
+        return finish(
+            format!("help {path}").trim_end(),
+            true,
+            false,
+            outcome,
+            Vec::new(),
+        );
     }
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => return parse_failure(error, &args, &command, json_requested(&args)),
     };
     let json = cli.json.is_some();
+    let verbose = cli.verbose;
     let shows_banner = cli.shows_banner();
     let Some(command_args) = cli.command else {
         let help = Cli::command().render_help().to_string();
-        return finish(&command, json, Ok(help_done(help, "")), Vec::new());
+        return finish(&command, json, verbose, Ok(help_done(help, "")), Vec::new());
     };
     let reports_pending = command_args.reports_pending();
     let interactive = match &command_args {
@@ -414,7 +430,15 @@ fn main() -> ExitCode {
     };
     let paths = match Paths::from_env() {
         Ok(paths) => paths,
-        Err(error) => return finish(&command, json, Err(error.to_string().into()), Vec::new()),
+        Err(error) => {
+            return finish(
+                &command,
+                json,
+                verbose,
+                Err(error.to_string().into()),
+                Vec::new(),
+            );
+        }
     };
     let agent_log = (log_format.is_some())
         .then(|| service::this_service(&paths).ok())
@@ -432,7 +456,7 @@ fn main() -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => {
             let error = CliError::from(format!("cannot start: {error}"));
-            return finish(&command, json, Err(error), Vec::new());
+            return finish(&command, json, verbose, Err(error), Vec::new());
         }
     };
     let daemon_run = matches!(command_args, Command::Daemon { .. });
@@ -486,11 +510,11 @@ fn main() -> ExitCode {
                 } else {
                     None
                 };
-                let exit = finish(command_name, json, outcome, pending);
+                let exit = finish(command_name, json, verbose, outcome, pending);
                 if ask && prompt_eligible
                     && let Err(error) = telemetry::ask(&telemetry_paths, &work_terminal).await
                 {
-                    return finish(command_name, json, Err(error), Vec::new());
+                    return finish(command_name, json, verbose, Err(error), Vec::new());
                 }
                 if let Some(summary) = summary {
                     work_terminal.outro(&summary);
@@ -505,7 +529,7 @@ fn main() -> ExitCode {
                     if status == 143 { "stopped by SIGTERM; what the command already did stays done" } else { "interrupted by Ctrl-C; what the command already did stays done" },
                 );
                 telemetry::flush();
-                let _ = finish(&command, json, Err(error), Vec::new());
+                let _ = finish(&command, json, verbose, Err(error), Vec::new());
                 let _ = io::Write::flush(&mut io::stdout());
                 std::process::exit(status.into());
             }
@@ -787,11 +811,13 @@ async fn finish_setup(
         Ok(done) => {
             done.text.clear();
             done.note = summary;
+            done.human = None;
         }
         Err(error) => {
             if let Some(done) = &mut error.partial {
                 done.text.clear();
                 done.note.clear();
+                done.human = None;
             }
         }
     }
@@ -829,12 +855,22 @@ fn finish_lifecycle(
             text if text.is_empty() && shows_state => report.status_line(),
             text => text,
         };
+        if !text.is_empty() {
+            let human = done.human.get_or_insert_with(|| report::HumanOutput {
+                text: done.text.clone(),
+                note: done.note.clone(),
+            });
+            human.text.push_str(&report.summary());
+        }
         done = with_service(done, report);
         done.text.push_str(&text);
     }
     if let Some(report) = app {
         let failed = setup_app && report.failed();
         done.text.push_str(&report.text());
+        if let Some(human) = &mut done.human {
+            human.text.push_str(&report.text());
+        }
         done.data = serde_json::to_value(report::WithApp {
             data: done.data,
             app: Some(report),
@@ -932,13 +968,16 @@ async fn execute(
 fn finish(
     command: &str,
     json: bool,
+    verbose: bool,
     outcome: Result<Done, CliError>,
     pending: Vec<Question>,
 ) -> ExitCode {
+    let concise = !json && !verbose && output::rich(command);
     let (exit, envelope, text, stderr, presentation, outcome, tone) = match outcome {
         Ok(done) => {
             let exit = done.exit;
-            let (text, note) = (done.text.clone(), done.note.clone());
+            let (text, note) = done.output(concise);
+            let (text, note) = (text.to_owned(), note.to_owned());
             let (presentation, outcome, tone) = (done.presentation, done.outcome, done.tone);
             (
                 exit,
@@ -952,7 +991,8 @@ fn finish(
         }
         Err(mut error) => {
             let partial = error.partial.take().map(|partial| *partial);
-            let text = (partial.as_ref()).map_or_else(String::new, |done| done.text.clone());
+            let text = (partial.as_ref())
+                .map_or_else(String::new, |done| done.output(concise).0.to_owned());
             let presentation = partial
                 .as_ref()
                 .map_or(output::Presentation::Text, |done| done.presentation);
@@ -1040,7 +1080,7 @@ fn parse_failure(error: clap::Error, args: &[OsString], command: &str, json: boo
         )),
         _ => Err(CliError::usage(rendered.trim_end())),
     };
-    finish(command, json, outcome, Vec::new())
+    finish(command, json, false, outcome, Vec::new())
 }
 
 /// Clap's message for arguments it refused, with every argument it echoes escaped so that a control character in one
@@ -1339,7 +1379,13 @@ fn paired(paths: &Paths, response: Response) -> Result<Done, CliError> {
         printable(&account.server),
         printable(&paths.credential().display().to_string())
     );
-    Ok(Done::ok(AccountData::of(&account), text))
+    Ok(Done::ok(AccountData::of(&account), text).human(
+        format!(
+            "Connected this device as {}.\n",
+            printable(&account.device_name)
+        ),
+        "",
+    ))
 }
 
 /// The decisions waiting in the profile.
@@ -1390,6 +1436,7 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
         Err(_) => UpdateNoticeData::of(&status.update, version, None),
     };
     let text = status_text(&status, &questions, &service.status_line(), &notice);
+    let summary = status_summary(&status, &questions, &service, &notice);
     let data = StatusData {
         account: status.account.as_ref().map(AccountData::of),
         running: status.running,
@@ -1399,7 +1446,7 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
         service,
         update: notice,
     };
-    let mut done = Done::ok(data, text);
+    let mut done = Done::ok(data, text).human(summary, "");
     done.decisions = questions.iter().map(Decision::of).collect();
     done.exit = exit;
     done.tone = tone;
@@ -1465,13 +1512,18 @@ async fn resolve(
                 answer: word,
             },
             "Resolved.\n",
-        )),
+        )
+        .human("Choice saved. Sync will apply it.\n", "")),
         Response::AlreadyAnswered => Ok(Done::ok(
             AnsweredData {
                 decision_id: id,
                 answer: word.clone(),
             },
             format!("Already resolved with {}.\n", printable(&word)),
+        )
+        .human(
+            format!("This choice was already saved as {}.\n", printable(&word)),
+            "",
         )
         .unchanged()),
         other => Err(unexpected(other)),
@@ -1486,7 +1538,13 @@ async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, CliError> {
             let text = linked(&folder, outcome);
             return Ok(Done {
                 outcome,
+                tone: if outcome == report::Outcome::Ok {
+                    output::Tone::Completed
+                } else {
+                    output::Tone::Neutral
+                },
                 ..Done::ok(FolderData::of(&folder), text)
+                    .human(linked_summary(&folder, outcome), "")
             });
         }
         FolderAction::Unlink { folder } => Request::Unlink {
@@ -1510,6 +1568,10 @@ async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, CliError> {
     };
     match ipc::run(paths, request).await? {
         Response::Unlinked { space_id, path } => {
+            let summary = format!(
+                "Unlinked {}. Its files and .koidrive folder stay on this device.\n",
+                output::path(&path)
+            );
             let text = format!(
                 "Unlinked {} from space {}. Its files and its .koidrive folder stay.\n",
                 printable(&path.display().to_string()),
@@ -1519,9 +1581,10 @@ async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, CliError> {
                 space_id: Some(space_id),
                 path: path.display().to_string(),
             };
-            Ok(Done::ok(data, text))
+            Ok(Done::ok(data, text).human(summary, "").completed())
         }
         Response::NotLinked { path } => {
+            let summary = format!("{} is not linked. Nothing changed.\n", output::path(&path));
             let path = path.display().to_string();
             let text = format!(
                 "{} is not linked, so there is nothing to unlink.\n",
@@ -1531,7 +1594,7 @@ async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, CliError> {
                 space_id: None,
                 path,
             };
-            Ok(Done::ok(data, text).unchanged())
+            Ok(Done::ok(data, text).human(summary, "").unchanged())
         }
         Response::Restarted { folder } => restarted(folder),
         other => Err(unexpected(other)),
@@ -1575,6 +1638,15 @@ fn linked(folder: &FolderStatus, outcome: report::Outcome) -> String {
     }
 }
 
+fn linked_summary(folder: &FolderStatus, outcome: report::Outcome) -> String {
+    let path = output::path(Path::new(&folder.path));
+    let space = printable(&folder.space_name);
+    match outcome {
+        report::Outcome::Unchanged => format!("{path} is already linked to {space}.\n"),
+        _ => format!("Linked {path} to {space}.\n"),
+    }
+}
+
 /// What `folder restart` reports for the folder as the restart left it.
 fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
     let path = printable(&folder.path);
@@ -1588,7 +1660,8 @@ fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
         }
         _ => format!("Syncing {path} again.\n"),
     };
-    Ok(Done::ok(FolderData::of(&folder), text))
+    let summary = format!("Syncing {} again.\n", output::path(Path::new(&folder.path)));
+    Ok(Done::ok(FolderData::of(&folder), text).human(summary, ""))
 }
 
 /// This profile's credential, for the commands that talk to the server directly. They write nothing to the profile, so
@@ -1629,6 +1702,13 @@ fn reading(paths: &Paths, credential: &Credential) -> Result<Auth, String> {
 
 fn left(not_removed: Vec<koidrive_driver::CleanupFailure>) -> Done {
     let mut text = "Signed out. This device no longer syncs, and the files in its folders stay where they are.\n".to_owned();
+    let mut summary = text.clone();
+    let tone = if not_removed.is_empty() {
+        output::Tone::Completed
+    } else {
+        summary.push_str("Sign-out cleanup is incomplete. Run koi device leave again to finish it. Use --verbose for details.\n");
+        output::Tone::Attention
+    };
     for failure in &not_removed {
         text.push_str(&format!(
             "{:?} could not be removed ({}). Run koi device leave again to remove it.\n",
@@ -1644,7 +1724,10 @@ fn left(not_removed: Vec<koidrive_driver::CleanupFailure>) -> Done {
             })
             .collect(),
     };
-    Done::ok(data, text)
+    Done {
+        tone,
+        ..Done::ok(data, text).human(summary, "")
+    }
 }
 
 /// Runs a device command (RFC 0009).
@@ -1728,7 +1811,7 @@ async fn device(paths: Paths, action: DeviceAction) -> Result<Done, CliError> {
             let text = format!(
                 "Revoked device {id}. It can no longer sync; the files already on it stay there.\n"
             );
-            Ok(Done::ok(RevokedData { device_id: id }, text))
+            Ok(Done::ok(RevokedData { device_id: id }, text).completed())
         }
     }
 }
@@ -1833,6 +1916,20 @@ async fn space(paths: Paths, action: SpaceAction) -> Result<Done, CliError> {
                 "{said}\nLink a folder to it with koi folder link <folder> --space {id}.\n"
             );
             let done = Done::value(SpaceData::of(space), &id, note);
+            let summary = match &named {
+                Named::Existing(_) => format!(
+                    "The shared folder {} already exists.\n",
+                    printable(&space.name)
+                ),
+                Named::Created(_) => {
+                    format!("Created the shared folder {}.\n", printable(&space.name))
+                }
+            };
+            let summary = format!(
+                "{summary}Link a folder with koi folder link <folder> --space {}.\n",
+                pairing::shell_word(&space.name)
+            );
+            let done = done.human(format!("{id}\n"), summary);
             Ok(match named {
                 Named::Existing(_) => done.unchanged(),
                 Named::Created(_) => done,
@@ -1979,7 +2076,23 @@ fn usage_read(usages: &[(SpaceInfo, SpaceUsage)], refused: &[(SpaceInfo, CliErro
             })
             .collect(),
     };
-    Done::ok(data, usage_output(usages, refused.len()))
+    let summary = if usages.is_empty() && !refused.is_empty() {
+        String::new()
+    } else if usages.is_empty() {
+        "No shared folders.\n".to_owned()
+    } else {
+        let mut summary = String::new();
+        for (space, usage) in usages {
+            summary.push_str(&format!(
+                "{}\n  Live files: {}, {}\n  Trash: {}, {}\n  Old versions: {}, {}\n  Other stored data: {}\n  Total: {}\n",
+                printable(&space.name), count(usage.live_files, "file"), size(usage.live_bytes), count(usage.trashed_files, "file"), size(usage.trash_bytes),
+                count(usage.old_versions, "version"), size(usage.old_version_bytes), size(usage.unreferenced_bytes), size(total_bytes(usage)),
+            ));
+        }
+        summary.push_str("Totals count shared data once.\n");
+        summary
+    };
+    Done::ok(data, usage_output(usages, refused.len())).human(summary, "")
 }
 
 /// What `koi space usage` prints on stdout: the spaces that answered. It prints nothing when every space refused, so
@@ -2171,6 +2284,73 @@ fn absolute(folder: &Path) -> Result<PathBuf, CliError> {
             printable(&folder.display().to_string())
         ))
     })
+}
+
+fn status_summary(
+    status: &Status,
+    questions: &[Question],
+    service: &service::Report,
+    notice: &UpdateNoticeData,
+) -> String {
+    let mut text = match &status.account {
+        Some(account) => format!("Connected as {}.\n", printable(&account.device_name)),
+        None => "This device is not set up. Run koi setup.\n".to_owned(),
+    };
+    text.push_str(&service.summary());
+    if status.paused {
+        text.push_str("Sync is paused. Run koi resume to continue.\n");
+    }
+    if status.folders.is_empty() && status.account.is_some() {
+        text.push_str("No linked folders. Run koi folder link <folder> --space <name>.\n");
+    }
+    for folder in &status.folders {
+        let state = match folder.state {
+            FolderState::Stopped => "Not syncing",
+            FolderState::Connecting => "Connecting",
+            FolderState::Bootstrapping => "Preparing the first sync",
+            FolderState::CatchingUp => "Syncing",
+            FolderState::UpToDate => "Up to date",
+            FolderState::Offline => "Offline. Check your connection",
+            FolderState::Halted => "Sync stopped. Run koi diagnose for a report",
+        };
+        text.push_str(&format!(
+            "{}: {state}.\n",
+            output::path(Path::new(&folder.path))
+        ));
+        if let Some(progress) = &folder.progress {
+            text.push_str(&format!("  {}\n", progress_text(progress)));
+        }
+        if let Some(problem) = &folder.problem {
+            text.push_str(&format!("  {}\n", printable(problem)));
+        }
+        if let Some(cause) = &folder.recovery {
+            let described = koidrive_driver::describe(cause);
+            if folder.problem.as_deref() != Some(described.as_str()) {
+                text.push_str("  Recovering this folder's sync state.\n");
+            }
+        }
+        for question in questions
+            .iter()
+            .filter(|question| question.space_id == folder.space_id)
+        {
+            text.push_str(&question_brief(question));
+        }
+    }
+    if let Some(latest) = &notice.latest {
+        text.push_str(&format!(
+            "Update: Koidrive {} is out (this device runs {}).",
+            printable(latest),
+            printable(&notice.version)
+        ));
+        if let Some(command) = &notice.command {
+            text.push_str(&format!(" Run: {}\n", printable(command)));
+        } else if let Some(url) = &notice.url {
+            text.push_str(&format!(" Download: {}\n", printable(url)));
+        } else {
+            text.push('\n');
+        }
+    }
+    text
 }
 
 fn status_text(

@@ -100,7 +100,7 @@ pub async fn run(paths: &Paths, action: ShareAction) -> Result<Done, CliError> {
                         return Ok(Done::ok(data(&link), text).unchanged());
                     }
                     let text = format!("Revoked the link to {shared}. It no longer opens.\n");
-                    Ok(Done::ok(data(&link), text))
+                    Ok(Done::ok(data(&link), text).completed())
                 }
                 other => Err(unexpected(other)),
             }

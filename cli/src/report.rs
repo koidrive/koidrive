@@ -48,8 +48,15 @@ pub struct Done {
     pub tone: Tone,
     /// What it prints on stderr after the text without `--json`: what the value is and what to do with it.
     pub note: String,
+    pub human: Option<HumanOutput>,
     pub decisions: Vec<Decision>,
     pub next: Vec<Next>,
+}
+
+#[derive(Debug)]
+pub struct HumanOutput {
+    pub text: String,
+    pub note: String,
 }
 
 impl Done {
@@ -62,6 +69,7 @@ impl Done {
             presentation: Presentation::Text,
             tone: Tone::Neutral,
             note: String::new(),
+            human: None,
             decisions: Vec::new(),
             next: Vec::new(),
         }
@@ -91,6 +99,11 @@ impl Done {
         }
     }
 
+    pub fn completed(mut self) -> Self {
+        self.tone = Tone::Completed;
+        self
+    }
+
     /// A command whose output was already printed while it ran, such as a server deploy.
     pub fn printed() -> Self {
         Done::ok(Value::Null, "")
@@ -99,6 +112,21 @@ impl Done {
     pub fn then(mut self, argv: &[&str]) -> Self {
         self.next.push(Next::of(argv));
         self
+    }
+
+    pub fn human(mut self, text: impl Into<String>, note: impl Into<String>) -> Self {
+        self.human = Some(HumanOutput {
+            text: text.into(),
+            note: note.into(),
+        });
+        self
+    }
+
+    pub fn output(&self, concise: bool) -> (&str, &str) {
+        match self.human.as_ref().filter(|_| concise) {
+            Some(human) => (&human.text, &human.note),
+            None => (&self.text, &self.note),
+        }
     }
 }
 
