@@ -6,7 +6,7 @@ import KoidriveFFI
 import KoidriveModel
 
 enum CrashReports {
-    static func install() {
+    static func install(helper: URL) {
         let configuration = KSCrashConfiguration()
         configuration.monitors = [.machException, .signal, .cppException, .nsException]
         configuration.enableMemoryIntrospection = false
@@ -14,7 +14,7 @@ enum CrashReports {
         configuration.addConsoleLogToReport = false
         try? KSCrash.shared.install(with: configuration)
         KSCrash.shared.setUserInfo(KoidriveFFI.version(), forKey: "koidrive_version")
-        KSCrash.shared.setUserInfo(false, forKey: "reports_on")
+        KSCrash.shared.setUserInfo(KoidriveFFI.telemetrySetting(helper: helper.path).enabled, forKey: "reports_on")
     }
 
     @MainActor static func forward(from model: AppModel) {

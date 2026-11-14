@@ -25,6 +25,15 @@ pub use crate::types::*;
 
 uniffi::setup_scaffolding!();
 
+/// The usage-report setting of the profile [`SyncSession::open`] opens through the `koi` at `helper`, read without
+/// opening it; the default, off, when no profile is found.
+#[uniffi::export]
+pub fn telemetry_setting(helper: String) -> TelemetrySetting {
+    profile::Profile::discover(std::path::Path::new(&helper), |name| std::env::var_os(name))
+        .map(|profile| daemon::telemetry_setting(&profile.paths))
+        .unwrap_or_default()
+}
+
 /// Returns the version of the Rust core.
 #[uniffi::export]
 pub fn version() -> String {

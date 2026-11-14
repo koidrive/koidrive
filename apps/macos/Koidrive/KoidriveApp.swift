@@ -35,8 +35,8 @@ struct KoidriveApp: App {
         if let scenario = AppModel.launchScenario(in: .standard) {
             model = AppModel.fake(scenario: scenario)
         } else {
-            CrashReports.install()
             let helper = Bundle.main.bundleURL.appending(path: "Contents/Helpers/koi")
+            CrashReports.install(helper: helper)
             do {
                 model = try AppModel.open(helper: helper)
                 CrashReports.forward(from: model)

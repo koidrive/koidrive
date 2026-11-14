@@ -59,6 +59,22 @@ struct Watcher {
     thread: JoinHandle<()>,
 }
 
+pub(crate) fn telemetry_setting(paths: &driver::Paths) -> TelemetrySetting {
+    let store = koidrive_telemetry::Store::new(&paths.state_dir);
+    let settings = (store.settings())
+        .inspect_err(|error| tracing::warn!(%error, "the telemetry settings cannot be read"))
+        .unwrap_or_default();
+    let status = koidrive_telemetry::resolve(|name| std::env::var_os(name), settings.enabled);
+    TelemetrySetting {
+        enabled: status.mode != koidrive_telemetry::Mode::Off,
+        decided: settings.enabled.is_some(),
+        locked: matches!(
+            status.source,
+            koidrive_telemetry::Source::DoNotTrack | koidrive_telemetry::Source::Variable
+        ),
+    }
+}
+
 impl DaemonCore {
     fn telemetry_store(&self) -> koidrive_telemetry::Store {
         let environment = koidrive_telemetry::Environment::detect(
@@ -763,19 +779,7 @@ impl Core for DaemonCore {
     }
 
     fn telemetry(&self) -> TelemetrySetting {
-        let store = koidrive_telemetry::Store::new(&self.paths.state_dir);
-        let settings = (store.settings())
-            .inspect_err(|error| tracing::warn!(%error, "the telemetry settings cannot be read"))
-            .unwrap_or_default();
-        let status = koidrive_telemetry::resolve(|name| std::env::var_os(name), settings.enabled);
-        TelemetrySetting {
-            enabled: status.mode != koidrive_telemetry::Mode::Off,
-            decided: settings.enabled.is_some(),
-            locked: matches!(
-                status.source,
-                koidrive_telemetry::Source::DoNotTrack | koidrive_telemetry::Source::Variable
-            ),
-        }
+        telemetry_setting(&self.paths)
     }
 
     fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
