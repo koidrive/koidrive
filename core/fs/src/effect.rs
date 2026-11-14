@@ -243,15 +243,6 @@ macro_rules! resolve {
     ($resolved:expr) => {
         match $resolved {
             Ok(resolved) => resolved,
-            Err(err) => return unresolved(err),
-        }
-    };
-}
-
-macro_rules! resolve_first {
-    ($resolved:expr) => {
-        match $resolved {
-            Ok(resolved) => resolved,
             Err(Unresolved::Io { err, .. }) if refused(&err) => return Ok(failed(Reason::Denied)),
             Err(err) => return unresolved(err),
         }
@@ -378,9 +369,9 @@ impl Space {
         self.check_held()?;
         let outcome = match &effect.action {
             Action::CreateDir { at } => {
-                let (parent, name) = resolve_first!(self.parent(at));
+                let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
-                resolve_first!(self.recheck(&parent));
+                resolve!(self.recheck(&parent));
                 match rustix::fs::mkdirat(parent.fd(), name, Mode::from_raw_mode(0o755)) {
                     Ok(()) => self.flush_folder(&parent, Flush::Plain)?,
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
@@ -394,7 +385,7 @@ impl Space {
             }
             Action::WriteFile { at, replaces: None } => {
                 let staging = self.private(&[STAGING_DIR])?;
-                let (parent, name) = resolve_first!(self.parent(at));
+                let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
                 self.place(&staging, &effect.id, &parent, name, true, hook)?
             }
@@ -413,8 +404,8 @@ impl Space {
                 self.displace(effect, &displaced, None, contents, now, hook)?
             }
             Action::Move { from, id, to } => {
-                let (source, name) = resolve_first!(self.parent(from));
-                let (target, new_name) = resolve_first!(self.parent(to));
+                let (source, name) = resolve!(self.parent(from));
+                let (target, new_name) = resolve!(self.parent(to));
                 match lookup(source.fd(), name) {
                     Err(err) => return denied(err),
                     Ok(None) => return Ok(failed(Reason::Missing)),
@@ -422,8 +413,8 @@ impl Space {
                     Ok(Some(_)) => {}
                 }
                 hook(Step::Checked);
-                resolve_first!(self.recheck(&source));
-                resolve_first!(self.recheck(&target));
+                resolve!(self.recheck(&source));
+                resolve!(self.recheck(&target));
                 match rename_no_replace(source.fd(), name, target.fd(), new_name) {
                     Ok(()) => {}
                     Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -455,10 +446,10 @@ impl Space {
         now: SystemTime,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
-        let (parent, name) = resolve_first!(self.parent(&displaced.at));
+        let (parent, name) = resolve!(self.parent(&displaced.at));
         let target = match place {
             Some(at) => {
-                let target = resolve_first!(self.parent(at));
+                let target = resolve!(self.parent(at));
                 let staging = self.private(&[STAGING_DIR])?;
                 if lookup(staging.fd(), OsStr::new(&effect.id))?.is_none() {
                     return Err(io::Error::new(
@@ -481,7 +472,7 @@ impl Space {
         }
         hook(Step::Checked);
 
-        resolve_first!(self.recheck(&parent));
+        resolve!(self.recheck(&parent));
         self.recheck(&quarantine)?;
         let id = OsStr::new(&effect.id);
         match rename_no_replace(parent.fd(), name, quarantine.fd(), id) {
@@ -529,7 +520,13 @@ impl Space {
         first_change: bool,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
-        resolve!(self.recheck(target));
+        match self.recheck(target) {
+            Ok(()) => {}
+            Err(Unresolved::Io { err, .. }) if first_change && refused(&err) => {
+                return Ok(failed(Reason::Denied));
+            }
+            Err(err) => return unresolved(err),
+        }
         self.recheck(staging)?;
         let identity = stat_at(staging.fd(), OsStr::new(id))?.id;
         match rename_no_replace(staging.fd(), OsStr::new(id), target.fd(), name) {
