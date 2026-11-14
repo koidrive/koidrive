@@ -985,6 +985,7 @@ impl Folder {
             )
         };
         let mut reasons: BTreeMap<&String, Vec<String>> = BTreeMap::new();
+        let mut restart = !self.engine.effects.blocked().is_empty() || !held.is_empty();
         for id in self.engine.effects.blocked().keys() {
             let why = (self.effect_failures.get(id)).map_or("it failed earlier", |(_, why)| why);
             let why = format!("the server's change could not be made here: {why}");
@@ -997,9 +998,12 @@ impl Folder {
                     unreadable.why,
                     utc(unreadable.at)
                 ),
-                None => (self.refused_nodes.get(id))
-                    .map_or("the server did not take it", String::as_str)
-                    .to_owned(),
+                None => {
+                    restart = true;
+                    (self.refused_nodes.get(id))
+                        .map_or("the server did not take it", String::as_str)
+                        .to_owned()
+                }
             };
             reasons.entry(id).or_default().push(why);
         }
@@ -1077,8 +1081,12 @@ impl Folder {
                     0 => String::new(),
                     more => format!(", and {more} more"),
                 };
+                let restart = match restart {
+                    true => format!("; run koi folder restart once {fixed} fixed"),
+                    false => String::new(),
+                };
                 Some(format!(
-                    "{count} could not be synced: {}{more}; run koi folder restart once {fixed} fixed",
+                    "{count} could not be synced: {}{more}{restart}",
                     stuck.join(", ")
                 ))
             }
