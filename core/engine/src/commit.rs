@@ -745,6 +745,7 @@ impl Commits {
                     if question.answer == Some(Answer::Discard) {
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
+                        trees.discard_server_entries_below(&question.shown);
                         let updates = (question.shown.into_iter())
                             .map(|(id, shape)| (id, Some(shape)))
                             .collect();

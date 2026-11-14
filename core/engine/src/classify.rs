@@ -975,6 +975,7 @@ impl Trees {
             changed = !excluded
                 && !self.held(child)
                 && ((self.discarded.get(child)).is_none_or(|shape| shape.parent != id)
+                    || !self.left_as_discarded(child)
                     || state == Some(Discard::Reclaimed));
         }
         match (changed, holds_excluded) {
@@ -1010,7 +1011,14 @@ impl Trees {
     }
 
     pub(crate) fn is_discarded(&self, id: &str) -> bool {
-        self.discarded.contains_key(id) && !self.reclaimed(id)
+        self.discarded.contains_key(id) && self.left_as_discarded(id) && !self.reclaimed(id)
+    }
+
+    fn left_as_discarded(&self, id: &str) -> bool {
+        self.r.get(id).is_none()
+            || (self.l.get(id)).is_some_and(|local| {
+                (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
+            })
     }
 
     pub(crate) fn rekey_discarded(&mut self, from: &str, to: &str) {
@@ -1043,6 +1051,45 @@ impl Trees {
         }
     }
 
+    pub(crate) fn discard_server_entries_below(&mut self, shown: &BTreeMap<NodeId, Shape>) {
+        let mut kept = Vec::new();
+        for folder in shown.keys() {
+            for child in self.local_children(folder) {
+                if !shown.contains_key(child) && self.excluded(child) {
+                    self.server_copy(child, &mut kept);
+                }
+            }
+        }
+        for (id, shape) in kept {
+            self.discarded.insert(id, shape);
+        }
+    }
+
+    fn server_copy(&self, id: &NodeId, kept: &mut Vec<(NodeId, Shape)>) -> bool {
+        let (Some(local), Some(remote)) = (self.l.get(id), self.r.get(id)) else {
+            return false;
+        };
+        let start = kept.len();
+        let copy = match local.shape.kind {
+            Kind::File => match (&local.shape.content, &remote.shape.content) {
+                (Some(local), Some(remote)) => same_content(local, remote),
+                _ => false,
+            },
+            Kind::Dir => {
+                let children: Vec<&NodeId> = self.local_children(id).collect();
+                children
+                    .into_iter()
+                    .all(|child| self.server_copy(child, kept))
+            }
+        };
+        if copy {
+            kept.push((id.clone(), local.shape.clone()));
+        } else {
+            kept.truncate(start);
+        }
+        copy
+    }
+
     pub(crate) fn approve(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         for id in ids {
             if self.reverted.remove(&id) {
@@ -1068,7 +1115,7 @@ impl Trees {
             false
         };
         let excluded_below: Vec<NodeId> = (self.discarded.keys())
-            .filter(|id| self.excluded(id) && below_reclaimed(id))
+            .filter(|id| self.r.get(id).is_none() && self.excluded(id) && below_reclaimed(id))
             .cloned()
             .collect();
         let mut left: Vec<NodeId> = reclaimed.iter().cloned().chain(excluded_below).collect();
@@ -1089,7 +1136,26 @@ impl Trees {
         if !left.is_empty() && self.drop_together(&left) {
             dropped.append(&mut left);
         }
-        for id in reclaimed.iter().filter(|id| !left.contains(id)) {
+        let released = |id: &NodeId| reclaimed.contains(id) && !left.contains(id);
+        let kept_with_released: Vec<NodeId> = (self.discarded.iter())
+            .filter(|(id, _)| self.r.get(id).is_some())
+            .filter(|(_, shape)| {
+                let mut parent = Some(&shape.parent);
+                for _ in 0..=self.discarded.len() {
+                    match parent {
+                        Some(dir) if released(dir) => return true,
+                        Some(dir) => parent = self.discarded.get(dir).map(|shape| &shape.parent),
+                        None => return false,
+                    }
+                }
+                false
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in kept_with_released {
+            self.discarded.remove(&id);
+        }
+        for id in reclaimed.iter().filter(|id| released(id)) {
             self.discarded.remove(id);
         }
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);
@@ -1273,9 +1339,11 @@ impl Trees {
         let synced = self.s.live(id)?;
         let local = self.l.get(id);
         let remote = self.r.live(id);
+        let server = self.r.get(id).is_some();
+        let fits = |shape: &Shape| !server || self.server_holds_above(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
-        if held(placed) || held(remote) || !self.ignored(id) {
+        if (held(placed) || held(remote)) && fits(synced) || !self.ignored(id) {
             return None;
         }
         let at = |shape: &Shape| {
@@ -1289,11 +1357,30 @@ impl Trees {
         if local.is_some()
             && let Some(remote) = remote
         {
-            next.push(at(remote));
-            next.extend(placed.map(at));
+            next.extend(
+                [remote]
+                    .into_iter()
+                    .chain(placed)
+                    .filter(|shape| fits(shape))
+                    .map(at),
+            );
         }
         next.push(None);
         Some(next)
+    }
+
+    fn server_holds_above(&self, shape: &Shape) -> bool {
+        let mut parent = &shape.parent;
+        for _ in 0..=self.s.len() {
+            if *parent == self.s.root {
+                return true;
+            }
+            let (Some(_), Some(synced)) = (self.r.get(parent), self.s.live(parent)) else {
+                return false;
+            };
+            parent = &synced.parent;
+        }
+        false
     }
 
     /// The nodes recorded by [`Trees::ignore_local`] that no observation has placed or removed

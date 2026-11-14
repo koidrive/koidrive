@@ -952,6 +952,27 @@ fn run_cut(
     )
 }
 
+fn server_copy(
+    trees: &Trees,
+    id: &str,
+    kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> bool {
+    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
+        return false;
+    };
+    let mut below = BTreeMap::new();
+    let copy = match (&local.shape.content, &remote.shape.content) {
+        (Some(local), Some(remote)) => koidrive_engine::tree::same_content(local, remote),
+        (None, None) => (trees.local_children(id)).all(|child| server_copy(trees, child, &mut below)),
+        _ => false,
+    };
+    if copy {
+        kept.append(&mut below);
+        kept.insert(id.to_owned(), local.shape.clone());
+    }
+    copy
+}
+
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
 /// local changes, and one more before each of the `during` changes. At the end a node the device
 /// excludes, or cannot place because of an excluded one ([`waits_on_excluded`]), must have R equal
@@ -1055,6 +1076,7 @@ fn run_ignoring(
     let (mut deletes, mut removals) = (0, 0);
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
     let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
+    let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut revived: BTreeSet<String> = BTreeSet::new();
     let mut pending: Option<Question> = None;
     let mut during = during.iter();
@@ -1211,6 +1233,14 @@ fn run_ignoring(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
+                revived.remove(id);
+            }
+            for folder in shown.keys() {
+                for child in device.trees.local_children(folder) {
+                    if !shown.contains_key(child) && device.trees.excluded(child) {
+                        server_copy(&device.trees, child, &mut kept_with);
+                    }
+                }
             }
             discarded.extend(shown);
         }
@@ -1222,6 +1252,7 @@ fn run_ignoring(
             changed
                 || (trees.local_children(id)).any(|child| {
                     !trees.excluded(child)
+                        && kept_with.get(child) != trees.local().get(child).map(|node| &node.shape)
                         && discarded
                             .get(child)
                             .is_none_or(|shown| &shown.parent != *id)
