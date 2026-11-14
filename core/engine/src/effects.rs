@@ -864,22 +864,18 @@ fn arrives_below(trees: &Trees, id: &str) -> bool {
     })
 }
 
-/// Whether L holds a node whose way to the root passes `id`. Each node on that way goes to its R
-/// position, or to its local one when R no longer has it, as a parked edit that is moved back, or
-/// when it is parked and ignored, as [`View::step`] moves it back.
 fn holds_below(trees: &Trees, id: &str) -> bool {
     let (local, remote) = (trees.local(), trees.remote());
+    let view = View::new(trees);
     let parent = |node: &str| {
-        let home = local
-            .get(node)
-            .filter(|held| {
-                held.parked
-                    && (trees.ignored(node)
-                        || remote
-                            .live(node)
-                            .is_some_and(|shape| View::new(trees).goes_home(node, shape)))
-            })
-            .map(|held| &held.shape);
+        let home = local.get(node).filter(|held| held.parked).and_then(|held| {
+            if trees.ignored(node) {
+                return Some(view.way_out(node, held));
+            }
+            (remote.live(node))
+                .filter(|shape| view.goes_home(node, shape))
+                .map(|_| &held.shape)
+        });
         (home
             .or_else(|| remote.live(node))
             .or_else(|| local.live(node)))
@@ -957,12 +953,7 @@ impl<'a> View<'a> {
         let local = self.trees.local().get(id);
         let remote = self.trees.remote().live(id);
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
-            let away = remote.filter(|remote| {
-                self.held_by_excluded(id, &local.shape)
-                    && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
-                    && self.blocked(id, remote).is_none()
-            });
-            return self.unpark(id, local, away.unwrap_or(&local.shape));
+            return self.unpark(id, local, self.way_out(id, local));
         }
         let (local, remote) = match (local, remote) {
             (None, None) => return Step::Skip,
@@ -1143,6 +1134,19 @@ impl<'a> View<'a> {
     fn goes_home(&self, id: &str, remote: &Shape) -> bool {
         self.trees.edited(id) && self.trees.ignored_in_remote(id)
             || self.held_by_excluded(id, remote)
+    }
+
+    fn way_out(&self, id: &str, local: &'a LocalNode) -> &'a Shape {
+        let lost = match self.blocked(id, &local.shape) {
+            Some(Step::Blocked(Some(holder))) if self.trees.excluded(&holder) => true,
+            Some(_) => self.trees.reverted().contains(id),
+            None => false,
+        };
+        let away = self.trees.remote().live(id).filter(|remote| {
+            lost && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
+                && self.blocked(id, remote).is_none()
+        });
+        away.unwrap_or(&local.shape)
     }
 
     fn held_by_excluded(&self, id: &str, target: &Shape) -> bool {

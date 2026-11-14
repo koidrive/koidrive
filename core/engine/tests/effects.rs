@@ -1779,6 +1779,46 @@ fn an_ignored_parked_file_whose_local_name_an_excluded_folder_holds_goes_into_it
 }
 
 #[test]
+fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_excluded_r_position() {
+    let renamed = "a (conflict from me 2026-11-09)";
+    for taken in [false, true] {
+        let mut nodes = vec![
+            ("h", Some(file(ROOT, "a", 1)), Some(file(ROOT, "a", 1))),
+            ("x", Some(dir(ROOT, "x")), Some(dir(ROOT, renamed))),
+        ];
+        if taken {
+            nodes.push(("k", Some(file(ROOT, renamed, 3)), Some(file(ROOT, "k", 3))));
+        }
+        let (mut trees, mut disk) = space(&nodes);
+        trees.set_local_rules(
+            koidrive_engine::ignore::LocalRules::new(&["a", "k"], &[] as &[&str]).unwrap(),
+        );
+        trees.set_synced("x".into(), None);
+        let mut local = trees.local().get("x").unwrap().clone();
+        local.parked = true;
+        local.shape = dir(ROOT, "a");
+        trees.set_local("x".into(), local);
+        trees.revert("x".into());
+        let entry = disk.entries.get_mut(&2).unwrap();
+        entry.area = Area::Parked;
+        entry.name = "x".into();
+        trees.check().unwrap();
+        disk.matches(&trees).unwrap();
+        assert!(trees.ignored("x") && !trees.excluded("h"));
+        converge(&mut trees, &mut disk, 10).unwrap();
+        let x = trees.local().get("x").unwrap();
+        if taken {
+            assert!(x.parked);
+            let reported = koidrive_engine::effects::stuck(&trees, &Effects::default(), None);
+            assert!(reported.contains_key("x"), "{reported:?}");
+        } else {
+            assert!(!x.parked);
+            assert_eq!(x.shape, dir(ROOT, renamed));
+        }
+    }
+}
+
+#[test]
 fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
     let (mut trees, mut disk) = space(&[
         ("h", Some(file(ROOT, "a", 1)), Some(file(ROOT, "a", 1))),
