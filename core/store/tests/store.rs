@@ -3055,6 +3055,31 @@ fn a_recovery_stored_before_its_cause_was_opens_as_a_rolled_back_store() {
 }
 
 #[test]
+fn a_store_from_before_first_listings_were_kept_keeps_one_per_history_across_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    Store::open(&path).unwrap();
+    store_before(&path, "first_listing");
+    let keep = |history_id: &str, listing: Listing| {
+        Store::open(&path)
+            .unwrap()
+            .transaction(|tx| tx.keep_first_listing(history_id, listing))
+            .unwrap()
+    };
+
+    assert_eq!(keep("h1", Listing::Empty), Listing::Empty);
+    assert_eq!(applied(&path), all_migrations());
+    assert_eq!(keep("h1", Listing::Live), Listing::Empty);
+    assert_eq!(keep("h2", Listing::Live), Listing::Live);
+    assert_eq!(keep("h1", Listing::Live), Listing::Live);
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.forget_first_listing())
+        .unwrap();
+    assert_eq!(keep("h1", Listing::Empty), Listing::Empty);
+}
+
+#[test]
 fn a_store_from_before_replaced_versions_were_recorded_opens_with_none_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
