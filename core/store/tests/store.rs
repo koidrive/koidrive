@@ -4040,7 +4040,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     );
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("n".into(), remote(shape("n", 1), 1, "v1"));
     trees.set_listed_remote("p".into(), remote(shape("p", 1), 1, "v1"));
     trees.forget_lost(

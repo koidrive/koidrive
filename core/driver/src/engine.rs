@@ -494,7 +494,7 @@ impl Engine {
         let synced = (self.trees).taken_from_others(|seq| commits.lost_here(seq));
         let moved = self.trees.moved_here();
         let untaken = self.trees.untaken_changes(|seq| commits.lost_here(seq));
-        let records = self.trees.remote_records();
+        let records = self.trees.remote_records(|seq| commits.lost_here(seq));
         let removed = self.trees.removed_here();
         let root = self.trees.remote().root.clone();
         let mut tree = Tree::new(root.clone());

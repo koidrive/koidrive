@@ -183,6 +183,14 @@ pub enum Untaken {
     Delete,
 }
 
+/// R's record of a node before a bootstrap replaced it ([`Trees::remote_records`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteRecord {
+    pub node: RemoteNode,
+    /// Whether a commit of this device that the server lost set the position the record holds.
+    pub moved_in_lost_commit: bool,
+}
+
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -1897,10 +1905,20 @@ impl Trees {
     }
 
     /// R's record of each node, live or in the trash, for [`Trees::forget_lost`] once a bootstrap
-    /// has replaced R.
-    pub fn remote_records(&self) -> BTreeMap<NodeId, RemoteNode> {
+    /// has replaced R: `lost_here` tells whether a seq is one of the commits of this device that
+    /// the server lost.
+    pub fn remote_records(
+        &self,
+        lost_here: impl Fn(u64) -> bool,
+    ) -> BTreeMap<NodeId, RemoteRecord> {
         (self.r.iter())
-            .map(|(id, remote)| (id.clone(), remote.clone()))
+            .map(|(id, remote)| {
+                let record = RemoteRecord {
+                    node: remote.clone(),
+                    moved_in_lost_commit: lost_here(remote.meta_rev),
+                };
+                (id.clone(), record)
+            })
             .collect()
     }
 
@@ -2070,7 +2088,7 @@ impl Trees {
         synced: Vec<(NodeId, Option<Shape>)>,
         moved: Vec<(NodeId, MovedHere)>,
         untaken: Vec<(NodeId, Untaken)>,
-        records: BTreeMap<NodeId, RemoteNode>,
+        records: BTreeMap<NodeId, RemoteRecord>,
         held_through: u64,
         accepted: u64,
     ) {
@@ -2322,14 +2340,12 @@ impl Trees {
                     };
                     at.same(remote)
                 };
-                let survived =
-                    (records.get(*id))
-                        .zip(self.r.get(id))
-                        .is_some_and(|(old, remote)| {
-                            old.content_rev <= held_through
-                                || (!old.version_id.is_empty()
-                                    && old.version_id == remote.version_id)
-                        });
+                let survived = (records.get(*id).map(|record| &record.node))
+                    .zip(self.r.get(id))
+                    .is_some_and(|(old, remote)| {
+                        old.content_rev <= held_through
+                            || (!old.version_id.is_empty() && old.version_id == remote.version_id)
+                    });
                 self.r.get(id).is_none()
                     || (!untaken.contains_key(*id)
                         && !survived
@@ -2401,8 +2417,8 @@ impl Trees {
             let before = match (unchanged && resent, in_place) {
                 (true, _) => remote_before.get(&id),
                 (false, true) => (records.get(&id))
-                    .filter(|remote| !remote.trashed)
-                    .map(|remote| &remote.shape),
+                    .filter(|record| !record.node.trashed && !record.moved_in_lost_commit)
+                    .map(|record| &record.node.shape),
                 (false, false) => None,
             };
             let moved = before

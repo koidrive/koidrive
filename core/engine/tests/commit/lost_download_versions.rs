@@ -333,7 +333,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
         };
         trees.set_remote("a".into(), deleted);
         trees.settle();
-        let records = trees.remote_records();
+        let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         trees.set_listed_remote("a".into(), edited);
         trees.forget_lost(
@@ -358,7 +358,7 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
         let mut trees = trees(&[synced("a", file(ROOT, "a", 1))]);
         trees.set_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
         trees.settle();
-        let records = trees.remote_records();
+        let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         let edited = RemoteNode {
             content_rev: 3,
