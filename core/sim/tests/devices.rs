@@ -4462,7 +4462,6 @@ fn a_lost_create_sent_again_under_a_new_name_is_taken_by_a_device_whose_download
 }
 
 #[test]
-#[ignore = "a device resends the position its disk holds, not the one it knew the server held (GUN-642)"]
 fn a_second_loss_before_the_download_moves_the_file_keeps_the_authors_name() {
     let mut world = converge(2, &[vec![(0, BACKUP), (0, file("a"))]]).unwrap();
     let mut steps = vec![(0, RESTORE)];
@@ -5754,6 +5753,59 @@ fn a_folder_owing_its_name_that_another_device_deletes_and_a_third_brings_back_l
 }
 
 #[test]
+fn a_lost_create_another_device_renamed_keeps_that_name_on_its_author() {
+    let u = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (1, u(1, 0, 0, 5, 0)),
+            (1, Step::Work(0)),
+            (1, u(0, 0, 0, 0, 0)),
+            (0, BACKUP),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, Step::Work(0)),
+            (1, u(0, 0, 971644710856725638, 0, 0)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, SCAN),
+        ],
+        vec![
+            (0, u(3, 11065823107604655381, 13144275098436594317, 2, 0)),
+            (0, u(0, 8924062193407307649, 10773226674498606075, 6, 3)),
+            (0, u(3, 17564874028559111626, 17714975167871673525, 0, 1)),
+            (1, SCAN),
+            (0, Step::Work(16971911762695882534)),
+            (0, Step::Work(15563487930343138531)),
+            (0, RESTORE),
+            (0, COMMIT),
+            (1, SCAN),
+            (0, u(1, 16792821577651118198, 11769716096091907979, 1, 1)),
+            (0, Step::Effect(Outcome::Fail)),
+        ],
+    ];
+    let world = converge(2, &phases).unwrap();
+    for device in 0..2 {
+        let names: Vec<String> = (files_on(&world, device).into_iter())
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            names.contains(&"a".to_string()),
+            "device {device}: {names:?}"
+        );
+        assert!(
+            !names.contains(&"ß".to_string()),
+            "device {device}: {names:?}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "a file one device deletes and another edits ends in a recovery copy although the server kept the edit (GUN-730)"]
 fn a_file_edited_after_another_device_deleted_it_converges() {
     let w = |d: usize| (d, Step::Work(0));
@@ -6232,4 +6284,20 @@ fn a_removal_done_before_a_crash_stays_the_engines_when_the_user_renamed_its_fol
         ],
     ];
     converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_resent_folder_created_where_l_holds_it_after_a_cycle_leaves_no_lost_position() {
+    let mut world = converge(2, &[vec![(0, BACKUP), (0, folder("a")), (0, folder("b"))]]).unwrap();
+    let mut steps = vec![(0, RESTORE)];
+    reconnect(&mut steps, 1, false);
+    steps.push((0, rename(0, 2, "a")));
+    reconnect(&mut steps, 0, true);
+    steps.extend([(1, DELIVER); 8]);
+    steps.extend([(1, Step::Effect(Outcome::Fail)), (0, RESTORE)]);
+    steps.push((1, rename(1, 1, "b")));
+    reconnect(&mut steps, 1, true);
+    reconnect(&mut steps, 0, true);
+    steps.extend([(1, DELIVER); 4]);
+    world.phase(1, &steps).unwrap();
 }

@@ -12,8 +12,8 @@ use koidrive_engine::commit::{Halt, InFlight};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::state::{
-    Agreed, CommitsChanges, CommitsState, EffectsChanges, EffectsState, MapChanges, MovedHere,
-    Pending, SetChanges, TreesChanges, TreesState,
+    Agreed, CommitsChanges, CommitsState, EffectsChanges, EffectsState, LostPosition, MapChanges,
+    MovedHere, Pending, SetChanges, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -288,6 +288,22 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, parent_id, name FROM lost_positions")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let at = LostPosition {
+                parent: row.get(1)?,
+                name: row.get(2)?,
+            };
+            state.trees.lost_positions.insert(row.get(0)?, at);
+        }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM lost_creates")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.lost_creates.insert(row.get(0)?);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id, kept FROM kept_originals")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -392,6 +408,8 @@ impl Tx<'_> {
             "replaced_versions",
             "resends",
             "local_changes",
+            "lost_positions",
+            "lost_creates",
             "kept_originals",
             "effect_state",
             "effects_in_flight",
@@ -451,6 +469,8 @@ impl Tx<'_> {
             replaced_versions,
             resends,
             local_changes,
+            lost_positions,
+            lost_creates,
             kept_originals,
         } = trees;
         let CommitsChanges {
@@ -643,6 +663,17 @@ impl Tx<'_> {
             local_changes,
             "DELETE FROM local_changes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO local_changes (node_id) VALUES (?1)",
+        )?;
+        self.write_set(
+            lost_creates,
+            "DELETE FROM lost_creates WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO lost_creates (node_id) VALUES (?1)",
+        )?;
+        self.write_map(
+            lost_positions,
+            "DELETE FROM lost_positions WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO lost_positions (node_id, parent_id, name) VALUES (?1, ?2, ?3)",
+            |put, node, at: &LostPosition| put.execute(params![node, at.parent, at.name]),
         )?;
         self.write_map(
             kept_originals,

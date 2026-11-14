@@ -14,7 +14,7 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, MovedHere, Pending, StateError, TreesState,
+    Agreed, CommitsState, EffectsState, LostPosition, MovedHere, Pending, StateError, TreesState,
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
 use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
@@ -130,6 +130,8 @@ fn trees_state() -> TreesState {
         dropped_edits: ["a".into()].into(),
         resends: Default::default(),
         local_changes: ["b".into()].into(),
+        lost_positions: Default::default(),
+        lost_creates: Default::default(),
         replaced_versions: [("a".into(), vec!["v1".into()])].into(),
         kept_originals: [("t".into(), "a".into())].into(),
     }
@@ -212,6 +214,40 @@ fn a_local_change_restores_only_while_l_holds_the_node() {
     assert_eq!(
         trees.restore(state),
         Err(StateError::NotLocalChange("g".into()))
+    );
+}
+
+#[test]
+fn a_lost_position_restores_only_while_l_holds_the_node() {
+    let at = LostPosition {
+        parent: ROOT.into(),
+        name: "g".into(),
+    };
+    let (mut trees, mut state) = unsent();
+    state.lost_positions.insert("g".into(), at.clone());
+    assert_eq!(
+        trees.restore(state),
+        Err(StateError::NotLostPosition("g".into()))
+    );
+    let (mut trees, mut state) = unsent();
+    state.lost_positions.insert("f".into(), at);
+    assert_eq!(trees.restore(state.clone()), Ok(()));
+    assert_eq!(trees.state().lost_positions, state.lost_positions);
+}
+
+#[test]
+fn a_lost_create_restores_only_while_l_holds_the_node_and_r_does_not() {
+    let (mut trees, mut state) = unsent();
+    state.lost_creates.insert("g".into());
+    assert_eq!(
+        trees.restore(state),
+        Err(StateError::NotLostCreate("g".into()))
+    );
+    let (mut trees, mut state) = unsent();
+    state.lost_creates.insert("f".into());
+    assert_eq!(
+        trees.restore(state),
+        Err(StateError::NotLostCreate("f".into()))
     );
 }
 

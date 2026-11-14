@@ -168,7 +168,10 @@ fn a_download_this_device_moved_in_a_lost_commit_is_listed_as_synced() {
     trees.set_remote("a".into(), moved);
     trees.settle();
     assert_eq!(trees.class("a"), Class::InSync);
-    assert_eq!(trees.taken_from_others(|seq| seq == 6), ["a".to_string()]);
+    let taken: Vec<String> = (trees.taken_from_others(|seq| seq == 6).into_iter())
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(taken, ["a".to_string()]);
     assert!(trees.taken_from_others(|seq| seq == 5).is_empty());
 }
 
@@ -177,11 +180,7 @@ fn a_download_edited_since_is_not_listed_as_synced() {
     let (_, mut trees, _) = downloaded_at_5();
     trees.set_local("a".into(), local(file(ROOT, "a", 4), 1));
     trees.settle();
-    assert!(
-        !trees
-            .taken_from_others(|_| false)
-            .contains(&"a".to_string())
-    );
+    assert!(!(trees.taken_from_others(|_| false).iter()).any(|(id, _)| id == "a"));
 }
 
 #[test]
@@ -334,7 +333,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
         };
         trees.set_remote("a".into(), deleted);
         trees.settle();
-        let records = trees.remote_records();
+        let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         trees.set_listed_remote("a".into(), edited);
         trees.forget_lost(
@@ -359,7 +358,7 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
         let mut trees = trees(&[synced("a", file(ROOT, "a", 1))]);
         trees.set_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
         trees.settle();
-        let records = trees.remote_records();
+        let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         let edited = RemoteNode {
             content_rev: 3,

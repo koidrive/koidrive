@@ -37,6 +37,13 @@ pub struct MovedHere {
     pub upgraded: bool,
 }
 
+/// The position R held a node at before a server loss, where a resend of the node creates it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LostPosition {
+    pub parent: NodeId,
+    pub name: String,
+}
+
 /// What [`Trees`](crate::classify::Trees) holds besides the nodes of R, L and S.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreesState {
@@ -81,8 +88,9 @@ pub struct TreesState {
     /// The nodes whose position a create or a move of this device set, while R holds them at that
     /// position, also after a delete and a restore of the node.
     pub moved_here: BTreeMap<NodeId, MovedHere>,
-    /// The earlier live records R held of each node, oldest first, the newest
-    /// [`PAST_POSITIONS_KEPT`](crate::classify::PAST_POSITIONS_KEPT).
+    /// The earlier live records R held of each node, oldest first: the newest
+    /// [`PAST_POSITIONS_KEPT`](crate::classify::PAST_POSITIONS_KEPT), and the one a move of
+    /// `moved_here` replaced, which shows that a move and not a create set that position.
     pub past_positions: BTreeMap<NodeId, Vec<Agreed>>,
     /// The files whose content in L is an edit of this device that the server does not hold,
     /// although S and R may hold the same bytes (section 4.4).
@@ -117,6 +125,21 @@ pub struct TreesState {
     /// takes L's shape, a scan finds L back at the shape S holds, L, S and R hold the same shape,
     /// or L no longer holds it.
     pub local_changes: BTreeSet<NodeId>,
+    /// For a node S forgot as a resend while R lacked it, the position R held it at before the loss
+    /// when that differs from the position L and S held: a move another device made that L had not
+    /// taken yet. A create of the node is made there, also after L's content changed, and once the
+    /// server takes it S takes L's position with the content it sent, so L takes the move. A live
+    /// record of the node that another device made moves the position to that record's. The record
+    /// ends when L moves or removes the node, or when L and R hold it live at the same position.
+    pub lost_positions: BTreeMap<NodeId, LostPosition>,
+    /// The nodes S forgot after a server loss that R lacks and L holds as S did, whose position no
+    /// move of this device set: a create of this device, if any, set it, and the server lost that
+    /// create. Another device that creates such a node again held it, so R taking the node again,
+    /// live with the content L holds, is a remote move: S takes L's shape. That includes a device
+    /// that held only a position from before an earlier loss, which a later create of this device
+    /// replaced. Unlike a resend, a delete made after the loss does not beat it. The record ends
+    /// when R holds the node again, and when S takes L's shape or L changes or removes the node.
+    pub lost_creates: BTreeSet<NodeId>,
 }
 
 /// A node this device sent under a pending name (docs/design/sync-engine.md section 2.6).
@@ -215,6 +238,8 @@ pub struct TreesChanges {
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
+    pub lost_positions: MapChanges<NodeId, LostPosition>,
+    pub lost_creates: SetChanges<NodeId>,
     pub kept_originals: MapChanges<NodeId, NodeId>,
 }
 
@@ -243,6 +268,8 @@ impl TreesChanges {
             replaced_versions,
             resends,
             local_changes,
+            lost_positions,
+            lost_creates,
             kept_originals,
         } = after;
         Self {
@@ -267,6 +294,8 @@ impl TreesChanges {
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
+            lost_positions: map_changes(&before.lost_positions, lost_positions),
+            lost_creates: set_changes(&before.lost_creates, lost_creates),
             kept_originals: map_changes(&before.kept_originals, kept_originals),
         }
     }
@@ -446,6 +475,10 @@ pub enum StateError {
     NotResend(NodeId),
     /// A node is recorded as holding a change of this device's user, but L does not hold it.
     NotLocalChange(NodeId),
+    /// A lost position is recorded for a node L does not hold.
+    NotLostPosition(NodeId),
+    /// A node is recorded as a lost create, but R holds it or L does not.
+    NotLostCreate(NodeId),
     /// The commit in flight does not take the slot after the accepted counter.
     DeviceSeq {
         accepted: u64,

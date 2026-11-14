@@ -1241,7 +1241,7 @@ fn list_a_at_its_old_place_after_a_loss(trees: &mut Trees, commits: &Commits) {
     );
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
     trees.remove_remote("pad");
     trees.forget_lost(
@@ -1280,7 +1280,7 @@ fn after_an_edit_dropped_in_flight(undo: bool, restored: RemoteNode) -> (Class, 
     );
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("a".into(), restored);
     trees.remove_remote("pad");
     trees.forget_lost(

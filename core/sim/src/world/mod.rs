@@ -1688,7 +1688,7 @@ impl World {
                 let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
                 let moved = trees.moved_here();
                 let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-                let records = trees.remote_records();
+                let records = trees.remote_records(|seq| commits.lost_here(seq));
                 let removed = trees.removed_here();
                 let root = trees.remote().root.clone();
                 let mut listed = BTreeMap::new();
@@ -2720,6 +2720,16 @@ impl World {
             }
             if let Some((id, _)) = engine.trees.local().iter().find(|(_, node)| node.parked) {
                 return fail(format!("node {id} is parked"));
+            }
+            let state = engine.trees.state();
+            if !state.resends.is_empty()
+                || !state.lost_positions.is_empty()
+                || !state.lost_creates.is_empty()
+            {
+                return fail(format!(
+                    "it still sends nodes again: {:?}, at {:?}, lost creates {:?}",
+                    state.resends, state.lost_positions, state.lost_creates
+                ));
             }
             let mut trees = engine.trees.clone();
             trees.settle();

@@ -13,7 +13,9 @@ use koidrive_engine::question::{
     Revisions,
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
-use koidrive_engine::state::{Agreed, CommitsState, EffectsState, MovedHere, Pending, TreesState};
+use koidrive_engine::state::{
+    Agreed, CommitsState, EffectsState, LostPosition, MovedHere, Pending, TreesState,
+};
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
 };
@@ -109,6 +111,8 @@ fn migrations_apply_from_empty() {
             "link",
             "local_changes",
             "local_nodes",
+            "lost_creates",
+            "lost_positions",
             "migrations",
             "moved_here",
             "node_maps",
@@ -361,6 +365,8 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     expected.trees.lost.clear();
     expected.trees.outside.remove("lost");
     expected.trees.resends.clear();
+    expected.trees.lost_positions.clear();
+    expected.trees.lost_creates.clear();
     expected.trees.replaced_versions.clear();
     expected.trees.discarded.clear();
     let upgraded = MovedHere {
@@ -631,6 +637,8 @@ fn legacy_state() -> EngineState {
     state.trees.edited_here = full.trees.edited_here;
     state.trees.unsent_edits = full.trees.unsent_edits;
     state.trees.resends = full.trees.resends;
+    state.trees.lost_positions = full.trees.lost_positions;
+    state.trees.lost_creates = full.trees.lost_creates;
     state.trees.replaced_versions = full.trees.replaced_versions;
     state.commits.accepted = full.commits.accepted;
     state.commits.in_flight = full.commits.in_flight;
@@ -1293,6 +1301,14 @@ fn engine_state() -> EngineState {
             dropped_edits: nodes(["d"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
+            lost_creates: nodes(["c"]),
+            lost_positions: BTreeMap::from([(
+                "u".into(),
+                LostPosition {
+                    parent: "root".into(),
+                    name: "u-before.txt".into(),
+                },
+            )]),
             replaced_versions: BTreeMap::from([(
                 "e".into(),
                 vec![
@@ -1504,7 +1520,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 36] = [
+const ENGINE_TABLES: [&str; 38] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1541,6 +1557,8 @@ const ENGINE_TABLES: [&str; 36] = [
     "past_positions",
     "dropped_edits",
     "removed_here",
+    "lost_positions",
+    "lost_creates",
 ];
 
 /// Counts each row inserted, updated or deleted in the engine's tables from now on in the table
@@ -1919,6 +1937,8 @@ fn a_store_from_before_contents_were_watched_opens_with_nothing_watched() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     before.commits.slots.clear();
     before.commits.questions.clear();
@@ -1957,6 +1977,8 @@ fn a_store_from_before_edits_were_recorded_opens_with_none_recorded() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     before.trees.lost.clear();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
@@ -1985,6 +2007,8 @@ fn a_store_from_before_deletes_were_recorded_opens_with_none_recorded() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     before.commits.slots.clear();
     before.commits.questions.clear();
@@ -2020,6 +2044,8 @@ fn a_store_from_before_the_guard_opens_with_an_empty_guard() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     before.commits.questions.clear();
     before.commits.guard = GuardState::default();
@@ -2050,6 +2076,8 @@ fn a_store_from_before_questions_showed_local_shapes_keeps_its_questions() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     Store::open(&path)
         .unwrap()
@@ -2094,6 +2122,8 @@ fn a_store_from_before_nodes_in_ignored_folders_were_stored_opens_with_none_reco
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     assert!(!after.trees.outside.is_empty() && !after.trees.displaced.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
@@ -2114,6 +2144,8 @@ fn a_store_from_before_remote_removals_were_counted_opens_with_none_counted() {
     let mut before = legacy_state();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.commits.published.clear();
     before.trees.unsent_edits.clear();
     before.commits.pending.clear();
@@ -2146,6 +2178,8 @@ fn a_store_from_before_positions_were_watched_opens_with_none_watched() {
     let mut before = legacy_state();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     Store::open(&path)
         .unwrap()
         .transaction(|tx| {
@@ -2199,6 +2233,8 @@ fn a_store_from_before_waiting_updates_kept_their_origin_takes_the_accepted_slot
     let mut before = legacy_state();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.waiting = BTreeMap::from([
         (
             "w".into(),
@@ -2283,6 +2319,8 @@ fn a_store_from_before_watched_positions_were_kept_takes_them_from_s() {
     let mut before = legacy_state();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.insert(
         "lost".into(),
         Some(Agreed {
@@ -2335,6 +2373,8 @@ fn a_store_from_before_lost_folders_were_marked_opens_with_none_marked() {
     before.trees.lost.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     assert!(!after.trees.lost.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
@@ -2354,6 +2394,8 @@ fn a_store_from_before_published_entries_were_recorded_opens_with_none_recorded(
     let mut before = legacy_state();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     Store::open(&path)
         .unwrap()
         .transaction(|tx| {
@@ -2402,6 +2444,8 @@ fn a_store_from_before_unsent_edits_were_recorded_opens_with_none_recorded() {
     before.trees.lost.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     assert!(!after.trees.unsent_edits.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
@@ -2476,6 +2520,8 @@ fn a_store_from_before_moves_were_recorded_records_the_positions_its_commits_set
         ("nfd".into(), upgraded(7)),
     ]);
     before.trees.past_positions.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))
@@ -2601,6 +2647,107 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
 }
 
 #[test]
+fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again_after_a_loss() {
+    let remote = |name: &str, meta_rev: u64, trashed: bool| RemoteNode {
+        shape: engine_shape("root", name),
+        trashed,
+        content_rev: 1,
+        meta_rev,
+        meta_edit_rev: meta_rev,
+        edit_rev: 0,
+        trash_group: if trashed {
+            format!("{meta_rev}:0")
+        } else {
+            String::new()
+        },
+        version_id: String::new(),
+    };
+    let local = |name: &str| EngineLocalNode {
+        shape: engine_shape("root", name),
+        identity: FileIdentity {
+            dev: 1,
+            ino: 1,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    let mut trees = Trees::new("root");
+    trees.set_remote("n".into(), remote("x", 1, false));
+    trees.set_local("n".into(), local("x"));
+    trees.set_synced("n".into(), Some(engine_shape("root", "x")));
+    trees.set_local("n".into(), local("y"));
+    trees.set_remote("n".into(), remote("y", 2, false));
+    trees.record_moved("n", 2);
+    trees.set_synced("n".into(), Some(engine_shape("root", "y")));
+    trees.set_remote("n".into(), remote("y", 3, true));
+    trees.set_remote("n".into(), remote("y", 4, false));
+    let mut state = trees.state();
+    state.past_positions.insert(
+        "n".into(),
+        vec![Agreed {
+            rev: 2,
+            parent: "root".into(),
+            name: "y".into(),
+        }],
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let n = NodeState {
+        node_id: "n".into(),
+        parent_id: "root".into(),
+        name: "y".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        content_rev: 1,
+        meta_rev: 4,
+        current: Some(VersionInfo {
+            content: Some(content(3)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| {
+            tx.set_engine_state(&EngineState {
+                trees: state,
+                ..Default::default()
+            })?;
+            tx.put_remote_node(&n)?;
+            tx.put_synced_node(&SyncedNode {
+                node_id: "n".into(),
+                shape: file_shape("root", "y"),
+            })
+        })
+        .unwrap();
+    store_before(&path, "lost_positions");
+
+    let state = (Store::open(&path).unwrap())
+        .transaction(|tx| tx.engine_state())
+        .unwrap();
+    trees.restore(state.trees).unwrap();
+    trees.rules_scanned();
+    let moved = trees.moved_here();
+    let synced = trees.taken_from_others(|_| false);
+    trees.set_listed_remote("n".into(), remote("x", 1, false));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        moved,
+        Vec::new(),
+        Default::default(),
+        1,
+        1,
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let resent = commits.build(&mut trees, &mut ids, 1_794_268_740_001, "history", 1);
+    let moved_to_y = |op: &Op| matches!(&op.op, Some(op::Op::Move(moved)) if moved.new_name == "y");
+    assert!(resent.is_some_and(|commit| commit.ops.iter().any(moved_to_y)));
+}
+
+#[test]
 fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
@@ -2608,6 +2755,8 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
     state.commits.pending.clear();
     state.trees.replaced_versions.clear();
     state.trees.resends.clear();
+    state.trees.lost_positions.clear();
+    state.trees.lost_creates.clear();
     let local =
         [("a", u64::MAX), ("b", 1 << 63), ("c", 42), ("d", 0)].map(|(node_id, ino)| LocalNode {
             node_id: node_id.into(),
@@ -2757,6 +2906,8 @@ fn a_store_from_before_pending_names_were_recorded_opens_with_none_recorded() {
     before.trees.lost.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     assert!(!after.commits.pending.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
@@ -2786,6 +2937,8 @@ fn a_store_from_before_replaced_versions_were_recorded_opens_with_none_recorded(
     let after = before.clone();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     assert!(!after.trees.replaced_versions.is_empty());
     assert!(!after.trees.resends.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
@@ -3043,6 +3196,8 @@ fn a_version_3_store_opens_with_empty_restore_tables() {
     before.trees.edited_here.clear();
     before.trees.replaced_versions.clear();
     before.trees.resends.clear();
+    before.trees.lost_positions.clear();
+    before.trees.lost_creates.clear();
     before.trees.watched_positions.clear();
     before.commits.slots.clear();
     before.commits.restores.clear();
@@ -3885,7 +4040,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     );
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let records = trees.remote_records();
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("n".into(), remote(shape("n", 1), 1, "v1"));
     trees.set_listed_remote("p".into(), remote(shape("p", 1), 1, "v1"));
     trees.forget_lost(
