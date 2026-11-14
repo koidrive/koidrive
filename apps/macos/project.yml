@@ -60,8 +60,26 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+  KoidriveUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - KoidriveUITests
+    dependencies:
+      - target: Koidrive
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.koidrive.KoidriveUITests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
+        CODE_SIGN_IDENTITY: "-"
+        TEST_TARGET_NAME: Koidrive
 schemes:
   Koidrive:
     build:
       targets:
         Koidrive: all
+    test:
+      config: Debug
+      targets:
+        - KoidriveUITests

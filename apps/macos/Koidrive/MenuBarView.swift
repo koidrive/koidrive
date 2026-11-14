@@ -343,6 +343,23 @@ struct MenuContent: View {
             MenuButton(title: "Needs You…", systemImage: "questionmark.circle") {
                 openWindow.show(WindowID.questions)
             }
+            Divider()
+            Group {
+                MenuButton(title: "Share Link…", systemImage: "square.and.arrow.up") {
+                    FilePicker.shareLink.choose(in: model.state.folders) { openWindow.showShareLink(for: $0) }
+                }
+                MenuButton(title: "Shared Links…", systemImage: "link") {
+                    openWindow.show(WindowID.sharedLinks)
+                }
+                MenuButton(title: "Version History…", systemImage: "clock.arrow.circlepath") {
+                    FilePicker.versionHistory.choose(in: model.state.folders) { openWindow.showVersionHistory(of: $0) }
+                }
+                MenuButton(title: "Deleted Files…", systemImage: "trash") {
+                    openWindow.show(WindowID.deletedFiles)
+                }
+            }
+            .disabled(model.needsSetup)
+            Divider()
             MenuButton(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,") {
                 openSettings()
                 NSApp.activate()

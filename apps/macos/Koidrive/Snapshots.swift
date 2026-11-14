@@ -59,7 +59,379 @@ enum Snapshots {
                 await capture(view.frame(width: 600, height: 380), width: 600, height: 380, titled: nil, dark: dark,
                               to: directory.appending(path: "settings-\(name)-\(suffix).png"))
             }
+            for (name, view) in await deletedFilesStates() {
+                await capture(view.frame(width: 880, height: 600), width: 880, height: 600, titled: "Deleted Files", dark: dark,
+                              to: directory.appending(path: "deleted-files-\(name)-\(suffix).png"))
+            }
+            for (name, view) in await versionHistoryStates() {
+                await capture(view.frame(width: 720, height: 480), width: 720, height: 480, titled: "Version History", dark: dark,
+                              to: directory.appending(path: "version-history-\(name)-\(suffix).png"))
+            }
+            for (name, view) in await shareLinkStates() {
+                await capture(view, width: 560, titled: "Share Link", dark: dark,
+                              to: directory.appending(path: "share-link-\(name)-\(suffix).png"))
+            }
+            for (name, view) in await sharedLinksStates() {
+                await capture(view.frame(width: 760, height: 516), width: 760, height: 516, titled: "Shared Links", dark: dark,
+                              to: directory.appending(path: "shared-links-\(name)-\(suffix).png"))
+            }
+            if let budget = await sharedLink("link-budget") {
+                await capture(ConfirmSheet(title: budget.revokeTitle, message: budget.revokeMessage, action: String(localized: "Revoke"),
+                                           confirm: {}, cancel: {}),
+                              width: 280, titled: nil, dark: dark, to: directory.appending(path: "shared-links-3-revoke-confirm-\(suffix).png"))
+            }
+            for (name, targeted) in [("1-drop", DropTarget?.none), ("2-drop-on-version-history", .versionHistory),
+                                     ("3-drop-on-share-link", .shareLink)] {
+                await capture(DropPanel(targets: DropTarget.allCases, targeted: targeted) { _, _ in }.padding(12), width: 354, titled: nil,
+                              dark: dark, to: directory.appending(path: "drop-panel-\(name)-\(suffix).png"))
+            }
+            await captureOpenPanel(.versionHistory, dark: dark, to: directory.appending(path: "version-history-0-file-picker-\(suffix).png"))
+            await captureOpenPanel(.shareLink, dark: dark, to: directory.appending(path: "share-link-0-file-picker-\(suffix).png"))
         }
+    }
+
+    private static func deletedFilesStates() async -> [(String, AnyView)] {
+        func make(_ scenario: FakeScenario = .upToDate) -> (AppModel, DeletedFilesModel) {
+            let app = AppModel.preview(scenario)
+            if let fake = app.session.fakeCore(), let documents = app.state.folders.first, let photos = app.state.folders.last {
+                _ = try? fake.setTrash(spaceId: documents.spaceId, items: [
+                    deletedItem("node-archive", "Archive", .folder, files: 2, bytes: 14_200_000, at: day(-3, 14, 32), by: "device-3", "Studio iMac"),
+                    deletedItem("node-launch", "Campaigns/Launch assets", .folder, files: 8, bytes: 12_600_000, at: day(-2, 16, 18),
+                                by: "device-3", "Studio iMac"),
+                    deletedItem("node-budget", "Finance/Budget 2026.numbers", .file, files: 1, bytes: 248_000, at: day(0, 9, 41),
+                                by: "device-2", "Ada's MacBook Air"),
+                    deletedItem("node-notes", "Notes/Notes.md", .file, files: 1, bytes: 4_000, at: day(-3, 9, 6), by: "device-1", "Ada's Mac mini"),
+                ])
+                _ = try? fake.setTrash(spaceId: photos.spaceId, items: [
+                    deletedItem("node-trip", "2026/Trip drafts", .folder, files: 18, bytes: 96_000_000, at: day(0, 8, 12), by: "device-1", "Ada's Mac mini"),
+                    deletedItem("node-0412", "2026/Seoul/IMG_0412.heic", .file, files: 1, bytes: 3_100_000, at: day(0, 7, 55),
+                                by: "device-1", "Ada's Mac mini"),
+                    deletedItem("node-0388", "2026/Seoul/IMG_0388.heic", .file, files: 1, bytes: 2_800_000, at: day(-5, 18, 20),
+                                by: "device-2", "Ada's MacBook Air"),
+                ])
+            }
+            return (app, DeletedFilesModel(app: app))
+        }
+        func view(_ app: AppModel, _ files: DeletedFilesModel, loads: Bool = true) -> AnyView {
+            AnyView(DeletedFilesView(files: files, loadsOnAppear: loads).environment(app))
+        }
+        func select(_ files: DeletedFilesModel, _ nodeID: String) {
+            files.selection = files.sections.flatMap(\.entries).first { $0.item.nodeId == nodeID }?.id
+        }
+
+        let (all, allFiles) = make()
+        await allFiles.load()
+        select(allFiles, "node-budget")
+
+        let (requested, requestedFiles) = make()
+        await requestedFiles.load()
+        select(requestedFiles, "node-budget")
+        await requestedFiles.restoreSelected()
+
+        let (photos, photosFiles) = make()
+        await photosFiles.load()
+        photosFiles.scope = .folder(spaceID: photos.state.folders.last?.spaceId ?? "")
+        select(photosFiles, "node-0412")
+
+        let (restores, restoresFiles) = make()
+        await restoresFiles.load()
+        if let fake = restores.session.fakeCore(), let documents = restores.state.folders.first {
+            let plan = documents.url.appending(path: "Launch plan.key")
+            _ = try? fake.setVersions(spaceId: documents.spaceId, versions: FileVersions(path: "Launch plan.key", nodeId: "node-plan", versions: [
+                FileVersion(versionId: "v2", size: 6_400_000, savedAtMs: day(0, 9, 41), deviceId: "device-1", deviceName: "Ada's Mac mini", current: true),
+                FileVersion(versionId: "v1", size: 5_900_000, savedAtMs: day(-3, 9, 6), deviceId: "device-1", deviceName: "Ada's Mac mini", current: false),
+            ]))
+            var asked: [String: String] = [:]
+            for nodeID in ["node-budget", "node-notes", "node-archive", "node-launch", "node-trip", "node-0388"] {
+                select(restoresFiles, nodeID)
+                await restoresFiles.restoreSelected()
+                asked[nodeID] = restoresFiles.scopedFolders.flatMap(\.requests).first { $0.target == .deleted(nodeId: nodeID) }?.id
+            }
+            if let versions = try? await restores.versions(of: plan), let earlier = versions.versions.last,
+               let version = try? await restores.restore(earlier, of: plan) {
+                _ = try? fake.finishRestore(requestId: version.requestId, state: .restored)
+            }
+            let ends: [(String, RestoreState)] = [
+                ("node-archive", .restoredAs(name: "Archive 2")), ("node-launch", .refused(reason: .gone)),
+                ("node-0388", .restoredAsCopy(nodeId: "node-copy", name: "IMG_0388 2.heic")), ("node-trip", .tooLarge),
+                ("node-notes", .pending(heldByProblem: true)),
+            ]
+            for (nodeID, state) in ends {
+                if let id = asked[nodeID] { _ = try? fake.finishRestore(requestId: id, state: state) }
+            }
+            await restoresFiles.refreshRequests()
+        }
+        restoresFiles.tab = .restores
+
+        let (noRestores, noRestoresFiles) = make()
+        await noRestoresFiles.load()
+        noRestoresFiles.tab = .restores
+
+        let empty = AppModel.preview(.syncing)
+        let emptyFiles = DeletedFilesModel(app: empty)
+
+        let nothing = AppModel.preview(.upToDate)
+        let nothingFiles = DeletedFilesModel(app: nothing)
+        nothingFiles.scope = .folder(spaceID: nothing.state.folders.last?.spaceId ?? "")
+
+        let (loading, loadingFiles) = make()
+
+        let (error, errorFiles) = make()
+        error.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+
+        let (offline, offlineFiles) = make()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+        offline.session.fakeCore()?.failNext(error: .ServerUnreachable(reason: "offline"))
+
+        let (search, searchFiles) = make()
+        searchFiles.search = "invoice"
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-all-folders", view(all, allFiles)), ("2-restore-requested", view(requested, requestedFiles)),
+            ("3-one-folder", view(photos, photosFiles)), ("4-restores", view(restores, restoresFiles)),
+            ("5-no-restores", view(noRestores, noRestoresFiles)), ("6-empty", view(empty, emptyFiles)),
+            ("7-nothing-in-photos", view(nothing, nothingFiles)), ("8-loading", view(loading, loadingFiles, loads: false)),
+            ("9-error", view(error, errorFiles)), ("10-offline", view(offline, offlineFiles)),
+            ("11-no-matches", view(search, searchFiles)),
+        ]
+    }
+
+    private static func versionHistoryStates() async -> [(String, AnyView)] {
+        let versions = [
+            FileVersion(versionId: "v4", size: 6_400_000, savedAtMs: day(0, 9, 41), deviceId: "device-1", deviceName: "Ada's Mac mini", current: true),
+            FileVersion(versionId: "v3", size: 6_200_000, savedAtMs: day(-1, 16, 18), deviceId: "device-2", deviceName: "Ada's MacBook Air", current: false),
+            FileVersion(versionId: "v2", size: 5_900_000, savedAtMs: day(-3, 9, 6), deviceId: "device-1", deviceName: "Ada's Mac mini", current: false),
+            FileVersion(versionId: "v1", size: 5_100_000, savedAtMs: day(-4, 14, 32), deviceId: "device-3", deviceName: "Studio iMac", current: false),
+        ]
+        func make(_ kept: [FileVersion]? = versions) -> (AppModel, VersionHistoryModel) {
+            let app = AppModel.preview(.upToDate)
+            let documents = app.state.folders.first
+            if let kept, let documents {
+                _ = try? app.session.fakeCore()?.setVersions(spaceId: documents.spaceId, versions: FileVersions(
+                    path: "Launch plan.key", nodeId: "node-plan", versions: kept))
+            }
+            let file = (documents?.url ?? URL(filePath: "/")).appending(path: "Launch plan.key")
+            return (app, VersionHistoryModel(app: app, file: file))
+        }
+        func view(_ app: AppModel, _ history: VersionHistoryModel, loads: Bool = true) -> AnyView {
+            AnyView(VersionHistoryView(history: history, loadsOnAppear: loads).environment(app))
+        }
+        func requested() async -> (AppModel, VersionHistoryModel) {
+            let (app, history) = make()
+            await history.load()
+            history.selection = "v3"
+            await history.restoreSelected()
+            return (app, history)
+        }
+
+        let (list, listHistory) = make()
+        await listHistory.load()
+        listHistory.selection = "v3"
+
+        let (asked, askedHistory) = await requested()
+
+        let (restored, restoredHistory) = await requested()
+        if case .requested(_, let id) = restoredHistory.restore, let fake = restored.session.fakeCore(),
+           let documents = restored.state.folders.first {
+            let now = FileVersion(versionId: "v5", size: 6_200_000, savedAtMs: Int64(Date.now.timeIntervalSince1970 * 1000),
+                                  deviceId: "device-1", deviceName: "Ada's Mac mini", current: true)
+            let earlier = versions.map { FileVersion(versionId: $0.versionId, size: $0.size, savedAtMs: $0.savedAtMs,
+                                                     deviceId: $0.deviceId, deviceName: $0.deviceName, current: false) }
+            _ = try? fake.setVersions(spaceId: documents.spaceId, versions: FileVersions(path: "Launch plan.key", nodeId: "node-plan",
+                                                                                     versions: [now] + earlier))
+            _ = try? fake.finishRestore(requestId: id, state: .restored)
+            await restoredHistory.refreshRestore()
+        }
+
+        let (refused, refusedHistory) = await requested()
+        if case .requested(_, let id) = refusedHistory.restore {
+            _ = try? refused.session.fakeCore()?.finishRestore(requestId: id, state: .refused(reason: .gone))
+            await refusedHistory.refreshRestore()
+        }
+
+        let (notSynced, notSyncedHistory) = make(nil)
+        let (single, singleHistory) = make(Array(versions.prefix(1)))
+        let (loading, loadingHistory) = make()
+        let (error, errorHistory) = make()
+        error.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+        let (offline, offlineHistory) = make()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+        offline.session.fakeCore()?.failNext(error: .ServerUnreachable(reason: "offline"))
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-versions", view(list, listHistory)), ("2-restore-requested", view(asked, askedHistory)),
+            ("3-restored", view(restored, restoredHistory)), ("4-refused", view(refused, refusedHistory)),
+            ("5-not-synced-yet", view(notSynced, notSyncedHistory)), ("6-no-earlier-versions", view(single, singleHistory)),
+            ("7-loading", view(loading, loadingHistory, loads: false)), ("8-error", view(error, errorHistory)),
+            ("9-offline", view(offline, offlineHistory)),
+        ]
+    }
+
+    private static func shareLinkStates() async -> [(String, AnyView)] {
+        func make(_ path: String = "Finance/Budget 2026.numbers", in folder: String = "Documents", step: ShareLinkModel.Step? = nil)
+            -> (AppModel, ShareLinkModel) {
+            let app = AppModel.preview(.upToDate)
+            let root = app.state.folders.first { $0.spaceName == folder }?.url ?? URL(filePath: "/")
+            let item = root.appending(path: path, directoryHint: path.contains(".") ? .notDirectory : .isDirectory)
+            return (app, step.map { ShareLinkModel(app: app, item: item, showing: $0) } ?? ShareLinkModel(app: app, item: item))
+        }
+        func view(_ app: AppModel, _ share: ShareLinkModel) -> AnyView {
+            AnyView(ShareLinkView(share: share).environment(app))
+        }
+
+        let (options, optionsShare) = make()
+
+        let (password, passwordShare) = make()
+        passwordShare.requiresPassword = true
+        passwordShare.password = "horse staple"
+
+        let (short, shortShare) = make()
+        shortShare.requiresPassword = true
+        shortShare.password = "horse"
+        await shortShare.create()
+
+        let (checking, checkingShare) = make(step: .checking)
+
+        let (created, createdShare) = make()
+        createdShare.requiresPassword = true
+        createdShare.password = "horse staple"
+        await createdShare.create()
+
+        let (folder, folderShare) = make("2026/Trip drafts", in: "Photos")
+
+        let (notSynced, notSyncedShare) = make("Contract draft.pdf")
+        if let fake = notSynced.session.fakeCore(), let documents = notSynced.state.folders.first {
+            _ = try? fake.setFolderState(spaceId: documents.spaceId, folderState: .syncing)
+            fake.failNext(error: .NotOnServer)
+        }
+        await notSyncedShare.create()
+
+        let (failed, failedShare) = make()
+        failed.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+        await failedShare.create()
+
+        let (offline, offlineShare) = make()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-options", view(options, optionsShare)), ("2-password", view(password, passwordShare)),
+            ("3-too-short", view(short, shortShare)), ("4-checking", view(checking, checkingShare)),
+            ("5-created", view(created, createdShare)), ("6-folder", view(folder, folderShare)),
+            ("7-not-synced-yet", view(notSynced, notSyncedShare)), ("8-couldnt-create", view(failed, failedShare)),
+            ("9-offline", view(offline, offlineShare)),
+        ]
+    }
+
+    private static func linksApp(_ scenario: FakeScenario = .upToDate) -> (AppModel, SharedLinksModel) {
+        let app = AppModel.preview(scenario)
+        if let fake = app.session.fakeCore(), let documents = app.state.folders.first?.path, let photos = app.state.folders.last?.path {
+            let now = Int64(Date.now.timeIntervalSince1970 * 1000)
+            let hour: Int64 = 3_600_000
+            let day = 24 * hour
+            func link(_ id: String, _ folder: String, _ path: String?, _ kind: NodeKind?, created: Int64, expires: Int64?,
+                      password: Bool = false, _ state: ShareState = .active) -> KoidriveFFI.ShareLink {
+                KoidriveFFI.ShareLink(id: id, folder: folder, path: path, kind: kind, createdAtMs: created, expiresAtMs: expires,
+                                      hasPassword: password, state: state)
+            }
+            _ = try? fake.setShareLinks(links: [
+                link("link-plan", documents, "Launch plan.key", .file, created: Self.day(0, 9, 20), expires: now + 23 * hour + 10 * 60_000),
+                link("link-budget", documents, "Finance/Budget 2026.numbers", .file, created: Self.day(-5, 10, 4),
+                     expires: now + 6 * day + 2 * hour, password: true),
+                link("link-gone", photos, nil, nil, created: Self.day(-2, 16, 40), expires: now + 4 * day + 2 * hour),
+                link("link-trip", photos, "2026/Trip drafts", .folder, created: Self.day(-30, 11, 15), expires: now + 29 * day + 2 * hour),
+                link("link-contract", documents, "Contract draft.pdf", .file, created: Self.day(-11, 9, 0), expires: Self.day(-1, 9, 0),
+                     .revoked),
+                link("link-notes", documents, "Notes/Notes.md", .file, created: Self.day(-11, 8, 30), expires: Self.day(-4, 8, 30),
+                     password: true, .expired),
+            ])
+        }
+        return (app, SharedLinksModel(app: app))
+    }
+
+    private static func sharedLink(_ id: String) async -> SharedLink? {
+        let (_, links) = linksApp()
+        await links.load()
+        return links.activeLinks.first { $0.id == id }
+    }
+
+    private static func sharedLinksStates() async -> [(String, AnyView)] {
+        func view(_ app: AppModel, _ links: SharedLinksModel, loads: Bool = true, drop: DropHover? = nil) -> AnyView {
+            AnyView(SharedLinksView(links: links, loadsOnAppear: loads, drop: drop).environment(app))
+        }
+
+        let (active, activeLinks) = linksApp()
+        await activeLinks.load()
+
+        let (ended, endedLinks) = linksApp()
+        await endedLinks.load()
+        endedLinks.showsEndedLinks = true
+
+        let (revoked, revokedLinks) = linksApp()
+        await revokedLinks.load()
+        if let budget = revokedLinks.activeLinks.first(where: { $0.id == "link-budget" }) {
+            await revokedLinks.revoke(budget.link)
+        }
+
+        let (dropping, droppingLinks) = linksApp()
+        await droppingLinks.load()
+
+        let empty = AppModel.preview(.upToDate)
+        _ = try? empty.session.fakeCore()?.setShareLinks(links: [])
+        let emptyLinks = SharedLinksModel(app: empty)
+
+        let (loading, loadingLinks) = linksApp()
+
+        let (error, errorLinks) = linksApp()
+        error.session.fakeCore()?.failNext(error: .Failed(reason: "The server didn’t answer."))
+
+        let (offline, offlineLinks) = linksApp()
+        offline.session.fakeCore()?.setActivity(activity: .offline)
+        offline.session.fakeCore()?.failNext(error: .ServerUnreachable(reason: "offline"))
+
+        try? await Task.sleep(for: .milliseconds(200))
+        return [
+            ("1-active", view(active, activeLinks)), ("2-ended-links", view(ended, endedLinks)),
+            ("3-revoked", view(revoked, revokedLinks)),
+            ("4-drop-to-share", view(dropping, droppingLinks, drop: DropHover(name: "Budget 2026.numbers"))),
+            ("5-empty", view(empty, emptyLinks)), ("6-loading", view(loading, loadingLinks, loads: false)),
+            ("7-error", view(error, errorLinks)), ("8-offline", view(offline, offlineLinks)),
+        ]
+    }
+
+    private static func captureOpenPanel(_ picker: FilePicker, dark: Bool, to url: URL) async {
+        let root = FileManager.default.temporaryDirectory.appending(path: "Koidrive Snapshots", directoryHint: .isDirectory)
+        let folders = ["Documents", "Photos"].map { name in
+            LinkedFolder(spaceId: "space-\(name)", spaceName: name, path: root.appending(path: name).path(percentEncoded: false), state: .upToDate)
+        }
+        for path in ["Documents/Archive", "Documents/Finance", "Photos/2026"] {
+            try? FileManager.default.createDirectory(at: root.appending(path: path), withIntermediateDirectories: true)
+        }
+        for path in ["Documents/Launch plan.key", "Documents/Contract draft.pdf", "Documents/Budget 2026.numbers", "Documents/Notes.md"] {
+            FileManager.default.createFile(atPath: root.appending(path: path).path(percentEncoded: false), contents: Data(path.utf8))
+        }
+        let (panel, filter) = picker.makePanel(in: folders)
+        panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        panel.setContentSize(NSSize(width: 720, height: 420))
+        panel.begin { _ in withExtendedLifetime(filter) {} }
+        try? await Task.sleep(for: .seconds(1.5))
+        shoot(panel, to: url)
+        panel.cancel(nil)
+    }
+
+    private static func day(_ offset: Int, _ hour: Int, _ minute: Int) -> Int64 {
+        let calendar = Calendar.current
+        let start = calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: .now)) ?? .now
+        let date = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: start) ?? start
+        return Int64(date.timeIntervalSince1970 * 1000)
+    }
+
+    private static func deletedItem(_ id: String, _ path: String, _ kind: NodeKind, files: UInt64, bytes: UInt64, at ms: Int64,
+                                    by device: String, _ name: String) -> DeletedItem {
+        DeletedItem(nodeId: id, path: path, kind: kind, files: files, bytes: bytes, modifiedAtMs: ms - 3_600_000,
+                    deletedAtMs: ms, deletedByDeviceId: device, deletedByDeviceName: name)
     }
 
     private static func menuStates() async -> [(String, AppModel)] {
@@ -228,6 +600,11 @@ enum Snapshots {
             await afterAppearing()
         }
         try? await Task.sleep(for: .milliseconds(300))
+        shoot(window, to: url)
+        window.close()
+    }
+
+    private static func shoot(_ window: NSWindow, to url: URL) {
         let screencapture = Process()
         screencapture.executableURL = URL(filePath: "/usr/sbin/screencapture")
         screencapture.arguments = ["-x", "-o", "-l", String(window.windowNumber), url.path(percentEncoded: false)]
@@ -240,7 +617,6 @@ enum Snapshots {
         guard screencapture.terminationStatus == 0 else {
             fatalError("screencapture failed for \(url.lastPathComponent) with status \(screencapture.terminationStatus)")
         }
-        window.close()
     }
 }
 

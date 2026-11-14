@@ -88,7 +88,7 @@ You need a Cloudflare account with R2 turned on, and a Mac with Apple silicon or
 
 ### The macOS app
 
-Koidrive for Mac is the full sync client for macOS 26 or later on Apple silicon. Set up this Mac, link folders and manage sync in the app. The menu bar shows sync status and notices, opens your folders in Finder and lets you pause or resume sync. **Needs You** asks before a large delete reaches your other machines.
+Koidrive for Mac is the full sync client for macOS 26 or later on Apple silicon. Set up this Mac, link folders and manage sync in the app. The menu bar shows sync status and notices, opens your folders in Finder and lets you pause or resume sync. **Needs You** asks before a large delete reaches your other machines. Deleted Files and Version History bring back deleted files and earlier versions of a file. Share Link makes a link that lets anyone download a file or folder, and Shared Links lists your links so you can revoke one.
 
 1. Download `Koidrive-<version>-arm64.dmg` from the [latest release](https://github.com/koidrive/koidrive/releases/latest), open it and drag Koidrive to Applications.
 
