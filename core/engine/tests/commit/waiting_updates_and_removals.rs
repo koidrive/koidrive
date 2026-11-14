@@ -165,7 +165,7 @@ fn a_parked_waiting_file_takes_remote_content_while_committing_is_halted() {
     trees.settle();
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
-        commits.failed(&refusal(error::Code::ReadOnly, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::ReadOnly, 0)),
         Ok(Failure::Halted(Halt::ReadOnly))
     );
     effects_for(&mut trees, &mut ids, "n");
@@ -299,7 +299,7 @@ fn a_waiting_blocker_whose_parking_failed_is_not_parked_again_unchanged() {
             ..
         }
     ));
-    effects.failed(&first.effect_id).unwrap();
+    effects.failed(&mut trees, &first.effect_id).unwrap();
     assert_eq!(
         effects
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -319,7 +319,7 @@ fn a_waiting_update_is_made_while_committing_is_halted() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(c)] if c.node_id == "p"));
     assert_eq!(
-        commits.failed(&refusal(error::Code::ReadOnly, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::ReadOnly, 0)),
         Ok(Failure::Halted(Halt::ReadOnly))
     );
     effects_for(&mut trees, &mut ids, "");
@@ -347,7 +347,7 @@ fn a_waiting_update_is_made_while_committing_is_halted_under_a_local_edit() {
         ops(&commit)
     );
     assert_eq!(
-        commits.failed(&refusal(error::Code::ReadOnly, 0)),
+        commits.failed(&mut trees, &refusal(error::Code::ReadOnly, 0)),
         Ok(Failure::Halted(Halt::ReadOnly))
     );
     effects_for(&mut trees, &mut ids, "");

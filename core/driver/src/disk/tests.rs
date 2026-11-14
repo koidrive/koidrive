@@ -204,7 +204,7 @@ fn a_same_byte_save_before_a_removal_does_not_delete_the_restored_file() {
     let engine = &mut running.engine;
     let commit = engine
         .commits
-        .build(&mut engine.trees, &mut engine.ids, 1, "history", 2)
+        .build(&mut engine.trees, &mut engine.ids, 1, "history", "me", 2)
         .cloned();
     assert!(
         commit.is_none(),
@@ -261,6 +261,7 @@ impl Folder {
                     tx.put_synced_node(&SyncedNode {
                         node_id: (*id).into(),
                         shape: shape.clone(),
+                        pending_for: String::new(),
                     })?;
                     tx.put_local_node(&koidrive_store::LocalNode {
                         node_id: (*id).into(),
@@ -563,6 +564,8 @@ fn remote(id: &str, name: &str, content: Option<Content>) -> NodeState {
             content: Some(content),
             ..VersionInfo::default()
         }),
+        pending_for: String::new(),
+        pending_by: String::new(),
     }
 }
 
@@ -1388,7 +1391,7 @@ fn a_remote_edit_never_replaces_a_file_whose_read_was_deferred() {
     let engine = &mut running.engine;
     engine
         .commits
-        .build(&mut engine.trees, &mut engine.ids, 1, "history", 2);
+        .build(&mut engine.trees, &mut engine.ids, 1, "history", "me", 2);
     let edit = disk_content(&report);
     let at_report: Vec<(&String, &LocalNode)> = (running.engine.trees.local().iter())
         .filter(|(_, node)| node.shape.name == "report.txt")
@@ -2592,7 +2595,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
     });
     let engine = &mut running.engine;
     let commit = (engine.commits)
-        .build(&mut engine.trees, &mut engine.ids, 1, "history", 2)
+        .build(&mut engine.trees, &mut engine.ids, 1, "history", "me", 2)
         .cloned()
         .unwrap();
     assert!(

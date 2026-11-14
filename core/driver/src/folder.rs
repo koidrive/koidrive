@@ -1352,7 +1352,7 @@ impl Folder {
         let before = self.engine.commits.problems().clone();
         let failure = self.step(|engine, tx| {
             let in_flight = engine.commits.edited_in_flight();
-            let failure = (engine.commits.failed(&refusal.0))
+            let failure = (engine.commits.failed(&mut engine.trees, &refusal.0))
                 .map_err(|error| Stop::Protocol(format!("a refused commit: {error:?}")))?;
             if matches!(failure, Failure::Resync) {
                 engine.server_behind(tx, in_flight)?;
@@ -1508,12 +1508,16 @@ impl Folder {
             && self.engine.commits.in_flight().is_none()
             && self.caught_up()
             && !self.offline
-            && self.engine.commits.due(&self.engine.trees);
+            && self
+                .engine
+                .commits
+                .due(&self.engine.trees, &self.link.device_id);
         if !may_build {
             return Ok(());
         }
         let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
             .map_or(0, |since| since.as_millis() as u64);
+        let device_id = self.link.device_id.clone();
         let built = self.step(|engine, _| {
             let cursor = engine.cursor.as_ref().expect("R follows the log");
             let built = engine.commits.build(
@@ -1521,6 +1525,7 @@ impl Folder {
                 &mut engine.ids,
                 now_ms,
                 &cursor.history_id,
+                &device_id,
                 cursor.base(),
             );
             Ok(built.cloned())

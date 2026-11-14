@@ -52,6 +52,8 @@ fn space(loose: usize, inside: usize) -> Trees {
                 trash_group: String::new(),
                 version_id: String::new(),
                 edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
             },
         );
     }
@@ -95,7 +97,7 @@ fn root_files(range: std::ops::Range<usize>) -> Vec<String> {
 }
 
 fn build_at(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen, now: u64) -> Vec<op::Op> {
-    let commit = commits.build(trees, ids, now, "history", 7).cloned();
+    let commit = commits.build(trees, ids, now, "history", "me", 7).cloned();
     trees.settle();
     commit.map_or_else(Vec::new, |commit| {
         commit.ops.into_iter().map(|op| op.op.unwrap()).collect()
@@ -497,6 +499,8 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
             trash_group: String::new(),
             version_id: String::new(),
             edit_rev: 2,
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -761,6 +765,8 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
             trash_group: String::new(),
             version_id: String::new(),
             edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
         },
     );
     trees.settle();
@@ -835,6 +841,8 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
             trash_group: top.into(),
             version_id: String::new(),
             edit_rev: 2,
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote(id, node);
     }
@@ -1026,6 +1034,8 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
                     String::new()
                 },
                 edit_rev: rev,
+                pending_for: None,
+                pending_by: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1280,6 +1290,8 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
                     String::new()
                 },
                 edit_rev: rev,
+                pending_for: None,
+                pending_by: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1362,6 +1374,8 @@ fn nested() -> Trees {
             trash_group: String::new(),
             version_id: String::new(),
             edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
         };
         trees.set_remote(id, node);
     }

@@ -1,0 +1,1 @@
+cc 8270747651c75e7ae9840ed8521d1f8cf567dc872c12a8ab7bc2ed5f4158e852 # GUN-547: kept the pending name "ss (pending)" after a rewind

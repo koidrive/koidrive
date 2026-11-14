@@ -2348,6 +2348,66 @@ fn devices_converge_after_the_pending_name_schedule_76bd3ad9() {
 }
 
 #[test]
+fn devices_converge_after_the_minimized_seed_2218_schedule() {
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![(
+            0,
+            Step::User(Action {
+                kind: 1,
+                target: 0,
+                parent: 0,
+                name: 0,
+                text: 0,
+            }),
+        )],
+        vec![
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 3,
+                    target: 950587297693614818,
+                    parent: 12703521683550914641,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Backup),
+            (2, Step::Work(0)),
+            (2, Step::Work(0)),
+            (0, Step::Work(0)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 2,
+                    text: 0,
+                }),
+            ),
+            (1, Step::Work(0)),
+            (2, Step::Work(770003563976859284)),
+            (0, Step::Rewind),
+            (1, Step::Work(0)),
+        ],
+    ];
+    let mut world = World::new(2);
+    for (phase, schedule) in phases.iter().enumerate() {
+        world.phase(phase, schedule).unwrap();
+    }
+}
+
+#[test]
 fn devices_converge_after_the_minimized_seed_1904_schedule() {
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![
@@ -2994,6 +3054,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         new_parent_id: local.shape.parent,
         new_name: local.shape.name,
         from: None,
+        pending_for: String::new(),
     };
     state.in_flight = Some(InFlight {
         commit: Commit {

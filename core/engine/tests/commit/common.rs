@@ -18,7 +18,7 @@ use koidrive_engine::ignore::RuleFile;
 
 use koidrive_engine::names::{MAX_NAME_BYTES, nfc, normalize_name};
 
-use koidrive_engine::state::{CommitsState, MovedHere, Pending, TreesState};
+use koidrive_engine::state::{CommitsState, FinishOrigin, MovedHere, PendingFinish, TreesState};
 
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 
@@ -68,6 +68,8 @@ fn remote(shape: Shape) -> RemoteNode {
         trash_group: String::new(),
         version_id: String::new(),
         edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
     }
 }
 
@@ -135,7 +137,7 @@ fn synced(id: &'static str, shape: Shape) -> Row {
 }
 
 fn build(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Option<proto::Commit> {
-    commits.build(trees, ids, NOW, HISTORY, 7).cloned()
+    commits.build(trees, ids, NOW, HISTORY, "me", 7).cloned()
 }
 
 fn ops(commit: &proto::Commit) -> Vec<op::Op> {
@@ -148,6 +150,7 @@ fn mv(node: &str, parent: &str, name: &str) -> op::Op {
         new_parent_id: parent.into(),
         new_name: name.into(),
         from: None,
+        pending_for: String::new(),
     })
 }
 
@@ -1010,21 +1013,7 @@ fn a_late_acknowledgement_converges_on_a_remote_edit_made_at_the_position_l_took
 }
 
 fn owing_its_name(rows: &[Row]) -> (Commits, Trees, IdGen) {
-    let trees = trees(rows);
-    let pending = BTreeMap::from([(
-        "a".to_owned(),
-        Pending {
-            sent: "a (pending)".into(),
-            name: "a".into(),
-            landed: true,
-        },
-    )]);
-    let commits = Commits::from_state(CommitsState {
-        pending,
-        ..Commits::default().state()
-    })
-    .unwrap();
-    (commits, trees, IdGen::new(1))
+    marked_by(rows, "me")
 }
 
 fn downloaded_at_5() -> (Commits, Trees, IdGen) {
@@ -1204,6 +1193,7 @@ fn owed_mv(node: &str, parent: &str, name: &str, from: &str) -> op::Op {
         node_id: node.into(),
         new_parent_id: parent.into(),
         new_name: name.into(),
+        pending_for: String::new(),
         from: Some(proto::Place {
             parent_id: parent.into(),
             name: from.into(),
@@ -1314,4 +1304,32 @@ fn edited_after_the_restore() -> RemoteNode {
         meta_rev: 2,
         ..remote(file(ROOT, "a", 4))
     }
+}
+
+fn marked_by(rows: &[Row], device: &str) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(rows);
+    let mut node = trees.remote().get("a").expect("a node of R").clone();
+    node.pending_for = Some("a".into());
+    node.pending_by = Some(device.into());
+    trees.set_remote("a".into(), node);
+    trees.settle();
+    (Commits::default(), trees, IdGen::new(1))
+}
+
+fn owing_a_rename_from_before_marks(trees: &mut Trees) {
+    let mut state = trees.state();
+    state.pending_finishes.insert(
+        "a".into(),
+        PendingFinish {
+            parent: ROOT.into(),
+            pending: "a (pending)".into(),
+            name: "a".into(),
+            origin: FinishOrigin::Legacy,
+            disk_first: false,
+            base: None,
+            sending: false,
+        },
+    );
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
 }

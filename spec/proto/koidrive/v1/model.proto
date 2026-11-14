@@ -61,6 +61,10 @@ message NodeState {
   // (RFC 0012). Clients compare groups only for equality.
   string trash_group = 8;
   VersionInfo current = 9;
+  // The name the node waits to take, set by the CreateDir or Move that gave it a stand-in name (RFC 0017).
+  string pending_for = 10;
+  // The device whose commit set the mark (RFC 0017). Empty when the node has no mark.
+  string pending_by = 11;
   // The seq of the newest commit that created the node, changed its content other than by a resend, or carried a user's
   // edit of content a resend brought (RFC 0018). 0 from a server before RFC 0018, read as content_rev.
   uint64 edit_rev = 12;
