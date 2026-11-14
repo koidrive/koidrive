@@ -856,6 +856,60 @@ fn a_parked_file_forked_in_a_build_is_created_only_after_the_effects_move_it_bac
 }
 
 #[test]
+fn a_parked_file_moves_back_to_its_place_after_r_loses_it() {
+    for lost_before_the_plan in [false, true] {
+        let mut trees = trees(&[(
+            "a",
+            Some(file(ROOT, "x", 2)),
+            Some(file(ROOT, "x", 1)),
+            Some(trashed(file(ROOT, "x", 1))),
+        )]);
+        trees.set_local(
+            "a".into(),
+            LocalNode {
+                parked: true,
+                ..local(file(ROOT, "x", 2), 2)
+            },
+        );
+        trees.revert("a".into());
+        if lost_before_the_plan {
+            trees.remove_remote("a");
+        }
+        trees.settle();
+        let (mut commits, mut ids, mut effects) =
+            (Commits::default(), IdGen::new(1), Effects::default());
+        assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+        trees.settle();
+        let unparked = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("no unpark, lost before the plan: {lost_before_the_plan}"));
+        assert!(
+            matches!(
+                &unparked.effect,
+                Effect::Move {
+                    from: Location::Parked(_),
+                    ..
+                }
+            ),
+            "{unparked:?}"
+        );
+        trees.remove_remote("a");
+        trees.settle();
+        effects
+            .done(&mut trees, commits.in_flight(), &unparked.effect_id, None)
+            .unwrap();
+        trees.settle();
+        let back: Vec<bool> = (trees.local().iter())
+            .filter(|(_, node)| node.shape == file(ROOT, "x", 2))
+            .map(|(_, node)| node.parked)
+            .collect();
+        assert_eq!(back, [false], "lost before the plan: {lost_before_the_plan}");
+    }
+}
+
+#[test]
 fn a_parked_folder_the_server_lost_is_created_again_after_a_delete_empties_it() {
     let mut trees = trees(&[
         (
