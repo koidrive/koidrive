@@ -48,6 +48,7 @@ enum Losses {
     None,
     Restores,
     Rewinds,
+    RestoresAndRewinds,
 }
 
 fn step(losses: Losses) -> BoxedStrategy<Step> {
@@ -89,6 +90,17 @@ fn step(losses: Losses) -> BoxedStrategy<Step> {
         Losses::Rewinds => prop_oneof![
             60 => steps,
             2 => Just(Step::Backup),
+            1 => Just(Step::Rewind),
+            3 => Just(Step::CopyStore),
+            2 => Just(Step::RollBack),
+            4 => (0..4usize).prop_map(Step::Answer),
+        ]
+        .boxed(),
+        Losses::RestoresAndRewinds => prop_oneof![
+            60 => steps,
+            2 => Just(Step::Backup),
+            1 => Just(Step::Restore),
+            1 => Just(Step::RestoreEarlier),
             1 => Just(Step::Rewind),
             3 => Just(Step::CopyStore),
             2 => Just(Step::RollBack),
@@ -329,6 +341,16 @@ proptest! {
     fn devices_converge_across_rewinds_and_rollbacks(devices in 2..=3usize, phases in phases(Losses::Rewinds)) {
         converge(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
     }
+
+    #[test]
+    fn devices_lose_no_write_across_restores_and_rewinds(devices in 2..=3usize, phases in phases(Losses::RestoresAndRewinds)) {
+        keep(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_converge_across_restores_and_rewinds(devices in 2..=3usize, phases in phases(Losses::RestoresAndRewinds)) {
+        converge(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
 }
 
 #[test]
@@ -484,6 +506,18 @@ fn the_rewind_schedules_reach_every_recovery() {
             "recovery answer discards",
             "recovery answer deletes",
             "recovery answer restores",
+        ],
+    );
+}
+
+#[test]
+fn the_mixed_schedules_restore_across_a_rewind() {
+    reaches(
+        phases(Losses::RestoresAndRewinds),
+        &[
+            "server restored, commits lost",
+            "server rewound",
+            "server refuses a history a rewind replaced",
         ],
     );
 }
