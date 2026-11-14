@@ -888,8 +888,11 @@ impl Trees {
         }
     }
 
-    fn synced_content_unheld(&self, id: &str) -> bool {
-        (self.s.live(id).and_then(|synced| synced.content.as_ref())).is_some_and(|content| {
+    fn acknowledged_content_unheld(&self, id: &str) -> bool {
+        let content = self
+            .acknowledged(id)
+            .and_then(|shape| shape.content.as_ref());
+        content.is_some_and(|content| {
             !(self.held_contents.get(id))
                 .is_some_and(|held| held.contains(&content.manifest_digest))
         })
@@ -902,7 +905,7 @@ impl Trees {
         self.lost.remove(id);
         self.count_held_trash(id, false);
         if (self.unsent_edits.remove(id) || self.resends.contains(id))
-            && self.synced_content_unheld(id)
+            && self.acknowledged_content_unheld(id)
         {
             self.set_synced(id.to_owned(), None);
         }

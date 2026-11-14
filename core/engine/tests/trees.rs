@@ -5,6 +5,7 @@
 use koidrive_engine::classify::{Class, SETTLE_GROUP_LIMIT, Trees, classify};
 use koidrive_engine::ignore::RuleFile;
 use koidrive_engine::names::{name_key, nfc};
+use koidrive_engine::state::MovedHere;
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, StateError, Tree, TreeError,
     same_content,
@@ -1231,4 +1232,43 @@ fn a_delete_before_a_resend_lands_removes_a_restored_version_this_device_wrote()
     trees.set_remote("f".into(), version(3));
     hold(&mut trees, 3);
     assert_eq!(delete_before_the_resend_of(trees, 2), Class::Local);
+}
+
+#[test]
+fn a_delete_while_a_restored_version_waits_downloads_it_when_this_device_never_held_it() {
+    let at = |digest: u8, name: &str, revision: u64| RemoteNode {
+        content_rev: revision,
+        edit_rev: revision,
+        version_id: format!("v{digest}"),
+        ..remote(file(ROOT, name, digest))
+    };
+    let mut trees = Trees::new(ROOT);
+    trees.set_remote("f".into(), at(66, "f", 3));
+    trees.set_local("f".into(), local(file(ROOT, "f", 66), 1));
+    trees.set_synced("f".into(), Some(file(ROOT, "f", 66)));
+    trees.set_remote("g".into(), remote(file(ROOT, "y", 7)));
+    trees.set_local("g".into(), local(file(ROOT, "x", 7), 2));
+    trees.set_synced("g".into(), Some(file(ROOT, "x", 7)));
+    trees.set_remote("f".into(), at(1, "x", 1));
+    let records = std::collections::BTreeMap::from([("f".into(), at(66, "f", 70))]);
+    trees.forget_lost(
+        vec![],
+        vec![("f".into(), 70)],
+        vec![],
+        vec![(
+            "f".into(),
+            MovedHere {
+                seq: 70,
+                upgraded: false,
+            },
+        )],
+        vec![],
+        records,
+        5,
+        1,
+    );
+    assert!(trees.unsent_edits().contains("f"));
+    assert!(trees.waiting().contains_key("f"));
+    trees.remove_local("f");
+    assert_eq!(trees.class("f"), Class::Remote);
 }
