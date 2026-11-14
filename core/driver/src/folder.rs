@@ -604,10 +604,10 @@ impl Folder {
                 Settled::Denied(_) => (PERMISSION_RETRY, true),
                 _ => (EFFECT_RETRY, false),
             };
+            self.denied_due.remove(&node);
             match settled {
                 Settled::Done => {
                     self.effect_failures.remove(&node);
-                    self.denied_due.remove(&node);
                     self.stuck_effects.remove(&node);
                 }
                 Settled::Failed(why) | Settled::Denied(why)

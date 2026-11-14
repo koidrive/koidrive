@@ -487,3 +487,44 @@ fn a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wai
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(stages, 1);
 }
+
+#[test]
+fn a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinary_retry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, site_a, mut a, site_b, mut b) = synced_on_both(&["locked/file.txt", "open/g.txt"]);
+    let locked = site_b.root.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::write(site_a.root.join("locked/file.txt"), "second version").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let mut timers = Vec::new();
+    run_holding_timers(&mut b, &mut remote, &mut timers);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    fs::write(site_a.root.join("locked/file.txt"), "third remote version").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let Some(Work::Stage(pending)) = b.work.pop_front() else {
+        panic!("the changed remote version must be planned without the old permission wait");
+    };
+    fs::write(locked.join("file.txt"), "local edit during staging").unwrap();
+    let staged = ready(pending.stage(&remote.chunks));
+    let step = b.folder.staged(pending, staged);
+    b.take(step).unwrap();
+    assert_eq!(b.folder.engine.effects.blocked().len(), 1);
+    let why = &b.folder.effect_failures.values().next().unwrap().1;
+    assert_eq!(why, "the entry changed on this device");
+
+    let wait = b.work.iter().filter_map(|work| match work {
+        Work::RetryAfter(wait) => Some(*wait),
+        _ => None,
+    }).min().unwrap();
+    assert!(wait <= Duration::from_secs(3));
+    std::thread::sleep(wait + Duration::from_millis(50));
+    let step = b.folder.retry();
+    b.take(step).unwrap();
+    assert!(b.folder.engine.effects.blocked().is_empty(), "the ordinary failure is held by the earlier permission wait");
+}
