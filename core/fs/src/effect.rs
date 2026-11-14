@@ -216,12 +216,17 @@ fn overtaken(placed: Outcome) -> Outcome {
     }
 }
 
+fn refused(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
 fn denied(err: io::Error) -> io::Result<Outcome> {
-    match err.kind() {
-        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
-            Ok(failed(Reason::Denied))
-        }
-        _ => Err(err),
+    match refused(&err) {
+        true => Ok(failed(Reason::Denied)),
+        false => Err(err),
     }
 }
 
@@ -230,7 +235,7 @@ fn unresolved(err: Unresolved) -> io::Result<Outcome> {
         Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. } => {
             Ok(failed(Reason::Moved))
         }
-        err => denied(err.into()),
+        err => Err(err.into()),
     }
 }
 
@@ -238,6 +243,16 @@ macro_rules! resolve {
     ($resolved:expr) => {
         match $resolved {
             Ok(resolved) => resolved,
+            Err(err) => return unresolved(err),
+        }
+    };
+}
+
+macro_rules! resolve_first {
+    ($resolved:expr) => {
+        match $resolved {
+            Ok(resolved) => resolved,
+            Err(Unresolved::Io { err, .. }) if refused(&err) => return Ok(failed(Reason::Denied)),
             Err(err) => return unresolved(err),
         }
     };
@@ -363,9 +378,9 @@ impl Space {
         self.check_held()?;
         let outcome = match &effect.action {
             Action::CreateDir { at } => {
-                let (parent, name) = resolve!(self.parent(at));
+                let (parent, name) = resolve_first!(self.parent(at));
                 hook(Step::Checked);
-                resolve!(self.recheck(&parent));
+                resolve_first!(self.recheck(&parent));
                 match rustix::fs::mkdirat(parent.fd(), name, Mode::from_raw_mode(0o755)) {
                     Ok(()) => self.flush_folder(&parent, Flush::Plain)?,
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
@@ -379,12 +394,9 @@ impl Space {
             }
             Action::WriteFile { at, replaces: None } => {
                 let staging = self.private(&[STAGING_DIR])?;
-                let (parent, name) = resolve!(self.parent(at));
+                let (parent, name) = resolve_first!(self.parent(at));
                 hook(Step::Checked);
-                match self.place(&staging, &effect.id, &parent, name, hook) {
-                    Ok(outcome) => outcome,
-                    Err(err) => denied(err)?,
-                }
+                self.place(&staging, &effect.id, &parent, name, true, hook)?
             }
             Action::WriteFile {
                 at,
@@ -401,16 +413,17 @@ impl Space {
                 self.displace(effect, &displaced, None, contents, now, hook)?
             }
             Action::Move { from, id, to } => {
-                let (source, name) = resolve!(self.parent(from));
-                let (target, new_name) = resolve!(self.parent(to));
-                match lookup(source.fd(), name)? {
-                    None => return Ok(failed(Reason::Missing)),
-                    Some(found) if found.id != *id => return Ok(failed(Reason::Changed)),
-                    Some(_) => {}
+                let (source, name) = resolve_first!(self.parent(from));
+                let (target, new_name) = resolve_first!(self.parent(to));
+                match lookup(source.fd(), name) {
+                    Err(err) => return denied(err),
+                    Ok(None) => return Ok(failed(Reason::Missing)),
+                    Ok(Some(found)) if found.id != *id => return Ok(failed(Reason::Changed)),
+                    Ok(Some(_)) => {}
                 }
                 hook(Step::Checked);
-                resolve!(self.recheck(&source));
-                resolve!(self.recheck(&target));
+                resolve_first!(self.recheck(&source));
+                resolve_first!(self.recheck(&target));
                 match rename_no_replace(source.fd(), name, target.fd(), new_name) {
                     Ok(()) => {}
                     Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -442,10 +455,10 @@ impl Space {
         now: SystemTime,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
-        let (parent, name) = resolve!(self.parent(&displaced.at));
+        let (parent, name) = resolve_first!(self.parent(&displaced.at));
         let target = match place {
             Some(at) => {
-                let target = resolve!(self.parent(at));
+                let target = resolve_first!(self.parent(at));
                 let staging = self.private(&[STAGING_DIR])?;
                 if lookup(staging.fd(), OsStr::new(&effect.id))?.is_none() {
                     return Err(io::Error::new(
@@ -458,16 +471,17 @@ impl Space {
             None => None,
         };
         let quarantine = self.private(&[QUARANTINE_DIR])?;
-        match lookup(parent.fd(), name)? {
-            None => return Ok(failed(Reason::Missing)),
-            Some(found) if found.entry() != Some(displaced.entry) => {
+        match lookup(parent.fd(), name) {
+            Err(err) => return denied(err),
+            Ok(None) => return Ok(failed(Reason::Missing)),
+            Ok(Some(found)) if found.entry() != Some(displaced.entry) => {
                 return Ok(failed(Reason::Changed));
             }
-            Some(_) => {}
+            Ok(Some(_)) => {}
         }
         hook(Step::Checked);
 
-        resolve!(self.recheck(&parent));
+        resolve_first!(self.recheck(&parent));
         self.recheck(&quarantine)?;
         let id = OsStr::new(&effect.id);
         match rename_no_replace(parent.fd(), name, quarantine.fd(), id) {
@@ -490,7 +504,7 @@ impl Space {
         }
         let outcome = match target {
             Some((staging, (target, new_name))) => {
-                overtaken(self.place(&staging, &effect.id, &target, new_name, hook)?)
+                overtaken(self.place(&staging, &effect.id, &target, new_name, false, hook)?)
             }
             None => Outcome::Done { identity: None },
         };
@@ -512,6 +526,7 @@ impl Space {
         id: &str,
         target: &Folder,
         name: &OsStr,
+        first_change: bool,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
         resolve!(self.recheck(target));
@@ -522,6 +537,7 @@ impl Space {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 return Ok(failed(Reason::Taken));
             }
+            Err(err) if first_change && refused(&err) => return Ok(failed(Reason::Denied)),
             Err(err) => return Err(err),
         }
         self.flush_folder(staging, Flush::Plain)?;
@@ -613,7 +629,9 @@ impl Space {
             }
             let outcome = match place {
                 Some(at) if staged => overtaken(match self.parent(at) {
-                    Ok((target, name)) => self.place(&staging, &effect.id, &target, name, hook)?,
+                    Ok((target, name)) => {
+                        self.place(&staging, &effect.id, &target, name, false, hook)?
+                    }
                     Err(err) => unresolved(err)?,
                 }),
                 Some(at) => match self.written_at(at, contents)? {
