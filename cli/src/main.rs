@@ -851,6 +851,9 @@ fn finish_lifecycle(
         service
     };
     if let Some(report) = service {
+        if report.failed() || !report.blocked.is_empty() {
+            done.tone = output::Tone::Attention;
+        }
         let text = match report.text() {
             text if text.is_empty() && shows_state => report.status_line(),
             text => text,
@@ -972,7 +975,7 @@ fn finish(
     outcome: Result<Done, CliError>,
     pending: Vec<Question>,
 ) -> ExitCode {
-    let concise = !json && !verbose && output::rich(command);
+    let concise = !json && !verbose && output::concise(command);
     let (exit, envelope, text, stderr, presentation, outcome, tone) = match outcome {
         Ok(done) => {
             let exit = done.exit;
@@ -1419,17 +1422,17 @@ async fn status(paths: &Paths, check: bool) -> Result<Done, CliError> {
         false => Vec::new(),
     };
     let conditions = report::conditions(&status, &questions);
-    let tone = if conditions.is_empty() {
-        output::Tone::Neutral
-    } else {
-        output::Tone::Attention
-    };
     let exit = if check {
         report::check_exit(&conditions)
     } else {
         0
     };
     let service = service::inspect(paths, status.running).await;
+    let tone = if conditions.is_empty() && !service.failed() && service.blocked.is_empty() {
+        output::Tone::Neutral
+    } else {
+        output::Tone::Attention
+    };
     let version = (status.version.as_deref()).unwrap_or(env!("CARGO_PKG_VERSION"));
     let notice = match update::Install::current() {
         Ok(install) => install.notice(&status.update, version),
@@ -1489,7 +1492,15 @@ async fn resolve(
 ) -> Result<Done, CliError> {
     let questions = questions(paths).await?;
     let (Some(id), Some(word)) = (id, word) else {
-        let mut done = Done::ok(Value::Null, questions_text(&questions));
+        let summary = if questions.is_empty() {
+            questions_text(&questions)
+        } else {
+            questions
+                .iter()
+                .map(|question| question_text_with_writers(question, Writers::RelativeTo(None)))
+                .collect()
+        };
+        let mut done = Done::ok(Value::Null, questions_text(&questions)).human(summary, "");
         done.decisions = questions.iter().map(Decision::of).collect();
         return Ok(done);
     };
@@ -2311,7 +2322,7 @@ fn status_summary(
             FolderState::CatchingUp => "Syncing",
             FolderState::UpToDate => "Up to date",
             FolderState::Offline => "Offline. Check your connection",
-            FolderState::Halted => "Sync stopped. Run koi diagnose for a report",
+            FolderState::Halted => "Sync stopped",
         };
         text.push_str(&format!(
             "{}: {state}.\n",
@@ -2323,17 +2334,45 @@ fn status_summary(
         if let Some(problem) = &folder.problem {
             text.push_str(&format!("  {}\n", printable(problem)));
         }
+        if let Some(wait) = &folder.wait {
+            let cause = match wait.kind {
+                koidrive_driver::WaitKind::Quota => "Storage is full or a daily limit was reached.",
+                koidrive_driver::WaitKind::Retry => "Sync is waiting to retry an operation.",
+            };
+            let seconds = (wait.until_ms.saturating_sub(now_ms()).max(0) as u64).div_ceil(1000);
+            let retry = match seconds {
+                0 => "Retry is due now.".to_owned(),
+                1..=60 => format!("Retry in {}.", count(seconds, "second")),
+                61..=3600 => format!("Retry in about {}.", count(seconds.div_ceil(60), "minute")),
+                _ => format!("Retry in about {}.", count(seconds.div_ceil(3600), "hour")),
+            };
+            text.push_str(&format!("  {cause} {retry}\n"));
+        }
         if let Some(cause) = &folder.recovery {
             let described = koidrive_driver::describe(cause);
             if folder.problem.as_deref() != Some(described.as_str()) {
-                text.push_str("  Recovering this folder's sync state.\n");
+                let cause = match cause.trigger {
+                    koidrive_engine::question::RecoveryTrigger::SpaceRewound => {
+                        "The shared folder was rewound or restored on the server.".to_owned()
+                    }
+                    _ => described,
+                };
+                text.push_str(&format!("  {cause} Recovering sync.\n"));
             }
         }
         for question in questions
             .iter()
             .filter(|question| question.space_id == folder.space_id)
         {
-            text.push_str(&question_brief(question));
+            text.push_str(&question_brief_with_writers(
+                question,
+                Writers::RelativeTo(
+                    status
+                        .account
+                        .as_ref()
+                        .map(|account| account.device_id.as_str()),
+                ),
+            ));
         }
     }
     if let Some(latest) = &notice.latest {
@@ -2567,8 +2606,13 @@ fn conflict_path(question: &Question, node_id: &str) -> String {
         .unwrap_or_else(|| format!("node {}", printable(node_id)))
 }
 
-/// The two files of a conflict, each with the device that wrote its current version, or nothing for another decision.
-fn conflict_files(question: &Question, indent: &str) -> String {
+#[derive(Clone, Copy)]
+enum Writers<'a> {
+    Detailed,
+    RelativeTo(Option<&'a str>),
+}
+
+fn conflict_files(question: &Question, indent: &str, writers: Writers<'_>) -> String {
     let QuestionKind::Conflict { original, copy, .. } = &question.kind else {
         return String::new();
     };
@@ -2578,8 +2622,13 @@ fn conflict_files(question: &Question, indent: &str) -> String {
             let writer = (question.items.iter())
                 .find(|item| item.node_id == file.node_id)
                 .and_then(|item| item.device_id.as_deref())
-                .map_or("an unknown device".to_owned(), |device_id| {
-                    format!("device {}", printable(device_id))
+                .map_or("an unknown device".to_owned(), |device_id| match writers {
+                    Writers::Detailed => format!("device {}", printable(device_id)),
+                    Writers::RelativeTo(Some(current)) if current == device_id => {
+                        "this device".to_owned()
+                    }
+                    Writers::RelativeTo(Some(_)) => "another device".to_owned(),
+                    Writers::RelativeTo(None) => "a device".to_owned(),
                 });
             format!(
                 "{indent}{role}: {}, written by {writer}\n",
@@ -2686,24 +2735,35 @@ fn answer_effect(answer: Answer) -> &'static str {
 
 /// How `koi status` shows a decision under its folder: what it is about, its first path, and how to make it.
 fn question_brief(question: &Question) -> String {
+    question_brief_with_writers(question, Writers::Detailed)
+}
+
+fn question_brief_with_writers(question: &Question, writers: Writers<'_>) -> String {
     format!(
         "  {}: {}{}\n{}{}",
         printable(&question.id),
         question_summary(question),
         first_path(question),
-        conflict_files(question, "    "),
+        conflict_files(question, "    ", writers),
         resolve_commands(question, "  ")
     )
 }
 
 /// How `koi resolve` shows a decision: what it is about, how to make it, and its first [`ITEMS_SHOWN`] items.
 fn question_text(question: &Question) -> String {
+    question_text_with_writers(question, Writers::Detailed)
+}
+
+fn question_text_with_writers(question: &Question, writers: Writers<'_>) -> String {
+    let space = match writers {
+        Writers::Detailed => format!("  space {}", printable(&question.space_id)),
+        Writers::RelativeTo(_) => String::new(),
+    };
     let mut text = format!(
-        "{}  space {}  {}\n{}{}",
+        "{}{space}  {}\n{}{}",
         printable(&question.id),
-        printable(&question.space_id),
         question_summary(question),
-        conflict_files(question, "    "),
+        conflict_files(question, "    ", writers),
         resolve_commands(question, "  ")
     );
     if let QuestionKind::Conflict { .. } = question.kind {
@@ -2754,6 +2814,70 @@ async fn pending_questions(paths: &Paths) -> Vec<Question> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concise_halted_status_keeps_the_actual_recovery_action() {
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "account":null, "running":true, "folders":[{
+                "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work", "state":"halted",
+                "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+                "problem":"Fix file access, then run koi folder restart /home/ada/Work"
+            }]
+        })).unwrap();
+        let service: service::Report = serde_json::from_value(
+            serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+        )
+        .unwrap();
+        let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+        let summary = status_summary(&status, &[], &service, &notice);
+        assert!(summary.contains("koi folder restart"));
+        assert!(!summary.contains("koi diagnose"), "{summary}");
+    }
+
+    #[test]
+    fn concise_status_explains_a_quota_wait_before_a_problem_is_recorded() {
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "account":null, "running":true, "folders":[{
+                "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work", "state":"up_to_date",
+                "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+                "problem":null,"wait":{"kind":"quota", "until_ms":now_ms()+60000}
+            }]
+        })).unwrap();
+        let service: service::Report = serde_json::from_value(
+            serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+        )
+        .unwrap();
+        let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+        let summary = status_summary(&status, &[], &service, &notice);
+        assert!(
+            summary.contains("Storage is full or a daily limit was reached"),
+            "{summary}"
+        );
+        assert!(summary.contains("Retry"), "{summary}");
+    }
+
+    #[test]
+    fn concise_conflicts_identify_this_device_without_writer_ids() {
+        let question = conflict("docs/notes (conflict).txt");
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "account":{"server":"https://files.example.com/", "user_id":"owner", "device_id":DESK,"device_name":"Desktop"},
+            "running":true, "folders":[{
+                "space_id":question.space_id, "space_name":"Work", "path":"/home/ada/Work", "state":"up_to_date",
+                "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":1,"problem":null
+            }]
+        })).unwrap();
+        let service: service::Report = serde_json::from_value(
+            serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+        )
+        .unwrap();
+        let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+        let summary = status_summary(&status, &[question], &service, &notice);
+        assert!(summary.contains("written by this device"), "{summary}");
+        assert!(summary.contains("written by another device"), "{summary}");
+        assert!(!summary.contains(DESK), "{summary}");
+        assert!(!summary.contains(LAPTOP), "{summary}");
+        assert!(summary.contains("keep-node:"));
+    }
     use koidrive_net::ApiError;
     use koidrive_proto::v1::device_info::Kind;
 

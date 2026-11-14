@@ -321,6 +321,29 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
         None => {}
     }
     let value = printable(&id);
+    let mut summary = format!("Restore requested for {shown}.\n");
+    let tone = match state {
+        None => {
+            summary.push_str("Run koi status to check whether this folder is still linked.\n");
+            crate::output::Tone::Attention
+        }
+        Some(FolderState::Stopped | FolderState::Halted | FolderState::Offline) => {
+            summary.push_str(
+                "The folder is not syncing. Run koi status to see what needs attention.\n",
+            );
+            crate::output::Tone::Attention
+        }
+        Some(_) => {
+            summary.push_str("It waits for the folder to sync.\n");
+            crate::output::Tone::Neutral
+        }
+    };
+    if state.is_some() {
+        summary.push_str(&format!(
+            "Check restore: koi history requests {}\n",
+            crate::output::command_path(Path::new(folder))
+        ));
+    }
     let data = RestoreAskedData {
         request_id: id,
         folder: folder.to_owned(),
@@ -328,11 +351,10 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
     };
     let done = Done {
         outcome: Outcome::Accepted,
+        tone,
         ..Done::value(data, &value, note)
-    }.human(
-        format!("{value}\n"),
-        format!("Restore requested for {shown}.\nIt waits for the folder to sync.\nCheck restore: koi history requests {}\n", printable(&crate::pairing::shell_word(folder))),
-    );
+    }
+    .human(format!("{value}\n"), summary);
     match state {
         Some(_) => done.then(&["koi", "history", "requests", folder]),
         None => done,
@@ -353,8 +375,32 @@ async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         folder: linked.path.clone(),
         requests: restores.iter().map(RequestData::of).collect(),
     };
-    Ok(Done::ok(data, restores_report(&restores, &linked))
-        .human(restores_summary(&restores, &linked), ""))
+    let pending = restores
+        .iter()
+        .any(|restore| matches!(restore.state, RestoreState::Pending { .. }));
+    let needs_attention = restores.iter().any(|restore| {
+        matches!(
+            restore.state,
+            RestoreState::Rejected { .. }
+                | RestoreState::DoesNotFit
+                | RestoreState::Pending { waits_for: Some(_) }
+        )
+    }) || pending
+        && (matches!(
+            linked.state,
+            FolderState::Stopped | FolderState::Halted | FolderState::Offline
+        ) || linked.problem.is_some()
+            || linked.questions > 0
+            || linked.wait.is_some());
+    Ok(Done {
+        tone: if needs_attention {
+            crate::output::Tone::Attention
+        } else {
+            crate::output::Tone::Neutral
+        },
+        ..Done::ok(data, restores_report(&restores, &linked))
+            .human(restores_summary(&restores, &linked), "")
+    })
 }
 
 /// Why no single deletion could be picked.
@@ -896,6 +942,26 @@ fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String
         report.push_str(
             "Pending restores wait for the folder to sync. Check progress with koi status.\n",
         );
+        if matches!(
+            linked.state,
+            FolderState::Stopped | FolderState::Halted | FolderState::Offline
+        ) {
+            report.push_str(
+                "The folder is not syncing. Run koi status to see what needs attention.\n",
+            );
+        }
+        if let Some(problem) = &linked.problem {
+            report.push_str(&format!(
+                "The folder has a problem: {}\n",
+                printable(problem)
+            ));
+        }
+        if linked.questions > 0 {
+            report.push_str(&format!(
+                "{}: koi resolve lists them.\n",
+                crate::need_you(linked.questions)
+            ));
+        }
     }
     report
 }
@@ -1036,6 +1102,52 @@ mod tests {
     }
 
     const SPACE: &str = "0194f8a2-0000-7000-8000-00000000000a";
+
+    #[test]
+    fn concise_restore_replay_does_not_assume_a_linked_folder() {
+        let done = asked("/home/ada/Work", "report.docx", "restore-1".into(), None);
+        let note = done.output(true).1;
+        assert!(!note.contains("waits for the folder to sync"), "{note}");
+        assert!(!note.contains("koi history requests"), "{note}");
+        assert!(note.contains("koi status"), "{note}");
+        assert!(done.next.is_empty());
+
+        let done = asked(
+            "/home/ada/Work",
+            "report.docx",
+            "restore-1".into(),
+            Some(FolderState::Stopped),
+        );
+        assert!(done.output(true).1.contains("koi status"));
+    }
+
+    #[test]
+    fn concise_pending_restores_keep_the_folder_problem_and_decisions() {
+        let folder = FolderStatus {
+            state: FolderState::Halted,
+            problem: Some("Fix file access, then run koi folder restart /home/ada/Koidrive".into()),
+            questions: 2,
+            ..linked()
+        };
+        let restores = [RestoreStatus {
+            id: "restore-1".into(),
+            path: Some("report.docx".into()),
+            asked_at_ms: 1000,
+            request: RestoreRequest::FromTrash {
+                node_id: "n1".into(),
+                parent_id: None,
+                name: None,
+            },
+            state: RestoreState::Pending { waits_for: None },
+        }];
+        let summary = restores_summary(&restores, &folder);
+        assert!(
+            summary.contains("Fix file access, then run koi folder restart"),
+            "{summary}"
+        );
+        assert!(summary.contains("2 need you"), "{summary}");
+        assert!(summary.contains("koi resolve"), "{summary}");
+    }
 
     fn node(
         id: &str,

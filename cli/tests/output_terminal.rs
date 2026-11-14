@@ -417,7 +417,7 @@ fn status_summarizes_every_state_and_verbose_keeps_engine_details() {
         ("catching_up", "Syncing"),
         ("up_to_date", "Up to date"),
         ("offline", "Offline. Check your connection"),
-        ("halted", "Sync stopped. Run koi diagnose for a report"),
+        ("halted", "Sync stopped"),
     ] {
         for (tty, verbose) in [(true, false), (true, true), (false, false)] {
             let profile = Profile::new();
@@ -565,6 +565,7 @@ fn restore_requests_show_paths_and_supported_progress_guidance() {
                 text.contains("report.docx: pending: waits for the folder to sync"),
                 "{text}"
             );
+            assert!(text.starts_with("▲  "), "{text}");
             assert!(text.contains("koi status"));
             assert!(!text.contains("node-internal"));
             assert!(!text.contains("koi _daemon"));
@@ -574,6 +575,46 @@ fn restore_requests_show_paths_and_supported_progress_guidance() {
                 "{text}"
             );
             assert!(text.contains("koi _daemon"));
+        }
+    }
+}
+
+#[test]
+fn concise_status_does_not_require_color_or_a_wide_terminal() {
+    for (width, args, vars) in [
+        (40, vec!["status"], vec![]),
+        (59, vec!["status"], vec![]),
+        (100, vec!["status", "--plain"], vec![]),
+        (100, vec!["status"], vec![("KOI_PLAIN", "1")]),
+        (100, vec!["status"], vec![("TERM", "dumb")]),
+    ] {
+        let profile = Profile::new();
+        let path = profile.0.path().join("Work").display().to_string();
+        let server = profile.fixture(1, move |request| {
+            assert_eq!(request["request"], "status");
+            json!({"response":"status", "status":{
+                "account":{"server":"https://files.example.com/", "user_id":"owner",
+                    "device_id":"device-internal", "device_name":"Laptop"},
+                "running":true, "folders":[{"space_id":"space-internal", "space_name":"Work", "path":path,
+                    "state":"up_to_date","history_id":null,"last_seq":42,"head_seq":50,
+                    "remote_nodes":99,"local_entries":88,"questions":0,"problem":null}]
+            }})
+        });
+        let output = profile.run_at_width(&args, true, false, &vars, width);
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        for expected in ["Connected as Laptop.", "~/Work: Up to date."] {
+            assert!(output.terminal.contains(expected), "{}", output.terminal);
+        }
+        for hidden in [
+            "device-internal",
+            "space-internal",
+            "seq 42",
+            "remote nodes",
+            "│",
+            "\u{1b}",
+        ] {
+            assert!(!output.terminal.contains(hidden), "{}", output.terminal);
         }
     }
 }

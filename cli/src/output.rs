@@ -35,6 +35,25 @@ pub fn path(path: &Path) -> String {
     crate::printable(&crate::setup::shown_folder(path))
 }
 
+pub fn command_path(path: &Path) -> String {
+    let relative = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .and_then(|home| path.strip_prefix(home).ok());
+    let word = match relative {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", crate::pairing::shell_word(&rest.to_string_lossy())),
+        None => crate::pairing::shell_word(&path.to_string_lossy()),
+    };
+    crate::printable(&word)
+}
+
+pub fn concise(command: &str) -> bool {
+    !matches!(command, "update" | "_daemon" | "_reconcile")
+        && io::stdout().is_terminal()
+        && io::stderr().is_terminal()
+}
+
 pub fn rich(command: &str) -> bool {
     !matches!(command, "_daemon" | "_reconcile")
         && crate::terminal::rich(
@@ -100,5 +119,25 @@ pub fn print(
             "{}",
             theme.format_log_with_spacing(pending, &theme.warning_symbol(), false)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concise_command_paths_expand_home_and_quote_only_the_relative_name() {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let folder = home.join("Work Files");
+        assert_eq!(command_path(&home), "~");
+        assert_eq!(command_path(&folder), "~/'Work Files'");
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf '%s' {}", command_path(&folder)))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, folder.to_string_lossy().as_bytes());
     }
 }
