@@ -443,10 +443,20 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     let alpha5 = |release: u64| {
         json!({
             "days": {
-                "20770": { "day": 20770, "counters": { "command": { "status": release } } },
+                "20770": {
+                    "day": 20770,
+                    "counters": {
+                        "command": { "status": release, "Alice Notes": 1 },
+                        "/home/alice/private": { "confidential.txt": 1 },
+                    },
+                    "levels": { "/home/alice/private": { "confidential.txt": 1 } },
+                },
                 "20771": { "day": 20771, "counters": { "command": { "folder": release } } },
             },
-            "events": [{ "type": "panic", "day": 20771, "file": "cli/src/main.rs", "line": release }],
+            "events": [{
+                "type": "panic", "day": 20771, "file": "cli/src/main.rs", "line": release,
+                "message": "secret error text from /home/alice/private",
+            }],
             "out": {
                 "id": id,
                 "batch": {
@@ -505,7 +515,7 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
                 .into_iter()
                 .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
                 .unwrap();
-                let uuid = event["uuid"].as_str().unwrap().to_owned();
+                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
                 arrived.push((
                     event["event"].as_str().unwrap().to_owned(),
                     property,
@@ -543,7 +553,15 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
             !old_queue.exists(),
             "the earlier release's queue is still there"
         );
-        requests.try_iter().collect::<Vec<_>>()
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        for (_, body) in &requests {
+            let text = body.to_string().to_lowercase();
+            assert!(
+                !text.contains("alice") && !text.contains("confidential"),
+                "{body}"
+            );
+        }
+        requests
     };
     let uuids = |body: &Value| {
         (body["batch"].as_array().unwrap().iter())
@@ -552,6 +570,37 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     };
 
     std::fs::write(&old_queue, serde_json::to_vec(&alpha5(1)).unwrap()).unwrap();
+    let status: Value = serde_json::from_str(&stdout(&koi(
+        home.path(),
+        &["--json", "telemetry", "status"],
+        &[],
+    )))
+    .unwrap();
+    assert_eq!(
+        (
+            &status["data"]["waiting_days"],
+            &status["data"]["waiting_events"]
+        ),
+        (&json!(3), &json!(2)),
+        "{status}"
+    );
+    let preview: Value =
+        serde_json::from_str(&stdout(&koi(home.path(), &["telemetry", "preview"], &[]))).unwrap();
+    let mut previewed = arrived(&[(200, preview.clone())]);
+    for record in &mut previewed {
+        assert_eq!(record.4, None, "{preview}");
+    }
+    let mut expected = records(1);
+    for record in &mut expected {
+        record.4 = None;
+    }
+    expected.sort();
+    previewed.sort();
+    assert_eq!(previewed, expected);
+    assert!(
+        !preview.to_string().to_lowercase().contains("alice"),
+        "{preview}"
+    );
     let upgraded = run(1);
     assert_eq!(upgraded[0].0, 503);
     assert_eq!(uuids(&upgraded[0].1), uuids(&upgraded[1].1));

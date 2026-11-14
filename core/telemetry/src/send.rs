@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use url::Url;
 
 use crate::consent::Mode;
-use crate::schema::{EventUuid, HourlyReport, InstallId, SCHEMA};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId, SCHEMA};
 use crate::store::{Batch, OldBatch, Store};
 use crate::system::Environment;
 
@@ -232,7 +232,8 @@ pub fn batch(
     json!({ "api_key": token, "historical_migration": false, "batch": events })
 }
 
-fn old_batch(
+/// The body an earlier release would send for `batch`, with only the reports and events its schema allows.
+pub fn old_batch(
     token: &str,
     id: &InstallId,
     environment: &Environment,
@@ -245,29 +246,41 @@ fn old_batch(
         properties.remove("koi_version");
         properties
     };
+    let mut uuids = uuids.iter().map(|uuid| json!(uuid.as_str()));
     let mut events = Vec::new();
     for report in &batch.days {
+        let uuid = uuids.next();
+        let stored = json!({ "hour": 0, "counters": report.counters, "levels": report.levels, "histograms": report.histograms });
+        let Ok(sums) =
+            serde_json::from_value::<HourlyReport>(stored).map(|report| self::sums(&report))
+        else {
+            continue;
+        };
         let mut properties = properties();
-        for (prefix, sums) in [
-            ("c", &report.counters),
-            ("l", &report.levels),
-            ("h", &report.histograms),
-        ] {
-            for (metric, labels) in sums {
-                for (label, value) in labels.as_object().into_iter().flatten() {
-                    properties.insert(format!("{prefix}.{metric}.{label}"), value.clone());
-                }
-            }
-        }
+        properties.extend(sums);
         events.push(json!({ "event": "daily_report", "properties": properties, "timestamp": time(u64::from(report.day) * 86_400) }));
+        if let Some(uuid) = uuid {
+            events.last_mut().unwrap()["uuid"] = uuid;
+        }
     }
     for event in &batch.events {
+        let uuid = uuids.next();
+        let mut stored = event.fields.clone();
+        stored.insert("type".into(), json!(event.name));
+        stored.insert("at".into(), json!(u64::from(event.day) * 86_400));
+        let Ok(Value::Object(mut fields)) =
+            serde_json::from_value::<Event>(Value::Object(stored)).map(|event| json!(event))
+        else {
+            continue;
+        };
+        fields.remove("type");
+        fields.remove("at");
         let mut properties = properties();
-        properties.extend(event.fields.clone());
+        properties.extend(fields);
         events.push(json!({ "event": event.name, "properties": properties, "timestamp": time(u64::from(event.day) * 86_400) }));
-    }
-    for (event, uuid) in events.iter_mut().zip(uuids) {
-        event["uuid"] = json!(uuid.as_str());
+        if let Some(uuid) = uuid {
+            events.last_mut().unwrap()["uuid"] = uuid;
+        }
     }
     json!({ "api_key": token, "historical_migration": false, "batch": events })
 }

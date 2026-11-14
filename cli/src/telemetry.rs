@@ -402,6 +402,7 @@ pub(crate) struct TelemetryStatusData {
     #[schemars(with = "Option<String>")]
     install_id: Option<InstallId>,
     waiting_hours: usize,
+    waiting_days: usize,
     waiting_events: usize,
     /// Whether this build can send: it has a project token.
     sends: bool,
@@ -453,16 +454,20 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 ),
             };
             let queued = store.peek().map_err(failed)?;
+            let old = store.peek_old().map_err(failed)?;
             let sends = Uploader::from_env(var).ok().flatten().is_some();
             let mut text = format!("Usage reports: {shown} ({why})\n");
             if let Some(id) = &settings.install_id {
                 text.push_str(&format!("Install id: {id}\n"));
             }
-            text.push_str(&format!(
-                "Waiting to send: {} hours, {} events\n",
-                queued.hours.len(),
-                queued.events.len()
-            ));
+            let events = queued.events.len() + old.events.len();
+            text.push_str(&match old.days.len() {
+                0 => format!("Waiting to send: {} hours, {events} events\n", queued.hours.len()),
+                days => format!(
+                    "Waiting to send: {} hours, {days} days from an earlier version, {events} events\n",
+                    queued.hours.len()
+                ),
+            });
             if status.mode == Mode::On && !sends {
                 text.push_str(
                     "This build has no project token, so reports wait on this machine and are not sent.\n",
@@ -478,7 +483,8 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 source,
                 install_id: settings.install_id,
                 waiting_hours: queued.hours.len(),
-                waiting_events: queued.events.len(),
+                waiting_days: old.days.len(),
+                waiting_events: events,
                 sends,
             };
             Ok(Done::ok(data, text))
@@ -509,8 +515,9 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
         }
         TelemetryAction::Preview => {
             let queued = store.peek().map_err(failed)?;
+            let old = store.peek_old().map_err(failed)?;
             let id = store.settings().map_err(failed)?.install_id;
-            let (Some(id), false) = (id, queued.is_empty()) else {
+            let (Some(id), false) = (id, queued.is_empty() && old.is_empty()) else {
                 return Ok(Done::ok(
                     serde_json::Value::Null,
                     "Nothing waits to be sent.\n",
@@ -522,7 +529,13 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 .map(|uploader| uploader.token().to_owned())
                 .unwrap_or_default();
             let environment = Environment::detect(Client::CliDaemon, env!("CARGO_PKG_VERSION"));
-            let body = koidrive_telemetry::batch(&token, &id, &environment, &queued, &[]);
+            let mut body = koidrive_telemetry::old_batch(&token, &id, &environment, &old, &[]);
+            let new = koidrive_telemetry::batch(&token, &id, &environment, &queued, &[]);
+            if let (Some(events), Some(new)) =
+                (body["batch"].as_array_mut(), new["batch"].as_array())
+            {
+                events.extend(new.iter().cloned());
+            }
             let text = format!(
                 "{}\n",
                 serde_json::to_string_pretty(&body).map_err(|error| error.to_string())?

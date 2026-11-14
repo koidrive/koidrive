@@ -466,7 +466,7 @@ impl Store {
     pub fn sent_old(&self, sending: SendingOld) -> io::Result<()> {
         let _lock = self.lock(true)?;
         let path = self.dir.join(OLD_QUEUE);
-        let mut queue: OldQueue = read(&path).unwrap_or_default();
+        let mut queue: OldQueue = read(&path)?;
         if (queue.out.as_ref()).is_some_and(|out| out.uuids == sending.uuids) {
             queue.out = None;
         }
@@ -475,6 +475,18 @@ impl Store {
         } else {
             write(&path, &queue)
         }
+    }
+
+    /// What an earlier release left in `queue.json`, its batch out included, without taking it.
+    pub fn peek_old(&self) -> io::Result<OldBatch> {
+        let queue: OldQueue = match read(&self.dir.join(OLD_QUEUE)) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => OldQueue::default(),
+            read => read?,
+        };
+        let mut batch = queue.out.map(|out| out.batch).unwrap_or_default();
+        batch.days.extend(queue.days.into_values());
+        batch.events.extend(queue.events);
+        Ok(batch)
     }
 
     fn remove_queues(&self) -> io::Result<()> {
@@ -547,6 +559,21 @@ mod tests {
     use super::*;
     use crate::Recorder;
     use crate::schema::{Command, Counter, SourceFile};
+
+    #[test]
+    fn an_earlier_release_queue_stays_when_it_cannot_be_read_after_its_batch_went() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        let old = store.dir.join(OLD_QUEUE);
+        fs::write(&old, br#"{"days":{"1":{"day":1}},"events":[{"type":"panic","day":2,"file":"cli/src/main.rs","line":1}]}"#).unwrap();
+        let sending = store.take_old().unwrap().unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(store.sent_old(sending).is_err());
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(store.peek_old().unwrap().events.len(), 1);
+    }
 
     #[test]
     fn an_earlier_release_queue_goes_when_reports_turn_off_and_is_dropped_when_unreadable() {

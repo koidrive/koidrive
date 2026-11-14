@@ -22,9 +22,9 @@ pub use recorder::{Pending, Recorder};
 pub use schema::{Event, EventUuid, HourlyReport, InstallId};
 pub use send::{
     ENDPOINT, ENDPOINT_VARIABLE, PROJECT_TOKEN, Sent, TOKEN_VARIABLE, UploadError, Uploader, batch,
-    send,
+    old_batch, send,
 };
-pub use store::{Batch, Sending, Settings, Store};
+pub use store::{Batch, OldBatch, Sending, Settings, Store};
 pub use system::Environment;
 
 /// Seconds since 1970-01-01T00:00Z, the time an event carries.
