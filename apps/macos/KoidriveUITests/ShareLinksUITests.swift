@@ -25,6 +25,9 @@ final class ShareLinksUITests: XCTestCase {
         XCTAssert(revokes.firstMatch.waitForExistence(timeout: 20))
         let before = revokes.count
 
+        let titleBar = list.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: list.frame.width / 2, dy: 12))
+        titleBar.press(forDuration: 0.2, thenDragTo: titleBar.withOffset(CGVector(dx: share.frame.maxX - list.frame.minX + 24, dy: 0)))
+        XCTAssertFalse(list.frame.intersects(share.frame))
         share.buttons["Create Link"].click()
 
         let url = share.staticTexts["share-url"]
