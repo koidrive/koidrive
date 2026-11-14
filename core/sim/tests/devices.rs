@@ -9042,6 +9042,27 @@ fn concurrent_edits_where_one_device_writes_the_old_bytes_back_converge_on_names
                 (0, u(2, 1620988347724599361, 10091788995064837455, 1, 0)),
             ],
         ],
+        vec![
+            vec![
+                (1, u(0, 0, 0, 3, 0)),
+                (0, u(1, 0, 0, 0, 0)),
+                (0, u(3, 0, 0, 0, 0)),
+            ],
+            vec![
+                (1, u(2, 3027247001654897081, 0, 0, 0)),
+                (2, u(2, 655002586079826284, 0, 0, 0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (1, Work(0)),
+                (2, Work(3451872640308818705)),
+                (2, Commit(Served)),
+                (1, u(0, 0, 0, 0, 0)),
+                (0, Work(0)),
+                (0, Effect(Outcome::Run)),
+                (0, Effect(Outcome::Run)),
+                (0, u(2, 2980850165259953687, 0, 0, 0)),
+            ],
+        ],
     ] {
         converge(3, &phases).unwrap();
     }
