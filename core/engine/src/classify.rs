@@ -512,17 +512,22 @@ impl Trees {
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
-        let hidden = (self.r.get(&id)).is_some_and(|old| old.content_rev != node.content_rev)
-            && !node.trashed
-            && self.edited(&id)
-            && (self
-                .acknowledged(&id)
-                .and_then(|shape| shape.content.as_ref()))
-            .zip(node.shape.content.as_ref())
-            .is_some_and(|(synced, remote)| same_content(synced, remote))
-            && !(self.l.live(&id).and_then(|local| local.content.as_ref()))
-                .zip(node.shape.content.as_ref())
-                .is_some_and(|(local, remote)| same_content(local, remote));
+        let hidden = (self.acknowledged(&id))
+            .filter(|synced| {
+                (self.r.get(&id)).is_some_and(|old| old.content_rev != node.content_rev)
+                    && !node.trashed
+                    && self.edited(&id)
+                    && (synced.content.as_ref())
+                        .zip(node.shape.content.as_ref())
+                        .is_some_and(|(synced, remote)| same_content(synced, remote))
+                    && !(self.l.live(&id).and_then(|local| local.content.as_ref()))
+                        .zip(node.shape.content.as_ref())
+                        .is_some_and(|(local, remote)| same_content(local, remote))
+            })
+            .map(|synced| Shape {
+                content: None,
+                ..synced.clone()
+            });
         let synced = self.acknowledged(&id);
         let local = self.l.get(&id);
         let local_gone = !made_here && local.is_none();
@@ -599,8 +604,10 @@ impl Trees {
         if removed_again && !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
             self.wait(id.clone(), Some(shape.clone()), Origin::Other);
         }
-        if hidden && !self.set_synced_if_valid(id.clone(), None) {
-            self.wait(id.clone(), None, Origin::Other);
+        if let Some(hidden) = hidden
+            && !self.set_synced_if_valid(id.clone(), Some(hidden.clone()))
+        {
+            self.wait(id.clone(), Some(hidden), Origin::Other);
         }
         let placed_here = placed_here
             && !path(&self.r, &id).is_some_and(|(names, kind)| self.ignores(&names, kind))

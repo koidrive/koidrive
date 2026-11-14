@@ -141,6 +141,34 @@ fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
 }
 
 #[test]
+fn a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_before_the_result() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(remote(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            content_rev: 3,
+            edit_rev: 3,
+            ..remote(file(ROOT, "f", 1))
+        },
+    );
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class("y"), Class::Remote);
+}
+
+#[test]
 fn a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here() {
     let mut trees = trees(&[(
         "f",
