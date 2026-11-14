@@ -18,20 +18,20 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     let home = tempfile::tempdir().unwrap();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let recorder = Recorder::on();
+    let hour = koidrive_telemetry::this_hour();
     for measure in Measure::all() {
-        recorder.measure(measure, 1234);
+        recorder.measure_on(hour, measure, 1234);
         if matches!(
             measure,
             Measure::FirstSync(_) | Measure::RemoteApplyMilliseconds | Measure::SyncingMilliseconds
         ) {
             for millis in [60_000, 600_000, 5_280_000] {
-                recorder.measure(measure, millis);
+                recorder.measure_on(hour, measure, millis);
             }
         }
     }
-    recorder.count(Counter::CpuMilliseconds, 4567);
+    recorder.count_on(hour, Counter::CpuMilliseconds, 4567);
     let pending = recorder.take();
-    let hour = *pending.hours.keys().next().unwrap();
     let expected = serde_json::to_value(&pending.hours[&hour]).unwrap();
     let store = Store::new(&home.path().join("state/koidrive"));
     store.absorb(pending).unwrap();
@@ -66,7 +66,7 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     std::fs::write(&queue, serde_json::to_vec(&value).unwrap()).unwrap();
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: Value = serde_json::from_str(&preview).unwrap();
-    let properties = &body["batch"][0]["properties"];
+    let properties = &hourly_report_with(&body, "c.process.cpu_ms")["properties"];
     assert_eq!(properties["c.process.cpu_ms"], 4567);
     for rejected in ["c.sync.unfinished", "h.syncing_ms.active_age"] {
         assert!(!properties.as_object().unwrap().contains_key(rejected));
@@ -183,8 +183,7 @@ fn a_command_run_with_reports_on_is_counted_by_name_only() {
     stdout(&koi(home.path(), &["telemetry", "status"], &[]));
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
-    let report = &body["batch"][0];
-    assert_eq!(report["event"], "hourly_report");
+    let report = hourly_report_with(&body, "c.command.telemetry");
     assert_eq!(report["properties"]["c.command.telemetry"], 1);
     assert!(
         !preview.contains(&home.path().display().to_string()),
@@ -224,7 +223,7 @@ fn a_daemon_that_cannot_start_is_counted_by_why() {
     assert!(!daemon.status.success());
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
     let body: serde_json::Value = serde_json::from_str(&preview).unwrap();
-    let report = &body["batch"][0]["properties"];
+    let report = &hourly_report_with(&body, "c.daemon_start_failed.socket")["properties"];
     assert_eq!(report["c.daemon_start_failed.socket"], 1, "{preview}");
     assert!(!preview.contains("run/koidrive"), "{preview}");
 }
@@ -364,11 +363,17 @@ fn every_daemon_start_sends_the_reports_of_past_hours() {
             .unwrap();
         daemon.wait().unwrap();
         let body = body.expect("the daemon sent nothing as it started");
-        let events = body["batch"].as_array().unwrap();
-        assert_eq!(events.len(), 1, "{body}");
-        assert_eq!(events[0]["event"], "hourly_report", "{body}");
-        assert_eq!(events[0]["properties"][property], 1, "{body}");
-        assert_eq!(events[0]["properties"]["client"], "cli_daemon", "{body}");
+        let reports: Vec<_> = (body["batch"].as_array().unwrap().iter())
+            .filter(|event| {
+                ["c.command.folder", "c.command.space"]
+                    .iter()
+                    .any(|name| event["properties"].get(name).is_some())
+            })
+            .collect();
+        assert_eq!(reports.len(), 1, "{body}");
+        assert_eq!(reports[0]["event"], "hourly_report", "{body}");
+        assert_eq!(reports[0]["properties"][property], 1, "{body}");
+        assert_eq!(reports[0]["properties"]["client"], "cli_daemon", "{body}");
     }
 }
 
@@ -403,7 +408,28 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
             std::thread::sleep(Duration::from_millis(20));
         }
     };
+    let panics = |body: &serde_json::Value| {
+        (body["batch"].as_array().unwrap().iter())
+            .filter(|event| event["event"] == "panic")
+            .map(|event| {
+                let line = event["properties"]["line"].as_u64().unwrap();
+                let at = event["timestamp"].as_str().unwrap();
+                (line, at[at.len() - 10..].to_owned())
+            })
+            .collect::<Vec<_>>()
+    };
     let (url, bodies) = posthog(1);
+    let next_with_panics = |timeout: Duration| {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let body = bodies
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .ok()?;
+            if !panics(&body).is_empty() {
+                return Some(body);
+            }
+        }
+    };
     happen(today + 3_725, 1);
     let vars = [
         ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
@@ -415,7 +441,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
         .spawn()
         .expect("run koi");
     let started = Instant::now();
-    let body = bodies.recv_timeout(Duration::from_secs(90));
+    let body = next_with_panics(Duration::from_secs(90));
     let waited = started.elapsed();
     settled();
     happen(today + 3_726, 2);
@@ -423,21 +449,11 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
         .args(["-TERM", &daemon.id().to_string()])
         .status()
         .unwrap();
-    let stopping = bodies.recv_timeout(Duration::from_secs(30));
+    let stopping = next_with_panics(Duration::from_secs(30));
     daemon.wait().unwrap();
 
     let body = body.expect("the daemon did not send again after its first send failed");
     assert!(waited <= Duration::from_secs(75), "it waited {waited:?}");
-    let panics = |body: &serde_json::Value| {
-        (body["batch"].as_array().unwrap().iter())
-            .filter(|event| event["event"] == "panic")
-            .map(|event| {
-                let line = event["properties"]["line"].as_u64().unwrap();
-                let at = event["timestamp"].as_str().unwrap();
-                (line, at[at.len() - 10..].to_owned())
-            })
-            .collect::<Vec<_>>()
-    };
     assert_eq!(panics(&body), [(1, "T01:02:05Z".to_owned())], "{body}");
     let stopping = stopping.expect("the daemon did not send as it stopped");
     assert_eq!(
@@ -450,7 +466,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
 #[test]
 fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade() {
     use koidrive_telemetry::schema::{Event, SourceFile};
-    use koidrive_telemetry::{Pending, Store};
+    use koidrive_telemetry::{EventUuid, Pending, Store};
     use serde_json::{Value, json};
 
     let home = tempfile::tempdir().unwrap();
@@ -516,34 +532,54 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
         records.sort();
         records
     };
-    let arrived = |requests: &[(u16, Value)]| {
-        let mut arrived = Vec::new();
+    let distinct = |requests: &[(u16, Value)]| {
+        let mut copies = std::collections::HashMap::new();
+        let mut events = Vec::new();
         for (_, body) in requests.iter().filter(|(status, _)| *status == 200) {
             for event in body["batch"].as_array().unwrap() {
-                let properties = event["properties"].as_object().unwrap();
-                if properties["schema"] != 1 {
+                let Some(uuid) = event["uuid"].as_str() else {
+                    events.push(event.clone());
                     continue;
+                };
+                match copies.entry(uuid.to_owned()) {
+                    std::collections::hash_map::Entry::Occupied(first) => {
+                        assert_eq!(first.get(), event, "two copies of {uuid} differ");
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(event.clone());
+                        events.push(event.clone());
+                    }
                 }
-                assert!(!properties.contains_key("koi_version"), "{event}");
-                let (property, release) = [
-                    "c.command.space",
-                    "c.command.status",
-                    "c.command.folder",
-                    "seconds_magnitude",
-                    "line",
-                ]
-                .into_iter()
-                .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
-                .unwrap();
-                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
-                arrived.push((
-                    event["event"].as_str().unwrap().to_owned(),
-                    property,
-                    release,
-                    event["timestamp"].as_str().unwrap().to_owned(),
-                    uuid.starts_with("00000000-").then_some(uuid),
-                ));
             }
+        }
+        events
+    };
+    let arrived = |requests: &[(u16, Value)]| {
+        let mut arrived = Vec::new();
+        for event in &distinct(requests) {
+            let properties = event["properties"].as_object().unwrap();
+            if properties["schema"] != 1 {
+                continue;
+            }
+            assert!(!properties.contains_key("koi_version"), "{event}");
+            let (property, release) = [
+                "c.command.space",
+                "c.command.status",
+                "c.command.folder",
+                "seconds_magnitude",
+                "line",
+            ]
+            .into_iter()
+            .find_map(|key| Some((key.to_owned(), properties.get(key)?.as_u64()?)))
+            .unwrap();
+            let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
+            arrived.push((
+                event["event"].as_str().unwrap().to_owned(),
+                property,
+                release,
+                event["timestamp"].as_str().unwrap().to_owned(),
+                uuid.starts_with("00000000-").then_some(uuid),
+            ));
         }
         arrived.sort();
         arrived
@@ -580,6 +616,10 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
                 !text.contains("alice") && !text.contains("confidential"),
                 "{body}"
             );
+            for event in body["batch"].as_array().unwrap() {
+                let uuid = event["uuid"].as_str().unwrap_or_default().to_owned();
+                assert!(EventUuid::try_from(uuid).is_ok(), "{event}");
+            }
         }
         requests
     };
@@ -641,11 +681,18 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     std::fs::write(&old_queue, serde_json::to_vec(&alpha5(2)).unwrap()).unwrap();
     let upgraded_again = run(0);
     assert_eq!(arrived(&upgraded_again), records(2));
-    let kept = (upgraded_again.iter())
-        .flat_map(|(_, body)| body["batch"].as_array().unwrap().clone())
+    let kept = (distinct(&upgraded_again).iter())
         .filter(|event| event["event"] == "panic" && event["properties"]["line"] == 99)
         .count();
     assert_eq!(kept, 1);
+}
+
+fn hourly_report_with<'a>(body: &'a serde_json::Value, property: &str) -> &'a serde_json::Value {
+    (body["batch"].as_array().unwrap().iter())
+        .find(|event| {
+            event["event"] == "hourly_report" && event["properties"].get(property).is_some()
+        })
+        .unwrap_or_else(|| panic!("no hourly report carries {property}: {body}"))
 }
 
 fn posthog(dropped: usize) -> (String, mpsc::Receiver<serde_json::Value>) {
