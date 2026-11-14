@@ -2216,6 +2216,7 @@ impl World {
                                 .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
                                 .collect();
                             let local = self.devices[d].engine.trees.local();
+                            let synced = self.devices[d].engine.trees.synced();
                             let ino = |node: &str| {
                                 (local.get(node).map(|node| node.identity.ino))
                                     .or_else(|| self.touched_nodes[d].get(node).copied())
@@ -2331,14 +2332,11 @@ impl World {
                             let carried: BTreeSet<u64> = (self.actions[d].range(..=built))
                                 .filter(|(_, (own, action))| {
                                     let settled = || {
-                                        crate::space::node_states(&record.changes).any(|state| {
-                                            let here = (local.get(&state.node_id))
-                                                .filter(|here| here.identity.ino == *own);
-                                            let there = RemoteNode::from_state(state).ok();
-                                            here.zip(there).is_some_and(|(here, (_, there))| {
-                                                !there.trashed
-                                                    && action.settled(&here.shape, &there.shape)
-                                            })
+                                        (local.iter()).any(|(id, here)| {
+                                            here.identity.ino == *own
+                                                && (synced.get(id)).is_some_and(|synced| {
+                                                    action.settled(&here.shape, synced)
+                                                })
                                         })
                                     };
                                     (changes.iter()).any(|(ino, change)| {
@@ -3999,6 +3997,84 @@ mod tests {
         assert!(
             matches!(&stale, Err(Failure::Diverged(why)) if why.contains("took write")),
             "{stale:?}"
+        );
+    }
+
+    #[test]
+    fn a_move_away_and_back_settled_while_another_device_moves_the_file_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        world.run(1, &[(1, user(3, 3))]).unwrap();
+        send(&mut world, 1).unwrap();
+        world
+            .run(1, &[(0, user(3, 2)), (0, user(3, 0)), (0, user(2, 0))])
+            .unwrap();
+        send(&mut world, 0).unwrap();
+        world.phase(1, &[]).unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
+        );
+    }
+
+    #[test]
+    fn a_move_away_and_back_whose_edit_another_device_already_wrote_leaves_no_touch() {
+        let user = |kind, name| {
+            Step::User(Action {
+                kind,
+                target: 0,
+                parent: 0,
+                name,
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        world.phase(0, &[(0, user(1, 0))]).unwrap();
+        let steps = [
+            (0, user(3, 2)),
+            (0, user(3, 0)),
+            (0, user(2, 0)),
+            (0, Step::Scan),
+            (0, Step::Commit(Reply::Served)),
+        ];
+        world.run(1, &steps).unwrap();
+        let device = &world.devices[0];
+        let ino = device.disk.visible()[0];
+        let wanted = device.disk.entries()[&ino].content.clone().unwrap();
+        let sent = device.engine.commits.in_flight().unwrap().commit.clone();
+        world.run(1, &[(1, user(2, 0))]).unwrap();
+        let other = &mut world.devices[1];
+        let other_ino = other.disk.visible()[0];
+        let mtime_ns = other.disk.entries()[&other_ino]
+            .content
+            .as_ref()
+            .unwrap()
+            .mtime_ns;
+        let same_bytes = Content {
+            mtime_ns,
+            ..wanted.clone()
+        };
+        other.disk.overwrite(other_ino, same_bytes).unwrap();
+        send(&mut world, 1).unwrap();
+        world.run(1, &[(0, Step::Commit(Reply::Served))]).unwrap();
+        let result = world.space.recorded_result(&sent.commit_id).unwrap();
+        assert!(result.changes.is_empty());
+        assert_eq!(result.results[0].code, op_result::Code::Applied as i32);
+        world.run(1, &[(0, Step::Deliver(0)); 8]).unwrap();
+        assert!(
+            world.touches[0].values().all(BTreeSet::is_empty),
+            "{:?}",
+            world.touches[0]
         );
     }
 
