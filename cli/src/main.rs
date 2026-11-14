@@ -1495,9 +1495,13 @@ async fn resolve(
         let summary = if questions.is_empty() {
             questions_text(&questions)
         } else {
+            let credential = Credential::load(&paths.credential()).ok().flatten();
+            let device = credential
+                .as_ref()
+                .map(|credential| credential.device_id.as_str());
             questions
                 .iter()
-                .map(|question| question_text_with_writers(question, Writers::RelativeTo(None)))
+                .map(|question| question_text_with_writers(question, Writers::RelativeTo(device)))
                 .collect()
         };
         let mut done = Done::ok(Value::Null, questions_text(&questions)).human(summary, "");
@@ -2333,6 +2337,12 @@ fn status_summary(
         }
         if let Some(problem) = &folder.problem {
             text.push_str(&format!("  {}\n", printable(problem)));
+            if folder.state == FolderState::Halted && !problem.contains("koi ") {
+                text.push_str(&format!(
+                    "  Fix the problem above, then run koi folder restart {}\n",
+                    output::command_path(Path::new(&folder.path))
+                ));
+            }
         }
         if let Some(wait) = &folder.wait {
             let cause = match wait.kind {
@@ -2355,7 +2365,13 @@ fn status_summary(
                     koidrive_engine::question::RecoveryTrigger::SpaceRewound => {
                         "The shared folder was rewound or restored on the server.".to_owned()
                     }
-                    _ => described,
+                    koidrive_engine::question::RecoveryTrigger::StoreRolledBack => {
+                        "The folder's sync state is older than its history on the server."
+                            .to_owned()
+                    }
+                    koidrive_engine::question::RecoveryTrigger::StoreOlderThanDisk => {
+                        "The folder's sync state is older than its files on disk.".to_owned()
+                    }
                 };
                 text.push_str(&format!("  {cause} Recovering sync.\n"));
             }
@@ -2814,6 +2830,58 @@ async fn pending_questions(paths: &Paths) -> Vec<Question> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concise_halted_status_gives_a_restart_after_commandless_problems() {
+        for problem in [
+            "the folder cannot be read: Permission denied (os error 13)",
+            "the folder cannot be claimed",
+            "a file cannot be placed in the folder",
+        ] {
+            let status: Status = serde_json::from_value(serde_json::json!({
+                "account":null, "running":true, "folders":[{
+                    "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work Files", "state":"halted",
+                    "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+                    "problem":problem
+                }]
+            })).unwrap();
+            let service: service::Report = serde_json::from_value(
+                serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+            )
+            .unwrap();
+            let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+            let summary = status_summary(&status, &[], &service, &notice);
+            assert!(summary.contains(problem), "{summary}");
+            assert!(
+                summary.contains(
+                    "Fix the problem above, then run koi folder restart '/home/ada/Work Files'"
+                ),
+                "{summary}"
+            );
+        }
+    }
+
+    #[test]
+    fn concise_recovery_keeps_causes_in_separate_sentences() {
+        for trigger in ["store_rolled_back", "store_older_than_disk"] {
+            let status: Status = serde_json::from_value(serde_json::json!({
+                "account":null, "running":true, "folders":[{
+                    "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work", "state":"catching_up",
+                    "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+                    "problem":null,"recovery":{"trigger":trigger}
+                }]
+            })).unwrap();
+            let service: service::Report = serde_json::from_value(
+                serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+            )
+            .unwrap();
+            let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+            let summary = status_summary(&status, &[], &service, &notice);
+            assert!(summary.contains(". Recovering sync."), "{summary}");
+            assert!(!summary.contains("server Recovering"), "{summary}");
+            assert!(!summary.contains("disk Recovering"), "{summary}");
+        }
+    }
 
     #[test]
     fn concise_halted_status_keeps_the_actual_recovery_action() {

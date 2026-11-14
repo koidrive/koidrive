@@ -477,6 +477,115 @@ fn status_summarizes_every_state_and_verbose_keeps_engine_details() {
 }
 
 #[test]
+fn concise_resolve_uses_the_local_device_for_conflict_choices() {
+    let profile = Profile::new();
+    let server = profile.fixture(1, |request| {
+        assert_eq!(request["request"], "questions");
+        json!({"response":"questions", "questions":[{
+            "id":"q1", "space_id":"s1", "asked_at_ms":1000,
+            "kind":{"type":"conflict",
+                "original":{"node_id":"n1","revisions":{"content_rev":2,"meta_rev":1}},
+                "copy":{"node_id":"n2","revisions":{"content_rev":1,"meta_rev":1}}},
+            "items":[
+                {"node_id":"n1","path":"deck.key","files":1,"device_id":"local-device"},
+                {"node_id":"n2","path":"deck (conflict).key","files":1,"device_id":"other-device"}
+            ]
+        }]})
+    });
+    let credential = profile.0.path().join("state/koidrive/credential.json");
+    fs::write(
+        &credential,
+        serde_json::to_vec(&json!({
+            "server":"https://files.example.com/", "user_id":"owner", "device_id":"local-device",
+            "device_name":"Laptop", "refresh_credential":"fixture-only"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = profile.run(&["resolve"], true, false, &[("NO_COLOR", "1")]);
+    server.join().unwrap();
+    assert_eq!(output.exit, 0);
+    for expected in [
+        "written by this device",
+        "written by another device",
+        "keep-node:n1",
+        "keep-node:n2",
+    ] {
+        assert!(output.terminal.contains(expected), "{}", output.terminal);
+    }
+    assert!(!output.terminal.contains("local-device"));
+    assert!(!output.terminal.contains("other-device"));
+}
+
+#[test]
+fn concise_restore_notes_keep_attention_on_stopped_folders() {
+    use sha2::{Digest, Sha256};
+
+    for state in ["stopped", "halted", "offline"] {
+        let profile = Profile::new();
+        let root = fs::canonicalize(profile.0.path()).unwrap();
+        let folder = root.join("Work");
+        fs::create_dir(&folder).unwrap();
+        let path = folder.display().to_string();
+        let server = profile.fixture(2, move |request| match request["request"].as_str().unwrap() {
+            "status" => json!({"response":"status", "status":{
+                "account":null, "running":true, "folders":[{"space_id":"s1", "space_name":"Work", "path":path,
+                    "state":state,"history_id":null,"last_seq":null,"head_seq":null,
+                    "remote_nodes":0,"local_entries":0,"questions":0,"problem":null}]
+            }}),
+            "questions" => json!({"response":"questions", "questions":[]}),
+            other => panic!("unexpected fixture request {other}"),
+        });
+        let records = root.join("state/koidrive/requests");
+        fs::create_dir(&records).unwrap();
+        let digest: String = Sha256::digest(b"restore-fixture")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let name = format!("{digest}.json");
+        let key = koidrive_ipc::Key::restore(&folder.join("report.docx"), None, None);
+        fs::write(
+            records.join(name),
+            serde_json::to_vec(&json!({
+                "id":"restore-fixture", "key":key, "outcome":{
+                    "response":"restore", "id":"restore-1", "space_id":"s1",
+                    "folder":folder, "path":"report.docx"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = profile.run(
+            &[
+                "history",
+                "restore",
+                "Work/report.docx",
+                "--request-id",
+                "restore-fixture",
+            ],
+            true,
+            false,
+            &[("NO_COLOR", "1")],
+        );
+        server.join().unwrap();
+        assert_eq!(output.exit, 0);
+        assert!(
+            output
+                .terminal
+                .starts_with("restore-1\n▲  Restore requested"),
+            "{}",
+            output.terminal
+        );
+        assert!(
+            output.terminal.contains("The folder is not syncing."),
+            "{}",
+            output.terminal
+        );
+    }
+}
+
+#[test]
 fn a_saved_choice_does_not_claim_that_sync_finished() {
     for (tty, verbose) in [(true, false), (true, true), (false, false)] {
         let profile = Profile::new();

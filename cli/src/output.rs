@@ -105,9 +105,10 @@ pub fn print(
         _ => print!("{text}"),
     }
     if !note.is_empty() {
-        let symbol = match error {
-            true => theme.error_symbol(),
-            false => theme.info_symbol(),
+        let symbol = match (error, tone) {
+            (true, _) => theme.error_symbol(),
+            (false, Tone::Attention) => theme.warning_symbol(),
+            (false, _) => theme.info_symbol(),
         };
         eprint!(
             "{}",
