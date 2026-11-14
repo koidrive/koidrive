@@ -149,6 +149,10 @@ The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, lim
 | [server/](server/) | Worker and Durable Objects in TypeScript | AGPL-3.0-or-later |
 | [apps/](apps/) | Desktop apps | Apache-2.0 |
 
+## Koidrive for teams
+
+Need a managed or custom deployment, help running Koidrive in your own infrastructure, or support? Contact [hello@koidrive.com](mailto:hello@koidrive.com) to discuss what your team needs.
+
 ## License, contributing and trademarks
 
 The server in [server/](server/) uses the GNU AGPL v3.0 or later, and everything else uses the Apache License 2.0. [LICENSE](LICENSE) explains the split.
