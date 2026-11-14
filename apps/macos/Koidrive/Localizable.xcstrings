@@ -60,6 +60,72 @@
         }
       }
     },
+    "%lld restores" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld restore"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld restores"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld restores waiting" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld restore waiting"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld restores waiting"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld versions" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld version"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld versions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%llu deletions" : {
       "localizations" : {
         "en" : {
@@ -111,16 +177,19 @@
     "A folder stopped syncing" : {},
     "A name is taken by an ignored item" : {},
     "A name isn't allowed on this Mac" : {},
+    "A waiting restore goes out once its folder’s earlier changes sync." : {},
     "About" : {},
     "Account" : {},
     "Add Folder…" : {},
     "Add a Device…" : {},
     "Add a folder to start syncing." : {},
     "Added %@" : {},
+    "All folders" : {},
     "Allow Koidrive in Login Items." : {},
     "Already dismissed." : {},
     "An ignore rule can't be read" : {},
     "Another Koidrive process is syncing this folder." : {},
+    "Another device" : {},
     "Another device removed this Mac, or its credential stopped working. Sign out in Account settings, then sign in with a pairing code from another device." : {},
     "Another device syncs this folder. Unlink it there first." : {},
     "Another disk is at the folder's path" : {},
@@ -131,11 +200,13 @@
     "Can't reach the server." : {},
     "Cancel" : {},
     "Cancel All Requests" : {},
+    "Can’t reach the server" : {},
     "Change Server" : {},
     "Change not saved: %@" : {},
     "Changed on this Mac" : {},
     "Changes sync when you resume." : {},
     "Choose" : {},
+    "Choose a file in %@ to see its versions." : {},
     "Choose a file or folder inside the linked folder." : {},
     "Choose a folder on your Mac's disk. This file system isn't supported." : {},
     "Choose a folder to sync" : {},
@@ -157,8 +228,14 @@
     "Connecting…" : {},
     "Copy" : {},
     "Copy Path" : {},
+    "Couldn’t load deleted files" : {},
+    "Couldn’t load versions" : {},
+    "Couldn’t restore. %@" : {},
+    "Couldn’t restore. The server no longer has this version." : {},
+    "Couldn’t restore. Too many items for one restore." : {},
     "Created after the restore point" : {},
     "Created on this Mac" : {},
+    "Current" : {},
     "Decisions Koidrive needs from you appear here." : {},
     "Delete %@ on the server?" : {},
     "Delete 1 item everywhere?" : {},
@@ -168,15 +245,33 @@
     "Delete many files" : {},
     "Delete many files?" : {},
     "Deleted %@" : {},
+    "Deleted %@ at %@" : {},
+    "Deleted %@ at %@ on %@" : {},
+    "Deleted %@ at %@ on this Mac" : {},
+    "Deleted Files" : {},
+    "Deleted Files…" : {},
+    "Deleted Items" : {},
     "Deleted files" : {},
+    "Deleted files load when Koidrive reconnects." : {},
+    "Deleted item" : {},
     "Deleted on this Mac" : {},
     "Deleted on this Mac but still on the server. Delete them there too, or download them again." : {},
+    "Deleted today at %@" : {},
+    "Deleted today at %@ on %@" : {},
+    "Deleted today at %@ on this Mac" : {},
+    "Deleted yesterday at %@" : {},
+    "Deleted yesterday at %@ on %@" : {},
+    "Deleted yesterday at %@ on this Mac" : {},
     "Devices" : {},
     "Dismiss" : {},
     "Done" : {},
     "Download All Again" : {},
     "Download only" : {},
+    "Drop on %@" : {},
     "Each chunk counts once. Unreferenced: uploads in progress and chunks awaiting deletion." : {},
+    "Each synced change keeps a version here." : {},
+    "Earlier" : {},
+    "Earlier version" : {},
     "Edited" : {},
     "Edited %@" : {},
     "Edited and moved from %@" : {},
@@ -186,6 +281,8 @@
     "Enter it on the new device. Expires %@." : {},
     "Every folder is unlinked. Files stay on this Mac and the server." : {},
     "Everything else is up to date." : {},
+    "Files" : {},
+    "Files deleted in %@ show up here." : {},
     "Files disappeared" : {},
     "Files stay in the folder and on the server." : {},
     "Find \"Koidrive claim code\" in the Worker's logs in Cloudflare." : {},
@@ -199,10 +296,13 @@
     "Get a code from Settings > Account on a signed-in device." : {},
     "Held deletions" : {},
     "Held files" : {},
+    "If the name is taken, Koidrive keeps both." : {},
     "Imported space" : {},
     "It changes too often to upload. If it's a log or database, add it to .koiignore." : {},
     "It never shares file names, paths or contents." : {},
     "It stops syncing. Files already on it stay there." : {},
+    "Its name isn't allowed." : {},
+    "Its versions show once it’s up to date." : {},
     "Koidrive can't save its sync state" : {},
     "Koidrive can't start" : {},
     "Koidrive is set up" : {},
@@ -212,6 +312,9 @@
     "Linked folders can't be inside one another." : {},
     "Linked with files" : {},
     "Live files" : {},
+    "Loading deleted files…" : {},
+    "Loading restores…" : {},
+    "Loading versions…" : {},
     "Many files deleted from %@ on another device" : {},
     "Many files deleted on another device" : {},
     "Move All to Local Trash" : {},
@@ -233,13 +336,21 @@
     "Needs you" : {},
     "Needs your answer" : {},
     "New Space…" : {},
+    "No deleted file matches “%@”." : {},
+    "No deleted files" : {},
+    "No earlier versions" : {},
     "No folders" : {},
+    "No matches" : {},
     "No other device is signed in. To get back in, run koi server add-device." : {},
     "No problems" : {},
+    "No restores yet" : {},
     "None" : {},
     "Not signed in" : {},
+    "Not synced yet" : {},
+    "Nothing deleted in %@" : {},
     "Nothing needs you" : {},
     "Old versions" : {},
+    "Only a file has versions." : {},
     "Only files have versions." : {},
     "Only this Mac has these files. Upload them or move them to the local trash." : {},
     "Open %@" : {},
@@ -257,6 +368,7 @@
     "Recovering" : {},
     "Recovery needs a decision" : {},
     "Refresh" : {},
+    "Refused. %@" : {},
     "Remove" : {},
     "Remove %@?" : {},
     "Remove Device" : {},
@@ -266,17 +378,31 @@
     "Rename the file on another device." : {},
     "Repeat All Requests" : {},
     "Requested before the reset" : {},
+    "Restore" : {},
     "Restore All Here" : {},
+    "Restore Version" : {},
     "Restore Version…" : {},
     "Restore from Deleted Files" : {},
+    "Restore requested" : {},
+    "Restore requested. It goes out with %@ next sync." : {},
     "Restore version from %@" : {},
+    "Restored" : {},
+    "Restored as %@. The name was taken." : {},
+    "Restored as a copy, %@. Another device changed the file." : {},
+    "Restored as a copy. Another device changed it." : {},
     "Restored on the server" : {},
     "Restored on the server to %@." : {},
     "Restored to %@" : {},
     "Restored to %@." : {},
+    "Restored. The %@ version is current on every device." : {},
+    "Restores" : {},
+    "Restores to" : {},
+    "Restoring makes it the current version on every device." : {},
     "Resume Sync" : {},
     "Retrying %@." : {},
     "Review problems" : {},
+    "Search Deleted Files" : {},
+    "See versions" : {},
     "Selected path:" : {},
     "Send anonymous usage reports" : {},
     "Server" : {},
@@ -285,6 +411,9 @@
     "Set Up Koidrive…" : {},
     "Set up Koidrive" : {},
     "Settings…" : {},
+    "Show" : {},
+    "Show Restores" : {},
+    "Show Versions" : {},
     "Show in Finder" : {},
     "Sign In" : {},
     "Sign Out" : {},
@@ -313,15 +442,22 @@
     "The folder can't be read" : {},
     "The folder had files when linked, and Koidrive couldn't match them all." : {},
     "The folder is missing" : {},
+    "The folder it goes back to is inside it." : {},
     "The folder was restored from an older backup" : {},
     "The folder's .koidrive marker can't be read" : {},
     "The folder's .koidrive marker is missing" : {},
     "The folder's file system isn't supported" : {},
+    "The linked folder itself can't be restored." : {},
     "The linked path isn't a folder" : {},
+    "The place it goes back to is a file now." : {},
     "The server didn't confirm the removal: %@" : {},
     "The server lost these restore requests." : {},
+    "The server no longer has it." : {},
+    "The server no longer has this version." : {},
     "The server rejected a change" : {},
+    "The server takes no changes from this Mac." : {},
     "These went missing while Koidrive wasn't running. Other devices keep them until you decide." : {},
+    "This Mac" : {},
     "This Mac isn't signed in." : {},
     "This Mac stays listed on the server until another device removes it." : {},
     "This Mac was removed" : {},
@@ -354,11 +490,14 @@
     "This space isn't linked on this Mac." : {},
     "This space needs a newer Koidrive" : {},
     "This space no longer exists." : {},
-    "This version no longer exists." : {},
     "To remove this Mac, sign out." : {},
+    "Today" : {},
+    "Too many items for one restore." : {},
     "Too many wrong codes. Try again in a few minutes." : {},
     "Total" : {},
+    "Try Again" : {},
     "Turned off by an environment variable." : {},
+    "Unknown item" : {},
     "Unlink" : {},
     "Unlink %@?" : {},
     "Unlink it and link the right folder." : {},
@@ -371,8 +510,18 @@
     "Upload All" : {},
     "Upload This Mac's Versions" : {},
     "Use a password of 8 to 256 characters." : {},
+    "Version History" : {},
+    "Version History…" : {},
+    "Version from %@ at %@" : {},
+    "Version from today at %@" : {},
+    "Version from yesterday at %@" : {},
+    "Versions load when Koidrive reconnects." : {},
     "Waiting" : {},
+    "Waiting for %@ to sync" : {},
+    "Waiting until a refused change to it is fixed" : {},
+    "When you restore a file, you can follow it here." : {},
     "Wrong or expired code." : {},
+    "Yesterday" : {},
     "Your name" : {},
     "^[%llu file](inflect: true)" : {},
     "^[%llu version](inflect: true)" : {},

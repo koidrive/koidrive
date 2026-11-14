@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import KoidriveFFI
+import KoidriveModel
 import Foundation
 
 extension SyncStatus {
@@ -320,7 +321,7 @@ extension SessionError {
         case .PathIsFolder: String(localized: "Only files have versions.")
         case .NotDeleted: String(localized: "This item isn't deleted.")
         case .DeletedItemNotFound: String(localized: "This item is no longer in the trash.")
-        case .VersionNotFound: String(localized: "This version no longer exists.")
+        case .VersionNotFound: String(localized: "The server no longer has this version.")
         case .VersionIsCurrent: String(localized: "This is already the current version.")
         case .NotOnServer: String(localized: "This item hasn't synced yet. Try again once it's uploaded.")
         case .PasswordLength: String(localized: "Use a password of 8 to 256 characters.")
@@ -353,5 +354,125 @@ func fileCount(_ count: UInt64) -> String {
 extension Date {
     init(milliseconds: Int64) {
         self.init(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
+    }
+}
+
+func restoreCount(_ count: Int) -> String {
+    String(localized: "\(count) restores")
+}
+
+func versionCount(_ count: Int) -> String {
+    String(localized: "\(count) versions")
+}
+
+func byteSize(_ bytes: UInt64) -> String {
+    Int64(clamping: bytes).formatted(.byteCount(style: .file))
+}
+
+func possessive(_ name: String) -> String {
+    name.hasSuffix("s") ? name + "’" : name + "’s"
+}
+
+func restoreGoesOut(with folder: String) -> String {
+    String(localized: "Restore requested. It goes out with \(possessive(folder)) next sync.")
+}
+
+extension Day {
+    var title: String {
+        switch self {
+        case .today: String(localized: "Today")
+        case .yesterday: String(localized: "Yesterday")
+        case .earlier: String(localized: "Earlier")
+        }
+    }
+
+    func time(of date: Date) -> String {
+        switch self {
+        case .today, .yesterday: date.formatted(.dateTime.hour().minute())
+        case .earlier: date.formatted(.dateTime.day().month(.abbreviated).hour().minute())
+        }
+    }
+}
+
+extension Optional where Wrapped == DeviceLabel {
+    var title: String {
+        switch self {
+        case .thisMac: String(localized: "This Mac")
+        case .named(let name): name
+        case nil: String(localized: "Another device")
+        }
+    }
+}
+
+extension Deletion {
+    var text: String {
+        let time = date.formatted(.dateTime.hour().minute())
+        let day = date.formatted(.dateTime.day().month(.abbreviated))
+        switch (self.day, device) {
+        case (.today, nil): return String(localized: "Deleted today at \(time)")
+        case (.yesterday, nil): return String(localized: "Deleted yesterday at \(time)")
+        case (.earlier, nil): return String(localized: "Deleted \(day) at \(time)")
+        case (.today, .thisMac): return String(localized: "Deleted today at \(time) on this Mac")
+        case (.yesterday, .thisMac): return String(localized: "Deleted yesterday at \(time) on this Mac")
+        case (.earlier, .thisMac): return String(localized: "Deleted \(day) at \(time) on this Mac")
+        case (.today, .named(let name)): return String(localized: "Deleted today at \(time) on \(name)")
+        case (.yesterday, .named(let name)): return String(localized: "Deleted yesterday at \(time) on \(name)")
+        case (.earlier, .named(let name)): return String(localized: "Deleted \(day) at \(time) on \(name)")
+        }
+    }
+}
+
+extension RestoreSubject {
+    var text: String {
+        switch self {
+        case .deletedItem:
+            return String(localized: "Deleted item")
+        case .earlierVersion:
+            return String(localized: "Earlier version")
+        case .version(let date, let day):
+            let time = date.formatted(.dateTime.hour().minute())
+            switch day {
+            case .today: return String(localized: "Version from today at \(time)")
+            case .yesterday: return String(localized: "Version from yesterday at \(time)")
+            case .earlier: return String(localized: "Version from \(date.formatted(.dateTime.day().month(.abbreviated))) at \(time)")
+            }
+        }
+    }
+}
+
+extension RestoreState {
+    func text(folder: String) -> String {
+        switch self {
+        case .pending(heldByProblem: false): String(localized: "Waiting for \(folder) to sync")
+        case .pending(heldByProblem: true): String(localized: "Waiting until a refused change to it is fixed")
+        case .restored: String(localized: "Restored")
+        case .restoredAs(let name): String(localized: "Restored as \(name). The name was taken.")
+        case .restoredAsCopy: String(localized: "Restored as a copy. Another device changed it.")
+        case .refused(let reason): String(localized: "Refused. \(reason.text)")
+        case .tooLarge: String(localized: "Too many items for one restore.")
+        }
+    }
+
+    var versionRefusal: String {
+        switch self {
+        case .refused(.gone): String(localized: "Couldn’t restore. The server no longer has this version.")
+        case .refused(let reason): String(localized: "Couldn’t restore. \(reason.text)")
+        default: String(localized: "Couldn’t restore. Too many items for one restore.")
+        }
+    }
+}
+
+extension RestoreRefusal {
+    var text: String {
+        switch self {
+        case .gone: String(localized: "The server no longer has it.")
+        case .notAFile: String(localized: "Only a file has versions.")
+        case .invalidName: String(localized: "Its name isn't allowed.")
+        case .destinationNotAFolder: String(localized: "The place it goes back to is a file now.")
+        case .destinationInsideItself: String(localized: "The folder it goes back to is inside it.")
+        case .root: String(localized: "The linked folder itself can't be restored.")
+        case .readOnly: String(localized: "The server takes no changes from this Mac.")
+        case .other(let reason): reason
+        }
     }
 }

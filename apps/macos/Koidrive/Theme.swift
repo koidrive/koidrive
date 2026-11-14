@@ -320,13 +320,14 @@ struct EmptyState<Actions: View>: View {
     let systemImage: String
     let title: LocalizedStringKey
     let message: Text?
+    var imageColor = Color.text3
     @ViewBuilder var actions: Actions
 
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(.system(size: 22, weight: .light))
-                .foregroundStyle(Color.text3)
+                .foregroundStyle(imageColor)
                 .padding(.bottom, 6)
             Text(title)
                 .font(.system(size: 15, weight: .semibold))

@@ -343,6 +343,17 @@ struct MenuContent: View {
             MenuButton(title: "Needs You…", systemImage: "questionmark.circle") {
                 openWindow.show(WindowID.questions)
             }
+            Divider()
+            Group {
+                MenuButton(title: "Version History…", systemImage: "clock.arrow.circlepath") {
+                    VersionHistoryPicker.choose(in: model.state.folders) { openWindow.showVersionHistory(of: $0) }
+                }
+                MenuButton(title: "Deleted Files…", systemImage: "trash") {
+                    openWindow.show(WindowID.deletedFiles)
+                }
+            }
+            .disabled(model.needsSetup)
+            Divider()
             MenuButton(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,") {
                 openSettings()
                 NSApp.activate()
