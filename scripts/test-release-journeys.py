@@ -1074,7 +1074,8 @@ def uninstall_run(evidence, binary, *args, env=None):
 
 
 def command_env(env, argv):
-    if argv[:1] != ["env"] or argv[-2:] != ["koi", "uninstall"]:
+    if (len(argv) < 3 or argv[0] != "env" or argv[-1] != "uninstall"
+            or not (argv[-2] == "koi" or Path(argv[-2]).is_absolute())):
         return None
     env = dict(env)
     words = iter(argv[1:-2])
@@ -1116,7 +1117,12 @@ def uninstalled(evidence, home, binary, peer_koi, folder, peer_folder, peer_env,
     devices = koi_json(evidence, peer_koi, "device", "list", env=peer_env)["devices"]
     entry = next((item for item in devices if item.get("device_id") == device), None)
     evidence.check("peer sees the device signed out", entry is not None and (entry.get("revoked_at_ms") or 0) > 0, entry)
-    status, envelope, data = uninstall_run(evidence, binary, "--last-device", env=peer)
+    status, out, _ = evidence.run([*others[0]["argv"], "--yes", "--last-device", "--json"], required=False, timeout=300)
+    try:
+        envelope = json.loads(out)
+    except ValueError:
+        envelope = {}
+    data = envelope.get("data") or {}
     evidence.check("peer profile uninstall finished", status == 0 and envelope.get("outcome") == "ok"
                    and not [item for item in data.get("kept", []) if item.get("kind") == "other_profile"],
                    f"status={status}")

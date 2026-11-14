@@ -210,6 +210,31 @@ fn a_profile_folder_that_lands_on_a_synced_folder_keeps_every_file() {
 }
 
 #[test]
+fn a_state_folder_that_holds_other_files_loses_only_what_koidrive_wrote() {
+    let machine = Machine::new();
+    let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
+    let photo = machine.write("Backup/wedding.jpg", "jpg");
+    fs::create_dir_all(machine.path("st")).unwrap();
+    std::os::unix::fs::symlink(machine.path("Backup"), machine.path("st/koidrive")).unwrap();
+    let document = machine.write("Koidrive/q3.docx", "q3");
+    for state in [machine.path("st"), machine.home.clone()] {
+        let mut status = machine.command(koi, &["status", "--json"]);
+        status.env("XDG_STATE_HOME", &state);
+        assert!(status.output().unwrap().status.success());
+        let mut command = machine.command(koi, &["uninstall", "--yes", "--json"]);
+        command.env("XDG_STATE_HOME", &state);
+
+        let (output, envelope) = machine.envelope(command);
+
+        assert!(output.status.success(), "{envelope:#}");
+        assert_eq!(fs::read_to_string(&photo).unwrap(), "jpg", "{envelope:#}");
+        assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
+    }
+    assert!(!machine.path("Backup/lock").exists());
+    assert!(fs::symlink_metadata(machine.path("st/koidrive")).is_ok());
+}
+
+#[test]
 fn a_linked_state_folder_goes_with_its_link() {
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");
@@ -616,8 +641,16 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
     let line = path_line(koi.parent().unwrap());
     let zprofile = machine.write(".zprofile", &format!("{line}\n"));
     let support = machine.write("Library/Application Support/Koidrive/window.json", "x");
-    let label = "dev.koidrive.koi.0123abcd";
     let (config, state) = (machine.path("other/config"), machine.path("other/state"));
+    let other = koidrive_driver::Paths::from_vars(|name| match name {
+        "XDG_CONFIG_HOME" => Some(config.clone().into()),
+        "XDG_STATE_HOME" => Some(state.clone().into()),
+        _ => None,
+    })
+    .unwrap();
+    let label = format!("dev.koidrive.koi.{}", other.state_key());
+    machine.write("other/state/koidrive/credential.json", "");
+    machine.write("other/state/koidrive/spaces/.keep", "");
     machine.write(
         &format!("Library/LaunchAgents/{label}.plist"),
         &format!(
@@ -641,20 +674,42 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
         "XDG_RUNTIME_DIR",
         format!("XDG_CONFIG_HOME={}", config.display()),
         format!("XDG_STATE_HOME={}", state.display()),
-        "koi",
+        koi.display().to_string(),
         "uninstall"
     ]);
-    let kept = kept(&envelope);
+    let shared = kept(&envelope);
     for item in [
         json!({ "kind": "other_profile", "service": label, "argv": argv }),
         json!({ "kind": "shared", "path": koi.display().to_string() }),
         json!({ "kind": "path_line", "path": zprofile.display().to_string() }),
     ] {
-        assert!(kept.contains(&item), "{item} in {envelope:#}");
+        assert!(shared.contains(&item), "{item} in {envelope:#}");
     }
     assert_eq!(
         envelope["next_commands"],
         json!([{ "argv": argv }]),
         "{envelope:#}"
     );
+
+    let argv: Vec<String> = serde_json::from_value(argv).unwrap();
+    let mut args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    args.extend(["--yes", "--json"]);
+    let (output, last) = machine.envelope(machine.command(Path::new(&argv[0]), &args));
+
+    assert!(output.status.success(), "{last:#}");
+    assert!(
+        kept(&last)
+            .iter()
+            .all(|item| item["kind"] != "other_profile"),
+        "{last:#}"
+    );
+    for gone in [
+        koi.clone(),
+        support,
+        machine.path(&format!("Library/LaunchAgents/{label}.plist")),
+        state.join("koidrive"),
+    ] {
+        assert!(!gone.exists(), "{} remains: {last:#}", gone.display());
+    }
+    assert!(!fs::read_to_string(&zprofile).is_ok_and(|text| text.contains(PATH_LINE)));
 }

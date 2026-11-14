@@ -225,6 +225,7 @@ fn plist_binary(plist: &str) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Installed {
     pub name: String,
+    pub binary: Option<String>,
     pub env: Vec<(&'static str, Option<String>)>,
 }
 
@@ -255,6 +256,7 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Vec<Installed
                 let text = fs::read_to_string(entry.path()).ok()?;
                 Some(Installed {
                     name: file.strip_suffix(".plist")?.to_owned(),
+                    binary: plist_binary(&text),
                     env: plist_env(&text),
                 })
             })
@@ -266,9 +268,11 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Vec<Installed
                 .filter_map(|line| {
                     let name = line.split_whitespace().next()?;
                     suffixed(name, "koidrive", ".service").then_some(())?;
+                    let text = systemctl(&["cat", name]).ok()?;
                     Some(Installed {
                         name: name.to_owned(),
-                        env: unit_env(&systemctl(&["cat", name]).ok()?),
+                        binary: unit_binary(&text),
+                        env: unit_env(&text),
                     })
                 })
                 .collect()

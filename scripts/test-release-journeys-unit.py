@@ -1058,7 +1058,7 @@ class ReleaseJourneys(unittest.TestCase):
                 profile.write_text("export PATH=\"$HOME/.local/bin:$PATH\"; : 'koidrive PATH'\n")
                 peer_env = {"XDG_STATE_HOME": str(home / "peer/state"), "XDG_CONFIG_HOME": str(home / "peer/config")}
                 argv = ["env", "XDG_CONFIG_HOME=" + peer_env["XDG_CONFIG_HOME"],
-                        "XDG_STATE_HOME=" + peer_env["XDG_STATE_HOME"], "koi", "uninstall"]
+                        "XDG_STATE_HOME=" + peer_env["XDG_STATE_HOME"], str(binary), "uninstall"]
                 evidence = DRIVER.Evidence(self.root / str(change) / "evidence", "v0.1.0-alpha.3", "uninstall")
 
                 def run(argv_, env=None, **_):
@@ -1073,7 +1073,7 @@ class ReleaseJourneys(unittest.TestCase):
                         return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": kept},
                                               "next_commands": [{"argv": argv}]}), ""
                     if "uninstall" in argv_:
-                        self.assertEqual(env["XDG_STATE_HOME"], peer_env["XDG_STATE_HOME"])
+                        self.assertEqual(argv_[:len(argv)], argv)
                         (peer_folder / ".koidrive").rmdir()
                         profile.unlink()
                         binary.unlink()

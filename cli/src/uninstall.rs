@@ -32,6 +32,22 @@ const STATE_MARKS: [&str; 5] = [
     RECORD,
     "update-check.json",
 ];
+const STATE_ENTRIES: [&str; 14] = [
+    "credential.json",
+    "lock",
+    "service.lock",
+    "paused",
+    "update-check.json",
+    "update.log",
+    "setup-state.json",
+    RECORD,
+    "leaving",
+    "spaces",
+    "requests",
+    "telemetry",
+    "systemd",
+    "daemon.sock",
+];
 const KOI_MARK: &[u8] = b"Koidrive sync client";
 const STATUS: Duration = Duration::from_secs(10);
 const HELPER: Duration = Duration::from_secs(20);
@@ -253,7 +269,7 @@ impl Run {
         }
     }
 
-    fn remove_dir(&mut self, dir: &Path, contents: &[PathBuf]) {
+    fn remove_dir(&mut self, dir: &Path, ours: fn(&str) -> bool) {
         let target = fs::symlink_metadata(dir)
             .is_ok_and(|meta| meta.is_symlink())
             .then(|| fs::canonicalize(dir).ok())
@@ -263,18 +279,17 @@ impl Run {
             return;
         }
         let mut gone = Vec::new();
-        let emptied = match contents.is_empty() {
-            true => remove_path(real).map(drop),
-            false => contents
-                .iter()
-                .try_for_each(|path| {
-                    if remove_path(&real.join(path))? {
-                        gone.push(dir.join(path));
+        let emptied = fs::read_dir(real)
+            .and_then(|entries| {
+                for entry in entries {
+                    let name = entry?.file_name();
+                    if name.to_str().is_some_and(ours) && remove_path(&real.join(&name))? {
+                        gone.push(dir.join(name));
                     }
-                    Ok(())
-                })
-                .and_then(|()| fs::remove_dir(real)),
-        };
+                }
+                Ok(())
+            })
+            .and_then(|()| fs::remove_dir(real));
         let shown = Removed::Files {
             path: dir.display().to_string(),
         };
@@ -308,6 +323,17 @@ fn holds(outer: &Path, inner: &Path) -> bool {
         .ancestors()
         .filter_map(|dir| fs::metadata(dir).ok())
         .any(|dir| dir.dev() == outer.dev() && dir.ino() == outer.ino())
+}
+
+fn is_state_entry(name: &str) -> bool {
+    let known = |name: &str| STATE_ENTRIES.contains(&name);
+    known(name)
+        || name.starts_with(".tmp")
+        || name
+            .strip_prefix('.')
+            .and_then(|name| name.strip_suffix(".tmp"))
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(name, pid)| known(name) && pid.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn is_state(dir: &Path) -> bool {
@@ -367,9 +393,9 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     }
     for file in &found.files {
         if *file == paths.state_dir {
-            run.remove_dir(file, &[]);
+            run.remove_dir(file, is_state_entry);
         } else if Some(file.as_path()) == paths.config_file.parent() {
-            run.remove_dir(file, &[PathBuf::from("config.toml")]);
+            run.remove_dir(file, |name| name == "config.toml");
         } else {
             run.remove(
                 file,
@@ -1143,7 +1169,26 @@ fn keep_shared(found: &Found, run: &mut Run) {
         .extend(found.profiles.iter().map(|path| Kept::PathLine {
             path: path.display().to_string(),
         }));
+    let on_path = crate::update::on_path(OsStr::new("koi"), std::env::var_os("PATH").as_deref())
+        .and_then(|koi| fs::canonicalize(koi).ok());
     for other in &found.others {
+        let binary = (other.binary.as_deref())
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(found.programs.iter().filter_map(|program| match program {
+                Program::Command(path) => Some(path.clone()),
+                Program::App(bundle) => Some(bundle.join("Contents/Helpers/koi")),
+                Program::Homebrew { koi, .. } => Some(koi.clone()),
+                Program::Elsewhere(_) | Program::Development(_) => None,
+            }))
+            .find(|binary| is_koi(binary))
+            .or_else(|| std::env::current_exe().ok());
+        let koi = match binary {
+            Some(binary) if on_path.is_none() || fs::canonicalize(&binary).ok() != on_path => {
+                binary.display().to_string()
+            }
+            _ => "koi".to_owned(),
+        };
         let mut argv = vec!["env".to_owned()];
         for (name, value) in &other.env {
             if value.is_none() {
@@ -1155,7 +1200,7 @@ fn keep_shared(found: &Found, run: &mut Run) {
                 argv.push(format!("{name}={value}"));
             }
         }
-        argv.extend(["koi".to_owned(), "uninstall".to_owned()]);
+        argv.extend([koi, "uninstall".to_owned()]);
         run.next.push(argv.clone());
         run.kept.push(Kept::OtherProfile {
             service: other.name.clone(),
