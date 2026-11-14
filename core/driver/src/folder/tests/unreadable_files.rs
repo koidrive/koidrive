@@ -333,7 +333,8 @@ fn every_file_but_the_unwritable_ones_is_downloaded(unwritable: &[bool]) {
     for at in 0..paths.len() {
         fs::set_permissions(site_b.root.join(at.to_string()), mode(0o755)).unwrap();
     }
-    b.work.extend(timers);
+    drop(b);
+    let mut b = restarted(&site_b, &mut remote);
     b.rest(&mut remote);
     let everything: Vec<String> = (paths.iter()).map(|path| version(1, path)).collect();
     assert_eq!(on_b(&site_b), everything);
@@ -404,3 +405,85 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
     assert!(problem.contains("INVALID_NAME"), "the next batch cleared the refusal: {problem}");
 }
 
+fn synced_on_both(files: &[&str]) -> (Remote, Site, Device, Site, Device) {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let (site_b, mut b) = linked(&mut remote, "b");
+    for file in files {
+        let path = site_a.root.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "first").unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    b.rest(&mut remote);
+    (remote, site_a, a, site_b, b)
+}
+
+fn run_holding_timers(b: &mut Device, remote: &mut Remote, timers: &mut Vec<Work>) -> usize {
+    let mut stages = 0;
+    for _ in 0..20 {
+        while let Some(work) = b.work.pop_front() {
+            match work {
+                Work::RetryAfter(_) => timers.push(work),
+                work => {
+                    stages += usize::from(matches!(work, Work::Stage(_) | Work::StageAfter(..)));
+                    b.perform(work, remote).unwrap();
+                }
+            }
+        }
+        b.scan(Duration::from_millis(50));
+    }
+    stages
+}
+
+#[test]
+fn a_file_moved_and_rewritten_into_a_folder_this_device_does_not_allow_stays_where_it_was() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, site_a, mut a, site_b, mut b) = synced_on_both(&["locked/f.txt", "open/g.txt"]);
+    let locked = site_b.root.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::rename(site_a.root.join("open/g.txt"), site_a.root.join("locked/g.txt")).unwrap();
+    fs::write(site_a.root.join("locked/g.txt"), "rewritten").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let mut timers = Vec::new();
+    run_holding_timers(&mut b, &mut remote, &mut timers);
+    let problem = b.folder.view().problem.unwrap_or_default();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(fs::read_to_string(site_b.root.join("open/g.txt")).unwrap(), "first");
+    assert!(!locked.join("g.txt").exists());
+    assert!(problem.contains("g.txt"), "{problem}");
+
+    drop(b);
+    let mut b = restarted(&site_b, &mut remote);
+    b.rest(&mut remote);
+    assert_eq!(fs::read_to_string(locked.join("g.txt")).unwrap(), "rewritten");
+    assert!(!site_b.root.join("open/g.txt").exists());
+}
+
+#[test]
+fn a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wait() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, site_a, mut a, site_b, mut b) = synced_on_both(&["locked/big.bin", "open/g.txt"]);
+    let locked = site_b.root.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    fs::write(site_a.root.join("locked/big.bin"), vec![7u8; 1 << 20]).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let mut timers = Vec::new();
+    let mut stages = run_holding_timers(&mut b, &mut remote, &mut timers);
+    for _ in 0..6 {
+        for timer in std::mem::take(&mut timers) {
+            b.perform(timer, &mut remote).unwrap();
+        }
+        stages += run_holding_timers(&mut b, &mut remote, &mut timers);
+    }
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(stages, 1);
+}

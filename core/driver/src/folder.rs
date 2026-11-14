@@ -73,7 +73,7 @@ const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// reads the file again meanwhile.
 const BUILD_AGAIN: Duration = Duration::from_secs(1);
 const LEFT_OUT_AFTER: u32 = 3;
-const UNREADABLE_RETRY: Backoff = Backoff {
+const PERMISSION_RETRY: Backoff = Backoff {
     initial: Duration::from_secs(30),
     max: Duration::from_secs(1800),
 };
@@ -134,6 +134,7 @@ pub(crate) struct Folder {
     /// The disk effects of each node that failed in a row in this task, for [`EFFECT_RETRY`], and why the last one
     /// failed.
     effect_failures: BTreeMap<String, (u32, String)>,
+    effect_due: BTreeMap<String, Instant>,
     /// The nodes whose last effect ended [`Settled::Stuck`]. A [`Work::RetryAfter`] leaves them blocked.
     stuck_effects: BTreeSet<String>,
     /// Why the server did not take a change of each node, for the nodes it may have left out of commits.
@@ -349,6 +350,7 @@ impl Folder {
             unreadable: BTreeMap::new(),
             retrying: BTreeMap::new(),
             effect_failures: BTreeMap::new(),
+            effect_due: BTreeMap::new(),
             stuck_effects: BTreeSet::new(),
             refused_nodes: BTreeMap::new(),
             asked,
@@ -598,15 +600,22 @@ impl Folder {
         }
         let mut work = Vec::new();
         for (node, settled) in settled {
+            let backoff = match settled {
+                Settled::Denied(_) => PERMISSION_RETRY,
+                _ => EFFECT_RETRY,
+            };
             match settled {
                 Settled::Done => {
                     self.effect_failures.remove(&node);
+                    self.effect_due.remove(&node);
                     self.stuck_effects.remove(&node);
                 }
-                Settled::Failed(why) if self.engine.effects.blocked().contains_key(&node) => {
+                Settled::Failed(why) | Settled::Denied(why)
+                    if self.engine.effects.blocked().contains_key(&node) =>
+                {
                     self.stuck_effects.remove(&node);
-                    let (failures, last) = self.effect_failures.entry(node).or_default();
-                    let wait = EFFECT_RETRY.delay(*failures);
+                    let (failures, last) = self.effect_failures.entry(node.clone()).or_default();
+                    let wait = backoff.delay(*failures);
                     *failures += 1;
                     last.clone_from(&why);
                     tracing::warn!(
@@ -617,12 +626,13 @@ impl Folder {
                          it changes"
                     );
                     let at = Instant::now() + wait;
+                    self.effect_due.insert(node, at);
                     if self.retry_at.is_none_or(|out| at < out) {
                         self.retry_at = Some(at);
                         work.push(Work::RetryAfter(wait));
                     }
                 }
-                Settled::Failed(why) => {
+                Settled::Failed(why) | Settled::Denied(why) => {
                     self.stuck_effects.remove(&node);
                     tracing::info!(
                         space_id = self.link.space_id,
@@ -652,11 +662,15 @@ impl Folder {
     /// effect was stuck stays blocked, since no wait changes what keeps it.
     pub fn retry(&mut self) -> Result<Vec<Work>, Stop> {
         self.retry_at = None;
+        let now = Instant::now();
         let timed: Vec<String> = (self.engine.effects.blocked().keys())
             .filter(|node| !self.stuck_effects.contains(*node))
+            .filter(|node| (self.effect_due.get(*node)).is_none_or(|due| *due <= now))
             .cloned()
             .collect();
-        let now = Instant::now();
+        for node in &timed {
+            self.effect_due.remove(node);
+        }
         let problems = self.engine.commits.problems();
         let due: Vec<String> = (self.unreadable.iter())
             .filter(|(node, unreadable)| {
@@ -676,10 +690,16 @@ impl Folder {
         self.let_back_in(&due)?;
         let mut work = Vec::new();
         let problems = self.engine.commits.problems();
+        let blocked = self.engine.effects.blocked();
         let next = (self.unreadable.iter())
             .filter(|(node, _)| problems.contains(*node))
             .filter_map(|(_, unreadable)| unreadable.left_out.as_ref())
             .map(|left_out| left_out.due)
+            .chain(
+                (self.effect_due.iter())
+                    .filter(|(node, _)| blocked.contains_key(*node))
+                    .map(|(_, due)| *due),
+            )
             .min();
         if let Some(next) = next {
             self.retry_at = Some(next);
@@ -854,7 +874,7 @@ impl Folder {
             work.push(Work::ResendAfter(BUILD_AGAIN));
             return Ok(());
         }
-        let wait = UNREADABLE_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
+        let wait = PERMISSION_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
         self.step(|engine, _| Ok(engine.commits.leave_out(&node)))?;
         let at = Instant::now() + wait;
         let seen = self.engine.trees.local().get(&node).cloned();

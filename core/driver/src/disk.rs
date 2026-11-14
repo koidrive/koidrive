@@ -148,6 +148,7 @@ pub(crate) enum Settled {
     /// Failed, and planning the effect again cannot help until the person changes the disk: the folder it removes
     /// holds entries L does not know. The node stays blocked with no wait to end it.
     Stuck(String),
+    Denied(String),
 }
 
 /// What the effect sections share with the observer's thread.
@@ -1230,8 +1231,9 @@ fn settle(
                     Reason::Changed => failed("the entry changed on this device"),
                     Reason::Taken => failed("another entry holds its name"),
                     Reason::Interrupted => failed("it was interrupted"),
-                    Reason::Denied => failed(
-                        "this device does not allow the change: the folder or the file may be read-only or locked",
+                    Reason::Denied => Settled::Denied(
+                        "this device does not allow the change: the folder or the file may be read-only or locked"
+                            .into(),
                     ),
                     Reason::Overtaken => {
                         failed("the file it replaced is gone and its name changed on this device")
