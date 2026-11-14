@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::consent::{self, Status};
 use crate::recorder::Pending;
-use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
+use crate::schema::{Event, EventUuid, HourlyReport, InstallId, Origin, Version};
 
 pub const KEEP_HOURS: u32 = 14 * 24;
 pub const MAX_EVENTS: usize = 500;
@@ -445,8 +445,9 @@ impl Store {
     }
 
     /// Queues the crash in `report`, a crash report KSCrash 2.6 wrote. Only the crash's kind, Mach exception, signal and
-    /// time are read, with the build UUID of the executable that crashed and the offsets of the crashed thread's frames
-    /// in it; paths, names, messages, memory and everything else in the report are never read. A report the queue
+    /// time are read, with the build UUID of the executable that crashed, the offsets of the crashed thread's frames in it
+    /// and the version the app wrote into `user.koidrive_version`, which the event goes under; paths, names, messages,
+    /// memory and everything else in the report are never read. A report the queue
     /// already took by its id, one without a crash and one from before reports were last turned on add nothing.
     pub fn absorb_app_crash(&self, report: &Value) -> io::Result<()> {
         let Some(event) = crate::app_crash::app_crash(report) else {
@@ -467,7 +468,13 @@ impl Store {
         {
             return Ok(());
         }
-        let origin = self.origin.clone();
+        let crashed = report["user"]["koidrive_version"]
+            .as_str()
+            .and_then(|version| Version::parse(version).ok());
+        let origin = (self.origin.clone()).map(|origin| Origin {
+            koi_version: crashed.unwrap_or(origin.koi_version),
+            ..origin
+        });
         queue.put(std::iter::empty(), vec![Queued { event, origin }]);
         queue.app_crash_reports.extend(id);
         let over = queue
@@ -1362,6 +1369,26 @@ mod tests {
         assert_eq!(app_crashes(&store), 1);
         let queue = fs::read_to_string(store.dir.join(QUEUE)).unwrap();
         assert_eq!(queue.matches("4D2B0160").count(), 1);
+    }
+
+    #[test]
+    fn an_app_crash_goes_under_the_version_that_crashed() {
+        let (_dir, store) = store();
+        let store = store.recorded_by(Origin {
+            koi_version: Version::parse("0.1.1").unwrap(),
+            client: crate::schema::Client::MacosApp,
+        });
+        store.set(true).unwrap();
+        let mut report = crash_report("A", crate::now());
+        report["user"] = serde_json::json!({ "koidrive_version": "0.1.0-rc.1", "name": "alice" });
+        store.absorb_app_crash(&report).unwrap();
+        store
+            .absorb_app_crash(&crash_report("B", crate::now()))
+            .unwrap();
+        let versions: Vec<_> = (store.peek().unwrap().events.into_iter())
+            .map(|queued| String::from(queued.origin.unwrap().koi_version))
+            .collect();
+        assert_eq!(versions, ["0.1.0-rc.1", "0.1.1"]);
     }
 
     #[test]

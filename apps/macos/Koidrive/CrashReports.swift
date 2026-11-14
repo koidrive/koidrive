@@ -11,6 +11,7 @@ enum CrashReports {
         configuration.enableMemoryIntrospection = false
         configuration.enableQueueNameSearch = false
         configuration.addConsoleLogToReport = false
+        configuration.userInfoJSON = ["koidrive_version": KoidriveFFI.version()]
         try? KSCrash.shared.install(with: configuration)
     }
 
