@@ -40,6 +40,9 @@ fn api() -> Api {
 
 static OWNER: OnceCell<Credentials> = OnceCell::const_new();
 
+#[cfg(target_os = "linux")]
+static SYSTEMD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The deployment's owner, claimed once for every test in this binary.
 async fn owner() -> Credentials {
     OWNER.get_or_init(claim).await.clone()
@@ -1798,6 +1801,7 @@ async fn a_linked_folder_syncs_in_the_systemd_user_service_until_the_last_unlink
         eprintln!("skipped: set KOIDRIVE_TEST_SYSTEMD=1 where systemctl --user works");
         return;
     }
+    let _systemd = SYSTEMD.lock().await;
     let systemctl = |args: &[&str]| {
         Command::new("systemctl")
             .arg("--user")
@@ -1881,6 +1885,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
         eprintln!("skipped: set KOIDRIVE_TEST_SYSTEMD=1 where systemctl --user works");
         return;
     }
+    let _systemd = SYSTEMD.lock().await;
     let systemctl = |args: &[&str]| {
         Command::new("systemctl")
             .arg("--user")

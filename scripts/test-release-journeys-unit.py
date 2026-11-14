@@ -1043,29 +1043,44 @@ class ReleaseJourneys(unittest.TestCase):
 
     @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
     def test_uninstall_journey_requires_unchanged_files_and_nothing_of_koidrive_left(self, _uid):
-        for change in (None, "edited file", "kept state"):
+        for change in (None, "edited file", "kept state", "no peer command"):
             with self.subTest(change=change):
                 home = self.root / str(change) / "home"
-                folder = home / "Sync"
-                (folder / ".koidrive").mkdir(parents=True)
-                (folder / "outbound.bin").write_bytes(b"out")
-                (folder / "inbound.bin").write_bytes(b"in")
+                folder, peer_folder = home / "Sync", home / "PeerSync"
+                for synced in (folder, peer_folder):
+                    (synced / ".koidrive").mkdir(parents=True)
+                    (synced / "outbound.bin").write_bytes(b"out")
+                    (synced / "inbound.bin").write_bytes(b"in")
+                binary = home / ".local/bin/koi"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"koi")
                 profile = home / ".zprofile"
                 profile.write_text("export PATH=\"$HOME/.local/bin:$PATH\"; : 'koidrive PATH'\n")
+                peer_env = {"XDG_STATE_HOME": str(home / "peer/state"), "XDG_CONFIG_HOME": str(home / "peer/config")}
+                argv = ["env", "XDG_CONFIG_HOME=" + peer_env["XDG_CONFIG_HOME"],
+                        "XDG_STATE_HOME=" + peer_env["XDG_STATE_HOME"], "koi", "uninstall"]
                 evidence = DRIVER.Evidence(self.root / str(change) / "evidence", "v0.1.0-alpha.3", "uninstall")
 
-                def run(argv, **_):
-                    argv = list(map(str, argv))
-                    if "uninstall" in argv:
+                def run(argv_, env=None, **_):
+                    argv_ = list(map(str, argv_))
+                    if "uninstall" in argv_ and "--last-device" not in argv_:
                         (folder / ".koidrive").rmdir()
-                        profile.unlink()
                         if change == "edited file":
                             (folder / "outbound.bin").write_bytes(b"changed")
+                        kept = [{"kind": "folder", "path": str(folder)}]
+                        if change != "no peer command":
+                            kept.append({"kind": "other_profile", "service": "dev.koidrive.koi.0123abcd", "argv": argv})
+                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": kept},
+                                              "next_commands": [{"argv": argv}]}), ""
+                    if "uninstall" in argv_:
+                        self.assertEqual(env["XDG_STATE_HOME"], peer_env["XDG_STATE_HOME"])
+                        (peer_folder / ".koidrive").rmdir()
+                        profile.unlink()
+                        binary.unlink()
                         if change == "kept state":
                             (home / ".local/state/koidrive").mkdir(parents=True)
-                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"},
-                                              "kept": [{"kind": "folder", "path": str(folder)}]}}), ""
-                    if argv[0] == "/bin/launchctl":
+                        return 0, json.dumps({"outcome": "ok", "data": {"device": {"state": "signed_out"}, "kept": []}}), ""
+                    if argv_[0] == "/bin/launchctl":
                         return 113, "", "Could not find service"
                     return 0, "", ""
 
@@ -1076,15 +1091,20 @@ class ReleaseJourneys(unittest.TestCase):
 
                 with patch.object(evidence, "run", side_effect=run), patch.object(DRIVER, "koi_json", koi_json), \
                         patch.object(DRIVER, "APP", self.root / "Applications/Koidrive.app"):
+                    call = lambda: DRIVER.uninstalled(evidence, home, binary, "peer", folder, peer_folder, peer_env, profile)
                     if change is None:
-                        DRIVER.uninstalled(evidence, home, home / ".local/bin/koi", "peer", folder, {}, profile)
+                        call()
                     else:
                         with self.assertRaises(RuntimeError):
-                            DRIVER.uninstalled(evidence, home, home / ".local/bin/koi", "peer", folder, {}, profile)
+                            call()
                 failed = [a["name"] for a in evidence.report["assertions"] if not a["passed"]]
                 expected = {None: [], "edited file": ["uninstall keeps synced files"],
-                            "kept state": ["uninstall leaves no Koidrive state"]}[change]
+                            "kept state": ["uninstall leaves no Koidrive state"],
+                            "no peer command": ["uninstall keeps what the peer profile uses"]}[change]
                 self.assertEqual(failed, expected)
+                if change is None:
+                    self.assertEqual(DRIVER.REQUIRED["uninstall"] - DRIVER.REQUIRED["installer"],
+                                     {a["name"] for a in evidence.report["assertions"]})
 
     @patch.object(DRIVER.os, "getuid", return_value=501, create=True)
     def test_native_service_cleanup_refuses_foreign_profile_or_binary(self, _uid):

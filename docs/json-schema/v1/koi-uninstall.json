@@ -645,6 +645,119 @@
             "problem"
           ],
           "type": "object"
+        },
+        {
+          "description": "A path that holds or lies inside a synced folder, so it stays with the folder.",
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "in_folder",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "folder"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A settings or state folder that holds files Koidrive does not write.",
+          "properties": {
+            "kind": {
+              "const": "unrecognized",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file the removed `koi` command linked to.",
+          "properties": {
+            "kind": {
+              "const": "link_target",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A program or file that another Koidrive profile on this computer still uses.",
+          "properties": {
+            "kind": {
+              "const": "shared",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The installer's PATH line in a shell profile, which another Koidrive profile still uses.",
+          "properties": {
+            "kind": {
+              "const": "path_line",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The background service of another Koidrive profile on this computer; `argv` removes that profile.",
+          "properties": {
+            "argv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "other_profile",
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "argv"
+          ],
+          "type": "object"
         }
       ]
     },

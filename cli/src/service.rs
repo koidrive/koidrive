@@ -222,6 +222,112 @@ fn plist_binary(plist: &str) -> Option<String> {
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installed {
+    pub name: String,
+    pub env: Vec<(&'static str, Option<String>)>,
+}
+
+const PROFILE_VARS: [&str; 3] = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"];
+
+fn suffixed(name: &str, stem: &str, end: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(stem)
+        .and_then(|rest| rest.strip_suffix(end))
+    else {
+        return false;
+    };
+    rest.is_empty()
+        || rest.strip_prefix(['.', '-']).is_some_and(|key| {
+            key.len() == 8 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        })
+}
+
+pub fn installed_services(manager: ServiceManager, home: &Path) -> Vec<Installed> {
+    let mut found: Vec<Installed> = match manager {
+        ServiceManager::Launchd => fs::read_dir(home.join("Library/LaunchAgents"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let file = entry.file_name().into_string().ok()?;
+                suffixed(&file, "dev.koidrive.koi", ".plist").then_some(())?;
+                let text = fs::read_to_string(entry.path()).ok()?;
+                Some(Installed {
+                    name: file.strip_suffix(".plist")?.to_owned(),
+                    env: plist_env(&text),
+                })
+            })
+            .collect(),
+        ServiceManager::Systemd => {
+            systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"])
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let name = line.split_whitespace().next()?;
+                    suffixed(name, "koidrive", ".service").then_some(())?;
+                    Some(Installed {
+                        name: name.to_owned(),
+                        env: unit_env(&systemctl(&["cat", name]).ok()?),
+                    })
+                })
+                .collect()
+        }
+    };
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+fn plist_env(plist: &str) -> Vec<(&'static str, Option<String>)> {
+    let Some(dict) = plist
+        .split_once("<key>EnvironmentVariables</key>")
+        .and_then(|(_, after)| after.split_once("<dict>"))
+        .and_then(|(_, dict)| dict.split_once("</dict>"))
+        .map(|(dict, _)| dict)
+    else {
+        return Vec::new();
+    };
+    PROFILE_VARS
+        .into_iter()
+        .filter_map(|name| {
+            let (_, after) = dict.split_once(&format!("<key>{name}</key>"))?;
+            let (value, _) = after
+                .trim_start()
+                .strip_prefix("<string>")?
+                .split_once("</string>")?;
+            let value = (value.replace("&lt;", "<").replace("&gt;", ">")).replace("&amp;", "&");
+            Some((name, (!value.is_empty()).then_some(value)))
+        })
+        .collect()
+}
+
+fn unit_env(unit: &str) -> Vec<(&'static str, Option<String>)> {
+    let unquoted = |word: &str| -> Option<String> {
+        let mut text = String::new();
+        let mut chars = word.strip_prefix('"')?.strip_suffix('"')?.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' | '%' => text.push(chars.next()?),
+                c => text.push(c),
+            }
+        }
+        Some(text)
+    };
+    PROFILE_VARS
+        .into_iter()
+        .filter_map(|name| {
+            unit.lines().find_map(|line| {
+                if line.strip_prefix("UnsetEnvironment=") == Some(name) {
+                    return Some((name, None));
+                }
+                let set = unquoted(line.strip_prefix("Environment=")?)?;
+                let value = set.strip_prefix(name)?.strip_prefix('=')?;
+                Some((name, Some(value.to_owned())))
+            })
+        })
+        .collect()
+}
+
 /// What the service manager reports for a service, or what keeps koi from using it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1300,6 +1406,46 @@ mod tests {
                 .contains("/internal/daemon.log")
         );
         assert!(data.get("summary_problem").is_none());
+    }
+
+    #[test]
+    fn the_profile_of_an_installed_service_reads_back_from_its_plist_and_its_unit() {
+        let home = Path::new("/Users/ada");
+        let state = "/srv/a <b> & \"c\" 100%";
+        let paths = Paths::from_vars(|name| match name {
+            "HOME" => Some(home.into()),
+            "XDG_STATE_HOME" => Some(state.into()),
+            _ => None,
+        })
+        .unwrap();
+        let service = Service::new(&paths, home, &home.join(".local/bin/koi")).unwrap();
+        let expected = vec![
+            ("XDG_CONFIG_HOME", Some("/Users/ada/.config".to_owned())),
+            ("XDG_STATE_HOME", Some(state.to_owned())),
+            ("XDG_RUNTIME_DIR", None),
+        ];
+        assert_eq!(plist_env(&service.plist()), expected);
+        assert_eq!(unit_env(&service.unit()), expected);
+        assert!(suffixed(
+            &format!("{}.plist", service.label()),
+            "dev.koidrive.koi",
+            ".plist"
+        ));
+        assert!(suffixed(&service.unit_name(), "koidrive", ".service"));
+        assert!(suffixed(
+            "dev.koidrive.koi.plist",
+            "dev.koidrive.koi",
+            ".plist"
+        ));
+        assert!(suffixed("koidrive.service", "koidrive", ".service"));
+        for other in [
+            "dev.koidrive.koi.other.plist",
+            "dev.koidrive.koix.plist",
+            "dev.koidrive.koi.1234567.plist",
+            "dev.koidrive.koi.ABCDEF12.plist",
+        ] {
+            assert!(!suffixed(other, "dev.koidrive.koi", ".plist"), "{other}");
+        }
     }
 
     #[test]

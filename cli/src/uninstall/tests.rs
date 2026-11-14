@@ -93,6 +93,7 @@ fn a_folder_loses_its_koidrive_records_and_keeps_every_file() {
     let private = linked(dir.path(), &ours);
     fs::create_dir_all(private.join("trash/2026-11-13")).unwrap();
     fs::create_dir_all(private.join("parked")).unwrap();
+    fs::write(private.join("trash.json"), b"{}").unwrap();
 
     assert_eq!(
         folder_data(&private, Some(&ours)).unwrap(),
@@ -120,12 +121,17 @@ fn files_in_the_local_trash_and_other_holding_folders_stay() {
     fs::create_dir_all(private.join("quarantine")).unwrap();
     fs::write(private.join("quarantine/q1"), b"held aside").unwrap();
     fs::create_dir_all(private.join("parked/empty")).unwrap();
+    fs::write(private.join("trash.json"), b"{}").unwrap();
 
     let cleaned = folder_data(&private, Some(&ours)).unwrap();
 
     assert_eq!(
         cleaned,
-        Cleaned::Kept(vec![private.join("quarantine"), private.join("trash")])
+        Cleaned::Kept(vec![
+            private.join("quarantine"),
+            private.join("trash"),
+            private.join("trash.json")
+        ])
     );
     assert_eq!(
         fs::read(private.join("trash/2026-11-13/Slides.key")).unwrap(),

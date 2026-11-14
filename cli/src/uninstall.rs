@@ -25,6 +25,13 @@ const RECORD: &str = "uninstall.json";
 const PATH_MARKERS: [&str; 2] = ["; : 'koidrive PATH'", "; true 'koidrive PATH'"];
 const BASH_PRELUDE: &str = r#"if [ -r "$HOME/.bash_login" ]; then . "$HOME/.bash_login"; elif [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi"#;
 const FOLDER_RECORDS: [&str; 4] = ["space.json", "device.json", "device.json.tmp", "staging"];
+const STATE_MARKS: [&str; 5] = [
+    "lock",
+    "credential.json",
+    "spaces",
+    RECORD,
+    "update-check.json",
+];
 const KOI_MARK: &[u8] = b"Koidrive sync client";
 const STATUS: Duration = Duration::from_secs(10);
 const HELPER: Duration = Duration::from_secs(20);
@@ -120,6 +127,32 @@ pub enum Kept {
         path: String,
         problem: String,
     },
+    /// A path that holds or lies inside a synced folder, so it stays with the folder.
+    InFolder {
+        path: String,
+        folder: String,
+    },
+    /// A settings or state folder that holds files Koidrive does not write.
+    Unrecognized {
+        path: String,
+    },
+    /// The file the removed `koi` command linked to.
+    LinkTarget {
+        path: String,
+    },
+    /// A program or file that another Koidrive profile on this computer still uses.
+    Shared {
+        path: String,
+    },
+    /// The installer's PATH line in a shell profile, which another Koidrive profile still uses.
+    PathLine {
+        path: String,
+    },
+    /// The background service of another Koidrive profile on this computer; `argv` removes that profile.
+    OtherProfile {
+        service: String,
+        argv: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +174,7 @@ enum Program {
     Homebrew {
         brew: PathBuf,
         cask: bool,
+        koi: PathBuf,
         app: Option<PathBuf>,
     },
     Elsewhere(PathBuf),
@@ -149,12 +183,16 @@ enum Program {
 
 struct Found {
     paired: bool,
+    state: bool,
     owner: Option<Owner>,
     folders: Vec<PathBuf>,
     service: Option<(Box<dyn Manager>, service::Service)>,
+    others: Vec<service::Installed>,
     programs: Vec<Program>,
     files: Vec<PathBuf>,
+    app_files: Vec<PathBuf>,
     profiles: Vec<PathBuf>,
+    kept: Vec<Kept>,
 }
 
 impl Found {
@@ -163,6 +201,7 @@ impl Found {
             && self.folders.is_empty()
             && self.service.is_none()
             && self.files.is_empty()
+            && self.app_files.is_empty()
             && self.profiles.is_empty()
             && self
                 .programs
@@ -177,10 +216,34 @@ struct Run {
     kept: Vec<Kept>,
     problems: Vec<String>,
     next: Vec<Vec<String>>,
+    folders: Vec<PathBuf>,
 }
 
 impl Run {
+    fn allowed(&mut self, path: &Path) -> bool {
+        if fs::symlink_metadata(path).is_err() {
+            return true;
+        }
+        let root = fs::metadata(path).is_ok_and(|meta| meta.is_dir())
+            && fs::symlink_metadata(path.join(".koidrive")).is_ok();
+        let folder = (self.folders.iter())
+            .find(|folder| holds(folder, path) || holds(path, folder))
+            .cloned()
+            .or_else(|| root.then(|| path.to_path_buf()));
+        let Some(folder) = folder else {
+            return true;
+        };
+        self.kept.push(Kept::InFolder {
+            path: path.display().to_string(),
+            folder: folder.display().to_string(),
+        });
+        false
+    }
+
     fn remove(&mut self, path: &Path, removed: Removed) {
+        if !self.allowed(path) {
+            return;
+        }
         match remove_path(path) {
             Ok(true) => self.removed.push(removed),
             Ok(false) => {}
@@ -189,6 +252,69 @@ impl Run {
                 .push(format!("cannot remove {}: {error}", shown_folder(path))),
         }
     }
+
+    fn remove_dir(&mut self, dir: &Path, contents: &[PathBuf]) {
+        let target = fs::symlink_metadata(dir)
+            .is_ok_and(|meta| meta.is_symlink())
+            .then(|| fs::canonicalize(dir).ok())
+            .flatten();
+        let real = target.as_deref().unwrap_or(dir);
+        if fs::symlink_metadata(real).is_err() || !self.allowed(dir) || !self.allowed(real) {
+            return;
+        }
+        let mut gone = Vec::new();
+        let emptied = match contents.is_empty() {
+            true => remove_path(real).map(drop),
+            false => contents
+                .iter()
+                .try_for_each(|path| {
+                    if remove_path(&real.join(path))? {
+                        gone.push(dir.join(path));
+                    }
+                    Ok(())
+                })
+                .and_then(|()| fs::remove_dir(real)),
+        };
+        let shown = Removed::Files {
+            path: dir.display().to_string(),
+        };
+        match emptied {
+            Ok(()) if target.is_some() => self.remove(dir, shown),
+            Ok(()) => self.removed.push(shown),
+            Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                self.removed.extend(gone.iter().map(|path| Removed::Files {
+                    path: path.display().to_string(),
+                }));
+                self.kept.push(Kept::Unrecognized {
+                    path: dir.display().to_string(),
+                })
+            }
+            Err(error) => self
+                .problems
+                .push(format!("cannot remove {}: {error}", shown_folder(dir))),
+        }
+    }
+}
+
+fn holds(outer: &Path, inner: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if inner.starts_with(outer) {
+        return true;
+    }
+    let Ok(outer) = fs::metadata(outer) else {
+        return false;
+    };
+    inner
+        .ancestors()
+        .filter_map(|dir| fs::metadata(dir).ok())
+        .any(|dir| dir.dev() == outer.dev() && dir.ino() == outer.ino())
+}
+
+fn is_state(dir: &Path) -> bool {
+    fs::symlink_metadata(dir.join(".koidrive")).is_err()
+        && STATE_MARKS
+            .iter()
+            .any(|mark| fs::symlink_metadata(dir.join(mark)).is_ok())
 }
 
 pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result<Done, CliError> {
@@ -203,7 +329,8 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         .ok_or_else(|| CliError::usage("HOME is not set to an absolute path"))?;
     let found = find(paths, &home).await;
     if found.is_empty() {
-        let kept = kept_programs(&found.programs);
+        let mut kept = found.kept.clone();
+        kept.extend(kept_programs(&found.programs));
         let text = format!(
             "Koidrive is not installed for this user, so there is nothing to remove.\n{}",
             kept_text(&kept)
@@ -216,9 +343,16 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         return Ok(Done::ok(data, text).unchanged());
     }
     confirm(&found, &options, terminal).await?;
-    let mut run = Run::default();
+    let shared = !found.others.is_empty();
+    let mut run = Run {
+        kept: found.kept.clone(),
+        folders: found.folders.clone(),
+        ..Run::default()
+    };
     record(paths, &found, &mut run);
-    quit_apps(&found.programs, &mut run).await;
+    if !shared {
+        quit_apps(&found.programs, &mut run).await;
+    }
     let device = sign_out(paths, &found, &options, terminal).await;
     remove_service(&found, &mut run);
     if let Err(problem) = released(paths).await {
@@ -232,6 +366,25 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         return finish(device, run);
     }
     for file in &found.files {
+        if *file == paths.state_dir {
+            run.remove_dir(file, &[]);
+        } else if Some(file.as_path()) == paths.config_file.parent() {
+            run.remove_dir(file, &[PathBuf::from("config.toml")]);
+        } else {
+            run.remove(
+                file,
+                Removed::Files {
+                    path: file.display().to_string(),
+                },
+            );
+        }
+    }
+    prune_runtime(paths);
+    if shared {
+        keep_shared(&found, &mut run);
+        return finish(device, run);
+    }
+    for file in &found.app_files {
         run.remove(
             file,
             Removed::Files {
@@ -239,7 +392,6 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
             },
         );
     }
-    prune_runtime(paths);
     for profile in &found.profiles {
         match strip_path_line(profile) {
             Ok(true) => run.removed.push(Removed::ShellProfile {
@@ -272,7 +424,8 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         })
         .or(recorded.owner);
     let mut folders = recorded.folders;
-    if paths.state_dir.exists()
+    let state = is_state(&paths.state_dir);
+    if state
         && let Ok(Ok(Response::Status { status })) =
             tokio::time::timeout(STATUS, ipc::run(paths, Request::Status)).await
     {
@@ -284,27 +437,44 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         }
     }
     let manager = service::system();
-    let service =
-        service::this_service(paths)
-            .ok()
-            .filter(|service| match manager.state(service) {
-                Ok(state) => state != State::NotInstalled,
-                Err(_) => service.file(manager.kind()).exists(),
-            });
+    let this = service::this_service(paths).ok();
+    let own = this.as_ref().map(|service| manager.name(service));
+    let others = service::installed_services(manager.kind(), home)
+        .into_iter()
+        .filter(|installed| Some(&installed.name) != own.as_ref())
+        .collect();
+    let mut files = Vec::new();
+    if cfg!(target_os = "macos")
+        && let Some(service) = &this
+    {
+        files.push(service.log_file());
+    }
+    let service = this.filter(|service| match manager.state(service) {
+        Ok(state) => state != State::NotInstalled,
+        Err(_) => service.file(manager.kind()).exists(),
+    });
     let mut also = Vec::new();
     if let Some(service) = &service
         && let Some(binary) = manager.installed(service)
     {
         also.push(PathBuf::from(binary));
     }
-    let programs = programs(&also);
-    let mut files = vec![paths.state_dir.clone()];
+    let programs = programs(home, &also);
+    let mut kept = Vec::new();
+    match state {
+        true => files.push(paths.state_dir.clone()),
+        false if fs::symlink_metadata(&paths.state_dir).is_ok() => kept.push(Kept::Unrecognized {
+            path: paths.state_dir.display().to_string(),
+        }),
+        false => {}
+    }
     files.extend(paths.config_file.parent().map(Path::to_path_buf));
     if paths.runtime_dir != paths.state_dir {
         files.push(paths.socket());
     }
+    let mut app_files = Vec::new();
     if cfg!(target_os = "macos") {
-        files.extend(
+        app_files.extend(
             [
                 "Library/Logs/Koidrive",
                 "Library/Application Support/Koidrive",
@@ -317,22 +487,27 @@ async fn find(paths: &Paths, home: &Path) -> Found {
             .iter()
             .map(|path| home.join(path)),
         );
-        files.extend(
+        app_files.extend(
             application_folders(home).map(|folder| folder.join(".koidrive-app-install.lock")),
         );
     }
     files.retain(|path| fs::symlink_metadata(path).is_ok());
+    app_files.retain(|path| fs::symlink_metadata(path).is_ok());
     Found {
         paired,
+        state,
         owner,
         folders,
         service: service.map(|service| (manager, service)),
+        others,
         programs,
         files,
+        app_files,
         profiles: profiles(home)
             .into_iter()
             .filter(|path| has_path_line(path))
             .collect(),
+        kept,
     }
 }
 
@@ -344,7 +519,7 @@ fn application_folders(home: &Path) -> impl Iterator<Item = PathBuf> {
     vec![PathBuf::from("/Applications"), home.join("Applications")].into_iter()
 }
 
-fn programs(also: &[PathBuf]) -> Vec<Program> {
+fn programs(home: &Path, also: &[PathBuf]) -> Vec<Program> {
     let mut programs = Vec::new();
     for install in Install::every(also) {
         let binary = install.binary().to_path_buf();
@@ -353,7 +528,15 @@ fn programs(also: &[PathBuf]) -> Vec<Program> {
             Method::Development => Program::Development(binary.clone()),
             Method::AppDownload => Program::Elsewhere(bundle().unwrap_or_else(|| binary.clone())),
             _ if !is_koi(&binary) => continue,
-            Method::Installer => Program::Command(binary.clone()),
+            Method::Installer => {
+                for location in command_locations(home, also, &binary) {
+                    let program = Program::Command(location);
+                    if !programs.contains(&program) {
+                        programs.push(program);
+                    }
+                }
+                continue;
+            }
             Method::App => match bundle() {
                 Some(bundle) => Program::App(bundle),
                 None => continue,
@@ -361,11 +544,13 @@ fn programs(also: &[PathBuf]) -> Vec<Program> {
             Method::Cask { brew } => Program::Homebrew {
                 brew: brew.clone(),
                 cask: true,
+                koi: binary.clone(),
                 app: bundle(),
             },
             Method::Formula { brew } => Program::Homebrew {
                 brew: brew.clone(),
                 cask: false,
+                koi: binary.clone(),
                 app: None,
             },
         };
@@ -374,6 +559,31 @@ fn programs(also: &[PathBuf]) -> Vec<Program> {
         }
     }
     programs
+}
+
+fn command_locations(home: &Path, also: &[PathBuf], binary: &Path) -> Vec<PathBuf> {
+    let invoked = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .filter(|arg| arg.components().count() > 1)
+        .and_then(|arg| std::path::absolute(arg).ok());
+    let on_path = crate::update::on_path(OsStr::new("koi"), std::env::var_os("PATH").as_deref());
+    let mut locations: Vec<PathBuf> = Vec::new();
+    for location in std::iter::once(home.join(".local/bin/koi"))
+        .chain(invoked)
+        .chain(on_path)
+        .chain(also.iter().cloned())
+    {
+        if fs::canonicalize(&location).is_ok_and(|resolved| resolved == binary)
+            && !locations.contains(&location)
+        {
+            locations.push(location);
+        }
+    }
+    if locations.is_empty() {
+        locations.push(binary.to_path_buf());
+    }
+    locations
 }
 
 fn is_koi(binary: &Path) -> bool {
@@ -464,7 +674,8 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
             manager.name(service)
         ));
     }
-    for program in &found.programs {
+    let shared = !found.others.is_empty();
+    for program in found.programs.iter().filter(|_| !shared) {
         match program {
             Program::Command(path) => lines.push(format!("  {}", shown_folder(path))),
             Program::App(path) => lines.push(format!("  the app {}", shown_folder(path))),
@@ -475,10 +686,14 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
             Program::Elsewhere(_) | Program::Development(_) => {}
         }
     }
-    for path in &found.files {
+    for path in found
+        .files
+        .iter()
+        .chain(found.app_files.iter().filter(|_| !shared))
+    {
         lines.push(format!("  {}", shown_folder(path)));
     }
-    for path in &found.profiles {
+    for path in found.profiles.iter().filter(|_| !shared) {
         lines.push(format!("  the PATH line in {}", shown_folder(path)));
     }
     for folder in &found.folders {
@@ -488,6 +703,22 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
         lines.push("It keeps your files:".to_owned());
         for folder in &found.folders {
             lines.push(format!("  {}", shown_folder(folder)));
+        }
+    }
+    if shared {
+        lines.push(
+            "It keeps the koi command and the app, which another Koidrive profile uses:".to_owned(),
+        );
+        for other in &found.others {
+            lines.push(format!("  the background service {}", other.name));
+        }
+    }
+    for kept in &found.kept {
+        if let Kept::Unrecognized { path } = kept {
+            lines.push(format!(
+                "It keeps {}, which holds files Koidrive does not write.",
+                shown_folder(Path::new(path))
+            ));
         }
     }
     lines
@@ -501,7 +732,7 @@ fn read_record(paths: &Paths) -> Record {
 }
 
 fn record(paths: &Paths, found: &Found, run: &mut Run) {
-    if !paths.state_dir.is_dir() {
+    if !found.state || !paths.state_dir.is_dir() {
         return;
     }
     let record = Record {
@@ -680,6 +911,12 @@ fn folder_data(private: &Path, owner: Option<&Owner>) -> io::Result<Cleaned> {
     for name in FOLDER_RECORDS {
         remove_path(&private.join(name))?;
     }
+    let trash = private.join("trash");
+    if fs::symlink_metadata(&trash).is_err() || prune_empty(&trash)? {
+        for index in ["trash.json", "trash.json.tmp"] {
+            remove_path(&private.join(index))?;
+        }
+    }
     let mut kept = Vec::new();
     for entry in fs::read_dir(private)? {
         let path = entry?.path();
@@ -841,12 +1078,26 @@ async fn remove_programs(programs: &[Program], run: &mut Run) {
     run.kept.extend(kept_programs(programs));
     for program in programs {
         match program {
-            Program::Command(path) => run.remove(
-                path,
-                Removed::Command {
-                    path: path.display().to_string(),
-                },
-            ),
+            Program::Command(path) => {
+                let target = fs::symlink_metadata(path)
+                    .is_ok_and(|meta| meta.is_symlink())
+                    .then(|| fs::canonicalize(path).ok())
+                    .flatten();
+                run.remove(
+                    path,
+                    Removed::Command {
+                        path: path.display().to_string(),
+                    },
+                );
+                if let Some(target) = target
+                    && !programs.contains(&Program::Command(target.clone()))
+                    && fs::symlink_metadata(&target).is_ok()
+                {
+                    run.kept.push(Kept::LinkTarget {
+                        path: target.display().to_string(),
+                    });
+                }
+            }
             Program::App(path) => run.remove(
                 path,
                 Removed::App {
@@ -874,6 +1125,45 @@ async fn remove_programs(programs: &[Program], run: &mut Run) {
     }
 }
 
+fn keep_shared(found: &Found, run: &mut Run) {
+    let shared = |path: &Path| Kept::Shared {
+        path: path.display().to_string(),
+    };
+    for program in &found.programs {
+        run.kept.push(match program {
+            Program::Command(path) | Program::App(path) => shared(path),
+            Program::Homebrew { koi, app, .. } => shared(app.as_deref().unwrap_or(koi)),
+            Program::Elsewhere(_) | Program::Development(_) => continue,
+        });
+    }
+    run.kept.extend(kept_programs(&found.programs));
+    run.kept
+        .extend(found.app_files.iter().map(|path| shared(path)));
+    run.kept
+        .extend(found.profiles.iter().map(|path| Kept::PathLine {
+            path: path.display().to_string(),
+        }));
+    for other in &found.others {
+        let mut argv = vec!["env".to_owned()];
+        for (name, value) in &other.env {
+            if value.is_none() {
+                argv.extend(["-u".to_owned(), (*name).to_owned()]);
+            }
+        }
+        for (name, value) in &other.env {
+            if let Some(value) = value {
+                argv.push(format!("{name}={value}"));
+            }
+        }
+        argv.extend(["koi".to_owned(), "uninstall".to_owned()]);
+        run.next.push(argv.clone());
+        run.kept.push(Kept::OtherProfile {
+            service: other.name.clone(),
+            argv,
+        });
+    }
+}
+
 fn brew_word(brew: &Path) -> String {
     let selected = crate::update::on_path(OsStr::new("brew"), std::env::var_os("PATH").as_deref())
         .and_then(|selected| fs::canonicalize(selected).ok());
@@ -889,11 +1179,27 @@ fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> {
         kept,
         problems,
         next,
+        ..
     } = run;
     let data = UninstalledData {
         device,
         removed,
         kept,
+    };
+    let other = (data.kept.iter()).any(|kept| matches!(kept, Kept::OtherProfile { .. }));
+    let header = match (other, data.removed.is_empty()) {
+        (false, _) => {
+            "Removed Koidrive from this computer.
+"
+        }
+        (true, false) => {
+            "Removed this Koidrive profile from this computer.
+"
+        }
+        (true, true) => {
+            "Nothing of this Koidrive profile is left to remove.
+"
+        }
     };
     let text = text(&data);
     let mut done = Done::ok(data, text);
@@ -902,11 +1208,7 @@ fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> {
         done = done.then(&argv);
     }
     if problems.is_empty() {
-        done.text.insert_str(
-            0,
-            "Removed Koidrive from this computer.
-",
-        );
+        done.text.insert_str(0, header);
         done.tone = Tone::Completed;
         return Ok(done);
     }
@@ -994,6 +1296,33 @@ fn kept_text(kept: &[Kept]) -> String {
             Kept::App { path } => format!(
                 "Kept {}, which is outside the Applications folders. Move it to the Trash.",
                 shown(path)
+            ),
+            Kept::InFolder { path, folder } => format!(
+                "Kept {}, because it holds or is inside the synced folder {}.",
+                shown(path),
+                shown(folder)
+            ),
+            Kept::Unrecognized { path } => format!(
+                "Kept {}, which holds files Koidrive does not write.",
+                shown(path)
+            ),
+            Kept::LinkTarget { path } => {
+                format!("Kept {}, which the koi command linked to.", shown(path))
+            }
+            Kept::Shared { path } => format!(
+                "Kept {}, which another Koidrive profile on this computer uses.",
+                shown(path)
+            ),
+            Kept::PathLine { path } => format!(
+                "Kept the PATH line in {}, which another Koidrive profile on this computer uses.",
+                shown(path)
+            ),
+            Kept::OtherProfile { service, argv } => format!(
+                "Another Koidrive profile runs the background service {service}. To remove it too, run: {}",
+                argv.iter()
+                    .map(|word| crate::pairing::shell_word(word))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             Kept::LoginItem { path, problem } => format!(
                 "Could not remove {} from Login Items ({}). Remove it in System Settings > General > Login Items.",

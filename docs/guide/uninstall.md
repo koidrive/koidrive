@@ -18,6 +18,8 @@ Koidrive lists what it will remove and asks before it changes anything. Then it:
 
 The files in your folders stay where they are. The summary lists what Koidrive removed and what it kept. If a step fails, the summary says why and Koidrive keeps the `koi` command, so you can run `koi uninstall` again to finish.
 
+If another Koidrive profile on this computer runs its own background service, `koi uninstall` removes only this profile. It keeps the app, the `koi` command and the PATH line, and prints the command that removes the other profile.
+
 - `--yes` removes without asking. Without a terminal, `koi uninstall` needs it.
 - `--keep-signed-in` keeps this device on the server's device list. To revoke it later, run `koi device revoke <id>` on another device.
 - `--last-device` signs out even if this is your account's last active device or the server doesn't answer. Read [sign-out confirmation and owner recovery](devices.md#sign-this-device-out) first. Without it, `koi uninstall` asks on a terminal. Otherwise it keeps the device signed in and removes everything else.

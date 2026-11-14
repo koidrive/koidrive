@@ -54,7 +54,8 @@ REQUIRED = {
 REQUIRED["uninstall"] = REQUIRED["installer"] | {
     "uninstall finished", "uninstall signed out", "uninstall removes folder records", "uninstall keeps synced files",
     "uninstall leaves no Koidrive state", "uninstall unloads the service", "uninstall removes the PATH line",
-    "fresh login shell has no koi", "peer sees the device signed out"}
+    "fresh login shell has no koi", "peer sees the device signed out", "uninstall keeps what the peer profile uses",
+    "peer profile uninstall finished", "uninstall keeps the peer's files"}
 
 
 def tag_value(value):
@@ -932,7 +933,7 @@ def installer(evidence, root, ownership, assets, source="held", reference="accep
                        for path, initial in initial_attrs.items()))
         evidence.report["coverage"]["menu_attachment"] = "Not asserted; no GUI automation or menu-bar probe. App installation, native service and released-byte sync are required."
         if uninstall:
-            uninstalled(evidence, home, binary, bootstrap / "koi", folder, peer_env, profile)
+            uninstalled(evidence, home, binary, bootstrap / "koi", folder, peer_folder, peer_env, profile)
     finally:
         safe = True
         for app in (APP, home / "Applications/Koidrive.app"):
@@ -1063,34 +1064,73 @@ def homebrew_update(evidence, root, ownership, entries):
             for path in [*state_paths(home)[3:], folder]:
                 evidence.cleanup("owned state " + str(path), lambda p=path: ownership.remove(p))
         evidence.cleanup("no loaded owned services", lambda: assert_native_absent(evidence, owned_labels))
-def uninstalled(evidence, home, binary, peer_koi, folder, peer_env, profile):
-    device = koi_json(evidence, binary, "status")["account"]["device_id"]
-    records = folder / ".koidrive"
-    files = {path.name: sha256(path) for path in folder.iterdir() if path != records}
-    status, out, _ = evidence.run([binary, "--json", "uninstall", "--yes"], required=False, timeout=300)
+def uninstall_run(evidence, binary, *args, env=None):
+    status, out, _ = evidence.run([binary, "--json", "uninstall", "--yes", *args], env=env, required=False, timeout=300)
     try:
         envelope = json.loads(out)
     except ValueError:
         envelope = {}
-    data = envelope.get("data") or {}
+    return status, envelope, envelope.get("data") or {}
+
+
+def command_env(env, argv):
+    if argv[:1] != ["env"] or argv[-2:] != ["koi", "uninstall"]:
+        return None
+    env = dict(env)
+    words = iter(argv[1:-2])
+    for word in words:
+        if word == "-u":
+            env.pop(next(words, ""), None)
+        elif "=" in word:
+            name, value = word.split("=", 1)
+            env[name] = value
+        else:
+            return None
+    return env
+
+
+def digests(folder):
+    return {path.name: sha256(path) for path in folder.iterdir() if path.name != ".koidrive"}
+
+
+def uninstalled(evidence, home, binary, peer_koi, folder, peer_folder, peer_env, profile):
+    device = koi_json(evidence, binary, "status")["account"]["device_id"]
+    files, peer_files = digests(folder), digests(peer_folder)
+    status, envelope, data = uninstall_run(evidence, binary)
     evidence.check("uninstall finished", status == 0 and envelope.get("outcome") == "ok", f"status={status}")
     evidence.check("uninstall signed out", data.get("device", {}).get("state") == "signed_out", data.get("device"))
+    records = folder / ".koidrive"
     evidence.check("uninstall removes folder records", not records.exists() and not records.is_symlink())
-    kept = [Path(item["path"]).resolve() for item in data.get("kept", []) if item.get("kind") == "folder"]
-    evidence.check("uninstall keeps synced files", folder.resolve() in kept and len(files) == 2
-                   and {path.name: sha256(path) for path in folder.iterdir()} == files, json.dumps(files))
-    left = [path for path in state_paths(home) if path.exists() or path.is_symlink()]
-    left += sorted((home / "Library/LaunchAgents").glob("dev.koidrive.koi.plist"))
-    evidence.check("uninstall leaves no Koidrive state", not left, json.dumps(list(map(str, left))))
+    kept = data.get("kept", [])
+    folders = [Path(item["path"]).resolve() for item in kept if item.get("kind") == "folder"]
+    evidence.check("uninstall keeps synced files", folder.resolve() in folders and len(files) == 2
+                   and set(path.name for path in folder.iterdir()) == set(files) and digests(folder) == files,
+                   json.dumps(files))
     status, _, error = evidence.run(["/bin/launchctl", "print", f"gui/{os.getuid()}/dev.koidrive.koi"], required=False)
     evidence.check("uninstall unloads the service", unloaded(status, error))
+    others = [item for item in kept if item.get("kind") == "other_profile"]
+    peer = command_env(evidence.env, others[0].get("argv", [])) if len(others) == 1 else None
+    evidence.check("uninstall keeps what the peer profile uses", binary.is_file() and peer is not None
+                   and peer.get("XDG_STATE_HOME") == peer_env["XDG_STATE_HOME"]
+                   and envelope.get("next_commands") == [{"argv": others[0]["argv"]}], json.dumps(others))
+    devices = koi_json(evidence, peer_koi, "device", "list", env=peer_env)["devices"]
+    entry = next((item for item in devices if item.get("device_id") == device), None)
+    evidence.check("peer sees the device signed out", entry is not None and (entry.get("revoked_at_ms") or 0) > 0, entry)
+    status, envelope, data = uninstall_run(evidence, binary, "--last-device", env=peer)
+    evidence.check("peer profile uninstall finished", status == 0 and envelope.get("outcome") == "ok"
+                   and not [item for item in data.get("kept", []) if item.get("kind") == "other_profile"],
+                   f"status={status}")
+    evidence.check("uninstall keeps the peer's files", digests(peer_folder) == peer_files
+                   and not (peer_folder / ".koidrive").exists() and digests(folder) == files, json.dumps(peer_files))
+    left = [path for path in state_paths(home) if path.exists() or path.is_symlink()]
+    left += [path for path in (Path(peer_env["XDG_STATE_HOME"]) / "koidrive", Path(peer_env["XDG_CONFIG_HOME"]) / "koidrive")
+             if path.exists() or path.is_symlink()]
+    left += sorted((home / "Library/LaunchAgents").glob("dev.koidrive.koi*.plist"))
+    evidence.check("uninstall leaves no Koidrive state", not left, json.dumps(list(map(str, left))))
     evidence.check("uninstall removes the PATH line", not profile.exists() or "koidrive PATH" not in profile.read_text())
     _, shell, _ = evidence.run(["/bin/zsh", "-d", "-l", "-c", "command -v koi || true"],
                                env={**evidence.env, "PATH": SYSTEM_PATH})
     evidence.check("fresh login shell has no koi", shell.strip() == "", shell)
-    devices = koi_json(evidence, peer_koi, "device", "list", env=peer_env)["devices"]
-    entry = next((item for item in devices if item.get("device_id") == device), None)
-    evidence.check("peer sees the device signed out", entry is not None and (entry.get("revoked_at_ms") or 0) > 0, entry)
 
 
 def assert_native_absent(evidence, labels=("dev.koidrive.koi",)):

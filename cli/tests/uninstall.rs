@@ -54,6 +54,7 @@ impl Machine {
         path
     }
 
+    #[cfg(target_os = "macos")]
     fn paths(&self) -> koidrive_driver::Paths {
         let vars = [
             ("XDG_CONFIG_HOME", self.path("config")),
@@ -89,10 +90,11 @@ impl Machine {
     }
 
     fn uninstall(&self, koi: &Path) -> (Output, Value) {
-        let output = self
-            .command(koi, &["uninstall", "--yes", "--json"])
-            .output()
-            .unwrap();
+        self.envelope(self.command(koi, &["uninstall", "--yes", "--json"]))
+    }
+
+    fn envelope(&self, mut command: Command) -> (Output, Value) {
+        let output = command.output().unwrap();
         let envelope: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
             panic!(
                 "{error}: {}\n{}",
@@ -123,6 +125,108 @@ fn path_line(dir: &Path) -> String {
 
 fn removed(envelope: &Value) -> &Vec<Value> {
     envelope["data"]["removed"].as_array().unwrap()
+}
+
+fn kept(envelope: &Value) -> &Vec<Value> {
+    envelope["data"]["kept"].as_array().unwrap()
+}
+
+fn record(machine: &Machine, folder: &Path) {
+    machine.write(
+        "state/koidrive/uninstall.json",
+        &json!({ "folders": [folder], "owner": null }).to_string(),
+    );
+}
+
+#[test]
+fn a_command_linked_into_a_synced_folder_loses_only_its_link() {
+    let machine = Machine::new();
+    machine.profile();
+    let folder = machine.path("Koidrive");
+    let target = machine.copy_koi("Koidrive/koi");
+    machine.write("Koidrive/.koidrive/space.json", "{}");
+    record(&machine, &folder);
+    let link = machine.path(".local/bin/koi");
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let (output, envelope) = machine.uninstall(&link);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(fs::symlink_metadata(&link).is_err(), "{envelope:#}");
+    assert!(target.is_file(), "{envelope:#}");
+    assert!(
+        removed(&envelope)
+            .contains(&json!({ "kind": "command", "path": link.display().to_string() })),
+        "{envelope:#}"
+    );
+    assert!(
+        kept(&envelope)
+            .contains(&json!({ "kind": "link_target", "path": target.display().to_string() })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
+fn a_profile_folder_that_lands_on_a_synced_folder_keeps_every_file() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let document = machine.write("koidrive/q3.docx", "q3");
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("XDG_STATE_HOME", &machine.home);
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "unrecognized",
+            "path": machine.path("koidrive").display().to_string()
+        })),
+        "{envelope:#}"
+    );
+
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("koidrive");
+    let document = machine.write("koidrive/q3.docx", "q3");
+    machine.write("koidrive/.koidrive/space.json", "{}");
+    record(&machine, &folder);
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("XDG_CONFIG_HOME", &machine.home);
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
+    let folder = folder.display().to_string();
+    assert!(
+        kept(&envelope).contains(&json!({ "kind": "in_folder", "path": folder, "folder": folder })),
+        "{envelope:#}"
+    );
+    assert!(!machine.path("state/koidrive").exists(), "{envelope:#}");
+}
+
+#[test]
+fn a_linked_state_folder_goes_with_its_link() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let elsewhere = machine.path("disk/koidrive-state");
+    machine.write("disk/koidrive-state/credential.json", "{}");
+    machine.write("disk/koidrive-state/spaces/s/store.sqlite", "x");
+    fs::create_dir_all(machine.path("state")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, machine.path("state/koidrive")).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!elsewhere.exists(), "{envelope:#}");
+    assert!(
+        fs::symlink_metadata(machine.path("state/koidrive")).is_err(),
+        "{envelope:#}"
+    );
 }
 
 #[test]
@@ -301,16 +405,16 @@ fn an_app_in_applications_is_unregistered_and_removed() {
         "Applications/Koidrive.app/Contents/MacOS/Koidrive",
         "printf '%s\\n' \"$*\" >> \"$HOME/login.calls\"\n",
     );
-    machine.write("Applications/.koidrive-app-install.lock", "");
+    let lock = machine.write("Applications/.koidrive-app-install.lock", "");
 
     let (output, envelope) = machine.uninstall(&helper);
 
     assert!(output.status.success(), "{envelope:#}");
     assert!(!app.exists());
-    assert!(
-        !machine
-            .path("Applications/.koidrive-app-install.lock")
-            .exists()
+    assert_eq!(
+        lock.exists(),
+        cfg!(not(target_os = "macos")),
+        "{envelope:#}"
     );
     assert_eq!(
         fs::read_to_string(machine.path("login.calls")).unwrap(),
@@ -501,4 +605,56 @@ fn the_launch_agent_of_a_temporary_profile_is_stopped_and_removed() {
     assert!(!agent.plist.exists());
     assert!(!machine.path("state/koidrive").exists());
     assert!(!koi.exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(".zprofile", &format!("{line}\n"));
+    let support = machine.write("Library/Application Support/Koidrive/window.json", "x");
+    let label = "dev.koidrive.koi.0123abcd";
+    let (config, state) = (machine.path("other/config"), machine.path("other/state"));
+    machine.write(
+        &format!("Library/LaunchAgents/{label}.plist"),
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string><key>XDG_RUNTIME_DIR</key><string></string></dict></dict></plist>\n",
+            koi.display(),
+            config.display(),
+            state.display()
+        ),
+    );
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!machine.path("state/koidrive").exists(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+    assert!(support.is_file(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&zprofile).unwrap(), format!("{line}\n"));
+    let argv = json!([
+        "env",
+        "-u",
+        "XDG_RUNTIME_DIR",
+        format!("XDG_CONFIG_HOME={}", config.display()),
+        format!("XDG_STATE_HOME={}", state.display()),
+        "koi",
+        "uninstall"
+    ]);
+    let kept = kept(&envelope);
+    for item in [
+        json!({ "kind": "other_profile", "service": label, "argv": argv }),
+        json!({ "kind": "shared", "path": koi.display().to_string() }),
+        json!({ "kind": "path_line", "path": zprofile.display().to_string() }),
+    ] {
+        assert!(kept.contains(&item), "{item} in {envelope:#}");
+    }
+    assert_eq!(
+        envelope["next_commands"],
+        json!([{ "argv": argv }]),
+        "{envelope:#}"
+    );
 }
