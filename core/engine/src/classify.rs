@@ -2389,18 +2389,28 @@ impl Trees {
             }
             if unchanged && resent {
                 self.resends.insert(id.clone());
-                let moved = (remote_before.get(&id))
-                    .filter(|remote| self.s.live(&id).is_some_and(|s| !s.same_position(remote)))
-                    .filter(|remote| {
-                        remote.parent == self.l.root || self.l.live(&remote.parent).is_some()
-                    });
-                if let Some(remote) = moved.filter(|_| self.r.get(&id).is_none()) {
-                    let at = LostPosition {
-                        parent: remote.parent.clone(),
-                        name: remote.name.clone(),
-                    };
-                    self.lost_positions.insert(id.clone(), at);
-                }
+            }
+            let in_place = !moved_here.contains(&id)
+                && (self.l.live(&id).zip(self.s.live(&id)))
+                    .is_some_and(|(local, synced)| local.same_position(synced));
+            let before = match (unchanged && resent, in_place) {
+                (true, _) => remote_before.get(&id),
+                (false, true) => (records.get(&id))
+                    .filter(|remote| !remote.trashed)
+                    .map(|remote| &remote.shape),
+                (false, false) => None,
+            };
+            let moved = before
+                .filter(|remote| self.s.live(&id).is_some_and(|s| !s.same_position(remote)))
+                .filter(|remote| {
+                    remote.parent == self.l.root || self.l.live(&remote.parent).is_some()
+                });
+            if let Some(remote) = moved.filter(|_| self.r.get(&id).is_none()) {
+                let at = LostPosition {
+                    parent: remote.parent.clone(),
+                    name: remote.name.clone(),
+                };
+                self.lost_positions.insert(id.clone(), at);
             }
             if self.r.get(&id).is_none() {
                 self.reverted.remove(&id);
