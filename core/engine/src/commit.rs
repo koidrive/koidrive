@@ -2874,6 +2874,7 @@ fn wedged(
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
             let create = trees.dirty_creates().contains(at);
             if problems.contains(at)
+                || trees.is_discarded(at)
                 || (pending && !trees.excluded(at))
                 || (create && (trees.excluded(at) || trees.held(at)))
             {
@@ -3323,7 +3324,7 @@ fn plan(
                 };
                 if *at == trees.local().root
                     || trees.remote().live(at).is_some()
-                    || (problems.contains(at) && !trees.excluded(at))
+                    || (skip.contains(at) && !trees.excluded(at))
                     || (creates.contains(at) && trees.held(at) && !trees.excluded(at))
                 {
                     return true;
@@ -3782,7 +3783,7 @@ fn plan(
             }
         }
         if cfg!(debug_assertions) && bound.is_none() {
-            let wedged = wedged(trees, &wants, &scratch, &moving, problems);
+            let wedged = wedged(trees, &wants, &scratch, &moving, skip);
             assert!(
                 wedged.is_empty(),
                 "planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: {wedged:?}"
