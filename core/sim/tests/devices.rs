@@ -9716,3 +9716,33 @@ fn a_rolled_back_store_adopts_the_servers_nfc_file_for_its_nfd_spelling_instead_
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_lost_move_and_edit_sent_again_after_a_restore_keep_the_write_in_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1, 0, 0, 0, 0))],
+        vec![(2, u(4, 0, 0, 0, 0)), (0, u(3, 0, 0, 5, 0)), (0, Backup)],
+        vec![
+            (0, Restore),
+            (2, Connect),
+            (2, Work(0)),
+            (2, Effect(Outcome::Run)),
+            (2, u(2, 0, 0, 0, 0)),
+            (2, Work(2940287964182624177)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
