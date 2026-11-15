@@ -3551,3 +3551,66 @@ fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_takes_the_se
         )), "unchanged server bytes are uploaded as a new local file: {sent:?}");
     }
 }
+
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(
+    lift_after_effects: bool,
+) {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("g", dir("f", "sub")),
+            ("e", file("g", "e", 4)),
+            ("x", file(ROOT, "server", 9)),
+        ],
+        &[("x", file(ROOT, "server", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_local("n".into(), local_node(file("f", "n", 6), 99));
+    trees.settle();
+    assert!(trees.reclaimed("f"));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.remove_local("n");
+    trees.settle();
+    assert!(!trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    let mut done = Vec::new();
+    if lift_after_effects {
+        done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    }
+    trees.set_rules(&[] as &[&str], None);
+    done.extend(run_effects(
+        &mut effects,
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        200,
+    ));
+    assert!(commits.questions().is_empty());
+    assert!(trees.local().get("f").is_none(), "{done:?}");
+    assert_eq!(
+        trees.local().get("x").unwrap().shape,
+        file(ROOT, "server", 9)
+    );
+}
+
+#[test]
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in_before_the_effects_run()
+ {
+    a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(false);
+}
+
+#[test]
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in_after_the_effects_run()
+{
+    a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(true);
+}
