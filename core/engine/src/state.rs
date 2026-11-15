@@ -74,6 +74,9 @@ pub struct TreesState {
     /// The nodes the person discarded in answer to a first-link question (section 6.4), each with
     /// the shape the question showed, while L, S or the S update waiting for them holds them.
     pub discarded: BTreeMap<NodeId, Shape>,
+    /// The files S forgot after a server loss while L, S and R held their content alike, each with
+    /// the shape S held, until L's content changes, S takes the node again or L no longer holds it.
+    pub forgotten_shapes: BTreeMap<NodeId, Shape>,
     /// The nodes whose local copy the user moved into an ignored folder that is no node, and the folders L keeps
     /// for them. L holds each at the position it had before.
     pub outside: BTreeSet<NodeId>,
@@ -245,6 +248,7 @@ pub struct TreesChanges {
     pub trashed_here: MapChanges<NodeId, u64>,
     pub removed_here: MapChanges<NodeId, u64>,
     pub discarded: MapChanges<NodeId, Shape>,
+    pub forgotten_shapes: MapChanges<NodeId, Shape>,
     pub outside: SetChanges<NodeId>,
     pub lost: SetChanges<NodeId>,
     pub displaced: MapChanges<NodeId, FileIdentity>,
@@ -277,6 +281,7 @@ impl TreesChanges {
             trashed_here,
             removed_here,
             discarded,
+            forgotten_shapes,
             outside,
             lost,
             displaced,
@@ -305,6 +310,7 @@ impl TreesChanges {
             trashed_here: map_changes(&before.trashed_here, trashed_here),
             removed_here: map_changes(&before.removed_here, removed_here),
             discarded: map_changes(&before.discarded, discarded),
+            forgotten_shapes: map_changes(&before.forgotten_shapes, forgotten_shapes),
             outside: set_changes(&before.outside, outside),
             lost: set_changes(&before.lost, lost),
             displaced: map_changes(&before.displaced, displaced),

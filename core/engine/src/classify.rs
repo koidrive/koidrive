@@ -343,6 +343,7 @@ pub struct Trees {
     removed_here: TrackedMap<NodeId, u64>,
     /// See [`TreesState::discarded`].
     discarded: ByParent<Shape>,
+    forgotten_shapes: TrackedMap<NodeId, Shape>,
     adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
@@ -440,6 +441,7 @@ impl Trees {
             trashed_here: TrackedMap::default(),
             removed_here: TrackedMap::default(),
             discarded: ByParent::default(),
+            forgotten_shapes: TrackedMap::default(),
             adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
@@ -1142,6 +1144,19 @@ impl Trees {
         self.yield_resends();
     }
 
+    pub(crate) fn take_forgotten_shape(&mut self, id: &str) -> bool {
+        if self.s.get(id).is_some() {
+            return false;
+        }
+        let Some(shape) = self.forgotten_shapes.get(id).cloned() else {
+            return false;
+        };
+        if !self.set_synced_if_valid(id.to_owned(), Some(shape.clone())) {
+            self.wait(id.to_owned(), Some(shape), Origin::Other);
+        }
+        true
+    }
+
     pub(crate) fn take_local(&mut self, id: NodeId) {
         self.lost_creates.remove(&id);
         self.resends.remove(&id);
@@ -1493,6 +1508,12 @@ impl Trees {
             if !old.shape.same_position(&node.shape) {
                 self.lost_positions.remove(&id);
             }
+            if !matches!(
+                (&old.shape.content, &node.shape.content),
+                (Some(old), Some(new)) if same_content(old, new)
+            ) {
+                self.forgotten_shapes.remove(&id);
+            }
             let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
             if moved {
                 self.unsent_marks.remove(&id);
@@ -1554,7 +1575,8 @@ impl Trees {
     /// ([`TreesState::local_changes`]), and a change back to the shape S holds ends the record unless
     /// an update of S waits. A change to a file this device sends again after a server loss
     /// ([`TreesState::resends`]) is an edit the server does not have ([`Trees::unsent_edits`]), even
-    /// when it ends at the bytes S holds.
+    /// when it ends at the bytes S holds, unless it keeps the content of the shape S forgot for it
+    /// ([`TreesState::forgotten_shapes`]).
     pub fn set_local_changed(&mut self, id: NodeId, node: LocalNode) {
         if !node.parked
             && (self.l.get(&id)).is_some_and(|old| !old.shape.same_position(&node.shape))
@@ -1562,8 +1584,14 @@ impl Trees {
             self.unsent_marks.remove(&id);
         }
         if !(self.l.get(&id)).is_some_and(|old| old.shape.same(&node.shape)) {
-            if node.shape.content.is_some() && self.resends.contains(&id) {
-                self.unsent_edits.insert(id.clone());
+            let forgotten_content =
+                (self.forgotten_shapes.get(&id)).and_then(|forgotten| forgotten.content.as_ref());
+            let edited = !matches!(
+                (&node.shape.content, forgotten_content),
+                (Some(local), Some(forgotten)) if same_content(local, forgotten)
+            );
+            if edited && node.shape.content.is_some() && self.resends.contains(&id) {
+                self.mark_unsent_edit(id.clone());
             }
             if !self.waiting.contains_key(&id) && same(Some(&node.shape), self.s.live(&id)) {
                 self.local_changes.remove(&id);
@@ -1588,6 +1616,7 @@ impl Trees {
         self.count_held_trash(id, false);
         self.unsent_edits.remove(id);
         self.end_resend(id);
+        self.forgotten_shapes.remove(id);
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
@@ -2820,9 +2849,12 @@ impl Trees {
     /// would then agree, so the edit would be taken for R's content, and a resend of the lost
     /// content would replace it. Each such file is recorded ([`Trees::unsent_edits`]), so L's
     /// content is sent, and a resend then meets an edit it did not see. A forgotten file whose
-    /// content L, S and R all hold alike is not recorded: only its position was lost. A file R holds
-    /// in the trash keeps S, and is recorded when L holds content S does not, since a device that
-    /// restores it from the trash with L's bytes would otherwise make L, S and R agree.
+    /// content L, S and R all hold alike is not recorded: only its position was lost. S keeps the
+    /// shape it forgot for it ([`TreesState::forgotten_shapes`]) and takes that shape back when R's
+    /// content moves on, so another device's later edit is downloaded into the file instead of
+    /// leaving L's content beside it as a conflict copy. A file R holds in the trash keeps S, and
+    /// is recorded when L holds content S does not, since a device that restores it from the trash
+    /// with L's bytes would otherwise make L, S and R agree.
     ///
     /// `synced` lists the nodes whose content L and S held as R did before the bootstrap, where no
     /// commit of this device that the server lost set R's content, with R's shape then
@@ -3218,7 +3250,7 @@ impl Trees {
             .collect();
         for id in unsent {
             self.mark(&id);
-            self.unsent_edits.insert(id);
+            self.mark_unsent_edit(id);
         }
         for (id, waits) in lost {
             let unchanged = (self.l.get(&id))
@@ -3255,11 +3287,36 @@ impl Trees {
             if self.r.get(&id).is_none() {
                 self.reverted.remove(&id);
             }
+            let held_alike = matches!(
+                (content(self.l.live(&id)), content(self.s.live(&id)), content(self.r.live(&id))),
+                (Some(local), Some(synced), Some(remote))
+                    if same_content(&local, &synced) && same_content(&local, &remote)
+            );
+            if let Some(shape) = self
+                .s
+                .live(&id)
+                .filter(|_| held_alike && !self.unsent_edits.contains(&id))
+                .cloned()
+            {
+                self.forgotten_shapes.insert(id.clone(), shape);
+            }
             if waits {
                 self.wait(id, None, Origin::Other);
             } else {
                 self.set_synced(id, None);
             }
+        }
+        let gone: Vec<NodeId> = (self.forgotten_shapes.iter())
+            .filter(|(id, forgotten)| {
+                !matches!(
+                    (content(self.r.live(id)), forgotten.content.as_ref()),
+                    (Some(remote), Some(forgotten)) if same_content(&remote, forgotten)
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in gone {
+            self.forgotten_shapes.remove(&id);
         }
         for (id, kept) in untaken {
             if self.s.get(&id) != Some(&kept)
@@ -3351,8 +3408,13 @@ impl Trees {
         let edited = self.local_content_differs(id);
         let trashed = self.r.get(id).is_some_and(|remote| remote.trashed);
         if edited && trashed && !self.waiting.contains_key(id) {
-            self.unsent_edits.insert(id.to_owned());
+            self.mark_unsent_edit(id.to_owned());
         }
+    }
+
+    fn mark_unsent_edit(&mut self, id: NodeId) {
+        self.forgotten_shapes.remove(&id);
+        self.unsent_edits.insert(id);
     }
 
     pub(crate) fn acknowledged(&self, id: &str) -> Option<&Shape> {
@@ -3821,6 +3883,9 @@ impl Trees {
 
     fn set_synced_unmarked(&mut self, id: &str, shape: Option<Shape>) {
         self.waiting.remove(id);
+        if shape.is_some() {
+            self.forgotten_shapes.remove(id);
+        }
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
@@ -3915,6 +3980,13 @@ impl Trees {
             None,
             "a change of this device's user that L, S and R all hold"
         );
+        debug_assert_eq!(
+            (self.forgotten_shapes.keys())
+                .find(|id| self.unsent_edits.contains(*id) || self.s.get(id).is_some())
+                .cloned(),
+            None,
+            "a forgotten shape of a node that holds an unsent edit or that S holds"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))
@@ -3933,6 +4005,7 @@ impl Trees {
             trashed_here: (*self.trashed_here).clone(),
             removed_here: (*self.removed_here).clone(),
             discarded: (*self.discarded).clone(),
+            forgotten_shapes: (*self.forgotten_shapes).clone(),
             outside: (*self.outside).clone(),
             lost: (*self.lost).clone(),
             displaced: (*self.displaced).clone(),
@@ -3971,6 +4044,7 @@ impl Trees {
             trashed_here,
             removed_here,
             discarded,
+            forgotten_shapes,
             adopted: _,
             recoveries: _,
             edited_here,
@@ -4021,6 +4095,7 @@ impl Trees {
             trashed_here: trashed_here.take_changes(),
             removed_here: removed_here.take_changes(),
             discarded: discarded.take_changes(),
+            forgotten_shapes: forgotten_shapes.take_changes(),
             outside: outside.take_changes(),
             lost: lost.take_changes(),
             displaced: displaced.take_changes(),
@@ -4143,6 +4218,7 @@ impl Trees {
             trashed_here,
             removed_here,
             discarded,
+            forgotten_shapes,
             outside,
             lost,
             displaced,
@@ -4176,6 +4252,7 @@ impl Trees {
         self.trashed_here = trashed_here.into();
         self.removed_here = removed_here.into();
         self.discarded = discarded.into();
+        self.forgotten_shapes = forgotten_shapes.into();
         self.outside = outside.into();
         self.lost = lost.into();
         self.displaced = displaced.into();
