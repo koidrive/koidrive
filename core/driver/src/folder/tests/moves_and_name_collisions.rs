@@ -516,9 +516,7 @@ fn an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_aga
 
 /// The same L, with the file already at its name when the process stops. `Disk::apply` no longer gets there, so
 /// the test leaves what a process without the check left: the marker written and the staged file renamed to `a`,
-/// with no acknowledgement. The next start finds the effect's file at its name and does not record it. The
-/// observer then reports the file as the user's own, so it is uploaded, and both devices end with the bytes twice:
-/// at `a` and at the name the server gave the copy.
+/// with no acknowledgement. The next start finds the effect's file at its name and does not record it.
 #[test]
 fn a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start() {
     let mut remote = Remote::new();
@@ -545,17 +543,18 @@ fn a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start() {
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);
     sync(&mut remote, (&site_a, &mut a), (&site, &mut b));
-    let held = entries(&site.root);
-    let mut texts: Vec<&str> = held
-        .iter()
-        .filter_map(|(_, text)| text.as_deref())
-        .collect();
-    texts.sort();
-    assert_eq!(
-        texts,
-        ["kept on b", "written on a", "written on a"],
-        "{held:?}"
-    );
+    for root in [&site.root, &site_a.root] {
+        let mut held = entries(root);
+        held.sort();
+        assert_eq!(
+            held,
+            [
+                ("a".to_owned(), Some("written on a".to_owned())),
+                ("f".to_owned(), None),
+                ("f/kept.txt".to_owned(), Some("kept on b".to_owned())),
+            ]
+        );
+    }
 }
 
 /// The second way to the same store: the folder `a` is planned, the user makes a folder `a` of their own, which a

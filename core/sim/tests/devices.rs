@@ -10316,3 +10316,59 @@ fn a_file_in_a_folder_a_store_rollback_forgot_after_a_rewind_follows_another_dev
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_file_a_restore_took_and_a_rolled_back_device_created_again_stays_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(0, 0, 0, 0, 0))],
+        vec![
+            (2, u(0, 0, 0, 1, 0)),
+            (0, Work(0)),
+            (0, Backup),
+            (0, u(2, 0, 0, 0, 0)),
+            (2, CopyStore),
+            (0, u(3, 0, 3116514469356445043, 0, 0)),
+            (0, u(1, 0, 0, 2, 0)),
+        ],
+        vec![(0, Restore), (2, RollBack)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_file_a_restore_took_after_a_rollback_and_created_again_stays_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(0, 0, 0, 0, 0))],
+        vec![
+            (2, u(0, 0, 0, 1, 0)),
+            (0, Work(0)),
+            (0, Backup),
+            (0, u(2, 0, 0, 0, 0)),
+            (2, CopyStore),
+            (0, u(3, 0, 3116514469356445043, 0, 0)),
+            (0, u(1, 0, 0, 2, 0)),
+        ],
+        vec![(2, RollBack), (0, Restore)],
+    ];
+    converge(2, &phases).unwrap();
+}

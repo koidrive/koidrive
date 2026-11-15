@@ -3318,3 +3318,52 @@ fn a_server_folder_added_after_the_discard_and_moved_out_leaves_the_discarded_fo
         vec![("move", "d".to_string())]
     );
 }
+
+fn written(name: &str, mtime_ns: i64) -> Shape {
+    let mut shape = file(ROOT, name, 1);
+    shape.content.as_mut().expect("a file").mtime_ns = mtime_ns;
+    shape
+}
+
+fn sent_beside(local_mtime_ns: i64, remote_mtime_ns: i64) -> (Vec<(&'static str, String)>, Trees) {
+    let mut trees = trees(
+        &[("l-a", written("a", local_mtime_ns))],
+        &[("r-a", written("a", remote_mtime_ns))],
+    );
+    trees.rules_scanned();
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    (ops(&mut commits, &mut trees, &mut ids), trees)
+}
+
+#[test]
+fn a_new_local_file_with_the_bytes_and_mtime_of_a_server_file_at_its_place_is_linked_to_it() {
+    let (sent, trees) = sent_beside(1_794_268_740_123_456_789, 1_794_268_740_123_456_789);
+    assert_eq!(sent, []);
+    assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+}
+
+#[test]
+fn a_new_local_file_with_the_bytes_of_another_write_at_its_place_is_sent() {
+    let (sent, _) = sent_beside(1_794_268_740_123_456_789, 1_794_268_740_987_654_321);
+    assert_eq!(sent, [("create file", "l-a".to_owned())]);
+}
+
+#[test]
+fn two_writes_with_the_same_bytes_and_a_coarse_mtime_are_not_linked() {
+    for mtime_ns in [1_794_268_740_000_000_000, 1_794_755_239_590_000_000] {
+        let (sent, trees) = sent_beside(mtime_ns, mtime_ns);
+        assert_eq!(sent, [("create file", "l-a".to_owned())], "{mtime_ns}");
+        assert_eq!(trees.synced().get("r-a"), None, "{mtime_ns}");
+    }
+}
+
+#[test]
+fn two_writes_with_the_same_bytes_and_a_copied_sub_second_mtime_are_linked() {
+    let (sent, trees) = sent_beside(1_794_268_740_123_456_789, 1_794_268_740_123_456_789);
+    assert_eq!(sent, []);
+    assert_eq!(
+        trees.synced().live("r-a"),
+        Some(&written("a", 1_794_268_740_123_456_789))
+    );
+}
