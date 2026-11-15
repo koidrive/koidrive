@@ -3212,7 +3212,10 @@ fn plan(
                     },
                     None => local.clone(),
                 };
-                let pending_for = trees.create_mark(id).map(str::to_owned);
+                let pending_for = (trees.lost_position(id).is_none())
+                    .then(|| trees.create_mark(id))
+                    .flatten()
+                    .map(str::to_owned);
                 wants.push(Want::Create {
                     id: id.clone(),
                     shape,
@@ -3378,11 +3381,14 @@ fn plan(
         else {
             break;
         };
-        if let Some(Want::Create { shape, .. }) = (wants.iter_mut())
+        if let Some(Want::Create {
+            shape, pending_for, ..
+        }) = (wants.iter_mut())
             .find(|want| matches!(want, Want::Create { id: create, .. } if *create == id))
         {
             shape.parent = parent;
             shape.name = name;
+            *pending_for = trees.create_mark(&id).map(str::to_owned);
         }
     }
     scratch.creating = (wants.iter())

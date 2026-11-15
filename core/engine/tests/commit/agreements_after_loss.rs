@@ -1061,3 +1061,21 @@ fn a_resend_whose_lost_folder_is_left_out_of_the_planned_creates_is_not_created_
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(!created_at(&commit).contains(&("a".to_owned(), 1)), "{:?}", ops(&commit));
 }
+
+#[test]
+fn a_folder_another_device_renamed_before_a_loss_is_created_without_the_name_it_was_pending_for() {
+    let mut trees = trees(&[synced("f", dir(ROOT, "a"))]);
+    trees.set_synced_mark("f".into(), Some("x".into()));
+    trees.set_remote("f".into(), remote_at(dir(ROOT, "b"), 2));
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        matches!(&ops(&commit)[..], [op::Op::CreateDir(create)] if create.name == "b" && create.pending_for.is_empty()),
+        "{:?}",
+        ops(&commit)
+    );
+}
