@@ -2686,7 +2686,7 @@ fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
         &[("x", dir(ROOT, "server")), ("p", dir(ROOT, "away"))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Shown);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
