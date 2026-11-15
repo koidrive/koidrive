@@ -581,15 +581,22 @@ impl Device {
         }
     }
 
-    fn receive(&mut self, changes: &[ChangeRecord]) {
+    fn receive(&mut self, changes: &[ChangeRecord], answered: bool) {
         for change in changes {
             apply(&mut self.trees, std::slice::from_ref(change));
-            if let Some(change_record::Change::Node(state)) = &change.change
-                && let Some(moved) = self.relocated.get(&state.node_id)
-                && (self.trees.remote().live(&state.node_id))
-                    .is_some_and(|r| r.same_position(&moved.to))
-            {
+            let Some(change_record::Change::Node(state)) = &change.change else {
+                continue;
+            };
+            let Some(remote) = self.trees.remote().live(&state.node_id).cloned() else {
+                continue;
+            };
+            let Some(moved) = self.relocated.get_mut(&state.node_id) else {
+                continue;
+            };
+            if remote.same_position(&moved.to) {
                 self.relocated.remove(&state.node_id);
+            } else if answered {
+                moved.from = remote;
             }
         }
     }
@@ -1450,7 +1457,7 @@ fn run_ignoring_answering_after(
         .unwrap();
     for record in backlog {
         prop_assert_eq!(record.seq, last_seq + 1);
-        device.receive(&record.changes);
+        device.receive(&record.changes, false);
         last_seq = record.seq;
     }
 
@@ -1516,7 +1523,7 @@ fn run_ignoring_answering_after(
                     })
                     .unwrap();
                 for record in backlog {
-                    device.receive(&record.changes);
+                    device.receive(&record.changes, false);
                     last_seq = record.seq;
                 }
             }
@@ -1793,9 +1800,9 @@ fn run_ignoring_answering_after(
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
             prop_assert!(!commits.acknowledge(&mut device.trees, last_seq));
             prop_assert_eq!(commits.resolved().len(), ended);
-            device.receive(&result.changes);
+            device.receive(&result.changes, true);
         } else {
-            device.receive(&result.changes);
+            device.receive(&result.changes, true);
             commits.received(result.clone()).unwrap();
         }
         last_seq = result.seq;

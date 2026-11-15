@@ -297,7 +297,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         changes.push(change("m", "root"));
     }
     changes.extend([change("k", "root"), change("m", "k"), change("u", "m")]);
-    device.receive(&changes);
+    device.receive(&changes, false);
     note_kept_back(&mut device);
     device.kept_back.contains("k")
 }
@@ -339,4 +339,40 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
     device.relocate("m", &at("h"), &at("k"));
     device.relocate("m", &at("c"), &at("h"));
     assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("c")));
+}
+
+#[test]
+fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let at = |parent: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: "m".into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let answer = ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: "m".into(),
+            parent_id: "k".into(),
+            name: "m".into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    device.relocate("m", &at("h"), &at("j"));
+    device.receive(&[answer], true);
+    device.relocate("m", &at("j"), &at("h"));
+    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("k")));
 }
