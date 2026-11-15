@@ -610,6 +610,76 @@ fn a_fresh_first_link_to_a_live_space_holds_only_what_the_trash_names() {
 }
 
 #[test]
+fn a_fresh_first_link_holds_a_folder_that_holds_an_entry_at_a_path_the_trash_holds() {
+    let mine = "r\u{e9}sum\u{e9}s";
+    for theirs in [mine, "R\u{e9}sum\u{e9}s", "re\u{301}sume\u{301}s"] {
+        let mut trees = trees(
+            &[
+                ("l-docs", dir(ROOT, mine)),
+                ("l-deleted", file("l-docs", "deleted.txt", 1)),
+                ("l-budget", file(ROOT, "Budget.xlsx", 2)),
+            ],
+            &[
+                ("r-docs", dir(ROOT, theirs)),
+                ("r-keep", file("r-docs", "keep.txt", 3)),
+            ],
+        );
+        let trashed = RemoteNode {
+            shape: file("r-docs", "Deleted.txt", 1),
+            trashed: true,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        };
+        trees.set_remote("r-deleted".into(), trashed);
+        trees.settle();
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Fresh);
+        trees.settle();
+        let asked = question(&commits);
+        let mut held: Vec<&String> = asked.holds().collect();
+        held.sort();
+        if theirs.starts_with('R') {
+            assert_eq!(held, ["l-deleted", "l-docs"], "{theirs}");
+        } else {
+            assert_eq!(held, ["l-deleted"], "{theirs}");
+        }
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("create file", "l-budget".to_owned())],
+            "{theirs}"
+        );
+    }
+}
+
+#[test]
+fn a_first_link_adopts_an_entry_whose_name_the_space_holds_in_another_unicode_form() {
+    let mut trees = trees(
+        &[
+            ("l-dir", dir(ROOT, "\u{1112}\u{1161}\u{11ab}")),
+            ("l-keep", file("l-dir", "re\u{301}sume\u{301}.docx", 1)),
+        ],
+        &[
+            ("r-dir", dir(ROOT, "\u{d55c}")),
+            ("r-keep", file("r-dir", "r\u{e9}sum\u{e9}.docx", 1)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Shown);
+    trees.settle();
+    assert_eq!(commits.questions(), []);
+    let mut adopted: Vec<&String> = trees.local().iter().map(|(id, _)| id).collect();
+    adopted.sort();
+    assert_eq!(adopted, ["r-dir", "r-keep"]);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
 fn a_held_entry_that_is_edited_or_moved_stays_held_under_a_new_question() {
     let (mut commits, mut trees, mut ids) = linked();
     let asked = question(&commits);

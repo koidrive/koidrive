@@ -405,6 +405,49 @@ fn a_first_link_of_a_folder_whose_marker_counts_effects_holds_what_the_space_lac
     assert_eq!(names(&site.root), ["notes.txt", "old.txt"]);
 }
 
+#[test]
+fn a_fresh_first_link_holds_a_folder_whose_name_differs_by_case_when_the_trash_holds_its_file() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("Docs")).unwrap();
+    a.create(&mut remote, &site_a.root.join("Docs/deleted.txt"), b"deleted");
+    a.create(&mut remote, &site_a.root.join("Docs/keep.txt"), b"keep");
+    delete_on(&mut a, &mut remote, &site_a.root.join("Docs/deleted.txt"));
+    assert_eq!(remote.names(), ["Docs", "keep.txt"]);
+
+    let site = Site::new(&remote, "b");
+    fs::create_dir(site.root.join("docs")).unwrap();
+    fs::write(site.root.join("docs/deleted.txt"), b"deleted").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.rest(&mut remote);
+
+    assert_eq!(remote.names(), ["Docs", "keep.txt"]);
+    assert_eq!(b.folder.view().questions, 1);
+}
+
+#[test]
+fn a_fresh_first_link_adopts_a_folder_both_macs_name_in_nfd() {
+    let name = "\u{1112}\u{1161}\u{11ab}";
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join(name)).unwrap();
+    a.create(&mut remote, &site_a.root.join(name).join("keep.docx"), b"keep");
+
+    let site = Site::new(&remote, "b");
+    fs::create_dir(site.root.join(name)).unwrap();
+    fs::write(site.root.join(name).join("keep.docx"), b"keep").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    sync(&mut remote, (&site_a, &mut a), (&site, &mut b));
+
+    assert_eq!(remote.names().len(), 2, "{:?}", remote.tree());
+    assert_eq!(files(&site.root).len(), 1);
+    assert_eq!(b.folder.view().questions, 0);
+}
+
 enum Before {
     Replay,
     Relist,
