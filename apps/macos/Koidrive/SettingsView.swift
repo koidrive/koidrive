@@ -196,8 +196,9 @@ struct AccountSettings: View {
     @State private var confirmingOffline = false
     @State private var error: SessionError?
 
-    init(pairing: PairingCode? = nil) {
+    init(pairing: PairingCode? = nil, error: SessionError? = nil) {
         _pairing = State(initialValue: pairing)
+        _error = State(initialValue: error)
     }
 
     var body: some View {
@@ -212,50 +213,53 @@ struct AccountSettings: View {
                                 .textSelection(.enabled)
                                 .truncationMode(.middle)
                         }
-                        if !account.userName.isEmpty {
-                            PropertyRow("Owner") {
-                                Text(verbatim: account.userName)
-                            }
+                        PropertyRow("Owner") {
+                            Text(verbatim: account.userName)
+                        } trailing: {
+                            Button("Sign Out…", role: .destructive) { confirmingSignOut = true }
+                                .controlSize(.small)
                         }
-                        GroupBand("Devices")
+                        GroupBand(title: "Devices") {
+                            Button {
+                                perform { pairing = try await model.startPairing() }
+                            } label: {
+                                Image(systemName: "plus")
+                                    .frame(width: 22, height: 22)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(Color.text)
+                            .help("Add a Device…")
+                            .accessibilityLabel("Add a Device…")
+                        }
                         ForEach(devices, id: \.deviceId) { device in
                             DeviceRow(device: device) { revoking = device }
                         }
-                        HStack(spacing: 10) {
-                            if let pairing {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    PairingCodeLabel(code: pairing.code)
-                                    Text("Enter it on the new device. Expires \(Date(milliseconds: pairing.expiresAtMs), format: .dateTime.hour().minute()).")
-                                        .font(.callout)
-                                        .foregroundStyle(Color.text2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                        if let pairing {
+                            VStack(alignment: .leading, spacing: 4) {
+                                PairingCodeLabel(code: pairing.code)
+                                Text("Enter it on the new device. Expires \(Date(milliseconds: pairing.expiresAtMs), format: .dateTime.hour().minute()).")
+                                    .font(.callout)
+                                    .foregroundStyle(Color.text2)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                            Spacer()
-                            Button("Add a Device…") {
-                                perform { pairing = try await model.startPairing() }
-                            }
-                            .controlSize(.small)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
                         if let error {
                             ErrorLine(error)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
                         }
-                        HStack {
-                            Spacer()
-                            Button("Sign Out…", role: .destructive) { confirmingSignOut = true }
-                                .controlSize(.small)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 4)
                     }
                     .padding(12)
                 }
                 .task(id: account.deviceId) {
-                    perform { devices = try await model.devices() }
+                    do {
+                        devices = try await model.devices()
+                    } catch let failure as SessionError {
+                        error = failure
+                    } catch {}
                 }
             } else {
                 EmptyState(systemImage: "person", title: "Not signed in")
@@ -324,13 +328,15 @@ struct AccountSettings: View {
     }
 }
 
-private struct PropertyRow<Value: View>: View {
+private struct PropertyRow<Value: View, Trailing: View>: View {
     let title: LocalizedStringKey
     @ViewBuilder let value: Value
+    @ViewBuilder let trailing: Trailing
 
-    init(_ title: LocalizedStringKey, @ViewBuilder value: () -> Value) {
+    init(_ title: LocalizedStringKey, @ViewBuilder value: () -> Value, @ViewBuilder trailing: () -> Trailing) {
         self.title = title
         self.value = value()
+        self.trailing = trailing()
     }
 
     var body: some View {
@@ -341,9 +347,16 @@ private struct PropertyRow<Value: View>: View {
             value
                 .foregroundStyle(Color.text)
                 .lineLimit(1)
+            trailing
         }
         .padding(.horizontal, 12)
         .frame(height: 36)
+    }
+}
+
+extension PropertyRow where Trailing == EmptyView {
+    init(_ title: LocalizedStringKey, @ViewBuilder value: () -> Value) {
+        self.init(title, value: value) { EmptyView() }
     }
 }
 

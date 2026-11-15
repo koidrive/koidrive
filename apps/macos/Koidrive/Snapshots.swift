@@ -575,12 +575,21 @@ enum Snapshots {
         if let fake = syncing.session.fakeCore(), let folder = syncing.state.folders.first {
             _ = try? fake.setFolderState(spaceId: folder.spaceId, folderState: .syncing)
         }
+        let oneDevice = AppModel.preview(.upToDate)
+        if let fake = oneDevice.session.fakeCore(), let devices = try? await oneDevice.devices() {
+            _ = try? fake.setDevices(devices: devices.filter(\.thisDevice))
+        }
         let pairing = PairingCode(code: "K7Q4-M2XD", expiresAtMs: Int64(Date.now.addingTimeInterval(600).timeIntervalSince1970 * 1000))
         return [
             ("1-folders", AnyView(FoldersSettings().environment(folders))),
             ("1b-folders-empty", AnyView(FoldersSettings().environment(AppModel.preview(.firstRun)))),
             ("1c-folders-syncing", AnyView(FoldersSettings().environment(syncing))),
-            ("2-account", AnyView(AccountSettings(pairing: pairing).environment(AppModel.preview(.upToDate)))),
+            ("2-account", AnyView(AccountSettings().environment(AppModel.preview(.upToDate)))),
+            ("2a-account-one-device", AnyView(AccountSettings().environment(oneDevice))),
+            ("2b-account-pairing-code", AnyView(AccountSettings(pairing: pairing).environment(AppModel.preview(.upToDate)))),
+            ("2c-account-call-failed", AnyView(AccountSettings(error: .ServerUnreachable(reason: "offline"))
+                .environment(AppModel.preview(.upToDate)))),
+            ("2d-account-not-signed-in", AnyView(AccountSettings().environment(AppModel.preview(.firstRun)))),
             ("3-problems", AnyView(ProblemsSettings().environment(AppModel.preview(.problems)))),
             ("4-general", AnyView(GeneralSettings().environment(AppModel.preview(.upToDate)))),
             ("4b-general-usage-reports-off", AnyView(GeneralSettings().environment(
