@@ -199,16 +199,15 @@ pub(crate) fn below(trees: &Trees, tops: &[NodeId]) -> Vec<NodeId> {
         .collect()
 }
 
-pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
+pub(crate) fn trashed_there(trees: &Trees) -> impl Fn(&NodeId) -> bool + '_ {
     let trashed: BTreeSet<Vec<String>> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
         .filter_map(|(id, _)| key_path(trees.remote(), id))
         .collect();
-    let at_trashed =
-        |id: &NodeId| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path));
-    (tops.into_iter())
-        .filter(|top| unsynced(trees, top).keys().any(at_trashed))
-        .collect()
+    move |top| {
+        (unsynced(trees, top).keys())
+            .any(|id| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path)))
+    }
 }
 
 fn key_path<N: Node>(tree: &Tree<N>, id: &str) -> Option<Vec<String>> {

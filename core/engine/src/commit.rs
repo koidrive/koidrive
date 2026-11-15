@@ -518,11 +518,10 @@ impl Commits {
         prior: PriorSync,
     ) {
         let tops = first_link::adopt(trees, None);
-        let held = match (listing, prior) {
-            (Listing::Live, PriorSync::Shown) => tops.clone(),
-            _ => first_link::trashed_there(trees, tops.clone()),
+        let (held, sent): (Vec<NodeId>, Vec<NodeId>) = match (listing, prior) {
+            (Listing::Live, PriorSync::Shown) => (tops, Vec::new()),
+            _ => tops.into_iter().partition(first_link::trashed_there(trees)),
         };
-        let sent: Vec<NodeId> = tops.into_iter().filter(|id| !held.contains(id)).collect();
         self.published.extend(first_link::below(trees, &sent));
         if let Some(question) = first_link::ask(trees, held, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
