@@ -925,12 +925,20 @@ async fn release(
                                 });
                         match cask {
                             Ok(cask) => koi = Some(UpdateBinary::App(Box::new(cask))),
-                            Err(_) => {
-                                return Err(failed(format!(
-                                    "Koidrive {to} went to {}, and the Homebrew app at {} still has another version.\n{guidance}",
+                            Err(mut error) => {
+                                error.message = format!(
+                                    "Koidrive {to} went to {}, but the Homebrew app at {} is not Koidrive {to}",
                                     installed.path().display(),
                                     install.binary.display()
-                                )));
+                                );
+                                return Err(app_not_updated(
+                                    paths,
+                                    &from,
+                                    &guidance,
+                                    prepared.invalidate(error),
+                                    app_deadline,
+                                )
+                                .await);
                             }
                         }
                     }
