@@ -2618,6 +2618,87 @@ fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_se
     assert!(trees.local().get("x").is_none());
 }
 
+fn a_taken_along_server_folder_after_the_server_changes(
+    changed: &[&str],
+    change: impl Fn(&mut RemoteNode),
+) -> Trees {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "new")), ("x", dir(ROOT, "server"))],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 5))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_synced("c".into(), Some(file("x", "child", 5)));
+    trees.set_local("c".into(), local_node(file("x", "child", 5), 50));
+    for id in changed {
+        let mut node = trees.remote().get(id).unwrap().clone();
+        change(&mut node);
+        node.content_rev += 1;
+        node.meta_rev += 1;
+        node.edit_rev += 1;
+        node.meta_edit_rev += 1;
+        trees.set_remote((*id).into(), node);
+    }
+    trees.set_rules(&[] as &[&str], None);
+    run_effects(
+        &mut Effects::default(),
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        100,
+    );
+    trees
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_trashes_what_arrived_inside()
+{
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["x", "c"], |node| {
+        node.trashed = true
+    });
+    assert_eq!(local(&trees), []);
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_edits_what_arrived_inside() {
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["c"], |node| {
+        node.shape.content = Some(content(6))
+    });
+    assert_eq!(
+        local(&trees),
+        [
+            ("c".into(), "x".into(), "child".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+    assert_eq!(trees.local().get("c").unwrap().shape, file("x", "child", 6));
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_moves_what_arrived_inside_out()
+ {
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["c"], |node| {
+        node.shape.parent = ROOT.into();
+        node.shape.name = "out".into();
+    });
+    assert_eq!(
+        local(&trees),
+        [
+            ("c".into(), ROOT.into(), "out".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+}
+
 #[test]
 fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_path_and_the_folder_is_sent()
  {
