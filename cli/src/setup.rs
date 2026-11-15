@@ -45,7 +45,7 @@ use crate::printable;
 use crate::report::{AccountData, Choice, ChoicesData, Done, FolderData, Outcome, SetupData};
 use crate::terminal::{Progress, Terminal, read_line};
 use claim::Claim;
-use state::{SetupState, StateFile, Step};
+use state::{SetupState, StateFile, Step, UninstallProgress};
 
 const API_BASE: &str = "https://api.cloudflare.com/client/v4/";
 /// Marks the Worker scripts `koi setup` uploads (section 6).
@@ -968,9 +968,6 @@ impl ServerAction {
     }
 }
 
-/// `koi server <action>`. Each logs in with Cloudflare in a browser, so it runs only with `--interactive` and a
-/// terminal on stdin and stderr. Otherwise, with or without `--json`, it stops before the login and names the
-/// `--interactive` command for a person to run.
 pub async fn server(
     paths: &Paths,
     action: ServerAction,
@@ -1033,9 +1030,26 @@ pub async fn server(
             yes,
             login,
         } => {
-            let resuming = StateFile::new(paths)
-                .load()?
-                .is_some_and(|state| state.step == Step::Uninstalling);
+            let file = StateFile::new(paths);
+            let saved = file.load()?;
+            if saved.as_ref().is_some_and(|state| {
+                state.step == Step::Uninstalling
+                    && (bucket.is_none()
+                        || state.script.is_empty()
+                            && bucket
+                                .as_deref()
+                                .is_some_and(|bucket| state.matches_bucket(bucket, jurisdiction)))
+                    && matches!(
+                        state.uninstall,
+                        Some(
+                            UninstallProgress::Service { .. } | UninstallProgress::Complete { .. }
+                        )
+                    )
+            }) {
+                finish_uninstall_service(paths, &file, saved.unwrap()).await?;
+                return Ok(Done::printed());
+            }
+            let resuming = saved.is_some_and(|state| state.step == Step::Uninstalling);
             if bucket.is_none() && !resuming {
                 bundled()?;
             }
@@ -1088,26 +1102,35 @@ fn connected(paths: &Paths) -> bool {
 /// Why a new deploy or claim must not replace `state`, the state file of a run in `account` or another one that has
 /// not finished: the file is that run's only record of what it created.
 fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliError {
+    let resource = if state.step == Step::Uninstalling && state.script.is_empty() {
+        format!(
+            "the bucket {} in the {} jurisdiction",
+            state.bucket,
+            state.jurisdiction.as_str()
+        )
+    } else {
+        state.script.clone()
+    };
     let run = if state.account != account {
         format!(
             "a setup of {} in another Cloudflare account ({}) has not finished; run koi setup and log in to that account to finish it",
-            state.script, state.account
+            resource, state.account
         )
     } else if state.step == Step::Uninstalling {
         format!(
             "the delete of {} has not finished; run koi server delete to finish it",
-            state.script
+            resource
         )
     } else {
         format!(
             "the deploy of {} has not finished; run koi setup to finish it",
-            state.script
+            resource
         )
     };
     let human = if state.account != account {
         format!(
             "Setup of {} in another Cloudflare account has not finished. Run koi setup and sign in to the account that created that server to finish it",
-            state.script
+            resource
         )
     } else {
         run.clone()
@@ -2132,24 +2155,38 @@ impl Session {
     ) -> Result<(), CliError> {
         let file = StateFile::new(paths);
         match file.load()? {
+            Some(mut state)
+                if state.account == self.account()
+                    && state.step == Step::Uninstalling
+                    && state.script.is_empty()
+                    && state.uninstall.is_none()
+                    && bucket.is_some_and(|bucket| state.matches_bucket(bucket, jurisdiction)) =>
+            {
+                confirm(&self.terminal, &format!("Continue deleting only the saved bucket {} in the {} jurisdiction? This does not delete a Worker or change this device's background service.", state.bucket, state.jurisdiction.as_str()), yes, "--yes").await?;
+                state.uninstall = Some(UninstallProgress::Cloud { server: None });
+                file.save(&state)?;
+                return self.finish_uninstall(paths, &file, state, None).await;
+            }
             Some(state)
                 if state.account == self.account()
                     && state.step == Step::Uninstalling
-                    && bucket.is_none() =>
+                    && (bucket.is_none()
+                        || state.script.is_empty()
+                            && state.uninstall.is_some()
+                            && bucket.is_some_and(|bucket| {
+                                state.matches_bucket(bucket, jurisdiction)
+                            })) =>
             {
                 println!(
                     "Continuing the uninstall that stopped earlier ({}).",
                     state.bucket
                 );
-                let script = state.script.clone();
-                uninstall::finish(self, &file, state).await?;
-                self.forget(paths, &script).await;
-                return Ok(());
+                return self.finish_uninstall(paths, &file, state, name).await;
             }
             Some(other) => return Err(unfinished(&other, self.account(), file.path())),
             None => {}
         }
-        let (state, contents) = match bucket {
+        let (mut state, contents) = match bucket {
             Some(bucket) => uninstall::plan(self, None, bucket, jurisdiction).await?,
             None => {
                 let server = self.pick(name).await?;
@@ -2175,33 +2212,86 @@ impl Session {
             yes,
             "--yes",
         ).await?;
+        let server = if state.script.is_empty() {
+            None
+        } else {
+            Some(self.worker_url(&state.script).await?.to_string())
+        };
+        state.uninstall = Some(UninstallProgress::Cloud { server });
         file.save(&state)?;
-        let script = state.script.clone();
-        uninstall::finish(self, &file, state).await?;
-        self.forget(paths, &script).await;
-        Ok(())
+        self.finish_uninstall(paths, &file, state, None).await
     }
 
-    /// Stops and removes this device's background service when the deleted Worker `script` was the server it syncs
-    /// with, at its workers.dev address.
-    async fn forget(&mut self, paths: &Paths, script: &str) {
-        if script.is_empty() {
-            return;
+    async fn finish_uninstall(
+        &mut self,
+        paths: &Paths,
+        file: &StateFile,
+        mut state: SetupState,
+        legacy_worker: Option<&str>,
+    ) -> Result<(), CliError> {
+        if state.uninstall.is_none() {
+            let script = if state.script.is_empty() {
+                legacy_worker.ok_or_else(|| {
+                    let jurisdiction = if state.jurisdiction == Jurisdiction::Default { String::new() } else { format!(" --jurisdiction {}", state.jurisdiction.as_str()) };
+                    let recovery = format!("Saved uninstall progress does not say whether this operation included a Worker. Keep the saved progress. If it included a Worker, run koi server delete --interactive --worker <deleted-worker-name> with that Worker's name. For a bucket-only operation, run koi server delete --interactive --bucket {}{jurisdiction} and confirm that the background service should stay unchanged.", crate::pairing::shell_word(&state.bucket));
+                    CliError::from(format!("{recovery} Saved progress: {}", file.path().display())).human(recovery)
+                })?
+            } else {
+                &state.script
+            };
+            let server = self.worker_url(script).await?.to_string();
+            state.uninstall = Some(UninstallProgress::Cloud {
+                server: Some(server),
+            });
+            file.save(&state)?;
         }
-        let url = match self.worker_url(script).await {
-            Ok(url) => url,
-            Err(error) => {
-                println!(
-                    "Couldn't check whether this device synced with the deleted server: {}. If it did, unlink its folders with koi folder unlink, which also removes the background service.",
-                    printable(error.message.trim_end_matches('.'))
-                );
-                return;
-            }
-        };
-        if let Some(report) = crate::service::forget(paths, &url).await {
-            print!("{}", report.text());
+        if matches!(state.uninstall, Some(UninstallProgress::Cloud { .. })) {
+            state = uninstall::finish(self, file, state).await?;
         }
+        finish_uninstall_service(paths, file, state).await
     }
+}
+
+async fn finish_uninstall_service(
+    paths: &Paths,
+    file: &StateFile,
+    mut state: SetupState,
+) -> Result<(), CliError> {
+    let bucket_kept = match &state.uninstall {
+        Some(UninstallProgress::Service {
+            server,
+            bucket_kept,
+        }) => {
+            let kept = *bucket_kept;
+            if let Some(server) = server {
+                let url = Url::parse(server).map_err(|_| CliError::from("the saved uninstall server address is invalid; keep the saved progress and run koi diagnose"))?;
+                let report = crate::service::forget(paths, &url)
+                    .await
+                    .map_err(CliError::from)?;
+                if let Some(report) = report {
+                    print!("{}", report.text());
+                }
+            }
+            state.uninstall = Some(UninstallProgress::Complete { bucket_kept: kept });
+            file.save(&state)?;
+            kept
+        }
+        Some(UninstallProgress::Complete { bucket_kept }) => *bucket_kept,
+        _ => return Err(
+            "the cloud uninstall has not finished; run koi server delete --interactive to continue"
+                .into(),
+        ),
+    };
+    file.remove()?;
+    if bucket_kept {
+        println!(
+            "Kept the bucket {} and its files. Local cleanup is complete.",
+            state.bucket
+        );
+    } else {
+        println!("The uninstall is complete.");
+    }
+    Ok(())
 }
 
 /// Fails when this koi has no embedded server bundle. The commands that find, deploy or upgrade a server call it before
@@ -2927,6 +3017,43 @@ mod tests {
 
                 assert!(error.contains("has not finished"), "{entry}: {error}");
                 assert_eq!(StateFile::new(&paths).load().unwrap(), Some(other.clone()));
+                assert_eq!(fake.seen().len(), before, "{entry} called the account");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_and_deploy_name_the_remaining_bucket_when_uninstall_has_no_worker() {
+        for account in [ACCOUNT, "another-account"] {
+            for entry in ["setup", "server deploy", "server add-device"] {
+                let fake = Fake::start(vec![tokens()]).await;
+                let mut session = fake::session(&fake).await;
+                let before = fake.seen().len();
+                let dir = tempfile::tempdir().unwrap();
+                let paths = Paths::under(dir.path());
+                let state = SetupState {
+                    account: account.into(),
+                    bucket: "remaining-bucket".into(),
+                    step: Step::Uninstalling,
+                    ..SetupState::default()
+                };
+                StateFile::new(&paths).save(&state).unwrap();
+
+                let error = match entry {
+                    "setup" => session.setup(&paths, "desk").await,
+                    "server deploy" => session.server_deploy(&paths, "desk").await,
+                    _ => session.server_add_device(&paths, None, "desk").await,
+                }
+                .unwrap_err();
+
+                for text in [&error.message, error.human.as_ref().unwrap()] {
+                    assert!(
+                        text.contains("the bucket remaining-bucket"),
+                        "{entry}: {text}"
+                    );
+                    assert!(!text.contains("of  "), "{entry}: {text}");
+                }
+                assert_eq!(StateFile::new(&paths).load().unwrap(), Some(state));
                 assert_eq!(fake.seen().len(), before, "{entry} called the account");
             }
         }

@@ -1115,25 +1115,48 @@ async fn blocked(paths: &Paths) -> Vec<Blocked> {
     }
 }
 
-pub async fn forget(paths: &Paths, deleted: &url::Url) -> Option<Report> {
-    let credential = koidrive_driver::Credential::load(&paths.credential()).ok()??;
-    let server = url::Url::parse(&credential.server).ok()?;
-    if server.origin() != deleted.origin() {
-        return None;
+pub async fn forget(paths: &Paths, deleted: &url::Url) -> Result<Option<Report>, String> {
+    let associated = koidrive_driver::Credential::load(&paths.credential())
+        .map_err(|error| error.to_string())
+        .and_then(|credential| match credential {
+            Some(credential) => url::Url::parse(&credential.server)
+                .map(|server| server.origin() == deleted.origin())
+                .map_err(|_| "the saved device server address is invalid".to_owned()),
+            None => Ok(true),
+        });
+    if associated == Ok(false) {
+        return Ok(None);
     }
     let manager = system();
-    let service = this_service(paths).ok()?;
-    Some(
-        converge(
-            manager.as_ref(),
-            &service,
-            0,
-            background_off(paths).unwrap_or(false),
-            false,
-            &Daemon::Absent,
-        )
-        .await,
-    )
+    let service = this_service(paths)?;
+    let file = service.file(manager.kind());
+    let stop = match manager.kind() {
+        ServiceManager::Launchd => format!(
+            "launchctl bootout gui/{}/{}",
+            rustix::process::getuid().as_raw(),
+            service.label()
+        ),
+        ServiceManager::Systemd => {
+            format!("systemctl --user disable --now {}", service.unit_name())
+        }
+    };
+    let manual = format!(
+        "Stop this profile's service with {stop}, remove its service file {}, then run koi server delete --interactive again. The files in its folders stay where they are.",
+        crate::pairing::shell_word(&file.display().to_string())
+    );
+    let installed = file.try_exists().map_err(|error| format!("could not check whether this device's background service is installed: {error}. {manual}"))?;
+    if !installed && matches!(manager.state(&service), Ok(State::NotInstalled) | Err(_)) {
+        return Ok(None);
+    }
+    associated.map_err(|error| format!("{error}. {manual}"))?;
+    let report = converge(manager.as_ref(), &service, 0, false, false, &Daemon::Absent).await;
+    if report.problem.is_some() || report.state != State::NotInstalled {
+        return Err(format!(
+            "could not remove this device's background service: {}. {manual}",
+            report.failure_message().trim_end_matches('.')
+        ));
+    }
+    Ok(Some(report))
 }
 
 fn write(path: &Path, text: &str) -> Result<bool, String> {
@@ -1172,11 +1195,14 @@ fn ok(program: &str, args: &[&str]) -> Result<String, String> {
     let output = run(program, args)?;
     match output.status.success() {
         true => Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
-        false => Err(format!(
-            "{program} {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
+        false => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let cause = match stderr.trim() {
+                "" => output.status.to_string(),
+                text => text.to_owned(),
+            };
+            Err(format!("{program} {} failed: {cause}", args.join(" ")))
+        }
     }
 }
 
