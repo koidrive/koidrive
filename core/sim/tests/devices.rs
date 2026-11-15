@@ -8575,6 +8575,132 @@ fn a_folder_a_rewind_keeps_does_not_stay_parked_once_its_finish_ends() {
     converge(2, &phases).unwrap();
 }
 
+fn rewound_move_into_a_kept_folder() -> Vec<Vec<(usize, Step)>> {
+    let a = |kind, target, parent, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    vec![
+        vec![
+            (0, a(1, 0, 0, 0)),
+            (2, a(1, 0, 0, 2)),
+            (0, a(3, 0, 0, 3)),
+            (0, Step::Backup),
+            (0, Step::Rewind),
+        ],
+        vec![
+            (2, a(0, 0, 0, 1)),
+            (0, Step::Backup),
+            (0, a(0, 0, 0, 0)),
+            (2, a(1, 0, 772145733640578172, 0)),
+            (2, a(3, 8663059027200705001, 6859699980083983498, 1)),
+            (0, Step::Rewind),
+        ],
+        vec![
+            (2, a(0, 0, 156918022144217281, 2)),
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (2, a(4, 83303815444914024, 0, 0)),
+            (2, Step::Deliver(0)),
+            (2, a(0, 0, 7314502859625272189, 0)),
+            (0, a(3, 627593218418688040, 2938730791407753661, 3)),
+        ],
+    ]
+}
+
+#[test]
+fn a_file_renamed_in_a_folder_a_rewind_keeps_reaches_the_server_inside_it() {
+    converge(2, &rewound_move_into_a_kept_folder()).unwrap();
+}
+
+#[test]
+fn a_file_another_device_moved_into_a_folder_a_rewind_keeps_reaches_the_server_inside_it() {
+    let a = |kind, target, parent, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, a(1, 0, 0, 2))],
+        vec![(0, Step::Backup), (1, a(0, 0, 0, 1)), (1, a(3, 0, 1, 1))],
+        vec![
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, Step::Deliver(0)),
+            (0, a(3, 0, 1, 3)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+fn moved_out_of_a_deleted_folder(edit: bool, answer: usize) -> Vec<Vec<(usize, Step)>> {
+    let a = |kind, target, parent, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    let mut phases = vec![
+        vec![(0, a(0, 0, 0, 0)), (0, a(1, 0, 1, 3))],
+        vec![(0, Step::Backup)],
+    ];
+    if edit {
+        phases.push(vec![(0, a(2, 1, 0, 0))]);
+    }
+    phases.push(vec![
+        (0, a(3, 1, 0, 2)),
+        (0, a(4, 0, 0, 0)),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, Step::Deliver(0)),
+        (0, Step::Answer(answer)),
+        (0, Step::Answer(1)),
+    ]);
+    phases
+}
+
+fn entries_beside_the_folder(world: &World) -> Vec<(String, Option<i64>)> {
+    (world.space().nodes().into_iter())
+        .filter(|node| !["a", ""].contains(&node.name.as_str()))
+        .map(|node| {
+            (
+                node.name.clone(),
+                node.current.and_then(|c| c.content).map(|c| c.mtime_ns),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_discarded_beside_a_restored_folder_goes_back_into_it() {
+    let world = converge(2, &moved_out_of_a_deleted_folder(false, 1)).unwrap();
+    assert_eq!(
+        entries_beside_the_folder(&world),
+        [("c.txt".to_owned(), Some(1))]
+    );
+}
+
+#[test]
+fn a_file_published_beside_a_restored_folder_keeps_its_write() {
+    let world = converge(2, &moved_out_of_a_deleted_folder(true, 0)).unwrap();
+    assert_eq!(
+        entries_beside_the_folder(&world),
+        [("b".to_owned(), Some(2))]
+    );
+}
+
 #[test]
 fn a_recovery_answer_does_not_put_a_disk_first_finish_back_at_its_pending_name() {
     use Reply::*;
