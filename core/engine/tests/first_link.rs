@@ -1833,7 +1833,7 @@ fn discarded_twice_around_a_server_node(
     let mut trees = trees(&[&held[..], local].concat(), remote);
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
@@ -2029,7 +2029,7 @@ fn an_excluded_entry_the_person_never_saw_stays_when_its_discarded_folder_is_let
     trees.settle();
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     trees.settle();
     let asked = question(&commits);
     assert!(!asked.holds().any(|id| id == "l-e2"));
@@ -2052,7 +2052,7 @@ fn an_edit_to_an_excluded_server_file_after_its_folder_is_discarded_is_not_remov
         &[("x", file(ROOT, "server", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2112,7 +2112,7 @@ fn an_unchanged_excluded_subtree_another_device_deleted_is_not_brought_back() {
     let entries = [("f", dir(ROOT, "folder")), ("c", file("f", "child", 9))];
     let mut trees = trees(&entries, &entries);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     assert!(commits.questions().is_empty());
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"folder/\n")));
     for id in ["c", "f"] {
@@ -2145,7 +2145,7 @@ fn a_server_file_moved_into_a_discarded_folder_and_edited_on_another_device_is_n
         &[("x", file(ROOT, "server", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2206,7 +2206,7 @@ fn a_server_file_moved_into_a_folder_before_the_folder_is_discarded_goes_back_wh
         &[("x", file(ROOT, "server", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2271,7 +2271,7 @@ fn a_server_folder_moved_into_a_discarded_folder_goes_back_with_what_the_server_
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.txt\n")));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.txt\nignored\n")));
     let mut moved = trees.local().get("z").unwrap().clone();
@@ -2324,7 +2324,7 @@ fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_se
         &[("x", file(ROOT, "server", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2393,7 +2393,7 @@ fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_p
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2445,7 +2445,7 @@ fn a_server_folder_in_a_discarded_folder_changed_after_the_answer(
     ];
     let mut trees = trees(&[&[("f", dir(ROOT, "new"))], &server[..]].concat(), &server);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(
         &[] as &[&str],
@@ -2551,7 +2551,7 @@ fn an_edit_after_a_child_of_a_server_folder_in_a_discarded_folder_is_purged_keep
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2601,7 +2601,7 @@ fn a_user_folder_parked_below_a_folder_the_server_added_keeps_the_discarded_fold
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
@@ -2680,7 +2680,7 @@ fn a_server_folder_added_after_the_discard_and_moved_out_leaves_the_discarded_fo
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 9))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
