@@ -1460,3 +1460,57 @@ fn a_change_r_took_while_s_held_the_node_is_forgotten_once_s_takes_a_new_shape()
     trees.set_synced("n".into(), Some(file(ROOT, "a", 1)));
     assert!(!trees.state().unseen_changes.contains("n"));
 }
+
+#[test]
+fn a_delete_is_not_planned_past_a_resend_that_follows_another_devices_delete_and_revival() {
+    let mut trees = trees(&[synced("n", file(ROOT, "a", 1))]);
+    trees.remove_local("n");
+    trees.settle();
+    trees.set_remote(
+        "n".into(),
+        RemoteNode {
+            trashed: true,
+            trash_group: "2:0".into(),
+            ..remote_at(file(ROOT, "a", 1), 2)
+        },
+    );
+    trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 3));
+    trees.set_remote(
+        "n".into(),
+        RemoteNode {
+            meta_rev: 4,
+            meta_edit_rev: 3,
+            ..remote(file(ROOT, "c", 1))
+        },
+    );
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 4)
+        .cloned();
+    assert_eq!(sent.as_ref().map(ops), None);
+}
+
+#[test]
+fn a_delete_is_not_planned_past_a_resend_when_l_lost_the_node_after_a_rename_and_a_rename_back() {
+    let mut trees = trees(&[synced("n", file(ROOT, "a", 1))]);
+    trees.set_remote("n".into(), remote_at(file(ROOT, "b", 1), 2));
+    trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 3));
+    trees.settle();
+    trees.remove_local("n");
+    trees.settle();
+    trees.set_remote(
+        "n".into(),
+        RemoteNode {
+            meta_rev: 4,
+            meta_edit_rev: 3,
+            ..remote(file(ROOT, "c", 1))
+        },
+    );
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 4)
+        .cloned();
+    assert_eq!(sent.as_ref().map(ops), None);
+}

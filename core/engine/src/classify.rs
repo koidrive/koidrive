@@ -869,8 +869,10 @@ impl Trees {
         let local = self.l.get(&id);
         let local_gone = !made_here && local.is_none();
         let old = (self.r.get(&id)).filter(|old| !old.trashed && !node.trashed);
-        let user_change = old.is_some_and(|old| {
-            old.edit_rev != node.edit_rev || old.meta_edit_rev != node.meta_edit_rev
+        let user_change = (self.r.get(&id)).is_some_and(|old| {
+            old.edit_rev != node.edit_rev
+                || old.meta_edit_rev != node.meta_edit_rev
+                || old.trashed != node.trashed
         });
         let no_user_change = !user_change
             && !self.unseen_changes.contains(&id)
