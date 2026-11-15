@@ -566,8 +566,15 @@ struct Relocation {
 }
 
 impl Device {
-    fn relocate(&mut self, id: &str, before: &koidrive_engine::tree::Shape, after: &koidrive_engine::tree::Shape) {
-        let from = self.relocated.remove(id).map_or_else(|| before.clone(), |moved| moved.from);
+    fn relocate(
+        &mut self,
+        id: &str,
+        before: &koidrive_engine::tree::Shape,
+        after: &koidrive_engine::tree::Shape,
+    ) {
+        let from = (self.relocated.remove(id))
+            .filter(|moved| moved.to.same_position(before))
+            .map_or_else(|| before.clone(), |moved| moved.from);
         if !from.same_position(after) {
             let to = after.clone();
             self.relocated.insert(id.to_owned(), Relocation { from, to });

@@ -336,4 +336,7 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
     assert!(device.relocated.contains_key("m"));
     device.relocate("m", &at("k"), &at("h"));
     assert!(!device.relocated.contains_key("m"));
+    device.relocate("m", &at("h"), &at("k"));
+    device.relocate("m", &at("c"), &at("h"));
+    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("c")));
 }
