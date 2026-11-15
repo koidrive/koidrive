@@ -245,7 +245,10 @@ fn follow_marks(
                     let at_a_folder_place = top.is_some_and(|top| {
                         folders.contains(&(top.shape.parent.clone(), name_key(&top.shape.name)))
                     });
-                    if pass != Pass::InNewFolder || at_a_folder_place {
+                    if pass != Pass::InNewFolder
+                        || at_a_folder_place
+                        || chain.iter().any(|id| marks.contains_key(id))
+                    {
                         waiting.insert(node.clone(), local.clone());
                         continue;
                     }

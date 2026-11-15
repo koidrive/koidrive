@@ -2152,6 +2152,22 @@ fn keeps_the_mark_invariants(
         if before.synced().get(local[i].0).is_some() {
             continue;
         }
+        if mark_of.contains_key(local[i].0) {
+            let mut above = after
+                .local()
+                .get(node)
+                .map(|entry| entry.shape.parent.clone());
+            while let Some(at) = above.filter(|at| *at != after.local().root) {
+                let folder = after.local().get(&at).expect("an ancestor in L");
+                assert!(
+                    after.synced().live(&at).is_some()
+                        || !mark_of.contains_key(local[folder.identity.ino as usize - 1].0),
+                    "{node} followed its mark inside a marked folder S does not hold\n{}",
+                    case()
+                );
+                above = Some(folder.shape.parent.clone());
+            }
+        }
         let entry = &after.local().get(node).expect("an adopted entry").shape;
         let held = after.synced().live(node).expect("S holds an adopted entry");
         assert!(
@@ -2638,6 +2654,41 @@ fn a_marked_file_in_a_marked_folder_moved_into_a_new_folder_keeps_its_place() {
     );
     assert_eq!(trees.synced().live("n"), Some(&dir(ROOT, "d")));
     assert_eq!(trees.synced().live("m"), Some(&file("n", "a", 1)));
+}
+
+#[test]
+fn a_file_in_a_marked_folder_that_cannot_follow_waits_with_it() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("folder", dir(ROOT, "fresh")),
+            ("entry", file("folder", "a", 1)),
+            ("m", file(ROOT, "z", 3)),
+        ],
+        &[("m", file(ROOT, "p", 3))],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("n", file(ROOT, "b", 1)),
+            live("m", file(ROOT, "w", 3)),
+        ],
+        &[
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("n", file("p", "a", 1)),
+            ("n", file(ROOT, "b", 1)),
+        ],
+        &[("folder", "p"), ("entry", "n")],
+    );
+    assert_eq!(trees.synced().get("p"), None);
+    assert_eq!(trees.synced().get("n"), None);
+    let question = (commits.questions().iter())
+        .find(|question| question.holds().any(|id| id == "folder"))
+        .expect("a question about the folder")
+        .clone();
+    assert!(question.holds().any(|id| id == "entry"));
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.iter().any(|(kind, id)| *kind == "move" && id == "n"));
 }
 
 #[test]
