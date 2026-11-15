@@ -2687,16 +2687,17 @@ fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_moves_wha
     );
 }
 
-#[test]
-fn deleting_a_folder_inside_a_taken_along_server_folder_before_its_entries_arrive_keeps_the_discard()
- {
+fn a_server_entry_deleted_inside_a_taken_along_folder(
+    remote: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+) -> (Trees, Commits, IdGen) {
+    let remote: Vec<(&str, Shape)> = [("x", dir(ROOT, "server"))]
+        .into_iter()
+        .chain(remote.iter().cloned())
+        .collect();
     let mut trees = trees(
         &[("f", dir(ROOT, "new")), ("x", dir(ROOT, "server"))],
-        &[
-            ("x", dir(ROOT, "server")),
-            ("d", dir("x", "sub")),
-            ("e", file("d", "unseen", 5)),
-        ],
+        &remote,
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
     commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
@@ -2710,7 +2711,128 @@ fn deleting_a_folder_inside_a_taken_along_server_folder_before_its_entries_arriv
     assert!(commits.decide(&asked.id, Answer::Discard));
     assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
     trees.set_rules(&[] as &[&str], None);
-    trees.set_synced("d".into(), Some(dir("x", "sub")));
+    for (id, shape) in synced {
+        trees.set_synced((*id).into(), Some(shape.clone()));
+    }
+    trees.settle();
+    (trees, commits, ids)
+}
+
+fn the_discard_holds_once_the_server_entry_comes_back(
+    remote: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+) -> Vec<(String, String, String)> {
+    let (mut trees, mut commits, mut ids) =
+        a_server_entry_deleted_inside_a_taken_along_folder(remote, synced);
+    assert!(!trees.reclaimed("f"));
+    run_effects(
+        &mut Effects::default(),
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        100,
+    );
+    local(&trees)
+}
+
+#[test]
+fn deleting_a_folder_inside_a_taken_along_server_folder_before_its_entries_arrive_keeps_the_discard()
+ {
+    let local = the_discard_holds_once_the_server_entry_comes_back(
+        &[("d", dir("x", "sub")), ("e", file("d", "unseen", 5))],
+        &[("d", dir("x", "sub"))],
+    );
+    assert_eq!(
+        local,
+        [
+            ("d".into(), "x".into(), "sub".into()),
+            ("e".into(), "d".into(), "unseen".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+}
+
+#[test]
+fn deleting_a_folder_inside_a_taken_along_server_folder_the_server_renamed_keeps_the_discard() {
+    let local = the_discard_holds_once_the_server_entry_comes_back(
+        &[("d", dir("x", "renamed"))],
+        &[("d", dir("x", "sub"))],
+    );
+    assert_eq!(
+        local,
+        [
+            ("d".into(), "x".into(), "renamed".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+}
+
+#[test]
+fn deleting_a_file_inside_a_taken_along_server_folder_the_server_edited_keeps_the_discard() {
+    let local = the_discard_holds_once_the_server_entry_comes_back(
+        &[("d", file("x", "doc", 5))],
+        &[("d", file("x", "doc", 4))],
+    );
+    assert_eq!(
+        local,
+        [
+            ("d".into(), "x".into(), "doc".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+}
+
+#[test]
+fn deleting_a_synced_file_inside_a_folder_the_server_brings_back_reclaims_the_discarded_folder() {
+    for remote in [
+        vec![("d", dir("x", "sub")), ("g", file("d", "seen", 3))],
+        vec![
+            ("d", dir("x", "sub")),
+            ("g", file("d", "seen", 3)),
+            ("e", file("d", "unseen", 5)),
+        ],
+    ] {
+        let (mut trees, mut commits, mut ids) = a_server_entry_deleted_inside_a_taken_along_folder(
+            &remote,
+            &[("d", dir("x", "sub")), ("g", file("d", "seen", 3))],
+        );
+        assert!(trees.reclaimed("f"), "{remote:?}");
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        assert!(sent.contains(&("create dir", "f".into())), "{sent:?}");
+        assert!(sent.contains(&("move", "x".into())), "{sent:?}");
+    }
+}
+
+#[test]
+fn a_server_folder_moved_within_a_taken_along_one_before_the_discard_keeps_the_discard_once_the_rules_let_it_in()
+ {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "sub")),
+            ("z", dir("x", "inner")),
+        ],
+        &[
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "sub")),
+            ("z", dir("x", "inner")),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\nhidden\n")));
+    for (id, parent, name) in [("x", "f", "ignored"), ("z", "y", "hidden")] {
+        let mut moved = trees.local().get(id).unwrap().clone();
+        moved.shape.parent = parent.into();
+        moved.shape.name = name.into();
+        trees.set_local_changed(id.into(), moved);
+    }
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"hidden\n")));
     trees.settle();
     assert!(!trees.reclaimed("f"));
     run_effects(
@@ -2720,14 +2842,8 @@ fn deleting_a_folder_inside_a_taken_along_server_folder_before_its_entries_arriv
         &mut ids,
         100,
     );
-    assert_eq!(
-        local(&trees),
-        [
-            ("d".into(), "x".into(), "sub".into()),
-            ("e".into(), "d".into(), "unseen".into()),
-            ("x".into(), ROOT.into(), "server".into())
-        ]
-    );
+    assert!(trees.local().get("f").is_none());
+    assert_eq!(trees.local().get("x").unwrap().shape, dir(ROOT, "server"));
 }
 
 #[test]

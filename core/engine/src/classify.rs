@@ -400,6 +400,7 @@ pub struct Trees {
     creates: BTreeSet<NodeId>,
     ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
+    keeping: RefCell<BTreeSet<NodeId>>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -483,6 +484,7 @@ impl Trees {
             creates: BTreeSet::new(),
             ready: BTreeSet::new(),
             others: BTreeSet::new(),
+            keeping: RefCell::default(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
@@ -1814,7 +1816,8 @@ impl Trees {
             return true;
         }
         let Some(local) = self.l.get(id) else {
-            return self.r.live(id).is_none() || self.kept_back(id);
+            return self.r.live(id).is_none()
+                || (self.kept_back(id) && self.keeps_the_synced_children(id, seen));
         };
         let holds = |shape: Option<&Shape>| shape.is_some_and(|shape| local.shape.same(shape));
         (holds(self.r.live(id)) || holds(self.acknowledged(id)))
@@ -1823,23 +1826,54 @@ impl Trees {
             && self.keeps_the_synced_children(id, seen)
     }
 
-    fn kept_back(&self, id: &str) -> bool {
-        self.remote_children(id).any(|child| {
-            let Some(remote) = self.r.live(child) else {
-                return false;
+    pub(crate) fn keep_walk<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> impl Iterator<Item = (&'a str, bool)> + 'a {
+        let goes_back = (self.l.get(id))
+            .is_some_and(|node| node.parked || self.reverted.contains(id))
+            || self.is_discarded(id);
+        let starts = !self.excluded(id)
+            && (self.r.live(id))
+                .is_some_and(|remote| goes_back || !same(Some(remote), self.acknowledged(id)));
+        let mut next = starts.then_some(id);
+        let mut steps = 0;
+        std::iter::from_fn(move || {
+            let current = next.take().filter(|_| steps <= self.r.len())?;
+            steps += 1;
+            let remote = self.r.live(current)?;
+            let deleted = match self.l.get(current) {
+                Some(local) => {
+                    let moved = (self.acknowledged(current))
+                        .is_none_or(|held| !local.shape.same_position(held));
+                    if moved && !self.reverted.contains(current) && !self.is_discarded(current) {
+                        return None;
+                    }
+                    false
+                }
+                None => self.s.live(current).is_some() || self.waiting.contains_key(current),
             };
-            let local = self.l.get(child);
-            let held = self.acknowledged(child);
-            let in_place = local.is_none_or(|node| {
-                self.reverted.contains(child)
-                    || held.is_some_and(|held| node.shape.same_position(held))
-            });
-            let changed = !self.excluded(child)
-                && (local.is_some_and(|node| node.parked)
-                    || self.reverted.contains(child)
-                    || !same(Some(remote), held));
-            in_place && (changed || self.kept_back(child))
+            next = (remote.parent != self.r.root).then_some(remote.parent.as_str());
+            Some((current, deleted))
         })
+    }
+
+    fn kept_back(&self, id: &str) -> bool {
+        if !self.keeping.borrow_mut().insert(id.to_owned()) {
+            return false;
+        }
+        let mut below = vec![id];
+        let mut kept = false;
+        while let Some(at) = below.pop().filter(|_| !kept) {
+            kept = self.others.contains(at) && self.keep_walk(at).any(|(node, _)| node == id);
+            below.extend(
+                (self.remote_children(at))
+                    .filter(|child| self.r.live(child).is_some())
+                    .map(String::as_str),
+            );
+        }
+        self.keeping.borrow_mut().remove(id);
+        kept
     }
 
     fn local_children_placed_or_parked<'a>(
@@ -1858,6 +1892,11 @@ impl Trees {
                 Some(node) if node.shape.parent == id => true,
                 Some(node) if !self.discarded.contains_key(child) => {
                     !waiting || (self.s.live(child)).is_some_and(|s| node.shape.same_position(s))
+                }
+                Some(node)
+                    if (self.discarded.get(child)).is_some_and(|shape| node.shape.same(shape)) =>
+                {
+                    true
                 }
                 _ => self.as_the_server_holds(child, seen),
             })
@@ -4188,6 +4227,7 @@ impl Trees {
             creates: _,
             ready: _,
             others: _,
+            keeping: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;
