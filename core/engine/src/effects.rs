@@ -1138,7 +1138,7 @@ impl<'a> View<'a> {
 
     fn way_out(&self, id: &str, local: &'a LocalNode) -> &'a Shape {
         let away = self.trees.remote().live(id).filter(|remote| {
-            self.blocked(id, &local.shape).is_some()
+            (self.trees.reverted().contains(id) || self.blocked(id, &local.shape).is_some())
                 && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
                 && self.blocked(id, remote).is_none()
         });
