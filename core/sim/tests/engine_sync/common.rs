@@ -1315,7 +1315,9 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
             || (trees.remote().iter()).any(|(node, remote)| {
                 !remote.trashed
                     && trees.local().get(node).is_none()
-                    && (!device.removed_from.contains_key(node) || server_changed(node))
+                    && (!device.removed_from.contains_key(node)
+                        || server_changed(node)
+                        || device.kept_back.contains(node))
                     && !trees.excluded(node)
                     && below_in_r(node)
             }))
