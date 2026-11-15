@@ -1668,3 +1668,26 @@ fn a_folder_moved_out_onto_a_name_r_holds_goes_before_what_is_created_in_it() {
     let d_out = sent.iter().position(|op| matches!(op, op::Op::Move(m) if m.node_id == "d"));
     assert!(d_out.is_some() && d_out < created, "{sent:?}");
 }
+
+#[test]
+fn a_create_into_a_folder_moving_into_a_new_folder_past_the_plan_window_waits_for_the_move() {
+    let mut trees = trees(&[
+        ("c", Some(dir("x", "c")), None, None),
+        ("g", Some(dir(ROOT, "g")), None, None),
+        (
+            "x",
+            Some(dir("z", "x")),
+            Some(dir(ROOT, "x")),
+            Some(remote(dir(ROOT, "x"))),
+        ),
+        ("z", Some(dir(ROOT, "z")), None, None),
+    ]);
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [create_dir("g", ROOT, "g")]);
+}
+
