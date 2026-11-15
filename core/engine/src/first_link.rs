@@ -213,7 +213,10 @@ pub(crate) fn adopt_by_marks_first(
                 continue 'adopt;
             }
         }
-        return waiting.into_values().collect();
+        return (waiting.into_iter())
+            .filter(|(node, local)| node != local)
+            .map(|(_, local)| local)
+            .collect();
     }
 }
 

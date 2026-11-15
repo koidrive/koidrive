@@ -2195,6 +2195,20 @@ fn keeps_the_mark_invariants(
             case()
         );
     }
+    for (id, entry) in after.local().iter() {
+        let Some(live) = after.remote().live(id) else {
+            continue;
+        };
+        let agrees = live.kind == entry.shape.kind
+            && live.content == entry.shape.content
+            && live.parent == entry.shape.parent
+            && same_name(&live.name, &entry.shape.name);
+        assert!(
+            !agrees || after.synced().live(id).is_some() || after.waiting().get(id).is_some(),
+            "{id} sits where R′ has it, but S holds nothing for it\n{}",
+            case()
+        );
+    }
 }
 
 fn recovered_by_marks(
@@ -3017,4 +3031,25 @@ proptest! {
             &marks,
         );
     }
+}
+
+#[test]
+fn a_marked_file_at_its_place_in_a_moved_folder_whose_mark_cannot_follow_is_settled_to_r() {
+    let (trees, _, _) = followed(
+        &[
+            ("c", dir(ROOT, "c")),
+            ("p", dir("c", "a")),
+            ("n", file("p", "a", 1)),
+        ],
+        &[("c", dir(ROOT, "c"))],
+        &[
+            live("c", dir(ROOT, "c")),
+            live("p", dir(ROOT, "A")),
+            live("n", file("p", "a", 1)),
+        ],
+        &[],
+        &[("p", "p"), ("n", "n")],
+    );
+    let settled = (trees.synced().live("n")).or_else(|| trees.waiting().get("n")?.shape.as_ref());
+    assert_eq!(settled, Some(&file("p", "a", 1)));
 }

@@ -10159,3 +10159,34 @@ fn a_conflict_name_the_server_gave_a_marked_file_is_not_taken_for_a_rename() {
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_file_in_a_folder_a_store_rollback_forgot_after_a_rewind_follows_another_devices_delete() {
+    let u = drawn_with;
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![
+            (2, u(0, 0, 0, 0, 0)),
+            (0, u(0, 0, 0, 1, 0)),
+            (2, u(4, 0, 0, 0, 0)),
+            (2, u(1, 0, 0, 2, 0)),
+            (0, Step::Work(0)),
+            (0, u(0, 0, 4785627299637041744, 3, 0)),
+            (0, Step::CopyStore),
+        ],
+        vec![
+            (0, u(3, 5716283514228567274, 4453223205626884582, 0, 0)),
+            (2, Step::Work(0)),
+            (2, Step::Commit(Reply::NoChunks)),
+            (0, Step::Backup),
+            (0, Step::Rewind),
+            (0, u(0, 0, 0, 5, 0)),
+        ],
+        vec![
+            (2, u(0, 0, 94749795983570289, 1, 0)),
+            (0, u(3, 1504566978321250355, 4403454807934007207, 0, 0)),
+            (0, Step::RollBack),
+            (1, u(4, 15683456900631568529, 0, 0, 0)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
