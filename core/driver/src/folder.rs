@@ -1714,12 +1714,9 @@ impl Folder {
 
     fn mark_given(&self, given: Vec<(NodeId, NodeId)>) {
         let trees = &self.engine.trees;
-        let entries = (given.into_iter()).filter_map(|(sent, node)| {
-            let id = [&node, &sent]
-                .into_iter()
-                .find(|id| trees.local().get(id).is_some())?;
-            Some((id.clone(), node))
-        });
+        let entries = (given.into_iter())
+            .filter(|(_, node)| trees.local().get(node).is_some())
+            .map(|(_, node)| (node.clone(), node));
         self.disk.mark(trees, entries);
     }
 

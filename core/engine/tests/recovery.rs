@@ -2298,6 +2298,64 @@ fn a_marked_entry_the_user_renamed_by_case_only_commits_the_rename() {
 }
 
 #[test]
+fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("n", file(ROOT, "x", 1)),
+            ("renamed", file(ROOT, "b", 2)),
+            ("copy", file(ROOT, "a", 2)),
+        ],
+        &[],
+        &[live("m", file(ROOT, "x", 1)), live("n", file(ROOT, "a", 2))],
+        &[("m", file(ROOT, "x", 1)), ("n", file(ROOT, "a", 2))],
+        &[("n", "m"), ("renamed", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["copy"]);
+    assert_eq!(local_shape(&trees, "m"), Some(&file(ROOT, "x", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_claim_whose_historical_folder_another_claim_holds_waits_for_that_claim_s_release() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "p")),
+            ("s-folder", dir(ROOT, "s")),
+            ("there", file("s-folder", "f", 2)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("s", dir(ROOT, "s")),
+            live("n", file("s", "f", 2)),
+        ],
+        &[
+            ("r", dir(ROOT, "r")),
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("s", dir(ROOT, "s")),
+            ("n", file("p", "f", 1)),
+            ("n", file("s", "f", 2)),
+        ],
+        &[("a-file", "n"), ("a-folder", "p")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
+    assert_eq!(trees.synced().live("n"), Some(&file("p", "f", 1)));
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["a-folder", "there"],
+    );
+}
+
+#[test]
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};

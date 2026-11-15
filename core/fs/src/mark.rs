@@ -71,7 +71,9 @@ pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
     };
     if native(entry) {
         let value = encode(node, stat.id);
-        let _ = rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty());
+        if rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()).is_err() {
+            let _ = rustix::fs::fremovexattr(entry, NAME);
+        }
     }
 }
 

@@ -2097,14 +2097,11 @@ impl World {
                         let given = commit::given_nodes(&flight.commit, &result);
                         device.engine.commits.received(result).map_err(refused)?;
                         let trees = &device.engine.trees;
-                        for (sent, node) in given {
-                            let Some((id, local)) = [&node, &sent]
-                                .into_iter()
-                                .find_map(|id| Some((id, trees.local().get(id)?)))
-                            else {
+                        for (_, node) in given {
+                            let Some(local) = trees.local().get(&node) else {
                                 continue;
                             };
-                            if let Some(at) = location_of(trees, id) {
+                            if let Some(at) = location_of(trees, &node) {
                                 device.disk.mark(&at, local.identity.ino, &node);
                             }
                         }

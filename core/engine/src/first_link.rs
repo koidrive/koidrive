@@ -200,29 +200,61 @@ pub(crate) fn adopt_by_marks_first(trees: &mut Trees, history: &History, marks: 
             claimed = left;
             continue;
         }
-        let depth =
-            |node: &NodeId| key_path(trees.remote(), node).map_or(usize::MAX, |path| path.len());
-        let Some(highest) = claimed.keys().map(depth).min() else {
+        if claimed.is_empty() {
             return;
-        };
-        released.extend(
-            claimed
-                .keys()
-                .filter(|node| depth(node) == highest)
-                .cloned(),
-        );
+        }
+        let free: Vec<NodeId> = (claimed.iter())
+            .filter(|(node, claimant)| !waits_on_a_claim(trees, history, node, claimant, &claimed))
+            .map(|(node, _)| node.clone())
+            .collect();
+        match free.is_empty() {
+            true => released.extend(claimed.keys().cloned()),
+            false => released.extend(free),
+        }
     }
 }
 
+fn waits_on_a_claim(
+    trees: &Trees,
+    history: &History,
+    node: &str,
+    claimant: &str,
+    claimed: &BTreeMap<NodeId, NodeId>,
+) -> bool {
+    let Some(target) = (trees.local().get(claimant))
+        .and_then(|entry| shape_to_follow(trees, history, node, &entry.shape))
+    else {
+        return false;
+    };
+    let mut parent = target.parent;
+    for _ in 0..=trees.remote().len() {
+        if parent == trees.synced().root || trees.synced().get(&parent).is_some() {
+            return false;
+        }
+        if claimed.contains_key(&parent) {
+            return true;
+        }
+        let Some(above) = trees.remote().get(&parent) else {
+            return false;
+        };
+        parent = above.shape.parent.clone();
+    }
+    false
+}
+
 fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) -> BTreeMap<NodeId, NodeId> {
-    let mut left = claimed_once(trees, marks);
     loop {
-        let before = left.len();
-        left.retain(|(local, node)| !follow_mark(trees, history, local, node));
-        if left.len() == before {
-            return (left.into_iter())
-                .map(|(local, node)| (node.clone(), local.clone()))
-                .collect();
+        let mut followed = false;
+        let mut left = BTreeMap::new();
+        for (local, node) in claimed_once(trees, marks) {
+            if follow_mark(trees, history, local, node) {
+                followed = true;
+            } else {
+                left.insert(node.clone(), local.clone());
+            }
+        }
+        if !followed {
+            return left;
         }
     }
 }
@@ -234,7 +266,9 @@ fn claimed_once<'a>(trees: &Trees, marks: &'a Marks) -> Vec<(&'a NodeId, &'a Nod
     }
     (marks.iter())
         .filter(|(local, node)| {
-            claims[node] == 1 && (local == node || trees.local().get(node).is_none())
+            claims[node] == 1
+                && trees.synced().get(local).is_none()
+                && (local == node || trees.local().get(node).is_none())
         })
         .collect()
 }
