@@ -1,0 +1,3 @@
+CREATE TABLE unseen_changes (
+    node_id TEXT PRIMARY KEY
+) STRICT, WITHOUT ROWID;
