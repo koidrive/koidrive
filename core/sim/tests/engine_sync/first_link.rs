@@ -257,6 +257,46 @@ fn a_discarded_folder_the_user_moved_a_synced_file_into_before_the_answer_conver
     .unwrap();
 }
 
+#[test]
+fn a_discarded_folder_the_user_moves_an_entry_an_earlier_discard_took_along_into_is_the_users() {
+    let seed = [act(1, 0, 0, 0, 0), act(1, 0, 0, 5, 0), act(0, 0, 0, 0, 0)];
+    let local = [
+        act(0, 0, 0, 0, 0),
+        act(1, 0, 5710523212519727777, 0, 0),
+        act(0, 0, 8362300977708182750, 2, 0),
+    ];
+    let during = [
+        (true, vec![act(8, 0, 3967452738093421826, 0, 0)]),
+        (
+            false,
+            vec![
+                act(2, 266909642346921001, 0, 0, 0),
+                act(4, 1422974510127056623, 0, 0, 0),
+            ],
+        ),
+        (true, vec![act(0, 0, 6000348076165824698, 5, 0)]),
+        (
+            true,
+            vec![act(3, 15276342541379635278, 11841328229179036497, 0, 0)],
+        ),
+        (false, vec![act(0, 0, 0, 0, 0)]),
+    ];
+    run_ignoring_answering_after(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &[Ruling::Exclude(vec!["c.txt"])],
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),
