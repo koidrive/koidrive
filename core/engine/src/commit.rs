@@ -2482,12 +2482,20 @@ fn in_sync(trees: &Trees, original: &ConflictFile, copy: &ConflictFile) -> bool 
         .all(|file| trees.class(&file.node_id) == Class::InSync)
 }
 
-fn leaving_unsent(trees: &Trees, problems: &BTreeSet<NodeId>, id: &str) -> bool {
+fn leaving_unsent(
+    trees: &Trees,
+    aliases: &BTreeMap<NodeId, NodeId>,
+    problems: &BTreeSet<NodeId>,
+    id: &str,
+) -> bool {
     let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
         return false;
     };
     (problems.contains(id) || trees.waiting().contains_key(id))
-        && (local.shape.parent != remote.shape.parent
+        && (aliases
+            .get(&local.shape.parent)
+            .unwrap_or(&local.shape.parent)
+            != &remote.shape.parent
             || name_key(&local.shape.name) != name_key(&remote.shape.name))
 }
 
@@ -3519,8 +3527,9 @@ fn plan(
             shape, pending_for, ..
         }) = slot.as_mut()
             && shape.kind == Kind::Dir
-            && (scratch.holders(&shape.parent, &shape.name))
-                .any(|other| moving.contains(other) || leaving_unsent(trees, problems, other))
+            && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
+                moving.contains(other) || leaving_unsent(trees, aliases, problems, other)
+            })
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
             pending_for.get_or_insert_with(|| shape.name.clone());
