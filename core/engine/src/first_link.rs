@@ -64,6 +64,14 @@ pub enum PriorSync {
 /// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
+    adopt_around(trees, history, &BTreeMap::new())
+}
+
+pub(crate) fn adopt_around(
+    trees: &mut Trees,
+    history: Option<&History>,
+    claimed: &BTreeMap<NodeId, NodeId>,
+) -> Vec<NodeId> {
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
         .map(|(id, node)| {
@@ -120,6 +128,9 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
             let key = (parent.clone(), nfc(&name));
             let matches = |remote_id: &NodeId, shape: &Shape| {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
+                    && claimed
+                        .get(remote_id)
+                        .is_none_or(|claimant| *claimant == id)
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
                     && shape.kind == local.kind
                     && same_bytes(&shape.content, &local.content)
@@ -177,14 +188,28 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     held
 }
 
-pub(crate) fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) -> bool {
+pub(crate) fn adopt_by_marks_first(trees: &mut Trees, history: &History, marks: &Marks) {
+    let mut claimed = follow_marks(trees, history, marks);
+    loop {
+        adopt_around(trees, Some(history), &claimed);
+        let left = follow_marks(trees, history, marks);
+        if left == claimed {
+            break;
+        }
+        claimed = left;
+    }
+    adopt(trees, Some(history));
+}
+
+fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) -> BTreeMap<NodeId, NodeId> {
     let mut left = claimed_once(trees, marks);
-    let claimed = left.len();
     loop {
         let before = left.len();
         left.retain(|(local, node)| !follow_mark(trees, history, local, node));
         if left.len() == before {
-            return left.len() < claimed;
+            return (left.into_iter())
+                .map(|(local, node)| (node.clone(), local.clone()))
+                .collect();
         }
     }
 }

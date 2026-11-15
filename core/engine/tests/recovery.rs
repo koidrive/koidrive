@@ -2220,6 +2220,46 @@ fn a_marked_file_the_user_renamed_in_an_unmarked_folder_follows_once_the_folder_
 }
 
 #[test]
+fn a_copy_at_the_old_name_in_an_unmarked_folder_leaves_the_node_to_the_renamed_original() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 1)),
+            ("b-folder", dir(ROOT, "d")),
+            ("c-copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["c-copy"]);
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_at_the_old_name_takes_the_node_when_the_renamed_original_cannot_follow_its_mark() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 2)),
+            ("b-folder", dir(ROOT, "d")),
+            ("c-copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["a-file"]);
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "f", 1)));
+}
+
+#[test]
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};

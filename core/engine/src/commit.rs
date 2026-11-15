@@ -567,11 +567,7 @@ impl Commits {
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
-        first_link::follow_marks(trees, history, marks);
-        first_link::adopt(trees, Some(history));
-        while first_link::follow_marks(trees, history, marks) {
-            first_link::adopt(trees, Some(history));
-        }
+        first_link::adopt_by_marks_first(trees, history, marks);
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
             .collect::<BTreeSet<_>>()
