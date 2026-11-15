@@ -215,16 +215,8 @@ proptest! {
         answer_after in 0usize..12,
         cut in prop::sample::select(CUTS.to_vec()),
     ) {
-        let during: Vec<(bool, Vec<Action>)> = (before.into_iter())
-            .chain([(true, vec![moved])])
-            .chain(gap)
-            .chain([(false, vec![purged]), (true, vec![changed])])
-            .collect();
-        let rulings: Vec<Ruling> = [Ruling::File(vec![])]
-            .into_iter()
-            .chain((2..during.len()).map(|_| Ruling::Exclude(excluded.clone())))
-            .chain([Ruling::Exclude(vec![])])
-            .collect();
+        let (during, rulings) =
+            the_server_drops_part_of_a_discarded_folder(before, moved, gap, purged, changed, excluded);
         run_ignoring_answering_after(
             &seed,
             &local,

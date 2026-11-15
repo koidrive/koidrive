@@ -298,6 +298,53 @@ fn a_discarded_folder_the_user_moves_an_entry_an_earlier_discard_took_along_into
     .unwrap();
 }
 
+#[test]
+fn a_discarded_folder_stays_off_the_server_when_the_user_moves_out_what_arrived_in_a_server_folder_it_takes_along() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(
+            false,
+            vec![
+                act(4, 10608111819271174101, 0, 0, 0),
+                act(0, 0, 12958059801695950876, 0, 0),
+            ],
+        )],
+        act(8, 0, 0, 0, 0),
+        vec![
+            (
+                false,
+                vec![
+                    act(0, 0, 1533563441121785454, 0, 0),
+                    act(3, 2646866086397974328, 286365459004699858, 0, 0),
+                ],
+            ),
+            (false, vec![act(0, 0, 7031929195995084547, 0, 0)]),
+        ],
+        act(7, 0, 0, 0, 0),
+        act(9, 8782585485606220866, 0, 0, 3),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 3, 0),
+            act(0, 0, 0, 6, 0),
+            act(0, 0, 163347753468072842, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 80214081026911650, 0, 0),
+        ],
+        &[act(0, 0, 0, 5, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),

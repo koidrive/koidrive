@@ -2954,6 +2954,13 @@ fn a_server_folder_in_a_discarded_folder_changed_after_the_answer(
             )
             .unwrap();
     }
+    (sent, trees)
+}
+
+fn a_server_folder_in_a_discarded_folder_reclaimed_after_the_answer(
+    change: impl FnOnce(&mut Trees),
+) -> (Vec<(&'static str, String)>, Trees) {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(change);
     assert!(sent.contains(&("create dir", "f".into())), "{sent:?}");
     assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
     (sent, trees)
@@ -2961,7 +2968,7 @@ fn a_server_folder_in_a_discarded_folder_changed_after_the_answer(
 
 #[test]
 fn a_file_deleted_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
-    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_reclaimed_after_the_answer(|trees| {
         trees.remove_local("c")
     });
     assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
@@ -3066,25 +3073,18 @@ fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_fo
 }
 
 #[test]
-fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_leaves_the_folder_discarded()
  {
-    let (mut sent, trees) =
+    let (sent, trees) =
         a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
             let mut moved = trees.local().get("c").unwrap().clone();
             moved.shape.parent = ROOT.into();
             moved.shape.name = "moved".into();
             trees.set_local_changed("c".into(), moved);
         });
-    sent.sort();
-    assert_eq!(
-        sent,
-        [
-            ("create dir", "f".to_owned()),
-            ("move", "c".to_owned()),
-            ("move", "x".to_owned())
-        ]
-    );
-    assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(trees.local().get("x").unwrap().shape, dir("p", "server"));
+    assert!(trees.local().get("f").is_none());
     assert_eq!(
         trees.local().get("c").unwrap().shape,
         file(ROOT, "moved", 5)
@@ -3092,13 +3092,15 @@ fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_
 }
 
 #[test]
-fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
+fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_leaves_the_folder_discarded() {
     let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
         let mut moved = trees.local().get("c").unwrap().clone();
         moved.shape.parent = ROOT.into();
         trees.set_local_changed("c".into(), moved);
     });
-    assert!(sent.contains(&("move", "c".into())), "{sent:?}");
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(trees.local().get("x").unwrap().shape, dir(ROOT, "server"));
+    assert!(trees.local().get("f").is_none());
     assert_eq!(
         trees.local().get("c").unwrap().shape,
         file(ROOT, "child", 9)
@@ -3107,7 +3109,7 @@ fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_makes_the_folder_th
 
 #[test]
 fn a_file_edited_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users() {
-    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_reclaimed_after_the_answer(|trees| {
         let mut edited = trees.local().get("c").unwrap().clone();
         edited.shape.content = Some(content(4));
         trees.set_local_changed("c".into(), edited);
@@ -3119,7 +3121,7 @@ fn a_file_edited_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_t
 #[test]
 fn a_file_the_server_dropped_and_edited_here_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
  {
-    let (_, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+    let (_, trees) = a_server_folder_in_a_discarded_folder_reclaimed_after_the_answer(|trees| {
         trees.remove_remote("c");
         let mut edited = trees.local().get("c").unwrap().clone();
         edited.shape.content = Some(content(4));
@@ -3365,5 +3367,65 @@ fn two_writes_with_the_same_bytes_and_a_copied_sub_second_mtime_are_linked() {
     assert_eq!(
         trees.synced().live("r-a"),
         Some(&written("a", 1_794_268_740_123_456_789))
+    );
+}
+
+#[test]
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_trashes_it()
+ {
+    let (sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            let mut moved = trees.local().get("c").unwrap().clone();
+            moved.shape.parent = ROOT.into();
+            moved.shape.name = "moved".into();
+            trees.set_local_changed("c".into(), moved);
+            let mut trashed = trees.remote().get("c").unwrap().clone();
+            trashed.trashed = true;
+            trees.set_remote("c".into(), trashed);
+        });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "moved", 5)
+    );
+}
+
+#[test]
+fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_trashes_it()
+ {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        let mut moved = trees.local().get("c").unwrap().clone();
+        moved.shape.parent = ROOT.into();
+        trees.set_local_changed("c".into(), moved);
+        let mut trashed = trees.remote().get("c").unwrap().clone();
+        trashed.trashed = true;
+        trees.set_remote("c".into(), trashed);
+    });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "child", 9)
+    );
+}
+
+#[test]
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_moves_and_trashes_it()
+ {
+    let (sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            let mut moved = trees.local().get("c").unwrap().clone();
+            moved.shape.parent = ROOT.into();
+            moved.shape.name = "moved".into();
+            trees.set_local_changed("c".into(), moved);
+            let mut trashed = trees.remote().get("c").unwrap().clone();
+            trashed.shape.parent = ROOT.into();
+            trashed.shape.name = "remote-moved".into();
+            trashed.trashed = true;
+            trees.set_remote("c".into(), trashed);
+        });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "moved", 5)
     );
 }

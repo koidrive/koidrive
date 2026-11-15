@@ -1171,7 +1171,7 @@ fn revive(
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && (!kept_with.contains_key(child)
-                        || acted_below(device, kept_with, child))
+                        || acted_below(device, child))
                     && discarded
                         .get(child)
                         .is_none_or(|shown| &shown.parent != *id)
@@ -1223,7 +1223,7 @@ fn placement_check(
         device.trees.local().get(&record.node),
     ) {
         let taken_along =
-            kept_with.contains_key(&record.node) && !acted_below(device, kept_with, &record.node);
+            kept_with.contains_key(&record.node) && !acted_below(device, &record.node);
         let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
             && (device.trees.remote().live(&record.node))
                 .is_some_and(|remote| remote.same_position(after));
@@ -1247,15 +1247,11 @@ fn positions(trees: &Trees) -> BTreeMap<String, Position> {
         .collect()
 }
 
-fn acted_below(
-    device: &Device,
-    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    id: &str,
-) -> bool {
+fn acted_below(device: &Device, id: &str) -> bool {
     let trees = &device.trees;
     let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
         let mut current = Some(entry.to_owned());
-        for _ in 0..=trees.local().len() + kept_with.len() + device.removed_from.len() {
+        for _ in 0..=trees.local().len() + device.removed_from.len() {
             match current {
                 Some(at) if at == id => return true,
                 Some(at) => current = parent(&at),
@@ -1265,7 +1261,6 @@ fn acted_below(
         false
     };
     let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
-    let in_kept = |at: &str| kept_with.get(at).map(|shape| shape.parent.clone());
     let removed_from = |at: &str| in_local(at).or_else(|| device.removed_from.get(at).cloned());
     let as_agreed = |entry: &str| {
         let Some(local) = trees.local().get(entry) else {
@@ -1283,7 +1278,7 @@ fn acted_below(
     (device.acted.iter())
         .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
         .any(|entry| {
-            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+            reaches(entry, &in_local) || reaches(entry, &removed_from)
         })
 }
 
@@ -2027,6 +2022,27 @@ fn act(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Action 
         name,
         text,
     }
+}
+
+fn the_server_drops_part_of_a_discarded_folder(
+    before: Vec<(bool, Vec<Action>)>,
+    moved: Action,
+    gap: Vec<(bool, Vec<Action>)>,
+    purged: Action,
+    changed: Action,
+    excluded: Vec<&'static str>,
+) -> (Vec<(bool, Vec<Action>)>, Vec<Ruling>) {
+    let during: Vec<(bool, Vec<Action>)> = (before.into_iter())
+        .chain([(true, vec![moved])])
+        .chain(gap)
+        .chain([(false, vec![purged]), (true, vec![changed])])
+        .collect();
+    let rulings: Vec<Ruling> = [Ruling::File(vec![])]
+        .into_iter()
+        .chain((2..during.len()).map(|_| Ruling::Exclude(excluded.clone())))
+        .chain([Ruling::Exclude(vec![])])
+        .collect();
+    (during, rulings)
 }
 
 /// The folder `a` with the file `c.txt` in it.
