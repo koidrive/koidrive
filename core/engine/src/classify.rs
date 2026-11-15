@@ -2,7 +2,7 @@
 
 //! Classifying a node (docs/design/sync-engine.md section 2.3) and the dirty set the planner reads.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_ignore::Status;
@@ -408,6 +408,7 @@ pub struct Trees {
     ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
     keeping: RefCell<Keeping>,
+    letting_go: Cell<bool>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -492,6 +493,7 @@ impl Trees {
             ready: BTreeSet::new(),
             others: BTreeSet::new(),
             keeping: RefCell::default(),
+            letting_go: Cell::default(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
@@ -1797,7 +1799,36 @@ impl Trees {
     }
 
     pub(crate) fn is_discarded(&self, id: &str) -> bool {
-        self.discarded.contains_key(id) && self.left_as_discarded(id) && !self.reclaimed(id)
+        self.discarded.contains_key(id)
+            && !self.no_longer_taken_along(id)
+            && self.left_as_discarded(id)
+            && !self.reclaimed(id)
+    }
+
+    fn no_longer_taken_along(&self, id: &str) -> bool {
+        if self.letting_go.replace(true) {
+            return false;
+        }
+        let gone = self.taken_along_is_the_users(id);
+        self.letting_go.set(false);
+        gone
+    }
+
+    fn taken_along_is_the_users(&self, id: &str) -> bool {
+        let Some(kept) = self.discarded.get(id).filter(|_| self.r.get(id).is_some()) else {
+            return false;
+        };
+        let mut parent = &kept.parent;
+        for _ in 0..=self.discarded.len() {
+            if self.reclaimed(parent) {
+                return true;
+            }
+            match (self.discarded.get(parent)).filter(|_| self.r.get(parent).is_some()) {
+                Some(kept) => parent = &kept.parent,
+                None => return false,
+            }
+        }
+        false
     }
 
     fn left_as_discarded(&self, id: &str) -> bool {
@@ -2095,8 +2126,31 @@ impl Trees {
             })
             .map(|(id, _)| id.clone())
             .collect();
+        let mut bases: Vec<(NodeId, Shape)> = Vec::new();
         for id in kept_with_released {
-            self.discarded.remove(&id);
+            let Some(kept) = self.discarded.remove(&id) else {
+                continue;
+            };
+            let Some(remote) = self.r.get(&id) else {
+                continue;
+            };
+            if self.s.get(&id).is_none() && !self.waiting.contains_key(&id) {
+                let base = Shape {
+                    content: kept.content,
+                    ..remote.shape.clone()
+                };
+                bases.push((id, base));
+            }
+        }
+        loop {
+            let before = bases.len();
+            bases.retain(|(id, base)| !self.set_synced_if_valid(id.clone(), Some(base.clone())));
+            if bases.len() == before {
+                break;
+            }
+        }
+        for (id, base) in bases {
+            self.wait(id, Some(base), Origin::Other);
         }
         for id in released {
             self.discarded.remove(id);
@@ -4292,6 +4346,7 @@ impl Trees {
             ready: _,
             others: _,
             keeping: _,
+            letting_go: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;
