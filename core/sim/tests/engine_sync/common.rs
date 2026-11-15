@@ -1682,14 +1682,16 @@ fn run_ignoring_answering_after(
             for id in answered_again {
                 kept_with.remove(&id);
             }
+            let mut taken = BTreeMap::new();
             for folder in shown.keys() {
                 for child in device.trees.local_children(folder) {
                     if !shown.contains_key(child) && device.trees.excluded(child) {
-                        server_copy(&device.trees, child, &mut kept_with);
+                        server_copy(&device.trees, child, &mut taken);
                     }
                 }
             }
-            device.acted.retain(|id| !kept_with.contains_key(id));
+            device.acted.retain(|id| !taken.contains_key(id));
+            kept_with.append(&mut taken);
             discarded.extend(shown);
         }
         revived_once.extend(revive(&device, &discarded, &kept_with));
