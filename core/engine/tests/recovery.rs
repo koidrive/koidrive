@@ -2059,13 +2059,15 @@ fn followed(
 }
 
 fn nodes_by_entry(trees: &Trees, entries: usize, remote: &[Remote]) -> Vec<Option<String>> {
+    let by_ino: BTreeMap<u128, &String> = (trees.local().iter())
+        .map(|(id, node)| (node.identity.ino, id))
+        .collect();
+    let in_r: BTreeSet<&str> = remote.iter().map(|Remote(id, ..)| *id).collect();
     (0..entries)
         .map(|i| {
-            let (id, _) =
-                (trees.local().iter()).find(|(_, node)| node.identity.ino == i as u128 + 1)?;
-            let adopted = trees.synced().live(id).is_some()
-                && remote.iter().any(|Remote(node, ..)| node == id);
-            adopted.then(|| id.clone())
+            let id = by_ino.get(&(i as u128 + 1))?;
+            let adopted = trees.synced().live(id).is_some() && in_r.contains(id.as_str());
+            adopted.then(|| (*id).clone())
         })
         .collect()
 }
@@ -2080,59 +2082,68 @@ fn keeps_the_mark_invariants(
     relabeled: &Trees,
 ) {
     let before = trees(local, synced, remote);
-    let in_r: Vec<(&str, &Shape, bool)> = (remote.iter())
-        .map(|Remote(id, shape, trashed, _)| (*id, shape, *trashed))
-        .collect();
-    let case = format!(
-        "local {local:?}\nsynced {synced:?}\nremote {in_r:?}\nhistory {history:?}\nmarks {marks:?}"
-    );
-    let found = nodes_by_entry(after, local.len(), remote);
-    assert_eq!(
-        found,
-        nodes_by_entry(relabeled, local.len(), remote),
-        "the outcome depends on the order of the local IDs\n{case}"
-    );
-    let known = |node: &str| -> Vec<&Shape> {
-        (history.iter())
-            .filter(|(id, _)| *id == node)
-            .map(|(_, shape)| shape)
-            .chain(
-                remote
-                    .iter()
-                    .filter(|Remote(id, ..)| *id == node)
-                    .map(|Remote(_, shape, ..)| shape),
-            )
-            .collect()
+    let case = || {
+        let in_r: Vec<(&str, &Shape, bool)> = (remote.iter())
+            .map(|Remote(id, shape, trashed, _)| (*id, shape, *trashed))
+            .collect();
+        format!(
+            "local {local:?}\nsynced {synced:?}\nremote {in_r:?}\nhistory {history:?}\nmarks {marks:?}"
+        )
     };
+    let found = nodes_by_entry(after, local.len(), remote);
+    assert!(
+        found == nodes_by_entry(relabeled, local.len(), remote),
+        "the outcome depends on the order of the local IDs\n{}",
+        case()
+    );
+    let mut known: BTreeMap<&str, Vec<&Shape>> = BTreeMap::new();
+    for (id, shape) in history {
+        known.entry(id).or_default().push(shape);
+    }
+    for Remote(id, shape, ..) in remote {
+        known.entry(id).or_default().push(shape);
+    }
+    let in_r: BTreeMap<&str, (&Shape, bool)> = (remote.iter())
+        .map(|Remote(id, shape, trashed, _)| (*id, (shape, *trashed)))
+        .collect();
+    let logged: BTreeSet<&str> = history.iter().map(|(id, _)| *id).collect();
+    let local_ids: BTreeSet<&str> = local.iter().map(|(id, _)| *id).collect();
+    let mark_of: BTreeMap<&str, &str> = marks.iter().copied().collect();
+    let mut claims: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, node) in marks {
+        *claims.entry(node).or_default() += 1;
+    }
+    let holder: BTreeMap<&str, usize> = (found.iter().enumerate())
+        .filter_map(|(i, node)| Some((node.as_deref()?, i)))
+        .collect();
     for (i, (id, shape)) in local.iter().enumerate() {
         if before.synced().get(id).is_some() {
             continue;
         }
-        let Some((_, node)) = marks.iter().find(|(entry, _)| entry == id) else {
+        let Some(node) = mark_of.get(id).copied() else {
             continue;
         };
-        let unique = marks.iter().filter(|(_, other)| other == node).count() == 1;
-        let free = local.iter().all(|(other, _)| other != node || other == id);
-        let live = (remote.iter())
-            .any(|Remote(r, live, trashed, _)| r == node && !trashed && live.kind == shape.kind);
-        let logged = history.iter().any(|(logged, _)| logged == node);
-        let content = (known(node).iter())
+        let unique = claims[node] == 1;
+        let free = !local_ids.contains(node) || node == *id;
+        let live =
+            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
+        let content = (known.get(node).into_iter().flatten())
             .any(|known| known.kind == shape.kind && known.content == shape.content);
-        if !(unique && free && live && logged && content) {
+        if !(unique && free && live && logged.contains(node) && content) {
             continue;
         }
         assert!(
-            found[i].as_deref().is_none_or(|found| found == *node),
-            "entry {id} with the mark of {node} became {:?}\n{case}",
-            found[i]
+            found[i].as_deref().is_none_or(|found| found == node),
+            "entry {id} with the mark of {node} became {:?}\n{}",
+            found[i],
+            case()
         );
-        for (j, other) in found.iter().enumerate() {
-            assert!(
-                j == i || other.as_deref() != Some(*node),
-                "entry {} took {node}, which the mark of {id} claims\n{case}",
-                local[j].0
-            );
-        }
+        assert!(
+            holder.get(node).is_none_or(|j| *j == i),
+            "entry {} took {node}, which the mark of {id} claims\n{}",
+            local[holder[node]].0,
+            case()
+        );
     }
     for (i, node) in found.iter().enumerate() {
         let Some(node) = node else {
@@ -2143,11 +2154,12 @@ fn keeps_the_mark_invariants(
         }
         let entry = &after.local().get(node).expect("an adopted entry").shape;
         let held = after.synced().live(node).expect("S holds an adopted entry");
-        assert_eq!(
-            held.content, entry.content,
-            "S gives {node} other content than L\n{case}"
+        assert!(
+            held.content == entry.content,
+            "S gives {node} other content than L\n{}",
+            case()
         );
-        let in_place = (known(node).iter()).any(|known| {
+        let in_place = (known.get(node.as_str()).into_iter().flatten()).any(|known| {
             known.kind == entry.kind
                 && known.content == entry.content
                 && known.parent == entry.parent
@@ -2155,7 +2167,8 @@ fn keeps_the_mark_invariants(
         });
         assert!(
             !in_place || (held.parent == entry.parent && same_name(&held.name, &entry.name)),
-            "{node} sits at a place the server gave it, but S holds it at {held:?}\n{case}"
+            "{node} sits at a place the server gave it, but S holds it at {held:?}\n{}",
+            case()
         );
     }
 }
@@ -2588,6 +2601,64 @@ fn a_marked_file_the_user_moved_into_a_new_folder_follows_and_the_folder_is_aske
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["new"]);
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
+fn a_marked_file_moved_into_a_new_folder_named_like_a_server_folder_elsewhere_follows() {
+    let (trees, _, _) = followed(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[
+            live("n", file(ROOT, "f", 1)),
+            live("o", dir(ROOT, "other")),
+            live("o2", dir("o", "fresh")),
+        ],
+        &[("n", file(ROOT, "f", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
+fn a_marked_file_in_a_marked_folder_moved_into_a_new_folder_keeps_its_place() {
+    let (trees, _, _) = followed(
+        &[
+            ("z", dir(ROOT, "new")),
+            ("y", dir("z", "d")),
+            ("f", file("y", "a", 1)),
+        ],
+        &[],
+        &[live("n", dir(ROOT, "d")), live("m", file("n", "b", 1))],
+        &[
+            ("n", dir(ROOT, "d")),
+            ("m", file("n", "a", 1)),
+            ("m", file("n", "b", 1)),
+        ],
+        &[("y", "n"), ("f", "m")],
+    );
+    assert_eq!(trees.synced().live("n"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.synced().live("m"), Some(&file("n", "a", 1)));
+}
+
+#[test]
+fn a_waiting_marked_entry_takes_no_other_node_at_its_place() {
+    let (trees, _, _) = followed(
+        &[
+            ("d-folder", dir(ROOT, "d")),
+            ("entry", file(ROOT, "renamed", 1)),
+        ],
+        &[],
+        &[
+            live("d", dir(ROOT, "d")),
+            live("n", file("d", "orig", 1)),
+            live("m", file(ROOT, "renamed", 1)),
+        ],
+        &[("n", file("d", "orig", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "renamed", 1)));
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "orig", 1)));
+    assert_eq!(trees.local().get("m"), None);
 }
 
 #[test]

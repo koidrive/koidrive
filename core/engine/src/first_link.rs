@@ -200,11 +200,12 @@ pub(crate) fn adopt_by_marks_first(
     history: &History,
     marks: &Marks,
 ) -> BTreeSet<NodeId> {
-    let (_, mut waiting) = follow_marks(trees, history, marks, Pass::Latest);
+    let folders = folder_places(trees, history);
+    let (_, mut waiting) = follow_marks(trees, history, marks, &folders, Pass::Latest);
     'adopt: loop {
         adopt_around(trees, Some(history), &waiting);
         for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
-            let (followed, left) = follow_marks(trees, history, marks, pass);
+            let (followed, left) = follow_marks(trees, history, marks, &folders, pass);
             waiting = left;
             if followed {
                 continue 'adopt;
@@ -218,12 +219,12 @@ fn follow_marks(
     trees: &mut Trees,
     history: &History,
     marks: &Marks,
+    folders: &BTreeSet<(NodeId, String)>,
     pass: Pass,
 ) -> (bool, BTreeMap<NodeId, NodeId>) {
     let mut followed = false;
     loop {
         let claims = claimed_once(trees, marks);
-        let claimants: BTreeSet<&NodeId> = claims.iter().map(|(local, _)| *local).collect();
         let mut waiting = BTreeMap::new();
         let mut found = Vec::new();
         for (local, node) in claims.iter().copied() {
@@ -240,9 +241,11 @@ fn follow_marks(
             let new_folder = match settled_above(trees, &entry.parent) {
                 None => false,
                 Some(chain) => {
-                    let open =
-                        |id: &NodeId| claimants.contains(id) || could_be_a_node(trees, history, id);
-                    if pass != Pass::InNewFolder || chain.iter().any(open) {
+                    let top = (chain.last()).and_then(|top| trees.local().get(top));
+                    let at_a_folder_place = top.is_some_and(|top| {
+                        folders.contains(&(top.shape.parent.clone(), name_key(&top.shape.name)))
+                    });
+                    if pass != Pass::InNewFolder || at_a_folder_place {
                         waiting.insert(node.clone(), local.clone());
                         continue;
                     }
@@ -293,17 +296,17 @@ fn follow_marks(
     }
 }
 
-fn could_be_a_node(trees: &Trees, history: &History, id: &str) -> bool {
-    let Some(entry) = trees.local().get(id) else {
-        return false;
-    };
-    let named =
-        |other: &Shape| other.kind == entry.shape.kind && same_name(&other.name, &entry.shape.name);
-    let pending = |node: &RemoteNode| {
-        (node.pending_for.as_deref()).is_some_and(|stem| same_name(stem, &entry.shape.name))
-    };
-    (trees.remote().iter()).any(|(_, node)| named(&node.shape) || pending(node))
-        || history.values().flatten().any(named)
+fn folder_places(trees: &Trees, history: &History) -> BTreeSet<(NodeId, String)> {
+    let shapes =
+        (trees.remote().iter().map(|(_, node)| &node.shape)).chain(history.values().flatten());
+    let pending = (trees.remote().iter()).filter_map(|(_, node)| {
+        let stem = node.pending_for.as_deref()?;
+        Some((node.shape.parent.clone(), name_key(stem)))
+    });
+    (shapes.filter(|shape| shape.kind == Kind::Dir))
+        .map(|shape| (shape.parent.clone(), name_key(&shape.name)))
+        .chain(pending)
+        .collect()
 }
 
 fn settled_above(trees: &Trees, parent: &NodeId) -> Option<Vec<NodeId>> {
