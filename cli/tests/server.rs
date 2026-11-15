@@ -1936,6 +1936,11 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
     let unit = linked["service"]["name"].as_str().unwrap().to_owned();
     assert!(unit.starts_with("koidrive-"), "{unit}");
     assert!(systemctl(&["is-active", "--quiet", &unit]).status.success());
+    machine
+        .status_until("the folder following the space's log", |status| {
+            status["folders"][0]["last_seq"].is_u64()
+        })
+        .await;
     commit_as_owner(
         &owner,
         &space.space_id,

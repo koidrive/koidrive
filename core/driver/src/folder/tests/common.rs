@@ -453,11 +453,8 @@ impl Device {
     fn perform(&mut self, work: Work, remote: &mut Remote) -> Result<(), Stop> {
         let step = match work {
             Work::Subscribe(since) => return self.resume(remote, since),
-            Work::List { trash } | Work::ListAfter(_, Listing { trash, .. }) => {
-                let trash = match trash {
-                    true => remote.trash_pages(TREE_PAGE),
-                    false => Vec::new(),
-                };
+            Work::List | Work::ListAfter(..) => {
+                let trash = remote.trash_pages(TREE_PAGE);
                 let pages = remote.pages(TREE_PAGE);
                 self.folder.listed(Ok(Listed::Done { pages, trash }))
             }
@@ -495,7 +492,7 @@ impl Device {
             );
             ran.push(match &work {
                 Work::Subscribe { .. } => "subscribe",
-                Work::List { .. } => "list",
+                Work::List => "list",
                 Work::ListAfter(..) => "list again",
                 Work::Stage(_) => "stage",
                 Work::StageAfter(..) => "stage again",

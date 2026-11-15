@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
+use crate::names::name_key;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, Tree, same_content};
+use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content};
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
 /// a place it left, where a download made before the store lost track of it may still hold it on
@@ -28,6 +29,16 @@ pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
         history.entry(id).or_default().extend(shapes);
     }
     history
+}
+
+/// What the space held when the device first read the server's tree on a first link. A node another device commits
+/// after that is a change like any other, never a sign that the space already held files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Listing {
+    /// Nothing live besides the root.
+    Empty,
+    /// At least one live file or folder.
+    Live,
 }
 
 /// Matches L against R from the root down, and returns the topmost local nodes that match
@@ -170,6 +181,31 @@ fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
 fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
     let mut items = items.into_iter();
     items.next().filter(|_| items.next().is_none())
+}
+
+pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
+    let trashed: BTreeSet<Vec<String>> = (trees.remote().iter())
+        .filter(|(_, node)| node.trashed)
+        .filter_map(|(id, _)| key_path(trees.remote(), id))
+        .collect();
+    (tops.into_iter())
+        .filter(|id| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path)))
+        .collect()
+}
+
+fn key_path<N: Node>(tree: &Tree<N>, id: &str) -> Option<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut current = id;
+    for _ in 0..=tree.len() {
+        if current == tree.root {
+            keys.reverse();
+            return Some(keys);
+        }
+        let shape = tree.get(current)?.shape();
+        keys.push(name_key(&shape.name));
+        current = &shape.parent;
+    }
+    None
 }
 
 /// Whether the question holds what a first link found on this device and nothing on the server.

@@ -311,7 +311,7 @@ fn a_tree_listing_put_off_for_an_hour_shows_in_the_status_and_one_put_off_for_a_
     let mut b = site.start();
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);
-    assert!(matches!(b.work.pop_front(), Some(Work::List { .. })));
+    assert!(matches!(b.work.pop_front(), Some(Work::List)));
 
     let later = |wait, why: &str, kind| Listed::Later {
         listing: Listing::default(),
@@ -367,7 +367,7 @@ fn a_quota_wait_of_a_second_is_typed_in_the_status_without_a_problem() {
     let mut b = site.start();
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);
-    assert!(matches!(b.work.pop_front(), Some(Work::List { .. })));
+    assert!(matches!(b.work.pop_front(), Some(Work::List)));
 
     let step = b.folder.listed(Ok(Listed::Later {
         listing: Listing::default(),
@@ -486,7 +486,7 @@ fn a_bootstrap_whose_pages_were_read_at_two_heads_replaces_r_after_the_replay() 
     let mut b = site.start();
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);
-    assert!(matches!(b.work.pop_front(), Some(Work::List { .. })));
+    assert!(matches!(b.work.pop_front(), Some(Work::List)));
     let step = b.folder.listed(Ok(Listed::Done {
         pages,
         trash: vec![],

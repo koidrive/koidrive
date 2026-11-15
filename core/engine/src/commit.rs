@@ -12,7 +12,7 @@ use prost::Message;
 
 use crate::classify::{Class, Origin, Trees, Waiting, path};
 use crate::effects;
-use crate::first_link::{self, History};
+use crate::first_link::{self, History, Listing};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
 use crate::names::{MAX_NAME_BYTES, name_key, nfc};
@@ -504,13 +504,20 @@ impl Commits {
 
     /// Matches L against R on the first link of the folder, once R holds the server's tree and L
     /// the first scan's (section 6.4): every local entry R holds at the same path with the same
-    /// kind and content is adopted, and the others are held under one question about what was
-    /// created on this device. A space with nothing live has nothing to match, and L syncs as it is.
-    pub fn first_link(&mut self, trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
-        if trees.remote().iter().all(|(_, node)| node.trashed) {
-            return;
+    /// kind and content is adopted. When `listing` held live nodes, the others are held under one
+    /// question about what was created on this device. Otherwise only those at a name R's trash
+    /// holds are held, and the rest sync as they are.
+    pub fn first_link(
+        &mut self,
+        trees: &mut Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+        listing: Listing,
+    ) {
+        let mut tops = first_link::adopt(trees, None);
+        if listing == Listing::Empty {
+            tops = first_link::trashed_there(trees, tops);
         }
-        let tops = first_link::adopt(trees, None);
         if let Some(question) = first_link::ask(trees, tops, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
         }

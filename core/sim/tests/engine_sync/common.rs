@@ -8,6 +8,8 @@ use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 
 use koidrive_engine::effects::{Base, BatchLimit, Effect, Effects, Location};
 
+use koidrive_engine::first_link::Listing;
+
 use koidrive_engine::ids::IdGen;
 
 use koidrive_engine::ignore::{LocalRules, RuleFile};
@@ -1018,7 +1020,11 @@ fn run_ignoring(
     }
     if first_link {
         device.trees.settle();
-        commits.first_link(&mut device.trees, &mut device.ids, NOW as u64);
+        let listing = match device.trees.remote().iter().any(|(_, node)| !node.trashed) {
+            true => Listing::Live,
+            false => Listing::Empty,
+        };
+        commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, listing);
     }
     let mut local_writes = written(
         device

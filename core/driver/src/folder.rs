@@ -192,11 +192,8 @@ enum Next {
 pub(crate) enum Work {
     /// `Session::subscribe`.
     Subscribe(Resume),
-    /// Read every page of the tree, then every page of the trash when `trash` is set. Answered with
-    /// [`Folder::listed`].
-    List {
-        trash: bool,
-    },
+    /// Read every page of the tree, then every page of the trash. Answered with [`Folder::listed`].
+    List,
     /// Read on from `Listing` after a wait.
     ListAfter(Duration, Listing),
     Reconnect,
@@ -220,7 +217,6 @@ pub(crate) enum Work {
 pub(crate) struct Listing {
     pages: Vec<TreePage>,
     cursor: String,
-    trash: bool,
     trash_pages: Vec<TrashPage>,
     trash_cursor: String,
     failures: u32,
@@ -504,9 +500,7 @@ impl Folder {
             && *superseded
         {
             *superseded = false;
-            return Ok(vec![Work::List {
-                trash: self.lists_trash(),
-            }]);
+            return Ok(vec![Work::List]);
         }
         let listed = listed?;
         if !matches!(self.stream, Stream::Listing { .. }) {
@@ -528,6 +522,11 @@ impl Folder {
             }
         };
         let mut staging = Staging::new(self.history_id.clone(), pages, trash);
+        if self.engine.cursor.is_none() {
+            let history_id = staging.history_id().to_owned();
+            let listing = staging.listing();
+            staging.decide(self.step(|_, tx| Ok(tx.keep_first_listing(&history_id, listing)?))?);
+        }
         tracing::info!(
             space_id = self.link.space_id,
             seq = staging.last_seq(),
@@ -1575,9 +1574,7 @@ impl Folder {
                 }),
             ) => {
                 self.stream = Stream::Listing { superseded: false };
-                work.push(Work::List {
-                    trash: self.lists_trash(),
-                });
+                work.push(Work::List);
             }
             (Stream::Connecting, Some(cursor)) => {
                 work.push(Work::Subscribe(resume(&cursor.history_id, &cursor.base())));
@@ -1735,6 +1732,7 @@ impl Folder {
             return Ok(());
         }
         let head = Some(staging.last_seq());
+        let listing = staging.listing();
         let Stream::Replaying(mut staging) =
             std::mem::replace(&mut self.stream, Stream::Following { head })
         else {
@@ -1752,6 +1750,7 @@ impl Folder {
             .unwrap_or_default();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
+            tx.forget_first_listing()?;
             if recovering {
                 (engine.commits).recover(
                     &mut engine.trees,
@@ -1762,7 +1761,7 @@ impl Folder {
                     now_ms,
                 );
             } else if first_link {
-                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms);
+                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms, listing);
                 engine.recovery_cause = Some(crate::RecoveryCause {
                     trigger: crate::RecoveryTrigger::NoSyncState,
                     restore_point_ms: None,
@@ -1903,17 +1902,7 @@ impl Folder {
             return;
         }
         self.stream = Stream::Listing { superseded: false };
-        work.push(Work::List {
-            trash: self.lists_trash(),
-        });
-    }
-
-    /// Whether a bootstrap reads the trash too: once the folder has synced, since L may then hold nodes another
-    /// device trashed while this device missed the log. A node trashed since the server lost commits this device
-    /// applied is then not taken for one the server lost and published again (RFC 0002 §6), and the mass-delete
-    /// guard tells by each node's trash group which deletion its removal belongs to (design §6.1).
-    fn lists_trash(&self) -> bool {
-        self.engine.cursor.is_some()
+        work.push(Work::List);
     }
 
     /// Starts the upload of what `commit` adds, or its send when it adds no content.
@@ -2402,11 +2391,8 @@ impl FolderTask {
                 for work in work {
                     match work {
                         Work::Subscribe(since) => session.subscribe(since),
-                        Work::List { trash } => {
-                            let listing = Listing {
-                                trash,
-                                ..Listing::default()
-                            };
+                        Work::List => {
+                            let listing = Listing::default();
                             list = Some(Box::pin(list_tree(
                                 session,
                                 &self.link.space_id,
@@ -2656,7 +2642,7 @@ async fn list_tree(
             Err(error) => return later(space_id, "tree", listing, &error),
         }
     }
-    while listing.trash && (listing.trash_pages.is_empty() || !listing.trash_cursor.is_empty()) {
+    while listing.trash_pages.is_empty() || !listing.trash_cursor.is_empty() {
         match session
             .list_trash(listing.trash_cursor.clone(), TREE_PAGE)
             .await
