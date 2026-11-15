@@ -1038,3 +1038,26 @@ fn a_file_edited_after_this_device_undid_its_move_is_created_where_l_holds_it_af
 fn a_file_another_device_renamed_after_this_device_undid_its_move_is_created_at_that_name() {
     assert_eq!(undone_move_then_edit_then_loss(Some("z")), [("z".to_owned(), 2)]);
 }
+
+#[test]
+fn a_resend_whose_lost_folder_is_left_out_of_the_planned_creates_is_not_created_at_its_old_name() {
+    let mut trees = trees(&[
+        synced("q", dir(ROOT, "q")),
+        synced("f", file(ROOT, "a", 1)),
+        ("g", Some(file(ROOT, "g", 2)), None, None),
+        ("h", Some(file(ROOT, "h", 3)), None, None),
+    ]);
+    trees.set_remote("f".into(), remote_at(file("q", "b", 1), 2));
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.remove_remote("q");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.settle();
+    let state = koidrive_engine::state::CommitsState {
+        cap: Some(1),
+        ..Commits::default().state()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(!created_at(&commit).contains(&("a".to_owned(), 1)), "{:?}", ops(&commit));
+}

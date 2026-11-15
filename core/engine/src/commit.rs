@@ -4,6 +4,7 @@
 //! sections 2.4, 2.6, 2.7, 2.8 and 4.2, and RFC 0002): the rebase of concurrent changes onto R, the
 //! one commit in flight with its history and device slot, and what each result and error does.
 
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 
@@ -3303,6 +3304,7 @@ fn plan(
         }
     }
 
+    let (creates, deferred) = (trees.dirty_creates(), Cell::new(false));
     loop {
         let planned: BTreeMap<&NodeId, &NodeId> = (wants.iter())
             .filter_map(|want| match want {
@@ -3311,21 +3313,31 @@ fn plan(
             })
             .collect();
         let placed = |id: &NodeId| {
-            let mut parent = planned.get(id);
-            for _ in 0..=planned.len() {
-                let Some(&at) = parent else {
+            let mut parent = planned.get(id).copied();
+            for _ in 0..=planned.len() + creates.len() {
+                let Some(at) = parent else {
                     return false;
                 };
                 if *at == trees.local().root
                     || trees.remote().live(at).is_some()
                     || (problems.contains(at) && !trees.excluded(at))
+                    || (creates.contains(at) && trees.held(at) && !trees.excluded(at))
                 {
                     return true;
                 }
                 if at == id {
                     return false;
                 }
-                parent = planned.get(at);
+                parent = planned.get(at).copied().or_else(|| {
+                    let local = (trees.local().get(at))
+                        .filter(|_| creates.contains(at) && !trees.excluded(at))?;
+                    deferred.set(deferred.get() || bound.is_some());
+                    Some(
+                        trees
+                            .lost_position(at)
+                            .map_or(&local.shape.parent, |lost| &lost.parent),
+                    )
+                });
             }
             false
         };
@@ -3763,7 +3775,7 @@ fn plan(
                 reverts.push(id.clone());
             }
         }
-        if cfg!(debug_assertions) {
+        if cfg!(debug_assertions) && bound.is_none() {
             let wedged = wedged(trees, &wants, &scratch, &moving, problems);
             assert!(
                 wedged.is_empty(),
@@ -3771,8 +3783,10 @@ fn plan(
             );
         }
     }
-    let exact = bound
-        .is_none_or(|(last, _)| ordered && filled_at.is_some_and(|filled| filled < (last, within)));
+    let exact = !deferred.get()
+        && bound.is_none_or(|(last, _)| {
+            ordered && filled_at.is_some_and(|filled| filled < (last, within))
+        });
     ((ops, deletes, reverts), exact)
 }
 
