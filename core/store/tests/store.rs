@@ -672,6 +672,7 @@ fn populate(path: &Path) {
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
+        found_marker: false,
     };
     let moved = file_shape("root", "moved.txt");
     Store::open(path)
@@ -3231,6 +3232,48 @@ fn a_store_from_before_first_listings_were_kept_keeps_one_per_history_across_a_r
 }
 
 #[test]
+fn a_store_from_before_found_markers_were_kept_reads_its_link_as_finding_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let link = Link {
+        space_id: "0190f0a0-0000-7000-8000-000000000001".into(),
+        space_name: "Projects".into(),
+        root: std::path::PathBuf::from("/home/ada/Koidrive"),
+        root_dev: 66306,
+        server_url: "https://files.example.com/".into(),
+        device_id: "d1".into(),
+        linked_at_ms: 1_700_000_000_000,
+        found_marker: true,
+    };
+    let stored = || {
+        Store::open(&path)
+            .unwrap()
+            .transaction(|tx| tx.link())
+            .unwrap()
+            .unwrap()
+    };
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    store_before(&path, "found_marker");
+
+    assert_eq!(
+        stored(),
+        Link {
+            found_marker: false,
+            ..link.clone()
+        }
+    );
+    assert_eq!(applied(&path), all_migrations());
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    assert_eq!(stored(), link);
+}
+
+#[test]
 fn a_store_from_before_replaced_versions_were_recorded_opens_with_none_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
@@ -3682,6 +3725,7 @@ fn a_read_only_open_reads_the_link_and_writes_nothing() {
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
+        found_marker: false,
     };
     Store::open(&path)
         .unwrap()
@@ -3740,6 +3784,7 @@ fn link_and_questions_persist() {
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
+        found_marker: false,
     };
     let question = |id: &str, at: i64| StoredQuestion {
         question_id: id.into(),

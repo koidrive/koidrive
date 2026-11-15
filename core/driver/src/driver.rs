@@ -1238,19 +1238,22 @@ impl Driver {
                 return Err(DriverError::FolderApprovalChanged(root));
             }
         }
-        match read_marker(&root).map_err(io_error(&root))? {
+        let found_marker = match read_marker(&root).map_err(io_error(&root))? {
             Some(marker) if marker.space_id != space.space_id => {
                 return Err(DriverError::MarkerOfOtherSpace(marker.space_id));
             }
-            Some(_) => {}
-            None => write_marker(
+            Some(_) => true,
+            None => false,
+        };
+        if !found_marker {
+            write_marker(
                 &root,
                 &Marker {
                     space_id: space.space_id.clone(),
                     effects: 0,
                 },
             )
-            .map_err(io_error(&root))?,
+            .map_err(io_error(&root))?;
         }
         claim::set_owner(&root, &owner).map_err(io_error(&root))?;
         let linked_started = crate::timing::Time::now();
@@ -1262,6 +1265,7 @@ impl Driver {
             server_url: credential.server.clone(),
             device_id: credential.device_id.clone(),
             linked_at_ms: linked_started.unix_ms,
+            found_marker,
         };
         let store_path = self.inner.paths.store(&link.space_id)?;
         let store_dir = store_path.parent().expect("a store path has a parent");
@@ -2331,6 +2335,7 @@ mod tests {
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
+                    found_marker: false,
                 })?;
                 for question in questions {
                     tx.put_question(&StoredQuestion {
@@ -3069,6 +3074,7 @@ mod tests {
             server_url: NOWHERE.into(),
             device_id: device_id.into(),
             linked_at_ms: 1,
+            found_marker: false,
         };
         Store::open(&store_path)
             .unwrap()
@@ -6620,6 +6626,52 @@ mod tests {
         driver.sign_out(true).await.unwrap();
         assert!(!paths.credential().exists());
         assert!(!next_path(&paths.credential()).exists());
+    }
+
+    #[tokio::test]
+    async fn linking_records_whether_the_folder_held_the_spaces_marker_already() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        fs::create_dir(&root).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let token = prost::Message::encode_to_vec(&koidrive_proto::v1::AccessToken {
+            token: "token".into(),
+            expires_at_ms: i64::MAX,
+            ..Default::default()
+        });
+        let spaces = prost::Message::encode_to_vec(&koidrive_proto::v1::SpaceList {
+            spaces: vec![SpaceInfo {
+                space_id: SPACE.into(),
+                name: "Projects".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let (server, _served) =
+            serve_recorded(vec![(200, token), (200, spaces.clone()), (200, spaces)]).await;
+        Credential {
+            server,
+            ..credential("d1")
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let found_marker = || {
+            Store::open(paths.store(SPACE).unwrap())
+                .unwrap()
+                .transaction(|tx| tx.link())
+                .unwrap()
+                .unwrap()
+                .found_marker
+        };
+
+        driver.link(&root, "Projects").await.unwrap();
+        assert!(!found_marker());
+        driver.unlink(&root).await.unwrap();
+        assert_eq!(read_marker(&root).unwrap().unwrap().space_id, SPACE);
+        driver.link(&root, "Projects").await.unwrap();
+        assert!(found_marker());
     }
 
     #[tokio::test]

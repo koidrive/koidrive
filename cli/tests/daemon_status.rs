@@ -87,6 +87,7 @@ impl Profile {
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
+                    found_marker: false,
                 })
             })
             .unwrap();
@@ -335,6 +336,7 @@ fn reconcile_leaves_a_login_items_disabled_service_off_and_succeeds() {
                 server_url: "https://files.example.com/".into(),
                 device_id: "d1".into(),
                 linked_at_ms: 1,
+                found_marker: false,
             })
         })
         .unwrap();

@@ -194,6 +194,40 @@ fn a_fresh_first_link_sends_a_file_whose_name_the_space_holds_as_a_conflict_copy
 }
 
 #[test]
+fn a_first_link_that_shows_an_earlier_sync_keeps_a_file_the_space_deleted_and_purged_deleted() {
+    let kept = [act(1, 0, 0, 2, 0), act(1, 0, 0, 3, 0), act(7, 1, 0, 0, 0)];
+    let emptied = [act(1, 0, 0, 3, 0), act(7, 0, 0, 0, 0)];
+    let local = [act(1, 0, 0, 3, 0)];
+    for (seed, prior, answer, asked, live) in [
+        (&kept[..], PriorSync::Shown, Answer::Discard, 1, vec!["b"]),
+        (&kept[..], PriorSync::Fresh, Answer::Discard, 0, vec!["b", "c.txt"]),
+        (&emptied[..], PriorSync::Shown, Answer::Discard, 1, vec![]),
+        (&emptied[..], PriorSync::Fresh, Answer::Discard, 0, vec!["c.txt"]),
+    ] {
+        let ran = run_ignoring(
+            seed,
+            &local,
+            &[],
+            MAX_OPS,
+            false,
+            &[],
+            Cut::None,
+            &[],
+            answer,
+            Some(prior),
+        )
+        .unwrap();
+        assert_eq!(ran.asked, asked, "{prior:?}");
+        let mut names: Vec<String> = (ran.space.nodes().into_iter())
+            .filter(|node| node.status == 1 && node.node_id != ran.space.space_id())
+            .map(|node| node.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, live, "{prior:?} {seed:?}");
+    }
+}
+
+#[test]
 fn a_discarded_folder_the_user_moved_a_synced_file_into_before_the_answer_converges() {
     let seed = [
         act(1, 0, 0, 2, 0),

@@ -701,6 +701,7 @@ pub(crate) mod tests {
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
+                    found_marker: false,
                 })?;
                 tx.put_question(&koidrive_store::StoredQuestion {
                     question_id: question.id.clone(),
