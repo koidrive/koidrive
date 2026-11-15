@@ -22,7 +22,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::StateError;
 
-use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Names, RemoteNode, same};
+use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, same};
 
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Commit, Content, CreateDir, CreateFile, Delete, Error, ListVersions,
@@ -872,11 +872,15 @@ fn stored(space: &SpaceDo) -> BTreeSet<(String, Vec<u8>)> {
 /// The content the server acknowledged for a file: its waiting S update's while one waits, and
 /// S's otherwise.
 fn acknowledged(trees: &Trees, id: &str) -> Option<Vec<u8>> {
-    let shape = match trees.waiting().get(id) {
+    let shape = acknowledged_shape(trees, id)?;
+    Some(shape.content.as_ref()?.manifest_digest.clone())
+}
+
+fn acknowledged_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
+    match trees.waiting().get(id) {
         Some(waiting) => waiting.shape.as_ref(),
         None => trees.synced().live(id),
-    }?;
-    Some(shape.content.as_ref()?.manifest_digest.clone())
+    }
 }
 
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
@@ -1225,14 +1229,14 @@ fn acted_below(
             match current {
                 Some(at) if at == entry => return true,
                 Some(at) => {
-                    let remote = trees.remote().live(&at);
-                    let moved_here = (trees.local().get(&at)).zip(remote).is_some_and(
-                        |(local, remote)| !local.shape.same_position(remote),
-                    );
+                    let moved_here = (trees.local().get(&at)).is_some_and(|local| {
+                        (acknowledged_shape(trees, &at))
+                            .is_none_or(|held| !local.shape.same_position(held))
+                    }) && !trees.reverted().contains(&at);
                     if moved_here {
                         return false;
                     }
-                    current = remote.map(|remote| remote.parent.clone());
+                    current = trees.remote().live(&at).map(|remote| remote.parent.clone());
                 }
                 None => return false,
             }
