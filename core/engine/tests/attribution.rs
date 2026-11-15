@@ -121,9 +121,10 @@ fn explore_from_env() {
             check(budget, rules(name))
         };
         println!(
-            "{name}: {} states, {} converged, {:?} in {:?}{}",
+            "{name}: {} states, {} converged ({} with a spurious copy), {:?} in {:?}{}",
             report.states,
             report.converged,
+            report.spurious,
             report.broken,
             start.elapsed(),
             if report.capped {
@@ -384,9 +385,10 @@ fn exhaustive(n: [u8; 10], rules: Rules) {
     let start = std::time::Instant::now();
     let report = check_deep(budget(n), rules);
     println!(
-        "{rules:?} {n:?}: {} states, {} converged in {:?}",
+        "{rules:?} {n:?}: {} states, {} converged ({} with a spurious copy) in {:?}",
         report.states,
         report.converged,
+        report.spurious,
         start.elapsed()
     );
     assert_eq!(report.broken, None);

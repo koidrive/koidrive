@@ -1805,6 +1805,7 @@ impl World {
 pub struct Report {
     pub states: usize,
     pub converged: usize,
+    pub spurious: usize,
     pub broken: Option<(Broken, Vec<Action>)>,
     pub capped: bool,
     pub steps: std::collections::BTreeSet<(Field, String, &'static str, String)>,
@@ -1858,6 +1859,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
     seen.insert(fingerprint(&start), 0);
     queue.push_back((start, 0u32));
     let mut converged = 0;
+    let mut spurious = 0;
     let mut steps = std::collections::BTreeSet::new();
     let trace = |parents: &Vec<(u32, Option<Action>)>, mut at: u32, last: Option<Action>| {
         let mut actions: Vec<Action> = last.into_iter().collect();
@@ -1873,6 +1875,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
         let settled = world.converged();
         if settled {
             converged += 1;
+            spurious += usize::from(world.spurious_copy().is_some());
         }
         if settled || actions.is_empty() {
             let broken = if settled {
@@ -1884,6 +1887,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
                 return Report {
                     states: seen.len(),
                     converged,
+                    spurious,
                     broken: Some((broken, trace(&parents, index, None))),
                     capped: false,
                     steps,
@@ -1896,6 +1900,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
                     return Report {
                         states: seen.len(),
                         converged,
+                        spurious,
                         broken: Some((broken, trace(&parents, index, Some(action)))),
                         capped: false,
                         steps,
@@ -1940,6 +1945,7 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
     Report {
         states: seen.len(),
         converged,
+        spurious,
         broken: None,
         capped: false,
         steps,
@@ -1953,16 +1959,19 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
     let mut path: Vec<Action> = Vec::new();
     let mut stack: Vec<(World, Vec<Action>)> = vec![(start.clone(), start.actions())];
     let mut converged = 0;
+    let mut spurious = 0;
     let steps = std::collections::BTreeSet::new();
     let cap: usize =
         std::env::var("MODEL_MAX_STATES").map_or(usize::MAX, |cap| cap.parse().unwrap());
-    let report = |seen: &std::collections::HashSet<u64>, converged, broken, steps| Report {
-        states: seen.len(),
-        converged,
-        broken,
-        capped: seen.len() >= cap,
-        steps,
-    };
+    let report =
+        |seen: &std::collections::HashSet<u64>, (converged, spurious), broken, steps| Report {
+            states: seen.len(),
+            converged,
+            spurious,
+            broken,
+            capped: seen.len() >= cap,
+            steps,
+        };
     if start.converged() {
         converged += 1;
     }
@@ -1976,20 +1985,26 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
             Ok(next) => next,
             Err(broken) => {
                 path.push(action);
-                return report(&seen, converged, Some((broken, path.clone())), steps);
+                return report(
+                    &seen,
+                    (converged, spurious),
+                    Some((broken, path.clone())),
+                    steps,
+                );
             }
         };
         if !seen.insert(fingerprint(&next)) {
             continue;
         }
         if seen.len() >= cap {
-            return report(&seen, converged, None, steps);
+            return report(&seen, (converged, spurious), None, steps);
         }
         path.push(action);
         let actions = next.actions();
         let settled = next.converged();
         if settled {
             converged += 1;
+            spurious += usize::from(next.spurious_copy().is_some());
         }
         if settled || actions.is_empty() {
             let broken = if settled {
@@ -1998,12 +2013,17 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
                 Some("the devices never converge".to_owned())
             };
             if let Some(broken) = broken {
-                return report(&seen, converged, Some((broken, path.clone())), steps);
+                return report(
+                    &seen,
+                    (converged, spurious),
+                    Some((broken, path.clone())),
+                    steps,
+                );
             }
         }
         stack.push((next, actions));
     }
-    report(&seen, converged, None, steps)
+    report(&seen, (converged, spurious), None, steps)
 }
 
 pub fn show(budget: Budget, rules: Rules, actions: &[Action]) {
