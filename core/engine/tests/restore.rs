@@ -2018,6 +2018,32 @@ fn an_explicit_restore_can_open_a_move_that_r_would_cycle() {
 }
 
 #[test]
+fn a_restore_out_of_a_trashed_folder_opens_a_move_into_the_restored_node() {
+    for (a, b) in [(id(1), id(2)), (id(2), id(1))] {
+        let mut trees = trees(&[
+            (
+                a.clone(),
+                Some(dir(&root(), "a")),
+                Some(dir(&root(), "a")),
+                Some(trashed(dir(&b, "a"))),
+            ),
+            (
+                b.clone(),
+                Some(dir(&a, "b")),
+                Some(dir(&root(), "b")),
+                Some(trashed(dir(&root(), "b"))),
+            ),
+        ]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let intent = RestoreIntent::from_trash(a.clone(), Some(root()), None).unwrap();
+        commits.restore(id(100), intent.clone());
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        assert_eq!(ops(&commit), [restore_op(&intent), moved(&b, &a, "b")]);
+        assert!(!trees.reverted().contains(&b));
+    }
+}
+
+#[test]
 fn a_move_into_a_folder_restored_inside_the_moving_folder_is_a_cycle() {
     let (a, b) = (id(1), id(2));
     let mut trees = trees(&[
