@@ -1070,42 +1070,49 @@ fn uninstall_service_cleanup_resumes_after_cloud_and_service_failures() {
 
 #[test]
 fn uninstall_does_not_stop_a_service_for_another_server() {
-    for phase in [
-        json!({"phase":"service","server":"https://deleted.example.com/"}),
-        json!({"phase":"complete"}),
-    ] {
-        let home = Home::new(&[], &[]);
-        home.save_uninstall();
-        home.service_for("https://another.example.com/");
-        let path = home.paths().state_dir.join("setup-state.json");
-        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        saved["script"] = json!("");
-        saved["uninstall"] = phase;
-        fs::write(&path, saved.to_string()).unwrap();
-        executable(
-            &home.path().join(if cfg!(target_os = "macos") {
-                "bin/open"
-            } else {
-                "bin/xdg-open"
-            }),
-            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
-        );
-        let mut command = home.command();
-        command.args(["server", "delete", "--interactive", "--yes"]);
-        let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
-        let text = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{text}");
-        assert!(home.paths().state_dir.join("service-running").exists());
-        assert!(!home.path().join("service-calls").exists());
-        assert!(!path.exists());
-        assert!(
-            home.state
-                .lock()
-                .unwrap()
-                .requests
-                .iter()
-                .all(|request| !request.contains("/client/v4/") && !request.contains("/oauth2/"))
-        );
+    for named in [false, true] {
+        for phase in [
+            json!({"phase":"service","server":"https://deleted.example.com/"}),
+            json!({"phase":"complete"}),
+        ] {
+            let home = Home::new(&[], &[]);
+            home.save_uninstall();
+            home.service_for("https://another.example.com/");
+            let path = home.paths().state_dir.join("setup-state.json");
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved["script"] = json!("");
+            saved["uninstall"] = phase;
+            fs::write(&path, saved.to_string()).unwrap();
+            executable(
+                &home.path().join(if cfg!(target_os = "macos") {
+                    "bin/open"
+                } else {
+                    "bin/xdg-open"
+                }),
+                "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+            );
+            let mut command = home.command();
+            command.args(["server", "delete", "--interactive", "--yes"]);
+            if named {
+                command.args(["--bucket", "synthetic-bucket"]);
+            }
+            let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(output.status.success(), "{text}");
+            assert!(home.paths().state_dir.join("service-running").exists());
+            assert!(!home.path().join("service-calls").exists());
+            assert!(!path.exists());
+            assert!(
+                home.state
+                    .lock()
+                    .unwrap()
+                    .requests
+                    .iter()
+                    .all(
+                        |request| !request.contains("/client/v4/") && !request.contains("/oauth2/")
+                    )
+            );
+        }
     }
 }
 
@@ -1358,6 +1365,67 @@ fn a_legacy_bucket_only_uninstall_resumes_only_for_the_confirmed_saved_bucket() 
                 .all(|request| !request.starts_with("DELETE ") && !request.contains("/workers/"))
         );
     }
+}
+
+#[test]
+fn bucket_only_uninstall_resumes_the_same_command_after_a_scan_failure() {
+    let run = |home: &Home| {
+        executable(
+            &home.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = home.command();
+        command.args([
+            "server",
+            "delete",
+            "--interactive",
+            "--yes",
+            "--bucket",
+            "synthetic-bucket",
+        ]);
+        terminal_with_stdout(command, &[], Some(home.path()), false, None)
+    };
+    let first = Home::new(&[], &[]);
+    first.save_uninstall();
+    let path = first.paths().state_dir.join("setup-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["script"] = json!("");
+    saved["script_created_on"] = Value::Null;
+    fs::write(&path, saved.to_string()).unwrap();
+    first.service_for("https://another.example.com/");
+    let output = run(&first);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(6), "{text}");
+    let progress = fs::read(&path).unwrap();
+    let saved: Value = serde_json::from_slice(&progress).unwrap();
+    assert_eq!(saved["uninstall"], json!({"phase":"cloud", "server":null}));
+    assert_eq!(saved["jurisdiction"], "eu");
+
+    let second = Home::new(&[], &[]);
+    second.save_uninstall();
+    second.state.lock().unwrap().failure = Some(Failure::UninstallBucketGone);
+    second.service_for("https://another.example.com/");
+    let path = second.paths().state_dir.join("setup-state.json");
+    fs::write(&path, progress).unwrap();
+    let output = run(&second);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert!(!path.exists());
+    assert!(second.paths().state_dir.join("service-running").exists());
+    assert!(!second.path().join("service-calls").exists());
+    assert!(
+        second
+            .state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .all(|request| !request.starts_with("DELETE ") && !request.contains("/workers/"))
+    );
 }
 
 #[test]

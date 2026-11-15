@@ -1032,18 +1032,18 @@ pub async fn server(
         } => {
             let file = StateFile::new(paths);
             let saved = file.load()?;
-            if bucket.is_none()
-                && saved.as_ref().is_some_and(|state| {
-                    state.step == Step::Uninstalling
-                        && matches!(
-                            state.uninstall,
-                            Some(
-                                UninstallProgress::Service { .. }
-                                    | UninstallProgress::Complete { .. }
-                            )
+            if saved.as_ref().is_some_and(|state| {
+                state.step == Step::Uninstalling
+                    && (bucket.is_none()
+                        || state.script.is_empty()
+                            && bucket.as_deref() == Some(state.bucket.as_str()))
+                    && matches!(
+                        state.uninstall,
+                        Some(
+                            UninstallProgress::Service { .. } | UninstallProgress::Complete { .. }
                         )
-                })
-            {
+                    )
+            }) {
                 finish_uninstall_service(paths, &file, saved.unwrap()).await?;
                 return Ok(Done::printed());
             }
@@ -2164,7 +2164,10 @@ impl Session {
             Some(state)
                 if state.account == self.account()
                     && state.step == Step::Uninstalling
-                    && bucket.is_none() =>
+                    && (bucket.is_none()
+                        || state.script.is_empty()
+                            && state.uninstall.is_some()
+                            && bucket == Some(state.bucket.as_str())) =>
             {
                 println!(
                     "Continuing the uninstall that stopped earlier ({}).",
