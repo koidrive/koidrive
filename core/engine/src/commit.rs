@@ -27,7 +27,7 @@ use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
-use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
+use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, same, same_content};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
@@ -3763,15 +3763,8 @@ fn plan(
             }
             Want::Restore { op, .. } => {
                 scratch.restoring.remove(&op.node_id);
-                let trashed = (trees.remote().get(&op.node_id))
-                    .filter(|node| node.trashed && op.version_id.is_empty());
-                match trashed {
-                    Some(node) => {
-                        let position = &node.shape;
-                        let parent = Some(&op.target_parent_id).filter(|id| !id.is_empty());
-                        let parent = parent.unwrap_or(&position.parent);
-                        let name = Some(&op.name).filter(|name| !name.is_empty());
-                        let name = name.unwrap_or(&position.name);
+                match restored_at(trees, &op) {
+                    Some((parent, name, node)) => {
                         let fit = scratch.fit_at(&op.node_id, parent, name);
                         if matches!(fit, Fit::Valid | Fit::NameTaken) {
                             scratch.place(&op.node_id, parent, name, node.shape.kind);
@@ -4071,6 +4064,21 @@ fn plan(
                 && filled_at.is_some_and(|filled| filled < (last, within))
         });
     ((ops, deletes, reverts, cycle_reverts), exact)
+}
+
+fn restored_at<'t>(
+    trees: &'t Trees,
+    op: &'t proto::Restore,
+) -> Option<(&'t str, &'t str, &'t RemoteNode)> {
+    let node = (trees.remote().get(&op.node_id))
+        .filter(|node| node.trashed && op.version_id.is_empty())?;
+    let parent = Some(op.target_parent_id.as_str()).filter(|id| !id.is_empty());
+    let name = Some(op.name.as_str()).filter(|name| !name.is_empty());
+    Some((
+        parent.unwrap_or(&node.shape.parent),
+        name.unwrap_or(&node.shape.name),
+        node,
+    ))
 }
 
 fn remote_below(trees: &Trees, id: &str, ancestors: &BTreeSet<&str>) -> bool {
@@ -4419,6 +4427,9 @@ impl<'a> Scratch<'a> {
             .filter_map(|want| match want {
                 Want::Move { parent, name, .. } => Some((parent.as_str(), name_key(name))),
                 Want::Create { shape, .. } => Some((shape.parent.as_str(), name_key(&shape.name))),
+                Want::Restore { op, .. } => {
+                    restored_at(self.trees, op).map(|(parent, name, _)| (parent, name_key(name)))
+                }
                 _ => None,
             })
             .collect();
@@ -4437,6 +4448,8 @@ impl<'a> Scratch<'a> {
                     shape.name.as_str(),
                     Some(shape.kind),
                 )),
+                Want::Restore { op, .. } => (restored_at(self.trees, op))
+                    .map(|(parent, name, _)| (op.node_id.as_str(), parent, name, None)),
                 _ => None,
             })
             .collect();

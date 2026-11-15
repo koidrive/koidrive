@@ -1984,3 +1984,53 @@ fn a_version_restore_in_a_folder_the_commit_moves_is_sent_after_the_move() {
     let restored = sent.iter().position(|op| *op == restore_op(&intent));
     assert!(moved.is_some() && moved < restored, "{sent:?}");
 }
+
+#[test]
+fn an_explicit_restore_can_open_a_move_that_r_would_cycle() {
+    let (a, b) = (id(1), id(2));
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            Some(dir(&b, "a")),
+            Some(dir(&root(), "a")),
+            Some(remote(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&root(), "b")),
+            Some(dir(&root(), "b")),
+            Some(trashed(dir(&a, "b"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(b.clone(), Some(root()), None).unwrap();
+    commits.restore(id(100), intent.clone());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [restore_op(&intent), moved(&a, &b, "a")]);
+    assert!(!trees.reverted().contains(&a));
+}
+
+#[test]
+fn a_move_into_a_folder_restored_inside_the_moving_folder_is_a_cycle() {
+    let (a, b) = (id(1), id(2));
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            Some(dir(&b, "a")),
+            Some(dir(&root(), "a")),
+            Some(remote(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&root(), "b")),
+            Some(dir(&root(), "b")),
+            Some(trashed(dir(&a, "b"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(b.clone(), None, None).unwrap();
+    commits.restore(id(100), intent.clone());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [restore_op(&intent)]);
+    assert!(trees.reverted().contains(&a));
+}
