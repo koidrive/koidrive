@@ -3318,3 +3318,30 @@ fn a_server_folder_added_after_the_discard_and_moved_out_leaves_the_discarded_fo
         vec![("move", "d".to_string())]
     );
 }
+
+#[test]
+fn a_new_local_file_with_the_bytes_and_mtime_of_a_server_file_at_its_place_is_linked_to_it() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "a", 1))],
+    );
+    trees.rules_scanned();
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+}
+
+#[test]
+fn a_new_local_file_with_the_bytes_of_another_write_at_its_place_is_sent() {
+    let mut written = file(ROOT, "a", 1);
+    written.content.as_mut().expect("a file").mtime_ns = 1;
+    let mut trees = trees(&[("l-a", written)], &[("r-a", file(ROOT, "a", 1))]);
+    trees.rules_scanned();
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create file", "l-a".to_owned())]
+    );
+}

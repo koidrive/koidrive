@@ -422,6 +422,8 @@ pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
                         node.shape.kind == Kind::File
                             && nfc(&node.shape.name) == name
                             && same_bytes(&remote.shape.content, &node.shape.content)
+                            && (remote.shape.content.as_ref()).map(|content| content.mtime_ns)
+                                == (node.shape.content.as_ref()).map(|content| content.mtime_ns)
                     }) && !held.contains(*id)
                         && !trees.excluded(id)
                         && trees.synced().get(id).is_none()
