@@ -9604,3 +9604,145 @@ fn two_devices_keep_a_lost_write_beside_an_edit_the_server_later_trashes() {
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_download_after_a_rewind_that_trashes_a_file_whose_bytes_the_server_kept_loses_no_write() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, u(2, 0, 0, 0, 0)),
+            (2, u(1, 0, 0, 8, 1)),
+            (0, Work(0)),
+            (2, Work(0)),
+            (2, u(1, 0, 0, 0, 0)),
+            (0, Work(0)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, u(0, 0, 0, 0, 0)),
+            (0, Effect(Outcome::Run)),
+            (2, Work(7742902646236123868)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, Effect(Outcome::Run)),
+            (0, u(2, 0, 0, 0, 0)),
+            (2, Work(20309767533768)),
+            (1, Work(0)),
+            (0, Effect(Outcome::Run)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, Work(0)),
+            (1, Work(0)),
+            (0, u(4, 0, 0, 0, 0)),
+            (0, Commit(Served)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, Work(0)),
+            (0, u(2, 0, 0, 0, 0)),
+            (0, Backup),
+            (0, u(1, 0, 0, 2, 0)),
+            (1, u(2, 0, 0, 0, 0)),
+            (0, Work(0)),
+            (0, Drop),
+            (0, Work(0)),
+            (0, Deliver(0)),
+            (0, u(3, 0, 0, 2, 0)),
+            (0, Deliver(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, u(0, 0, 0, 2, 0)),
+            (1, Work(0)),
+            (0, u(2, 1094535345328263236, 0, 0, 0)),
+            (1, u(0, 0, 0, 0, 0)),
+            (1, u(2, 11801438942878707546, 0, 0, 0)),
+            (0, u(0, 0, 0, 7, 0)),
+            (0, u(3, 0, 0, 2, 0)),
+            (0, Work(0)),
+            (0, u(0, 0, 0, 2, 0)),
+        ],
+        vec![
+            (0, Rewind),
+            (2, Connect),
+            (1, u(2, 7056140508931023448, 0, 0, 0)),
+            (2, Work(0)),
+            (2, u(2, 1064132681827190715, 0, 0, 1)),
+            (0, u(0, 0, 0, 3, 0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_rolled_back_store_adopts_the_servers_nfc_file_for_its_nfd_spelling_instead_of_sending_it_again()
+ {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, Backup),
+            (2, u(1, 0, 0, 2, 0)),
+            (0, u(1, 0, 0, 1, 0)),
+            (0, CopyStore),
+            (0, u(1, 0, 0, 8, 1)),
+            (0, u(1, 0, 0, 3, 0)),
+        ],
+        vec![
+            (2, u(0, 0, 0, 4, 0)),
+            (0, u(2, 1930748380681672965, 0, 0, 0)),
+            (0, u(2, 1080177642849377558, 0, 0, 0)),
+            (2, Work(0)),
+            (0, Work(0)),
+            (2, Commit(Served)),
+            (0, RollBack),
+            (2, u(3, 7166634527832064925, 878588270508669530, 7, 0)),
+            (0, Work(0)),
+            (2, Connect),
+            (0, Work(0)),
+            (0, Rewind),
+            (2, Effect(Outcome::Run)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_lost_move_and_edit_sent_again_after_a_restore_keep_the_write_in_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1, 0, 0, 0, 0))],
+        vec![(2, u(4, 0, 0, 0, 0)), (0, u(3, 0, 0, 5, 0)), (0, Backup)],
+        vec![
+            (0, Restore),
+            (2, Connect),
+            (2, Work(0)),
+            (2, Effect(Outcome::Run)),
+            (2, u(2, 0, 0, 0, 0)),
+            (2, Work(2940287964182624177)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
