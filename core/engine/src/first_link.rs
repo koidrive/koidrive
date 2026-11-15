@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::classify::{Adopted, Trees};
+use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::names::{name_key, nfc, same_name};
@@ -177,7 +177,7 @@ pub(crate) fn adopt_around(
                 continue;
             }
             if renamed {
-                trees.adopt(remote_id.clone(), Adopted::PendingName);
+                trees.adopt_pending(remote_id.clone());
             }
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
@@ -240,6 +240,14 @@ fn follow_marks(
             if shapes.is_empty() {
                 continue;
             }
+            let in_place = (shapes.iter())
+                .any(|shape| shape.parent == entry.parent && same_name(&shape.name, &entry.name));
+            let current = (trees.remote().get(node))
+                .is_some_and(|remote| same_bytes(&remote.shape.content, &entry.content));
+            if !in_place && !current {
+                waiting.insert(node.clone(), local.clone());
+                continue;
+            }
             let new_folder = match settled_above(trees, &entry.parent) {
                 None => false,
                 Some(chain) => {
@@ -291,8 +299,16 @@ fn follow_marks(
             return (followed, waiting);
         }
         for (local, node, shape) in alone {
+            let entry = &trees.local().get(&local).expect("a claim in L").shape;
+            let pending = (trees.remote().get(&node)).is_some_and(|remote| {
+                entry.kind == Kind::Dir
+                    && remote.shape.parent == entry.parent
+                    && remote.pending_for.as_deref() == Some(entry.name.as_str())
+            });
+            if pending {
+                trees.adopt_pending(node.clone());
+            }
             trees.set_synced(node.clone(), Some(shape));
-            trees.adopt(node.clone(), Adopted::Mark);
             if local != node {
                 rekey(trees, &local, &node);
             }

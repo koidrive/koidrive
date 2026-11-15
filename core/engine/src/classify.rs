@@ -307,12 +307,6 @@ pub struct RemoteRecord {
     pub moved_in_lost_commit: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Adopted {
-    PendingName,
-    Mark,
-}
-
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -350,7 +344,7 @@ pub struct Trees {
     /// See [`TreesState::discarded`].
     discarded: ByParent<Shape>,
     forgotten_shapes: TrackedMap<NodeId, Shape>,
-    adopted: BTreeMap<NodeId, Adopted>,
+    adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
     /// R holds that content.
@@ -448,7 +442,7 @@ impl Trees {
             removed_here: TrackedMap::default(),
             discarded: ByParent::default(),
             forgotten_shapes: TrackedMap::default(),
-            adopted: BTreeMap::new(),
+            adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
             moved_here: TrackedMap::default(),
@@ -1744,12 +1738,12 @@ impl Trees {
         }
     }
 
-    pub(crate) fn adopt(&mut self, id: NodeId, how: Adopted) {
-        self.adopted.insert(id, how);
+    pub(crate) fn adopt_pending(&mut self, id: NodeId) {
+        self.adopted.insert(id);
     }
 
-    pub(crate) fn adopted(&self, id: &str) -> Option<Adopted> {
-        self.adopted.get(id).copied()
+    pub(crate) fn adopted(&self, id: &str) -> bool {
+        self.adopted.contains(id)
     }
 
     pub fn recoveries(&self) -> u64 {

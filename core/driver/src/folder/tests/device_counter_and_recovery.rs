@@ -867,7 +867,8 @@ fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_resto
 }
 
 #[test]
-fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_users_rename() {
+fn a_file_a_store_copied_before_its_download_forgot_is_asked_about_once_and_publish_keeps_its_node_through_the_users_rename()
+ {
     let mut remote = Remote::new();
     let (site, a) = linked(&mut remote, "a");
     drop(a);
@@ -881,6 +882,7 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
     a.settle();
     a.run(&mut remote);
     assert_eq!(names(&site.root), ["two.txt"]);
+    let node = node_named(&a, "two.txt");
     drop(a);
     fs::rename(site.root.join("two.txt"), site.root.join("renamed.txt")).unwrap();
     fs::copy(&copy, &site.db).unwrap();
@@ -889,8 +891,16 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
     a.run(&mut remote);
     a.settle();
     a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert_eq!(answer(&site, Answer::Publish).items.len(), 1);
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
     assert!(shown(&site).is_empty());
     assert_eq!(remote.names(), ["renamed.txt"]);
+    assert_eq!(node_named(&a, "renamed.txt"), node);
     assert_eq!(names(&site.root), ["renamed.txt"]);
 }
 
@@ -973,8 +983,16 @@ fn a_stale_record_of_brought_back_entries_leaves_a_users_rename_to_its_mark() {
     a.run(&mut remote);
     a.settle();
     a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    assert_eq!(answer(&site, Answer::Publish).items.len(), 1);
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
     assert!(shown(&site).is_empty());
     assert_eq!(remote.names(), ["renamed.txt"]);
+    assert_eq!(node_named(&a, "renamed.txt"), node);
 }
 
 #[test]

@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::classify::{Adopted, Trees};
+use crate::classify::Trees;
 use crate::ids::IdGen;
 use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, Revisions,
@@ -54,8 +54,7 @@ pub(crate) fn group(trees: &Trees, id: &str) -> Option<RecoveryGroup> {
         })
     };
     match (local, synced) {
-        (Some(l), _) if trees.adopted(id) == Some(Adopted::PendingName) && pending(l) => None,
-        (Some(_), Some(_)) if trees.adopted(id) == Some(Adopted::Mark) => None,
+        (Some(l), _) if trees.adopted(id) && pending(l) => None,
         (Some(_), Some(_)) if same(local, synced) && remote.is_none() => {
             Some(RecoveryGroup::CreatedAfterRestorePoint)
         }

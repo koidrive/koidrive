@@ -10037,3 +10037,125 @@ fn an_entry_a_store_rollback_brings_back_under_a_recovered_name_is_not_renamed_o
     ];
     converge(3, &[synced, renamed]).unwrap();
 }
+
+fn drawn_with(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Step {
+    Step::User(Action {
+        kind,
+        target,
+        parent,
+        name,
+        text,
+    })
+}
+
+#[test]
+fn a_restore_that_drops_a_rename_a_device_had_applied_is_not_committed_again() {
+    let u = drawn_with;
+    let phases = vec![
+        vec![
+            (1, u(0, 0, 0, 0, 0)),
+            (1, Step::CopyStore),
+            (0, u(1, 0, 0, 7, 1)),
+            (2, u(0, 0, 0, 2, 0)),
+            (2, Step::Work(0)),
+            (0, u(1, 0, 241544023268831342, 0, 0)),
+            (0, Step::Work(114817291181618044)),
+            (2, u(3, 1436382903664588132, 5002213811301655124, 3, 0)),
+            (2, Step::Work(885934720489249408)),
+            (0, Step::Backup),
+        ],
+        vec![
+            (2, u(4, 15637410514108707325, 0, 0, 0)),
+            (0, Step::Backup),
+            (1, Step::RollBack),
+            (0, Step::RestoreEarlier),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_restore_that_drops_a_rename_before_a_store_rollback_is_not_committed_again() {
+    let u = drawn_with;
+    let phases = vec![
+        vec![
+            (2, Step::CopyStore),
+            (2, u(0, 0, 0, 0, 0)),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, u(0, 0, 0, 7, 0)),
+            (2, u(1, 0, 0, 4, 0)),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, u(1, 0, 0, 4, 0)),
+            (0, u(0, 0, 4169570265945001466, 4, 0)),
+            (0, Step::Work(0)),
+            (0, u(1, 0, 0, 1, 0)),
+        ],
+        vec![
+            (0, u(3, 15088839132082008703, 16549998420610856678, 0, 0)),
+            (0, Step::Backup),
+            (0, u(0, 0, 13979458140388463, 1, 0)),
+            (2, u(0, 0, 79213871115161958, 8, 0)),
+            (0, Step::Backup),
+        ],
+        vec![
+            (0, u(4, 6969092282615143905, 0, 0, 0)),
+            (0, Step::Restore),
+            (2, Step::RollBack),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_store_rollback_after_a_rewind_dropped_a_rename_does_not_commit_it_again() {
+    let u = drawn_with;
+    let phases = vec![
+        vec![(1, Step::CopyStore), (1, u(1, 0, 0, 5, 2))],
+        vec![
+            (2, u(3, 0, 0, 0, 0)),
+            (0, u(2, 0, 0, 0, 0)),
+            (2, u(2, 0, 0, 0, 0)),
+        ],
+        vec![
+            (0, u(0, 0, 0, 0, 0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, u(2, 0, 0, 0, 2)),
+            (0, u(0, 0, 0, 0, 0)),
+            (1, Step::RollBack),
+            (0, u(3, 0, 0, 1, 0)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_conflict_name_the_server_gave_a_marked_file_is_not_taken_for_a_rename() {
+    let u = drawn_with;
+    let phases = vec![
+        vec![
+            (2, u(0, 0, 0, 6, 0)),
+            (1, Step::CopyStore),
+            (2, Step::Work(0)),
+            (2, Step::Commit(Reply::Served)),
+            (0, u(1, 0, 0, 0, 0)),
+            (0, u(2, 0, 0, 0, 0)),
+        ],
+        vec![
+            (1, u(1, 0, 5174916572430982064, 5, 0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (0, Step::Deliver(0)),
+            (1, Step::Work(0)),
+            (0, Step::Effect(Outcome::Crash(Cut::Placed))),
+            (0, Step::Work(0)),
+            (0, u(4, 14106287496425533298, 0, 0, 0)),
+            (1, Step::RollBack),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

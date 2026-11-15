@@ -2047,13 +2047,7 @@ fn followed(
             .collect::<Vec<_>>(),
     );
     keeps_the_mark_invariants(
-        local,
-        synced,
-        remote,
-        history,
-        marks,
-        &recovered.0,
-        &relabeled,
+        local, synced, remote, history, marks, &recovered, &relabeled,
     );
     recovered
 }
@@ -2078,7 +2072,7 @@ fn keeps_the_mark_invariants(
     remote: &[Remote],
     history: &[(&str, Shape)],
     marks: &[(&str, &str)],
-    after: &Trees,
+    (after, asked, _): &(Trees, Commits, IdGen),
     relabeled: &Trees,
 ) {
     let before = trees(local, synced, remote);
@@ -2187,6 +2181,19 @@ fn keeps_the_mark_invariants(
             "{node} sits at a place the server gave it, but S holds it at {held:?}\n{}",
             case()
         );
+        let moved = held.parent != entry.parent || !same_name(&held.name, &entry.name);
+        let current =
+            (in_r.get(node.as_str())).is_some_and(|(live, _)| live.content == entry.content);
+        assert!(
+            !moved
+                || (current
+                    && asked
+                        .questions()
+                        .iter()
+                        .any(|question| question.holds().any(|held| held == node))),
+            "{node} was adopted away from every place the server gave it without a question, or with content R does not give it\n{}",
+            case()
+        );
     }
 }
 
@@ -2226,10 +2233,12 @@ fn a_marked_entry_the_user_renamed_is_its_node_and_the_rename_is_committed() {
         &[("n", file(ROOT, "a", 1))],
         &[("entry", "n")],
     );
-    assert_eq!(groups(&commits), []);
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 1)));
     assert_eq!(trees.local().get("entry"), None);
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2257,7 +2266,7 @@ fn a_marked_entry_at_a_place_the_server_moved_it_from_follows_the_server() {
 }
 
 #[test]
-fn a_marked_entry_takes_the_latest_shape_the_server_gave_its_content() {
+fn a_marked_entry_the_user_renamed_whose_content_the_server_replaced_is_asked_about_as_new() {
     let (mut trees, mut commits, mut ids) = followed(
         &[("entry", file(ROOT, "x", 1))],
         &[],
@@ -2270,12 +2279,9 @@ fn a_marked_entry_takes_the_latest_shape_the_server_gave_its_content() {
         ],
         &[("entry", "n")],
     );
-    assert_eq!(groups(&commits), []);
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "b", 1)));
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [("move", "n".to_owned())]
-    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
 #[test]
@@ -2384,10 +2390,12 @@ fn a_marked_file_the_user_moved_out_of_its_marked_folder_follows_once_the_folder
         &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
         &[("a-file", "n"), ("b-folder", "d")],
     );
-    assert_eq!(groups(&commits), []);
     assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
     assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2406,10 +2414,12 @@ fn a_marked_file_the_user_renamed_in_an_unmarked_folder_follows_once_the_folder_
         &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
         &[("a-file", "n")],
     );
-    assert_eq!(groups(&commits), []);
     assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
     assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2432,6 +2442,9 @@ fn a_copy_at_the_old_name_in_an_unmarked_folder_leaves_the_node_to_the_renamed_o
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["c-copy"]);
     assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2485,9 +2498,11 @@ fn a_marked_entry_the_user_renamed_by_case_only_commits_the_rename() {
         &[("n", file(ROOT, "cafe", 1))],
         &[("entry", "n")],
     );
-    assert_eq!(groups(&commits), []);
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "cafe", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "Cafe", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2510,6 +2525,9 @@ fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["copy"]);
     assert_eq!(local_shape(&trees, "m"), Some(&file(ROOT, "x", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -2517,7 +2535,7 @@ fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
 }
 
 #[test]
-fn a_marked_file_whose_historical_folder_is_marked_follows_once_that_folder_takes_an_older_place() {
+fn a_marked_folder_takes_an_older_place_and_its_file_whose_content_the_server_replaced_waits() {
     let (trees, commits, _) = followed(
         &[
             ("a-file", file(ROOT, "g", 1)),
@@ -2543,13 +2561,14 @@ fn a_marked_file_whose_historical_folder_is_marked_follows_once_that_folder_take
         ],
         &[("a-file", "n"), ("a-folder", "p")],
     );
-    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
-    assert_eq!(trees.synced().live("n"), Some(&file("p", "f", 1)));
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "p")));
     assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "q")));
+    assert_eq!(trees.synced().get("n"), None);
+    asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["p"]);
     asked(
         &commits,
         RecoveryGroup::CreatedOnThisDevice,
-        &["b-folder", "there"],
+        &["a-file", "b-folder", "there"],
     );
 }
 

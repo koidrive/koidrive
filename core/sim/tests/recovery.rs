@@ -3402,7 +3402,7 @@ fn recovery_finds_no_folder_the_parked_directory_holds() {
 }
 
 #[test]
-fn a_file_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename() {
+fn a_file_a_store_rollback_forgot_and_its_user_renamed_is_asked_about_once_and_keeps_its_node() {
     let mut world = World::new(2);
     world
         .run(0, &[(1, Step::CopyStore), (0, file("a"))])
@@ -3412,13 +3412,16 @@ fn a_file_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename() {
         .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
         .unwrap();
     let downloaded = only_entry(&world, 1, "a");
+    let node = node_named(&world, "a");
     world.run(0, &[(1, rename(0, "b"))]).unwrap();
     world
         .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
         .unwrap();
     world.phase(1, &[]).unwrap();
-    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
+    assert_eq!(world.seen["recovery answer publishes"], 1);
     assert_eq!(live(&world), ["b"]);
+    assert_eq!(node_named(&world, "b"), node);
     assert_eq!(only_entry(&world, 1, "b"), downloaded);
 }
 
@@ -3465,7 +3468,7 @@ fn roll_back(world: &mut World, d: usize) {
 }
 
 #[test]
-fn a_file_a_store_rollback_forgot_and_its_user_moved_follows_the_move() {
+fn a_file_a_store_rollback_forgot_and_its_user_moved_keeps_its_node_once_published() {
     let mut world = World::new(2);
     let folder = user(0, 0, 0, "c.txt");
     world
@@ -3478,7 +3481,7 @@ fn a_file_a_store_rollback_forgot_and_its_user_moved_follows_the_move() {
     let (_, _, parent) = index_of(&world, 1, "c.txt");
     world.run(0, &[(1, user(3, target, parent, "b"))]).unwrap();
     roll_back(&mut world, 1);
-    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
     assert_eq!(live(&world), ["b", "c.txt"]);
     let file = (world.space().nodes().into_iter())
         .find(|node| node.name == "b")
@@ -3502,9 +3505,24 @@ fn a_file_a_store_rollback_forgot_keeps_its_node_when_its_copy_takes_its_old_nam
         text: 0,
     });
     world.run(0, &[(1, copy)]).unwrap();
-    roll_back(&mut world, 1);
+    let publish = (1, Step::Answer(0));
+    world
+        .run(
+            0,
+            &[
+                (1, Step::RollBack),
+                (1, Step::Connect),
+                (1, Step::Connect),
+                (1, DELIVER),
+                publish,
+                publish,
+            ],
+        )
+        .unwrap();
+    world.phase(1, &[]).unwrap();
     assert!(world.seen.contains_key("recovery classifies the trees"));
-    assert_eq!(answered(&world).len(), 1, "{:?}", answered(&world));
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
+    assert_eq!(live(&world), ["a", "b"]);
     assert_eq!(node_named(&world, "b"), node);
     assert_eq!(index_of(&world, 1, "b").0, original);
 }
@@ -3533,7 +3551,7 @@ fn a_file_a_store_rollback_forgot_that_an_app_saved_in_place_is_in_sync() {
 }
 
 #[test]
-fn a_folder_merged_into_another_devices_folder_that_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename()
+fn a_folder_merged_into_another_devices_folder_that_a_store_rollback_forgot_and_its_user_renamed_keeps_its_node_once_published()
  {
     let mut world = World::new(2);
     let folder = user(0, 0, 0, "b");
@@ -3549,15 +3567,15 @@ fn a_folder_merged_into_another_devices_folder_that_a_store_rollback_forgot_and_
     let node = node_named(&world, "b");
     world.run(0, &[(1, rename(0, "a"))]).unwrap();
     roll_back(&mut world, 1);
-    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
     assert_eq!(live(&world), ["a"]);
     assert_eq!(node_named(&world, "a"), node);
     assert_eq!(only_entry(&world, 1, "a"), created);
 }
 
 #[test]
-fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename()
-{
+fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_keeps_its_node_once_published()
+ {
     let mut world = World::new(2);
     world
         .run(0, &[(1, Step::CopyStore), (1, file("a"))])
@@ -3567,7 +3585,7 @@ fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_
     let node = node_named(&world, "a");
     world.run(0, &[(1, rename(0, "b"))]).unwrap();
     roll_back(&mut world, 1);
-    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
     assert_eq!(live(&world), ["b"]);
     assert_eq!(node_named(&world, "b"), node);
     assert_eq!(only_entry(&world, 1, "b"), created);
