@@ -29,7 +29,8 @@ public final class AppModel {
     public internal(set) var updateFailure: UpdateFailure?
     public internal(set) var installingVersion: String?
     public private(set) var checkingForUpdates = false
-    public private(set) var updateCheck: UpdateCheck?
+    public private(set) var checkedUpdate: UpdateStatus?
+    public private(set) var failedUpdateCheck: FailedUpdateCheck?
     public private(set) var showsUpdateCheck = false
     public let session: SyncSession
     @ObservationIgnored public let version: String
@@ -122,11 +123,7 @@ public final class AppModel {
         case .questions(let questions): replaceQuestions(questions)
         case .problems(let problems): state.problems = problems
         case .notices(let notices): state.notices = notices
-        case .update(let update):
-            state.update = update
-            if let checkedAtMs = update.checkedAtMs, let updateCheck, checkedAtMs > updateCheck.atMs {
-                self.updateCheck = nil
-            }
+        case .update(let update): state.update = update
         }
     }
 
@@ -295,14 +292,15 @@ public final class AppModel {
         }
         let task = Task {
             do {
-                updateCheck = .answered(try await run { try $0.checkForUpdates() })
+                checkedUpdate = try await run { try $0.checkForUpdates() }
+                failedUpdateCheck = nil
             } catch SessionError.ReleasesUnreachable {
-                updateCheck = .failed(.unreachable, atMs: Self.nowMs)
+                failedUpdateCheck = FailedUpdateCheck(failure: .unreachable, atMs: Self.nowMs)
             } catch SessionError.ReleasesRefused {
-                updateCheck = .failed(.refused, atMs: Self.nowMs)
+                failedUpdateCheck = FailedUpdateCheck(failure: .refused, atMs: Self.nowMs)
             } catch {
                 let error = error as? SessionError ?? .Failed(reason: error.localizedDescription)
-                updateCheck = .failed(.other(error), atMs: Self.nowMs)
+                failedUpdateCheck = FailedUpdateCheck(failure: .other(error), atMs: Self.nowMs)
             }
         }
         updateCheckInFlight = task

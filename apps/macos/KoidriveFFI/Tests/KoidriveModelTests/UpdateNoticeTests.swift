@@ -159,6 +159,44 @@ import Testing
         }
     }
 
+    @Test func aFailedCheckKeepsTheReleaseAnEarlierCheckFoundWhileScheduledChecksAreOff() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let fake = try #require(model.session.fakeCore())
+        fake.setUpdate(update: .off)
+        model.apply(.update(update: .off))
+        fake.setReleased(version: "0.1.1")
+        await model.checkForUpdates()
+        let available = UpdateNotice.available(
+            version: "0.1.1", releaseURL: URL(string: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1"))
+        #expect(model.updateNotice == available)
+        fake.failNext(error: .ReleasesUnreachable)
+        await model.checkForUpdates()
+        #expect(model.state.update == .off)
+        #expect(model.updateNotice == available)
+        model.dismissUpdateCheck()
+        #expect(model.popoverUpdateNotice == available)
+    }
+
+    @Test func aDaemonAnswerNewerThanTheCheckReplacesIt() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let fake = try #require(model.session.fakeCore())
+        fake.setUpdate(update: .off)
+        fake.setReleased(version: "0.1.1")
+        await model.checkForUpdates()
+        guard case .available = model.updateNotice else {
+            Issue.record("expected the check's answer, got \(model.updateNotice)")
+            return
+        }
+        let later = Int64(Date.now.timeIntervalSince1970 * 1000) + 60_000
+        model.apply(.update(update: .upToDate(checkedAtMs: later)))
+        #expect(model.updateNotice == .upToDate(checkedAtMs: later))
+        guard case .available(_, _, let checkedAtMs) = model.checkedUpdate else {
+            Issue.record("expected the check's answer to stay stored, got \(String(describing: model.checkedUpdate))")
+            return
+        }
+        #expect(checkedAtMs < later)
+    }
+
     @Test func aCheckAfterAFailedInstallShowsItsAnswerAndUpdateBringsTheFailureBack() async throws {
         let model = AppModel.fake(scenario: .updateFails)
         #expect(await model.installUpdate() == nil)

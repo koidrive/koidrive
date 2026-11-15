@@ -16,16 +16,9 @@ public enum UpdateCheckFailure: Equatable, Sendable {
     case other(SessionError)
 }
 
-public enum UpdateCheck: Equatable, Sendable {
-    case answered(UpdateStatus)
-    case failed(UpdateCheckFailure, atMs: Int64)
-
-    var atMs: Int64 {
-        switch self {
-        case .answered(let update): update.checkedAtMs ?? 0
-        case .failed(_, let atMs): atMs
-        }
-    }
+public struct FailedUpdateCheck: Equatable, Sendable {
+    public let failure: UpdateCheckFailure
+    let atMs: Int64
 }
 
 /// What the app says about updating Koidrive, from the daemon's last check and the person's last update.
@@ -55,12 +48,13 @@ extension AppModel {
         if let installingVersion { return .updating(version: installingVersion) }
         if let updateFailure { return .failed(updateFailure) }
         if checkingForUpdates { return .checking }
-        if case .available = newestUpdate { return Self.notice(newestUpdate) }
-        switch updateCheck {
-        case .failed(let failure, _): return .checkFailed(failure)
-        case .answered(let update): return Self.notice(update)
-        case nil: return state.status == .offline ? .offline : Self.notice(state.update)
+        let newest = newestUpdate
+        if case .available = newest { return Self.notice(newest) }
+        if let failedUpdateCheck, failedUpdateCheck.atMs >= newest.checkedAtMs ?? 0 {
+            return .checkFailed(failedUpdateCheck.failure)
         }
+        if checkedUpdate == nil, state.status == .offline { return .offline }
+        return Self.notice(newest)
     }
 
     /// The update notice in the menu bar popover, which shows only what the person can act on, just did or asked for.
@@ -75,7 +69,8 @@ extension AppModel {
     }
 
     private var newestUpdate: UpdateStatus {
-        if case .answered(let update) = updateCheck { update } else { state.update }
+        guard let checkedUpdate, checkedUpdate.checkedAtMs ?? 0 >= state.update.checkedAtMs ?? 0 else { return state.update }
+        return checkedUpdate
     }
 
     private static func notice(_ update: UpdateStatus) -> UpdateNotice {
