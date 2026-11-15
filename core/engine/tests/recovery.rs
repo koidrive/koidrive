@@ -372,6 +372,91 @@ fn keeping_a_file_the_rewind_removed_creates_it_under_its_own_id() {
     );
 }
 
+fn a_folder_the_rewind_removed(
+    folder_on_disk: Shape,
+    child: Remote,
+    child_on_disk: Shape,
+) -> (Trees, Commits, IdGen) {
+    let moved_in = file("a", "A", 1);
+    let mut trees = trees(
+        &[("a", folder_on_disk), ("f", moved_in.clone())],
+        &[("a", dir(ROOT, "A")), ("f", moved_in)],
+        &[child],
+    );
+    let (commits, ids) = recovered(&mut trees, 0);
+    let mut renamed = trees.local().get("f").unwrap().clone();
+    renamed.shape = child_on_disk;
+    trees.set_local("f".into(), renamed);
+    trees.settle();
+    (trees, commits, ids)
+}
+
+#[test]
+fn keeping_a_folder_sends_a_file_renamed_in_it_that_the_rewind_moved_out() {
+    let (mut trees, mut commits, mut ids) = a_folder_the_rewind_removed(
+        dir(ROOT, "A"),
+        live("f", file(ROOT, "b", 1)),
+        file("a", "c.txt", 1),
+    );
+    let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Keep));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "a".into()), ("move", "f".into())]
+    );
+}
+
+#[test]
+fn keeping_a_folder_sends_a_file_renamed_in_it_that_the_rewind_trashed() {
+    let (mut trees, mut commits, mut ids) = a_folder_the_rewind_removed(
+        dir(ROOT, "A"),
+        Remote("f", file(ROOT, "b", 1), true, 1),
+        file("a", "c.txt", 1),
+    );
+    let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Keep));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "a".into()), ("move", "f".into())]
+    );
+}
+
+#[test]
+fn publishing_a_folder_the_rewind_removed_sends_a_file_renamed_in_it() {
+    let (mut trees, mut commits, mut ids) = a_folder_the_rewind_removed(
+        dir(ROOT, "A2"),
+        live("f", file(ROOT, "b", 1)),
+        file("a", "c.txt", 1),
+    );
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "a".into()), ("move", "f".into())]
+    );
+}
+
+#[test]
+fn keeping_a_folder_still_moves_out_an_unchanged_file_the_rewind_moved_out() {
+    let (mut trees, mut commits, mut ids) = a_folder_the_rewind_removed(
+        dir(ROOT, "A"),
+        live("f", file(ROOT, "b", 1)),
+        file("a", "A", 1),
+    );
+    let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Keep));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::Move { .. })] if node == "f"),
+        "{done:?}"
+    );
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "a".into())]
+    );
+}
+
 #[test]
 fn discarding_a_file_the_rewind_removed_moves_it_to_the_local_trash() {
     let mut trees = trees(

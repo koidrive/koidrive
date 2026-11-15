@@ -249,7 +249,7 @@ pub(crate) fn release(
     };
     let remote = |id: &str| trees.remote().get(id).map(|node| node.shape.clone());
     let local = |id: &str| trees.local().get(id).map(|node| node.shape.clone());
-    (question.holds())
+    let released: BTreeMap<NodeId, Option<Shape>> = (question.holds())
         .filter_map(|id| {
             let shape = match (group, answer) {
                 (RecoveryGroup::CreatedAfterRestorePoint, Answer::Keep) => None,
@@ -261,5 +261,24 @@ pub(crate) fn release(
             };
             Some((id.clone(), shape))
         })
-        .collect()
+        .collect();
+    let carried: Vec<(NodeId, Option<Shape>)> = (released.iter())
+        .filter(|(_, shape)| shape.is_none())
+        .flat_map(|(id, _)| trees.synced_children(id))
+        .filter(|child| !released.contains_key(*child))
+        .filter_map(|child| {
+            let synced = trees.synced().live(child)?;
+            if trees.local().get(child)?.shape.same(synced) {
+                return None;
+            }
+            let server = remote(child)?;
+            let moved = Shape {
+                parent: server.parent,
+                name: server.name,
+                ..synced.clone()
+            };
+            Some((child.clone(), Some(moved)))
+        })
+        .collect();
+    released.into_iter().chain(carried).collect()
 }
