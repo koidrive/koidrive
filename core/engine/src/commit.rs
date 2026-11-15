@@ -1175,6 +1175,7 @@ impl Commits {
                     &candidates,
                     bound,
                     &skip,
+                    &self.problems,
                     &needed,
                     cap,
                     &answered,
@@ -2485,7 +2486,7 @@ fn leaving_unsent(trees: &Trees, problems: &BTreeSet<NodeId>, id: &str) -> bool 
     let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
         return false;
     };
-    problems.contains(id)
+    (problems.contains(id) || trees.waiting().contains_key(id))
         && (local.shape.parent != remote.shape.parent
             || name_key(&local.shape.name) != name_key(&remote.shape.name))
 }
@@ -2993,6 +2994,7 @@ fn plan(
     trees: &Trees,
     candidates: &[&NodeId],
     bound: Option<(usize, &str)>,
+    skip: &BTreeSet<NodeId>,
     problems: &BTreeSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
@@ -3025,7 +3027,7 @@ fn plan(
     let mut deleted = BTreeSet::new();
     let mut reverts = Vec::new();
     let mut within = None;
-    for &id in candidates.iter().filter(|id| !problems.contains(**id)) {
+    for &id in candidates.iter().filter(|id| !skip.contains(**id)) {
         if within.is_none() && bound.is_some_and(|(_, bound)| id.as_str() >= bound) {
             within = Some(wants.len());
         }
@@ -3161,7 +3163,7 @@ fn plan(
         }
     }
     let unsettled = |node: &&str| {
-        problems.contains(*node)
+        skip.contains(*node)
             || trees.waiting().contains_key(*node)
             || trees.class(node) == Class::Same
     };
