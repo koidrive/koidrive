@@ -821,12 +821,16 @@ struct Verdict {
     made_up: Vec<usize>,
     made_up_by_delete: Vec<usize>,
     lost: Vec<String>,
+    renamed: Vec<String>,
     refused: bool,
 }
 
 impl Verdict {
     fn safe(&self) -> bool {
-        self.revived.is_empty() && self.made_up.is_empty() && self.lost.is_empty()
+        self.revived.is_empty()
+            && self.made_up.is_empty()
+            && self.lost.is_empty()
+            && self.renamed.is_empty()
     }
 
     fn clean(&self) -> bool {
@@ -954,6 +958,15 @@ fn judge(
         path
     };
     let holding: BTreeSet<String> = targets.iter().flat_map(|id| path(id)).collect();
+    for node in after.nodes() {
+        let renamed = !targets.contains(node.node_id.as_str())
+            && node.status() == NodeStatus::Live
+            && (before.node(&node.node_id))
+                .is_some_and(|was| was.status() == NodeStatus::Live && was.name != node.name);
+        if renamed {
+            verdict.renamed.push(world.label_of(&root, &node.node_id));
+        }
+    }
     for id in trashed(before) {
         if after
             .node(&id)
@@ -1561,6 +1574,9 @@ fn kinds(verdicts: &[&Verdict]) -> Vec<&'static str> {
     if verdicts.iter().any(|verdict| !verdict.lost.is_empty()) {
         kinds.push("lost");
     }
+    if verdicts.iter().any(|verdict| !verdict.renamed.is_empty()) {
+        kinds.push("renamed by the server");
+    }
     kinds
 }
 
@@ -1638,10 +1654,11 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         ));
     }
     let later = runs.iter().flat_map(|run| run.sent.iter().skip(1));
-    if let Some(sent) = later
-        .clone()
-        .find(|sent| !sent.verdict.revived.is_empty() || !sent.verdict.lost.is_empty())
-    {
+    if let Some(sent) = later.clone().find(|sent| {
+        !sent.verdict.revived.is_empty()
+            || !sent.verdict.lost.is_empty()
+            || !sent.verdict.renamed.is_empty()
+    }) {
         hard = true;
         let (resolution, note) = resolve(world, vec![&sent.before], &sent.commit, &root);
         for kind in kinds(&[&sent.verdict])
@@ -2168,6 +2185,24 @@ fn repros() -> Vec<(&'static str, World)> {
                 &[kept, kept],
                 &[Onto(1), To(In(0))],
                 &[(Kind::Dir, To(In(0)))],
+            ),
+        ),
+        (
+            "a new file at the name of a folder another device moved, kept there by a cycle against R",
+            world(
+                &[Root, Root, In(0)],
+                &[kept, Remote::Into(In(2)), kept],
+                &[Removed, Kept, To(In(1))],
+                &[(Kind::Dir, To(In(1))), (Kind::File, Onto(1))],
+            ),
+        ),
+        (
+            "a new file at the name of a folder another device moved, kept there by a cycle against R below a deleted folder",
+            world(
+                &[Root, Root, In(0), In(2)],
+                &[kept, Remote::Into(In(3)), kept, kept],
+                &[Kept, Kept, Removed, To(In(1))],
+                &[(Kind::Dir, To(In(1))), (Kind::File, Onto(1))],
             ),
         ),
     ]
