@@ -512,9 +512,24 @@ fn an_edited_file_another_device_deleted_comes_back_once_after_a_split_commit_th
 
 #[test]
 fn a_remote_edit_of_a_file_another_device_then_deleted_reaches_l_after_a_split_commit_that_merges_the_folder() {
+    let class = split_ends_like_the_whole_commit(("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))));
+    assert_eq!(class, Class::Remote);
+}
+
+#[test]
+fn a_split_commit_that_merges_a_new_folder_into_a_renamed_folder_ends_like_the_whole_commit() {
+    split_ends_like_the_whole_commit((
+        "a",
+        Some(dir(ROOT, "e")),
+        Some(dir(ROOT, "e")),
+        Some(remote(dir(ROOT, "a"))),
+    ));
+}
+
+fn split_ends_like_the_whole_commit(a: Row) -> Class {
     let rows = || {
         trees(&[
-            ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+            a.clone(),
             ("x", None, None, Some(remote(dir("a", "x")))),
             (
                 "c",
@@ -562,5 +577,87 @@ fn a_remote_edit_of_a_file_another_device_then_deleted_reaches_l_after_a_split_c
     assert_eq!(build(&mut commits, &mut split, &mut ids), None);
     assert_eq!(split.synced().live("c"), whole.synced().live("c"));
     assert_eq!(split.class("c"), whole.class("c"));
-    assert_eq!(split.class("c"), Class::Remote);
+    split.class("c")
+}
+
+#[test]
+fn a_trashed_file_moved_into_a_new_folder_comes_back_after_a_split_commit_merges_it_into_a_renamed_folder() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote_at(dir(ROOT, "a"), 2)),
+        ),
+        (
+            "c",
+            Some(file("n", "c", 1)),
+            Some(file("a", "c", 1)),
+            Some(trashed(file("a", "c", 1))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let whole = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&whole), [create_dir("n", ROOT, "a"), mv("c", "n", "c")]);
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids);
+    assert_eq!(second.as_ref().map(ops), Some(vec![mv("c", "a", "c")]));
+}
+
+#[test]
+fn a_move_into_a_new_folder_survives_a_split_commit_that_merges_it_into_a_renamed_folder() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote_at(dir(ROOT, "a"), 2)),
+        ),
+        (
+            "b",
+            Some(dir("a", "b")),
+            Some(dir("a", "b")),
+            Some(remote(dir("a", "b"))),
+        ),
+        (
+            "c",
+            Some(file("n", "c", 1)),
+            Some(file("a", "c", 1)),
+            Some(remote_at(file("b", "c", 1), 2)),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let whole = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&whole), [create_dir("n", ROOT, "a"), mv("c", "n", "c")]);
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids);
+    assert_eq!(second.as_ref().map(ops), Some(vec![mv("c", "a", "c")]));
 }
