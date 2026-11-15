@@ -379,14 +379,11 @@ fn a_trashed_folder_moved_into_a_new_folder_comes_back_with_its_trash_group_afte
         }],
     );
     let second = build(&mut commits, &mut trees, &mut ids);
-    assert_eq!(
-        second.as_ref().map(ops),
-        Some(vec![mv("b", "a", "b"), mv("d", "b", "d")])
-    );
+    assert_eq!(second.as_ref().map(ops), Some(vec![mv("b", "a", "b")]));
     acknowledge(
         &mut commits,
         &mut trees,
-        vec![outcome(op_result::Code::Applied); 2],
+        vec![outcome(op_result::Code::Applied)],
     );
     trees.set_remote_made_here("b".into(), remote_at(dir("a", "b"), 2));
     trees.set_remote_made_here("d".into(), remote_at(dir("b", "d"), 2));
@@ -431,4 +428,139 @@ fn a_file_moved_into_a_new_folder_keeps_a_remote_edit_after_a_split_commit_that_
         !planned.iter().any(|op| matches!(op, op::Op::UpdateContent(_))),
         "{planned:?}"
     );
+}
+
+#[test]
+fn a_remote_edit_of_a_moved_in_file_survives_a_split_commit_that_merges_the_folder() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        (
+            "c",
+            Some(file("n", "c", 1)),
+            Some(file("a", "c", 1)),
+            Some(remote_at(file("a", "c", 2), 2)),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let whole = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&whole), [create_dir("n", ROOT, "a"), mv("c", "n", "c")]);
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids);
+    let second = second.as_ref().map(ops).unwrap_or_default();
+    assert!(!second.contains(&update("c", 1)), "{second:?}");
+}
+
+#[test]
+fn an_edited_file_another_device_deleted_comes_back_once_after_a_split_commit_that_merges_the_folder() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        ("x", None, None, Some(remote(dir("a", "x")))),
+        (
+            "c",
+            Some(file("n", "c", 2)),
+            Some(file("a", "c", 1)),
+            Some(trashed(file("a", "c", 1))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let split = |commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen| loop {
+        match build(commits, trees, ids) {
+            Some(commit) if commit.ops.len() > 1 => {
+                let refused = commits.failed(trees, &refusal(error::Code::LimitExceeded, 0));
+                assert_eq!(refused, Ok(Failure::Split));
+            }
+            other => break other.map(|commit| ops(&commit)).unwrap_or_default(),
+        }
+    };
+    let first = split(&mut commits, &mut trees, &mut ids);
+    assert_eq!(first, [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = split(&mut commits, &mut trees, &mut ids);
+    assert_eq!(second, [mv("c", "a", "c")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied)],
+    );
+    trees.set_remote_made_here("c".into(), remote_at(file("a", "c", 1), 2));
+    trees.settle();
+    let third = split(&mut commits, &mut trees, &mut ids);
+    assert_eq!(third, [update("c", 2)]);
+}
+
+#[test]
+fn a_remote_edit_of_a_file_another_device_then_deleted_reaches_l_after_a_split_commit_that_merges_the_folder() {
+    let rows = || {
+        trees(&[
+            ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+            ("x", None, None, Some(remote(dir("a", "x")))),
+            (
+                "c",
+                Some(file("n", "c", 1)),
+                Some(file("a", "c", 1)),
+                Some(trashed(file("a", "c", 2))),
+            ),
+            ("n", Some(dir(ROOT, "a")), None, None),
+        ])
+    };
+    let merged = || OpResult {
+        node_id: "a".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    let mut whole = rows();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut whole, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [create_dir("n", ROOT, "a"), mv("c", "n", "c")]);
+    acknowledge(
+        &mut commits,
+        &mut whole,
+        vec![merged(), outcome(op_result::Code::Applied)],
+    );
+    whole.set_remote_made_here("c".into(), remote_at(file("a", "c", 2), 2));
+    whole.settle();
+    assert_eq!(build(&mut commits, &mut whole, &mut ids), None);
+    let mut split = rows();
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let first = build(&mut commits, &mut split, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(&mut commits, &mut split, vec![merged()]);
+    let second = build(&mut commits, &mut split, &mut ids).unwrap();
+    assert_eq!(ops(&second), [mv("c", "a", "c")]);
+    acknowledge(
+        &mut commits,
+        &mut split,
+        vec![outcome(op_result::Code::Applied)],
+    );
+    split.set_remote_made_here("c".into(), remote_at(file("a", "c", 2), 2));
+    split.settle();
+    assert_eq!(build(&mut commits, &mut split, &mut ids), None);
+    assert_eq!(split.synced().live("c"), whole.synced().live("c"));
+    assert_eq!(split.class("c"), whole.class("c"));
+    assert_eq!(split.class("c"), Class::Remote);
 }

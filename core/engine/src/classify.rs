@@ -357,6 +357,7 @@ pub struct Trees {
     unsent_edits: TrackedSet<NodeId>,
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
+    unsent_moves: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     resends: TrackedSet<NodeId>,
     local_changes: TrackedSet<NodeId>,
@@ -453,6 +454,7 @@ impl Trees {
             past_positions: TrackedMap::default(),
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
+            unsent_moves: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             resends: TrackedSet::default(),
             local_changes: TrackedSet::default(),
@@ -971,6 +973,9 @@ impl Trees {
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
+        if !node.trashed {
+            self.unsent_moves.remove(&id);
+        }
         if !made_here && !node.trashed && self.lost_positions.contains_key(&id) {
             let at = LostPosition {
                 parent: node.shape.parent.clone(),
@@ -1088,6 +1093,7 @@ impl Trees {
     fn changes(&self) -> BTreeSet<&NodeId> {
         (self.local_changes.iter())
             .chain(self.unsent_edits.iter())
+            .chain(self.unsent_moves.iter())
             .filter(|id| !self.resends.contains(*id) && !self.excluded(id))
             .filter(|id| {
                 matches!(
@@ -1624,6 +1630,7 @@ impl Trees {
         self.lost.remove(id);
         self.count_held_trash(id, false);
         self.unsent_edits.remove(id);
+        self.unsent_moves.remove(id);
         self.end_resend(id);
         self.forgotten_shapes.remove(id);
         self.local_changes.remove(id);
@@ -3365,7 +3372,7 @@ impl Trees {
     /// same bytes.
     pub fn class_against(&self, id: &str, synced: Option<&Shape>) -> Class {
         let class = classify(self.l.live(id), synced, self.r.live(id));
-        if !self.unsent_edits.contains(id) {
+        if !self.unsent_edits.contains(id) && !self.unsent_moves.contains(id) {
             return class;
         }
         match class {
@@ -3384,6 +3391,21 @@ impl Trees {
     /// the file: the edit beats the removal and the file is created again, as for any edit L holds.
     pub fn unsent_edits(&self) -> &BTreeSet<NodeId> {
         &self.unsent_edits
+    }
+
+    pub(crate) fn unsent_moves(&self) -> &BTreeSet<NodeId> {
+        &self.unsent_moves
+    }
+
+    pub(crate) fn hold_unsent_move(&mut self, id: NodeId) {
+        self.mark(&id);
+        self.unsent_moves.insert(id);
+    }
+
+    pub(crate) fn sent_move(&mut self, id: &str) {
+        if self.unsent_moves.remove(id) {
+            self.mark(id);
+        }
     }
 
     /// Records `ids` as files the commit in flight edited when the server lost commits of this
@@ -4065,6 +4087,7 @@ impl Trees {
             past_positions: (*self.past_positions).clone(),
             unsent_edits: (*self.unsent_edits).clone(),
             dropped_edits: (*self.dropped_edits).clone(),
+            unsent_moves: (*self.unsent_moves).clone(),
             replaced_versions: (*self.replaced_versions).clone(),
             resends: (*self.resends).clone(),
             local_changes: (*self.local_changes).clone(),
@@ -4105,6 +4128,7 @@ impl Trees {
             past_positions,
             unsent_edits,
             dropped_edits,
+            unsent_moves,
             replaced_versions,
             resends,
             local_changes,
@@ -4158,6 +4182,7 @@ impl Trees {
             past_positions: past_positions.take_changes(),
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
+            unsent_moves: unsent_moves.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             resends: resends.take_changes(),
             local_changes: local_changes.take_changes(),
@@ -4282,6 +4307,7 @@ impl Trees {
             past_positions,
             unsent_edits,
             dropped_edits,
+            unsent_moves,
             replaced_versions,
             resends,
             local_changes,
@@ -4317,6 +4343,7 @@ impl Trees {
         self.past_positions = past_positions.into();
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
+        self.unsent_moves = unsent_moves.into();
         self.replaced_versions = replaced_versions.into();
         self.resends = resends.into();
         self.local_changes = local_changes.into();

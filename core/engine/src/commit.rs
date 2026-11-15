@@ -1723,39 +1723,25 @@ impl Commits {
                                 && (synced.get(trees, id))
                                     .is_some_and(|shape| shape.parent != create.node_id)
                         };
-                        let mut moved_in: Vec<(NodeId, Option<Shape>)> = (trees
+                        let (trashed, moved_in): (Vec<&NodeId>, Vec<&NodeId>) = (trees
                             .local_children(&create.node_id))
                         .filter(|id| outside(id))
-                        .map(|id| {
-                            let position = (trees.remote().live(id))
-                                .zip(synced.get(trees, id))
-                                .map(|(remote, synced)| Shape {
-                                    parent: remote.parent.clone(),
-                                    name: remote.name.clone(),
-                                    ..synced
-                                });
-                            (id.clone(), position)
-                        })
-                        .collect();
-                        let mut groups: Vec<(NodeId, String)> = (moved_in.iter())
-                            .filter_map(|(id, _)| {
-                                let remote =
-                                    trees.remote().get(id).filter(|remote| remote.trashed)?;
-                                Some((id.clone(), remote.trash_group.clone()))
+                        .partition(|id| {
+                            trees.remote().get(id).is_some_and(|remote| remote.trashed)
+                        });
+                        let trashed: Vec<NodeId> = trashed.into_iter().cloned().collect();
+                        let moved_in: Vec<(NodeId, Option<Shape>)> = (moved_in.into_iter())
+                            .map(|id| {
+                                let position = (trees.remote().live(id))
+                                    .zip(synced.get(trees, id))
+                                    .map(|(remote, synced)| Shape {
+                                        parent: remote.parent.clone(),
+                                        name: remote.name.clone(),
+                                        ..synced
+                                    });
+                                (id.clone(), position)
                             })
                             .collect();
-                        while let Some((parent, group)) = groups.pop() {
-                            for id in trees.local_children(&parent) {
-                                if outside(id)
-                                    && trees.remote().get(id).is_some_and(|remote| {
-                                        remote.trashed && remote.trash_group == group
-                                    })
-                                {
-                                    moved_in.push((id.clone(), None));
-                                    groups.push((id.clone(), group.clone()));
-                                }
-                            }
-                        }
                         rekey(trees, &create.node_id, into);
                         let held: Vec<(NodeId, Shape)> = (trees.synced().iter())
                             .map(|(id, _)| id)
@@ -1784,6 +1770,9 @@ impl Commits {
                         }
                         for (id, remote) in moved_in {
                             synced.set(&id, remote);
+                        }
+                        for id in trashed {
+                            trees.hold_unsent_move(id);
                         }
                         merged.insert(create.node_id.clone(), into.clone());
                     } else if applied && trees.lost_position(&create.node_id).is_some() {
@@ -1909,6 +1898,9 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, id, result.seq));
                         synced.set(id, Some(shape));
+                    }
+                    if applied || cycle || superseded {
+                        trees.sent_move(id);
                     }
                     if cycle {
                         trees.revert(id.clone());
@@ -3283,7 +3275,7 @@ fn plan(
         if in_alias && (placed(synced) || placed(remote)) && !trees.reverted().contains(id) {
             reverts.push(id.clone());
         }
-        if synced.is_none_or(|s| !s.same_position(local))
+        if (synced.is_none_or(|s| !s.same_position(local)) || trees.unsent_moves().contains(id))
             && remote.is_none_or(|r| !r.same_position(local))
             && !trees.reverted().contains(id)
             && !trees.reviving(id)
