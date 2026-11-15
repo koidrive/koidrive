@@ -1809,8 +1809,11 @@ impl Trees {
         });
         let mut seen = BTreeSet::new();
         unchanged
-            && (self.discarded.children(id))
-                .all(|child| self.is_discarded(child) || self.as_the_server_holds(child, &mut seen))
+            && (self.discarded.children(id)).all(|child| {
+                self.is_discarded(child)
+                    || (self.l.get(child)).is_some_and(|local| local.shape.parent != id)
+                    || self.as_the_server_holds(child, &mut seen)
+            })
             && (self.local_children_placed_or_parked(id)).all(|child| {
                 (self.discarded.get(child)).is_some_and(|shape| shape.parent == id)
                     || self.as_the_server_holds(child, &mut seen)
@@ -1907,19 +1910,8 @@ impl Trees {
     }
 
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
-        (self.synced_children(id).chain(self.waiting.children(id))).all(|child| {
-            match self.l.get(child) {
-                Some(node) if node.shape.parent == id || !self.discarded.contains_key(child) => {
-                    true
-                }
-                Some(node)
-                    if (self.discarded.get(child)).is_some_and(|shape| node.shape.same(shape)) =>
-                {
-                    true
-                }
-                _ => self.as_the_server_holds(child, seen),
-            }
-        })
+        (self.synced_children(id).chain(self.waiting.children(id)))
+            .all(|child| self.l.get(child).is_some() || self.as_the_server_holds(child, seen))
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {

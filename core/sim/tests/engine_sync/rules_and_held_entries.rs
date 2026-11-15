@@ -626,6 +626,6 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     device.trees.set_remote("f".into(), remote(server));
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get("f").is_none());
-    assert!(acted_below(&device, &BTreeMap::new(), "k"));
+    assert!(acted_below(&device, "k"));
 }
 
