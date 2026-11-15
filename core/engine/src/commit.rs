@@ -1605,8 +1605,10 @@ impl Commits {
     /// instead of sending the create again: equal content leaves nothing to send, and other
     /// content is kept beside R's as a new node (section 2.4). A node R holds in the trash keeps
     /// the S that L and R agreed on while the create was out, and otherwise takes R's content at the
-    /// position the create sent as its S. So L follows the delete unless it holds content the
-    /// server never showed for the node, which revives it (R8).
+    /// position the create sent as its S, or at L's position when the create was sent at a lost
+    /// position, as an accepted one takes it. So L follows the delete, and the move the lost
+    /// position stands for, unless it holds content the server never showed for the node, which
+    /// revives it (R8).
     ///
     /// A `Restore` op changes neither S nor L. What it sent is an instruction, and only the server
     /// knows the nodes and the content it brought back, so all of it is a remote change that R
@@ -2011,7 +2013,15 @@ impl Commits {
                     name: sent_name.clone(),
                     ..remote.shape.clone()
                 };
-                synced.set(node, Some(shape));
+                if trees.lost_position(node).is_some() {
+                    trees.take_lost_position(
+                        node.clone(),
+                        shape,
+                        Origin::Commit(flight.commit.device_seq),
+                    );
+                } else {
+                    synced.set(node, Some(shape));
+                }
                 let content = match &op.op {
                     Some(op::Op::CreateFile(create)) => create.content.as_ref(),
                     _ => None,
