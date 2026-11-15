@@ -22,7 +22,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::StateError;
 
-use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Names, RemoteNode, same};
+use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, same};
 
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Commit, Content, CreateDir, CreateFile, Delete, Error, ListVersions,
@@ -872,11 +872,15 @@ fn stored(space: &SpaceDo) -> BTreeSet<(String, Vec<u8>)> {
 /// The content the server acknowledged for a file: its waiting S update's while one waits, and
 /// S's otherwise.
 fn acknowledged(trees: &Trees, id: &str) -> Option<Vec<u8>> {
-    let shape = match trees.waiting().get(id) {
+    let shape = acknowledged_shape(trees, id)?;
+    Some(shape.content.as_ref()?.manifest_digest.clone())
+}
+
+fn acknowledged_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
+    match trees.waiting().get(id) {
         Some(waiting) => waiting.shape.as_ref(),
         None => trees.synced().live(id),
-    }?;
-    Some(shape.content.as_ref()?.manifest_digest.clone())
+    }
 }
 
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
@@ -1219,8 +1223,39 @@ fn acted_below(
         (Some(local), Some(remote)) => local.shape.same(remote),
         (local, remote) => local.is_none() && remote.is_none(),
     };
+    let below_in_r = |node: &str, entry: &str| {
+        let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
+        for _ in 0..=trees.remote().len() {
+            match current {
+                Some(at) if at == entry => return true,
+                Some(at) => {
+                    let moved_here = (trees.local().get(&at)).is_some_and(|local| {
+                        (acknowledged_shape(trees, &at))
+                            .is_none_or(|held| !local.shape.same_position(held))
+                    }) && !trees.reverted().contains(&at);
+                    if moved_here {
+                        return false;
+                    }
+                    current = trees.remote().live(&at).map(|remote| remote.parent.clone());
+                }
+                None => return false,
+            }
+        }
+        false
+    };
+    let kept_by_r7 = |entry: &str| {
+        trees.local().get(entry).is_none()
+            && trees.remote().live(entry).is_some()
+            && (trees.remote().iter()).any(|(node, remote)| {
+                !remote.trashed
+                    && trees.local().get(node).is_none()
+                    && !device.removed_from.contains_key(node)
+                    && !trees.excluded(node)
+                    && below_in_r(node, entry)
+            })
+    };
     (device.acted.iter())
-        .filter(|entry| !as_on_server(entry))
+        .filter(|entry| !as_on_server(entry) && !kept_by_r7(entry))
         .any(|entry| {
             reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
         })
