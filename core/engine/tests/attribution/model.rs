@@ -21,6 +21,7 @@ struct Value {
     pos: Tok,
     content: Tok,
     seen: [Tok; 2],
+    held: [u32; 2],
     renamed_from: Option<Tok>,
 }
 
@@ -229,6 +230,7 @@ struct Device {
     seen: Vec<u8>,
     history: [Vec<(Tok, Seq)>; 2],
     earlier: Vec<u8>,
+    held: [u32; 2],
     unsent: Unsent,
     by_user: [bool; 2],
     flight: Option<Flight>,
@@ -312,6 +314,7 @@ pub enum Rules {
     ListedRemovalsInRecovery,
     RemovalTakesListedShape,
     HighestHeld,
+    DeleteSeesOnlyView,
 }
 
 impl Rules {
@@ -351,6 +354,7 @@ impl World {
             pos: Tok(0),
             content: Tok(1),
             seen: [Tok(0), Tok(1)],
+            held: [0; 2],
             renamed_from: None,
         };
         let agreed = |val| Agreed {
@@ -374,6 +378,7 @@ impl World {
             seen: vec![0],
             history: [Vec::new(), Vec::new()],
             earlier: Vec::new(),
+            held: [1 << 0, 1 << 1],
             unsent: Unsent::default(),
             by_user: [false; 2],
             flight: None,
@@ -430,6 +435,7 @@ impl World {
     }
 
     fn mint(&mut self, value: Value) -> Tok {
+        assert!(self.values.len() < 32, "a held set is a u32 of tokens");
         self.values.push(value);
         Tok(self.values.len() as u8 - 1)
     }
@@ -581,6 +587,7 @@ impl World {
                     pos,
                     content,
                     seen,
+                    held: [0; 2],
                     renamed_from: None,
                 });
                 let dev = &mut w.devices[d];
@@ -613,12 +620,14 @@ impl World {
                         w.server.overruled.push(remote);
                     }
                 }
+                let held = w.devices[d].held;
                 let gone = w.mint(Value {
                     field: Field::Existence,
                     author: Some(d),
                     pos,
                     content,
                     seen,
+                    held,
                     renamed_from: None,
                 });
                 let dev = &mut w.devices[d];
@@ -737,6 +746,12 @@ impl World {
             }
             Action::Bootstrap(d) => w.bootstrap(d, rules)?,
         }
+        for dev in &mut w.devices {
+            if let Local::Live { pos, content } = dev.l {
+                dev.held[0] |= 1 << pos.0;
+                dev.held[1] |= 1 << content.0;
+            }
+        }
         w.check()?;
         Ok(w)
     }
@@ -767,12 +782,19 @@ impl World {
             .map(|index| self.saw(Tok(index as u8), rules))
             .collect();
         let saw = |gone: Tok| saws[gone.0 as usize];
+        let helds: Vec<[u32; 2]> = self.values.iter().map(|value| value.held).collect();
+        let saw_value = |gone: Tok, field: Field, value: Tok| {
+            saw(gone).is_some_and(|seen| {
+                seen[slot(field)] == value
+                    || (rules != Rules::DeleteSeesOnlyView
+                        && helds[gone.0 as usize][slot(field)] & (1 << value.0) != 0)
+            })
+        };
         let seen_by_delete = |node: &Node, value: Tok, field: Field| {
             !matches!(rules, Rules::SeqDelete | Rules::ResendRevivesSeenValue)
                 && node
                     .trashed
-                    .and_then(saw)
-                    .is_some_and(|seen| seen[slot(field)] == value)
+                    .is_some_and(|trash| saw_value(trash, field, value))
         };
         for ((op, _), &by_user) in flight.ops.iter().zip(&flight.by_user) {
             let revives = |value: Tok| {
@@ -786,8 +808,8 @@ impl World {
             let code = match *op {
                 Op::Delete { base, gone } => {
                     let unseen = |field: Field| {
-                        let differs = rules == Rules::SeqDelete
-                            || saw(gone).is_none_or(|seen| node.get(field) != seen[slot(field)]);
+                        let differs =
+                            rules == Rules::SeqDelete || !saw_value(gone, field, node.get(field));
                         differs && node.edit(field) > base && node.by(field) != Some(d)
                     };
                     if let Some(trash) = node.trashed {
@@ -1234,6 +1256,8 @@ impl World {
                         && r.user_set(field)
                         && r.by(field) != Some(d)
                         && (old || r.edit(field) > synced.seq)
+                        && (rules == Rules::DeleteSeesOnlyView
+                            || dev.held[slot(field)] & (1 << r.get(field).0) == 0)
                 });
                 if unseen {
                     return self.take_remote(d);

@@ -84,6 +84,7 @@ fn rules(name: &str) -> Rules {
         "BoundOnly" => Rules::BoundOnly,
         "RemovalTakesListedShape" => Rules::RemovalTakesListedShape,
         "HighestHeld" => Rules::HighestHeld,
+        "DeleteSeesOnlyView" => Rules::DeleteSeesOnlyView,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         other => panic!("no rules {other}"),
     }
@@ -346,6 +347,12 @@ fn refute_removal_takes_listed_shape() {
 #[ignore]
 fn refute_highest_held() {
     refute(Rules::HighestHeld);
+}
+
+#[test]
+#[ignore]
+fn refute_delete_sees_only_view() {
+    refute(Rules::DeleteSeesOnlyView);
 }
 
 fn exhaustive(n: [u8; 10], rules: Rules) {
