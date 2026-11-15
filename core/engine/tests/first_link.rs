@@ -2678,9 +2678,9 @@ fn a_file_deleted_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_
     assert!(trees.local().get("c").is_none());
 }
 
-#[test]
-fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
- {
+fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
+    change: impl FnOnce(&mut Trees),
+) -> (Vec<(&'static str, String)>, Trees) {
     let mut trees = trees(
         &[("f", dir(ROOT, "new")), ("x", dir(ROOT, "server"))],
         &[("x", dir(ROOT, "server")), ("p", dir(ROOT, "away"))],
@@ -2731,7 +2731,7 @@ fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_fo
             .unwrap();
     }
     assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
-    trees.remove_local("c");
+    change(&mut trees);
     let mut sent = Vec::new();
     for ino in 200..250 {
         trees.settle();
@@ -2757,12 +2757,48 @@ fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_fo
             )
             .unwrap();
     }
+    (sent, trees)
+}
+
+#[test]
+fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+ {
+    let (sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            trees.remove_local("c");
+        });
     assert_eq!(
         sent,
         [("create dir", "f".to_owned()), ("move", "x".to_owned())]
     );
     assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
     assert!(trees.local().get("c").is_none());
+}
+
+#[test]
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+ {
+    let (mut sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            let mut moved = trees.local().get("c").unwrap().clone();
+            moved.shape.parent = ROOT.into();
+            moved.shape.name = "moved".into();
+            trees.set_local_changed("c".into(), moved);
+        });
+    sent.sort();
+    assert_eq!(
+        sent,
+        [
+            ("create dir", "f".to_owned()),
+            ("move", "c".to_owned()),
+            ("move", "x".to_owned())
+        ]
+    );
+    assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "moved", 5)
+    );
 }
 
 #[test]
