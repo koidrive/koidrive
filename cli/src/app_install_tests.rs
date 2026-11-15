@@ -3177,6 +3177,29 @@ async fn an_older_app_only_in_user_applications_is_upgraded_where_it_is() {
 }
 
 #[tokio::test]
+async fn an_older_app_in_an_unwritable_user_applications_is_preserved_beside_a_new_system_app() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    let user = f.config.user.join(BUNDLE);
+    bundle(&user, Some("0.1.0"));
+    fs::set_permissions(&f.config.user, fs::Permissions::from_mode(0o500)).unwrap();
+    let result = f.run().await;
+    fs::set_permissions(&f.config.user, fs::Permissions::from_mode(0o700)).unwrap();
+    let AppInstall::Present {
+        path, preserved, ..
+    } = result.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(path, f.installed());
+    assert_eq!(preserved, vec![user.clone()]);
+    assert_eq!(
+        fs::read(user.join("Contents/Helpers/koi")).unwrap(),
+        b"0.1.0"
+    );
+    f.unmounted();
+}
+
+#[tokio::test]
 async fn equal_copies_prefer_system_applications() {
     let f = Fixture::new(None, DMG.to_vec(), 200).await;
     bundle(&f.installed(), Some(TARGET));
