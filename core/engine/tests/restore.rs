@@ -1386,13 +1386,13 @@ fn a_rejected_restore_sent_with_a_move_that_brings_its_file_back_leaves_the_file
     let intent = version(&g, &missing);
     assert!(commits.restore(id(100), intent.clone()));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [restore_op(&intent), moved(&a, &root(), "A")]);
+    assert_eq!(ops(&commit), [moved(&a, &root(), "A"), restore_op(&intent)]);
 
     let back = [
         (a.as_str(), dir(&root(), "A")),
         (g.as_str(), file(&a, "g", 1)),
     ];
-    let results = vec![rejected("NOT_FOUND"), outcome(op_result::Code::Applied)];
+    let results = vec![outcome(op_result::Code::Applied), rejected("NOT_FOUND")];
     revived(&mut commits, &mut trees, &back, results);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let delete = op::Op::Delete(proto::Delete {
@@ -1410,7 +1410,7 @@ fn a_restore_sent_with_a_move_that_already_brought_its_file_back_downloads_the_f
     let intent = from_trash(&g);
     assert!(commits.restore(id(100), intent.clone()));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [restore_op(&intent), moved(&a, &root(), "A")]);
+    assert_eq!(ops(&commit), [moved(&a, &root(), "A"), restore_op(&intent)]);
 
     let back = [
         (a.as_str(), dir(&root(), "A")),
@@ -1958,4 +1958,29 @@ fn a_restore_of_a_file_its_folders_delete_planned_leaves_the_other_files_of_that
         requires: None,
     });
     assert_eq!(next, Some(vec![delete]));
+}
+
+#[test]
+fn a_version_restore_in_a_folder_the_commit_moves_is_sent_after_the_move() {
+    let (c, d, f, v, request) = (id(1), id(2), id(3), id(50), id(100));
+    let mut trees = trees(&[
+        synced(c.clone(), dir(&root(), "c")),
+        (
+            d.clone(),
+            Some(dir(&root(), "d")),
+            Some(dir(&c, "d")),
+            Some(remote(dir(&c, "d"))),
+        ),
+        synced(f.clone(), file(&d, "f", 2)),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = version(&f, &v);
+    commits.restore(request, intent.clone());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    let moved = sent
+        .iter()
+        .position(|op| matches!(op, op::Op::Move(m) if m.node_id == d));
+    let restored = sent.iter().position(|op| *op == restore_op(&intent));
+    assert!(moved.is_some() && moved < restored, "{sent:?}");
 }
