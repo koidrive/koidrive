@@ -1874,7 +1874,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
 }
 
 #[test]
-fn an_edit_sent_before_its_folder_is_published_is_not_trashed_again() {
+fn an_edit_sent_after_its_folder_is_published_is_not_trashed_again() {
     let mut trees = trees(
         &[("d", dir(ROOT, "new")), ("c", file("d", "child", 1))],
         &[("d", dir(ROOT, "old")), ("c", file("d", "child", 1))],
@@ -1892,7 +1892,7 @@ fn an_edit_sent_before_its_folder_is_published_is_not_trashed_again() {
     trees.settle(commits.aliases());
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
-        [("update", "c".into()), ("move", "d".into())]
+        [("move", "d".into()), ("update", "c".into())]
     );
 }
 

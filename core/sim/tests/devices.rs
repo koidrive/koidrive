@@ -11571,3 +11571,323 @@ fn a_rescan_of_a_folder_leaves_changes_inside_a_folder_beside_it_unseen() {
     world.run(1, &[(0, scan)]).unwrap();
     assert_eq!(held_at(&world, 0, &["b", "c.txt"]), None);
 }
+
+#[test]
+fn a_folder_filled_and_moved_out_of_a_parent_deleted_unseen_leaves_the_parent_deleted() {
+    use koidrive_sim::world::{Reply::*, Step::*};
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1, 0, 0, 0, 0))],
+        vec![
+            (0, u(0, 0, 0, 1, 0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (1, Work(0)),
+            (2, u(0, 7853161845665043933, 10937315443270625612, 4, 3)),
+            (0, Work(10306828727535055232)),
+            (1, u(0, 15175370738434802850, 18259546604571407387, 3, 3)),
+            (0, Work(6489148156081065588)),
+            (0, Work(16406056084710737371)),
+            (2, Work(3039580562240389245)),
+            (2, u(3, 12809576152428991615, 16874573027182768766, 3, 0)),
+            (0, Work(2490531765444796218)),
+            (2, Work(239978212353154480)),
+            (0, Work(2274070171698544523)),
+            (1, u(1, 2545506725853293189, 1324895178393418744, 1, 0)),
+            (1, u(3, 1, 0, 2, 0)),
+            (0, u(4, 7461149847638907305, 15639844297871630477, 3, 0)),
+            (1, Work(15325358320108984923)),
+            (0, Deliver(16759699815505144328)),
+            (1, Commit(NoChunks)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+mod planned_against_the_server {
+    use koidrive_engine::classify::Trees;
+    use koidrive_engine::commit::Commits;
+    use koidrive_engine::ids::IdGen;
+    use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+    use koidrive_proto::v1::{self as proto, NodeState, NodeStatus, op, op_result};
+    use koidrive_sim::space::{Role, Session, SpaceDo};
+
+    const NOW: u64 = 1_794_268_740_000;
+
+    struct Server {
+        space: SpaceDo,
+        ids: IdGen,
+        root: String,
+    }
+
+    impl Server {
+        fn new() -> Self {
+            let space = SpaceDo::new(11, NOW as i64);
+            let root = space.space_id().to_string();
+            Self {
+                space,
+                ids: IdGen::new(12),
+                root,
+            }
+        }
+
+        fn send(&mut self, device: &str, mut commit: proto::Commit) -> proto::CommitResult {
+            let session = Session {
+                device_id: device.into(),
+                user_id: "user".into(),
+                device_name: device.into(),
+                role: Role::Owner,
+                max_format: 1,
+            };
+            commit.device_seq = self.space.device_seq(device) + 1;
+            let done = self.space.commit(&session, NOW as i64, &commit).unwrap();
+            let rejected = op_result::Code::Rejected as i32;
+            assert!(
+                done.result.results.iter().all(|r| r.code != rejected),
+                "{done:?}"
+            );
+            done.result
+        }
+
+        fn other(&mut self, ops: Vec<op::Op>) {
+            let commit = proto::Commit {
+                commit_id: self.ids.uuid_v7(NOW),
+                history_id: self.space.history_id().into(),
+                base_seq: self.space.head_seq(),
+                ops: ops
+                    .into_iter()
+                    .map(|op| proto::Op {
+                        op: Some(op),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            self.send("other", commit);
+        }
+
+        fn plan(&mut self, trees: &mut Trees, base: u64) {
+            let mut commits = Commits::default();
+            let history = self.space.history_id().to_string();
+            let built = commits.build(trees, &mut self.ids, NOW, &history, "me", base);
+            let result = self.send("me", built.unwrap().clone());
+            for node in (self.space.nodes().into_iter()).filter(|node| node.node_id != self.root) {
+                let (id, held) = RemoteNode::from_state(&node).unwrap();
+                trees.set_remote(id, held);
+            }
+            commits.received(result).unwrap();
+            assert!(commits.acknowledge(trees, self.space.head_seq()));
+        }
+
+        fn node(&self, id: &str) -> NodeState {
+            self.space.node(id).unwrap()
+        }
+    }
+
+    fn dir(parent: &str, name: &str) -> Shape {
+        Shape {
+            parent: parent.into(),
+            name: name.into(),
+            kind: Kind::Dir,
+            content: None,
+        }
+    }
+
+    fn remote(shape: Shape, meta_rev: u64) -> RemoteNode {
+        RemoteNode {
+            shape,
+            trashed: false,
+            content_rev: 1,
+            meta_rev,
+            meta_edit_rev: meta_rev,
+            trash_group: String::new(),
+            version_id: String::new(),
+            made_over: Vec::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+        }
+    }
+
+    fn trees(root: &str, rows: Vec<(&String, Option<Shape>, Option<RemoteNode>, Shape)>) -> Trees {
+        let mut trees = Trees::new(root);
+        for (ino, (id, synced, held, local)) in (1..).zip(rows) {
+            let identity = FileIdentity {
+                ino,
+                birth_ns: Some(0),
+            };
+            trees.set_local(
+                id.clone(),
+                LocalNode {
+                    shape: local,
+                    identity,
+                    parked: false,
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                },
+            );
+            trees.set_synced(id.clone(), synced);
+            if let Some(held) = held {
+                trees.set_remote(id.clone(), held);
+            }
+        }
+        trees.settle(&Default::default());
+        trees
+    }
+
+    fn mkdir(id: &str, parent: &str, name: &str) -> op::Op {
+        op::Op::CreateDir(proto::CreateDir {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: name.into(),
+            pending_for: String::new(),
+        })
+    }
+
+    fn mv(id: &str, parent: &str, name: &str) -> op::Op {
+        op::Op::Move(proto::Move {
+            node_id: id.into(),
+            new_parent_id: parent.into(),
+            new_name: name.into(),
+            from: None,
+            pending_for: String::new(),
+        })
+    }
+
+    fn delete(id: &str) -> op::Op {
+        op::Op::Delete(proto::Delete {
+            node_id: id.into(),
+            requires: None,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_folder_renamed_onto_a_name_moving_into_it_leaves_its_unseen_deleted_parent_deleted() {
+        let mut server = Server::new();
+        let root = server.root.clone();
+        let [p, x, n, c] = std::array::from_fn(|_| server.ids.uuid_v7(NOW));
+        server.other(vec![mkdir(&p, &root, "p"), mkdir(&x, &root, "q")]);
+        let base = server.space.head_seq();
+        let mut trees = trees(
+            &root,
+            vec![
+                (
+                    &p,
+                    Some(dir(&root, "p")),
+                    Some(remote(dir(&root, "p"), 1)),
+                    dir(&root, "q"),
+                ),
+                (
+                    &x,
+                    Some(dir(&root, "q")),
+                    Some(remote(dir(&root, "q"), 1)),
+                    dir(&n, "q"),
+                ),
+                (&n, None, None, dir(&p, "n")),
+            ],
+        );
+        server.other(vec![mkdir(&c, &root, "C.TXT"), mv(&p, &c, "p"), delete(&c)]);
+        server.plan(&mut trees, base);
+        assert_eq!(server.node(&c).status(), NodeStatus::Trashed);
+        assert_eq!(
+            (
+                server.node(&p).status(),
+                server.node(&p).parent_id,
+                server.node(&p).name
+            ),
+            (NodeStatus::Live, root, "q".to_string())
+        );
+        assert_eq!(server.node(&n).parent_id, p);
+        assert_eq!(server.node(&x).parent_id, n);
+    }
+
+    fn rename_onto_the_name_of_a_folder_moving_into_a_moved_folder(new_folders: usize) {
+        let mut server = Server::new();
+        let root = server.root.clone();
+        let [a, b, c, d, z, n, m] =
+            std::array::from_fn(|i| format!("01a1c2c0-39a0-700{0}-8000-00000000000{0}", i + 1));
+        let created = [&n, &m];
+        let created = &created[..new_folders];
+        server.other(vec![
+            mkdir(&a, &root, "a"),
+            mkdir(&b, &root, "b"),
+            mkdir(&c, &root, "C.TXT"),
+            mkdir(&d, &c, "d"),
+            mkdir(&z, &root, "held"),
+        ]);
+        server.other(vec![mv(&z, &root, "z")]);
+        let base = server.space.head_seq();
+        let into = created.last().copied().unwrap_or(&d);
+        let synced = |shape: &Shape| (Some(shape.clone()), Some(remote(shape.clone(), 1)));
+        let rows = [
+            (&a, dir(&root, "a"), dir(&root, "b")),
+            (&b, dir(&root, "b"), dir(into, "b")),
+            (&c, dir(&root, "C.TXT"), dir(&root, "C.TXT")),
+            (&d, dir(&c, "d"), dir(&root, "z")),
+        ];
+        let mut rows: Vec<_> = (rows.into_iter())
+            .map(|(id, before, after)| {
+                let (s, r) = synced(&before);
+                (id, s, r, after)
+            })
+            .collect();
+        rows.push((
+            &z,
+            Some(dir(&root, "held")),
+            Some(remote(dir(&root, "z"), 2)),
+            dir(&root, "held"),
+        ));
+        for (at, id) in created.iter().enumerate() {
+            let parent = if at == 0 { &d } else { created[at - 1] };
+            rows.push((id, None, None, dir(parent, "n")));
+        }
+        let mut trees = trees(&root, rows);
+        server.other(vec![delete(&c)]);
+        server.plan(&mut trees, base);
+        assert_eq!(server.node(&c).status(), NodeStatus::Trashed);
+        assert_eq!(
+            (server.node(&a).parent_id, server.node(&a).name),
+            (root.clone(), "b".to_string())
+        );
+        assert_eq!(&server.node(&b).parent_id, into);
+        for (at, id) in created.iter().enumerate() {
+            let parent = if at == 0 { &d } else { created[at - 1] };
+            assert_eq!(&server.node(id).parent_id, parent);
+        }
+        assert_eq!(trees.synced().live(&a), Some(&dir(&root, "b")));
+        assert_eq!(
+            trees.local().get(&a).map(|node| &node.shape),
+            Some(&dir(&root, "b"))
+        );
+        assert!(!trees.reverted().contains(&a));
+    }
+
+    #[test]
+    fn a_folder_renamed_onto_the_name_of_a_folder_moving_into_a_moved_folder_keeps_that_name() {
+        rename_onto_the_name_of_a_folder_moving_into_a_moved_folder(0);
+    }
+
+    #[test]
+    fn a_folder_renamed_onto_the_name_of_a_folder_moving_through_a_new_folder_keeps_that_name() {
+        rename_onto_the_name_of_a_folder_moving_into_a_moved_folder(1);
+    }
+
+    #[test]
+    fn a_folder_renamed_onto_the_name_of_a_folder_moving_two_new_folders_deep_keeps_that_name() {
+        rename_onto_the_name_of_a_folder_moving_into_a_moved_folder(2);
+    }
+}
