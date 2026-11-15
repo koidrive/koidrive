@@ -893,3 +893,18 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
     assert_eq!(remote.names(), ["renamed.txt"]);
     assert_eq!(names(&site.root), ["renamed.txt"]);
 }
+
+#[test]
+fn a_given_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("a.txt"), b"bytes");
+    let id = (a.folder.engine.trees.local().iter())
+        .find(|(_, node)| node.shape.name == "a.txt")
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    let marks = |a: &Device| a.folder.disk.marks(&a.folder.engine.trees, [&id]);
+    assert_eq!(marks(&a).get(&id), Some(&id));
+    a.folder.mark_given(vec![(id.clone(), "absent-copy".to_owned())]);
+    assert_eq!(marks(&a).get(&id), Some(&id));
+}

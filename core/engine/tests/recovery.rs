@@ -2320,7 +2320,7 @@ fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
 }
 
 #[test]
-fn a_claim_whose_historical_folder_another_claim_holds_waits_for_that_claim_s_release() {
+fn a_marked_file_whose_historical_folder_is_marked_follows_once_that_folder_takes_an_older_place() {
     let (trees, commits, _) = followed(
         &[
             ("a-file", file(ROOT, "g", 1)),
@@ -2348,10 +2348,51 @@ fn a_claim_whose_historical_folder_another_claim_holds_waits_for_that_claim_s_re
     );
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
     assert_eq!(trees.synced().live("n"), Some(&file("p", "f", 1)));
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "q")));
     asked(
         &commits,
         RecoveryGroup::CreatedOnThisDevice,
-        &["a-folder", "there"],
+        &["b-folder", "there"],
+    );
+}
+
+#[test]
+fn a_node_a_mark_claims_goes_to_no_other_entry_while_the_mark_cannot_follow() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "b")),
+            ("i-folder", dir("b-folder", "i")),
+            ("s-folder", dir(ROOT, "s")),
+            ("there", file("s-folder", "f", 2)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("b", dir("r", "b")),
+            live("u", dir(ROOT, "u")),
+            live("i", dir("u", "i")),
+            live("s", dir(ROOT, "s")),
+            live("n", file("s", "f", 2)),
+        ],
+        &[
+            ("b", dir(ROOT, "b")),
+            ("b", dir("r", "b")),
+            ("i", dir("b", "i")),
+            ("i", dir("u", "i")),
+            ("n", file("i", "f", 1)),
+            ("n", file("s", "f", 2)),
+        ],
+        &[("a-file", "n"), ("a-folder", "b")],
+    );
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(trees.local().get("n"), None);
+    assert_eq!(local_shape(&trees, "b"), Some(&dir(ROOT, "q")));
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["a-file", "b-folder", "i-folder", "there"],
     );
 }
 
@@ -2413,7 +2454,8 @@ fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies()
 }
 
 #[test]
-fn a_marked_file_keeps_its_node_when_the_claim_of_its_folder_is_released_to_an_unmarked_copy() {
+fn a_marked_folder_the_servers_place_cannot_hold_follows_an_older_place_and_its_marked_child_follows()
+ {
     let (trees, commits, _) = followed(
         &[
             ("a-file", file(ROOT, "g", 1)),
@@ -2436,9 +2478,11 @@ fn a_marked_file_keeps_its_node_when_the_claim_of_its_folder_is_released_to_an_u
         &[("a-file", "n"), ("a-folder", "p")],
     );
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "p")));
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "q")));
     asked(
         &commits,
         RecoveryGroup::CreatedOnThisDevice,
-        &["a-folder", "copy"],
+        &["b-folder", "copy"],
     );
 }

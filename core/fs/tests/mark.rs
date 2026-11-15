@@ -213,3 +213,16 @@ fn a_replacement_whose_mark_cannot_be_written_is_placed_unmarked() {
     (scenario.check)(root, &outcome);
     assert_eq!(mark_of(root, "docs/report.txt"), None);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_mark_write_removes_the_previous_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.txt"), b"bytes").unwrap();
+    mark(root, "a.txt", "old-node");
+    assert_eq!(mark_of(root, "a.txt").as_deref(), Some("old-node"));
+    mark(root, "a.txt", &"x".repeat(131072));
+    assert_eq!(mark_of(root, "a.txt"), None);
+    assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"bytes");
+}
