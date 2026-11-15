@@ -4161,6 +4161,8 @@ fn plan(
     let exact = !deferred.get()
         && bound.is_none_or(|(last, _)| {
             ordered
+                && scratch.ends.missing.is_empty()
+                && scratch.ends.cycles.is_empty()
                 && filled_at.is_some_and(|filled| filled < (last, within))
         });
     ((ops, deletes, reverts, cycle_reverts), exact)
