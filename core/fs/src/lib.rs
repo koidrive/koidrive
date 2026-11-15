@@ -2384,8 +2384,8 @@ mod tests;
 mod trash;
 
 pub use effect::{
-    Action, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal, STAGING_DIR,
-    Section, Step,
+    Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
+    STAGING_DIR, Section, Step,
 };
 pub use ignore::{Ignore, Ignored, RULES_FILE, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};

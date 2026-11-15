@@ -54,8 +54,8 @@ use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
-    Action, Base, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId, Location, Marker,
-    Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
+    Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
+    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -264,7 +264,7 @@ pub(crate) struct Disk {
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
     hook: Hook,
-    brought_back: HashSet<FileId>,
+    brought_back: BroughtBack,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -377,7 +377,7 @@ impl Disk {
             rescan_after: None,
             batch: BATCH,
             hook,
-            brought_back: HashSet::new(),
+            brought_back: BroughtBack::Entries(HashSet::new()),
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -735,9 +735,15 @@ impl Disk {
     }
 
     pub fn marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
-        let brought_back = |identity: &_| self.brought_back.contains(&file_id(*identity));
+        let brought_back = |identity: &_| self.brought_back.holds(file_id(*identity));
+        self.read_marks(
+            trees,
+            (ids.into_iter()).filter(|id| !first_link::at_or_under(trees, id, brought_back)),
+        )
+    }
+
+    fn read_marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
         (ids.into_iter())
-            .filter(|id| !first_link::at_or_under(trees, id, brought_back))
             .filter_map(|id| {
                 let (at, expected) = self.place_of(trees, id)?;
                 match self.space.mark_of(&at, expected) {
@@ -751,11 +757,30 @@ impl Disk {
             .collect()
     }
 
-    pub fn forget_brought_back(&mut self) {
-        match self.space.forget_brought_back() {
-            Ok(()) => self.brought_back.clear(),
+    pub fn keep_brought_back(&mut self, trees: &Trees) {
+        let brought_back = |identity: &_| self.brought_back.holds(file_id(*identity));
+        let inside = (trees.local().iter().map(|(id, _)| id))
+            .filter(|id| first_link::at_or_under(trees, id, brought_back));
+        let astray: Vec<NodeId> = (self.read_marks(trees, inside).into_iter())
+            .filter(|(id, node)| id != node || trees.synced().get(id).is_none())
+            .map(|(id, _)| id)
+            .collect();
+        let kept: HashSet<FileId> = match &self.brought_back {
+            BroughtBack::Entries(ids) => (ids.iter().copied())
+                .filter(|entry| {
+                    (astray.iter()).any(|id| {
+                        first_link::at_or_under(trees, id, |identity| file_id(*identity) == *entry)
+                    })
+                })
+                .collect(),
+            BroughtBack::Unreadable => (astray.iter())
+                .filter_map(|id| Some(file_id(trees.local().get(id)?.identity)))
+                .collect(),
+        };
+        match self.space.keep_brought_back(&kept) {
+            Ok(()) => self.brought_back = BroughtBack::Entries(kept),
             Err(err) => {
-                tracing::warn!(space_id = self.space_id, %err, "could not forget what a recovery brought back")
+                tracing::warn!(space_id = self.space_id, %err, "could not record what a recovery brought back")
             }
         }
     }

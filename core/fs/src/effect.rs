@@ -29,6 +29,24 @@ pub const QUARANTINE_DIR: &str = "quarantine";
 const BROUGHT_BACK: &str = "brought-back.json";
 const BROUGHT_BACK_TEMP: &str = "brought-back.json.tmp";
 
+/// What [`Space::brought_back`] read of the entries a store rollback brought back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroughtBack {
+    Entries(HashSet<FileId>),
+    /// The record exists but cannot be read, so no entry is known not to be one of them.
+    Unreadable,
+}
+
+impl BroughtBack {
+    /// Whether `id` may be an entry a store rollback brought back.
+    pub fn holds(&self, id: FileId) -> bool {
+        match self {
+            BroughtBack::Entries(ids) => ids.contains(&id),
+            BroughtBack::Unreadable => true,
+        }
+    }
+}
+
 /// An entry an effect displaces, as the caller last observed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Displaced {
@@ -493,25 +511,26 @@ impl Space {
             Ok((private, entries))
         });
         let held = [parked?, quarantine?];
-        let mut brought_back = self.brought_back()?;
-        for (private, entries) in &held {
-            for entry in entries {
-                brought_back.insert(stat_at(private.fd(), entry)?.id);
-            }
-        }
         if held.iter().all(|(_, entries)| entries.is_empty()) {
             return Ok(Vec::new());
         }
-        let ids: Vec<_> = (brought_back.iter())
-            .map(|id| (id.dev, id.ino, id.birth_ns))
-            .collect();
-        replace_file(
-            self.private(&[])?.fd(),
-            BROUGHT_BACK,
-            BROUGHT_BACK_TEMP,
-            &serde_json::to_vec(&ids)?,
-            Flush::Barrier,
-        )?;
+        if let BroughtBack::Entries(mut brought_back) = self.brought_back()? {
+            for (private, entries) in &held {
+                for entry in entries {
+                    brought_back.insert(stat_at(private.fd(), entry)?.id);
+                }
+            }
+            let ids: Vec<_> = (brought_back.iter())
+                .map(|id| (id.dev, id.ino, id.birth_ns))
+                .collect();
+            replace_file(
+                self.private(&[])?.fd(),
+                BROUGHT_BACK,
+                BROUGHT_BACK_TEMP,
+                &serde_json::to_vec(&ids)?,
+                Flush::Barrier,
+            )?;
+        }
         let mut moved = Vec::new();
         for (private, entries) in &held {
             for entry in entries {
@@ -526,30 +545,47 @@ impl Space {
         Ok(moved)
     }
 
-    /// The identities of the entries [`Space::bring_back_all`] moved since the last
-    /// [`Space::forget_brought_back`]. Recovery does not find an entry by its node mark when the
+    /// The identities of the entries [`Space::bring_back_all`] moved that recovery still keeps
+    /// ([`Space::keep_brought_back`]). Recovery does not find an entry by its node mark when the
     /// entry, or a folder it is in, is one of them (design §6.4). The set is kept on disk, so a
-    /// stop between bringing entries back and recovering keeps it.
-    pub fn brought_back(&self) -> io::Result<HashSet<FileId>> {
+    /// stop between bringing entries back and recovering keeps it. A record that cannot be read
+    /// is [`BroughtBack::Unreadable`], and a later bring-back leaves it so.
+    pub fn brought_back(&self) -> io::Result<BroughtBack> {
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let file =
             match rustix::fs::openat(self.private(&[])?.fd(), BROUGHT_BACK, flags, Mode::empty()) {
                 Ok(file) => file,
-                Err(Errno::NOENT) => return Ok(HashSet::new()),
-                Err(err) => return Err(err.into()),
+                Err(Errno::NOENT) => return Ok(BroughtBack::Entries(HashSet::new())),
+                Err(_) => return Ok(BroughtBack::Unreadable),
             };
-        let ids: Vec<(u64, u128, Option<i64>)> = serde_json::from_reader(File::from(file))
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        Ok((ids.into_iter())
-            .map(|(dev, ino, birth_ns)| FileId { dev, ino, birth_ns })
-            .collect())
+        let Ok(ids) = serde_json::from_reader::<_, Vec<(u64, u128, Option<i64>)>>(File::from(file))
+        else {
+            return Ok(BroughtBack::Unreadable);
+        };
+        Ok(BroughtBack::Entries(
+            (ids.into_iter())
+                .map(|(dev, ino, birth_ns)| FileId { dev, ino, birth_ns })
+                .collect(),
+        ))
     }
 
-    /// Empties the set [`Space::brought_back`] reads, once recovery has used it.
-    pub fn forget_brought_back(&self) -> io::Result<()> {
+    /// Replaces the set [`Space::brought_back`] reads with `ids`, which recovery keeps.
+    pub fn keep_brought_back(&self, ids: &HashSet<FileId>) -> io::Result<()> {
         let private = self.private(&[])?;
-        remove_if_present(private.fd(), BROUGHT_BACK)?;
-        flush(private.fd(), Flush::Plain)
+        if ids.is_empty() {
+            remove_if_present(private.fd(), BROUGHT_BACK)?;
+            return flush(private.fd(), Flush::Plain);
+        }
+        let ids: Vec<_> = (ids.iter())
+            .map(|id| (id.dev, id.ino, id.birth_ns))
+            .collect();
+        replace_file(
+            private.fd(),
+            BROUGHT_BACK,
+            BROUGHT_BACK_TEMP,
+            &serde_json::to_vec(&ids)?,
+            Flush::Plain,
+        )
     }
 
     /// Begins an effect section after checking that the root is held. It

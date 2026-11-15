@@ -1057,9 +1057,10 @@ fn the_entries_a_store_rollback_brings_back_are_remembered_until_forgotten() {
         (meta.dev(), u128::from(meta.ino()))
     };
     let ids = |space: &Space| {
-        let mut ids: Vec<_> = (space.brought_back().unwrap().into_iter())
-            .map(|id| (id.dev, id.ino))
-            .collect();
+        let BroughtBack::Entries(ids) = space.brought_back().unwrap() else {
+            panic!("the record is unreadable");
+        };
+        let mut ids: Vec<_> = (ids.into_iter()).map(|id| (id.dev, id.ino)).collect();
         ids.sort();
         ids
     };
@@ -1096,8 +1097,49 @@ fn the_entries_a_store_rollback_brings_back_are_remembered_until_forgotten() {
     );
     assert_eq!(ids(&space), expected);
 
-    space.forget_brought_back().unwrap();
+    let BroughtBack::Entries(all) = space.brought_back().unwrap() else {
+        panic!("the record is unreadable");
+    };
+    let one: std::collections::HashSet<FileId> = all.into_iter().take(1).collect();
+    space.keep_brought_back(&one).unwrap();
+    assert_eq!(space.brought_back().unwrap(), BroughtBack::Entries(one));
+
+    space.keep_brought_back(&Default::default()).unwrap();
     assert_eq!(ids(&space), []);
+}
+
+#[test]
+fn a_partial_record_of_brought_back_entries_stays_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    let private = root.join(PRIVATE_DIR);
+    fs::write(private.join("brought-back.json"), "[[1,2,nu").unwrap();
+    fs::write(private.join(PARKED_DIR).join("n1"), "parked").unwrap();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+    assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
+    assert_eq!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
+    assert!(BroughtBack::Unreadable.holds(FileId {
+        dev: 1,
+        ino: 2,
+        birth_ns: None
+    }));
+
+    space.keep_brought_back(&Default::default()).unwrap();
+    assert_eq!(
+        space.brought_back().unwrap(),
+        BroughtBack::Entries(Default::default())
+    );
 }
 
 #[test]

@@ -895,6 +895,65 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
 }
 
 #[test]
+fn a_stale_record_of_brought_back_entries_leaves_a_users_rename_to_its_mark() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    let record = site.root.join(koidrive_fs::PRIVATE_DIR).join("brought-back.json");
+    fs::write(&record, "[[1,2,null]]").unwrap();
+    fs::rename(site.root.join("two.txt"), site.root.join("renamed.txt")).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(shown(&site).is_empty());
+    assert_eq!(remote.names(), ["renamed.txt"]);
+    assert!(!record.exists());
+}
+
+#[test]
+fn an_unreadable_record_of_brought_back_entries_adopts_nothing_by_mark() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    let record = site.root.join(koidrive_fs::PRIVATE_DIR).join("brought-back.json");
+    fs::write(&record, "[[1,2,nu").unwrap();
+    fs::rename(site.root.join("two.txt"), site.root.join("renamed.txt")).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(shown(&site).len(), 1);
+    assert_eq!(remote.names(), ["two.txt"]);
+    let kept = fs::read_to_string(&record).unwrap();
+    assert!(kept.starts_with("[[") && kept.ends_with("]]"), "{kept}");
+}
+
+#[test]
 fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
@@ -907,6 +966,56 @@ fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
     assert_eq!(marks(&a).get(&id), Some(&id));
     a.folder.mark_granted(vec!["absent-copy".to_owned()]);
     assert_eq!(marks(&a).get(&id), Some(&id));
+}
+
+#[test]
+fn a_second_store_rollback_before_the_download_runs_again_keeps_the_unanswered_entry_out_of_marks() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    let private = parked.join(&node);
+    fs::rename(site.root.join("two.txt"), &private).unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o444)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    let ledger = site.root.join(koidrive_fs::PRIVATE_DIR).join("brought-back.json");
+    assert!(ledger.exists());
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    for _ in 0..16 {
+        if a.folder.engine.commits.halted().is_none() {
+            break;
+        }
+        let work = a.work.pop_front().expect("recovery has work");
+        a.perform(work, &mut remote).unwrap();
+    }
+    assert!(a.folder.engine.commits.halted().is_none());
+    assert_eq!(shown(&site).len(), 1);
+    assert!(!site.root.join("two.txt").exists());
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(ledger.exists());
+    drop(a);
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
 }
 
 #[test]
@@ -964,6 +1073,43 @@ fn a_stop_between_bringing_back_and_recovering_keeps_the_server_name() {
     fs::copy(&copy, &site.db).unwrap();
     drop(site.start());
     assert!(!parked.join(&node).exists());
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
+}
+
+#[test]
+fn a_second_store_rollback_keeps_the_server_name_of_an_entry_the_first_brought_back() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    fs::rename(site.root.join("two.txt"), parked.join(&node)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(shown(&site).len(), 1);
+    drop(a);
+    fs::remove_file(site.root.join("two.txt")).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
     let mut a = site.start();
     a.connect(&remote);
     a.run(&mut remote);
