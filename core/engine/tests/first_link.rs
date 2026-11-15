@@ -1519,6 +1519,75 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
     assert_eq!(trees.waiting().get("c"), Some(&waiting));
 }
 
+#[test]
+fn a_reclaimed_folder_that_cannot_leave_s_yet_lets_go_of_the_server_entries_it_took_along() {
+    let mut trees = Trees::new(ROOT);
+    let local = [
+        ("f", dir(ROOT, "a"), 1),
+        ("c", dir("f", "child"), 2),
+        ("k", file("f", "kept", 3), 3),
+    ];
+    for (id, shape, ino) in local {
+        if id != "k" {
+            trees.set_synced(id.into(), Some(shape.clone()));
+        }
+        trees.set_local(
+            id.into(),
+            LocalNode {
+                shape,
+                identity: FileIdentity {
+                    dev: 1,
+                    ino,
+                    birth_ns: Some(0),
+                },
+                parked: false,
+            },
+        );
+    }
+    let remote = |shape: Shape| RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        edit_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("p".into(), remote(dir(ROOT, "a")));
+    trees.set_remote("c".into(), remote(dir("p", "child")));
+    trees.set_remote("k".into(), remote(file(ROOT, "kept", 3)));
+    trees.settle();
+    let mut state = trees.state();
+    state.discarded.insert("f".into(), dir(ROOT, "a"));
+    state.discarded.insert("k".into(), file("f", "kept", 3));
+    let waiting = Waiting {
+        shape: Some(dir("p", "child")),
+        origin: Origin::Commit(7),
+    };
+    state.waiting.insert("c".into(), waiting);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    assert!(trees.reclaimed("f"));
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(7);
+    commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 1);
+    trees.settle();
+    let mut effects = Effects::default();
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        planned.iter().all(|record| record.node != "k"),
+        "the entry stays where the user put it in the folder that is the user's again: {planned:?}"
+    );
+    assert_eq!(trees.local().get("k").unwrap().shape, file("f", "kept", 3));
+}
+
 fn reclaim_with_waiting(
     synced: &[(&str, Shape)],
     remote: &[(&str, Shape)],
