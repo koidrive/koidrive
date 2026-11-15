@@ -557,16 +557,30 @@ struct Device {
     acted: BTreeSet<String>,
     removed_from: BTreeMap<String, String>,
     kept_back: BTreeSet<String>,
-    relocated: BTreeMap<String, koidrive_engine::tree::Shape>,
+    relocated: BTreeMap<String, Relocation>,
+}
+
+struct Relocation {
+    from: koidrive_engine::tree::Shape,
+    to: koidrive_engine::tree::Shape,
 }
 
 impl Device {
+    fn relocate(&mut self, id: &str, before: &koidrive_engine::tree::Shape, after: &koidrive_engine::tree::Shape) {
+        let from = self.relocated.remove(id).map_or_else(|| before.clone(), |moved| moved.from);
+        if !from.same_position(after) {
+            let to = after.clone();
+            self.relocated.insert(id.to_owned(), Relocation { from, to });
+        }
+    }
+
     fn receive(&mut self, changes: &[ChangeRecord]) {
         for change in changes {
             apply(&mut self.trees, std::slice::from_ref(change));
             if let Some(change_record::Change::Node(state)) = &change.change
-                && let Some(to) = self.relocated.get(&state.node_id)
-                && (self.trees.remote().live(&state.node_id)).is_some_and(|r| r.same_position(to))
+                && let Some(moved) = self.relocated.get(&state.node_id)
+                && (self.trees.remote().live(&state.node_id))
+                    .is_some_and(|r| r.same_position(&moved.to))
             {
                 self.relocated.remove(&state.node_id);
             }
@@ -707,15 +721,13 @@ impl Device {
                         self.trees.ignore_local(&id)
                     }
                     _ => {
-                        let moves = node.shape.parent != parent || node.shape.name != name;
-                        if moves {
-                            self.touched.insert(id.clone());
-                            self.acted.insert(id.clone());
-                        }
+                        let before = node.shape.clone();
                         node.shape.parent = parent;
                         node.shape.name = name.into();
-                        if moves {
-                            self.relocated.insert(id.clone(), node.shape.clone());
+                        if before.parent != node.shape.parent || before.name != node.shape.name {
+                            self.touched.insert(id.clone());
+                            self.acted.insert(id.clone());
+                            self.relocate(&id, &before, &node.shape);
                         }
                         self.trees.set_local(id, node);
                     }
@@ -1268,7 +1280,7 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
                 Some(at) if at == entry => return true,
                 Some(at) => {
                     let moved_here = (device.relocated.get(&at))
-                        .is_some_and(|to| relocation_stands(trees, &at, to));
+                        .is_some_and(|moved| relocation_stands(trees, &at, &moved.to));
                     if moved_here {
                         return false;
                     }
@@ -1297,7 +1309,7 @@ fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape)
 
 fn note_kept_back(device: &mut Device) {
     let trees = &device.trees;
-    device.relocated.retain(|id, to| relocation_stands(trees, id, to));
+    (device.relocated).retain(|id, moved| relocation_stands(trees, id, &moved.to));
     let kept: Vec<String> = (device.removed_from.keys())
         .filter(|entry| kept_by_r7(device, entry))
         .cloned()
