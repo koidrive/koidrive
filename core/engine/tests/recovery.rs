@@ -529,6 +529,39 @@ fn keeping_a_folder_leaves_a_child_another_question_holds_held() {
 }
 
 #[test]
+fn discarding_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_nothing() {
+    let mut trees = trees(
+        &[("c", file(ROOT, "x", 1))],
+        &[("d", dir(ROOT, "D")), ("c", file("d", "c", 1))],
+        &[live("d", dir(ROOT, "D")), live("c", file("d", "c", 1))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let deleted = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["c"]);
+    assert!(commits.decide(&deleted.id, Answer::Restore));
+    assert!(commits.decide(&changed.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_content() {
+    let mut trees = trees(
+        &[("c", file(ROOT, "x", 2))],
+        &[("d", dir(ROOT, "D")), ("c", file("d", "c", 2))],
+        &[live("d", dir(ROOT, "D")), live("c", file("d", "c", 1))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let deleted = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["c"]);
+    assert!(commits.decide(&deleted.id, Answer::Restore));
+    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "c".into()), ("update", "c".into())]
+    );
+}
+
+#[test]
 fn discarding_a_file_the_rewind_removed_moves_it_to_the_local_trash() {
     let mut trees = trees(
         &[("new", file(ROOT, "new", 2))],
