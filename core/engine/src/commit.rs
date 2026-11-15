@@ -2574,7 +2574,7 @@ fn leaving_unsent(
     else {
         return false;
     };
-    (problems.contains(id) || trees.waiting().contains_key(id))
+    (problems.contains(id) || trees.waiting().contains_key(id) || trees.excluded(id))
         && (aliases
             .get(&local.shape.parent)
             .unwrap_or(&local.shape.parent)

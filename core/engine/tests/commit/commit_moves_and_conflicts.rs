@@ -519,6 +519,31 @@ fn a_folder_created_where_a_moving_file_still_is_takes_a_pending_name_first() {
 }
 
 #[test]
+fn a_folder_created_where_a_node_the_rules_now_exclude_still_is_takes_a_pending_name_first() {
+    let mut trees = trees(&[
+        (
+            "h",
+            Some(dir(ROOT, "ignored")),
+            Some(dir(ROOT, "a")),
+            Some(remote(dir(ROOT, "a"))),
+        ),
+        ("n", Some(dir(ROOT, "A")), None, None),
+    ]);
+    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"ignored\n")));
+    trees.settle();
+    assert!(trees.excluded("h"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let create = op::Op::CreateDir(proto::CreateDir {
+        node_id: "n".into(),
+        parent_id: ROOT.into(),
+        name: "A (pending)".into(),
+        pending_for: "A".into(),
+    });
+    assert_eq!(ops(&first), [create]);
+}
+
+#[test]
 fn a_renamed_result_reverts_the_local_name_to_the_server_one() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
