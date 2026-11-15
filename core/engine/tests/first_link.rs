@@ -3350,10 +3350,12 @@ fn a_new_local_file_with_the_bytes_of_another_write_at_its_place_is_sent() {
 }
 
 #[test]
-fn two_writes_with_the_same_bytes_and_a_whole_second_mtime_are_not_linked() {
-    let (sent, trees) = sent_beside(1_794_268_740_000_000_000, 1_794_268_740_000_000_000);
-    assert_eq!(sent, [("create file", "l-a".to_owned())]);
-    assert_eq!(trees.synced().get("r-a"), None);
+fn two_writes_with_the_same_bytes_and_a_coarse_mtime_are_not_linked() {
+    for mtime_ns in [1_794_268_740_000_000_000, 1_794_755_239_590_000_000] {
+        let (sent, trees) = sent_beside(mtime_ns, mtime_ns);
+        assert_eq!(sent, [("create file", "l-a".to_owned())], "{mtime_ns}");
+        assert_eq!(trees.synced().get("r-a"), None, "{mtime_ns}");
+    }
 }
 
 #[test]

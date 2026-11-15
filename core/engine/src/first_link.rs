@@ -417,7 +417,7 @@ pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
             }
             let mtime_ns = (remote.shape.content.as_ref())
                 .map(|content| content.mtime_ns)
-                .filter(|mtime_ns| mtime_ns % 1_000_000_000 != 0)?;
+                .filter(|mtime_ns| mtime_ns % 10_000_000 != 0)?;
             let name = nfc(&remote.shape.name);
             let id =
                 (trees.local_holders(&remote.shape.parent, &remote.shape.name)).find(|id| {
