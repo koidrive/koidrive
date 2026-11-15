@@ -90,6 +90,8 @@ fn placement_check_after_a_move(
         touched: BTreeSet::from(["x".into()]),
         acted: BTreeSet::from(["x".into()]),
         removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     let result = placement_check(
         &device,
@@ -253,4 +255,124 @@ fn a_discarded_folder_the_user_moved_a_synced_file_into_before_the_answer_conver
         Some(PriorSync::Shown),
     )
     .unwrap();
+}
+
+fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::from(["k".into(), "m".into()]),
+        removed_from: BTreeMap::from([("k".into(), "root".into())]),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let state = |id: &str, parent: &str| NodeState {
+        node_id: id.into(),
+        parent_id: parent.into(),
+        name: id.into(),
+        kind: 1,
+        status: 1,
+        ..Default::default()
+    };
+    let change = |id: &str, parent: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(state(id, parent))),
+    };
+    let moved = RemoteNode::from_state(&state("m", "root")).unwrap().1.shape;
+    device.trees.set_local(
+        "m".into(),
+        LocalNode {
+            shape: moved.clone(),
+            identity: identity(1),
+            parked: false,
+        },
+    );
+    let from = RemoteNode::from_state(&state("m", "k")).unwrap().1.shape;
+    device.relocate("m", &from, &moved);
+    let mut changes = Vec::new();
+    if server_took_the_move {
+        changes.push(change("m", "root"));
+    }
+    changes.extend([change("k", "root"), change("m", "k"), change("u", "m")]);
+    device.receive(&changes, false);
+    note_kept_back(&mut device);
+    device.kept_back.contains("k")
+}
+
+#[test]
+fn the_keep_rule_walk_stops_at_a_folder_the_users_pending_move_takes_out() {
+    assert!(!keep_rule_walk_reaches_a_deleted_folder(false));
+}
+
+#[test]
+fn the_keep_rule_walk_passes_a_folder_whose_move_the_server_took_before_moving_it_back() {
+    assert!(keep_rule_walk_reaches_a_deleted_folder(true));
+}
+
+#[test]
+fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let at = |parent: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: "m".into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    device.relocate("m", &at("h"), &at("k"));
+    assert!(device.relocated.contains_key("m"));
+    device.relocate("m", &at("k"), &at("h"));
+    assert!(!device.relocated.contains_key("m"));
+    device.relocate("m", &at("h"), &at("k"));
+    device.relocate("m", &at("c"), &at("h"));
+    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("c")));
+}
+
+#[test]
+fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let at = |parent: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: "m".into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let answer = ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: "m".into(),
+            parent_id: "k".into(),
+            name: "m".into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    device.relocate("m", &at("h"), &at("j"));
+    device.receive(&[answer], true);
+    device.relocate("m", &at("j"), &at("h"));
+    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("k")));
 }

@@ -556,9 +556,51 @@ struct Device {
     touched: BTreeSet<String>,
     acted: BTreeSet<String>,
     removed_from: BTreeMap<String, String>,
+    kept_back: BTreeSet<String>,
+    relocated: BTreeMap<String, Relocation>,
+}
+
+struct Relocation {
+    from: koidrive_engine::tree::Shape,
+    to: koidrive_engine::tree::Shape,
 }
 
 impl Device {
+    fn relocate(
+        &mut self,
+        id: &str,
+        before: &koidrive_engine::tree::Shape,
+        after: &koidrive_engine::tree::Shape,
+    ) {
+        let from = (self.relocated.remove(id))
+            .filter(|moved| moved.to.same_position(before))
+            .map_or_else(|| before.clone(), |moved| moved.from);
+        if !from.same_position(after) {
+            let to = after.clone();
+            self.relocated.insert(id.to_owned(), Relocation { from, to });
+        }
+    }
+
+    fn receive(&mut self, changes: &[ChangeRecord], answered: bool) {
+        for change in changes {
+            apply(&mut self.trees, std::slice::from_ref(change));
+            let Some(change_record::Change::Node(state)) = &change.change else {
+                continue;
+            };
+            let Some(remote) = self.trees.remote().live(&state.node_id).cloned() else {
+                continue;
+            };
+            let Some(moved) = self.relocated.get_mut(&state.node_id) else {
+                continue;
+            };
+            if remote.same_position(&moved.to) {
+                self.relocated.remove(&state.node_id);
+            } else if answered {
+                moved.from = remote;
+            }
+        }
+    }
+
     fn identity(&mut self) -> FileIdentity {
         self.inos += 1;
         identity(self.inos)
@@ -693,12 +735,14 @@ impl Device {
                         self.trees.ignore_local(&id)
                     }
                     _ => {
-                        if node.shape.parent != parent || node.shape.name != name {
-                            self.touched.insert(id.clone());
-                            self.acted.insert(id.clone());
-                        }
+                        let before = node.shape.clone();
                         node.shape.parent = parent;
                         node.shape.name = name.into();
+                        if before.parent != node.shape.parent || before.name != node.shape.name {
+                            self.touched.insert(id.clone());
+                            self.acted.insert(id.clone());
+                            self.relocate(&id, &before, &node.shape);
+                        }
                         self.trees.set_local(id, node);
                     }
                 }
@@ -739,6 +783,8 @@ impl Device {
                     if let Some(node) = self.trees.local().get(&other) {
                         self.removed_from.insert(other.clone(), node.shape.parent.clone());
                     }
+                    self.kept_back.remove(&other);
+                    self.relocated.remove(&other);
                     self.acted.insert(other.clone());
                     self.trees.remove_local(&other);
                 }
@@ -1227,16 +1273,28 @@ fn acted_below(
         trees.remote().live(entry).is_some_and(holds)
             || acknowledged_shape(trees, entry).is_some_and(holds)
     };
-    let below_in_r = |node: &str, entry: &str| {
+    let kept_back = |entry: &str| {
+        device.kept_back.contains(entry)
+            && trees.local().get(entry).is_none()
+            && trees.remote().live(entry).is_some()
+    };
+    (device.acted.iter())
+        .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
+        .any(|entry| {
+            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+        })
+}
+
+fn kept_by_r7(device: &Device, entry: &str) -> bool {
+    let trees = &device.trees;
+    let below_in_r = |node: &str| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
             match current {
                 Some(at) if at == entry => return true,
                 Some(at) => {
-                    let moved_here = (trees.local().get(&at)).is_some_and(|local| {
-                        (acknowledged_shape(trees, &at))
-                            .is_none_or(|held| !local.shape.same_position(held))
-                    }) && !trees.reverted().contains(&at);
+                    let moved_here = (device.relocated.get(&at))
+                        .is_some_and(|moved| relocation_stands(trees, &at, &moved.to));
                     if moved_here {
                         return false;
                     }
@@ -1247,22 +1305,30 @@ fn acted_below(
         }
         false
     };
-    let kept_by_r7 = |entry: &str| {
-        trees.local().get(entry).is_none()
-            && trees.remote().live(entry).is_some()
-            && (trees.remote().iter()).any(|(node, remote)| {
-                !remote.trashed
-                    && trees.local().get(node).is_none()
-                    && !device.removed_from.contains_key(node)
-                    && !trees.excluded(node)
-                    && below_in_r(node, entry)
-            })
-    };
-    (device.acted.iter())
-        .filter(|entry| !as_agreed(entry) && !kept_by_r7(entry))
-        .any(|entry| {
-            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+    trees.local().get(entry).is_none()
+        && trees.remote().live(entry).is_some()
+        && (trees.remote().iter()).any(|(node, remote)| {
+            !remote.trashed
+                && trees.local().get(node).is_none()
+                && !device.removed_from.contains_key(node)
+                && !trees.excluded(node)
+                && below_in_r(node)
         })
+}
+
+fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape) -> bool {
+    (trees.local().get(id)).is_some_and(|local| local.shape.same_position(to))
+        && !(trees.remote().live(id)).is_some_and(|remote| remote.same_position(to))
+}
+
+fn note_kept_back(device: &mut Device) {
+    let trees = &device.trees;
+    (device.relocated).retain(|id, moved| relocation_stands(trees, id, &moved.to));
+    let kept: Vec<String> = (device.removed_from.keys())
+        .filter(|entry| kept_by_r7(device, entry))
+        .cloned()
+        .collect();
+    device.kept_back.extend(kept);
 }
 
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
@@ -1324,6 +1390,8 @@ fn run_ignoring_answering_after(
         touched: BTreeSet::new(),
         acted: BTreeSet::new(),
         removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -1389,7 +1457,7 @@ fn run_ignoring_answering_after(
         .unwrap();
     for record in backlog {
         prop_assert_eq!(record.seq, last_seq + 1);
-        apply(&mut device.trees, &record.changes);
+        device.receive(&record.changes, false);
         last_seq = record.seq;
     }
 
@@ -1455,7 +1523,7 @@ fn run_ignoring_answering_after(
                     })
                     .unwrap();
                 for record in backlog {
-                    apply(&mut device.trees, &record.changes);
+                    device.receive(&record.changes, false);
                     last_seq = record.seq;
                 }
             }
@@ -1464,6 +1532,7 @@ fn run_ignoring_answering_after(
         prop_assert_eq!(device.trees.check(), Ok(()));
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
+        note_kept_back(&mut device);
         let revived = revive(&device, &discarded, &kept_with);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
@@ -1731,9 +1800,9 @@ fn run_ignoring_answering_after(
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
             prop_assert!(!commits.acknowledge(&mut device.trees, last_seq));
             prop_assert_eq!(commits.resolved().len(), ended);
-            apply(&mut device.trees, &result.changes);
+            device.receive(&result.changes, true);
         } else {
-            apply(&mut device.trees, &result.changes);
+            device.receive(&result.changes, true);
             commits.received(result.clone()).unwrap();
         }
         last_seq = result.seq;
