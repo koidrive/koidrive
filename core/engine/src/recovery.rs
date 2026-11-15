@@ -265,10 +265,10 @@ pub(crate) fn release(
     let carried: Vec<(NodeId, Option<Shape>)> = (released.iter())
         .filter(|(_, shape)| shape.is_none())
         .flat_map(|(id, _)| trees.synced_children(id))
-        .filter(|child| !released.contains_key(*child))
+        .filter(|child| !released.contains_key(*child) && !trees.held(child))
         .filter_map(|child| {
             let synced = trees.synced().live(child)?;
-            if trees.local().get(child)?.shape.same(synced) {
+            if trees.local().get(child)?.shape.same_position(synced) {
                 return None;
             }
             let server = remote(child)?;
