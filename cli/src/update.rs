@@ -131,6 +131,15 @@ impl Method {
             Method::Development => None,
         }
     }
+
+    fn brew(&self) -> Option<&Path> {
+        match self {
+            Method::Cask { brew } | Method::CaskElsewhere { brew } | Method::Formula { brew } => {
+                Some(brew)
+            }
+            Method::Installer | Method::App | Method::AppDownload | Method::Development => None,
+        }
+    }
 }
 
 pub(crate) struct Install {
@@ -186,8 +195,7 @@ impl Install {
                     Err(_) => continue,
                 },
             };
-            let homebrew =
-                |method: &Method| matches!(method, Method::Cask { .. } | Method::Formula { .. });
+            let homebrew = |method: &Method| method.brew().is_some();
             match found
                 .iter()
                 .position(|known| known.binary == install.binary)
@@ -381,11 +389,7 @@ impl Install {
     }
 
     fn fallback(&self) -> Option<Vec<&str>> {
-        let (Method::Cask { brew } | Method::CaskElsewhere { brew } | Method::Formula { brew }) =
-            &self.method
-        else {
-            return None;
-        };
+        let brew = self.method.brew()?;
         let path = std::env::var_os("PATH");
         let selected = on_path(OsStr::new("brew"), path.as_deref())
             .and_then(|selected| selected.parent().and_then(|bin| fs::canonicalize(bin).ok()));
