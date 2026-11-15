@@ -312,6 +312,105 @@ fn the_keep_rule_walk_passes_a_folder_whose_move_the_server_took_before_moving_i
     assert!(keep_rule_walk_reaches_a_deleted_folder(true));
 }
 
+fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::from(["k".into()]),
+        removed_from: BTreeMap::from([("k".into(), "root".into())]),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let change = |name: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: "k".into(),
+            parent_id: "root".into(),
+            name: name.into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    device.receive(&[change("k")], false);
+    let held = device.trees.remote().live("k").unwrap().clone();
+    device.trees.set_local(
+        "k".into(),
+        LocalNode {
+            shape: held,
+            identity: identity(1),
+            parked: false,
+        },
+    );
+    device.trees.settle();
+    device.trees.remove_local("k");
+    device.receive(&[change(if server_renames_it { "a" } else { "k" })], false);
+    note_kept_back(&mut device);
+    device.kept_back.contains("k")
+}
+
+#[test]
+fn the_keep_rule_keeps_back_a_delete_of_a_folder_the_server_renamed() {
+    assert!(keep_rule_keeps_a_deleted_folder(true));
+}
+
+#[test]
+fn the_keep_rule_lets_a_delete_through_when_the_server_left_the_folder_as_it_was() {
+    assert!(!keep_rule_keeps_a_deleted_folder(false));
+}
+
+#[test]
+fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let change = |id: &str, parent: &str, name: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: name.into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    device.receive(&[change("k", "root", "k"), change("c", "k", "c")], false);
+    for (id, ino) in [("k", 1), ("c", 2)] {
+        let shape = device.trees.remote().live(id).unwrap().clone();
+        let node = LocalNode {
+            shape,
+            identity: identity(ino),
+            parked: false,
+        };
+        device.trees.set_local(id.into(), node);
+    }
+    device.trees.settle();
+    device.trees.remove_local("c");
+    device.removed_from.insert("c".into(), "k".into());
+    device.acted.insert("c".into());
+    device.receive(&[change("c", "k", "a")], false);
+    note_kept_back(&mut device);
+    assert!(device.kept_back.contains("c"));
+    device.trees.set_synced("c".into(), None);
+    device.trees.remove_local("k");
+    device.removed_from.insert("k".into(), "root".into());
+    device.acted.insert("k".into());
+    note_kept_back(&mut device);
+    assert!(device.kept_back.contains("k"));
+}
+
 #[test]
 fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
     let mut device = Device {

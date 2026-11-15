@@ -1287,6 +1287,10 @@ fn acted_below(
 
 fn kept_by_r7(device: &Device, entry: &str) -> bool {
     let trees = &device.trees;
+    let server_changed = |node: &str| {
+        (acknowledged_shape(trees, node))
+            .is_some_and(|agreed| (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed)))
+    };
     let below_in_r = |node: &str| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
@@ -1307,13 +1311,16 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
     };
     trees.local().get(entry).is_none()
         && trees.remote().live(entry).is_some()
-        && (trees.remote().iter()).any(|(node, remote)| {
-            !remote.trashed
-                && trees.local().get(node).is_none()
-                && !device.removed_from.contains_key(node)
-                && !trees.excluded(node)
-                && below_in_r(node)
-        })
+        && (server_changed(entry) && !trees.excluded(entry)
+            || (trees.remote().iter()).any(|(node, remote)| {
+                !remote.trashed
+                    && trees.local().get(node).is_none()
+                    && (!device.removed_from.contains_key(node)
+                        || server_changed(node)
+                        || device.kept_back.contains(node))
+                    && !trees.excluded(node)
+                    && below_in_r(node)
+            }))
 }
 
 fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape) -> bool {

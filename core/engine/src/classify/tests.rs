@@ -283,3 +283,31 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
     trees.yield_resends();
     assert_eq!(trees.class("c"), Class::Remote);
 }
+
+#[test]
+fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
+    let mut trees = Trees::new("root");
+    let mut parent = "root".to_string();
+    for k in 0..40 {
+        let (x, c) = (format!("x{k}"), format!("c{k}"));
+        trees.set_remote(x.clone(), remote(dir(&parent, &x)));
+        trees.set_remote(c.clone(), remote(dir(&x, &c)));
+        let identity = FileIdentity {
+            dev: 1,
+            ino: k + 1,
+            birth_ns: Some(0),
+        };
+        let local = LocalNode {
+            shape: dir("root", &x),
+            identity,
+            parked: false,
+        };
+        trees.set_local(x.clone(), local);
+        trees.discarded.insert(x.clone(), dir("root", &x));
+        trees.discarded.insert(c.clone(), dir(&x, &c));
+        parent = c;
+    }
+    trees.set_remote("f".into(), remote(dir(&parent, "f")));
+    trees.others = BTreeSet::from(["f".into()]);
+    assert!(trees.is_discarded("x0"));
+}

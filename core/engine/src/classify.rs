@@ -307,6 +307,13 @@ pub struct RemoteRecord {
     pub moved_in_lost_commit: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct Keeping {
+    open: BTreeSet<NodeId>,
+    done: BTreeMap<NodeId, bool>,
+    cut: bool,
+}
+
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -400,6 +407,7 @@ pub struct Trees {
     creates: BTreeSet<NodeId>,
     ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
+    keeping: RefCell<Keeping>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -483,6 +491,7 @@ impl Trees {
             creates: BTreeSet::new(),
             ready: BTreeSet::new(),
             others: BTreeSet::new(),
+            keeping: RefCell::default(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
@@ -1814,13 +1823,80 @@ impl Trees {
             return true;
         }
         let Some(local) = self.l.get(id) else {
-            return self.r.live(id).is_none();
+            return self.r.live(id).is_none()
+                || (self.kept_back(id) && self.keeps_the_synced_children(id, seen));
         };
         let holds = |shape: Option<&Shape>| shape.is_some_and(|shape| local.shape.same(shape));
         (holds(self.r.live(id)) || holds(self.acknowledged(id)))
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.as_the_server_holds(child, seen))
             && self.keeps_the_synced_children(id, seen)
+    }
+
+    pub(crate) fn keep_walk<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> impl Iterator<Item = (&'a str, bool)> + 'a {
+        let goes_back = (self.l.get(id))
+            .is_some_and(|node| node.parked || self.reverted.contains(id))
+            || self.is_discarded(id);
+        let starts = !self.excluded(id)
+            && (self.r.live(id))
+                .is_some_and(|remote| goes_back || !same(Some(remote), self.acknowledged(id)));
+        let mut next = starts.then_some(id);
+        let mut steps = 0;
+        std::iter::from_fn(move || {
+            let current = next.take().filter(|_| steps <= self.r.len())?;
+            steps += 1;
+            let remote = self.r.live(current)?;
+            let deleted = match self.l.get(current) {
+                Some(local) => {
+                    let moved = (self.acknowledged(current))
+                        .is_none_or(|held| !local.shape.same_position(held));
+                    if moved && !self.reverted.contains(current) && !self.is_discarded(current) {
+                        return None;
+                    }
+                    false
+                }
+                None => self.s.live(current).is_some() || self.waiting.contains_key(current),
+            };
+            next = (remote.parent != self.r.root).then_some(remote.parent.as_str());
+            Some((current, deleted))
+        })
+    }
+
+    fn kept_back(&self, id: &str) -> bool {
+        let outer_cut = {
+            let mut keeping = self.keeping.borrow_mut();
+            if let Some(&kept) = keeping.done.get(id) {
+                return kept;
+            }
+            if !keeping.open.insert(id.to_owned()) {
+                keeping.cut = true;
+                return false;
+            }
+            std::mem::take(&mut keeping.cut)
+        };
+        let mut below = vec![id];
+        let mut kept = false;
+        while let Some(at) = below.pop().filter(|_| !kept) {
+            kept = self.others.contains(at) && self.keep_walk(at).any(|(node, _)| node == id);
+            below.extend(
+                (self.remote_children(at))
+                    .filter(|child| self.r.live(child).is_some())
+                    .map(String::as_str),
+            );
+        }
+        let mut keeping = self.keeping.borrow_mut();
+        keeping.open.remove(id);
+        if !keeping.cut {
+            keeping.done.insert(id.to_owned(), kept);
+        }
+        keeping.cut |= outer_cut;
+        if keeping.open.is_empty() {
+            *keeping = Keeping::default();
+        }
+        kept
     }
 
     fn local_children_placed_or_parked<'a>(
@@ -1839,6 +1915,11 @@ impl Trees {
                 Some(node) if node.shape.parent == id => true,
                 Some(node) if !self.discarded.contains_key(child) => {
                     !waiting || (self.s.live(child)).is_some_and(|s| node.shape.same_position(s))
+                }
+                Some(node)
+                    if (self.discarded.get(child)).is_some_and(|shape| node.shape.same(shape)) =>
+                {
+                    true
                 }
                 _ => self.as_the_server_holds(child, seen),
             })
@@ -4221,6 +4302,7 @@ impl Trees {
             creates: _,
             ready: _,
             others: _,
+            keeping: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;

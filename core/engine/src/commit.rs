@@ -2798,9 +2798,7 @@ fn rebase(
     let mut needed = BTreeSet::new();
     let mut agreed = Vec::new();
     for id in &dirty {
-        if !trees.excluded(id) {
-            keep(trees, id, &mut needed);
-        }
+        keep(trees, id, &mut needed);
         if skip.contains(id) {
             continue;
         }
@@ -2875,45 +2873,15 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
 }
 
 fn keep(trees: &mut Trees, id: &str, needed: &mut BTreeSet<NodeId>) {
-    let goes_back = trees
-        .local()
-        .get(id)
-        .is_some_and(|node| node.parked || trees.reverted().contains(id))
-        || trees.is_discarded(id);
-    if trees.remote().live(id).is_none()
-        || (!goes_back && same(trees.remote().live(id), trees.acknowledged(id)))
-    {
-        return;
-    }
-    let mut current = id.to_owned();
-    for _ in 0..=trees.remote().len() {
-        let Some(remote) = trees.remote().live(&current) else {
-            return;
-        };
-        let parent = remote.parent.clone();
-        match trees.local().get(&current) {
-            None if trees.synced().live(&current).is_some()
-                || trees.waiting().contains_key(&current) =>
-            {
-                if !trees.set_synced_if_valid(current.clone(), None) {
-                    trees.revert(current.clone());
-                    needed.insert(current.clone());
-                }
-            }
-            None => {}
-            Some(local) => {
-                let moved = trees
-                    .acknowledged(&current)
-                    .is_none_or(|held| !local.shape.same_position(held));
-                if moved && !trees.reverted().contains(&current) && !trees.is_discarded(&current) {
-                    return;
-                }
-            }
+    let deleted: Vec<NodeId> = (trees.keep_walk(id))
+        .filter(|(_, deleted)| *deleted)
+        .map(|(node, _)| node.to_owned())
+        .collect();
+    for node in deleted {
+        if !trees.set_synced_if_valid(node.clone(), None) {
+            trees.revert(node.clone());
+            needed.insert(node);
         }
-        if parent == trees.remote().root {
-            return;
-        }
-        current = parent;
     }
 }
 
