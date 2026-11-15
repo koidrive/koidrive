@@ -818,10 +818,6 @@ impl Trees {
     }
 
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
-        self.cycles_may_end |= made == Made::Elsewhere
-            && (self.r.get(&id)).is_none_or(|old| {
-                old.shape.parent != node.shape.parent || old.trashed != node.trashed
-            });
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         let hidden = (self.acknowledged(&id))
@@ -1049,6 +1045,10 @@ impl Trees {
         }
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
+        self.cycles_may_end |= !made_here
+            && (self.r.get(&id)).is_none_or(|old| {
+                old.shape.parent != node.shape.parent || old.trashed != node.trashed
+            });
         let old = self.r.insert(id.clone(), node);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -3664,7 +3664,7 @@ impl Trees {
             match folder {
                 Some(at) if at == id => return true,
                 Some(at) => {
-                    folder = (self.r.live(at).map(|node| node.parent.as_str()))
+                    folder = (self.r.get(at).map(|node| node.shape.parent.as_str()))
                         .or_else(|| self.l.get(at).map(|node| node.shape.parent.as_str()))
                 }
                 None => return false,

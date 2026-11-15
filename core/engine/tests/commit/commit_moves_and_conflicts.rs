@@ -343,6 +343,15 @@ fn a_move_that_closes_a_cycle_against_r_is_reverted() {
 
 #[test]
 fn a_move_reverted_for_a_cycle_is_sent_once_another_device_ends_the_cycle() {
+    move_sent_once_the_cycle_ends(|trees, id, node| trees.set_remote(id, node));
+}
+
+#[test]
+fn a_move_reverted_for_a_cycle_is_sent_once_a_listing_shows_the_cycle_ended() {
+    move_sent_once_the_cycle_ends(|trees, id, node| trees.set_listed_remote(id, node));
+}
+
+fn move_sent_once_the_cycle_ends(update: impl Fn(&mut Trees, String, RemoteNode)) {
     let mut trees = trees(&[
         (
             "p",
@@ -362,7 +371,7 @@ fn a_move_reverted_for_a_cycle_is_sent_once_another_device_ends_the_cycle() {
     assert!(trees.reverted().contains("p"));
     trees.settle();
     assert!(trees.reverted().contains("p"));
-    trees.set_remote("q".into(), remote(dir(ROOT, "q")));
+    update(&mut trees, "q".into(), remote(dir(ROOT, "q")));
     trees.settle();
     assert!(!trees.reverted().contains("p"));
     let mut effects = Effects::default();
@@ -1248,6 +1257,36 @@ fn a_move_that_closes_a_cycle_against_trashed_folders_in_r_is_reverted() {
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains("p"));
+}
+
+#[test]
+fn a_move_reverted_for_a_cycle_through_trashed_folders_stays_reverted_when_another_node_changes() {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir("q", "p")),
+            Some(dir(ROOT, "p")),
+            Some(trashed(dir(ROOT, "p"))),
+        ),
+        (
+            "q",
+            Some(dir(ROOT, "q")),
+            Some(dir(ROOT, "q")),
+            Some(trashed(dir("p", "q"))),
+        ),
+        (
+            "r",
+            Some(dir(ROOT, "r")),
+            Some(dir(ROOT, "r")),
+            Some(remote(dir(ROOT, "r"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains("p"));
+    trees.set_remote("r".into(), trashed(dir(ROOT, "r")));
+    trees.settle();
     assert!(trees.reverted().contains("p"));
 }
 
