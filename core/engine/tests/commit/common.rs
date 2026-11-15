@@ -20,7 +20,7 @@ use koidrive_engine::names::{MAX_NAME_BYTES, nfc, normalize_name};
 
 use koidrive_engine::state::{CommitsState, FinishOrigin, MovedHere, PendingFinish, TreesState};
 
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, same_content};
 
 use koidrive_proto::v1::{self as proto, CommitResult, OpResult, Welcome, error, op, op_result};
 
@@ -631,8 +631,10 @@ fn commit_file(trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen, id: &s
 /// Whether `ops` upload content `digest`, to any node.
 fn uploads(ops: &[op::Op], digest: u8) -> bool {
     ops.iter().any(|op| match op {
-        op::Op::CreateFile(create) => create.content == Some(content(digest)),
-        op::Op::UpdateContent(update) => update.content == Some(content(digest)),
+        op::Op::CreateFile(create) => (create.content.as_ref())
+            .is_some_and(|sent| same_content(sent, &content(digest))),
+        op::Op::UpdateContent(update) => (update.content.as_ref())
+            .is_some_and(|sent| same_content(sent, &content(digest))),
         _ => false,
     })
 }

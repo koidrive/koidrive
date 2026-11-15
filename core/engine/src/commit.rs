@@ -2675,6 +2675,9 @@ fn rebase(
         {
             continue;
         }
+        if trees.take_forgotten_shape(id) {
+            continue;
+        }
         if trees.write_held_beside(id) {
             trees.take_local(id.clone());
             continue;

@@ -2320,6 +2320,273 @@ fn a_write_a_restore_took_that_no_disk_keeps_is_still_reported_lost() {
 }
 
 #[test]
+fn a_renamed_file_in_a_folder_the_server_lost_takes_a_later_edit_without_a_copy() {
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![
+            (
+                2,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 2,
+                    text: 0,
+                }),
+            ),
+        ],
+        vec![
+            (
+                2,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 1791005992912060646,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (
+                2,
+                Step::User(Action {
+                    kind: 3,
+                    target: 201596918561837118,
+                    parent: 2900601734929258487,
+                    name: 2,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Work(0)),
+            (
+                2,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 3,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Backup),
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 4,
+                    target: 2910488353651873,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                2,
+                Step::User(Action {
+                    kind: 3,
+                    target: 140773753700673835,
+                    parent: 11360897704646696770,
+                    name: 7,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Work(0)),
+        ],
+        vec![
+            (0, Step::Restore),
+            (
+                2,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 3,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Connect),
+            (2, Step::Deliver(0)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 8706682150967253,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                2,
+                Step::User(Action {
+                    kind: 3,
+                    target: 5352822049013114274,
+                    parent: 0,
+                    name: 4,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 2,
+                    target: 12500989401006490792,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Commit(Reply::Served)),
+            (2, Step::Work(82460615571668533)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_file_another_device_moved_into_a_folder_the_server_lost_takes_a_later_edit_without_a_copy() {
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 4,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (2, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, Step::Work(0)),
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 1,
+                }),
+            ),
+            (2, Step::Work(0)),
+            (0, Step::Commit(Reply::Served)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (
+                1,
+                Step::User(Action {
+                    kind: 3,
+                    target: 0,
+                    parent: 0,
+                    name: 2,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 3,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+            (2, Step::Work(141828595472779704)),
+            (2, Step::Work(320685041940936460)),
+        ],
+        vec![
+            (
+                0,
+                Step::User(Action {
+                    kind: 2,
+                    target: 7805284477832526839,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                2,
+                Step::User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Backup),
+            (
+                2,
+                Step::User(Action {
+                    kind: 3,
+                    target: 6447423470522966332,
+                    parent: 1668726329282792143,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                1,
+                Step::User(Action {
+                    kind: 4,
+                    target: 3293933612150230424,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+        ],
+        vec![
+            (
+                0,
+                Step::User(Action {
+                    kind: 2,
+                    target: 1571786324126042697,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Step::Restore),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
 fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_beside_it() {
     let world = converge(
         2,

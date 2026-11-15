@@ -769,6 +769,303 @@ fn a_move_another_device_made_after_a_loss_is_taken() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
+fn a_file_whose_folder_the_server_lost(
+    kept: &[(&str, RemoteNode)],
+    changed_here: impl FnOnce(&mut Trees),
+) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))]);
+    changed_here(&mut trees);
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("d");
+    for (id, node) in kept {
+        trees.set_remote((*id).into(), node.clone());
+    }
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    (trees, Commits::default(), IdGen::new(1))
+}
+
+fn assert_takes_a_later_edit_without_a_copy(mut trees: Trees, mut commits: Commits, mut ids: IdGen) {
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 2), 4));
+    trees.settle();
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(!uploads(&sent, 1), "{sent:?}");
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); sent.len()],
+    );
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::WriteFile { content: written, .. }] if *written == content(2)),
+        "{effects:?}"
+    );
+}
+
+fn kept_at_the_root() -> [(&'static str, RemoteNode); 1] {
+    [("f", remote_at(file(ROOT, "f", 1), 3))]
+}
+
+fn kept_in_a_folder_s_lacks() -> [(&'static str, RemoteNode); 2] {
+    [
+        ("e", remote_at(dir(ROOT, "e"), 3)),
+        ("f", remote_at(file("e", "f", 1), 3)),
+    ]
+}
+
+fn renamed(trees: &mut Trees, mtime_ns: i64) {
+    let mut shape = file("d", "g", 1);
+    shape.content.as_mut().unwrap().mtime_ns = mtime_ns;
+    trees.set_local_changed("f".into(), local(shape, 2));
+    trees.settle();
+}
+
+#[test]
+fn a_file_in_a_folder_the_server_lost_takes_a_later_edit_of_the_content_the_server_kept() {
+    let (trees, commits, ids) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    assert_takes_a_later_edit_without_a_copy(trees, commits, ids);
+}
+
+#[test]
+fn a_rename_of_a_file_in_a_folder_the_server_lost_is_no_edit_of_the_content_the_server_kept() {
+    let (mut trees, commits, ids) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    renamed(&mut trees, 0);
+    assert_takes_a_later_edit_without_a_copy(trees, commits, ids);
+}
+
+#[test]
+fn a_rename_that_only_touches_the_mtime_of_a_file_in_a_folder_the_server_lost_is_no_edit() {
+    let (mut trees, commits, ids) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    renamed(&mut trees, 5);
+    assert_takes_a_later_edit_without_a_copy(trees, commits, ids);
+}
+
+#[test]
+fn a_rename_of_a_file_the_server_kept_in_a_folder_s_lacks_is_no_edit_of_its_content() {
+    let (mut trees, commits, ids) = a_file_whose_folder_the_server_lost(&kept_in_a_folder_s_lacks(), |_| {});
+    renamed(&mut trees, 0);
+    assert_takes_a_later_edit_without_a_copy(trees, commits, ids);
+}
+
+#[test]
+fn an_edit_here_after_a_loss_of_a_file_in_a_folder_the_server_lost_is_kept_beside_another_device_s_edit() {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    trees.set_local_changed("f".into(), local(file("d", "f", 3), 2));
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 2), 4));
+    trees.settle();
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 3), "{sent:?}");
+    assert!(
+        !sent.iter().any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_file_in_a_folder_the_server_lost_that_a_later_loss_takes_is_kept_beside_another_device_s_edit() {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    trees.remove_remote("f");
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 2), 6));
+    trees.settle();
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 1), "{sent:?}");
+}
+
+#[test]
+fn a_lost_edit_of_a_file_in_a_folder_the_server_lost_is_kept_beside_another_device_s_edit_when_the_server_holds_its_bytes() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))]);
+    trees.remove_remote("d");
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 1), 3));
+    trees.forget_lost(
+        Vec::new(),
+        vec![("f".into(), 5)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 2), 6));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 1), "{sent:?}");
+    assert!(
+        !sent.iter().any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_remote_edit_after_a_trash_of_a_file_renamed_before_a_loss_of_its_folder_is_kept_beside_the_rename() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))]);
+    trees.set_local_changed("f".into(), local(file("d", "g", 1), 2));
+    trees.settle();
+    let edited = trees.edited_here();
+    let synced = trees.taken_from_others(|_| false);
+    let moved = trees.moved_here();
+    let untaken = trees.untaken_changes(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.remove_remote("d");
+    trees.set_listed_remote("f".into(), remote_at(file(ROOT, "f", 1), 3));
+    trees.forget_lost(Vec::new(), edited, synced, moved, untaken, records, 0, 0);
+    trees.settle();
+    let mut deleted = trashed(file(ROOT, "f", 1));
+    deleted.meta_rev = 4;
+    deleted.meta_edit_rev = 4;
+    trees.set_remote("f".into(), deleted);
+    trees.settle();
+    assert_eq!(trees.check(), Ok(()));
+    let mut edited_there = remote_at(file(ROOT, "f", 2), 5);
+    edited_there.content_rev = 5;
+    edited_there.edit_rev = 5;
+    trees.set_remote("f".into(), edited_there);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(
+        !sent.iter().any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_file_in_a_folder_the_server_lost_from_a_store_before_forgotten_shapes_is_kept_beside_another_device_s_edit() {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    let mut state = trees.state();
+    state.forgotten_shapes.clear();
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.set_remote("f".into(), remote_at(file(ROOT, "f", 2), 4));
+    trees.settle();
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 1), "{sent:?}");
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); sent.len()],
+    );
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::WriteFile { content: written, .. }] if *written == content(2)),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_in_a_folder_the_server_lost_keeps_no_forgotten_shape_once_s_takes_it_or_l_no_longer_holds_it() {
+    let (mut trees, _, _) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    assert!(trees.state().forgotten_shapes.contains_key("f"));
+    trees.set_synced("f".into(), Some(file(ROOT, "f", 1)));
+    assert!(trees.state().forgotten_shapes.is_empty());
+    let (mut trees, _, _) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
+    trees.remove_local("f");
+    assert!(trees.state().forgotten_shapes.is_empty());
+}
+
+fn renamed_by_another_device() -> [(&'static str, RemoteNode); 1] {
+    [("f", remote_at(file(ROOT, "g", 1), 3))]
+}
+
+fn assert_takes_a_rename_another_device_made_after_the_loss(deleted_here: &[&str]) {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&renamed_by_another_device(), |trees| {
+            for id in deleted_here {
+                trees.remove_local(id);
+            }
+        });
+    let mut sent = Vec::new();
+    for _ in 0..4 {
+        let Some(commit) = build(&mut commits, &mut trees, &mut ids) else {
+            break;
+        };
+        let ops = ops(&commit);
+        acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); ops.len()]);
+        sent.extend(ops);
+    }
+    assert!(!sent.contains(&delete("f")), "{sent:?}");
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::WriteFile { content: written, .. }] if *written == content(1)),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_deleted_here_in_a_folder_the_server_lost_takes_a_rename_another_device_made_after_the_loss() {
+    assert_takes_a_rename_another_device_made_after_the_loss(&["f"]);
+}
+
+#[test]
+fn a_folder_deleted_here_that_the_server_lost_takes_a_rename_of_its_file_another_device_made_after_the_loss() {
+    assert_takes_a_rename_another_device_made_after_the_loss(&["f", "d"]);
+}
+
+#[test]
+fn an_edit_here_of_a_file_in_a_folder_the_server_lost_keeps_a_rename_another_device_made_after_the_loss() {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&renamed_by_another_device(), |trees| {
+            trees.set_local_changed("f".into(), local(file("d", "f", 2), 2));
+        });
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 2), "{sent:?}");
+    assert!(
+        !sent.iter().any(|op| matches!(op, op::Op::Move(moved) if moved.node_id == "f")
+            || matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")),
+        "{sent:?}"
+    );
+}
+
+fn changed_after_the_bootstrap(change: impl FnOnce(&mut Trees)) -> Vec<op::Op> {
+    let (mut trees, mut commits, mut ids) =
+        a_file_whose_folder_the_server_lost(&renamed_by_another_device(), |_| {});
+    change(&mut trees);
+    trees.settle();
+    ops(&build(&mut commits, &mut trees, &mut ids).unwrap())
+}
+
+#[test]
+fn a_delete_found_after_the_bootstrap_keeps_a_rename_another_device_made_after_the_loss() {
+    let sent = changed_after_the_bootstrap(|trees| trees.remove_local("f"));
+    assert!(!sent.contains(&delete("f")), "{sent:?}");
+}
+
+#[test]
+fn an_edit_found_after_the_bootstrap_keeps_a_rename_another_device_made_after_the_loss() {
+    let sent = changed_after_the_bootstrap(|trees| {
+        trees.set_local_changed("f".into(), local(file("d", "f", 2), 2));
+    });
+    assert!(
+        !sent.iter().any(|op| matches!(op, op::Op::Move(moved) if moved.node_id == "f")),
+        "{sent:?}"
+    );
+}
+
 #[test]
 fn a_move_of_this_device_the_server_lost_is_sent_again() {
     let (mut trees, mut commits, mut ids) = n_at_x();
