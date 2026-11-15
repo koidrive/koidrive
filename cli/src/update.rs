@@ -1,26 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::fs::{self, File};
-use std::io::{self, IsTerminal, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
-use std::time::{Duration, SystemTime};
+use std::fs;
 
 use koidrive_driver::Paths;
-use koidrive_driver::update::{self, Release};
-use koidrive_ipc::{Code, Next};
-use semver::Version;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use url::Url;
+use koidrive_driver::update;
+use koidrive_ipc::Next;
 
 use crate::error::CliError;
-use crate::report::{Done, UpdateNoticeData, UpdateResult, UpdatedData, Via};
+use crate::report::{Done, UpdateResult, UpdatedData};
 use crate::service;
-use crate::terminal::{Progress, Terminal};
 
 mod handoff;
 mod homebrew;
@@ -28,30 +15,23 @@ mod installer;
 mod inventory;
 mod process;
 mod reconcile;
+mod release_source;
 
 pub use handoff::follow_newest;
 pub(crate) use inventory::{Install, Method, on_path};
 pub use inventory::{Installs, homebrew_link};
 
-#[cfg(test)]
-use handoff::scan;
 use homebrew::homebrew;
 use installer::{installer, script_url};
 use inventory::command_text;
-use process::{Child, Echo, Steps, exit, minutes};
-#[cfg(any(target_os = "macos", test))]
-use reconcile::ReconcileError;
-#[cfg(test)]
-use reconcile::update_problem;
+use process::{Echo, Steps};
+#[cfg(target_os = "macos")]
+use reconcile::{ReconcileError, discover_app_version, select_app_helper};
 use reconcile::{
     SERVICE_CHECK, UpdateBinary, app_not_updated, checked, finish_reconciliation, reached,
     reconcile_updated, updated,
 };
-#[cfg(target_os = "macos")]
-use reconcile::{discover_app_version, select_app_helper};
-
-const INSTALLER: Duration = Duration::from_secs(5 * 60);
-const RECONCILE: Duration = Duration::from_secs(7 * 60);
+use release_source::{RECONCILE, failed, newest};
 
 fn refuse_root(root: bool) -> Result<(), CliError> {
     match root {
@@ -60,23 +40,6 @@ fn refuse_root(root: bool) -> Result<(), CliError> {
         )),
         false => Ok(()),
     }
-}
-
-fn failed(why: String) -> CliError {
-    CliError::new(Code::Failed, why)
-}
-
-async fn newest(paths: &Paths) -> Result<(Version, String), CliError> {
-    let Release { version, url } = update::check_now(paths)
-        .await
-        .map_err(|error| CliError::new(Code::Unavailable, error.to_string()))?
-        .ok_or_else(|| failed("GitHub lists no Koidrive release for this system".to_owned()))?;
-    let to = Version::parse(&version).map_err(|_| {
-        failed(format!(
-            "GitHub names the release {version}, which is not a version"
-        ))
-    })?;
-    Ok((to, url))
 }
 
 pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliError> {
@@ -340,4 +303,5 @@ async fn release(
 #[path = "../tests/support/executable.rs"]
 mod fixture;
 
-include!("update/tests.rs");
+#[cfg(test)]
+mod tests;

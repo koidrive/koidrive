@@ -1,4 +1,14 @@
-use super::*;
+use std::ffi::OsStr;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+use koidrive_driver::update;
+
+use crate::error::CliError;
+use crate::report::{UpdateNoticeData, Via};
+
+use super::release_source::failed;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Installs {
@@ -243,11 +253,7 @@ impl Install {
         Self::locate(binary, prefixes, apps)
     }
 
-    pub(super) fn locate(
-        binary: &Path,
-        prefixes: &[PathBuf],
-        apps: &[PathBuf],
-    ) -> Result<Self, CliError> {
+    fn locate(binary: &Path, prefixes: &[PathBuf], apps: &[PathBuf]) -> Result<Self, CliError> {
         let resolved = fs::canonicalize(binary)
             .map_err(|error| failed(format!("Cannot resolve {}: {error}", binary.display())))?;
         let mut candidates = Vec::new();

@@ -1,4 +1,16 @@
-use super::*;
+use std::io::Write;
+use std::path::Path;
+use std::time::Duration;
+
+use koidrive_ipc::Code;
+use semver::Version;
+use tokio::process::Command;
+use url::Url;
+
+use crate::error::CliError;
+
+use super::process::{Child, Echo, exit, minutes};
+use super::release_source::{INSTALLER, failed};
 
 const INSTALL_SCRIPT: &str = "https://koidrive.com/install.sh";
 const INSTALL_SCRIPT_VARIABLE: &str = "KOIDRIVE_INSTALL_SCRIPT_URL";

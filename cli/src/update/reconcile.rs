@@ -1,4 +1,17 @@
-use super::*;
+use std::path::{Path, PathBuf};
+
+use koidrive_driver::Paths;
+use koidrive_ipc::Code;
+use semver::Version;
+use tokio::process::Command;
+
+use crate::error::CliError;
+use crate::report::{Done, UpdateResult, UpdatedData, Via};
+use crate::service;
+use crate::terminal::Progress;
+
+use super::process::{Child, Echo};
+use super::release_source::failed;
 
 pub(super) enum UpdateBinary {
     Other(PathBuf),

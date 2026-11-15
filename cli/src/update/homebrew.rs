@@ -1,4 +1,22 @@
-use super::*;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use koidrive_driver::Paths;
+use tokio::process::Command;
+
+use crate::error::CliError;
+use crate::report::{Done, Via};
+use crate::service;
+
+use super::inventory::{Install, Method, command_text};
+use super::process::{Child, Echo, Steps, exit, minutes};
+use super::reconcile::{
+    SERVICE_CHECK, UpdateBinary, checked, finish_reconciliation, reconcile_updated, updated,
+};
+use super::release_source::{INSTALLER, RECONCILE, failed, newest};
 
 const TAP_REFRESH: Duration = Duration::from_secs(60);
 const TAP: &str = "koidrive/tap";
