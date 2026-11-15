@@ -561,6 +561,18 @@ struct Device {
 }
 
 impl Device {
+    fn receive(&mut self, changes: &[ChangeRecord]) {
+        for change in changes {
+            apply(&mut self.trees, std::slice::from_ref(change));
+            if let Some(change_record::Change::Node(state)) = &change.change
+                && let Some(to) = self.relocated.get(&state.node_id)
+                && (self.trees.remote().live(&state.node_id)).is_some_and(|r| r.same_position(to))
+            {
+                self.relocated.remove(&state.node_id);
+            }
+        }
+    }
+
     fn identity(&mut self) -> FileIdentity {
         self.inos += 1;
         identity(self.inos)
@@ -1419,7 +1431,7 @@ fn run_ignoring_answering_after(
         .unwrap();
     for record in backlog {
         prop_assert_eq!(record.seq, last_seq + 1);
-        apply(&mut device.trees, &record.changes);
+        device.receive(&record.changes);
         last_seq = record.seq;
     }
 
@@ -1485,7 +1497,7 @@ fn run_ignoring_answering_after(
                     })
                     .unwrap();
                 for record in backlog {
-                    apply(&mut device.trees, &record.changes);
+                    device.receive(&record.changes);
                     last_seq = record.seq;
                 }
             }
@@ -1762,9 +1774,9 @@ fn run_ignoring_answering_after(
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
             prop_assert!(!commits.acknowledge(&mut device.trees, last_seq));
             prop_assert_eq!(commits.resolved().len(), ended);
-            apply(&mut device.trees, &result.changes);
+            device.receive(&result.changes);
         } else {
-            apply(&mut device.trees, &result.changes);
+            device.receive(&result.changes);
             commits.received(result.clone()).unwrap();
         }
         last_seq = result.seq;

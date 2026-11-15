@@ -270,36 +270,35 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
     };
-    let remote = |id: &str, parent: &str| {
-        RemoteNode::from_state(&NodeState {
-            node_id: id.into(),
-            parent_id: parent.into(),
-            name: id.into(),
-            kind: 1,
-            status: 1,
-            ..Default::default()
-        })
-        .unwrap()
-        .1
+    let state = |id: &str, parent: &str| NodeState {
+        node_id: id.into(),
+        parent_id: parent.into(),
+        name: id.into(),
+        kind: 1,
+        status: 1,
+        ..Default::default()
     };
-    let moved = remote("m", "root");
+    let change = |id: &str, parent: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(state(id, parent))),
+    };
+    let moved = RemoteNode::from_state(&state("m", "root")).unwrap().1.shape;
     device.trees.set_local(
         "m".into(),
         LocalNode {
-            shape: moved.shape.clone(),
+            shape: moved.clone(),
             identity: identity(1),
             parked: false,
         },
     );
-    device.relocated.insert("m".into(), moved.shape.clone());
+    device.relocated.insert("m".into(), moved);
+    let mut changes = Vec::new();
     if server_took_the_move {
-        device.trees.set_remote("m".into(), moved);
-        note_kept_back(&mut device);
+        changes.push(change("m", "root"));
     }
-    for (id, parent) in [("k", "root"), ("m", "k"), ("u", "m")] {
-        device.trees.set_remote(id.into(), remote(id, parent));
-    }
-    kept_by_r7(&device, "k")
+    changes.extend([change("k", "root"), change("m", "k"), change("u", "m")]);
+    device.receive(&changes);
+    note_kept_back(&mut device);
+    device.kept_back.contains("k")
 }
 
 #[test]
