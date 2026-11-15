@@ -1139,6 +1139,21 @@ fn revive(
 
 type Position = (String, String);
 
+fn closes_a_cycle(trees: &Trees, id: &str, parent: &str) -> bool {
+    let mut folder = Some(parent.to_owned());
+    for _ in 0..=trees.local().len() + trees.remote().len() {
+        match folder {
+            Some(at) if at == id => return true,
+            Some(at) => {
+                folder = (trees.remote().live(&at).map(|shape| shape.parent.clone()))
+                    .or_else(|| trees.local().get(&at).map(|node| node.shape.parent.clone()))
+            }
+            None => return false,
+        }
+    }
+    false
+}
+
 fn position(shape: &koidrive_engine::tree::Shape) -> Position {
     (shape.parent.clone(), shape.name.clone())
 }
@@ -1437,8 +1452,9 @@ fn run_ignoring_answering_after(
             ) {
                 let taken_along = kept_with.contains_key(&record.node)
                     && !acted_below(&device, &kept_with, &record.node);
-                let left_where_put =
-                    !taken_along && placed.get(&record.node) == Some(&position(&local.shape));
+                let left_where_put = !taken_along
+                    && !closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+                    && placed.get(&record.node) == Some(&position(&local.shape));
                 prop_assert!(
                     !(left_where_put
                         && after.parent != local.shape.parent
