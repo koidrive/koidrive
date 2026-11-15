@@ -2170,7 +2170,11 @@ describe("chunk relay", () => {
     const bytes = parts.bytes[0]!;
     const key = chunkKey(spaceId, toHex(parts.content.chunks[0]!.hash), targetIncarnation(target.url));
 
-    const tampered = { ...target, url: target.url.slice(0, -3) + "AAA" };
+    const mac = new URL(target.url).searchParams.get("ticket")!.split(".")[2]!;
+    const middle = target.url.lastIndexOf(mac) + Math.floor(mac.length / 2);
+    const swapped = target.url[middle] === "A" ? "B" : "A";
+    const tampered = { ...target, url: target.url.slice(0, middle) + swapped + target.url.slice(middle + 1) };
+    expect(tampered.url).not.toBe(target.url);
     expect((await put(tampered, bytes)).status).toBe(403);
     expect((await put({ ...target, url: target.url.split("?")[0]! }, bytes)).status).toBe(403);
     const otherSpace = { ...target, url: target.url.replace(spaceId, uuidv7()) };
