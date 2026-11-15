@@ -47,6 +47,10 @@ on:
         description: Build the tests with the release profile
         type: boolean
         default: false
+      env:
+        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
+        type: string
+        default: ''
       os:
         description: Operating systems to run on
         type: choice
@@ -66,6 +70,7 @@ env:
   FEATURES: ${{ inputs.features }}
   IGNORED: ${{ inputs.ignored }}
   RELEASE: ${{ inputs.release }}
+  EXTRA_ENV: ${{ inputs.env }}
 
 defaults:
   run:
@@ -145,6 +150,13 @@ jobs:
           cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
       - name: Run the tests
         run: |
+          for pair in $EXTRA_ENV; do
+            if [[ ! "$pair" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]]*$ ]]; then
+              echo "::error::env takes NAME=value pairs, not '$pair'."
+              exit 1
+            fi
+            export "${pair?}"
+          done
           out="$RUNNER_TEMP/heavy-tests"
           mkdir -p "$out/logs" "$out/regressions"
           cargo_args=(--locked --no-fail-fast -p "$CRATE")
@@ -157,7 +169,7 @@ jobs:
           [ -z "$CASES" ] || export PROPTEST_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
           [ "${#test_args[@]}" -eq 0 ] || repro_args+=" --$(printf ' %q' "${test_args[@]}")"
-          repro="git checkout $SHA && PROPTEST_RNG_SEED=<seed>${CASES:+ PROPTEST_CASES=$CASES} cargo test$repro_args"
+          repro="git checkout $SHA && PROPTEST_RNG_SEED=<seed>${CASES:+ PROPTEST_CASES=$CASES}${EXTRA_ENV:+ $EXTRA_ENV} cargo test$repro_args"
           {
             echo "### $RUNNER_OS: cargo test$repro_args"
             echo

@@ -1952,9 +1952,65 @@ pub fn check(budget: Budget, rules: Rules) -> Report {
     }
 }
 
+struct Fingerprints {
+    slots: Vec<u64>,
+    len: usize,
+    fixed: bool,
+}
+
+impl Fingerprints {
+    fn new() -> Self {
+        let fixed = std::env::var("MODEL_TABLE_SLOTS").ok();
+        let slots = fixed
+            .as_ref()
+            .map_or(1 << 20, |slots| slots.parse().unwrap());
+        Fingerprints {
+            slots: vec![0; slots],
+            len: 0,
+            fixed: fixed.is_some(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn full(&self) -> bool {
+        self.fixed && self.len * 20 >= self.slots.len() * 19
+    }
+
+    fn insert(&mut self, fingerprint: u64) -> bool {
+        if !self.fixed && self.len * 4 >= self.slots.len() * 3 {
+            let grown = vec![0; self.slots.len() * 2];
+            let old = std::mem::replace(&mut self.slots, grown);
+            self.len = 0;
+            for fingerprint in old.into_iter().filter(|&slot| slot != 0) {
+                self.insert(fingerprint);
+            }
+        }
+        let fingerprint = fingerprint.max(1);
+        let size = self.slots.len();
+        let mut at = ((u128::from(fingerprint) * size as u128) >> 64) as usize;
+        loop {
+            match self.slots[at] {
+                0 => {
+                    self.slots[at] = fingerprint;
+                    self.len += 1;
+                    if self.len.is_multiple_of(100_000_000) {
+                        println!("{} states", self.len);
+                    }
+                    return true;
+                }
+                slot if slot == fingerprint => return false,
+                _ => at = (at + 1) % size,
+            }
+        }
+    }
+}
+
 pub fn check_deep(budget: Budget, rules: Rules) -> Report {
     let start = World::new(budget);
-    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut seen = Fingerprints::new();
     seen.insert(fingerprint(&start));
     let mut path: Vec<Action> = Vec::new();
     let mut stack: Vec<(World, Vec<Action>)> = vec![(start.clone(), start.actions())];
@@ -1963,15 +2019,14 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
     let steps = std::collections::BTreeSet::new();
     let cap: usize =
         std::env::var("MODEL_MAX_STATES").map_or(usize::MAX, |cap| cap.parse().unwrap());
-    let report =
-        |seen: &std::collections::HashSet<u64>, (converged, spurious), broken, steps| Report {
-            states: seen.len(),
-            converged,
-            spurious,
-            broken,
-            capped: seen.len() >= cap,
-            steps,
-        };
+    let report = |seen: &Fingerprints, (converged, spurious), broken, steps| Report {
+        states: seen.len(),
+        converged,
+        spurious,
+        broken,
+        capped: seen.len() >= cap || seen.full(),
+        steps,
+    };
     if start.converged() {
         converged += 1;
     }
@@ -1996,7 +2051,7 @@ pub fn check_deep(budget: Budget, rules: Rules) -> Report {
         if !seen.insert(fingerprint(&next)) {
             continue;
         }
-        if seen.len() >= cap {
+        if seen.len() >= cap || seen.full() {
             return report(&seen, (converged, spurious), None, steps);
         }
         path.push(action);
