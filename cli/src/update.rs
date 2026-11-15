@@ -839,6 +839,16 @@ async fn release(
         Some(command) => format!("To update, run: {}", command_text(&command)),
         None => format!("Download Koidrive {to} from {url}"),
     };
+    #[cfg(target_os = "macos")]
+    if let Method::Cask { .. } = install.method
+        && let Some(folder) = install.binary.ancestors().nth(4)
+        && !crate::app_install::writable(folder).map_err(|error| failed(error.to_string()))?
+    {
+        return Err(failed(format!(
+            "This user cannot write {}, so Koidrive cannot replace the Homebrew app there.\n{guidance}",
+            folder.display()
+        )));
+    }
     let manager = service::system();
     let service = service::this_service(paths);
     let app_deadline = tokio::time::Instant::now() + RECONCILE;
@@ -899,7 +909,31 @@ async fn release(
                 )
                 .await
                 {
-                    Ok(Some(helper)) => koi = Some(UpdateBinary::App(Box::new(helper))),
+                    Ok(Some(helper))
+                        if !matches!(install.method, Method::Cask { .. })
+                            || fs::canonicalize(helper.path())
+                                .is_ok_and(|path| path == install.binary) =>
+                    {
+                        koi = Some(UpdateBinary::App(Box::new(helper)))
+                    }
+                    Ok(Some(installed)) => {
+                        let cask =
+                            crate::app_install::verify_existing(&install.binary, app_deadline)
+                                .await
+                                .and_then(|cask| {
+                                    cask.require_version(&to.to_string()).map(|()| cask)
+                                });
+                        match cask {
+                            Ok(cask) => koi = Some(UpdateBinary::App(Box::new(cask))),
+                            Err(_) => {
+                                return Err(failed(format!(
+                                    "Koidrive {to} went to {}, and the Homebrew app at {} still has another version.\n{guidance}",
+                                    installed.path().display(),
+                                    install.binary.display()
+                                )));
+                            }
+                        }
+                    }
                     Ok(None) => {
                         return Err(app_not_updated(
                             paths,

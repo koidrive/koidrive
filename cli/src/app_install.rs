@@ -221,7 +221,7 @@ pub(crate) async fn verify_existing(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::QUIESCE;
+pub(crate) use macos::{QUIESCE, writable};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -2809,7 +2809,7 @@ function run(args) {
         }
     }
 
-    fn writable(root: &Path) -> Result<bool, AppInstallError> {
+    pub(crate) fn writable(root: &Path) -> Result<bool, AppInstallError> {
         match tempfile::Builder::new()
             .prefix(".koidrive-write-")
             .tempdir_in(root)

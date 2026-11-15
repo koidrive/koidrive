@@ -1271,6 +1271,52 @@ fn koi_update_updates_a_cask_with_the_app_updater_and_names_brew_only_as_the_fal
     assert!(log.contains(message), "{log}");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn koi_update_leaves_a_cask_in_a_folder_this_user_cannot_write_to_homebrew() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), true);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let brew = std::fs::canonicalize(home.path().join("brew"))
+        .unwrap()
+        .join("bin/brew");
+    let applications = std::fs::canonicalize(home.path().join("Applications")).unwrap();
+    let before = std::fs::read(&koi).unwrap();
+    std::fs::set_permissions(&applications, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .env("PATH", home.path().join("empty"))
+        .output()
+        .unwrap();
+    std::fs::set_permissions(&applications, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let envelope = envelope(&output);
+    assert!(!output.status.success(), "{envelope:#}");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert_eq!(
+        message,
+        format!(
+            "This user cannot write {}, so Koidrive cannot replace the Homebrew app there.\nTo update, run: {} upgrade --cask koidrive",
+            applications.display(),
+            brew.display()
+        )
+    );
+    assert_eq!(
+        envelope["next_commands"],
+        serde_json::json!([{ "argv": [brew, "upgrade", "--cask", "koidrive"] }])
+    );
+    assert!(!brew.with_extension("calls").exists());
+    assert_eq!(std::fs::read(&koi).unwrap(), before);
+    assert_eq!(
+        std::fs::read_dir(&applications).unwrap().count(),
+        1,
+        "the update left no second app beside the cask"
+    );
+}
+
 #[test]
 fn koi_update_through_homebrew_says_when_koidrive_is_already_the_newest() {
     for json in [true, false] {
