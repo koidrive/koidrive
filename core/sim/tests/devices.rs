@@ -10013,3 +10013,27 @@ fn a_lost_move_and_edit_sent_again_after_a_restore_keep_the_write_in_one_file() 
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn an_entry_a_store_rollback_brings_back_under_a_recovered_name_is_not_renamed_on_the_server() {
+    let user = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let synced = vec![(1, user(1, 0, 9)), (0, user(1, 0, 0)), (2, Step::CopyStore)];
+    let renamed = vec![
+        (0, user(3, 1, 7)),
+        (0, Step::Work(0)),
+        (0, Step::Work(0)),
+        (0, Step::Work(0)),
+        (2, Step::Deliver(0)),
+        (2, Step::Effect(Outcome::Crash(Cut::Placed))),
+        (2, Step::RollBack),
+    ];
+    converge(3, &[synced, renamed]).unwrap();
+}

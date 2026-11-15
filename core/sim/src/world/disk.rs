@@ -163,12 +163,14 @@ impl Disk {
             let entry = self.entries.get_mut(&ino).expect("listed");
             entry.place = Place::Root;
             entry.name = free;
+            entry.mark = None;
         }
         for (ino, entry) in std::mem::take(&mut self.quarantine).into_values() {
             let name = self.recovered(&entry.name);
             let entry = Entry {
                 place: Place::Root,
                 name,
+                mark: None,
                 ..entry
             };
             self.entries.insert(ino, entry);

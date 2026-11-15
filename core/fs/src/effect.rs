@@ -474,7 +474,8 @@ impl Space {
     /// name made from `name` of its private name and identity, and returns the paths they took. A
     /// store older than the disk does not know what the disk parked, or what the last effect the
     /// root marker counts left in quarantine when it stopped between its steps, and scans read
-    /// neither directory (design §6.4).
+    /// neither directory (design §6.4). Each entry loses its node mark, since the name it takes is
+    /// not one the user gave it.
     pub fn bring_back_all(
         &self,
         name: impl Fn(&OsStr, FileId) -> OsString,
@@ -485,6 +486,9 @@ impl Space {
         for dir in [PARKED_DIR, QUARANTINE_DIR] {
             let private = self.private(&[dir])?;
             for entry in list(private.fd())? {
+                if let Some(held) = mark::open(private.fd(), &entry)? {
+                    mark::clear(held.as_fd());
+                }
                 let stat = stat_at(private.fd(), &entry)?;
                 let original = name(&entry, stat.id);
                 let folder = stat.file_type == FileType::Directory;

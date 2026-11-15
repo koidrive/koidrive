@@ -77,7 +77,13 @@ pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
     }
 }
 
-fn read(entry: BorrowedFd<'_>) -> io::Result<Option<String>> {
+pub(crate) fn clear(entry: BorrowedFd<'_>) {
+    if native(entry) {
+        let _ = rustix::fs::fremovexattr(entry, NAME);
+    }
+}
+
+pub(crate) fn read(entry: BorrowedFd<'_>) -> io::Result<Option<String>> {
     let mut value = [0; 256];
     let len = match rustix::fs::fgetxattr(entry, NAME, &mut value) {
         Ok(len) => len,

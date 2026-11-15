@@ -1036,6 +1036,40 @@ fn an_entry_an_effect_left_in_quarantine_is_moved_to_the_root_under_its_recovere
     assert_eq!(fs::read_dir(&quarantine).unwrap().count(), 0);
 }
 
+#[test]
+fn an_entry_brought_back_under_a_recovered_name_loses_its_mark() {
+    use std::os::fd::AsFd;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    space.private(&[QUARANTINE_DIR]).unwrap();
+    let private = root.join(PRIVATE_DIR);
+    fs::create_dir(private.join(PARKED_DIR).join("n1")).unwrap();
+    fs::write(private.join(QUARANTINE_DIR).join("effect-7"), "displaced").unwrap();
+    let held = [
+        private.join(PARKED_DIR).join("n1"),
+        private.join(QUARANTINE_DIR).join("effect-7"),
+    ];
+    for (path, node) in held.iter().zip(["n1", "n2"]) {
+        let entry = fs::File::open(path).unwrap();
+        mark::write(entry.as_fd(), node);
+        assert_eq!(mark::read(entry.as_fd()).unwrap().as_deref(), Some(node));
+    }
+
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let moved = space
+        .bring_back_all(|held, _| held.to_owned(), now)
+        .unwrap();
+
+    assert_eq!(moved.len(), 2);
+    for path in moved {
+        let entry = fs::File::open(root.join(path)).unwrap();
+        assert_eq!(mark::read(entry.as_fd()).unwrap(), None);
+    }
+}
+
 #[derive(Clone, Default)]
 struct Lines(std::sync::Arc<std::sync::Mutex<BTreeMap<PathBuf, Vec<u8>>>>);
 
