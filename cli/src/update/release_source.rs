@@ -32,11 +32,11 @@ pub(super) async fn newest(paths: &Paths) -> Result<(Version, String), CliError>
 }
 
 pub(crate) async fn check_updates(paths: &Paths) -> Result<Done, CliError> {
-    let update = match ipc::run(paths, Request::CheckForUpdates).await? {
-        Response::UpdateChecked { update } => update,
+    let (update, version) = match ipc::run(paths, Request::CheckForUpdates).await? {
+        Response::UpdateChecked { update, version } => (update, version),
         other => return Err(unexpected(other)),
     };
-    let notice = UpdateNoticeData::of(&update, env!("CARGO_PKG_VERSION"), None);
+    let notice = UpdateNoticeData::of(&update, &version, None);
     let text = match (&notice.state, &notice.latest) {
         (_, Some(latest)) => format!(
             "Koidrive {} is out (this device runs {}).\n",

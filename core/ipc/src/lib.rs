@@ -219,9 +219,10 @@ pub enum Response {
         link: SharedLink,
         already: bool,
     },
-    /// GitHub's answer to [`Request::CheckForUpdates`].
+    /// GitHub's answer to [`Request::CheckForUpdates`], and the Koidrive version it was compared with.
     UpdateChecked {
         update: Update,
+        version: String,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {

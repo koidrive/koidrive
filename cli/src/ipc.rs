@@ -208,7 +208,10 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
         }
         Request::CheckForUpdates => {
             return match driver.check_for_updates_now().await {
-                Ok(update) => Response::UpdateChecked { update },
+                Ok(update) => Response::UpdateChecked {
+                    update,
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                },
                 Err(error) => Response::from(CliError::from(error)),
             };
         }
@@ -611,6 +614,7 @@ pub(crate) mod tests {
         )));
         let checked = Response::UpdateChecked {
             update: Update::Off,
+            version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
