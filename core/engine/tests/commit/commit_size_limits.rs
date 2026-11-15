@@ -396,3 +396,39 @@ fn a_trashed_folder_moved_into_a_new_folder_comes_back_with_its_trash_group_afte
     assert_eq!(trees.synced().live("d"), Some(&dir("b", "d")));
     assert_eq!(trees.local().get("d").map(|node| &node.shape), Some(&dir("b", "d")));
 }
+
+#[test]
+fn a_file_moved_into_a_new_folder_keeps_a_remote_edit_after_a_split_commit_that_merges_the_folder() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        ("b", None, Some(dir("a", "b")), Some(remote(dir("a", "b")))),
+        (
+            "c",
+            Some(file("n", "c", 1)),
+            Some(file("a", "c", 1)),
+            Some(remote_at(file("b", "c", 2), 2)),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let planned = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(planned.contains(&mv("c", "a", "c")), "{planned:?}");
+    assert!(
+        !planned.iter().any(|op| matches!(op, op::Op::UpdateContent(_))),
+        "{planned:?}"
+    );
+}

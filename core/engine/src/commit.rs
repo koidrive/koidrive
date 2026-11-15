@@ -1726,7 +1726,16 @@ impl Commits {
                         let mut moved_in: Vec<(NodeId, Option<Shape>)> = (trees
                             .local_children(&create.node_id))
                         .filter(|id| outside(id))
-                        .map(|id| (id.clone(), trees.remote().live(id).cloned()))
+                        .map(|id| {
+                            let position = (trees.remote().live(id))
+                                .zip(synced.get(trees, id))
+                                .map(|(remote, synced)| Shape {
+                                    parent: remote.parent.clone(),
+                                    name: remote.name.clone(),
+                                    ..synced
+                                });
+                            (id.clone(), position)
+                        })
                         .collect();
                         let mut groups: Vec<(NodeId, String)> = (moved_in.iter())
                             .filter_map(|(id, _)| {
