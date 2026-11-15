@@ -3021,7 +3021,7 @@ pub(crate) fn finishes<'a>(
         })
 }
 
-fn changed_locally(trees: &Trees, id: &str) -> bool {
+pub(crate) fn changed_locally(trees: &Trees, id: &str) -> bool {
     let Some(Waiting {
         shape: Some(waiting),
         ..
@@ -3038,8 +3038,8 @@ fn changed_locally(trees: &Trees, id: &str) -> bool {
             (Some(a), Some(b)) => !same_content(a, b),
             (a, b) => a.is_some() != b.is_some(),
         };
-    let moved =
-        !local.same_position(waiting) && remote.is_some_and(|remote| remote.same_position(waiting));
+    let moved = !local.same_position(waiting)
+        && (trees.remote().get(id)).is_some_and(|remote| remote.shape.same_position(waiting));
     edited || moved
 }
 

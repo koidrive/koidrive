@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::{Class, Origin, Trees};
-use crate::commit::{InFlight, disk_first, finishes};
+use crate::commit::{InFlight, changed_locally, disk_first, finishes};
 use crate::guard::RemoteRemoval;
 use crate::ids::IdGen;
 use crate::ignore::is_rules_file;
@@ -750,7 +750,8 @@ fn candidate(trees: &Trees, id: &str) -> bool {
             && (trees.remote().live(id).is_some() || !trees.edited(id)))
         || (trees.waiting().contains_key(id)
             && trees.remote().live(id).is_none()
-            && !trees.edited(id))
+            && !trees.edited(id)
+            && !changed_locally(trees, id))
         || trees.is_discarded(id);
     changed
         && !forgets

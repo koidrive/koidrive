@@ -3369,3 +3369,41 @@ fn two_writes_with_the_same_bytes_and_a_copied_sub_second_mtime_are_linked() {
         Some(&written("a", 1_794_268_740_123_456_789))
     );
 }
+
+#[test]
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_trashes_it()
+ {
+    let (sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            let mut moved = trees.local().get("c").unwrap().clone();
+            moved.shape.parent = ROOT.into();
+            moved.shape.name = "moved".into();
+            trees.set_local_changed("c".into(), moved);
+            let mut trashed = trees.remote().get("c").unwrap().clone();
+            trashed.trashed = true;
+            trees.set_remote("c".into(), trashed);
+        });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "moved", 5)
+    );
+}
+
+#[test]
+fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_trashes_it()
+ {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        let mut moved = trees.local().get("c").unwrap().clone();
+        moved.shape.parent = ROOT.into();
+        trees.set_local_changed("c".into(), moved);
+        let mut trashed = trees.remote().get("c").unwrap().clone();
+        trashed.trashed = true;
+        trees.set_remote("c".into(), trashed);
+    });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "child", 9)
+    );
+}
