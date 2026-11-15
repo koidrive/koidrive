@@ -751,6 +751,8 @@ jobs:
           path: apps/macos/build/UITests.xcresult
           if-no-files-found: ignore
           retention-days: 7
+      - name: Check that the string catalog lists every string the app uses
+        run: python3 scripts/check-string-catalog.py Koidrive/Localizable.xcstrings build/DerivedData
       - name: Check the app bundle
         run: plutil -p build/release/Koidrive.app/Contents/Info.plist
       - name: Sign the app ad hoc (pull requests are never signed with the Developer ID)
