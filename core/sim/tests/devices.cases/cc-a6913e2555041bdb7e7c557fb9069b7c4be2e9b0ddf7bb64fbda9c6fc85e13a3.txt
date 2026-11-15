@@ -1,0 +1,1 @@
+cc a6913e2555041bdb7e7c557fb9069b7c4be2e9b0ddf7bb64fbda9c6fc85e13a3 # shrinks to devices = 3, two devices keep a lost write beside an edit the server later trashes (GUN-751)

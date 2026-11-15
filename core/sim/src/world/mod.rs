@@ -484,6 +484,7 @@ struct Exposure {
     nodes: BTreeMap<NodeId, (usize, bool)>,
     /// The disk entries that held the write under no node of L at the restore.
     loose: usize,
+    replaced: BTreeSet<NodeId>,
 }
 
 impl Exposure {
@@ -806,7 +807,7 @@ impl World {
         for (write, exposure) in &mut self.exposed {
             *exposure = Exposure {
                 nodes: files.remove(write).unwrap_or_default(),
-                loose: 0,
+                ..Exposure::default()
             };
         }
     }
@@ -2240,6 +2241,20 @@ impl World {
                     .collect();
                 match self.space.commit(&session, now_ms, &sent) {
                     Ok(committed) => {
+                        if !self.exposed.is_empty() {
+                            let nodes = self.space.nodes();
+                            for (write, exposure) in &mut self.exposed {
+                                let replaced = (nodes.iter())
+                                    .filter(|node| exposure.nodes.contains_key(&node.node_id))
+                                    .filter(|node| {
+                                        (node.current.as_ref())
+                                            .and_then(|version| version.content.as_ref())
+                                            .is_some_and(|content| content.mtime_ns != *write)
+                                    })
+                                    .map(|node| node.node_id.clone());
+                                exposure.replaced.extend(replaced);
+                            }
+                        }
                         let answer = (self.space.recorded_result(&sent.commit_id))
                             .cloned()
                             .unwrap_or_default();
@@ -3079,15 +3094,8 @@ impl World {
             let Some(exposure) = self.exposed.get(&write) else {
                 return 1;
             };
-            let replaced = |id: &NodeId| {
-                (nodes.iter()).any(|(other, node)| {
-                    other == id
-                        && !node.trashed
-                        && (node.shape.content.as_ref()).is_some_and(|c| c.mtime_ns != write)
-                })
-            };
             let files = (exposure.nodes.iter()).map(|(id, (devices, rolled_back))| {
-                if *rolled_back || replaced(id) {
+                if *rolled_back || exposure.replaced.contains(id) {
                     (*devices).max(1)
                 } else {
                     1
@@ -3719,7 +3727,7 @@ mod tests {
                 2,
                 Exposure {
                     nodes: BTreeMap::from([(file.into(), (1, true))]),
-                    loose: 0,
+                    ..Exposure::default()
                 },
             )]);
             let accepted = resent_over_revert(&exposed, &rolled_back, &record, &applied);

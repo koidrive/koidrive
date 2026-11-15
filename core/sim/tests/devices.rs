@@ -9573,3 +9573,34 @@ fn a_resent_folder_created_where_l_holds_it_after_a_cycle_leaves_no_lost_positio
     steps.extend([(1, DELIVER); 4]);
     world.phase(1, &steps).unwrap();
 }
+
+#[test]
+fn two_devices_keep_a_lost_write_beside_an_edit_the_server_later_trashes() {
+    let a = |kind: u8, target: usize, parent: usize, name: usize| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(1, a(0, 0, 0, 4)), (0, a(1, 0, 0, 0)), (0, Step::Backup)],
+        vec![
+            (0, Step::Restore),
+            (2, Step::Connect),
+            (2, a(0, 0, 0, 1)),
+            (2, a(2, 821312807666835336, 0, 0)),
+            (2, Step::Work(0)),
+            (1, a(3, 3110468748807590231, 0, 1)),
+            (2, Step::Work(6648828578650684279)),
+            (2, Step::Commit(Reply::Served)),
+            (2, Step::Work(1125344594660608525)),
+            (2, a(3, 6327774101383147332, 3344028213978741854, 0)),
+            (2, a(4, 1250683131289406618, 0, 0)),
+            (0, Step::Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
