@@ -1143,7 +1143,7 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, reverts) = loop {
+        let (planned, deletes, reverts, cycle_reverts) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1212,6 +1212,9 @@ impl Commits {
             window *= 4;
         };
         for id in reverts {
+            trees.revert(id);
+        }
+        for id in cycle_reverts {
             trees.revert_for_cycle(id);
         }
         for op in &planned {
@@ -3134,7 +3137,12 @@ enum Fit {
     Merged,
 }
 
-type Planned = (Vec<proto::Op>, BTreeMap<NodeId, Vec<NodeId>>, Vec<NodeId>);
+type Planned = (
+    Vec<proto::Op>,
+    BTreeMap<NodeId, Vec<NodeId>>,
+    Vec<NodeId>,
+    Vec<NodeId>,
+);
 
 #[allow(clippy::too_many_arguments)]
 fn plan(
@@ -3173,6 +3181,7 @@ fn plan(
     }
     let mut deleted = BTreeSet::new();
     let mut reverts = Vec::new();
+    let mut cycle_reverts = Vec::new();
     let mut within = None;
     for &id in candidates.iter().filter(|id| !skip.contains(**id)) {
         if within.is_none() && bound.is_some_and(|(_, bound)| id.as_str() >= bound) {
@@ -3779,7 +3788,7 @@ fn plan(
             if let Want::Move { id, .. } = want
                 && scratch.fit(want, &moving) == Fit::Cycle
             {
-                reverts.push(id.clone());
+                cycle_reverts.push(id.clone());
             }
         }
         if cfg!(debug_assertions) && bound.is_none() {
@@ -3794,7 +3803,7 @@ fn plan(
         && bound.is_none_or(|(last, _)| {
             ordered && filled_at.is_some_and(|filled| filled < (last, within))
         });
-    ((ops, deletes, reverts), exact)
+    ((ops, deletes, reverts, cycle_reverts), exact)
 }
 
 fn remote_below(trees: &Trees, id: &str, ancestors: &BTreeSet<&str>) -> bool {
