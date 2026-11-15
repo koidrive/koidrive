@@ -2216,7 +2216,10 @@ impl Trees {
         let fits = |shape: &Shape| !server || !self.under_discarded(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
-        if (held(placed) || held(remote)) && fits(synced) || !self.ignored(id) {
+        if (held(placed) || held(remote)) && fits(synced)
+            || !self.ignored(id)
+            || self.trashed_while_parked(id)
+        {
             return None;
         }
         let at = |shape: &Shape| {
@@ -3644,6 +3647,12 @@ impl Trees {
         self.l.get(id).is_some_and(|node| node.parked)
     }
 
+    pub(crate) fn trashed_while_parked(&self, id: &str) -> bool {
+        self.parked(id)
+            && self.r.get(id).is_some_and(|remote| remote.trashed)
+            && self.acknowledged_class(id) == Class::Remote
+    }
+
     /// Nodes whose local position the server will not take: a move that closes a cycle against R,
     /// a create or move the server renamed, a folder merged into one L holds elsewhere with the
     /// nodes created in it, and folders L deleted on the way from such a node to the root. The
@@ -3930,7 +3939,7 @@ impl Trees {
             next += 1;
             below.extend(self.s_names.children(&folder).cloned());
         }
-        if !below.iter().all(|node| self.ignored(node)) {
+        if !(below.iter()).all(|node| self.ignored(node) && !self.trashed_while_parked(node)) {
             return Vec::new();
         }
         for node in below.iter().rev() {

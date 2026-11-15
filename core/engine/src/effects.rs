@@ -953,6 +953,9 @@ impl<'a> View<'a> {
         let local = self.trees.local().get(id);
         let remote = self.trees.remote().live(id);
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
+            if self.trees.trashed_while_parked(id) {
+                return self.remove(id, local);
+            }
             return self.unpark(id, local, self.way_out(id, local));
         }
         let (local, remote) = match (local, remote) {

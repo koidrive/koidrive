@@ -1814,6 +1814,42 @@ fn a_parked_folder_the_rules_now_exclude_whose_local_name_another_node_took_goes
 }
 
 #[test]
+fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out() {
+    let (mut trees, mut disk) = space(&[
+        ("d", Some(dir(ROOT, "b")), None),
+        ("x", Some(dir("d", "ß")), None),
+    ]);
+    for (id, shape) in [("d", dir(ROOT, "b")), ("x", dir("d", "ss"))] {
+        let mut trashed = remote(shape);
+        trashed.trashed = true;
+        trashed.trash_group = "other-device".into();
+        trees.set_remote(id.into(), trashed);
+    }
+    let mut local = trees.local().get("x").unwrap().clone();
+    local.parked = true;
+    trees.set_local("x".into(), local);
+    let entry = disk.entries.get_mut(&2).unwrap();
+    entry.area = Area::Parked;
+    entry.name = "x".into();
+    trees.set_rules(
+        &[] as &[&str],
+        Some(koidrive_engine::ignore::RuleFile::parse(b"ss/\n")),
+    );
+    trees.check().unwrap();
+    disk.matches(&trees).unwrap();
+    assert!(trees.ignored("x"));
+    converge(&mut trees, &mut disk, 10).unwrap();
+    assert_eq!(trees.local().get("x"), None);
+    trees.set_rules(
+        &[] as &[&str],
+        Some(koidrive_engine::ignore::RuleFile::parse(b"")),
+    );
+    assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
+    assert_eq!(trees.local().get("x"), None);
+    assert_in_sync(&mut trees);
+}
+
+#[test]
 fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_excluded_r_position() {
     let renamed = "a (conflict from me 2026-11-09)";
     for taken in [false, true] {
