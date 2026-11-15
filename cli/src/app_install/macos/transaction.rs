@@ -327,7 +327,7 @@ async fn upgrade_alternatives(
     }
     Ok((tokens, preserved, reopened))
 }
-pub(super) async fn transaction(
+async fn transaction(
     config: Config,
     target: Version,
     launch: AppLaunch,
