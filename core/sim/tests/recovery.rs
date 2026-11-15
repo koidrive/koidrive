@@ -3399,3 +3399,24 @@ fn recovery_finds_no_folder_the_parked_directory_holds() {
         assert_eq!(disk.recover(&record).outcome, Err(Refused::Interrupted));
     }
 }
+
+#[test]
+fn a_file_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename() {
+    let mut world = World::new(2);
+    world
+        .run(0, &[(1, Step::CopyStore), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
+        .unwrap();
+    let downloaded = only_entry(&world, 1, "a");
+    world.run(0, &[(1, rename(0, "b"))]).unwrap();
+    world
+        .run(0, &[(1, Step::RollBack), (1, Step::Connect)])
+        .unwrap();
+    world.phase(1, &[]).unwrap();
+    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(live(&world), ["b"]);
+    assert_eq!(only_entry(&world, 1, "b"), downloaded);
+}
