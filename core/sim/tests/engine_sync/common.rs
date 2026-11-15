@@ -1145,7 +1145,7 @@ fn closes_a_cycle(trees: &Trees, id: &str, parent: &str) -> bool {
         match folder {
             Some(at) if at == id => return true,
             Some(at) => {
-                folder = (trees.remote().live(&at).map(|shape| shape.parent.clone()))
+                folder = (trees.remote().get(&at).map(|node| node.shape.parent.clone()))
                     .or_else(|| trees.local().get(&at).map(|node| node.shape.parent.clone()))
             }
             None => return false,
@@ -1156,6 +1156,36 @@ fn closes_a_cycle(trees: &Trees, id: &str, parent: &str) -> bool {
 
 fn position(shape: &koidrive_engine::tree::Shape) -> Position {
     (shape.parent.clone(), shape.name.clone())
+}
+
+fn placement_check(
+    device: &Device,
+    record: &koidrive_engine::effects::EffectRecord,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    placed: &BTreeMap<String, Position>,
+    revived: &BTreeSet<String>,
+) -> Result<(), TestCaseError> {
+    if let (Effect::Move { .. }, Some(after), Some(local)) = (
+        &record.effect,
+        &record.after,
+        device.trees.local().get(&record.node),
+    ) {
+        let taken_along =
+            kept_with.contains_key(&record.node) && !acted_below(device, kept_with, &record.node);
+        let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+            && (device.trees.remote().live(&record.node))
+                .is_some_and(|remote| remote.same_position(after));
+        let left_where_put =
+            !taken_along && !reverted && placed.get(&record.node) == Some(&position(&local.shape));
+        prop_assert!(
+            !(left_where_put
+                && after.parent != local.shape.parent
+                && revived.contains(&local.shape.parent)),
+            "{} is where the user put it in a folder that is the user's again, but the effects move it out",
+            record.node
+        );
+    }
+    Ok(())
 }
 
 fn positions(trees: &Trees) -> BTreeMap<String, Position> {
@@ -1445,27 +1475,7 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
-            if let (Effect::Move { .. }, Some(after), Some(local)) = (
-                &record.effect,
-                &record.after,
-                device.trees.local().get(&record.node),
-            ) {
-                let taken_along = kept_with.contains_key(&record.node)
-                    && !acted_below(&device, &kept_with, &record.node);
-                let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
-                    && (device.trees.remote().live(&record.node))
-                        .is_some_and(|remote| remote.same_position(after));
-                let left_where_put = !taken_along
-                    && !reverted
-                    && placed.get(&record.node) == Some(&position(&local.shape));
-                prop_assert!(
-                    !(left_where_put
-                        && after.parent != local.shape.parent
-                        && revived.contains(&local.shape.parent)),
-                    "{} is where the user put it in a folder that is the user's again, but the effects move it out",
-                    record.node
-                );
-            }
+            placement_check(&device, &record, &kept_with, &placed, &revived)?;
             if let (
                 Effect::CreateDir {
                     at:
