@@ -900,6 +900,102 @@ fn a_file_is_linked_before_planning_when_its_two_folders_enter_s_in_the_same_set
     linked_before_planning(&[("g", dir(ROOT, "outer")), ("p", dir("g", "inner"))]);
 }
 
+fn remote_node(id: &str, shape: Shape) -> RemoteNode {
+    let remote = trees(&[], &[(id, shape)]);
+    remote.remote().get(id).cloned().expect("a node of R")
+}
+
+fn restarted(trees: &Trees) -> Trees {
+    let mut fresh = Trees::new(ROOT);
+    for (id, node) in trees.local().iter() {
+        fresh.set_local(id.clone(), node.clone());
+    }
+    for (id, node) in trees.remote().iter() {
+        fresh.set_remote(id.clone(), node.clone());
+    }
+    for (id, shape) in trees.synced().iter() {
+        fresh.set_synced(id.clone(), Some(shape.clone()));
+    }
+    fresh.restore(trees.state()).unwrap();
+    fresh.rules_scanned();
+    fresh
+}
+
+fn linked_once_the_folder_is_placed(place: impl FnOnce(&mut Trees)) {
+    let remote_parent = dir(ROOT, "remote-folder");
+    let mut child = written("notes", WRITTEN_NS);
+    child.parent = "p".into();
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    trees.set_local("p".into(), local_node(dir(ROOT, "local-folder"), 1));
+    trees.set_local("l-file".into(), local_node(child.clone(), 2));
+    trees.set_remote("p".into(), remote_node("p", remote_parent));
+    trees.set_remote("r-file".into(), remote_node("r-file", child));
+    trees.settle();
+    assert!(trees.synced().get("p").is_none());
+    assert!(trees.local().get("l-file").is_some());
+    place(&mut trees);
+    trees.settle();
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+    let sent = ops(&mut Commits::default(), &mut trees, &mut IdGen::new(7));
+    assert!(
+        !sent.contains(&("create file", "l-file".into())),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_file_is_linked_when_its_folder_enters_s_in_a_later_settle() {
+    linked_once_the_folder_is_placed(|trees| {
+        trees.set_synced("p".into(), Some(dir(ROOT, "remote-folder")));
+    });
+}
+
+#[test]
+fn a_file_is_linked_when_the_user_moves_its_folder_to_the_servers_place() {
+    linked_once_the_folder_is_placed(|trees| {
+        trees.set_local_changed("p".into(), local_node(dir(ROOT, "remote-folder"), 1));
+    });
+}
+
+#[test]
+fn a_file_is_linked_when_its_folder_enters_s_after_a_restart() {
+    linked_once_the_folder_is_placed(|trees| {
+        *trees = restarted(trees);
+        trees.settle();
+        assert!(trees.local().get("l-file").is_some());
+        trees.set_synced("p".into(), Some(dir(ROOT, "remote-folder")));
+    });
+}
+
+#[test]
+fn a_file_added_in_a_folder_whose_create_result_lands_later_is_linked_to_the_servers_copy() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "docs"))],
+        &[("r-docs", dir(ROOT, "docs"))],
+    );
+    trees.rules_scanned();
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "d".to_owned())]
+    );
+    let copy = String::from("docs (conflict from me 2026-11-09)");
+    let mut file = written("a.docx", WRITTEN_NS);
+    file.parent = "d".into();
+    trees.set_remote("d".into(), remote_node("d", dir(ROOT, &copy)));
+    trees.set_remote("r-file".into(), remote_node("r-file", file.clone()));
+    trees.set_local("l-file".into(), local_node(file, 50));
+    trees.settle();
+    renamed_create(&mut commits, &mut trees, "d", &copy, 2);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+}
+
 #[test]
 fn a_read_only_device_downloads_a_conflict_copy_beside_a_local_file_of_the_same_name() {
     let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);

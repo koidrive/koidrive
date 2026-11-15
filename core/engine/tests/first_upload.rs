@@ -368,6 +368,66 @@ fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
     work
 }
 
+fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    for f in 0..folders {
+        let folder = format!("d{f:06}");
+        let ino = 2 * f as u128 + 1;
+        let local_folder = local(ROOT.into(), format!("mine {f}"), Kind::Dir, ino);
+        trees.set_local(folder.clone(), local_folder);
+        trees.set_remote(
+            folder.clone(),
+            remote(ROOT.into(), format!("theirs {f}"), Kind::Dir),
+        );
+        let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
+        (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+        let mut node = remote(folder.clone(), "notes".into(), Kind::File);
+        node.shape = file.shape.clone();
+        trees.set_local(format!("l{f:06}"), file);
+        trees.set_remote(format!("r{f:06}"), node);
+    }
+    trees.settle();
+    let before = allocated();
+    for s in 0..settles {
+        let ino = (2 * folders + s) as u128 + 1;
+        let other = local(ROOT.into(), format!("other {s}"), Kind::File, ino);
+        trees.set_local(format!("o{s:06}"), other);
+        trees.settle();
+    }
+    let waiting = allocated() - before;
+    let before = allocated();
+    for f in 0..folders {
+        let placed = local(
+            ROOT.into(),
+            format!("theirs {f}"),
+            Kind::Dir,
+            2 * f as u128 + 1,
+        );
+        trees.set_local_changed(format!("d{f:06}"), placed);
+    }
+    trees.settle();
+    let placing = allocated() - before;
+    assert_eq!(trees.synced().len(), 2 * folders);
+    (waiting, placing)
+}
+
+#[test]
+fn links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s() {
+    let (small_waiting, small_placing) = links_waiting_on_their_folders(2000, 500);
+    let (large_waiting, large_placing) = links_waiting_on_their_folders(20_000, 500);
+    let waiting = large_waiting as f64 / small_waiting as f64;
+    assert!(
+        waiting < 2.0,
+        "500 settles beside 2000 waiting links allocated {small_waiting} bytes and beside 20000 {large_waiting}, {waiting:.1} times as many"
+    );
+    let placing = large_placing as f64 / small_placing as f64;
+    assert!(
+        placing < 12.0,
+        "placing 2000 folders allocated {small_placing} bytes and 20000 {large_placing}, {placing:.1} times as many"
+    );
+}
+
 #[test]
 fn a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files() {
     for depth in [1, 10] {

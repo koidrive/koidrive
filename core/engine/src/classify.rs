@@ -20,6 +20,8 @@ use crate::tree::{
     TreeError, same, same_content,
 };
 
+type Pair = (NodeId, NodeId);
+
 /// The most mutually dependent [`Class::Same`] updates [`Trees::settle`] searches as one group.
 /// Every subset of a group is tried, so the search costs up to 2^n checks of n nodes.
 pub const SETTLE_GROUP_LIMIT: usize = 12;
@@ -392,6 +394,8 @@ pub struct Trees {
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
+    unlinked: BTreeMap<(NodeId, Option<String>), BTreeSet<Pair>>,
+    link_due: BTreeSet<Pair>,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
     /// Nodes whose entry in R, L or S changed since [`Trees::take_changed`].
@@ -484,6 +488,8 @@ impl Trees {
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
+            unlinked: BTreeMap::new(),
+            link_due: BTreeSet::new(),
             same: BTreeSet::new(),
             changed: BTreeSet::new(),
             l_names: ByName::default(),
@@ -3689,24 +3695,52 @@ impl Trees {
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts();
         }
-        let mut unfit = match self.rules_known {
-            true => {
-                let changed = match std::mem::take(&mut self.relink) {
-                    true => self.dirty.iter().cloned().collect(),
-                    false => self.unsettled.clone(),
-                };
-                first_link::adopt_equal_files(self, &changed)
-            }
-            false => Vec::new(),
-        };
+        if self.rules_known {
+            let changed = match std::mem::take(&mut self.relink) {
+                true => self.dirty.iter().cloned().collect(),
+                false => self.unsettled.clone(),
+            };
+            let unfit = first_link::adopt_equal_files(self, &changed);
+            self.wait_to_link(unfit);
+        }
         self.settle_marked();
-        while !unfit.is_empty() {
-            let tried = unfit.len();
-            unfit = first_link::link(self, unfit);
-            if unfit.len() == tried {
-                break;
-            }
+        while self.link_due() {
             self.settle_marked();
+        }
+    }
+
+    pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
+        for (id, remote_id) in pairs {
+            let Some(remote) = self.r.get(&remote_id) else {
+                continue;
+            };
+            let parent = remote.shape.parent.clone();
+            let placed = parent == self.s.root
+                || (self.s.live(&parent)).is_some_and(|shape| shape.kind == Kind::Dir);
+            let place = placed.then(|| name_key(&remote.shape.name));
+            (self.unlinked.entry((parent, place)).or_default()).insert((id, remote_id));
+        }
+    }
+
+    pub(crate) fn link_due(&mut self) -> bool {
+        if !self.rules_known || self.link_due.is_empty() {
+            return false;
+        }
+        let due = std::mem::take(&mut self.link_due).into_iter().collect();
+        let (linked, unfit) = first_link::link(self, due);
+        self.wait_to_link(unfit);
+        linked
+    }
+
+    fn release_links(&mut self, id: &str, old: Option<&Shape>) {
+        if self.unlinked.is_empty() {
+            return;
+        }
+        let place = old.map(|old| (old.parent.clone(), Some(name_key(&old.name))));
+        for key in std::iter::once((id.to_owned(), None)).chain(place) {
+            if let Some(pairs) = self.unlinked.remove(&key) {
+                self.link_due.extend(pairs);
+            }
         }
     }
 
@@ -4237,6 +4271,7 @@ impl Trees {
             }
             None => self.s.remove(id),
         };
+        self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
         if let Some(changed) = self.watched.get_mut(id) {
@@ -4417,6 +4452,8 @@ impl Trees {
             asked: _,
             unsettled: _,
             relink: _,
+            unlinked: _,
+            link_due: _,
             same: _,
             changed: _,
             l_names: _,

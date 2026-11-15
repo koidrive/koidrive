@@ -428,11 +428,14 @@ pub(crate) fn adopt_equal_files(
             _ => None,
         })
         .collect();
-    link(trees, found)
+    link(trees, found).1
 }
 
-pub(crate) fn link(trees: &mut Trees, found: Vec<(NodeId, NodeId)>) -> Vec<(NodeId, NodeId)> {
-    let mut unfit = Vec::new();
+pub(crate) fn link(
+    trees: &mut Trees,
+    found: Vec<(NodeId, NodeId)>,
+) -> (bool, Vec<(NodeId, NodeId)>) {
+    let (mut linked, mut unfit) = (false, Vec::new());
     for (id, remote_id) in found {
         let Some(remote) = trees.remote().get(&remote_id) else {
             continue;
@@ -445,11 +448,14 @@ pub(crate) fn link(trees: &mut Trees, found: Vec<(NodeId, NodeId)>) -> Vec<(Node
             (id.clone(), None),
         ];
         match set_synced_together(trees, &updates) {
-            true => rekey(trees, &id, &remote_id),
+            true => {
+                rekey(trees, &id, &remote_id);
+                linked = true;
+            }
             false => unfit.push((id, remote_id)),
         }
     }
-    unfit
+    (linked, unfit)
 }
 
 pub(crate) fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {

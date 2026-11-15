@@ -611,7 +611,8 @@ impl Commits {
         }
         let mut groups = recovery::classify(trees);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
-            first_link::adopt_equal_files(trees, restored);
+            let unfit = first_link::adopt_equal_files(trees, restored);
+            trees.wait_to_link(unfit);
             restored.retain(|id| trees.local().get(id).is_some());
         }
         if let Some(created) = groups.remove(&RecoveryGroup::CreatedOnThisDevice) {
@@ -1080,6 +1081,7 @@ impl Commits {
         trees.applied_head(base.seq);
         trees.check_finishes();
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
+        trees.link_due();
         if self.halted.is_some() || !trees.rules_known() {
             return None;
         }
