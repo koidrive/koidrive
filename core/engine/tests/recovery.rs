@@ -2621,6 +2621,32 @@ fn a_marked_file_the_user_moved_into_a_new_folder_follows_and_the_folder_is_aske
 }
 
 #[test]
+fn a_marked_file_moved_into_a_new_folder_named_like_a_files_pending_name_follows() {
+    let mut trees = trees(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[
+            live("n", file(ROOT, "f", 1)),
+            live("p", file(ROOT, "fresh (pending)", 2)),
+        ],
+    );
+    mark(&mut trees, "p", "fresh");
+    let mut logged = History::new();
+    logged
+        .entry("n".into())
+        .or_default()
+        .push(file(ROOT, "f", 1));
+    let marks: Marks = [("entry".to_owned(), "n".to_owned())].into_iter().collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
 fn a_marked_file_moved_into_a_new_folder_named_like_a_server_folder_elsewhere_follows() {
     let (trees, _, _) = followed(
         &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],

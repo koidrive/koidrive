@@ -305,7 +305,10 @@ fn folder_places(trees: &Trees, history: &History) -> BTreeSet<(NodeId, String)>
     let shapes =
         (trees.remote().iter().map(|(_, node)| &node.shape)).chain(history.values().flatten());
     let pending = (trees.remote().iter()).filter_map(|(_, node)| {
-        let stem = node.pending_for.as_deref()?;
+        let stem = node
+            .pending_for
+            .as_deref()
+            .filter(|_| node.shape.kind == Kind::Dir)?;
         Some((node.shape.parent.clone(), name_key(stem)))
     });
     (shapes.filter(|shape| shape.kind == Kind::Dir))
