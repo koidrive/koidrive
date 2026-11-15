@@ -51,10 +51,13 @@ final class KeyboardUITests: XCTestCase {
 
     @MainActor
     private func tab(until element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        var visited: [String] = []
         for _ in 0..<30 where !focused(element) {
             app.typeKey(.tab, modifierFlags: [])
+            let current = app.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == true")).firstMatch
+            visited.append(current.exists ? "\(current.elementType.rawValue):\(current.label)" : "none")
         }
-        XCTAssert(focused(element), "Tab never reached \(element)", file: file, line: line)
+        XCTAssert(focused(element), "Tab never reached \(element). Focus went through: \(visited)", file: file, line: line)
     }
 
     @MainActor
