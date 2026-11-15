@@ -1769,15 +1769,14 @@ impl Trees {
         if !seen.insert(id) {
             return true;
         }
-        match (self.l.get(id), self.r.live(id)) {
-            (Some(local), Some(remote)) => {
-                local.shape.same(remote)
-                    && (self.local_children_placed_or_parked(id))
-                        .all(|child| self.as_the_server_holds(child, seen))
-                    && self.keeps_the_synced_children(id, seen)
-            }
-            (local, remote) => local.is_none() && remote.is_none(),
-        }
+        let Some(local) = self.l.get(id) else {
+            return self.r.live(id).is_none();
+        };
+        let holds = |shape: Option<&Shape>| shape.is_some_and(|shape| local.shape.same(shape));
+        (holds(self.r.live(id)) || holds(self.acknowledged(id)))
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.as_the_server_holds(child, seen))
+            && self.keeps_the_synced_children(id, seen)
     }
 
     fn local_children_placed_or_parked<'a>(
