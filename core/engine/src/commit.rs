@@ -2871,7 +2871,11 @@ fn wedged(
         }
         loop {
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
-            if problems.contains(at) || (pending && !trees.excluded(at)) {
+            let create = trees.dirty_creates().contains(at);
+            if problems.contains(at)
+                || (pending && !trees.excluded(at))
+                || (create && (trees.excluded(at) || trees.held(at)))
+            {
                 return None;
             }
             if !seen.insert(at) {
@@ -2881,6 +2885,14 @@ fn wedged(
                 Some((_, fit)) if *fit != Fit::Wait => return None,
                 Some(_) if under_reverted_merge(at) => return None,
                 Some((parent, _)) => at = parent,
+                None if create => {
+                    at = &trees
+                        .local()
+                        .get(at)
+                        .expect("creates are in L")
+                        .shape
+                        .parent
+                }
                 None => return Some(at.clone()),
             }
         }
