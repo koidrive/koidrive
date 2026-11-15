@@ -16,7 +16,7 @@ import Testing
         #expect(model.popoverUpdateNotice == nil)
 
         model.apply(.update(update: .unknown))
-        #expect(model.updateNotice == .checking)
+        #expect(model.updateNotice == .unchecked)
         model.apply(.update(update: .off))
         #expect(model.updateNotice == .off)
         #expect(model.popoverUpdateNotice == nil)
@@ -83,6 +83,92 @@ import Testing
         #expect(unsignedFailure.fallbackCommand == nil)
         #expect(await retried.installUpdate() == UpdateResult(from: "0.1.0", to: "0.1.1"))
         #expect(retried.updateFailure == nil)
+    }
+
+    @Test func aCheckShowsCheckingThenItsAnswerAndASecondPressJoinsIt() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let fake = try #require(model.session.fakeCore())
+        let first = Task.immediate { await model.checkForUpdates() }
+        #expect(model.updateNotice == .checking)
+        #expect(model.popoverUpdateNotice == .checking)
+        #expect(model.checkingForUpdates)
+        let second = Task.immediate { await model.checkForUpdates() }
+        await first.value
+        await second.value
+        #expect(fake.updateChecks() == 1)
+        #expect(!model.checkingForUpdates)
+        guard case .upToDate = model.updateNotice else {
+            Issue.record("expected up to date, got \(model.updateNotice)")
+            return
+        }
+        #expect(model.popoverUpdateNotice == model.updateNotice)
+        #expect(model.updateNotice.offersCheck)
+        model.dismissUpdateCheck()
+        #expect(model.popoverUpdateNotice == nil)
+
+        await model.checkForUpdates()
+        #expect(fake.updateChecks() == 2)
+    }
+
+    @Test func aCheckThatFindsAReleaseShowsTheAvailableNoticeWithUpdate() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        try #require(model.session.fakeCore()).setReleased(version: "0.1.1")
+        #expect(model.popoverUpdateNotice == nil)
+        await model.checkForUpdates()
+        let available = UpdateNotice.available(
+            version: "0.1.1", releaseURL: URL(string: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1"))
+        #expect(model.updateNotice == available)
+        #expect(model.popoverUpdateNotice == available)
+        #expect(!available.offersCheck)
+        #expect(await model.installUpdate() == UpdateResult(from: "0.1.0", to: "0.1.1"))
+    }
+
+    @Test func aFailedCheckSaysWhyUntilANewerAnswerArrives() async throws {
+        let model = AppModel.fake(scenario: .upToDate)
+        let fake = try #require(model.session.fakeCore())
+        fake.failNext(error: .ReleasesUnreachable)
+        await model.checkForUpdates()
+        #expect(model.updateNotice == .checkFailed(.unreachable))
+        #expect(model.popoverUpdateNotice == .checkFailed(.unreachable))
+        #expect(model.updateNotice.offersCheck)
+
+        fake.failNext(error: .ReleasesRefused)
+        await model.checkForUpdates()
+        #expect(model.updateNotice == .checkFailed(.refused))
+        fake.failNext(error: .Failed(reason: "koi is missing"))
+        await model.checkForUpdates()
+        #expect(model.updateNotice == .checkFailed(.refused))
+
+        let later = Int64(Date.now.timeIntervalSince1970 * 1000) + 60_000
+        model.apply(.update(update: .upToDate(checkedAtMs: later)))
+        #expect(model.updateNotice == .upToDate(checkedAtMs: later))
+    }
+
+    @Test func aCheckAnswersWhileSyncIsOfflineAndWhileScheduledChecksAreOff() async throws {
+        let offline = AppModel.fake(scenario: .upToDate)
+        offline.apply(.status(status: .offline))
+        #expect(offline.updateNotice == .offline)
+        #expect(offline.updateNotice.offersCheck)
+        await offline.checkForUpdates()
+        guard case .upToDate = offline.updateNotice else {
+            Issue.record("expected up to date, got \(offline.updateNotice)")
+            return
+        }
+
+        let off = AppModel.fake(scenario: .upToDate)
+        let fake = try #require(off.session.fakeCore())
+        fake.setUpdate(update: .off)
+        off.apply(.update(update: .off))
+        #expect(off.updateNotice == .off)
+        #expect(off.updateNotice.offersCheck)
+        fake.setReleased(version: "0.1.1")
+        await off.checkForUpdates()
+        #expect(off.state.update == .off)
+        guard case .available(let version, _) = off.updateNotice else {
+            Issue.record("expected the one-off answer, got \(off.updateNotice)")
+            return
+        }
+        #expect(version == "0.1.1")
     }
 
     @Test func theUpdatedNoteShowsInThePopoverUntilAcknowledged() throws {

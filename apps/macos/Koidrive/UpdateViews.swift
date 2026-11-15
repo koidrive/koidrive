@@ -30,8 +30,8 @@ struct UpdatePopoverNotice: View {
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    if case .updated = notice {
-                        Button(action: model.acknowledgeUpdate) {
+                    if let dismiss = dismissAction(notice) {
+                        Button(action: dismiss) {
                             Image(systemName: "xmark")
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(Color.text2)
@@ -52,6 +52,14 @@ struct UpdatePopoverNotice: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.fillStrong))
+        }
+    }
+
+    private func dismissAction(_ notice: UpdateNotice) -> (() -> Void)? {
+        switch notice {
+        case .updated: model.acknowledgeUpdate
+        case _ where notice.offersCheck: model.dismissUpdateCheck
+        default: nil
         }
     }
 }
@@ -76,7 +84,7 @@ struct UpdateSettingsRow: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                UpdateActions(notice: notice)
+                UpdateActions(notice: notice, offersCheck: true)
             }
             if case .failed(let failure) = notice, let command = failure.fallbackCommand {
                 FallbackCommand(command: command)
@@ -94,6 +102,10 @@ private struct UpdateIcon: View {
             switch notice {
             case .checking, .updating:
                 ProgressView().controlSize(.mini)
+            case .unchecked:
+                Image(systemName: "questionmark.circle").foregroundStyle(Color.text2)
+            case .checkFailed:
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Color.statusYellow)
             case .available:
                 Image(systemName: "arrow.down.circle").foregroundStyle(Color.text2)
             case .updated, .upToDate:
@@ -115,6 +127,7 @@ private struct UpdateActions: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     let notice: UpdateNotice
+    var offersCheck = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -132,7 +145,11 @@ private struct UpdateActions: View {
                 if failure.fallbackCommand == nil {
                     Button("Try Again", action: install)
                 }
-            case .checking, .offline, .off, .upToDate, .updating:
+            case _ where offersCheck && notice.offersCheck:
+                Button("Check for Updates") {
+                    Task { await model.checkForUpdates() }
+                }
+            default:
                 EmptyView()
             }
         }
@@ -177,9 +194,13 @@ private extension UpdateNotice {
     func title(popover: Bool) -> String {
         switch self {
         case .checking: String(localized: "Checking for updates…")
+        case .unchecked:
+            popover ? String(localized: "Koidrive hasn’t checked for updates") : String(localized: "Koidrive hasn’t checked for updates.")
+        case .checkFailed:
+            popover ? String(localized: "Couldn’t check for updates") : String(localized: "Couldn’t check for updates.")
         case .offline: String(localized: "Can’t check for updates while offline.")
         case .off: String(localized: "Update checks are off.")
-        case .upToDate: String(localized: "Koidrive is up to date.")
+        case .upToDate: popover ? String(localized: "Koidrive is up to date") : String(localized: "Koidrive is up to date.")
         case .available(let version, _):
             popover ? String(localized: "Koidrive \(version) is available") : String(localized: "Koidrive \(version) is available.")
         case .updating(let version): String(localized: "Updating to \(version)…")
@@ -193,7 +214,9 @@ private extension UpdateNotice {
 
     func detail(running: String, popover: Bool) -> String? {
         switch self {
-        case .checking: nil
+        case .checking, .unchecked: nil
+        case .checkFailed(.unreachable): String(localized: "Check your internet connection and try again.")
+        case .checkFailed(.refused): String(localized: "The update server didn’t answer. Try again later.")
         case .offline: String(localized: "Koidrive checks again when it reconnects.")
         case .off: String(localized: "They were turned off in Koidrive’s settings file.")
         case .upToDate(let checkedAtMs): checked(Date(timeIntervalSince1970: TimeInterval(checkedAtMs) / 1000))

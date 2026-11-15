@@ -61,7 +61,7 @@ pub(crate) fn telemetry_of(
         Command::Diagnose => (Name::Diagnose, None, None),
         Command::Update { .. } => (Name::Update, None, None),
         Command::Daemon { .. } => (Name::Daemon, None, None),
-        Command::Uninstall { .. } => return None,
+        Command::Uninstall { .. } | Command::CheckUpdates => return None,
     })
 }
 
@@ -157,6 +157,7 @@ pub(crate) async fn execute(
         | Command::Reconcile { .. } => Ok(Done::ok(Empty {}, "")),
         Command::Pause => pause(&paths).await,
         Command::Resume => resume(&paths).await,
+        Command::CheckUpdates => update::check_updates(&paths).await,
         Command::Device { action } => device(paths, action).await,
         Command::History { action } => history::run(&paths, action).await,
         Command::Share { action } => share::run(&paths, action).await,

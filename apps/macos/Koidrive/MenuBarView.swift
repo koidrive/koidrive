@@ -363,6 +363,10 @@ struct MenuContent: View {
             }
             .disabled(model.needsSetup)
             separator
+            MenuButton(title: "Check for Updates…", systemImage: "arrow.down.circle") {
+                Task { await model.checkForUpdates() }
+            }
+            .disabled(model.checkingForUpdates || model.updating)
             MenuButton(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,") {
                 openSettings()
                 NSApp.activate()

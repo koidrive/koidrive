@@ -206,6 +206,12 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 already: revoked.already,
             })
         }
+        Request::CheckForUpdates => {
+            return match driver.check_for_updates_now().await {
+                Ok(update) => Response::UpdateChecked { update },
+                Err(error) => Response::from(CliError::from(error)),
+            };
+        }
         Request::Once {
             request_id,
             key,
@@ -596,6 +602,30 @@ pub(crate) mod tests {
         let paths = Paths::under(dir.path());
         let response = run(&paths, Request::Questions).await.unwrap();
         assert_eq!(response, Response::Questions { questions: vec![] });
+    }
+
+    #[tokio::test]
+    async fn an_update_check_reaches_the_daemon_or_else_the_profile() {
+        assert!(koidrive_driver::update::is_development_version(env!(
+            "CARGO_PKG_VERSION"
+        )));
+        let checked = Response::UpdateChecked {
+            update: Update::Off,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        assert_eq!(
+            run(&paths, Request::CheckForUpdates).await.unwrap(),
+            checked
+        );
+        let driver = Driver::open(paths.clone()).unwrap();
+        let socket = bind(&paths.socket()).unwrap();
+        let daemon = tokio::spawn(async move { serve(socket, driver).await });
+        assert_eq!(
+            ask(&paths, &Request::CheckForUpdates).await.unwrap(),
+            Some(checked)
+        );
+        daemon.abort();
     }
 
     #[tokio::test]

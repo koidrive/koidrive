@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -61,7 +62,7 @@ pub struct Release {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CheckError {
     #[error("GitHub cannot be reached")]
     Unreachable,
@@ -485,6 +486,8 @@ pub(crate) struct Updates {
     path: PathBuf,
     checked: Mutex<Option<Checked>>,
     task: Mutex<Option<AbortHandle>>,
+    asking: tokio::sync::Mutex<Option<Result<Update, CheckError>>>,
+    answers: AtomicU64,
 }
 
 impl Updates {
@@ -501,6 +504,8 @@ impl Updates {
             path,
             checked: Mutex::new(checked),
             task: Mutex::new(None),
+            asking: tokio::sync::Mutex::new(None),
+            answers: AtomicU64::new(0),
         }
     }
 
@@ -557,7 +562,6 @@ impl Updates {
         url: Url,
         changed: Arc<watch::Sender<()>>,
     ) {
-        let asset = this_asset();
         loop {
             let checked = self.checked.lock().unwrap().clone().unwrap_or_default();
             let wait = checked.due().saturating_sub(now_ms());
@@ -565,14 +569,53 @@ impl Updates {
                 tokio::time::sleep(Duration::from_millis(wait.min(HOUR_MS) as u64)).await;
                 continue;
             }
-            let answer = ask(&http, url.clone(), checked.etag.as_deref(), &asset).await;
-            let checked = checked.after(answer, now_ms());
+            let _ = self.ask_once(&http, url.clone(), &changed).await;
+        }
+    }
+
+    pub async fn check_now(&self, changed: &watch::Sender<()>) -> Result<Update, CheckError> {
+        if is_development_version(&self.version.to_string()) {
+            return Ok(Update::Off);
+        }
+        let (http, url) = endpoint()?;
+        self.ask_once(&http, url, changed).await
+    }
+
+    async fn ask_once(
+        &self,
+        http: &reqwest::Client,
+        url: Url,
+        changed: &watch::Sender<()>,
+    ) -> Result<Update, CheckError> {
+        let answers = self.answers.load(Ordering::SeqCst);
+        let mut last = self.asking.lock().await;
+        if let Some(last) = last.as_ref()
+            && self.answers.load(Ordering::SeqCst) != answers
+        {
+            return last.clone();
+        }
+        let checked = match self.on {
+            true => self.checked.lock().unwrap().clone().unwrap_or_default(),
+            false => Checked::default(),
+        };
+        let answer = ask(http, url, checked.etag.as_deref(), &this_asset()).await;
+        let failure = match answer {
+            Answer::Unreachable => Some(CheckError::Unreachable),
+            Answer::Refused { .. } => Some(CheckError::Refused),
+            Answer::Releases { .. } | Answer::NotModified => None,
+        };
+        let checked = checked.after(answer, now_ms());
+        if self.on {
             if let Err(error) = save(&self.path, &checked) {
                 tracing::warn!(%error, "the update check's answer cannot be saved");
             }
-            *self.checked.lock().unwrap() = Some(checked);
+            *self.checked.lock().unwrap() = Some(checked.clone());
             changed.send_replace(());
         }
+        let result = failure.map_or_else(|| Ok(checked.notice(&self.version)), Err);
+        *last = Some(result.clone());
+        self.answers.fetch_add(1, Ordering::SeqCst);
+        result
     }
 }
 
@@ -1461,6 +1504,137 @@ mod tests {
         save(&path, &Checked::default()).unwrap();
         let on = release_updates(true, path.clone());
         assert_eq!(on.notice(), Update::Unknown);
+    }
+
+    fn newest_release_page() -> String {
+        let asset = this_asset();
+        page(
+            serde_json::json!([listed("v0.2.0", false, &[asset.as_str()])]),
+            None,
+            "\"e1\"",
+        )
+    }
+
+    async fn stub_github() -> (TcpListener, reqwest::Client, Url) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let (url, https) = releases_url(Some(&base)).unwrap();
+        (listener, client(https).unwrap(), url)
+    }
+
+    #[tokio::test]
+    async fn checking_now_keeps_the_answer_and_a_second_call_while_it_waits_shares_its_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let (listener, http, url) = stub_github().await;
+        let updates = release_updates(true, path.clone());
+        let changed = watch::Sender::new(());
+        let mut seen = changed.subscribe();
+        let newest = newest_release_page();
+        let (_, first, second) = tokio::join!(
+            served(&listener, &newest),
+            updates.ask_once(&http, url.clone(), &changed),
+            updates.ask_once(&http, url.clone(), &changed),
+        );
+        let Ok(available @ Update::Available { .. }) = first.clone() else {
+            panic!("{first:?}");
+        };
+        assert_eq!(second, first);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "the second call sent a request of its own"
+        );
+        assert!(seen.has_changed().unwrap());
+        assert_eq!(updates.notice(), available);
+        assert_eq!(load(&path).unwrap().release, release("0.2.0"));
+
+        seen.mark_unchanged();
+        let not_modified = "HTTP/1.1 304 Not Modified\r\ncontent-length: 0\r\n\r\n";
+        let (request, again) = tokio::join!(
+            served(&listener, not_modified),
+            updates.ask_once(&http, url, &changed)
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("if-none-match: \"e1\""),
+            "{request}"
+        );
+        assert!(
+            matches!(&again, Ok(Update::Available { latest, .. }) if latest == "0.2.0"),
+            "{again:?}"
+        );
+        assert!(seen.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn checking_now_with_the_check_off_answers_once_and_keeps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let (listener, http, url) = stub_github().await;
+        let updates = release_updates(false, path.clone());
+        let changed = watch::Sender::new(());
+        let seen = changed.subscribe();
+        let newest = newest_release_page();
+        let (request, answered) = tokio::join!(
+            served(&listener, &newest),
+            updates.ask_once(&http, url, &changed)
+        );
+        assert!(!request.to_ascii_lowercase().contains("if-none-match"));
+        assert!(
+            matches!(&answered, Ok(Update::Available { latest, .. }) if latest == "0.2.0"),
+            "{answered:?}"
+        );
+        assert_eq!(updates.notice(), Update::Off);
+        assert!(!path.exists());
+        assert!(!seen.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_now_says_why_and_keeps_the_last_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let cached = Checked {
+            asset: Some(this_asset()),
+            checked_at: Some(100),
+            successful_at: Some(100),
+            release: release("0.1.0"),
+            ..Checked::default()
+        };
+        save(&path, &cached).unwrap();
+        let (listener, http, url) = stub_github().await;
+        let updates = release_updates(true, path.clone());
+        let changed = watch::Sender::new(());
+        assert_eq!(updates.notice(), Update::UpToDate { checked_at_ms: 100 });
+        let refused = "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n";
+        let (_, answered) = tokio::join!(
+            served(&listener, refused),
+            updates.ask_once(&http, url.clone(), &changed)
+        );
+        assert_eq!(answered, Err(CheckError::Refused));
+        assert_eq!(updates.notice(), Update::UpToDate { checked_at_ms: 100 });
+        drop(listener);
+        assert_eq!(
+            updates.ask_once(&http, url, &changed).await,
+            Err(CheckError::Unreachable)
+        );
+        assert_eq!(updates.notice(), Update::UpToDate { checked_at_ms: 100 });
+    }
+
+    #[tokio::test]
+    async fn a_development_build_answers_off_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let updates = Updates::for_version(
+            true,
+            dir.path().join("update-check.json"),
+            Version::parse("0.0.0-dev").unwrap(),
+        );
+        assert_eq!(
+            updates.check_now(&watch::Sender::new(())).await,
+            Ok(Update::Off)
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::helper::{
     AccountData, DevicesData, Done, FolderData, Helper, InvitationData, Outcome, Refusal,
     RequestsData, RestoreAskedData, ShareLinkData, ShareLinksData, SharedData, SpaceData,
-    SpacesData, TrashData, UpdatedData, UsagesData, VersionsData,
+    SpacesData, TrashData, UpdateCheckData, UpdatedData, UsagesData, VersionsData,
 };
 use crate::profile::Profile;
 use crate::state::{self, Seen};
@@ -823,6 +823,11 @@ impl Core for DaemonCore {
             Outcome::Unchanged => Err(SessionError::UpdateUnavailable),
             _ => Ok(done.data::<UpdatedData>()?.result()),
         }
+    }
+
+    fn check_for_updates(&self) -> Result<UpdateStatus, SessionError> {
+        let done = self.change(&["_check-updates"])?;
+        Ok(state::update(&done.data::<UpdateCheckData>()?.update))
     }
 
     fn close(&self) {

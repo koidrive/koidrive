@@ -148,6 +148,8 @@ impl From<Refusal> for SessionError {
             Some(Reason::PasswordLength) => return SessionError::PasswordLength,
             Some(Reason::NoSuchLink) => return SessionError::ShareLinkNotFound,
             Some(Reason::ShareLinkLimit) => return SessionError::ShareLinkLimit,
+            Some(Reason::ReleasesUnreachable) => return SessionError::ReleasesUnreachable,
+            Some(Reason::ReleasesRefused) => return SessionError::ReleasesRefused,
             Some(Reason::NotInLinkedFolder | Reason::SeveralDeletions) | None => {}
         }
         match refusal.code {
@@ -410,6 +412,11 @@ struct StatusData {
     folders: Vec<FolderData>,
     #[serde(default)]
     update: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpdateCheckData {
+    pub(crate) update: driver::Update,
 }
 
 #[derive(Debug, Deserialize)]

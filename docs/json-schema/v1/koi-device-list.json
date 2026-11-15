@@ -770,6 +770,16 @@
           "const": "share_link_limit",
           "description": "The space has as many active share links as the server allows.",
           "type": "string"
+        },
+        {
+          "const": "releases_unreachable",
+          "description": "GitHub cannot be reached to ask for the newest release.",
+          "type": "string"
+        },
+        {
+          "const": "releases_refused",
+          "description": "GitHub did not send the list of releases, for example because it limits the rate.",
+          "type": "string"
         }
       ]
     },

@@ -346,6 +346,7 @@ extension SessionError {
         case .ShareLinkLimit: String(localized: "This space has as many active links as it can hold. Revoke one to make a new link.")
         case .UpdateFailed: String(localized: "Koidrive couldn't update.")
         case .UpdateUnavailable: String(localized: "Koidrive is up to date.")
+        case .ReleasesUnreachable, .ReleasesRefused: String(localized: "Couldn’t check for updates.")
         case .Failed(let reason): reason
         }
     }

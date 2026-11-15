@@ -9,7 +9,7 @@ use crate::profile::Profile;
 use crate::types::{
     Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
     RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult,
+    Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -217,5 +217,9 @@ impl SyncSession {
 
     pub fn update(&self) -> Result<UpdateResult, SessionError> {
         self.core.update()
+    }
+
+    pub fn check_for_updates(&self) -> Result<UpdateStatus, SessionError> {
+        self.core.check_for_updates()
     }
 }

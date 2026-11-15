@@ -21,6 +21,7 @@ mod release_source;
 pub use handoff::follow_newest;
 pub use inventory::homebrew_link;
 pub(crate) use inventory::{Install, Method, on_path};
+pub(crate) use release_source::check_updates;
 
 use homebrew::homebrew;
 use installer::{installer, script_url};

@@ -897,6 +897,10 @@ pub enum SessionError {
     },
     #[error("this Mac already runs the newest release")]
     UpdateUnavailable,
+    #[error("GitHub cannot be reached to check for a newer release")]
+    ReleasesUnreachable,
+    #[error("GitHub did not send the list of Koidrive releases; try again later")]
+    ReleasesRefused,
     #[error("{reason}")]
     Failed { reason: String },
 }
