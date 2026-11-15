@@ -576,10 +576,12 @@ fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_c
 
 #[test]
 fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
+    let mut written = file(ROOT, "new", 2);
+    written.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
     let mut trees = trees(
-        &[("new", file(ROOT, "new", 2))],
-        &[("new", file(ROOT, "new", 2))],
-        &[live("theirs", file(ROOT, "new", 2))],
+        &[("new", written.clone())],
+        &[("new", written.clone())],
+        &[live("theirs", written)],
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert!(commits.questions().is_empty(), "{:?}", commits.questions());

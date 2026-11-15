@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_ignore::Status;
 
+use crate::first_link;
 use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc};
 use crate::state::{
@@ -390,6 +391,7 @@ pub struct Trees {
     asked: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
+    relink: bool,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
     /// Nodes whose entry in R, L or S changed since [`Trees::take_changed`].
@@ -481,6 +483,7 @@ impl Trees {
             unknown_rules: BTreeSet::new(),
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
+            relink: false,
             same: BTreeSet::new(),
             changed: BTreeSet::new(),
             l_names: ByName::default(),
@@ -1707,13 +1710,14 @@ impl Trees {
 
     /// Records that a scan read the folder `id` and passed its rules, or found it has none.
     pub fn set_rules_known(&mut self, id: &str) {
-        self.unknown_rules.remove(id);
+        self.relink |= self.unknown_rules.remove(id);
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
     /// questions), which stay on disk as they are until the person answers.
     pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
         self.forget_reclaims();
+        self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
     }
 
@@ -2279,6 +2283,7 @@ impl Trees {
     /// device-local list. Planning starts again.
     pub fn rules_scanned(&mut self) {
         self.rules_known = true;
+        self.relink = true;
     }
 
     /// False from [`Trees::restore`] until [`Trees::rules_scanned`]. The stored state does not hold
@@ -2653,6 +2658,10 @@ impl Trees {
     /// even if it changed back.
     pub fn took_content(&self, id: &str) -> bool {
         self.watched.get(id) == Some(&true)
+    }
+
+    pub(crate) fn sending_content(&self, id: &str) -> bool {
+        self.watched.get(id).is_some()
     }
 
     /// Watches the position L and R agree on for `ids`, the nodes the commit just built creates or
@@ -3680,6 +3689,13 @@ impl Trees {
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts();
         }
+        if self.rules_known {
+            let changed = match std::mem::take(&mut self.relink) {
+                true => self.dirty.iter().cloned().collect(),
+                false => self.unsettled.clone(),
+            };
+            first_link::adopt_equal_files(self, &changed);
+        }
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {
@@ -4385,6 +4401,7 @@ impl Trees {
             unknown_rules: _,
             asked: _,
             unsettled: _,
+            relink: _,
             same: _,
             changed: _,
             l_names: _,

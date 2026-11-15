@@ -4,7 +4,7 @@
 //! section 6.4).
 
 use koidrive_engine::classify::{Origin, Trees, Waiting};
-use koidrive_engine::commit::{Commits, Failure, Reconnect};
+use koidrive_engine::commit::{Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
 use koidrive_engine::first_link::{History, PriorSync, adopt};
 use koidrive_engine::ids::IdGen;
@@ -762,53 +762,160 @@ fn a_held_entry_the_rules_leave_out_for_a_while_stays_held_until_the_person_answ
     );
 }
 
-fn unlinked(local: &str, remote: &str, digest: u8) -> (Commits, Trees, IdGen) {
-    let mut trees = trees(
-        &[("l-file", file(ROOT, local, 1))],
-        &[("r-file", file(ROOT, remote, digest))],
-    );
+const WRITTEN_NS: i64 = 1_794_268_740_123_456_789;
+
+fn unlinked(local: &str, remote: &[(&str, Shape)]) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(&[("l-file", written(local, WRITTEN_NS))], remote);
     trees.rules_scanned();
     trees.settle();
     (Commits::default(), trees, IdGen::new(7))
 }
 
-#[test]
-fn a_file_the_server_holds_under_its_conflict_name_with_the_same_bytes_is_linked_and_takes_that_name()
- {
-    let copy = conflict_name("ß", "pc", NOW as i64, 2);
-    let (mut commits, mut trees, mut ids) = unlinked("ß", &copy, 1);
+type Run = (
+    Vec<(&'static str, String)>,
+    Vec<(String, String, String)>,
+    Vec<Effect>,
+);
+
+fn run_beside(local_name: &str, remote: &[(&str, Shape)], read_only: bool) -> Run {
+    let (mut commits, mut trees, mut ids) = unlinked(local_name, remote);
     let mut effects = Effects::default();
-    assert_eq!(
-        effects
-            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
-            .first(),
-        None
-    );
-    let done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
-    assert!(
-        matches!(&done[..], [(node, Effect::Move { .. })] if node == "r-file"),
-        "{done:?}"
-    );
-    assert_eq!(local(&trees), [("r-file".into(), ROOT.into(), copy)]);
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    if read_only {
+        commits.connected(&Welcome {
+            history_id: HISTORY.into(),
+            read_only: true,
+            ..Default::default()
+        });
+    }
+    let (mut sent, mut done) = (Vec::new(), Vec::new());
+    for ino in 100..200u128 {
+        trees.settle();
+        if sent.is_empty() {
+            sent = ops(&mut commits, &mut trees, &mut ids);
+        }
+        let Some(record) =
+            (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+                .first()
+                .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        (effects.done(
+            &mut trees,
+            commits.in_flight(),
+            &record.effect_id,
+            Some(identity),
+        ))
+        .unwrap();
+        done.push(record.effect);
+    }
+    (sent, local(&trees), done)
 }
 
 #[test]
-fn a_file_is_sent_beside_a_server_file_whose_name_only_looks_like_its_conflict_name() {
-    for (name, digest) in [
-        (conflict_name("ß", "pc", NOW as i64, 2), 2),
-        ("ß (conflict from pc 2026-13-09)".into(), 1),
-        ("ß (conflict from pc 2026-11-09 1)".into(), 1),
-        ("ß (copy)".into(), 1),
-        (conflict_name("s", "pc", NOW as i64, 1), 1),
-    ] {
-        let (mut commits, mut trees, mut ids) = unlinked("ß", &name, digest);
+fn an_equal_server_file_at_a_new_local_files_name_is_linked_before_any_effect_is_planned() {
+    let (_, mut trees, mut ids) = unlinked("a.docx", &[("r-file", written("a.docx", WRITTEN_NS))]);
+    trees.settle();
+    let mut effects = Effects::default();
+    assert_eq!(
+        effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE),
+        []
+    );
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+}
+
+#[test]
+fn a_local_file_and_an_equal_server_file_that_arrive_in_separate_settles_are_linked() {
+    let shape = written("a.docx", WRITTEN_NS);
+    let mut local_first = trees(&[("l-file", shape.clone())], &[]);
+    let remote = trees(&[], &[("r-file", shape.clone())])
+        .remote()
+        .get("r-file")
+        .cloned();
+    local_first.set_remote("r-file".into(), remote.unwrap());
+    let mut remote_first = trees(&[], &[("r-file", shape.clone())]);
+    remote_first.set_local("l-file".into(), local_node(shape, 1));
+    for mut trees in [local_first, remote_first] {
+        trees.settle();
         assert_eq!(
-            ops(&mut commits, &mut trees, &mut ids),
-            [("create file", "l-file".to_owned())],
-            "{name}"
+            local(&trees),
+            [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
         );
     }
+}
+
+#[test]
+fn a_read_only_device_downloads_a_conflict_copy_beside_a_local_file_of_the_same_name() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let (_, held, _) = run_beside("a.docx", &[("r-file", written(&copy, WRITTEN_NS))], true);
+    assert!(held.iter().any(|(_, _, name)| *name == copy), "{held:?}");
+    assert!(held.iter().any(|(_, _, name)| name == "a.docx"), "{held:?}");
+}
+
+#[test]
+fn a_new_local_file_is_sent_beside_another_devices_equal_conflict_copy() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let (sent, held, _) = run_beside("a.docx", &[("r-file", written(&copy, WRITTEN_NS))], false);
+    assert_eq!(sent, [("create file", "l-file".to_owned())], "{held:?}");
+}
+
+#[test]
+fn a_local_file_beside_an_equal_server_file_and_its_conflict_copy_moves_neither() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let remote = [
+        ("r-a", written(&copy, WRITTEN_NS)),
+        ("r-b", written("a.docx", WRITTEN_NS)),
+    ];
+    let (_, _, done) = run_beside("a.docx", &remote, false);
+    assert!(
+        !done
+            .iter()
+            .any(|effect| matches!(effect, Effect::Move { .. })),
+        "{done:?}"
+    );
+}
+
+#[test]
+fn a_new_local_file_is_not_merged_into_a_server_file_named_as_its_conflict_copy() {
+    let literal = "notes (conflict from pc 2026-11-09)";
+    let (mut commits, mut trees, mut ids) =
+        unlinked("notes", &[("r-file", written(literal, WRITTEN_NS))]);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create file", "l-file".to_owned())]
+    );
+}
+
+#[test]
+fn a_device_that_cannot_build_still_downloads_a_conflict_copy_beside_its_file() {
+    let literal = "notes (conflict from pc 2026-11-09)";
+    let (commits, mut trees, mut ids) =
+        unlinked("notes", &[("r-file", written(literal, WRITTEN_NS))]);
+    let mut commits = Commits::from_state(CommitsState {
+        halted: Some(Halt::ReadOnly),
+        ..commits.state()
+    })
+    .unwrap();
+    for _ in 0..3 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        trees.settle();
+    }
+    let mut effects = Effects::default();
+    let planned = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        (planned.iter())
+            .any(|record| record.node == "r-file"
+                && matches!(record.effect, Effect::WriteFile { .. })),
+        "{planned:?}"
+    );
 }
 
 /// An entry created after the first link, beside the held ones, is an ordinary create.

@@ -5,6 +5,7 @@ use std::cell::Cell;
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
+use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
@@ -257,6 +258,92 @@ fn a_first_upload_takes_work_in_proportion_to_its_files() {
         assert!(
             bytes < 12.0,
             "{ids:?}, {per_dir} per folder, ignored folder {ignored}: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
+        );
+    }
+}
+
+fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
+    let content = (kind == Kind::File).then(|| Content {
+        size: 3,
+        manifest_digest: vec![7; 32],
+        ..Default::default()
+    });
+    RemoteNode {
+        shape: Shape {
+            parent,
+            name,
+            kind,
+            content,
+        },
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        edit_rev: 1,
+        meta_edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+    }
+}
+
+fn first_download(files: usize, per_dir: usize) -> u64 {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    let dirs = files.div_ceil(per_dir);
+    for d in 0..dirs {
+        let node = remote(ROOT.into(), format!("folder {d}"), Kind::Dir);
+        trees.set_remote(format!("d{d:06}"), node);
+    }
+    for f in 0..files {
+        let node = remote(
+            format!("d{:06}", f / per_dir),
+            format!("file {f}"),
+            Kind::File,
+        );
+        trees.set_remote(format!("f{f:06}"), node);
+    }
+    trees.settle();
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let limit = BatchLimit {
+        effects: 64,
+        bytes: u64::MAX,
+    };
+    let before = allocated();
+    let mut ino = 0;
+    loop {
+        let planned: Vec<String> = (effects.plan(&trees, None, &mut ids, NOW, limit).iter())
+            .map(|record| record.effect_id.clone())
+            .collect();
+        if planned.is_empty() {
+            break;
+        }
+        for effect_id in planned {
+            ino += 1;
+            let identity = FileIdentity {
+                dev: 1,
+                ino,
+                birth_ns: Some(0),
+            };
+            (effects.done(&mut trees, None, &effect_id, Some(identity))).unwrap();
+            trees.settle();
+        }
+    }
+    let work = allocated() - before;
+    assert!(trees.dirty().is_empty(), "{:?}", trees.work());
+    assert_eq!(trees.synced().len(), files + dirs);
+    work
+}
+
+#[test]
+fn a_first_download_takes_work_in_proportion_to_its_files() {
+    for per_dir in [1, 100, 5000] {
+        let small = first_download(2000, per_dir);
+        let large = first_download(20_000, per_dir);
+        let bytes = large as f64 / small as f64;
+        assert!(
+            bytes < 12.0,
+            "{per_dir} per folder: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
         );
     }
 }

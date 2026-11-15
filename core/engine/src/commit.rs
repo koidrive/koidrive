@@ -611,7 +611,7 @@ impl Commits {
         }
         let mut groups = recovery::classify(trees);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
-            first_link::adopt_restored_files(trees, restored);
+            first_link::adopt_equal_files(trees, restored);
             restored.retain(|id| trees.local().get(id).is_some());
         }
         if let Some(created) = groups.remove(&RecoveryGroup::CreatedOnThisDevice) {
@@ -1083,7 +1083,6 @@ impl Commits {
         if self.halted.is_some() || !trees.rules_known() {
             return None;
         }
-        first_link::adopt_equal_files(trees);
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
         let released = self.ask_recovery(trees, cause, left, ids, now_ms);

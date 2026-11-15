@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::{Class, Origin, Trees};
 use crate::commit::{InFlight, changed_locally, disk_first, finishes};
-use crate::first_link;
 use crate::guard::RemoteRemoval;
 use crate::ids::IdGen;
 use crate::ignore::is_rules_file;
@@ -752,7 +751,7 @@ pub(crate) fn kept_out(trees: &Trees, id: &str) -> bool {
 fn candidate(trees: &Trees, id: &str) -> bool {
     let forgets = (trees.waiting().get(id)).is_some_and(|waiting| waiting.shape.is_none())
         && (trees.local().get(id).is_some() || !trees.reverted().contains(id));
-    let changed = (remote_only(trees, id) && first_link::equal_file(trees, id).is_none())
+    let changed = remote_only(trees, id)
         || trees.local().get(id).is_some_and(|node| node.parked)
         || (trees.reverted().contains(id)
             && (trees.local().get(id).is_some()
