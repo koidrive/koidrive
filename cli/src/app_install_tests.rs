@@ -2077,6 +2077,7 @@ async fn pending_retirements_follow_a_new_current_app_across_roots() {
         panic!()
     };
     assert_eq!(path, f.config.user.join(BUNDLE));
+    bundle(&f.installed(), Some("0.1.0"));
     let mut newer = Fixture::versioned("0.3.0", None, DMG.to_vec(), 200).await;
     newer.config.system = f.config.system.clone();
     newer.config.user = f.config.user.clone();
@@ -2102,7 +2103,7 @@ async fn pending_retirements_follow_a_new_current_app_across_roots() {
         fs::read(f.config.user.join(BUNDLE).join("Contents/Helpers/koi")).unwrap(),
         b"0.3.0"
     );
-    assert_eq!(retired.len(), 2);
+    assert_eq!(retired.len(), 3);
     assert!(residue.is_empty());
     for token in retired {
         token.discard().unwrap();
@@ -3151,6 +3152,27 @@ async fn unwritable_system_root_uses_user_applications() {
     assert_eq!(change, AppChange::Installed);
     assert_eq!(path, f.config.user.join(BUNDLE));
     assert!(!f.installed().exists());
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_older_app_only_in_user_applications_is_upgraded_where_it_is() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    let user = f.config.user.join(BUNDLE);
+    bundle(&user, Some("0.1.0"));
+    let AppInstall::Present {
+        path,
+        version,
+        retired,
+        ..
+    } = f.run().await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(path, user);
+    assert_eq!(version.to_string(), TARGET);
+    assert!(!f.installed().exists());
+    assert!(retired.iter().all(|app| app.bundle != f.installed()));
     f.unmounted();
 }
 

@@ -3281,11 +3281,15 @@ function run(args) {
         })?;
         control.check()?;
         let system_root = directory(&config.system, false)?;
-        let (root, root_fd) = if writable(&config.system)? {
-            (config.system.clone(), system_root)
-        } else {
-            (config.user.clone(), directory(&config.user, true)?)
+        let older_in = |root: &Path| {
+            (installed.iter()).any(|app| app.path.parent() == Some(root) && older(app, &target))
         };
+        let (root, root_fd) =
+            if writable(&config.system)? && (older_in(&config.system) || !older_in(&config.user)) {
+                (config.system.clone(), system_root)
+            } else {
+                (config.user.clone(), directory(&config.user, true)?)
+            };
         let _root_lock = lock(&root_fd, &control).await?;
         let receipt = begin_receipt(&config, &work_root, &target)?;
         attempt.receipts.push(receipt.path());
