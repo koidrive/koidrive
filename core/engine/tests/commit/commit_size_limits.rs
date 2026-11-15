@@ -661,3 +661,66 @@ fn a_move_into_a_new_folder_survives_a_split_commit_that_merges_it_into_a_rename
     let second = build(&mut commits, &mut trees, &mut ids);
     assert_eq!(second.as_ref().map(ops), Some(vec![mv("c", "a", "c")]));
 }
+
+#[test]
+fn a_trashed_file_moved_into_a_new_folder_comes_back_when_the_commit_after_its_merge_is_refused() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote_at(dir(ROOT, "a"), 2)),
+        ),
+        (
+            "c",
+            Some(file("n", "c", 1)),
+            Some(file("a", "c", 1)),
+            Some(trashed(file("a", "c", 1))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    trees.set_local("z".into(), local(file(ROOT, "z", 1), 9));
+    let second = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(ops(&second).contains(&mv("c", "a", "c")), "{:?}", ops(&second));
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let mut sent = Vec::new();
+    for seq in 2..6 {
+        let Some(commit) = build(&mut commits, &mut trees, &mut ids) else {
+            break;
+        };
+        for op in ops(&commit) {
+            let (id, shape) = match &op {
+                op::Op::Move(moved) => (&moved.node_id, file(&moved.new_parent_id, &moved.new_name, 1)),
+                op::Op::CreateFile(create) => (&create.node_id, file(&create.parent_id, &create.name, 1)),
+                other => panic!("{other:?}"),
+            };
+            trees.set_remote_made_here(id.clone(), remote_at(shape, seq));
+            sent.push(op);
+        }
+        commits
+            .received(result(seq, vec![outcome(op_result::Code::Applied); commit.ops.len()]))
+            .unwrap();
+        assert!(commits.acknowledge(&mut trees, seq));
+        trees.settle();
+    }
+    assert!(sent.contains(&mv("c", "a", "c")), "{sent:?}");
+    assert_eq!(trees.remote().live("c"), Some(&file("a", "c", 1)));
+}

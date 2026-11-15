@@ -3277,7 +3277,8 @@ fn plan(
         }
         let remote = trees.remote().live(id);
         let placed = |shape: Option<&Shape>| shape.is_some_and(|s| s.same_position(local));
-        if in_alias && (placed(synced) || placed(remote)) && !trees.reverted().contains(id) {
+        let agreed = synced.filter(|_| !trees.unsent_moves().contains(id));
+        if in_alias && (placed(agreed) || placed(remote)) && !trees.reverted().contains(id) {
             reverts.push(id.clone());
         }
         if (synced.is_none_or(|s| !s.same_position(local)) || trees.unsent_moves().contains(id))
