@@ -1601,14 +1601,15 @@ impl Commits {
     /// A create the server refuses with ID_EXISTS while R holds the node, live or in the trash, is
     /// no problem. Only another device can have created a node under this device's ID first, as
     /// when both send a file the server lost again (section 4.4), and it may have deleted the node
-    /// since. S stays without a node R holds live, so the next plan compares L with what R holds
-    /// instead of sending the create again: equal content leaves nothing to send, and other
-    /// content is kept beside R's as a new node (section 2.4). A node R holds in the trash keeps
-    /// the S that L and R agreed on while the create was out, and otherwise takes R's content at the
-    /// position the create sent as its S, or at L's position when the create was sent at a lost
-    /// position, as an accepted one takes it. So L follows the delete, and the move the lost
-    /// position stands for, unless it holds content the server never showed for the node, which
-    /// revives it (R8).
+    /// since. S stays without a node R holds live, unless the create was sent at a lost position,
+    /// so the next plan compares L with what R holds instead of sending the create again: equal
+    /// content leaves nothing to send, and other content is kept beside R's as a new node
+    /// (section 2.4). A node R holds in the trash, and one whose create was sent at a lost
+    /// position, keeps the S that L and R agreed on while the create was out, and otherwise takes
+    /// R's content as its S: at the position the create sent, or at L's position for a lost
+    /// position, as an accepted create takes it. So L takes the move a lost position stands for
+    /// and follows a delete, and content it holds that the server never showed for the node is
+    /// sent as an edit, which revives a node in the trash (R8).
     ///
     /// A `Restore` op changes neither S nor L. What it sent is an instruction, and only the server
     /// knows the nodes and the content it brought back, so all of it is a remote change that R
@@ -2002,10 +2003,12 @@ impl Commits {
                 trees.record_moved(node, result.seq);
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
+            let at_lost_position = trees.lost_position(node).is_some();
             if created
                 && taken
                 && let Some((sent_parent, sent_name)) = sent
-                && let Some(remote) = trees.remote().get(node).filter(|remote| remote.trashed)
+                && let Some(remote) =
+                    (trees.remote().get(node)).filter(|remote| remote.trashed || at_lost_position)
                 && synced.get(trees, node).is_none()
             {
                 let shape = Shape {
@@ -2013,7 +2016,7 @@ impl Commits {
                     name: sent_name.clone(),
                     ..remote.shape.clone()
                 };
-                if trees.lost_position(node).is_some() {
+                if at_lost_position {
                     trees.take_lost_position(
                         node.clone(),
                         shape,

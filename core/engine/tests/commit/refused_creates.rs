@@ -128,20 +128,40 @@ fn id_exists() -> OpResult {
     }
 }
 
-#[test]
-fn a_resend_refused_for_a_node_another_device_renamed_and_deleted_revives_the_edit_at_that_name() {
-    let (mut trees, mut commits, mut ids) = resent_where_another_device_renamed_it(Some(2));
-    trees.set_remote("f".into(), trashed(file(ROOT, "b", 1)));
+fn sends_the_edit_at_the_renamed_name(mut trees: Trees, mut commits: Commits, mut ids: IdGen) {
     acknowledge(&mut commits, &mut trees, vec![id_exists()]);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("f", 2)]);
-    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "b", 2), 2));
-    commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "b", 2), 4));
+    commits.received(result(4, vec![outcome(op_result::Code::Applied)])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 4));
     trees.settle();
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "f");
     assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+}
+
+#[test]
+fn a_resend_refused_for_a_node_another_device_renamed_and_deleted_revives_the_edit_at_that_name() {
+    let (mut trees, commits, ids) = resent_where_another_device_renamed_it(Some(2));
+    trees.set_remote("f".into(), trashed(file(ROOT, "b", 1)));
+    sends_the_edit_at_the_renamed_name(trees, commits, ids);
+}
+
+#[test]
+fn a_resend_refused_for_a_node_another_device_renamed_and_sent_again_sends_the_edit_at_that_name() {
+    let (mut trees, commits, ids) = resent_where_another_device_renamed_it(Some(2));
+    trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 3));
+    sends_the_edit_at_the_renamed_name(trees, commits, ids);
+}
+
+#[test]
+fn a_resend_refused_for_a_node_another_device_renamed_deleted_and_restored_sends_the_edit_at_that_name() {
+    let (mut trees, commits, ids) = resent_where_another_device_renamed_it(Some(2));
+    trees.set_remote("f".into(), trashed(file(ROOT, "b", 1)));
+    trees.settle();
+    trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 3));
+    sends_the_edit_at_the_renamed_name(trees, commits, ids);
 }
 
 #[test]
