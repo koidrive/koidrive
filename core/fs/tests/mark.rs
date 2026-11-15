@@ -193,3 +193,23 @@ fn a_volume_that_keeps_attributes_in_companion_files_gets_no_mark() {
         .collect();
     assert_eq!(changed, [root.join("docs/._control.txt")]);
 }
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_replacement_whose_mark_cannot_be_written_is_placed_unmarked() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let scenario = scenario("replace");
+    let effect = prepare(scenario, root);
+    let staged = root.join(".koidrive/staging").join(&effect.id);
+    let denied = Command::new("chmod")
+        .args(["+a", "everyone deny writeextattr"])
+        .arg(&staged)
+        .status()
+        .unwrap();
+    assert!(denied.success());
+    let outcome = apply_one(&bind(root), &effect, &mut |_| {}).unwrap();
+    assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+    (scenario.check)(root, &outcome);
+    assert_eq!(mark_of(root, "docs/report.txt"), None);
+}

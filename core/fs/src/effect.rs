@@ -551,7 +551,7 @@ impl Space {
                 }
                 let folder = mark::open(parent.fd(), name)?.ok_or(io::ErrorKind::NotFound)?;
                 let identity = stat_fd(folder.as_fd())?.id;
-                mark::write(folder.as_fd(), &effect.node)?;
+                mark::write(folder.as_fd(), &effect.node);
                 hook(Step::Placed);
                 Outcome::Done {
                     identity: Some(identity),
@@ -707,7 +707,7 @@ impl Space {
         let id = OsStr::new(&effect.id);
         let staged = mark::open(staging.fd(), id)?.ok_or(io::ErrorKind::NotFound)?;
         let identity = stat_fd(staged.as_fd())?.id;
-        mark::write(staged.as_fd(), &effect.node)?;
+        mark::write(staged.as_fd(), &effect.node);
         match rename_no_replace(staging.fd(), id, target.fd(), name) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {

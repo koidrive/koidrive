@@ -17,11 +17,15 @@ const NAME: &str = "user.koidrive.node";
 
 impl Space {
     /// Marks the entry at `at` with `node` when it is still the entry `expected`, so that a recovery
-    /// finds the node of an entry the store lost track of (design section 6.4). A volume that keeps
-    /// extended attributes in companion files gets no mark.
+    /// finds the node of an entry the store lost track of (design section 6.4). An entry on a volume
+    /// that keeps extended attributes in companion files, or one whose attribute cannot be written,
+    /// gets no mark.
     pub fn mark(&self, at: &Location, expected: FileId, node: &str) -> io::Result<()> {
         match self.open_entry(at, expected)? {
-            Some(entry) => write(entry.as_fd(), node),
+            Some(entry) => {
+                write(entry.as_fd(), node);
+                Ok(())
+            }
             None => Ok(()),
         }
     }
@@ -61,14 +65,13 @@ pub(crate) fn open(folder: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Ow
     }
 }
 
-pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) -> io::Result<()> {
-    if !native(entry)? {
-        return Ok(());
-    }
-    let value = encode(node, stat_fd(entry)?.id);
-    match rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()) {
-        Ok(()) | Err(Errno::NOTSUP) => Ok(()),
-        Err(err) => Err(err.into()),
+pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
+    let Ok(stat) = stat_fd(entry) else {
+        return;
+    };
+    if native(entry) {
+        let value = encode(node, stat.id);
+        let _ = rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty());
     }
 }
 
@@ -115,16 +118,18 @@ fn decode(value: &[u8]) -> Option<(String, FileId)> {
 }
 
 #[cfg(target_vendor = "apple")]
-fn native(entry: BorrowedFd<'_>) -> io::Result<bool> {
-    let volume = rustix::fs::fstatfs(entry)?;
+fn native(entry: BorrowedFd<'_>) -> bool {
+    let Ok(volume) = rustix::fs::fstatfs(entry) else {
+        return false;
+    };
     let name: Vec<u8> = (volume.f_fstypename.iter())
         .take_while(|byte| **byte != 0)
         .map(|byte| *byte as u8)
         .collect();
-    Ok(matches!(name.as_slice(), b"apfs" | b"hfs"))
+    matches!(name.as_slice(), b"apfs" | b"hfs")
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn native(_: BorrowedFd<'_>) -> io::Result<bool> {
-    Ok(true)
+fn native(_: BorrowedFd<'_>) -> bool {
+    true
 }

@@ -3549,3 +3549,19 @@ fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_
     assert_eq!(node_named(&world, "b"), node);
     assert_eq!(only_entry(&world, 1, "b"), created);
 }
+
+#[test]
+fn a_file_its_user_copied_is_in_two_files_on_the_server() {
+    let mut world = World::new(2);
+    downloaded(&mut world);
+    let copy = Step::Copy(Action {
+        kind: 0,
+        target: 0,
+        parent: 0,
+        name: NAMES.iter().position(|name| *name == "b").unwrap(),
+        text: 0,
+    });
+    world.run(0, &[(1, copy)]).unwrap();
+    world.phase(1, &[]).unwrap();
+    assert_eq!(live(&world), ["a", "b"]);
+}

@@ -1038,6 +1038,7 @@ impl World {
             (Act::Copy, Some(ino)) => {
                 if let Some(new) = disk.copy(ino, place, name) {
                     self.named[d].insert(name);
+                    (self.copied).extend(disk.entries()[&new].content.as_ref().map(|c| c.mtime_ns));
                     touched = std::iter::once(new).chain(above).collect();
                 }
             }
@@ -2008,10 +2009,10 @@ impl World {
                         })
                         .collect();
                     commits.recover(trees, device_seq, &cause, &history, &marks, ids, NOW as u64);
+                    let unheld: BTreeSet<u128> = unheld.into_iter().map(|(_, ino)| ino).collect();
                     let adopted = (trees.local().iter())
                         .filter(|(id, node)| {
-                            trees.synced().get(id).is_some()
-                                && unheld.iter().any(|(_, ino)| *ino == node.identity.ino)
+                            trees.synced().get(id).is_some() && unheld.contains(&node.identity.ino)
                         })
                         .filter_map(|(id, node)| {
                             Some((location_of(trees, id)?, node.identity.ino, id))

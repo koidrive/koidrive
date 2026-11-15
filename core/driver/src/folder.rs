@@ -13,7 +13,7 @@
 //! A future owns what it needs and borrows only the session and the transfer client, so none holds the store or
 //! the engine across an await.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::future::Future;
 use std::io;
@@ -1768,6 +1768,7 @@ impl Folder {
             .map(|(id, node)| (id.clone(), node.identity))
             .collect();
         let marks = self.disk.marks(trees, unheld.keys());
+        let unheld: HashSet<FileIdentity> = unheld.into_values().collect();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
             if recovering {
@@ -1795,7 +1796,7 @@ impl Folder {
         let trees = &self.engine.trees;
         let adopted = (trees.local().iter())
             .filter(|(id, node)| {
-                trees.synced().get(id).is_some() && unheld.values().any(|was| *was == node.identity)
+                trees.synced().get(id).is_some() && unheld.contains(&node.identity)
             })
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect::<Vec<_>>();

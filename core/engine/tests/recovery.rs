@@ -2198,6 +2198,28 @@ fn a_marked_file_the_user_moved_out_of_its_marked_folder_follows_once_the_folder
 }
 
 #[test]
+fn a_marked_file_the_user_renamed_in_an_unmarked_folder_follows_once_the_folder_is_adopted() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 1)),
+            ("b-folder", dir(ROOT, "d")),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};

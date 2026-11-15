@@ -177,13 +177,14 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     held
 }
 
-pub(crate) fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) {
+pub(crate) fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) -> bool {
     let mut left = claimed_once(trees, marks);
+    let claimed = left.len();
     loop {
         let before = left.len();
         left.retain(|(local, node)| !follow_mark(trees, history, local, node));
         if left.len() == before {
-            return;
+            return left.len() < claimed;
         }
     }
 }
