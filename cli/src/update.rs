@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#[cfg(target_os = "macos")]
 use std::fs;
 
 use koidrive_driver::Paths;
