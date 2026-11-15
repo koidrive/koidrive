@@ -1712,6 +1712,35 @@ impl Commits {
                         content: None,
                     };
                     let into = &outcome.node_id;
+                    let (trashed, moved_in): (Vec<NodeId>, Vec<(NodeId, Option<Shape>)>) =
+                        match code == Code::MergedInto {
+                            false => Default::default(),
+                            true => {
+                                let (trashed, moved_in): (Vec<&NodeId>, Vec<&NodeId>) = (trees
+                                    .local_children(&create.node_id))
+                                .filter(|id| {
+                                    !placed.contains(*id)
+                                        && (synced.get(trees, id))
+                                            .is_some_and(|shape| shape.parent != create.node_id)
+                                })
+                                .partition(|id| {
+                                    trees.remote().get(id).is_some_and(|remote| remote.trashed)
+                                });
+                                let moved_in = (moved_in.into_iter())
+                                    .map(|id| {
+                                        let position = (trees.remote().live(id))
+                                            .zip(synced.get(trees, id))
+                                            .map(|(remote, synced)| Shape {
+                                                parent: remote.parent.clone(),
+                                                name: remote.name.clone(),
+                                                ..synced
+                                            });
+                                        (id.clone(), position)
+                                    })
+                                    .collect();
+                                (trashed.into_iter().cloned().collect(), moved_in)
+                            }
+                        };
                     if code == Code::MergedInto && trees.local().get(into).is_some() {
                         trees.revert(create.node_id.clone());
                         merged.insert(create.node_id.clone(), into.clone());
@@ -1759,6 +1788,12 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, &create.node_id, result.seq));
                         synced.set(&create.node_id, Some(shape));
+                    }
+                    for (id, remote) in moved_in {
+                        synced.set(&id, remote);
+                    }
+                    for id in trashed {
+                        trees.hold_unsent_move(id);
                     }
                     let exists = taken && trees.remote().get(&create.node_id).is_some();
                     (
@@ -1868,6 +1903,9 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, id, result.seq));
                         synced.set(id, Some(shape));
+                    }
+                    if applied || cycle || superseded {
+                        trees.sent_move(id);
                     }
                     if cycle {
                         trees.revert(id.clone());
@@ -3239,10 +3277,11 @@ fn plan(
         }
         let remote = trees.remote().live(id);
         let placed = |shape: Option<&Shape>| shape.is_some_and(|s| s.same_position(local));
-        if in_alias && (placed(synced) || placed(remote)) && !trees.reverted().contains(id) {
+        let agreed = synced.filter(|_| !trees.unsent_moves().contains(id));
+        if in_alias && (placed(agreed) || placed(remote)) && !trees.reverted().contains(id) {
             reverts.push(id.clone());
         }
-        if synced.is_none_or(|s| !s.same_position(local))
+        if (synced.is_none_or(|s| !s.same_position(local)) || trees.unsent_moves().contains(id))
             && remote.is_none_or(|r| !r.same_position(local))
             && !trees.reverted().contains(id)
             && !trees.reviving(id)

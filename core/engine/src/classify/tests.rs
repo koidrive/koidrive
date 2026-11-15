@@ -225,3 +225,61 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
     assert!(["x", "y", "z"].iter().all(|id| trees.is_discarded(id)));
     assert!(trees.discard_state("f") == Some(Discard::Kept));
 }
+
+#[test]
+fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
+    let mut trees = Trees::new("root");
+    let shape = dir("root", "c");
+    let local = LocalNode {
+        shape: shape.clone(),
+        identity: FileIdentity {
+            dev: 1,
+            ino: 1,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("c".into(), local);
+    trees.set_synced("c".into(), Some(shape.clone()));
+    trees.set_remote(
+        "c".into(),
+        RemoteNode {
+            trashed: true,
+            ..remote(shape)
+        },
+    );
+    trees.settle();
+    trees.hold_unsent_move("c".into());
+    assert_eq!(trees.class("c"), Class::Concurrent);
+    trees.discard(["c".to_string()], &BTreeMap::new());
+    assert_eq!(trees.class("c"), Class::Remote);
+}
+
+#[test]
+fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
+    let mut trees = Trees::new("root");
+    let shape = dir("root", "c");
+    let local = LocalNode {
+        shape: shape.clone(),
+        identity: FileIdentity {
+            dev: 1,
+            ino: 1,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("c".into(), local);
+    trees.set_synced("c".into(), Some(shape.clone()));
+    trees.set_remote(
+        "c".into(),
+        RemoteNode {
+            trashed: true,
+            ..remote(shape)
+        },
+    );
+    trees.settle();
+    trees.hold_unsent_move("c".into());
+    trees.resends.insert("c".into());
+    trees.yield_resends();
+    assert_eq!(trees.class("c"), Class::Remote);
+}

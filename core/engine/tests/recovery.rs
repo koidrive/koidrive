@@ -1051,6 +1051,55 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
 }
 
 #[test]
+fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_another_devices_rename()
+ {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "a")), ("f", file("d", "f", 1))],
+        &[("d", dir(ROOT, "a")), ("f", file(ROOT, "f", 1))],
+        &[live("f", file(ROOT, "g", 1))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let kept = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["d"]);
+    let discarded = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["f"]);
+    assert!(commits.decide(&kept.id, Answer::Keep));
+    assert!(commits.decide(&discarded.id, Answer::Discard));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "d".into())]
+    );
+    let merged = OpResult {
+        node_id: "other".into(),
+        code: op_result::Code::MergedInto as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.set_remote(
+        "other".into(),
+        RemoteNode {
+            shape: dir(ROOT, "a"),
+            trashed: false,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        },
+    );
+    trees.settle();
+    assert!(!trees.reclaimed("f"));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
 fn a_folder_the_server_holds_under_its_pending_name_with_nothing_more_gets_its_name() {
     let mut trees = trees(
         &[("d", dir(ROOT, "x")), ("f", file("d", "kept.txt", 3))],

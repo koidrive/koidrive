@@ -105,6 +105,11 @@ pub struct TreesState {
     /// of it. The bootstrap after the loss takes each whose content in L still differs from S's
     /// as a lost edit (section 4.4).
     pub dropped_edits: BTreeSet<NodeId>,
+    /// The nodes R holds trashed that a move of this device's user put back at the position S
+    /// holds, when the new folder it moved them into merged there. A move revives each, as the
+    /// move into the folder would have. The server's ack of it ends the record, and so does R
+    /// holding the node live or L dropping it.
+    pub unsent_moves: BTreeSet<NodeId>,
     /// The nodes a delete of a conflict answer removes, each with the file the answer keeps, which the delete
     /// requires live (RFC 0015). Each is held while R holds the node trashed by that delete, or while its delete is
     /// sent again after the server lost it (section 4.4).
@@ -261,6 +266,7 @@ pub struct TreesChanges {
     pub past_positions: MapChanges<NodeId, Vec<Agreed>>,
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
+    pub unsent_moves: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
@@ -295,6 +301,7 @@ impl TreesChanges {
             past_positions,
             unsent_edits,
             dropped_edits,
+            unsent_moves,
             replaced_versions,
             resends,
             local_changes,
@@ -325,6 +332,7 @@ impl TreesChanges {
             past_positions: map_changes(&before.past_positions, past_positions),
             unsent_edits: set_changes(&before.unsent_edits, unsent_edits),
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
+            unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
