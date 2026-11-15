@@ -44,7 +44,6 @@ use onboarding::report_paired;
 pub use onboarding::setup;
 pub(crate) use onboarding::shown_folder;
 use remote::server_api;
-use servers::jurisdiction;
 pub use servers::server;
 pub(crate) use session::read_code;
 
@@ -142,6 +141,19 @@ pub enum ServerAction {
         #[command(flatten)]
         login: LoginArgs,
     },
+}
+
+fn jurisdiction(text: &str) -> Result<Jurisdiction, String> {
+    [
+        Jurisdiction::Default,
+        Jurisdiction::Eu,
+        Jurisdiction::Us,
+        Jurisdiction::Fedramp,
+        Jurisdiction::FedrampHigh,
+    ]
+    .into_iter()
+    .find(|jurisdiction| jurisdiction.as_str() == text)
+    .ok_or_else(|| "not one of default, eu, us, fedramp and fedramp-high".to_owned())
 }
 
 #[derive(clap::Args)]

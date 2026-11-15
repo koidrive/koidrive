@@ -3,7 +3,7 @@
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use koidrive_cloudflare::{Bundle, Jurisdiction, Secret, UploadPlan};
+use koidrive_cloudflare::{Bundle, Secret, UploadPlan};
 use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Next};
 use koidrive_telemetry::schema::SetupStep;
@@ -189,19 +189,6 @@ pub async fn server(
         }
     }
     Ok(Done::printed())
-}
-
-pub(super) fn jurisdiction(text: &str) -> Result<Jurisdiction, String> {
-    [
-        Jurisdiction::Default,
-        Jurisdiction::Eu,
-        Jurisdiction::Us,
-        Jurisdiction::Fedramp,
-        Jurisdiction::FedrampHigh,
-    ]
-    .into_iter()
-    .find(|jurisdiction| jurisdiction.as_str() == text)
-    .ok_or_else(|| "not one of default, eu, us, fedramp and fedramp-high".to_owned())
 }
 
 impl Session {
