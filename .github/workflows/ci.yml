@@ -740,6 +740,12 @@ jobs:
             echo "::error::UI tests need Automation Mode without authentication on this runner. Run 'sudo automationmodetool enable-automationmode-without-authentication' on it once, or run this job on a hosted runner."
             exit 1
           fi
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            defaults write -g AppleKeyboardUIMode -int 2
+          elif [ "$(defaults read -g AppleKeyboardUIMode 2>/dev/null)" != 2 ]; then
+            echo "::error::UI tests need keyboard navigation on this runner. Turn on Keyboard navigation in System Settings for the runner user, or run 'defaults write -g AppleKeyboardUIMode -int 2' as that user once."
+            exit 1
+          fi
           xcodebuild test -project Koidrive.xcodeproj -scheme Koidrive -configuration Debug \
             -derivedDataPath build/DerivedData -destination "platform=macOS,arch=$(uname -m)" \
             -resultBundlePath build/UITests.xcresult CODE_SIGN_IDENTITY=- 2>&1 | tee build/uitests.log
