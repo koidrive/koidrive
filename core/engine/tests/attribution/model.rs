@@ -27,6 +27,8 @@ struct Value {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Node {
+    created: bool,
+    created_rev: Seq,
     trashed: Option<Tok>,
     pos: Tok,
     content: Tok,
@@ -185,6 +187,10 @@ enum Op {
     Copy {
         content: Tok,
     },
+    Create {
+        pos: Tok,
+        content: Tok,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -193,6 +199,7 @@ enum Code {
     Renamed(Tok),
     Superseded,
     Copied,
+    Rejected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -235,6 +242,7 @@ struct Device {
     by_user: [bool; 2],
     flight: Option<Flight>,
     copies: Vec<(Tok, Option<Seq>)>,
+    lost_position: Option<Tok>,
 }
 
 fn old_wire(d: Dev, rules: Rules) -> bool {
@@ -254,6 +262,54 @@ impl Device {
         self.by_user[slot(field)] = false;
     }
 
+    fn create_at(&self) -> Option<Tok> {
+        let pos = self.l.get(Field::Position)?;
+        Some(match self.unsent.position {
+            Some(Author::Own) => pos,
+            _ => self.lost_position.unwrap_or(pos),
+        })
+    }
+
+    fn take_refused_create(&mut self, sent: Tok, rules: Rules, own: impl Fn(Tok) -> bool) {
+        let r = self.r;
+        let lost = self.lost_position.take().is_some();
+        let Local::Live { pos, content } = self.l else {
+            return;
+        };
+        let takes = lost
+            && rules.refused_keeps_lost_position()
+            && (r.trashed.is_some()
+                || (rules.refused_live_takes_lost_position() && content == r.content));
+        if r.trashed.is_none() && !takes {
+            return;
+        }
+        let sent = if takes { pos } else { sent };
+        self.unsent.existence = None;
+        self.s = Synced {
+            live: true,
+            exist_seq: r.meta_rev,
+            deleted_here: false,
+            pos: Agreed {
+                val: sent,
+                seq: r.meta_rev,
+                own: own(sent),
+            },
+            content: Agreed {
+                val: r.content,
+                seq: r.content_rev,
+                own: own(r.content),
+            },
+        };
+        for (field, local, synced) in [
+            (Field::Position, pos, sent),
+            (Field::Content, content, r.content),
+        ] {
+            if local != synced && self.unsent.get(field).is_none() {
+                self.unsent.set(field, Some(Author::Own));
+            }
+        }
+    }
+
     fn head(&self) -> (Seq, u8) {
         (
             self.seen.len() as Seq,
@@ -270,6 +326,7 @@ pub struct Budget {
     pub trash_restores: [u8; 2],
     pub renames: u8,
     pub losses: u8,
+    pub created_by: Option<Dev>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -322,11 +379,33 @@ pub enum Rules {
     CopiesOwnBase,
     BoundOnlyResendsSeen,
     TrashCoversView,
+    LostCreateResends,
+    NoLostPosition,
+    AbsentDeleteResent,
+    ResentCreateFrom,
+    RefusedKeepsLostPosition,
+    RefusedTakesLostPosition,
+    CreateFixes,
 }
 
 impl Rules {
     fn old_server(self) -> bool {
         matches!(self, Rules::OldServer | Rules::BoundOnlyResendsSeen)
+    }
+
+    fn create_from(self) -> bool {
+        matches!(self, Rules::ResentCreateFrom | Rules::CreateFixes)
+    }
+
+    fn refused_keeps_lost_position(self) -> bool {
+        matches!(
+            self,
+            Rules::RefusedKeepsLostPosition | Rules::RefusedTakesLostPosition | Rules::CreateFixes
+        )
+    }
+
+    fn refused_live_takes_lost_position(self) -> bool {
+        matches!(self, Rules::RefusedTakesLostPosition | Rules::CreateFixes)
     }
 
     fn bound_only(self) -> bool {
@@ -349,72 +428,96 @@ type Broken = String;
 
 impl World {
     fn new(budget: Budget) -> Self {
+        let creator = budget.created_by;
+        let at: Seq = if creator.is_some() { 2 } else { 1 };
         let node = Node {
+            created: true,
+            created_rev: at,
             trashed: None,
             pos: Tok(0),
             content: Tok(1),
-            meta_rev: 1,
-            meta_edit_rev: 1,
-            meta_editor: None,
-            content_rev: 1,
-            edit_rev: 1,
-            editor: None,
-            pos_rev: 1,
+            meta_rev: at,
+            meta_edit_rev: at,
+            meta_editor: creator,
+            content_rev: at,
+            edit_rev: at,
+            editor: creator,
+            pos_rev: at,
             trash_base: 0,
+        };
+        let absent = Node {
+            created: false,
+            created_rev: 0,
+            pos: UNKNOWN,
+            content: UNKNOWN,
+            meta_rev: 0,
+            meta_edit_rev: 0,
+            meta_editor: None,
+            content_rev: 0,
+            edit_rev: 0,
+            editor: None,
+            pos_rev: 0,
+            ..node
         };
         let initial = |field| Value {
             field,
-            author: None,
+            author: creator,
             pos: Tok(0),
             content: Tok(1),
             seen: [Tok(0), Tok(1)],
             held: [0; 2],
             renamed_from: None,
         };
-        let agreed = |val| Agreed {
-            val,
-            seq: 1,
-            own: false,
+        let device = |d: Dev| {
+            let agreed = |val| Agreed {
+                val,
+                seq: at,
+                own: creator == Some(d),
+            };
+            Device {
+                l: Local::Live {
+                    pos: Tok(0),
+                    content: Tok(1),
+                },
+                s: Synced {
+                    live: true,
+                    exist_seq: at,
+                    deleted_here: false,
+                    pos: agreed(Tok(0)),
+                    content: agreed(Tok(1)),
+                },
+                r: node,
+                seen: (0..at).collect(),
+                history: [Vec::new(), Vec::new()],
+                earlier: Vec::new(),
+                held: [1 << 0, 1 << 1],
+                unsent: Unsent::default(),
+                by_user: [creator == Some(d); 2],
+                flight: None,
+                copies: Vec::new(),
+                lost_position: None,
+            }
         };
-        let device = Device {
-            l: Local::Live {
-                pos: Tok(0),
-                content: Tok(1),
-            },
-            s: Synced {
-                live: true,
-                exist_seq: 1,
-                deleted_here: false,
-                pos: agreed(Tok(0)),
-                content: agreed(Tok(1)),
-            },
-            r: node,
-            seen: vec![0],
-            history: [Vec::new(), Vec::new()],
-            earlier: Vec::new(),
-            held: [1 << 0, 1 << 1],
-            unsent: Unsent::default(),
-            by_user: [false; 2],
-            flight: None,
-            copies: Vec::new(),
-        };
+        let records = [absent, node].into_iter().skip(2 - at as usize);
         World {
             values: vec![initial(Field::Position), initial(Field::Content)],
             server: Server {
-                log: vec![Record {
-                    seq: 1,
-                    token: 0,
-                    node,
-                }],
+                log: (records.enumerate())
+                    .map(|(token, node)| Record {
+                        seq: token as Seq + 1,
+                        token: token as u8,
+                        node,
+                    })
+                    .collect(),
                 copies: Vec::new(),
-                tokens: 1,
+                tokens: at,
                 overwritten: Vec::new(),
                 restored: Vec::new(),
                 overruled: Vec::new(),
-                authors: vec![None],
+                authors: [None, creator].into_iter().take(at as usize).collect(),
                 before_loss: None,
             },
-            devices: [device.clone(), device],
+            devices: [device(0), device(1)],
             budget,
         }
     }
@@ -532,7 +635,21 @@ impl World {
     fn plan(&self, d: Dev) -> Vec<(Op, Author)> {
         let dev = &self.devices[d];
         let mut ops = Vec::new();
+        let absent = !dev.r.created;
+        let refused = dev.r.trashed.is_some() && !dev.s.live;
+        let creating = absent || refused;
+        if let (true, Local::Live { content, .. }, Some(author), Some(at)) =
+            (creating, dev.l, dev.unsent.existence, dev.create_at())
+        {
+            let author = if dev.unsent.holds_own() {
+                Author::Own
+            } else {
+                author
+            };
+            ops.push((Op::Create { pos: at, content }, author));
+        }
         match dev.l {
+            _ if absent || (refused && !ops.is_empty()) => {}
             Local::Gone(gone) => {
                 if dev.unsent.existence == Some(Author::Own) {
                     if let Some(author) = dev.unsent.position {
@@ -620,6 +737,9 @@ impl World {
                 dev.l.set(field, value);
                 dev.by_user[slot(field)] = true;
                 dev.unsent.set(field, Some(Author::Own));
+                if field == Field::Position {
+                    dev.lost_position = None;
+                }
                 if rules == Rules::NodeAuthor {
                     for other in FIELDS {
                         if dev.unsent.get(other).is_some() {
@@ -637,7 +757,8 @@ impl World {
                 let dev = &w.devices[d];
                 for field in FIELDS {
                     let remote = dev.r.get(field);
-                    let overrules = dev.unsent.get(field) == Some(Author::Own)
+                    let overrules = dev.r.created
+                        && dev.unsent.get(field) == Some(Author::Own)
                         && dev.l.get(field) != Some(remote);
                     if overrules
                         && w.author(remote).is_some()
@@ -672,6 +793,7 @@ impl World {
                     }
                 }
                 dev.l = Local::Gone(gone);
+                dev.lost_position = None;
                 let resent = |author: Option<Author>| {
                     author.filter(|&author| {
                         author == Author::Other && rules != Rules::DeleteDropsResends
@@ -682,7 +804,12 @@ impl World {
                     position: resent(dev.unsent.position),
                     content: resent(dev.unsent.content),
                 };
-                if !dev.s.live && dev.flight.is_none() && w.covers(d, rules) {
+                if !dev.r.created && dev.flight.is_none() {
+                    dev.unsent = Unsent::default();
+                    dev.s.live = false;
+                    dev.s.deleted_here = true;
+                    dev.s.exist_seq = 0;
+                } else if !dev.s.live && dev.flight.is_none() && w.covers(d, rules) {
                     w.devices[d].unsent = Unsent::default();
                 }
             }
@@ -702,11 +829,12 @@ impl World {
                 let ops: Vec<(Op, Author)> = w.plan(d).into_iter().take(k as usize).collect();
                 let dev = &w.devices[d];
                 let by_user: Vec<bool> = (ops.iter())
-                    .map(|(op, _)| match op {
+                    .map(|(op, author)| match op {
                         Op::Delete { gone, .. } => w.author(*gone) == Some(d),
                         Op::Move { .. } => dev.by_user[0],
                         Op::Update { .. } => dev.by_user[1],
                         Op::Copy { .. } => true,
+                        Op::Create { .. } => *author == Author::Own,
                     })
                     .collect();
                 for ((op, author), by_user) in ops.iter().zip(&by_user) {
@@ -744,7 +872,10 @@ impl World {
             Action::Record(d) => {
                 let record = w.server.log[w.devices[d].seen.len()];
                 let dev = &mut w.devices[d];
-                for field in FIELDS.into_iter().filter(|_| rules.bound_only()) {
+                for field in FIELDS
+                    .into_iter()
+                    .filter(|_| rules.bound_only() && dev.r.created)
+                {
                     let replaced = (dev.r.get(field), dev.r.rev(field));
                     let history = &mut dev.history[slot(field)];
                     if replaced.0 != record.node.get(field) && !history.contains(&replaced) {
@@ -832,6 +963,31 @@ impl World {
                 ))
             };
             let code = match *op {
+                Op::Create { pos, content } if !node.created => {
+                    let claims = |value: Tok| {
+                        !rules.create_from() || self.values[value.0 as usize].author == Some(d)
+                    };
+                    node = Node {
+                        created: true,
+                        created_rev: seq,
+                        trashed: None,
+                        pos,
+                        content,
+                        meta_rev: seq,
+                        meta_edit_rev: if claims(pos) { seq } else { 0 },
+                        meta_editor: claims(pos).then_some(d),
+                        content_rev: seq,
+                        edit_rev: if claims(content) { seq } else { 0 },
+                        editor: claims(content).then_some(d),
+                        pos_rev: seq,
+                        trash_base: 0,
+                    };
+                    Code::Applied
+                }
+                Op::Create { .. } => Code::Rejected,
+                Op::Delete { .. } | Op::Move { .. } | Op::Update { .. } if !node.created => {
+                    Code::Rejected
+                }
                 Op::Delete { base, gone } => {
                     let unseen = |field: Field| {
                         let differs =
@@ -1073,6 +1229,9 @@ impl World {
     }
 
     fn acknowledge(&mut self, d: Dev, rules: Rules) {
+        let authors: Vec<Option<Dev>> = self.values.iter().map(|value| value.author).collect();
+        let made_here = |value: Tok| authors[value.0 as usize] == Some(d);
+        let landed_own = |value: Tok| rules == Rules::LandedResendIsOwn || made_here(value);
         let dev = &mut self.devices[d];
         let flight = dev.flight.take().unwrap();
         let Phase::Arrived(Answer::Done { seq, codes, .. }) = flight.phase else {
@@ -1094,6 +1253,42 @@ impl World {
         for ((op, author), code) in flight.ops.into_iter().zip(codes) {
             let own = author == Author::Own || rules == Rules::LandedResendIsOwn;
             match (op, code) {
+                (Op::Create { pos, content }, Code::Applied) => {
+                    let lost = dev.lost_position.take().is_some();
+                    let held = dev.l.get(Field::Position);
+                    let Some(at) = (if lost { held } else { Some(pos) }) else {
+                        dev.unsent = Unsent::default();
+                        continue;
+                    };
+                    dev.s = Synced {
+                        live: true,
+                        exist_seq: seq,
+                        deleted_here: false,
+                        pos: Agreed {
+                            val: at,
+                            seq,
+                            own: landed_own(at),
+                        },
+                        content: Agreed {
+                            val: content,
+                            seq,
+                            own: landed_own(content),
+                        },
+                    };
+                    if let Local::Live { .. } = dev.l {
+                        dev.unsent.existence = None;
+                        if dev.unsent.position.is_none() && held != Some(at) {
+                            dev.take(Field::Position, at);
+                        }
+                        for (field, sent) in [(Field::Position, at), (Field::Content, content)] {
+                            if dev.l.get(field) == Some(sent) {
+                                dev.unsent.set(field, None);
+                            }
+                        }
+                    }
+                }
+                (Op::Create { pos, .. }, _) => dev.take_refused_create(pos, rules, made_here),
+                (_, Code::Rejected) => {}
                 (Op::Delete { .. }, Code::Superseded)
                     if rules != Rules::SupersededDeleteGivesUp => {}
                 (Op::Move { to, .. }, Code::Applied | Code::Renamed(_))
@@ -1244,6 +1439,7 @@ impl World {
         dev.s.exist_seq = r.meta_rev;
         dev.s.deleted_here = false;
         dev.unsent = Unsent::default();
+        dev.lost_position = None;
         Ok(())
     }
 
@@ -1252,6 +1448,68 @@ impl World {
         let edited_here = self.edited_here(d, &self.devices[d].r, &self.devices[d].seen, rules);
         let dev = &mut self.devices[d];
         let r = dev.r;
+        if !r.created {
+            if let Local::Gone(_) = dev.l {
+                if dev.unsent.existence == Some(Author::Own) {
+                    dev.s.deleted_here = true;
+                    dev.s.exist_seq = 0;
+                }
+                dev.s.live = false;
+                dev.unsent = Unsent::default();
+                dev.lost_position = None;
+            }
+            return Ok(());
+        }
+        if let Local::Gone(_) = dev.l
+            && !dev.s.live
+            && dev.s.deleted_here
+            && dev.s.exist_seq == 0
+        {
+            dev.s.exist_seq = r.meta_rev;
+            if r.trashed.is_none() && rules == Rules::AbsentDeleteResent {
+                dev.s.live = true;
+                dev.unsent.existence = Some(Author::Own);
+            }
+        }
+        if let (Local::Live { content, .. }, Some(pending)) = (dev.l, dev.unsent.existence) {
+            match r.trashed {
+                Some(delete) if pending == Author::Other && !dev.unsent.holds_own() => {
+                    dev.l = Local::Gone(delete);
+                    dev.s.live = false;
+                    dev.s.exist_seq = r.meta_rev;
+                    dev.s.deleted_here = false;
+                    dev.unsent = Unsent::default();
+                    dev.lost_position = None;
+                    return Ok(());
+                }
+                Some(_) => return Ok(()),
+                None => {
+                    dev.unsent.existence = None;
+                    dev.lost_position = None;
+                    if content != r.content {
+                        dev.copies.push((content, None));
+                        dev.take(Field::Content, r.content);
+                        dev.unsent.content = None;
+                    }
+                    if dev.unsent.position.is_none() {
+                        dev.take(Field::Position, r.pos);
+                    }
+                    for field in FIELDS {
+                        dev.s.set(
+                            field,
+                            Agreed {
+                                val: r.get(field),
+                                seq: r.rev(field),
+                                own: false,
+                            },
+                        );
+                    }
+                    dev.s.live = true;
+                    dev.s.exist_seq = r.meta_rev;
+                    dev.s.deleted_here = false;
+                }
+            }
+        }
         match (dev.l, r.trashed) {
             (Local::Live { .. }, Some(delete)) => {
                 if !dev.unsent.holds_own() {
@@ -1409,6 +1667,9 @@ impl World {
     fn bootstrap(&mut self, d: Dev, rules: Rules) -> Result<(), Broken> {
         let log: Vec<u8> = self.server.log.iter().map(|record| record.token).collect();
         let listing = self.server.node();
+        if !listing.created {
+            return self.bootstrap_absent(d, rules, log, listing);
+        }
         let trash_covers = listing
             .trashed
             .is_some_and(|trash| self.trash_covers(d, trash, rules));
@@ -1599,6 +1860,82 @@ impl World {
         self.classify(d, rules)
     }
 
+    fn bootstrap_absent(
+        &mut self,
+        d: Dev,
+        rules: Rules,
+        log: Vec<u8>,
+        listing: Node,
+    ) -> Result<(), Broken> {
+        let dev = &self.devices[d];
+        let pre = dev.r;
+        let lost_own = FIELDS.map(|field| {
+            dev.unsent.get(field) == Some(Author::Own)
+                || (dev.by_user[slot(field)]
+                    && dev.l.get(field).is_some_and(|local| {
+                        let value = self.values[local.0 as usize];
+                        let before = match field {
+                            Field::Position => value.pos,
+                            _ => value.content,
+                        };
+                        before != local
+                    }))
+        });
+        let changed = lost_own.contains(&true);
+        let content_here = pre.created
+            && (dev.seen.get(pre.content_rev as usize - 1))
+                .is_some_and(|&token| self.server.authors[token as usize] == Some(d));
+        let untaken = (pre.trashed).filter(|&trash| self.author(trash) != Some(d));
+        let dev = &mut self.devices[d];
+        dev.r = listing;
+        dev.seen = log;
+        dev.flight = None;
+        for copy in &mut dev.copies {
+            if copy.1.is_some_and(|seq| seq > 1) {
+                copy.1 = None;
+            }
+        }
+        dev.s.live = false;
+        dev.s.exist_seq = 1;
+        dev.s.deleted_here = false;
+        dev.s.pos.seq = 1;
+        dev.s.content.seq = 1;
+        let Local::Live { pos, .. } = dev.l else {
+            if let Local::Gone(gone) = dev.l
+                && self.values[gone.0 as usize].author == Some(d)
+            {
+                let dev = &mut self.devices[d];
+                dev.s.deleted_here = true;
+                dev.s.exist_seq = 0;
+            }
+            let dev = &mut self.devices[d];
+            dev.unsent = Unsent::default();
+            dev.lost_position = None;
+            return Ok(());
+        };
+        if let (Some(trash), false) = (untaken, changed) {
+            dev.l = Local::Gone(trash);
+            dev.unsent = Unsent::default();
+            dev.lost_position = None;
+            return Ok(());
+        }
+        let resends = !changed && (rules == Rules::LostCreateResends || !content_here);
+        if pre.created {
+            dev.lost_position = (rules != Rules::NoLostPosition
+                && dev.unsent.position.is_none()
+                && pre.trashed.is_none()
+                && pre.pos != pos)
+                .then_some(pre.pos);
+        }
+        let own = |lost: bool| lost.then_some(Author::Own);
+        dev.unsent = Unsent {
+            existence: Some(if resends { Author::Other } else { Author::Own }),
+            position: own(lost_own[0]),
+            content: own(lost_own[1]),
+        };
+        Ok(())
+    }
+
     fn check(&self) -> Result<(), Broken> {
         for (d, dev) in self.devices.iter().enumerate() {
             match dev.l {
@@ -1653,7 +1990,7 @@ impl World {
                             && dev.s.live
                             && (dev.s.pos.val, dev.s.content.val) == (pos, content)
                     }
-                    Local::Gone(_) => node.trashed.is_some() && !dev.s.live,
+                    Local::Gone(_) => (node.trashed.is_some() || !node.created) && !dev.s.live,
                 }
         })
     }
@@ -1661,7 +1998,7 @@ impl World {
     fn survived(&self, value: Tok) -> bool {
         let node = self.server.node();
         let info = self.values[value.0 as usize];
-        let held = node.trashed.is_none() && node.get(info.field) == value;
+        let held = node.created && node.trashed.is_none() && node.get(info.field) == value;
         let copied = info.field == Field::Content
             && self.server.copies.iter().any(|(copy, _)| *copy == value);
         let overwritten =
@@ -1768,7 +2105,8 @@ impl World {
     }
 
     fn undone_delete(&self, rules: Rules) -> Option<Broken> {
-        if self.server.node().trashed.is_some() {
+        let node = self.server.node();
+        if node.trashed.is_some() || !node.created {
             return None;
         }
         let tokens = (0..self.values.len()).map(|index| Tok(index as u8));
@@ -1819,6 +2157,7 @@ impl World {
             Op::Move { .. } => field == Field::Position,
             Op::Update { .. } => field == Field::Content,
             Op::Copy { .. } => false,
+            Op::Create { .. } => field == Field::Existence,
         });
         let author = match dev.unsent.get(field) {
             None => "agreed",
@@ -1924,7 +2263,7 @@ impl World {
         ] {
             (pair[at(0)], pair[at(1)]).hash(&mut h);
         }
-        (budget.renames, budget.losses, count).hash(&mut h);
+        (budget.renames, budget.losses, dev(budget.created_by), count).hash(&mut h);
         for &old in &order[..count] {
             let value = &self.values[old as usize];
             Value {
@@ -2033,6 +2372,10 @@ impl World {
                         Op::Copy { content } => Op::Copy {
                             content: tok(content),
                         },
+                        Op::Create { pos, content } => Op::Create {
+                            pos: tok(pos),
+                            content: tok(content),
+                        },
                     };
                     (op, author).hash(&mut h);
                 }
@@ -2071,6 +2414,7 @@ impl World {
             for &(copy, landed) in &device.copies {
                 (tok(copy), landed).hash(&mut h);
             }
+            device.lost_position.map(tok).hash(&mut h);
         }
         h.finish()
     }

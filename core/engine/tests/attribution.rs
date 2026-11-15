@@ -41,7 +41,12 @@ fn show_from_env() {
     })
     .collect();
     show(
-        ANY,
+        Budget {
+            created_by: std::env::var("MODEL_CREATED")
+                .ok()
+                .map(|d| d.parse().unwrap()),
+            ..ANY
+        },
         rules(&std::env::var("MODEL_RULES").unwrap_or("Spec".into())),
         &trace,
     );
@@ -57,6 +62,7 @@ const ANY: Budget = Budget {
     trash_restores: [1, 1],
     renames: 1,
     losses: 2,
+    created_by: None,
 };
 
 fn rules(name: &str) -> Rules {
@@ -93,6 +99,13 @@ fn rules(name: &str) -> Rules {
         "BoundOnlyResendsSeen" => Rules::BoundOnlyResendsSeen,
         "TrashCoversView" => Rules::TrashCoversView,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
+        "LostCreateResends" => Rules::LostCreateResends,
+        "NoLostPosition" => Rules::NoLostPosition,
+        "AbsentDeleteResent" => Rules::AbsentDeleteResent,
+        "ResentCreateFrom" => Rules::ResentCreateFrom,
+        "RefusedKeepsLostPosition" => Rules::RefusedKeepsLostPosition,
+        "RefusedTakesLostPosition" => Rules::RefusedTakesLostPosition,
+        "CreateFixes" => Rules::CreateFixes,
         other => panic!("no rules {other}"),
     }
 }
@@ -112,6 +125,7 @@ fn explore_from_env() {
         trash_restores: [numbers[6], numbers[7]],
         renames: numbers[8],
         losses: numbers[9],
+        created_by: numbers.get(10).map(|&d| d as usize),
     };
     for name in std::env::var("MODEL_RULES").unwrap().split(',') {
         let start = std::time::Instant::now();
@@ -160,6 +174,13 @@ const LARGE: [[u8; 10]; 6] = [
     [0, 0, 1, 1, 1, 1, 0, 0, 0, 2],
 ];
 
+const CREATED: [[u8; 10]; 4] = [
+    [0, 0, 0, 1, 1, 0, 0, 0, 0, 1],
+    [0, 0, 0, 1, 1, 1, 0, 0, 0, 1],
+    [1, 1, 0, 0, 1, 1, 0, 0, 0, 1],
+    [0, 0, 1, 1, 1, 1, 0, 0, 0, 1],
+];
+
 fn budget(n: [u8; 10]) -> Budget {
     Budget {
         writes: [n[0], n[1]],
@@ -168,15 +189,23 @@ fn budget(n: [u8; 10]) -> Budget {
         trash_restores: [n[6], n[7]],
         renames: n[8],
         losses: n[9],
+        created_by: None,
     }
 }
 
-type Counterexample = ([u8; 10], (String, Vec<Action>));
+fn created(n: [u8; 10]) -> Budget {
+    Budget {
+        created_by: Some(A),
+        ..budget(n)
+    }
+}
 
-fn refuted(rules: Rules, budgets: &[[u8; 10]]) -> Option<Counterexample> {
-    budgets.iter().find_map(|&n| {
+type Counterexample = (Budget, (String, Vec<Action>));
+
+fn refuted(rules: Rules, budgets: impl IntoIterator<Item = Budget>) -> Option<Counterexample> {
+    budgets.into_iter().find_map(|n| {
         let start = std::time::Instant::now();
-        let deep = check_deep(budget(n), rules);
+        let deep = check_deep(n, rules);
         println!(
             "{rules:?} {n:?}: {} states in {:?}, broken: {}",
             deep.states,
@@ -185,7 +214,7 @@ fn refuted(rules: Rules, budgets: &[[u8; 10]]) -> Option<Counterexample> {
         );
         let broken = deep.broken?;
         let shortest = if deep.states < 2_000_000 {
-            check(budget(n), rules).broken
+            check(n, rules).broken
         } else {
             None
         };
@@ -197,12 +226,14 @@ fn refuted(rules: Rules, budgets: &[[u8; 10]]) -> Option<Counterexample> {
 #[ignore]
 fn refute_from_env() {
     for name in std::env::var("MODEL_RULES").unwrap().split(',') {
-        println!("{name}: {:?}", refuted(rules(name), &SMALL));
+        println!("{name}: {:?}", refuted(rules(name), SMALL.map(budget)));
     }
 }
 
 fn refute(rules: Rules) {
-    let found = refuted(rules, &SMALL).or_else(|| refuted(rules, &LARGE));
+    let found = refuted(rules, SMALL.map(budget))
+        .or_else(|| refuted(rules, CREATED.map(created)))
+        .or_else(|| refuted(rules, LARGE.map(budget)));
     println!("{rules:?} breaks: {found:?}");
     assert!(found.is_some(), "no budget breaks {rules:?}");
 }
@@ -381,9 +412,25 @@ fn refute_trash_covers_view() {
     refute(Rules::TrashCoversView);
 }
 
+#[test]
+#[ignore]
+fn refute_no_lost_position() {
+    refute(Rules::NoLostPosition);
+}
+
+#[test]
+#[ignore]
+fn refute_absent_delete_resent() {
+    refute(Rules::AbsentDeleteResent);
+}
+
 fn exhaustive(n: [u8; 10], rules: Rules) {
+    exhaustive_from(budget(n), rules);
+}
+
+fn exhaustive_from(n: Budget, rules: Rules) {
     let start = std::time::Instant::now();
-    let report = check_deep(budget(n), rules);
+    let report = check_deep(n, rules);
     println!(
         "{rules:?} {n:?}: {} states, {} converged ({} with a spurious copy) in {:?}",
         report.states,
@@ -518,6 +565,129 @@ fn old_deleter_moves_and_deletes_two_restores() {
 #[test]
 fn a_small_budget_breaks_no_rule() {
     exhaustive([0, 1, 0, 1, 1, 0, 0, 0, 0, 1], Rules::Spec);
+}
+
+const MADE_BY_A: Budget = Budget {
+    created_by: Some(A),
+    ..ANY
+};
+
+fn broken_on_main(trace: &[Action], broken: &str) {
+    let found = settle(MADE_BY_A, Rules::Spec, trace).unwrap_err();
+    assert!(found.contains(broken), "{found}");
+}
+
+#[test]
+fn a_delete_comes_undone_when_a_resent_create_claims_a_renamed_position() {
+    broken_on_main(
+        &[
+            Move(A),
+            Build(A, 1),
+            Delete(A),
+            ServeRenamed(A),
+            Answer(A),
+            Record(B),
+            Lose(1),
+            Bootstrap(B),
+            Build(B, 1),
+            Serve(B),
+            Bootstrap(A),
+            Answer(B),
+            Record(B),
+        ],
+        "came undone",
+    );
+}
+
+#[test]
+fn a_refused_lost_position_create_moves_the_file_back() {
+    broken_on_main(
+        &[
+            Move(A),
+            Build(A, 1),
+            Write(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Serve(B),
+            Answer(B),
+            Record(B),
+            Lose(1),
+            Bootstrap(A),
+            Build(A, 1),
+            Delete(A),
+            Bootstrap(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Record(A),
+            Build(A, 1),
+            Serve(A),
+            Serve(B),
+            Answer(B),
+            Record(B),
+            Record(B),
+            Record(B),
+        ],
+        "holds Position Tok(0) as Own",
+    );
+}
+
+#[test]
+fn a_delete_of_a_lost_node_comes_undone_when_another_device_resends_its_create() {
+    broken_on_main(
+        &[
+            Delete(A),
+            Lose(1),
+            Bootstrap(A),
+            Bootstrap(B),
+            Build(B, 1),
+            Serve(B),
+            Record(A),
+            Answer(B),
+            Record(B),
+        ],
+        "came undone",
+    );
+}
+
+#[test]
+fn a_delete_while_a_lost_position_create_is_in_flight_survives_its_landing() {
+    let trace = [
+        Move(B),
+        Lose(1),
+        Bootstrap(B),
+        Build(B, 1),
+        Serve(B),
+        Bootstrap(A),
+        Build(A, 1),
+        Serve(A),
+        Answer(A),
+        Record(A),
+        Record(B),
+        Record(B),
+        Lose(1),
+        Bootstrap(A),
+        Answer(B),
+        Bootstrap(B),
+        Build(B, 1),
+        Delete(B),
+        Serve(B),
+        Record(A),
+        Answer(B),
+        Record(B),
+    ];
+    if let Err(broken) = settle(MADE_BY_A, Rules::Spec, &trace) {
+        panic!("{broken}");
+    }
+}
+
+#[test]
+fn a_delete_comes_undone_across_a_restore_and_back() {
+    broken_on_main(
+        &[Delete(A), Lose(1), Bootstrap(A), Action::Unlose, Record(A)],
+        "came undone",
+    );
 }
 
 fn handled(trace: &[Action], broken_by: &[Rules]) {
