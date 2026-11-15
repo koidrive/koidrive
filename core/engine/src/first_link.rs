@@ -200,13 +200,17 @@ pub(crate) fn adopt_by_marks_first(trees: &mut Trees, history: &History, marks: 
             claimed = left;
             continue;
         }
-        let highest = (claimed.keys()).min_by_key(|node| {
-            key_path(trees.remote(), node).map_or(usize::MAX, |path| path.len())
-        });
-        let Some(highest) = highest else {
+        let depth =
+            |node: &NodeId| key_path(trees.remote(), node).map_or(usize::MAX, |path| path.len());
+        let Some(highest) = claimed.keys().map(depth).min() else {
             return;
         };
-        released.insert(highest.clone());
+        released.extend(
+            claimed
+                .keys()
+                .filter(|node| depth(node) == highest)
+                .cloned(),
+        );
     }
 }
 
