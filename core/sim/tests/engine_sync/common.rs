@@ -1555,7 +1555,7 @@ fn run_ignoring_answering_after(
                 .unwrap();
             continue;
         }
-        let before = device.trees.clone();
+        let before = (device.trees.clone(), commits.questions().to_vec());
         let built = commits.build(
             &mut device.trees,
             &mut device.ids,
@@ -1634,7 +1634,8 @@ fn run_ignoring_answering_after(
                 asked += 1;
                 continue;
             }
-            quiet = device.trees == before && during.len() == 0;
+            quiet = (&device.trees, commits.questions()) == (&before.0, &before.1[..])
+                && during.len() == 0;
             continue;
         };
         let mut sending = Vec::new();
