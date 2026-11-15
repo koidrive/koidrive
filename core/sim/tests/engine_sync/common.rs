@@ -1219,8 +1219,29 @@ fn acted_below(
         (Some(local), Some(remote)) => local.shape.same(remote),
         (local, remote) => local.is_none() && remote.is_none(),
     };
+    let below_in_r = |node: &str, entry: &str| {
+        let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
+        for _ in 0..=trees.remote().len() {
+            match current {
+                Some(at) if at == entry => return true,
+                Some(at) => current = trees.remote().live(&at).map(|remote| remote.parent.clone()),
+                None => return false,
+            }
+        }
+        false
+    };
+    let kept_by_r7 = |entry: &str| {
+        trees.local().get(entry).is_none()
+            && trees.remote().live(entry).is_some()
+            && (trees.remote().iter()).any(|(node, remote)| {
+                !remote.trashed
+                    && trees.local().get(node).is_none()
+                    && !device.removed_from.contains_key(node)
+                    && below_in_r(node, entry)
+            })
+    };
     (device.acted.iter())
-        .filter(|entry| !as_on_server(entry))
+        .filter(|entry| !as_on_server(entry) && !kept_by_r7(entry))
         .any(|entry| {
             reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
         })
