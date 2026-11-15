@@ -410,6 +410,34 @@ fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() 
 }
 
 #[test]
+fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it() {
+    let mut trees = Trees::new(ROOT);
+    for (id, old, new) in [
+        ("a", dir(ROOT, "v"), dir(ROOT, "w")),
+        ("b", dir(ROOT, "w"), dir(ROOT, "v")),
+        ("c", dir(ROOT, "c"), dir("t", "A")),
+        ("d", dir("0e", "ss"), dir(ROOT, "d")),
+    ] {
+        same_change(&mut trees, id, old, new, 10);
+    }
+    trees.set_synced("t".into(), Some(dir("c", "t")));
+    trees.set_local("t".into(), local(dir(ROOT, "z"), 11));
+    trees.set_remote("t".into(), remote(dir(ROOT, "t")));
+    trees.set_synced("0e".into(), Some(dir("t", "a")));
+    trees.set_local("0e".into(), local(dir(ROOT, "x"), 12));
+    let mut trashed = remote(dir("t", "a"));
+    trashed.trashed = true;
+    trees.set_remote("0e".into(), trashed);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    assert_eq!(trees.check(), Ok(()));
+    trees.settle();
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.synced().live("0e"), None);
+    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "w")));
+    assert_eq!(trees.synced().live("b"), Some(&dir(ROOT, "v")));
+}
+
+#[test]
 fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
     let mut trees = Trees::new(ROOT);
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));

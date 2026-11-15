@@ -3577,7 +3577,7 @@ impl Trees {
                 break;
             }
             pending.retain(|id| !together.contains(id));
-            taken.extend(together);
+            taken.extend(together.into_iter().filter(|id| list.contains(id)));
         }
         for id in taken {
             if self.l.get(&id).is_none()
@@ -3706,9 +3706,7 @@ impl Trees {
     }
 
     /// S := R together for a non-empty set of `pending` nodes whose updates leave S valid, when one
-    /// exists. An excluded node that [`Trees::released`] lets go and whose S entry holds the name
-    /// one of them takes may leave S in the same set. Returns the pending nodes it updated, or an
-    /// empty set.
+    /// exists. Returns the nodes it updated, or an empty set.
     fn take_remote_together(&mut self, pending: &[NodeId]) -> BTreeSet<NodeId> {
         let mut targets: BTreeMap<&str, Option<&Shape>> = (pending.iter())
             .map(|id| (id.as_str(), self.r.live(id)))
@@ -3730,9 +3728,7 @@ impl Trees {
             self.set_synced_unmarked(&id, next);
         }
         debug_assert_eq!(self.s.check(Names::ByKey), Ok(()));
-        (taken.into_iter())
-            .filter(|id| pending.contains(id))
-            .collect()
+        taken
     }
 
     /// Finds a non-empty set of the nodes of `targets` whose updates to their target shapes leave S
