@@ -1051,6 +1051,20 @@ impl Commits {
         base: impl Into<Base>,
     ) -> Option<&proto::Commit> {
         let base = base.into();
+        trees.in_one_build(|trees| {
+            self.build_in_one_pass(trees, ids, now_ms, history_id, device_id, base)
+        })
+    }
+
+    fn build_in_one_pass(
+        &mut self,
+        trees: &mut Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+        history_id: &str,
+        device_id: &str,
+        base: Base,
+    ) -> Option<&proto::Commit> {
         if self.in_flight.is_some() {
             return None;
         }

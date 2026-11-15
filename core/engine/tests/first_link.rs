@@ -3552,6 +3552,104 @@ fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_takes_the_se
     }
 }
 
+#[test]
+fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_stays_in_it_while_the_server_edits_it()
+ {
+    let mut trees = a_reclaimed_folder_that_took_along_a_server_file(4);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(7);
+    commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 1);
+    let mut effects = Effects::default();
+    let (mut sent, mut done) = (Vec::new(), Vec::new());
+    for ino in 100..200 {
+        trees.settle();
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        (effects.done(
+            &mut trees,
+            commits.in_flight(),
+            &record.effect_id,
+            Some(identity),
+        ))
+        .unwrap();
+        done.push((record.node, record.effect));
+    }
+    assert!(
+        !done.iter().any(|(_, effect)| matches!(effect,
+            Effect::RemoveFile { displaced } if displaced.identity.ino == 3
+        )),
+        "{done:?}"
+    );
+    let k = trees.local().get("k").unwrap();
+    assert_eq!((k.shape.clone(), k.identity.ino), (file("f", "kept", 3), 3));
+    assert!(sent.contains(&("move", "k".to_owned())), "{sent:?}");
+    assert!(sent.iter().all(|(op, _)| *op != "create file"), "{sent:?}");
+}
+
+fn one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(
+    files: usize,
+) -> std::time::Duration {
+    let names: Vec<String> = (0..files).map(|i| format!("y{i}")).collect();
+    let server: Vec<(&str, Shape)> = std::iter::once(("x", dir(ROOT, "server")))
+        .chain(names.iter().map(|name| (name.as_str(), file("x", name, 9))))
+        .collect();
+    let local: Vec<(&str, Shape)> = std::iter::once(("f", dir(ROOT, "new")))
+        .chain(server.iter().cloned())
+        .collect();
+    let mut trees = trees(&local, &server);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let started = std::time::Instant::now();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let planned = Effects::default()
+        .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+        .to_vec();
+    let took = started.elapsed();
+    assert!(
+        planned.iter().any(|record| record.node == "x"),
+        "{planned:?}"
+    );
+    took
+}
+
+#[test]
+fn a_server_folder_a_discard_took_along_is_planned_in_linear_time_once_the_rules_let_it_in() {
+    let (two_hundred, two_thousand) = (
+        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(200),
+        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(2000),
+    );
+    assert!(
+        two_thousand < two_hundred * 30,
+        "a build and a plan with 2,000 taken-along files took {two_thousand:?}, and with 200 {two_hundred:?}"
+    );
+}
+
 fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(
     lift_after_effects: bool,
 ) {
