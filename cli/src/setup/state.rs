@@ -44,9 +44,18 @@ pub struct SetupState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UninstallProgress {
-    Cloud { server: Option<String> },
-    Service { server: Option<String> },
-    Complete,
+    Cloud {
+        server: Option<String>,
+    },
+    Service {
+        server: Option<String>,
+        #[serde(default)]
+        bucket_kept: bool,
+    },
+    Complete {
+        #[serde(default)]
+        bucket_kept: bool,
+    },
 }
 
 pub struct StateFile {
@@ -137,8 +146,9 @@ mod tests {
             },
             UninstallProgress::Service {
                 server: Some("https://koidrive.synthetic.workers.dev/".into()),
+                bucket_kept: true,
             },
-            UninstallProgress::Complete,
+            UninstallProgress::Complete { bucket_kept: true },
         ] {
             let state = SetupState {
                 account: "account".into(),

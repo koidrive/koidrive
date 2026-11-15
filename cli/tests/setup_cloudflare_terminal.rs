@@ -1015,11 +1015,13 @@ fn uninstall_service_cleanup_resumes_after_cloud_and_service_failures() {
         text.contains("run koi server delete --interactive"),
         "{text}"
     );
+    assert!(text.contains("exit status: 1"), "{text}");
+    assert!(!text.contains("failed:;"), "{text}");
     let progress = fs::read(second.paths().state_dir.join("setup-state.json")).unwrap();
     let saved: Value = serde_json::from_slice(&progress).unwrap();
     assert_eq!(
         saved["uninstall"],
-        json!({"phase":"service", "server":server})
+        json!({"phase":"service", "server":server, "bucket_kept":false})
     );
     assert!(second.paths().state_dir.join("service-running").exists());
     assert!(
@@ -1108,6 +1110,300 @@ fn uninstall_does_not_stop_a_service_for_another_server() {
 }
 
 #[test]
+fn uninstall_without_a_service_session_checks_whether_a_service_is_installed() {
+    for installed in [false, true] {
+        let home = Home::new(&[], &[]);
+        home.save_uninstall();
+        let server = home.base.join("workers/koidrive/").unwrap().to_string();
+        home.service_for(&server);
+        fs::remove_file(home.paths().state_dir.join("service-running")).unwrap();
+        let path = home.paths().state_dir.join("setup-state.json");
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["script"] = json!("");
+        saved["uninstall"] = json!({"phase":"service", "server":server});
+        let before = saved.to_string();
+        fs::write(&path, &before).unwrap();
+        if installed {
+            let service_file = if cfg!(target_os = "macos") {
+                home.path().join("Library/LaunchAgents").join(format!(
+                    "dev.koidrive.koi.{}.plist",
+                    home.paths().state_key()
+                ))
+            } else {
+                home.paths()
+                    .state_dir
+                    .join("systemd")
+                    .join(format!("koidrive-{}.service", home.paths().state_key()))
+            };
+            fs::create_dir_all(service_file.parent().unwrap()).unwrap();
+            fs::write(service_file, "synthetic service").unwrap();
+        }
+        for manager in ["launchctl", "systemctl"] {
+            let manager_path = home.path().join("bin").join(manager);
+            let script = fs::read_to_string(&manager_path).unwrap();
+            executable(
+                &manager_path,
+                &script
+                    .replace(
+                        "print:gui/*|print-disabled:gui/*) ;;",
+                        "print:gui/*) exit 1 ;; print-disabled:gui/*) ;;",
+                    )
+                    .replace(
+                        "show-environment|enable|daemon-reload) ;;",
+                        "show-environment) exit 1 ;; enable|daemon-reload) ;;",
+                    ),
+            );
+        }
+        let mut command = home.command();
+        command.args(["server", "delete", "--interactive", "--yes"]);
+        let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+        let raw = String::from_utf8(output.stdout).unwrap();
+        let text = console::strip_ansi_codes(&raw);
+        if installed {
+            assert_eq!(output.status.code(), Some(1), "{text}");
+            assert!(
+                text.contains(if cfg!(target_os = "macos") {
+                    "not logged in to the Mac's desktop"
+                } else {
+                    "no systemd user session"
+                }),
+                "{text}"
+            );
+            assert!(
+                text.contains("run koi server delete --interactive"),
+                "{text}"
+            );
+            assert!(!text.contains("service: ;"), "{text}");
+            assert!(!text.contains("The uninstall is complete."), "{text}");
+            assert_eq!(fs::read_to_string(path).unwrap(), before);
+        } else {
+            assert!(output.status.success(), "{text}");
+            assert!(text.contains("The uninstall is complete."), "{text}");
+            assert!(!path.exists());
+        }
+        assert!(
+            home.state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|request| !request.contains("/client/v4/") && !request.contains("/oauth2/"))
+        );
+    }
+}
+
+#[test]
+fn uninstall_with_unreadable_credentials_only_waits_for_a_present_service() {
+    for installed in [false, true] {
+        for invalid in [false, true] {
+            let home = Home::new(&[], &[]);
+            home.save_uninstall();
+            let server = home.base.join("workers/koidrive/").unwrap().to_string();
+            home.service_for(&server);
+            let credential = home.paths().credential();
+            if invalid {
+                fs::write(&credential, "{not json").unwrap();
+            } else {
+                fs::remove_file(&credential).unwrap();
+            }
+            let service_file = if cfg!(target_os = "macos") {
+                home.path().join("Library/LaunchAgents").join(format!(
+                    "dev.koidrive.koi.{}.plist",
+                    home.paths().state_key()
+                ))
+            } else {
+                home.paths()
+                    .state_dir
+                    .join("systemd")
+                    .join(format!("koidrive-{}.service", home.paths().state_key()))
+            };
+            if installed {
+                fs::create_dir_all(service_file.parent().unwrap()).unwrap();
+                fs::write(&service_file, "synthetic service").unwrap();
+            } else {
+                fs::remove_file(home.paths().state_dir.join("service-running")).unwrap();
+            }
+            let path = home.paths().state_dir.join("setup-state.json");
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved["script"] = json!("");
+            saved["uninstall"] = json!({"phase":"service", "server":server});
+            let before = saved.to_string();
+            fs::write(&path, &before).unwrap();
+            let run = || {
+                let mut command = home.command();
+                command.args(["server", "delete", "--interactive", "--yes"]);
+                terminal_with_stdout(command, &[], Some(home.path()), false, None)
+            };
+            let output = run();
+            let text = String::from_utf8(output.stdout).unwrap();
+            if installed && invalid {
+                assert_eq!(output.status.code(), Some(1), "{text}");
+                assert!(text.contains("is not valid"), "{text}");
+                assert!(
+                    text.contains(if cfg!(target_os = "macos") {
+                        "launchctl bootout"
+                    } else {
+                        "systemctl --user disable --now"
+                    }),
+                    "{text}"
+                );
+                assert!(text.contains(&service_file.display().to_string()), "{text}");
+                assert!(
+                    text.contains("The files in its folders stay where they are."),
+                    "{text}"
+                );
+                assert_eq!(fs::read_to_string(&path).unwrap(), before);
+                let mut stop =
+                    Command::new(home.path().join("bin").join(if cfg!(target_os = "macos") {
+                        "launchctl"
+                    } else {
+                        "systemctl"
+                    }));
+                stop.env("HOME", home.path());
+                if cfg!(target_os = "macos") {
+                    stop.args([
+                        "bootout",
+                        &format!(
+                            "gui/{}/dev.koidrive.koi.{}",
+                            rustix::process::getuid().as_raw(),
+                            home.paths().state_key()
+                        ),
+                    ]);
+                } else {
+                    stop.args([
+                        "--user",
+                        "disable",
+                        "--now",
+                        &format!("koidrive-{}.service", home.paths().state_key()),
+                    ]);
+                }
+                assert!(stop.status().unwrap().success());
+                fs::remove_file(&service_file).unwrap();
+                let retried = run();
+                assert!(
+                    retried.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&retried.stdout)
+                );
+            } else {
+                assert!(output.status.success(), "{text}");
+            }
+            assert!(!path.exists());
+            assert!(!home.paths().state_dir.join("service-running").exists());
+            if invalid {
+                assert_eq!(fs::read_to_string(credential).unwrap(), "{not json");
+            }
+            assert!(
+                home.state
+                    .lock()
+                    .unwrap()
+                    .requests
+                    .iter()
+                    .all(
+                        |request| !request.contains("/client/v4/") && !request.contains("/oauth2/")
+                    )
+            );
+        }
+    }
+}
+
+#[test]
+fn a_legacy_bucket_only_uninstall_resumes_only_for_the_confirmed_saved_bucket() {
+    for bucket in ["synthetic-bucket", "another-bucket"] {
+        let home = Home::new(&[], &[]);
+        home.save_uninstall();
+        home.state.lock().unwrap().failure = Some(Failure::UninstallBucketGone);
+        home.service_for("https://another.example.com/");
+        let path = home.paths().state_dir.join("setup-state.json");
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["script"] = json!("");
+        saved["script_created_on"] = Value::Null;
+        let before = saved.to_string();
+        fs::write(&path, &before).unwrap();
+        executable(
+            &home.path().join(if cfg!(target_os = "macos") {
+                "bin/open"
+            } else {
+                "bin/xdg-open"
+            }),
+            "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+        );
+        let mut command = home.command();
+        command.args([
+            "server",
+            "delete",
+            "--interactive",
+            "--yes",
+            "--bucket",
+            bucket,
+        ]);
+        let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+        let text = String::from_utf8(output.stdout).unwrap();
+        if bucket == "synthetic-bucket" {
+            assert!(output.status.success(), "{text}");
+            assert!(!text.contains("deleted-worker-name"), "{text}");
+            assert!(!path.exists());
+        } else {
+            assert!(!output.status.success(), "{text}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        }
+        assert!(home.paths().state_dir.join("service-running").exists());
+        assert!(!home.path().join("service-calls").exists());
+        assert!(
+            home.state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|request| !request.starts_with("DELETE ") && !request.contains("/workers/"))
+        );
+    }
+}
+
+#[test]
+fn a_resumed_uninstall_reports_a_kept_bucket_instead_of_full_removal() {
+    for phase in ["service", "complete"] {
+        let home = Home::new(&[], &[]);
+        home.save_uninstall();
+        let server = home.base.join("workers/koidrive/").unwrap().to_string();
+        if phase == "service" {
+            home.service_for(&server);
+        }
+        let path = home.paths().state_dir.join("setup-state.json");
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["script"] = json!("");
+        saved["uninstall"] = if phase == "service" {
+            json!({"phase":phase,"server":server,"bucket_kept":true})
+        } else {
+            json!({"phase":phase,"bucket_kept":true})
+        };
+        fs::write(&path, saved.to_string()).unwrap();
+        let mut command = home.command();
+        command.args(["server", "delete", "--interactive", "--yes"]);
+        let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{text}");
+        assert!(
+            text.contains(
+                "Kept the bucket synthetic-bucket and its files. Local cleanup is complete."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("The uninstall is complete."), "{text}");
+        assert!(!path.exists());
+        assert!(!home.paths().state_dir.join("service-running").exists());
+        assert!(
+            home.state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .all(|request| !request.contains("/client/v4/") && !request.contains("/oauth2/"))
+        );
+    }
+}
+
+#[test]
 fn legacy_uninstall_without_worker_identity_keeps_the_service_and_progress() {
     let home = Home::new(&[], &[]);
     home.save_uninstall();
@@ -1131,7 +1427,7 @@ fn legacy_uninstall_without_worker_identity_keeps_the_service_and_progress() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("no longer identifies the deleted server"),
+        text.contains("does not say whether this operation included a Worker"),
         "{text}"
     );
     assert!(!text.contains("The uninstall is complete."), "{text}");

@@ -131,14 +131,14 @@ pub async fn finish(
         println!(
             "The bucket {bucket} was created again after this uninstall began, so it is another bucket. Deleted nothing in it."
         );
-        return cloud_done(file, state);
+        return cloud_done(file, state, true);
     }
     if let Some(other) = binder(cloud, &bucket, jurisdiction).await? {
         println!(
             "Kept the bucket {bucket} and its files, because the Worker {} also uses it.",
             crate::printable(&other)
         );
-        return cloud_done(file, state);
+        return cloud_done(file, state, true);
     }
     let Some(contents) = scan(cloud, &bucket, jurisdiction)
         .await
@@ -156,7 +156,7 @@ pub async fn finish(
             "Kept the bucket {bucket} and its files, because it holds {}, which Koidrive does not write: another application stores data there.",
             crate::printable(&key)
         );
-        return cloud_done(file, state);
+        return cloud_done(file, state, true);
     }
     println!("Emptying the bucket {bucket}...");
     loop {
@@ -204,22 +204,29 @@ pub async fn finish(
             )
         })?;
     println!("Deleted the bucket {bucket}.");
-    cloud_done(file, state)
+    cloud_done(file, state, false)
 }
 
 fn gone(file: &StateFile, state: SetupState) -> Result<SetupState, CliError> {
     println!("The bucket {} is already gone.", state.bucket);
-    cloud_done(file, state)
+    cloud_done(file, state, false)
 }
 
-fn cloud_done(file: &StateFile, mut state: SetupState) -> Result<SetupState, CliError> {
+fn cloud_done(
+    file: &StateFile,
+    mut state: SetupState,
+    bucket_kept: bool,
+) -> Result<SetupState, CliError> {
     let Some(UninstallProgress::Cloud { server }) = state.uninstall.take() else {
         return Err(
             "the uninstall has no saved cloud phase; keep its saved progress and run koi diagnose"
                 .into(),
         );
     };
-    state.uninstall = Some(UninstallProgress::Service { server });
+    state.uninstall = Some(UninstallProgress::Service {
+        server,
+        bucket_kept,
+    });
     file.save(&state)?;
     Ok(state)
 }
@@ -600,7 +607,8 @@ mod tests {
         assert_eq!(
             file.load().unwrap().unwrap().uninstall,
             Some(UninstallProgress::Service {
-                server: Some("https://koidrive.synthetic.workers.dev/".into())
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+                bucket_kept: false,
             })
         );
     }
@@ -626,7 +634,10 @@ mod tests {
         assert!(!fake.sent(&["DELETE"]));
         assert_eq!(
             file.load().unwrap().unwrap().uninstall,
-            Some(UninstallProgress::Service { server: None })
+            Some(UninstallProgress::Service {
+                server: None,
+                bucket_kept: true,
+            })
         );
     }
 
@@ -771,7 +782,8 @@ mod tests {
         assert_eq!(
             file.load().unwrap().unwrap().uninstall,
             Some(UninstallProgress::Service {
-                server: Some("https://koidrive.synthetic.workers.dev/".into())
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+                bucket_kept: true,
             })
         );
     }
@@ -815,7 +827,8 @@ mod tests {
         assert_eq!(
             file.load().unwrap().unwrap().uninstall,
             Some(UninstallProgress::Service {
-                server: Some("https://koidrive.synthetic.workers.dev/".into())
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+                bucket_kept: true,
             })
         );
     }
@@ -868,7 +881,8 @@ mod tests {
         assert_eq!(
             file.load().unwrap().unwrap().uninstall,
             Some(UninstallProgress::Service {
-                server: Some("https://koidrive.synthetic.workers.dev/".into())
+                server: Some("https://koidrive.synthetic.workers.dev/".into()),
+                bucket_kept: false,
             })
         );
     }

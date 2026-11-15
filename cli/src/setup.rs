@@ -1037,7 +1037,10 @@ pub async fn server(
                     state.step == Step::Uninstalling
                         && matches!(
                             state.uninstall,
-                            Some(UninstallProgress::Service { .. } | UninstallProgress::Complete)
+                            Some(
+                                UninstallProgress::Service { .. }
+                                    | UninstallProgress::Complete { .. }
+                            )
                         )
                 })
             {
@@ -2146,6 +2149,18 @@ impl Session {
     ) -> Result<(), CliError> {
         let file = StateFile::new(paths);
         match file.load()? {
+            Some(mut state)
+                if state.account == self.account()
+                    && state.step == Step::Uninstalling
+                    && state.script.is_empty()
+                    && state.uninstall.is_none()
+                    && bucket == Some(state.bucket.as_str()) =>
+            {
+                confirm(&self.terminal, &format!("Continue deleting only the saved bucket {} in the {} jurisdiction? This does not delete a Worker or change this device's background service.", state.bucket, state.jurisdiction.as_str()), yes, "--yes").await?;
+                state.uninstall = Some(UninstallProgress::Cloud { server: None });
+                file.save(&state)?;
+                return self.finish_uninstall(paths, &file, state, None).await;
+            }
             Some(state)
                 if state.account == self.account()
                     && state.step == Step::Uninstalling
@@ -2205,8 +2220,10 @@ impl Session {
     ) -> Result<(), CliError> {
         if state.uninstall.is_none() {
             let script = if state.script.is_empty() {
-                legacy_worker.ok_or_else(|| CliError::from(format!("saved uninstall progress for the bucket {} no longer identifies the deleted Worker; keep {} and run koi server delete --interactive --worker <deleted-worker-name> with that Worker's name to finish the uninstall", state.bucket, file.path().display()))
-                    .human("Saved uninstall progress no longer identifies the deleted server, so Koidrive cannot check whether this device's background service still uses it. The uninstall is not complete. Keep the saved progress. Run koi server delete --interactive --worker <deleted-worker-name> with the deleted Worker's name to finish it."))?
+                legacy_worker.ok_or_else(|| {
+                    let recovery = format!("Saved uninstall progress does not say whether this operation included a Worker. Keep the saved progress. If it included a Worker, run koi server delete --interactive --worker <deleted-worker-name> with that Worker's name. For a bucket-only operation, run koi server delete --interactive --bucket {} and confirm that the background service should stay unchanged.", crate::pairing::shell_word(&state.bucket));
+                    CliError::from(format!("{recovery} Saved progress: {}", file.path().display())).human(recovery)
+                })?
             } else {
                 &state.script
             };
@@ -2228,30 +2245,40 @@ async fn finish_uninstall_service(
     file: &StateFile,
     mut state: SetupState,
 ) -> Result<(), CliError> {
-    match &state.uninstall {
-        Some(UninstallProgress::Service { server }) => {
+    let bucket_kept = match &state.uninstall {
+        Some(UninstallProgress::Service {
+            server,
+            bucket_kept,
+        }) => {
+            let kept = *bucket_kept;
             if let Some(server) = server {
                 let url = Url::parse(server).map_err(|_| CliError::from("the saved uninstall server address is invalid; keep the saved progress and run koi diagnose"))?;
-                let report = crate::service::forget(paths, &url).await.map_err(|error| {
-                    CliError::from(format!(
-                        "{error}; run koi server delete --interactive to finish the uninstall"
-                    ))
-                })?;
+                let report = crate::service::forget(paths, &url)
+                    .await
+                    .map_err(CliError::from)?;
                 if let Some(report) = report {
                     print!("{}", report.text());
                 }
             }
-            state.uninstall = Some(UninstallProgress::Complete);
+            state.uninstall = Some(UninstallProgress::Complete { bucket_kept: kept });
             file.save(&state)?;
+            kept
         }
-        Some(UninstallProgress::Complete) => {}
+        Some(UninstallProgress::Complete { bucket_kept }) => *bucket_kept,
         _ => return Err(
             "the cloud uninstall has not finished; run koi server delete --interactive to continue"
                 .into(),
         ),
-    }
+    };
     file.remove()?;
-    println!("The uninstall is complete.");
+    if bucket_kept {
+        println!(
+            "Kept the bucket {} and its files. Local cleanup is complete.",
+            state.bucket
+        );
+    } else {
+        println!("The uninstall is complete.");
+    }
     Ok(())
 }
 
