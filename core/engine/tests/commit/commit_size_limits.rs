@@ -724,3 +724,69 @@ fn a_trashed_file_moved_into_a_new_folder_comes_back_when_the_commit_after_its_m
     assert!(sent.contains(&mv("c", "a", "c")), "{sent:?}");
     assert_eq!(trees.remote().live("c"), Some(&file("a", "c", 1)));
 }
+
+#[test]
+fn a_folder_the_server_lost_in_a_new_folder_it_merges_is_created_again() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a")),
+            Some(remote(dir(ROOT, "a"))),
+        ),
+        ("b", Some(dir("n", "b")), Some(dir("a", "b")), None),
+        ("c", Some(dir("b", "c")), Some(dir("b", "c")), None),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert_eq!(second.unwrap_or_default().first(), Some(&create_dir("b", "a", "b")));
+}
+
+
+#[test]
+fn a_folder_the_server_lost_moved_into_a_new_folder_it_merges_is_created_again() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        ("b", Some(dir("n", "b")), Some(dir("a", "b")), None),
+        (
+            "c",
+            Some(dir("b", "c")),
+            Some(dir("a", "c")),
+            Some(remote(dir("a", "c"))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert_eq!(second.unwrap_or_default().first(), Some(&create_dir("b", "a", "b")));
+}
+

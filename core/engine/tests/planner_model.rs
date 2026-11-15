@@ -2205,6 +2205,24 @@ fn repros() -> Vec<(&'static str, World)> {
                 &[(Kind::Dir, To(In(1))), (Kind::File, Onto(1))],
             ),
         ),
+        (
+            "a folder the server lost, in a new folder merged into a folder that moves into it, one op per commit",
+            world(
+                &[Root, In(0), In(1)],
+                &[kept, Remote::Forgotten, kept],
+                &[To(In(2)), To(In(3)), Kept],
+                &[(Kind::Dir, Onto(0))],
+            ),
+        ),
+        (
+            "a folder the server lost, moved into a new folder merged into a folder deleted here, one op per commit",
+            world(
+                &[Root, In(0), In(0)],
+                &[kept, Remote::Forgotten, kept],
+                &[Removed, To(In(3)), To(In(1))],
+                &[(Kind::Dir, Onto(0))],
+            ),
+        ),
     ]
 }
 

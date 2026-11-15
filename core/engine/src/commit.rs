@@ -1820,36 +1820,34 @@ impl Commits {
                         content: None,
                     };
                     let into = &outcome.node_id;
-                    let (trashed, moved_in): (Vec<NodeId>, Vec<(NodeId, Option<Shape>)>) =
+                    let (mut unsent, moved_in): (Vec<NodeId>, Vec<(NodeId, Shape)>) =
                         match code == Code::MergedInto {
                             false => Default::default(),
                             true => {
-                                let (trashed, moved_in): (Vec<&NodeId>, Vec<&NodeId>) = (trees
+                                let (unsent, moved_in): (Vec<&NodeId>, Vec<&NodeId>) = (trees
                                     .local_children(&create.node_id))
                                 .filter(|id| {
                                     !placed.contains(*id)
                                         && (synced.get(trees, id))
                                             .is_some_and(|shape| shape.parent != create.node_id)
                                 })
-                                .partition(|id| {
-                                    trees.remote().get(id).is_some_and(|remote| remote.trashed)
-                                });
+                                .partition(|id| trees.remote().live(id).is_none());
                                 let moved_in = (moved_in.into_iter())
-                                    .map(|id| {
-                                        let position = (trees.remote().live(id))
-                                            .zip(synced.get(trees, id))
-                                            .map(|(remote, synced)| Shape {
-                                                parent: remote.parent.clone(),
-                                                name: remote.name.clone(),
-                                                ..synced
-                                            });
-                                        (id.clone(), position)
+                                    .filter_map(|id| {
+                                        let remote = trees.remote().live(id)?;
+                                        let position = Shape {
+                                            parent: remote.parent.clone(),
+                                            name: remote.name.clone(),
+                                            ..synced.get(trees, id)?
+                                        };
+                                        Some((id.clone(), position))
                                     })
                                     .collect();
-                                (trashed.into_iter().cloned().collect(), moved_in)
+                                (unsent.into_iter().cloned().collect(), moved_in)
                             }
                         };
                     if code == Code::MergedInto && trees.local().get(into).is_some() {
+                        unsent.retain(|id| trees.remote().get(id).is_some());
                         trees.revert(create.node_id.clone());
                         merged.insert(create.node_id.clone(), into.clone());
                         self.aliases.insert(create.node_id.clone(), into.clone());
@@ -1897,10 +1895,10 @@ impl Commits {
                         agreed.extend(agree(trees, &create.node_id, result.seq));
                         synced.set(&create.node_id, Some(shape));
                     }
-                    for (id, remote) in moved_in {
-                        synced.set(&id, remote);
+                    for (id, position) in moved_in {
+                        synced.set(&id, Some(position));
                     }
-                    for id in trashed {
+                    for id in unsent {
                         trees.hold_unsent_move(id);
                     }
                     let exists = taken && trees.remote().get(&create.node_id).is_some();
@@ -4162,7 +4160,8 @@ fn plan(
     }
     let exact = !deferred.get()
         && bound.is_none_or(|(last, _)| {
-            ordered && filled_at.is_some_and(|filled| filled < (last, within))
+            ordered
+                && filled_at.is_some_and(|filled| filled < (last, within))
         });
     ((ops, deletes, reverts, cycle_reverts), exact)
 }
