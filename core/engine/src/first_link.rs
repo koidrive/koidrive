@@ -41,13 +41,15 @@ pub enum Listing {
     Live,
 }
 
-/// Whether the server shows that this device synced the space before the store it links with, by
-/// counting commits it accepted from the device in the current history.
+/// Whether the folder synced the space before the store it links with: the server accepted commits
+/// from this device in the current history, or the folder held the space's root marker before the
+/// link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PriorSync {
-    /// The server accepted no commit from this device.
+    /// Neither the server nor the folder shows an earlier sync.
     Fresh,
-    /// The server accepted commits from this device that no store remembers.
+    /// The server accepted commits from this device that no store remembers, or the folder held the
+    /// space's marker before the link.
     Shown,
 }
 

@@ -205,6 +205,8 @@ pub struct Link {
     pub server_url: String,
     pub device_id: String,
     pub linked_at_ms: i64,
+    /// The folder held this space's root marker before the link wrote one, so a device may have synced it before.
+    pub found_marker: bool,
 }
 
 /// A question the engine asked the person (`AskUser`, design §1), with its
@@ -731,7 +733,8 @@ impl Tx<'_> {
         Ok(self
             .0
             .query_row(
-                "SELECT space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms
+                "SELECT space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms,
+                        found_marker
                  FROM link WHERE id = 1",
                 [],
                 |row| {
@@ -743,6 +746,7 @@ impl Tx<'_> {
                         server_url: row.get(4)?,
                         device_id: row.get(5)?,
                         linked_at_ms: row.get(6)?,
+                        found_marker: row.get(7)?,
                     })
                 },
             )
@@ -752,8 +756,9 @@ impl Tx<'_> {
     pub fn set_link(&self, link: &Link) -> Result<()> {
         self.0.execute(
             "INSERT OR REPLACE INTO link
-             (id, space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (id, space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms,
+              found_marker)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 link.space_id,
                 link.space_name,
@@ -762,6 +767,7 @@ impl Tx<'_> {
                 link.server_url,
                 link.device_id,
                 link.linked_at_ms,
+                link.found_marker,
             ],
         )?;
         Ok(())

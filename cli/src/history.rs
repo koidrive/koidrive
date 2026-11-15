@@ -1442,6 +1442,7 @@ mod tests {
                     server_url: server.into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
+                    found_marker: false,
                 })
             })
             .unwrap();
@@ -1462,6 +1463,7 @@ mod tests {
                     server_url: "http://127.0.0.1:9/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
+                    found_marker: false,
                 })
             })
             .unwrap();

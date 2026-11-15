@@ -235,6 +235,7 @@ impl Folder {
             server_url: "https://files.example.com/".into(),
             device_id: "device".into(),
             linked_at_ms: 0,
+            found_marker: false,
         };
         let mut store = Store::open(&db).unwrap();
         store.transaction(|tx| tx.set_link(&link)).unwrap();

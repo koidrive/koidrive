@@ -406,6 +406,62 @@ fn a_first_link_of_a_folder_whose_marker_counts_effects_holds_what_the_space_lac
 }
 
 #[test]
+fn a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_space_deleted_since_deleted() {
+    for found_marker in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("kept.txt"), b"kept");
+        a.create(&mut remote, &site_a.root.join("old.txt"), b"written on a");
+        let old = node_named(&a, "old.txt");
+        drop(a);
+        let (site_b, mut b) = linked(&mut remote, "b");
+        fs::remove_file(site_b.root.join("old.txt")).unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        assert_eq!(remote.names(), ["kept.txt"]);
+        assert!(remote.space.purge(&old, NOW));
+        assert_eq!(koidrive_fs::read_marker(&site_a.root).unwrap().unwrap().effects, 0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("store.sqlite");
+        let link = Link {
+            device_id: "c".into(),
+            found_marker,
+            ..site_a.link.clone()
+        };
+        Store::open(&db).unwrap().transaction(|tx| tx.set_link(&link)).unwrap();
+        let site = Site {
+            _dir: dir,
+            root: site_a.root.clone(),
+            db,
+            link,
+            caller: Caller {
+                device_id: "c".into(),
+                device_name: "c".into(),
+                ..site_a.caller.clone()
+            },
+        };
+        let mut c = site.start();
+        c.connect(&remote);
+        c.scan_until(|c| c.folder.scanned);
+        c.rest(&mut remote);
+
+        assert_eq!(names(&site.root), ["kept.txt", "old.txt"], "found_marker={found_marker}");
+        match found_marker {
+            true => {
+                assert!(c.sent.is_empty(), "nothing is sent before an answer");
+                assert_eq!(c.folder.view().questions, 1);
+                assert_eq!(remote.names(), ["kept.txt"]);
+            }
+            false => {
+                assert_eq!(c.folder.view().questions, 0);
+                assert_eq!(remote.names(), ["kept.txt", "old.txt"]);
+            }
+        }
+    }
+}
+
+#[test]
 fn a_fresh_first_link_holds_a_folder_whose_name_differs_by_case_when_the_trash_holds_its_file() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");

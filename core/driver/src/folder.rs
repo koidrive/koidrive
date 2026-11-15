@@ -1746,6 +1746,10 @@ impl Folder {
             _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
         };
         let device_seq = self.device_seq;
+        let prior = match device_seq > 0 || self.link.found_marker {
+            true => PriorSync::Shown,
+            false => PriorSync::Fresh,
+        };
         let history = (staging.take_history())
             .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
             .unwrap_or_default();
@@ -1762,10 +1766,6 @@ impl Folder {
                     now_ms,
                 );
             } else if first_link {
-                let prior = match device_seq {
-                    0 => PriorSync::Fresh,
-                    _ => PriorSync::Shown,
-                };
                 (engine.commits).first_link(
                     &mut engine.trees,
                     &mut engine.ids,

@@ -1275,6 +1275,7 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
                             server_url: "https://files.example.com/".into(),
                             device_id: "local".into(),
                             linked_at_ms: 1,
+                            found_marker: false,
                         })
                     })
                     .unwrap();
