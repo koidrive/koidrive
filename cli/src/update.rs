@@ -39,11 +39,13 @@ use homebrew::homebrew;
 use installer::{installer, script_url};
 use inventory::command_text;
 use process::{Child, Echo, Steps, exit, minutes};
+#[cfg(any(target_os = "macos", test))]
+use reconcile::ReconcileError;
 #[cfg(test)]
 use reconcile::update_problem;
 use reconcile::{
-    ReconcileError, SERVICE_CHECK, UpdateBinary, app_not_updated, checked, finish_reconciliation,
-    reached, reconcile_updated, updated,
+    SERVICE_CHECK, UpdateBinary, app_not_updated, checked, finish_reconciliation, reached,
+    reconcile_updated, updated,
 };
 #[cfg(target_os = "macos")]
 use reconcile::{discover_app_version, select_app_helper};
