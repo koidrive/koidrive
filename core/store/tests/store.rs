@@ -96,6 +96,7 @@ fn migrations_apply_from_empty() {
             "commit_in_flight_restore_members",
             "commit_slots",
             "commit_state",
+            "cycle_reverted",
             "discarded_nodes",
             "dropped_edits",
             "edited_here",
@@ -1241,6 +1242,7 @@ fn engine_state() -> EngineState {
             dirty: nodes(["a", "b"]),
             unsearched: nodes(["b"]),
             reverted: nodes(["r"]),
+            cycle_reverted: nodes(["r"]),
             parked_as: BTreeMap::from([("p".into(), "p-before".into())]),
             waiting: BTreeMap::from([
                 (
@@ -1528,7 +1530,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 40] = [
+const ENGINE_TABLES: [&str; 41] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1564,6 +1566,7 @@ const ENGINE_TABLES: [&str; 40] = [
     "moved_here",
     "past_positions",
     "dropped_edits",
+    "cycle_reverted",
     "removed_here",
     "unsent_marks",
     "pending_finishes",
@@ -4388,6 +4391,31 @@ fn a_store_from_before_dropped_edits_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.dropped_edits.clear();
     assert!(!after.trees.dropped_edits.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_cycle_reverts_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "cycle_reverted");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.cycle_reverted.clear();
+    assert!(!after.trees.cycle_reverted.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

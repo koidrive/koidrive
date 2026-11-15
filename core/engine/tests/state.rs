@@ -83,6 +83,7 @@ fn trees_state() -> TreesState {
         dirty: ["b".into()].into(),
         unsearched: ["b".into()].into(),
         reverted: ["a".into()].into(),
+        cycle_reverted: ["a".into()].into(),
         parked_as: [("b".into(), "c".into())].into(),
         waiting: [(
             "a".into(),

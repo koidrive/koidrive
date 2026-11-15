@@ -1,0 +1,1 @@
+CREATE TABLE cycle_reverted (node_id TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;

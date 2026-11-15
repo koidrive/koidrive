@@ -1212,7 +1212,7 @@ impl Commits {
             window *= 4;
         };
         for id in reverts {
-            trees.revert(id);
+            trees.revert_for_cycle(id);
         }
         for op in &planned {
             let Some(op::Op::Move(moved)) = &op.op else {

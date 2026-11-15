@@ -342,6 +342,40 @@ fn a_move_that_closes_a_cycle_against_r_is_reverted() {
 }
 
 #[test]
+fn a_move_reverted_for_a_cycle_is_sent_once_another_device_ends_the_cycle() {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir("q", "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        (
+            "q",
+            Some(dir(ROOT, "q")),
+            Some(dir(ROOT, "q")),
+            Some(remote(dir("p", "q"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains("p"));
+    trees.settle();
+    assert!(trees.reverted().contains("p"));
+    trees.set_remote("q".into(), remote(dir(ROOT, "q")));
+    trees.settle();
+    assert!(!trees.reverted().contains("p"));
+    let mut effects = Effects::default();
+    assert!(
+        effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .is_empty()
+    );
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("p", "q", "p")]);
+}
+
+#[test]
 fn a_reverted_move_brings_back_the_folders_l_deleted_on_its_way() {
     let mut trees = trees(&[
         (
