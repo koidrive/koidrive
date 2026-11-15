@@ -1174,7 +1174,7 @@ impl Trees {
     pub(crate) fn take_local(&mut self, id: NodeId) {
         self.lost_creates.remove(&id);
         self.resends.remove(&id);
-        self.unsent_edits.remove(&id);
+        self.end_local_claim(&id);
         let Some(local) = self.l.get(&id).map(|node| node.shape.clone()) else {
             return;
         };
@@ -1190,7 +1190,7 @@ impl Trees {
         };
         self.lost_creates.remove(&id);
         self.resends.remove(&id);
-        self.unsent_edits.remove(&id);
+        self.end_local_claim(&id);
         let shape = Shape {
             parent: local.parent,
             name: local.name,
@@ -1629,8 +1629,7 @@ impl Trees {
         self.outside.remove(id);
         self.lost.remove(id);
         self.count_held_trash(id, false);
-        self.unsent_edits.remove(id);
-        self.unsent_moves.remove(id);
+        self.end_local_claim(id);
         self.end_resend(id);
         self.forgotten_shapes.remove(id);
         self.local_changes.remove(id);
@@ -1912,8 +1911,7 @@ impl Trees {
         shown: &BTreeMap<NodeId, Shape>,
     ) {
         for id in ids {
-            let edited = self.unsent_edits.remove(&id);
-            if self.unsent_moves.remove(&id) || edited {
+            if self.end_local_claim(&id) {
                 self.mark(&id);
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
@@ -3403,6 +3401,11 @@ impl Trees {
         self.unsent_moves.insert(id);
     }
 
+    fn end_local_claim(&mut self, id: &str) -> bool {
+        let edited = self.unsent_edits.remove(id);
+        self.unsent_moves.remove(id) || edited
+    }
+
     pub(crate) fn sent_move(&mut self, id: &str) {
         if self.unsent_moves.remove(id) {
             self.mark(id);
@@ -4059,6 +4062,13 @@ impl Trees {
                 .cloned(),
             None,
             "a forgotten shape of a node that holds an unsent edit or that S holds"
+        );
+        debug_assert_eq!(
+            (self.unsent_moves.iter())
+                .find(|id| self.l.get(id).is_none() || self.all_trees_hold(id))
+                .cloned(),
+            None,
+            "an unsent move of a node L does not hold or that L, S and R all hold"
         );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
