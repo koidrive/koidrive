@@ -394,6 +394,7 @@ pub struct Trees {
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
+    unwatched: BTreeSet<NodeId>,
     unlinked: BTreeMap<(NodeId, Option<String>), BTreeSet<Pair>>,
     link_due: BTreeSet<Pair>,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
@@ -488,6 +489,7 @@ impl Trees {
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
+            unwatched: BTreeSet::new(),
             unlinked: BTreeMap::new(),
             link_due: BTreeSet::new(),
             same: BTreeSet::new(),
@@ -1685,6 +1687,7 @@ impl Trees {
     /// Replaces this device's include and exclude lists, which are never synced.
     pub fn set_local_rules(&mut self, local: LocalRules) {
         self.ignore.set_local(local, std::iter::empty());
+        self.relink = true;
     }
 
     /// Sets the rules of the `.koiignore` file in the folder at `dir`, the names from the root to
@@ -1692,11 +1695,13 @@ impl Trees {
     /// device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], rules: Option<RuleFile>) {
         self.ignore.set_rules(dir, rules, std::iter::empty());
+        self.relink = true;
     }
 
     /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
+        self.relink = true;
     }
 
     /// Records that a scan could not read the folder `id` of L, or the root, so the rules below it are unknown until
@@ -1798,6 +1803,7 @@ impl Trees {
             finish.base = None;
         }
         self.adopted.clear();
+        self.unwatched.extend(self.watched.keys().cloned());
         self.watched.clear();
         self.watched_positions.clear();
         self.trashed_here.clear();
@@ -2656,6 +2662,7 @@ impl Trees {
     /// Watches S's content of `ids`, the nodes whose content the commit just built creates or updates, and
     /// stops watching any other node.
     pub fn watch_content(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        self.unwatched.extend(self.watched.keys().cloned());
         self.watched.clear();
         self.watched.extend(ids.into_iter().map(|id| (id, false)));
     }
@@ -3696,9 +3703,10 @@ impl Trees {
             self.release_cycle_reverts();
         }
         if self.rules_known {
+            let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
                 true => self.dirty.iter().cloned().collect(),
-                false => self.unsettled.clone(),
+                false => self.unsettled.union(&unwatched).cloned().collect(),
             };
             let unfit = first_link::adopt_equal_files(self, &changed);
             self.wait_to_link(unfit);
@@ -3720,6 +3728,16 @@ impl Trees {
             let place = placed.then(|| name_key(&remote.shape.name));
             (self.unlinked.entry((parent, place)).or_default()).insert((id, remote_id));
         }
+    }
+
+    pub(crate) fn link_unwatched(&mut self) {
+        self.watch_content([]);
+        if !self.rules_known {
+            return;
+        }
+        let unwatched = std::mem::take(&mut self.unwatched);
+        let unfit = first_link::adopt_equal_files(self, &unwatched);
+        self.wait_to_link(unfit);
     }
 
     pub(crate) fn link_due(&mut self) -> bool {
@@ -4452,6 +4470,7 @@ impl Trees {
             asked: _,
             unsettled: _,
             relink: _,
+            unwatched: _,
             unlinked: _,
             link_due: _,
             same: _,

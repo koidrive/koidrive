@@ -1081,6 +1081,7 @@ impl Commits {
         trees.applied_head(base.seq);
         trees.check_finishes();
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
+        trees.link_unwatched();
         trees.link_due();
         if self.halted.is_some() || !trees.rules_known() {
             return None;

@@ -997,6 +997,62 @@ fn a_file_added_in_a_folder_whose_create_result_lands_later_is_linked_to_the_ser
 }
 
 #[test]
+fn a_file_the_rules_stop_excluding_is_linked_to_an_equal_server_file_on_the_next_settle() {
+    let root: [&str; 0] = [];
+    let mut trees = trees(&[], &[]);
+    trees.rules_scanned();
+    trees.set_rules(&root, Some(RuleFile::parse(b"a.docx\n")));
+    trees.set_local(
+        "l-file".into(),
+        local_node(written("a.docx", WRITTEN_NS), 1),
+    );
+    trees.set_remote(
+        "r-file".into(),
+        remote_node("r-file", written("a.docx", WRITTEN_NS)),
+    );
+    trees.settle();
+    assert!(trees.excluded("l-file"));
+    assert!(trees.local().get("l-file").is_some());
+
+    trees.set_rules(&root, None);
+    trees.settle();
+    assert!(!trees.excluded("r-file"));
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+    assert_eq!(
+        ops(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
+        []
+    );
+}
+
+#[test]
+fn a_file_whose_create_ended_unanswered_is_linked_to_an_equal_server_file_instead_of_sent_again() {
+    let (mut commits, mut trees, mut ids) = unlinked("a.docx", &[]);
+    let created = [("create file", "l-file".to_owned())];
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), created);
+    let head_moved = Error {
+        code: error::Code::HeadMoved as i32,
+        ..Default::default()
+    };
+    assert_eq!(
+        commits.failed(&mut trees, &head_moved),
+        Ok(Failure::Abandoned)
+    );
+    trees.set_remote(
+        "r-file".into(),
+        remote_node("r-file", written("a.docx", WRITTEN_NS)),
+    );
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+}
+
+#[test]
 fn a_read_only_device_downloads_a_conflict_copy_beside_a_local_file_of_the_same_name() {
     let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
     let (_, held, _) = run_beside("a.docx", &[("r-file", written(&copy, WRITTEN_NS))], true);
