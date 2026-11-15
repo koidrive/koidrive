@@ -307,6 +307,7 @@ struct PathText: View {
             Text(verbatim: String(path[..<slash]))
                 .foregroundStyle(Color.text2)
                 .truncationMode(.tail)
+                .frame(minWidth: slash == path.startIndex ? 0 : 28, alignment: .leading)
             Text(verbatim: String(path[slash...]))
                 .foregroundStyle(Color.text)
                 .truncationMode(.middle)

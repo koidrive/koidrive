@@ -162,6 +162,7 @@ struct MenuContent: View {
             header
             attention
             notices
+            UpdatePopoverNotice()
             recentChanges
             separator
             actions
