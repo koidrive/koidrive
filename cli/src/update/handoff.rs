@@ -11,8 +11,7 @@ use tokio::process::Command;
 
 use crate::service;
 
-use super::Installs;
-use super::inventory::homebrew_link;
+use super::inventory::{Installs, homebrew_link};
 use super::release_source::RECONCILE;
 
 const SCAN: Duration = Duration::from_secs(60 * 60);

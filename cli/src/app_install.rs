@@ -5,9 +5,6 @@ mod facts;
 mod outcome;
 
 pub(crate) use error::AppInstallError;
-#[cfg(target_os = "macos")]
-#[expect(unused_imports)]
-pub(crate) use error::{AppInstallErrorDetails, AppInstallFailure};
 pub(crate) use facts::{AppLaunch, CommitChange, CommitFact};
 #[cfg(target_os = "macos")]
 pub(crate) use macos::VerifiedHelper;

@@ -172,117 +172,104 @@ pub(in crate::app_install) async fn verify_helper(
     verified.check(deadline).await?;
     Ok(verified)
 }
-mod bundle {
-    use super::{
-        AppInstallError, AppInstallFailure, Config, Control, IDENTIFIER, REQUIREMENT,
-        VerifiedBundle, args, failure, identity, io_error, process, safe_tree, signature_args,
-        verification_error,
-    };
-    use semver::Version;
-    use std::ffi::OsStr;
-    use std::fs;
-    use std::path::Path;
-
-    pub(in crate::app_install::macos) async fn verify(
-        config: &Config,
-        path: &Path,
-        target: Option<&Version>,
-        control: &Control,
-    ) -> Result<VerifiedBundle, AppInstallError> {
-        safe_tree(path, control)?;
-        let id = identity(&fs::symlink_metadata(path).map_err(io_error)?);
-        process(
-            &config.codesign,
-            &signature_args(path, REQUIREMENT, true),
+pub(super) async fn verify(
+    config: &Config,
+    path: &Path,
+    target: Option<&Version>,
+    control: &Control,
+) -> Result<VerifiedBundle, AppInstallError> {
+    safe_tree(path, control)?;
+    let id = identity(&fs::symlink_metadata(path).map_err(io_error)?);
+    process(
+        &config.codesign,
+        &signature_args(path, REQUIREMENT, true),
+        control,
+    )
+    .await
+    .map_err(|error| verification_error(error, "App signature verification failed"))?;
+    if target.is_some() {
+        let assessment = process(
+            &config.spctl,
+            &args(&[
+                OsStr::new("--assess"),
+                OsStr::new("--type"),
+                OsStr::new("execute"),
+                OsStr::new("--verbose=2"),
+                path.as_os_str(),
+            ]),
             control,
         )
         .await
-        .map_err(|error| verification_error(error, "App signature verification failed"))?;
-        if target.is_some() {
-            let assessment = process(
-                &config.spctl,
-                &args(&[
-                    OsStr::new("--assess"),
-                    OsStr::new("--type"),
-                    OsStr::new("execute"),
-                    OsStr::new("--verbose=2"),
-                    path.as_os_str(),
-                ]),
-                control,
-            )
-            .await
-            .map_err(|error| verification_error(error, "App notarization assessment failed"))?;
-            let assessment = String::from_utf8_lossy(&assessment);
-            let sources: Vec<_> = assessment
-                .lines()
-                .filter_map(|line| line.strip_prefix("source="))
-                .collect();
-            if sources != ["Notarized Developer ID"] {
-                return Err(failure(
-                    AppInstallFailure::Verification,
-                    "App is not a Notarized Developer ID app",
-                ));
-            }
-        }
-        let plist_path = path.join("Contents/Info.plist");
-        if fs::metadata(&plist_path).map_err(io_error)?.len() > 1024 * 1024 {
+        .map_err(|error| verification_error(error, "App notarization assessment failed"))?;
+        let assessment = String::from_utf8_lossy(&assessment);
+        let sources: Vec<_> = assessment
+            .lines()
+            .filter_map(|line| line.strip_prefix("source="))
+            .collect();
+        if sources != ["Notarized Developer ID"] {
             return Err(failure(
                 AppInstallFailure::Verification,
-                "App Info.plist exceeds limit",
+                "App is not a Notarized Developer ID app",
             ));
         }
-        let plist = plist::Value::from_file(plist_path)
-            .map_err(|error| failure(AppInstallFailure::Verification, error))?;
-        let dict = plist.as_dictionary().ok_or_else(|| {
-            failure(
-                AppInstallFailure::Verification,
-                "App Info.plist is not a dictionary",
-            )
-        })?;
-        if dict
-            .get("CFBundleIdentifier")
-            .and_then(plist::Value::as_string)
-            != Some(IDENTIFIER)
-        {
-            return Err(failure(
-                AppInstallFailure::Verification,
-                "Wrong app bundle identifier",
-            ));
-        }
-        let version_kind = if target.is_some() {
-            AppInstallFailure::Verification
-        } else {
-            AppInstallFailure::Conflict
-        };
-        let version = match dict.get("KoidriveVersion") {
-            None if target.is_none() => None,
-            value => {
-                let text = value.and_then(plist::Value::as_string).ok_or_else(|| {
-                    failure(version_kind, "App has no valid full KoidriveVersion")
-                })?;
-                Some(Version::parse(text).map_err(|error| failure(version_kind, error))?)
-            }
-        };
-        if target.is_some_and(|target| version.as_ref() != Some(target)) {
-            return Err(failure(
-                AppInstallFailure::Verification,
-                "App full release version does not match target",
-            ));
-        }
-        if identity(&fs::symlink_metadata(path).map_err(io_error)?) != id {
-            return Err(failure(
-                AppInstallFailure::ConcurrentChange,
-                "App changed during verification",
-            ));
-        }
-        Ok(VerifiedBundle {
-            path: path.to_path_buf(),
-            version,
-            identity: id,
-        })
     }
+    let plist_path = path.join("Contents/Info.plist");
+    if fs::metadata(&plist_path).map_err(io_error)?.len() > 1024 * 1024 {
+        return Err(failure(
+            AppInstallFailure::Verification,
+            "App Info.plist exceeds limit",
+        ));
+    }
+    let plist = plist::Value::from_file(plist_path)
+        .map_err(|error| failure(AppInstallFailure::Verification, error))?;
+    let dict = plist.as_dictionary().ok_or_else(|| {
+        failure(
+            AppInstallFailure::Verification,
+            "App Info.plist is not a dictionary",
+        )
+    })?;
+    if dict
+        .get("CFBundleIdentifier")
+        .and_then(plist::Value::as_string)
+        != Some(IDENTIFIER)
+    {
+        return Err(failure(
+            AppInstallFailure::Verification,
+            "Wrong app bundle identifier",
+        ));
+    }
+    let version_kind = if target.is_some() {
+        AppInstallFailure::Verification
+    } else {
+        AppInstallFailure::Conflict
+    };
+    let version = match dict.get("KoidriveVersion") {
+        None if target.is_none() => None,
+        value => {
+            let text = value
+                .and_then(plist::Value::as_string)
+                .ok_or_else(|| failure(version_kind, "App has no valid full KoidriveVersion"))?;
+            Some(Version::parse(text).map_err(|error| failure(version_kind, error))?)
+        }
+    };
+    if target.is_some_and(|target| version.as_ref() != Some(target)) {
+        return Err(failure(
+            AppInstallFailure::Verification,
+            "App full release version does not match target",
+        ));
+    }
+    if identity(&fs::symlink_metadata(path).map_err(io_error)?) != id {
+        return Err(failure(
+            AppInstallFailure::ConcurrentChange,
+            "App changed during verification",
+        ));
+    }
+    Ok(VerifiedBundle {
+        path: path.to_path_buf(),
+        version,
+        identity: id,
+    })
 }
-pub(super) use bundle::verify;
 pub(super) fn verification_error(error: AppInstallError, message: &str) -> AppInstallError {
     if matches!(
         error.kind,

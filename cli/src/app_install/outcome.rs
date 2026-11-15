@@ -1,7 +1,7 @@
 #[cfg(target_os = "macos")]
 use super::facts::CommitFact;
 #[cfg(target_os = "macos")]
-use super::macos::state as macos;
+use super::macos::state::RetiredOwnership;
 #[cfg(target_os = "macos")]
 use semver::Version;
 #[cfg(target_os = "macos")]
@@ -47,5 +47,5 @@ pub(crate) enum AppLaunchResult {
 pub(crate) struct RetiredApp {
     pub(crate) bundle: PathBuf,
     pub(crate) version: Option<Version>,
-    pub(super) ownership: macos::RetiredOwnership,
+    pub(super) ownership: RetiredOwnership,
 }
