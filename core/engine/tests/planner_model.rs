@@ -946,18 +946,6 @@ fn judge(
         }
     }
     let targets: BTreeSet<&str> = commit.ops.iter().map(target).collect();
-    let path = |id: &str| {
-        let mut path = Vec::new();
-        let mut at = after.node(id);
-        while let Some(node) = at {
-            at = (node.parent_id != root)
-                .then(|| after.node(&node.parent_id))
-                .flatten();
-            path.push(node.node_id);
-        }
-        path
-    };
-    let holding: BTreeSet<String> = targets.iter().flat_map(|id| path(id)).collect();
     for node in after.nodes() {
         let renamed = !targets.contains(node.node_id.as_str())
             && node.status() == NodeStatus::Live
@@ -967,18 +955,7 @@ fn judge(
             verdict.renamed.push(world.label_of(&root, &node.node_id));
         }
     }
-    for id in trashed(before) {
-        if after
-            .node(&id)
-            .is_none_or(|node| node.status() != NodeStatus::Live)
-        {
-            continue;
-        }
-        let restored = path(&id).iter().any(|up| targets.contains(up.as_str()));
-        if !restored && !holding.contains(&id) {
-            verdict.revived.push(world.label_of(&root, &id));
-        }
-    }
+    verdict.revived = revived(world, before, &[commit], &after);
     let kept: BTreeSet<String> = (0..world.len())
         .filter(|&i| world.local_place(i).is_some())
         .map(|i| world.id(i))
@@ -992,6 +969,42 @@ fn judge(
         }
     }
     (after, result, verdict)
+}
+
+fn revived(
+    world: &World,
+    before: &SpaceDo,
+    commits: &[&proto::Commit],
+    after: &SpaceDo,
+) -> Vec<String> {
+    let root = before.space_id().to_string();
+    let targets: BTreeSet<&str> = (commits.iter())
+        .flat_map(|commit| commit.ops.iter().map(target))
+        .collect();
+    let path = |id: &str| {
+        let mut path = Vec::new();
+        let mut at = after.node(id);
+        while let Some(node) = at {
+            at = (node.parent_id != root)
+                .then(|| after.node(&node.parent_id))
+                .flatten();
+            path.push(node.node_id);
+        }
+        path
+    };
+    let holding: BTreeSet<String> = targets.iter().flat_map(|id| path(id)).collect();
+    (trashed(before).into_iter())
+        .filter(|id| {
+            after
+                .node(id)
+                .is_some_and(|node| node.status() == NodeStatus::Live)
+        })
+        .filter(|id| {
+            let restored = path(id).iter().any(|up| targets.contains(up.as_str()));
+            !restored && !holding.contains(id)
+        })
+        .map(|id| world.label_of(&root, &id))
+        .collect()
 }
 
 struct Sent {
@@ -1015,6 +1028,7 @@ struct Run {
     sent: Vec<Sent>,
     end: SpaceDo,
     stop: Stop,
+    revived: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -1150,12 +1164,18 @@ fn run(
         }
         next = planner.build();
     };
+    let applied: Vec<&proto::Commit> = (sent.iter())
+        .filter(|sent| !sent.verdict.refused)
+        .map(|sent| &sent.commit)
+        .collect();
+    let revived = revived(world, &before, &applied, &server);
     Run {
         unseen,
         before,
         sent,
         end: server,
         stop,
+        revived,
     }
 }
 
@@ -1775,6 +1795,9 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         {
             found.push(format!("under a cap of {fits}: {kind}"));
         }
+        if !capped.revived.is_empty() {
+            found.push(format!("under a cap of {fits}: revival over the run"));
+        }
         match capped.stop {
             Stop::Busy => found.push(format!(
                 "under a cap of {fits}: still sending after {COMMITS} commits"
@@ -1804,6 +1827,11 @@ fn check(world: &World, space: &SpaceDo) -> Report {
     if runs.iter().any(|run| run.stop == Stop::Stalled) {
         hard = true;
         classes.push("acknowledge refused".into());
+    }
+    if let Some(run) = runs.iter().find(|run| !run.revived.is_empty()) {
+        hard = true;
+        classes.push("revival over the run".into());
+        notes += &format!("\n    revived over the run: {:?}", run.revived);
     }
     if firsts
         .iter()
@@ -2249,6 +2277,36 @@ fn the_known_repros_keep_trashed_folders_trashed_and_names_given() {
         }
     }
     assert!(failed.is_empty(), "{failed:?}");
+}
+
+#[test]
+fn a_revival_a_later_commit_hides_is_found_over_the_run() {
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, Root],
+        &[Remote::Kept, Remote::Kept],
+        &[Local::Into(In(1)), Local::Kept],
+        &[(Kind::Dir, Local::Into(In(0)))],
+    );
+    let mut start = server(&world);
+    unsee(&world, &mut start, Unseen::Bury(0));
+    let commit = |space: &SpaceDo, n, op: proto::Op| proto::Commit {
+        commit_id: IdGen::new(n).uuid_v7(NOW),
+        history_id: space.history_id().into(),
+        device_seq: space.device_seq("me") + 1,
+        base_seq: space.head_seq(),
+        ops: vec![op],
+        ..Default::default()
+    };
+    let create = commit(&start, 20, mkdir(world.id(2), world.id(0), world.label(2)));
+    let (created, _, first) = judge(&world, &start, &create);
+    let moved = commit(&created, 21, mv(world.id(0), world.id(1), world.label(0)));
+    let (end, _, second) = judge(&world, &created, &moved);
+    assert_eq!((first.revived, second.revived), (vec![], vec![]));
+    assert_eq!(
+        revived(&world, &start, &[&create, &moved], &end),
+        ["burial"]
+    );
 }
 
 #[test]
