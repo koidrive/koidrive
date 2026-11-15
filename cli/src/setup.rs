@@ -23,9 +23,7 @@ mod state;
 #[cfg(feature = "test-setup")]
 mod testing;
 #[cfg(test)]
-mod tests {
-    include!("setup/tests.rs");
-}
+mod tests;
 mod uninstall;
 
 use std::io::IsTerminal;
