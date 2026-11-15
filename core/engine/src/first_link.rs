@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::classify::Trees;
 use crate::commit::rekey;
 use crate::ids::IdGen;
-use crate::names::name_key;
+use crate::names::{name_key, nfc, same_name};
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content};
 
@@ -41,6 +41,16 @@ pub enum Listing {
     Live,
 }
 
+/// Whether the server shows that this device synced the space before the store it links with, by
+/// counting commits it accepted from the device in the current history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PriorSync {
+    /// The server accepted no commit from this device.
+    Fresh,
+    /// The server accepted commits from this device that no store remembers.
+    Shown,
+}
+
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
 /// exactly its name and kind, and for a file the same content. A folder also matches a folder R
@@ -62,7 +72,7 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
         .filter(|(_, node)| !node.trashed)
         .map(|(id, node)| {
             (
-                (node.shape.parent.clone(), node.shape.name.clone()),
+                (node.shape.parent.clone(), nfc(&node.shape.name)),
                 id.clone(),
             )
         })
@@ -73,21 +83,21 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
             continue;
         }
         if let Some(stem) = &node.pending_for {
-            let key = (node.shape.parent.clone(), stem.clone());
+            let key = (node.shape.parent.clone(), nfc(stem));
             pending_dirs.entry(key).or_default().push(id.clone());
         }
     }
     let mut trashed: BTreeMap<(NodeId, String), Vec<NodeId>> = BTreeMap::new();
     for (id, node) in trees.remote().iter().filter(|_| history.is_some()) {
         if node.trashed {
-            let key = (node.shape.parent.clone(), node.shape.name.clone());
+            let key = (node.shape.parent.clone(), nfc(&node.shape.name));
             trashed.entry(key).or_default().push(id.clone());
         }
     }
     let mut left: BTreeMap<(NodeId, String), Vec<(NodeId, Shape)>> = BTreeMap::new();
     for (id, shapes) in history.into_iter().flatten() {
         for shape in shapes {
-            let key = (shape.parent.clone(), shape.name.clone());
+            let key = (shape.parent.clone(), nfc(&shape.name));
             left.entry(key)
                 .or_default()
                 .push((id.clone(), shape.clone()));
@@ -111,7 +121,7 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 }
                 continue;
             }
-            let key = (parent.clone(), name);
+            let key = (parent.clone(), nfc(&name));
             let matches = |remote_id: &NodeId, shape: &Shape| {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
@@ -152,7 +162,7 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 held.push(id);
                 continue;
             };
-            let renamed = shape.name != local.name;
+            let renamed = !same_name(&shape.name, &local.name);
             if !trees.set_synced_if_valid(remote_id.clone(), Some(shape)) {
                 held.push(id);
                 continue;
@@ -183,14 +193,21 @@ fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
     items.next().filter(|_| items.next().is_none())
 }
 
-pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
+pub(crate) fn below(trees: &Trees, tops: &[NodeId]) -> Vec<NodeId> {
+    (tops.iter())
+        .flat_map(|top| unsynced(trees, top).into_keys())
+        .collect()
+}
+
+pub(crate) fn trashed_there(trees: &Trees) -> impl Fn(&NodeId) -> bool + '_ {
     let trashed: BTreeSet<Vec<String>> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
         .filter_map(|(id, _)| key_path(trees.remote(), id))
         .collect();
-    (tops.into_iter())
-        .filter(|id| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path)))
-        .collect()
+    move |top| {
+        (unsynced(trees, top).keys())
+            .any(|id| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path)))
+    }
 }
 
 fn key_path<N: Node>(tree: &Tree<N>, id: &str) -> Option<Vec<String>> {
@@ -306,7 +323,7 @@ fn holds_no_more(trees: &Trees, remote: &str, local: &str) -> bool {
                     (Some(remote), Some(local)) => same_content(remote, local),
                     (remote, local) => remote.is_none() && local.is_none(),
                 };
-                mine.name == node.shape.name
+                same_name(&mine.name, &node.shape.name)
                     && mine.kind == node.shape.kind
                     && alike
                     && (mine.kind != Kind::Dir || holds_no_more(trees, remote_id, id))

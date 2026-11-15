@@ -58,7 +58,7 @@ fn a_discarded_entry_the_rules_leave_out_for_a_while_stays_discarded_once_they_l
             Cut::None,
             &rulings,
             Answer::Discard,
-            true,
+            Some(PriorSync::Shown),
         )
         .unwrap();
     }
@@ -99,7 +99,7 @@ fn a_discarded_folder_the_user_moves_a_server_folder_into_is_sent_without_what_t
         Cut::None,
         &rulings,
         Answer::Discard,
-        true,
+        Some(PriorSync::Shown),
     )
     .unwrap();
 }
@@ -134,7 +134,7 @@ fn a_discarded_folder_parked_where_an_excluded_folder_holds_its_name_goes_to_the
         Cut::None,
         &rulings,
         Answer::Discard,
-        true,
+        Some(PriorSync::Shown),
     )
     .unwrap();
 }
@@ -187,7 +187,7 @@ fn an_edited_parked_file_whose_place_here_is_taken_and_whose_server_place_is_exc
             cut,
             &rulings,
             answer,
-            true,
+            Some(PriorSync::Shown),
         )
         .unwrap();
     }
@@ -227,7 +227,7 @@ fn a_folder_deleted_here_that_holds_excluded_files_stays_on_the_server_and_settl
                 cut,
                 &rulings,
                 answer,
-                true,
+                Some(PriorSync::Shown),
             )
             .unwrap();
         }
@@ -267,7 +267,7 @@ fn a_discarded_held_folder_that_holds_an_entry_excluded_after_it_was_made_settle
                 cut,
                 &rulings,
                 answer,
-                true,
+                Some(PriorSync::Shown),
             )
             .unwrap();
         }
@@ -301,7 +301,7 @@ fn a_folder_deleted_here_that_holds_excluded_files_comes_back_for_a_folder_the_o
                 cut,
                 &rulings,
                 answer,
-                true,
+                Some(PriorSync::Shown),
             )
             .unwrap();
         }
@@ -394,7 +394,7 @@ fn a_folder_brought_back_inside_a_folder_the_rules_exclude_here_is_left_out() {
     for cut in CUTS {
         let answer = Answer::Delete;
         run_ignoring(
-            &seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, answer, false,
+            &seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, answer, None,
         )
         .unwrap();
     }
@@ -419,7 +419,7 @@ fn a_server_entry_below_a_folder_moved_out_of_what_the_rules_include_here_is_lef
     for cut in CUTS {
         let answer = Answer::Delete;
         run_ignoring(
-            &seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, answer, false,
+            &seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, answer, None,
         )
         .unwrap();
     }
@@ -438,7 +438,7 @@ fn a_folder_deleted_here_that_another_device_renamed_comes_back_once_nothing_exc
     ];
     let rulings = [Ruling::Exclude(vec!["*.txt"])];
     for cut in CUTS {
-        let ran = run_ignoring(&seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, Answer::Delete, false).unwrap();
+        let ran = run_ignoring(&seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, Answer::Delete, None).unwrap();
         let root = ran.space.space_id().to_owned();
         let folders: Vec<_> = (ran.space.nodes().into_iter())
             .filter(|n| n.node_id != root && n.kind == 1 && n.status == 1)
@@ -464,7 +464,7 @@ fn a_file_deleted_here_with_its_kept_folder_stays_deleted_after_another_device_r
         Ruling::Exclude(vec![]),
     ];
     for cut in CUTS {
-        let ran = run_ignoring(&seed, &local, &[], MAX_OPS, false, &during, cut, &rulings, Answer::Delete, false).unwrap();
+        let ran = run_ignoring(&seed, &local, &[], MAX_OPS, false, &during, cut, &rulings, Answer::Delete, None).unwrap();
         let root = ran.space.space_id().to_owned();
         let live: Vec<_> = (ran.space.nodes().into_iter())
             .filter(|n| n.node_id != root && n.status == 1)
@@ -503,7 +503,7 @@ fn an_edit_after_another_device_purges_a_file_in_a_server_folder_in_a_discarded_
         Cut::None,
         &rulings,
         Answer::Discard,
-        true,
+        Some(PriorSync::Shown),
     )
     .unwrap();
 }
@@ -552,7 +552,7 @@ fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_se
         Cut::Built,
         &rulings,
         Answer::Discard,
-        true,
+        Some(PriorSync::Shown),
         2,
     )
     .unwrap();

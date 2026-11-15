@@ -39,9 +39,9 @@ fn a_file_unreadable_until_its_folder_swapped_names_reaches_the_other_device() {
 #[test]
 fn a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed() {
     let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
-    let site = Site::new(&remote, "b");
     fs::create_dir(site.root.join("held")).unwrap();
     fs::write(site.root.join("held/a.txt"), b"inside").unwrap();
     let mut b = site.start();
@@ -117,9 +117,9 @@ fn a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node() {
 #[test]
 fn a_held_folder_renamed_while_another_devices_rule_lets_it_in_stays_held() {
     let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
-    let site = Site::new(&remote, "b");
     fs::create_dir(site.root.join("held")).unwrap();
     fs::write(site.root.join("held/a.txt"), b"inside").unwrap();
     let mut b = site.start();
@@ -146,9 +146,9 @@ fn a_held_folder_renamed_while_another_devices_rule_lets_it_in_stays_held() {
 #[test]
 fn a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed_while_stopped() {
     let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
-    let site = Site::new(&remote, "b");
     fs::create_dir(site.root.join("held")).unwrap();
     fs::write(site.root.join("held/a.txt"), b"inside").unwrap();
     let mut b = site.start();

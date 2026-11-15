@@ -19,14 +19,18 @@ Names compare without regard to case or Unicode normalization. Two names in one 
 
 ## The first link compares the folder with the space
 
-If the space holds no live files or folders when sync first reads it, the folder's files upload as they are, and files another device adds after that sync as usual. Only a file or folder at a name the space's trash holds is held, since the space records a deletion at that path. A restart or a new read of the space before the first sync ends keeps that first answer. Otherwise the first sync compares the folder with the space, path by path. Here names must match exactly, including case and Unicode normalization, so `Report.txt` doesn't match `report.txt`:
+The first sync compares the folder with the space, path by path. Here names must match exactly, including case, so `Report.txt` doesn't match `report.txt`. Names in different Unicode forms, such as the ones macOS and Linux write for `résumé.docx`, match:
 
 - A folder that the space also holds at the same path stays, and its contents are compared one by one.
 - A file that the space holds at the same path, with the same content and the same executable bit, stays as it is.
 - Files and folders that only the space holds are downloaded, except where a held entry has the same name.
 - Entries that `.koiignore` or this device's rules leave out are skipped.
+- A file or folder at a path the space's trash holds is held, since the space records a deletion at that path. A folder whose name the space holds only in another case is held with everything in it when it holds such a file.
+- Every other file and folder uploads as it is. If the space has a file with the same name, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name).
 
-Every other file and folder is held, and sync asks one question about them, which takes `publish` or `discard`. A file you create later inside a held folder joins the question. Files you create anywhere else sync as usual. If the held entries change before sync applies your answer, sync replaces the question with a new one that has a new ID and drops your answer. An entry you edit or move stays held, and one you delete leaves the question. Run `koi resolve` again and answer the new question.
+Sync holds every other file and folder too when the folder shows an earlier sync with the space: its `.koidrive` marker counts changes it received from the space, or the space held live files or folders when sync first read it and the server already has changes from this device in it. A restart or a new read of the space before the first sync ends keeps that first answer.
+
+Sync asks one question about the held files and folders, which takes `publish` or `discard`. A file you create later inside a held folder joins the question. Files you create anywhere else sync as usual. If the held entries change before sync applies your answer, sync replaces the question with a new one that has a new ID and drops your answer. An entry you edit or move stays held, and one you delete leaves the question. Run `koi resolve` again and answer the new question.
 
 ## Koidrive refuses some folders
 

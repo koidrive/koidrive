@@ -8,7 +8,7 @@ use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 
 use koidrive_engine::effects::{Base, BatchLimit, Effect, Effects, Location};
 
-use koidrive_engine::first_link::Listing;
+use koidrive_engine::first_link::{Listing, PriorSync};
 
 use koidrive_engine::ids::IdGen;
 
@@ -973,6 +973,7 @@ struct Ran {
     trashed: usize,
     /// The questions the run answered.
     asked: usize,
+    conflicts: usize,
     space: SpaceDo,
 }
 
@@ -1079,7 +1080,7 @@ fn run_cut(
         cut,
         &[],
         Answer::Delete,
-        false,
+        None,
     )
 }
 
@@ -1196,7 +1197,7 @@ fn run_ignoring(
     cut: Cut,
     rulings: &[Ruling],
     answer: Answer,
-    first_link: bool,
+    first_link: Option<PriorSync>,
 ) -> Result<Ran, TestCaseError> {
     run_ignoring_answering_after(
         seed,
@@ -1224,7 +1225,7 @@ fn run_ignoring_answering_after(
     cut: Cut,
     rulings: &[Ruling],
     answer: Answer,
-    first_link: bool,
+    first_link: Option<PriorSync>,
     answer_after: usize,
 ) -> Result<Ran, TestCaseError> {
     let (mut space, mut other) = seeded(seed);
@@ -1242,7 +1243,7 @@ fn run_ignoring_answering_after(
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
-        if !node.trashed && !first_link {
+        if !node.trashed && first_link.is_none() {
             device
                 .trees
                 .set_synced(id.clone(), Some(node.shape.clone()));
@@ -1272,13 +1273,13 @@ fn run_ignoring_answering_after(
             _ => device.act(action),
         }
     }
-    if first_link {
+    if let Some(prior) = first_link {
         device.trees.settle();
         let listing = match device.trees.remote().iter().any(|(_, node)| !node.trashed) {
             true => Listing::Live,
             false => Listing::Empty,
         };
-        commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, listing);
+        commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, listing, prior);
     }
     let mut local_writes = written(
         device
@@ -1839,6 +1840,9 @@ fn run_ignoring_answering_after(
         removals,
         trashed: server.iter().filter(|(_, shape)| shape.is_none()).count(),
         asked,
+        conflicts: (commits.questions().iter())
+            .filter(|question| matches!(question.kind, QuestionKind::Conflict { .. }))
+            .count(),
         space,
     })
 }

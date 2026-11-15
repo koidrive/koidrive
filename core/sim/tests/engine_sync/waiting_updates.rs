@@ -33,7 +33,7 @@ fn a_server_file_moved_into_a_held_folder_while_its_s_update_waits_is_not_held()
             Cut::None,
             &[],
             answer,
-            true,
+            Some(PriorSync::Shown),
         )
         .unwrap();
     }

@@ -15,7 +15,7 @@ fn a_first_link_holds_a_file_whose_name_the_space_holds_until_the_person_answers
             Cut::None,
             &[],
             answer,
-            true,
+            Some(PriorSync::Shown),
         )
         .unwrap();
         assert_eq!(ran.asked, 1, "{answer}");
@@ -30,6 +30,30 @@ fn a_first_link_holds_a_file_whose_name_the_space_holds_until_the_person_answers
             "{answer}"
         );
     }
+}
+
+#[test]
+fn a_fresh_first_link_sends_a_file_whose_name_the_space_holds_as_a_conflict_copy_without_a_question() {
+    let seed = [act(1, 0, 0, 0, 0)];
+    let local = [act(1, 0, 0, 0, 0), act(0, 0, 0, 2, 0)];
+    let ran = run_ignoring(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &[],
+        Cut::None,
+        &[],
+        Answer::Publish,
+        Some(PriorSync::Fresh),
+    )
+    .unwrap();
+    assert_eq!((ran.asked, ran.conflicts), (0, 0));
+    let live = (ran.space.nodes().into_iter())
+        .filter(|node| node.status == 1 && node.node_id != ran.space.space_id())
+        .count();
+    assert_eq!((live, ran.removals), (3, 0));
 }
 
 #[test]
@@ -55,7 +79,7 @@ fn a_discarded_folder_the_user_moved_a_synced_file_into_before_the_answer_conver
         Cut::None,
         &[],
         Answer::Discard,
-        true,
+        Some(PriorSync::Shown),
     )
     .unwrap();
 }

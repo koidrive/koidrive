@@ -58,7 +58,7 @@ proptest! {
             Cut::None,
             &rulings,
             Answer::Delete,
-            false,
+            None,
         )?;
         prop_assert_eq!((ran.deletes, ran.removals, ran.trashed), (0, 0, 0));
     }
@@ -93,7 +93,7 @@ proptest! {
         let mut actions = vec![act(4, folder, 0, 0, 0)];
         actions.extend(local);
 
-        let ran = run_ignoring(&seed, &actions, &[], fits, true, &[], cut, &[], answer, false)?;
+        let ran = run_ignoring(&seed, &actions, &[], fits, true, &[], cut, &[], answer, None)?;
 
         prop_assert!(ran.asked >= 1, "the removal was asked about");
         match answer {
@@ -122,7 +122,30 @@ proptest! {
         answer in prop_oneof![Just(Answer::Publish), Just(Answer::Discard)],
         cut in prop::sample::select(CUTS.to_vec()),
     ) {
-        run_ignoring(&seed, &local, &[], fits, false, &during, cut, &[], answer, true)?;
+        run_ignoring(&seed, &local, &[], fits, false, &during, cut, &[], answer, Some(PriorSync::Shown))?;
+    }
+
+    #[test]
+    fn a_fresh_first_link_asks_nothing_and_keeps_every_file_on_both_sides(
+        seed in prop::collection::vec(action(2), 1..12),
+        local in prop::collection::vec(action(2), 1..8),
+        remote in prop::collection::vec(action(2), 0..8),
+        fits in prop_oneof![Just(MAX_OPS), 1usize..4],
+        cut in prop::sample::select(CUTS.to_vec()),
+    ) {
+        let ran = run_ignoring(
+            &seed,
+            &local,
+            &remote,
+            fits,
+            false,
+            &[],
+            cut,
+            &[],
+            Answer::Publish,
+            Some(PriorSync::Fresh),
+        )?;
+        prop_assert_eq!((ran.asked, ran.conflicts), (0, 0));
     }
 
     #[test]
@@ -138,7 +161,7 @@ proptest! {
         answer in prop_oneof![Just(Answer::Publish), Just(Answer::Discard)],
         cut in prop::sample::select(CUTS.to_vec()),
     ) {
-        run_ignoring(&seed, &local, &[], fits, false, &during, cut, &rulings, answer, true)?;
+        run_ignoring(&seed, &local, &[], fits, false, &during, cut, &rulings, answer, Some(PriorSync::Shown))?;
     }
 
     #[test]
@@ -167,7 +190,7 @@ proptest! {
             cut,
             &rulings,
             Answer::Discard,
-            true,
+            Some(PriorSync::Shown),
             answer_after,
         )?;
     }
@@ -212,7 +235,7 @@ proptest! {
             cut,
             &rulings,
             Answer::Discard,
-            true,
+            Some(PriorSync::Shown),
             answer_after,
         )?;
     }
