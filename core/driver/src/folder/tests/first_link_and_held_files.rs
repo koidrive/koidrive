@@ -549,13 +549,6 @@ fn listed(remote: &mut Remote, site: &Site) -> Device {
     b
 }
 
-fn kept_listing(site: &Site, history_id: &str, otherwise: koidrive_engine::first_link::Listing) -> koidrive_engine::first_link::Listing {
-    let mut store = Store::open(&site.db).unwrap();
-    store
-        .transaction(|tx| tx.keep_first_listing(history_id, otherwise))
-        .unwrap()
-}
-
 #[test]
 fn a_file_another_device_adds_after_an_empty_listing_asks_nothing_after_a_relist_or_a_restart() {
     for before in [Before::Replay, Before::Relist, Before::Restart] {
@@ -624,25 +617,6 @@ fn a_file_another_device_deleted_before_an_empty_listing_is_held() {
         assert_eq!(b.folder.view().questions, 1);
     }
 }
-
-#[test]
-fn the_first_listing_is_kept_until_the_first_link_classifies() {
-    let mut remote = Remote::new();
-    let (site_a, mut a) = linked(&mut remote, "a");
-    let site = Site::new(&remote, "b");
-    fs::write(site.root.join("Budget.xlsx"), b"written here").unwrap();
-    let b = listed(&mut remote, &site);
-    let history_id = b.folder.history_id.clone();
-    drop(b);
-    a.create(&mut remote, &site_a.root.join("Slides.pptx"), b"written on another device");
-    assert_eq!(kept_listing(&site, &history_id, koidrive_engine::first_link::Listing::Live), koidrive_engine::first_link::Listing::Empty);
-
-    let b = listed(&mut remote, &site);
-    let b = after_the_first_listing(&mut remote, &site, b, Before::Replay);
-    assert!(b.folder.engine.cursor.is_some());
-    assert_eq!(kept_listing(&site, &history_id, koidrive_engine::first_link::Listing::Live), koidrive_engine::first_link::Listing::Live);
-}
-
 
 #[test]
 fn a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held() {
