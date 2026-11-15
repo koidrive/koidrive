@@ -158,12 +158,14 @@ struct MenuContent: View {
     @State private var error: SessionError?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            header
-            attention
-            notices
-            UpdatePopoverNotice()
-            recentChanges
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                header
+                attention
+                notices
+                UpdatePopoverNotice()
+                recentChanges
+            }
             separator
             actions
             separator
@@ -182,7 +184,7 @@ struct MenuContent: View {
     private var separator: some View {
         Divider()
             .padding(.horizontal, 7)
-            .padding(.vertical, 1)
+            .padding(.vertical, 5)
     }
 
     private var headlineIcon: some View {
@@ -240,8 +242,8 @@ struct MenuContent: View {
             }
         }
         .padding(.horizontal, 7)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
     }
 
     @ViewBuilder
@@ -344,7 +346,7 @@ struct MenuContent: View {
             MenuButton(title: "Needs You…", systemImage: "questionmark.circle") {
                 openWindow.show(WindowID.questions)
             }
-            Divider()
+            separator
             Group {
                 MenuButton(title: "Share Link…", systemImage: "square.and.arrow.up") {
                     FilePicker.shareLink.choose(in: model.state.folders) { openWindow.showShareLink(for: $0) }
@@ -360,7 +362,7 @@ struct MenuContent: View {
                 }
             }
             .disabled(model.needsSetup)
-            Divider()
+            separator
             MenuButton(title: "Settings…", systemImage: "gearshape", shortcut: "⌘,") {
                 openSettings()
                 NSApp.activate()
@@ -565,7 +567,7 @@ private struct MenuButton: View {
                 }
             }
             .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .opacity(isEnabled ? 1 : 0.4)
             .background(RoundedRectangle(cornerRadius: 6).fill(hovering && isEnabled ? Color.fillStrong : .clear))
             .contentShape(Rectangle())
