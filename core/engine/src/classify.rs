@@ -1912,7 +1912,8 @@ impl Trees {
         shown: &BTreeMap<NodeId, Shape>,
     ) {
         for id in ids {
-            if self.unsent_edits.remove(&id) {
+            let edited = self.unsent_edits.remove(&id);
+            if self.unsent_moves.remove(&id) || edited {
                 self.mark(&id);
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
