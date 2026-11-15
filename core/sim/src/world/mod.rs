@@ -25,7 +25,8 @@
 //! - A write the server does not hold stays on the disk of the device it was made on until that
 //!   device's user overwrites or deletes it.
 //! - A write that a restore took from the server while a disk held it is on the server again
-//!   once the devices are quiet, unless a user overwrote or deleted it.
+//!   once the devices are quiet, unless a user overwrote or deleted it, or a person discarded it
+//!   in answer to a recovery question and it is in the local trash of that person's device.
 //! - L, S and R are valid trees after every step, the store gives back the state it was given,
 //!   and the engine and the server accept every outcome and message the harness reports.
 //! - The engine loads what the store holds after every transaction. The transaction that records
@@ -50,8 +51,9 @@
 //!   other content, and then in the files the server holds it in.
 //! - A recovery copy of a write the restore kept shares its source's lineage only when that
 //!   write's retained source version is newer than the copying device's newest own commit the
-//!   server retains, and the source holds different bytes when the copy applies. The device
-//!   then cannot prove that the restore kept the write. Each device has its own bound. The
+//!   server retains from before the server's last restore in the history, and the source holds
+//!   different bytes when the copy applies. The device then cannot prove that the restore kept
+//!   the write. Each device has its own bound. The
 //!   copy shares the lineage only while the source holds other content; unrelated copies and
 //!   copies of exposed writes keep the file-count check above. A recovery copy whose device's
 //!   own retained commit shows the server kept the write holds it in no file once the devices
@@ -523,6 +525,14 @@ struct Placement {
     name: String,
 }
 
+fn copy_bound(held: &BTreeSet<u64>, restored_to: Option<u64>) -> u64 {
+    (held.iter())
+        .rev()
+        .find(|seq| restored_to.is_none_or(|point| **seq <= point))
+        .copied()
+        .unwrap_or(0)
+}
+
 fn unspend(spent: &mut Vec<Spent>, touches: &mut [BTreeMap<u128, BTreeSet<u64>>], backup: &Backup) {
     let (lost, still): (Vec<Spent>, Vec<Spent>) = std::mem::take(spent)
         .into_iter()
@@ -582,6 +592,7 @@ pub struct World {
     /// the files the server may hold it in.
     exposed: BTreeMap<i64, Exposure>,
     held_commits: Vec<BTreeSet<u64>>,
+    restored_to: Option<u64>,
     planned_copies: Vec<BTreeMap<NodeId, RecoveryCopy>>,
     recovery_copies: BTreeMap<NodeId, RecoveryCopy>,
     restored_names: Vec<BTreeMap<NodeId, BTreeSet<String>>>,
@@ -606,6 +617,7 @@ pub struct World {
     moved_since_rewind: BTreeSet<i64>,
     /// The writes a person discarded in answer to a recovery question, which go to the local trash.
     discarded: BTreeSet<i64>,
+    discards: Vec<BTreeSet<i64>>,
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
@@ -668,6 +680,7 @@ impl World {
                     recovery_from: Resume::default(),
                     store_copy: None,
                     rolled_back: false,
+                    restored_ahead: false,
                     left: false,
                 }
             })
@@ -697,6 +710,7 @@ impl World {
             retired: BTreeSet::new(),
             exposed: BTreeMap::new(),
             held_commits: vec![BTreeSet::new(); count],
+            restored_to: None,
             planned_copies: vec![BTreeMap::new(); count],
             recovery_copies: BTreeMap::new(),
             rolled_back: BTreeMap::new(),
@@ -713,6 +727,7 @@ impl World {
             republished: BTreeSet::new(),
             moved_since_rewind: BTreeSet::new(),
             discarded: BTreeSet::new(),
+            discards: vec![BTreeSet::new(); count],
             binned_copies: BTreeSet::new(),
             answers: 0,
         }
@@ -772,6 +787,7 @@ impl World {
         for device in &mut self.devices {
             if !device.recovering() {
                 device.rolled_back = false;
+                device.restored_ahead = false;
             }
         }
         for names in &mut self.restored_names {
@@ -1018,6 +1034,7 @@ impl World {
             .copied()
             .collect();
         self.space.rewind(&backup.space, self.server_now());
+        self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.placements.clone_from(&backup.placements);
         self.in_history = backup.in_history.clone();
@@ -1049,15 +1066,17 @@ impl World {
 
     fn recover(&mut self, d: usize, trigger: RecoveryTrigger, why: String) -> Result<(), Failure> {
         let device = &mut self.devices[d];
-        if device.engine.history == self.space.history_id() && !device.rolled_back {
+        let ahead = device.restored_ahead && trigger == RecoveryTrigger::StoreRolledBack;
+        if device.engine.history == self.space.history_id() && !device.rolled_back && !ahead {
             return Err(Failure::Broken(format!(
-                "recovery started with no rewind and no rolled-back store: {why}"
+                "recovery started with no rewind, no rolled-back store and no restore of commits it lost: {why}"
             )));
         }
         note(
             &mut self.seen,
             match device.engine.history == self.space.history_id() {
-                true => "recovery starts after a store rollback",
+                true if device.rolled_back => "recovery starts after a store rollback",
+                true => "recovery starts after a restore brings back commits the device saw lost",
                 false => "recovery starts after a rewind",
             },
         );
@@ -1162,6 +1181,7 @@ impl World {
                 for ino in &inos {
                     self.approved[d].remove(ino);
                 }
+                self.discards[d].extend(&local);
                 self.discarded.extend(local);
             }
             Answer::Publish => {
@@ -1244,6 +1264,12 @@ impl World {
             })
             .copied()
             .collect();
+        for (device, (held, restored)) in
+            (self.devices.iter_mut()).zip(self.held_commits.iter().zip(&backup.held_commits))
+        {
+            device.restored_ahead |= !restored.is_subset(held);
+        }
+        self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2088,7 +2114,7 @@ impl World {
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
                 self.built[d] = self.scanned[d];
-                let bound = self.held_commits[d].last().copied().unwrap_or(0);
+                let bound = copy_bound(&self.held_commits[d], self.restored_to);
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for op in ops.into_iter().flatten() {
                     let Some(op::Op::CreateFile(create)) = &op.op else {
@@ -2874,6 +2900,9 @@ impl World {
             !server.contains(write)
                 && !self.retired.contains(write)
                 && !self.removed.iter().any(|removed| removed.contains(write))
+                && !(self.devices.iter().zip(&self.discards)).any(|(device, discards)| {
+                    discards.contains(write) && device.disk.binned(**write)
+                })
                 && !(refused
                     && (self.devices.iter())
                         .any(|device| device.disk.holds(**write) || device.disk.binned(**write)))
@@ -3488,6 +3517,92 @@ mod tests {
                 .contains(r#"write 1 is in the recovery copy "b""#),
             "{failure}"
         );
+    }
+
+    #[test]
+    fn only_a_restore_that_brings_back_commits_a_device_lost_lets_the_server_count_start_a_recovery()
+     {
+        let mut world = World::new(1);
+        world.step(0, &Step::Backup).unwrap();
+        (world.devices[0].disk)
+            .create(Place::Root, "a", Some(content(0, 0, 1)))
+            .unwrap();
+        world.phase(0, &[]).unwrap();
+        world.step(0, &Step::Backup).unwrap();
+        world.restore(false);
+        let recovery = |world: &mut World, trigger| world.recover(0, trigger, "test".into());
+        let refused = recovery(&mut world, RecoveryTrigger::StoreRolledBack);
+        assert!(matches!(refused, Err(Failure::Broken(_))), "{refused:?}");
+        world.restore(true);
+        world.restore(false);
+        let refused = recovery(&mut world, RecoveryTrigger::SpaceRewound);
+        assert!(matches!(refused, Err(Failure::Broken(_))), "{refused:?}");
+        recovery(&mut world, RecoveryTrigger::StoreRolledBack).unwrap();
+    }
+
+    #[test]
+    fn a_copy_bound_counts_only_commits_from_before_the_last_restore() {
+        let held = BTreeSet::from([2, 5]);
+        assert_eq!(copy_bound(&held, None), 5);
+        assert_eq!(copy_bound(&held, Some(3)), 2);
+        assert_eq!(copy_bound(&held, Some(1)), 0);
+        let mut world = World::new(1);
+        (world.devices[0].disk)
+            .create(Place::Root, "a", Some(content(0, 0, 1)))
+            .unwrap();
+        world.phase(0, &[]).unwrap();
+        world.step(0, &Step::Backup).unwrap();
+        world.restore(false);
+        (world.devices[0].disk)
+            .create(Place::Root, "b", Some(content(0, 1, 2)))
+            .unwrap();
+        world.phase(1, &[]).unwrap();
+        let held = world.held_commits[0].clone();
+        assert_eq!(held.len(), 2, "{held:?}");
+        let before = *held.first().unwrap();
+        assert_eq!(copy_bound(&held, world.restored_to), before);
+    }
+
+    #[test]
+    fn a_write_a_restore_took_is_excused_only_in_the_trash_of_the_device_whose_person_discarded_it()
+    {
+        let mut world = World::new(2);
+        let write = content(0, 1, 5);
+        let disk = &mut world.devices[0].disk;
+        let ino = disk.create(Place::Root, "a", Some(write.clone())).unwrap();
+        let record = EffectRecord {
+            effect_id: "removal".into(),
+            node: "a".into(),
+            counter: 1,
+            effect: Effect::RemoveFile {
+                displaced: Displaced {
+                    at: Location::At {
+                        base: Base::Root,
+                        dirs: Vec::new(),
+                        name: "a".into(),
+                    },
+                    identity: disk::identity(ino),
+                    content: write,
+                },
+            },
+            after: None,
+            recoveries: 0,
+        };
+        disk.apply(&record, Some(Cut::Done)).unwrap();
+        assert!(disk.binned(5));
+        world.exposed.insert(5, Exposure::default());
+        let lost = |world: &World| {
+            let kept = world.kept();
+            assert!(
+                matches!(&kept, Err(Failure::Broken(why)) if why.starts_with("a restore took write 5")),
+                "{kept:?}"
+            );
+        };
+        lost(&world);
+        world.discards[1].insert(5);
+        lost(&world);
+        world.discards[0].insert(5);
+        world.kept().unwrap();
     }
 
     #[test]

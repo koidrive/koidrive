@@ -2264,6 +2264,62 @@ fn a_copy_of_a_kept_write_by_a_device_whose_own_commit_shows_the_server_kept_it_
 }
 
 #[test]
+fn a_device_whose_only_commit_since_a_restore_landed_after_it_may_copy_a_write_the_restore_kept() {
+    let u = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = [
+        vec![(0, u(1, 0)), (0, u(1, 1))],
+        vec![
+            (0, u(2, 0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (1, u(0, 1)),
+            (2, u(0, 1)),
+            (2, Step::Work(0)),
+            (2, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Commit(Reply::Served)),
+            (0, BACKUP),
+            (1, Step::Work(0)),
+            (2, DELIVER),
+            (0, RESTORE),
+            (0, Step::Connect),
+            (0, Step::Work(122514933138980321)),
+        ],
+    ];
+    keep(3, &phases).unwrap();
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_write_a_restore_took_that_no_disk_keeps_is_still_reported_lost() {
+    let mut world = World::new(2);
+    world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
+    for device in &mut world.devices {
+        let held: Vec<u128> = (device.disk.entries().iter())
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .map(|(ino, _)| *ino)
+            .collect();
+        for ino in held {
+            device.disk.delete(ino);
+        }
+        assert!(!device.disk.holds(1) && !device.disk.binned(1));
+    }
+    let failure = world.phase(1, &[]).unwrap_err();
+    assert!(
+        failure.to_string().contains("a restore took write 1"),
+        "{failure}"
+    );
+}
+
+#[test]
 fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_beside_it() {
     let world = converge(
         2,
@@ -3146,6 +3202,76 @@ fn a_second_restore_keeps_an_edit_another_device_never_downloaded() {
     second.extend([(1, DELIVER); 8]);
     second.extend(commit(1));
     world.phase(3, &second).unwrap();
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_its_device_saw_lost_recovers_without_losing_or_resending_it()
+{
+    let lost = vec![
+        (0, BACKUP),
+        (0, Step::RestoreEarlier),
+        (0, Step::Connect),
+        (0, RESTORE),
+    ];
+    let world = converge(2, &[vec![(0, BACKUP), (0, file("a"))], lost]).unwrap();
+    assert_eq!(
+        world.seen["recovery starts after a restore brings back commits the device saw lost"],
+        1
+    );
+    assert_eq!(world.space().head_seq(), 1);
+    assert_eq!(copies_of(&world, 1), 1);
+}
+
+#[test]
+fn a_restore_that_brings_back_a_create_another_device_saw_lost_recovers() {
+    let u = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = [
+        vec![(0, BACKUP), (1, u(0, 0))],
+        vec![
+            (0, BACKUP),
+            (0, Step::RestoreEarlier),
+            (1, Step::Connect),
+            (0, RESTORE),
+        ],
+    ];
+    keep(2, &phases).unwrap();
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_restore_in_the_phase_after_an_earlier_restore_brings_back_the_commits_it_lost() {
+    let u = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = [
+        vec![
+            (0, BACKUP),
+            (0, u(0, 7)),
+            (0, u(1, 0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, u(0, 0)),
+            (0, u(0, 1)),
+        ],
+        vec![(0, BACKUP), (0, Step::RestoreEarlier)],
+        vec![(0, RESTORE)],
+    ];
+    keep(3, &phases).unwrap();
+    converge(3, &phases).unwrap();
 }
 
 #[test]
@@ -6464,6 +6590,44 @@ fn a_write_a_restore_took_may_be_discarded_once_a_rewind_follows() {
     steps.push((0, Step::Rewind));
     steps.push((0, act(0, 0, 7662212994444525949, "a", 0)));
     converge(2, &[steps]).unwrap();
+}
+
+#[test]
+fn a_write_a_restore_took_may_be_discarded_on_every_device_in_answer_to_a_recovery_question() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = [
+        vec![
+            (0, u(1, 0, 6)),
+            (0, BACKUP),
+            (2, u(1, 0, 0)),
+            (0, Step::Work(0)),
+            (1, Step::CopyStore),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, u(0, 0, 1)),
+            (0, u(0, 0, 2)),
+            (2, DELIVER),
+            (0, u(0, 0, 3)),
+            (0, Step::CopyStore),
+        ],
+        vec![
+            (0, BACKUP),
+            (1, Step::RollBack),
+            (2, Step::RollBack),
+            (0, Step::RestoreEarlier),
+            (2, u(2, 12745289885958749870, 0)),
+        ],
+    ];
+    let world = keep(2, &phases).unwrap();
+    assert!(world.devices.iter().all(|device| device.disk.binned(2)));
 }
 
 #[test]

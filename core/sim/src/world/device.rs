@@ -237,6 +237,7 @@ pub struct Device {
     pub recovery_from: Resume,
     pub store_copy: Option<Engine>,
     pub rolled_back: bool,
+    pub restored_ahead: bool,
     pub left: bool,
 }
 
