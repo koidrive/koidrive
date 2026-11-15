@@ -405,14 +405,4 @@ pub async fn forget(paths: &Paths, deleted: &url::Url) -> Result<Option<Report>,
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-
-    use super::binary::{MOVE_TO_APPLICATIONS, PROBE, target, volatile_binary};
-    use super::definition::{plist_binary, plist_env, suffixed, unit_binary, unit_env};
-    use super::launchd::{launchd_disabled, launchd_exit, launchd_state, unloaded};
-    use super::report::{SWITCHED_OFF, blocked_text};
-
-    include!("service/tests.rs");
-}
+mod tests;
