@@ -3533,6 +3533,29 @@ fn a_file_a_store_rollback_forgot_that_an_app_saved_in_place_is_in_sync() {
 }
 
 #[test]
+fn a_folder_merged_into_another_devices_folder_that_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename()
+ {
+    let mut world = World::new(2);
+    let folder = user(0, 0, 0, "b");
+    world
+        .run(0, &[(1, Step::CopyStore), (0, folder), (1, folder)])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world.run(0, &commit(1)).unwrap();
+    world.run(0, &[(1, EFFECT), (1, EFFECT)]).unwrap();
+    world.phase(1, &[]).unwrap();
+    assert!(world.seen.contains_key("op merged a folder"));
+    let created = only_entry(&world, 1, "b");
+    let node = node_named(&world, "b");
+    world.run(0, &[(1, rename(0, "a"))]).unwrap();
+    roll_back(&mut world, 1);
+    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(live(&world), ["a"]);
+    assert_eq!(node_named(&world, "a"), node);
+    assert_eq!(only_entry(&world, 1, "a"), created);
+}
+
+#[test]
 fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename()
 {
     let mut world = World::new(2);

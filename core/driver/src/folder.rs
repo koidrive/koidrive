@@ -24,7 +24,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use koidrive_engine::classify::Class;
-use koidrive_engine::commit::{self, Base, Failure, Halt as CommitHalt, Reconnect};
+use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
@@ -1470,6 +1470,8 @@ impl Folder {
             Ok((out, unanswered(tx)?))
         })?;
         self.questions = questions;
+        let granted = self.engine.commits.take_granted();
+        self.mark_granted(granted);
         #[cfg(test)]
         if let Some(left) = &mut self.crash_after {
             if *left == 0 {
@@ -1666,8 +1668,6 @@ impl Folder {
                 self.refused_nodes.insert(node, why);
             }
         }
-        let given =
-            (flight.map(|flight| commit::given_nodes(&flight.commit, &result))).unwrap_or_default();
         let receive = |engine: &mut Engine, result: CommitResult| {
             (engine.commits.received(result)).map_err(|error| {
                 Stop::Protocol(format!("the result of commit {commit_id}: {error:?}"))
@@ -1690,7 +1690,6 @@ impl Folder {
             if ours {
                 self.step(|engine, _| receive(engine, result))?;
             }
-            self.mark_given(given);
             return self.publish_remote();
         }
         self.remote_nodes = self.step(|engine, tx| {
@@ -1708,15 +1707,14 @@ impl Folder {
             }
             Ok(tx.remote_node_count()?)
         })?;
-        self.mark_given(given);
         Ok(())
     }
 
-    fn mark_given(&self, given: Vec<(NodeId, NodeId)>) {
+    fn mark_granted(&self, granted: Vec<NodeId>) {
         let trees = &self.engine.trees;
-        let entries = (given.into_iter())
-            .filter(|(_, node)| trees.local().get(node).is_some())
-            .map(|(_, node)| (node.clone(), node));
+        let entries = (granted.into_iter())
+            .filter(|node| trees.local().get(node).is_some())
+            .map(|node| (node.clone(), node));
         self.disk.mark(trees, entries);
     }
 

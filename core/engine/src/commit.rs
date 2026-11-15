@@ -191,6 +191,7 @@ pub struct Commits {
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
     guard: Guard,
+    granted: Vec<NodeId>,
 }
 
 impl Commits {
@@ -229,6 +230,7 @@ impl Commits {
             questions,
             published,
             guard,
+            granted: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -324,6 +326,7 @@ impl Commits {
             questions: questions.into(),
             published: published.into(),
             guard: guard.into(),
+            granted: Vec::new(),
         })
     }
 
@@ -1608,6 +1611,12 @@ impl Commits {
         !recovering && self.acknowledge_flight(trees, last_seq)
     }
 
+    /// The nodes the server gave to the creates, merged folders and conflict copies of each commit acknowledged
+    /// since the last call ([`given_nodes`]), for the disk to mark on the entries L holds under them.
+    pub fn take_granted(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.granted)
+    }
+
     fn record_served(&self, trees: &mut Trees, last_seq: u64) {
         let Some(flight) = (self.in_flight.as_ref()).filter(|flight| flight.result.is_none())
         else {
@@ -1646,6 +1655,11 @@ impl Commits {
             return false;
         };
         let result = flight.result.expect("taken with a result");
+        (self.granted).extend(
+            given_nodes(&flight.commit, &result)
+                .into_iter()
+                .map(|(_, node)| node),
+        );
         let commit_id = &flight.commit.commit_id;
         let (sent, questions): (Vec<Question>, Vec<Question>) = std::mem::take(self.questions.get_mut()).into_iter().partition(|question| {
             matches!(&question.kind, QuestionKind::Recovery { sent_in: Some(sent), .. } if sent == commit_id)

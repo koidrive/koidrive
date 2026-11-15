@@ -895,7 +895,7 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
 }
 
 #[test]
-fn a_given_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
+fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("a.txt"), b"bytes");
@@ -905,6 +905,6 @@ fn a_given_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
         .unwrap();
     let marks = |a: &Device| a.folder.disk.marks(&a.folder.engine.trees, [&id]);
     assert_eq!(marks(&a).get(&id), Some(&id));
-    a.folder.mark_given(vec![(id.clone(), "absent-copy".to_owned())]);
+    a.folder.mark_granted(vec!["absent-copy".to_owned()]);
     assert_eq!(marks(&a).get(&id), Some(&id));
 }

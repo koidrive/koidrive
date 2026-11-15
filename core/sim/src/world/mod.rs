@@ -421,7 +421,8 @@ fn resent_over_revert(
 
 /// Applies the result of the commit in flight to R when it is the next commit, and acknowledges
 /// the commit once R holds its records (section 2.7).
-fn acknowledge(engine: &mut Engine) -> Result<(), Failure> {
+fn acknowledge(device: &mut Device) -> Result<(), Failure> {
+    let engine = &mut device.engine;
     let next = (engine.commits.in_flight())
         .and_then(|flight| Some((flight.commit.commit_id.clone(), flight.result.clone()?)));
     if let Some((commit_id, result)) =
@@ -440,6 +441,15 @@ fn acknowledge(engine: &mut Engine) -> Result<(), Failure> {
     engine
         .commits
         .acknowledge(&mut engine.trees, engine.cursor.seq);
+    let trees = &engine.trees;
+    for node in engine.commits.take_granted() {
+        let Some(local) = trees.local().get(&node) else {
+            continue;
+        };
+        if let Some(at) = location_of(trees, &node) {
+            device.disk.mark(&at, local.identity.ino, &node);
+        }
+    }
     Ok(())
 }
 
@@ -2062,8 +2072,7 @@ impl World {
                         if flight.is_some_and(|f| f.commit.commit_id == record.commit_id) {
                             note(&mut self.seen, "own commit replayed before its result");
                         }
-                        let engine = &mut self.devices[d].engine;
-                        acknowledge(engine)?;
+                        acknowledge(&mut self.devices[d])?;
                     } else {
                         note(&mut self.seen, "records arrive twice");
                     }
@@ -2093,18 +2102,7 @@ impl World {
                                 _ => "result arrives before earlier commits",
                             },
                         );
-                        let flight = device.engine.commits.in_flight().expect("answered");
-                        let given = commit::given_nodes(&flight.commit, &result);
                         device.engine.commits.received(result).map_err(refused)?;
-                        let trees = &device.engine.trees;
-                        for (_, node) in given {
-                            let Some(local) = trees.local().get(&node) else {
-                                continue;
-                            };
-                            if let Some(at) = location_of(trees, &node) {
-                                device.disk.mark(&at, local.identity.ino, &node);
-                            }
-                        }
                     }
                     Err(error) => match device
                         .engine
@@ -2165,7 +2163,7 @@ impl World {
                 }
             }
         }
-        acknowledge(&mut self.devices[d].engine)?;
+        acknowledge(&mut self.devices[d])?;
         self.devices[d].persist()?;
         Ok(true)
     }
