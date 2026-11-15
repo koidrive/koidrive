@@ -3606,3 +3606,33 @@ fn a_file_its_user_copied_is_in_two_files_on_the_server() {
     world.phase(1, &[]).unwrap();
     assert_eq!(live(&world), ["a", "b"]);
 }
+
+#[test]
+fn a_file_a_store_rollback_forgot_that_its_user_renamed_while_another_device_edited_it_keeps_both_versions_once_published()
+ {
+    let mut world = World::new(2);
+    let original = downloaded(&mut world);
+    let node = node_named(&world, "a");
+    world.run(0, &[(1, rename(0, "b"))]).unwrap();
+    world.run(0, &[(0, overwrite(0))]).unwrap();
+    world.run(0, &commit(0)).unwrap();
+    let written = |world: &World, name: &str| {
+        let node = world.space().node(&node_named(world, name)).unwrap();
+        node.current.unwrap().content.unwrap().mtime_ns
+    };
+    let edited = written(&world, "a");
+    let renamed = world.devices[1].disk.entries()[&original]
+        .content
+        .as_ref()
+        .unwrap()
+        .mtime_ns;
+    assert_ne!(edited, renamed);
+    roll_back(&mut world, 1);
+    assert_eq!(answered(&world), ["recovery answer publishes"]);
+    assert_eq!(world.seen["recovery answer publishes"], 1);
+    assert_eq!(live(&world), ["a", "b"]);
+    assert_eq!(node_named(&world, "a"), node);
+    assert_ne!(node_named(&world, "b"), node);
+    assert_eq!(written(&world, "a"), edited);
+    assert_eq!(written(&world, "b"), renamed);
+}
