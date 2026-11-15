@@ -6,7 +6,7 @@ use std::path::Path;
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Halt, InFlight, Reconnect};
 use koidrive_engine::effects::{Base, BatchLimit, Dir, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::first_link::{Listing, PriorSync};
+use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::question::{
@@ -103,7 +103,6 @@ fn migrations_apply_from_empty() {
             "effects_in_flight",
             "engine_state",
             "failed_effects",
-            "first_listing",
             "guard_confirmed",
             "guard_confirmed_limits",
             "guard_confirmed_members",
@@ -3207,28 +3206,30 @@ fn a_recovery_stored_before_its_cause_was_opens_as_a_rolled_back_store() {
 }
 
 #[test]
-fn a_store_from_before_first_listings_were_kept_keeps_one_per_history_across_a_reopen() {
+fn a_store_from_before_the_first_listing_was_dropped_opens_without_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     Store::open(&path).unwrap();
-    store_before(&path, "first_listing");
-    let keep = |history_id: &str, listing: Listing| {
-        Store::open(&path)
-            .unwrap()
-            .transaction(|tx| tx.keep_first_listing(history_id, listing))
-            .unwrap()
-    };
-
-    assert_eq!(keep("h1", Listing::Empty), Listing::Empty);
-    assert_eq!(applied(&path), all_migrations());
-    assert_eq!(keep("h1", Listing::Live), Listing::Empty);
-    assert_eq!(keep("h2", Listing::Live), Listing::Live);
-    assert_eq!(keep("h1", Listing::Live), Listing::Live);
-    Store::open(&path)
+    store_before(&path, "first_listing_dropped");
+    Connection::open(&path)
         .unwrap()
-        .transaction(|tx| tx.forget_first_listing())
+        .execute(
+            "INSERT INTO first_listing (history_id, live) VALUES ('h1', 1)",
+            [],
+        )
         .unwrap();
-    assert_eq!(keep("h1", Listing::Empty), Listing::Empty);
+
+    Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let kept: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'first_listing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 0);
 }
 
 #[test]
@@ -3425,7 +3426,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     trees.settle();
     let mut commits = Commits::default();
     let mut ids = IdGen::new(333);
-    commits.first_link(&mut trees, &mut ids, 1, Listing::Live, PriorSync::Shown);
+    commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
     let question = commits.questions()[0].id.clone();
     assert!(commits.decide(&question, Answer::Discard));
     assert!(
@@ -3937,7 +3938,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         trees.settle();
         let mut commits = Commits::default();
         let mut ids = IdGen::new(335);
-        commits.first_link(&mut trees, &mut ids, 1, Listing::Live, PriorSync::Shown);
+        commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
         let question = commits.questions()[0].id.clone();
         assert!(commits.decide(&question, Answer::Discard));
         assert!(

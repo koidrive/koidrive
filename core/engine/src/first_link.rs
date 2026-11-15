@@ -31,16 +31,6 @@ pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
     history
 }
 
-/// What the space held when the device first read the server's tree on a first link. A node another device commits
-/// after that is a change like any other, never a sign that the space already held files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Listing {
-    /// Nothing live besides the root.
-    Empty,
-    /// At least one live file or folder.
-    Live,
-}
-
 /// Whether the folder synced the space before the store it links with: the server accepted commits
 /// from this device in the current history, or the folder held the space's root marker before the
 /// link.

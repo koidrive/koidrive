@@ -523,11 +523,6 @@ impl Folder {
             }
         };
         let mut staging = Staging::new(self.history_id.clone(), pages, trash);
-        if self.engine.cursor.is_none() {
-            let history_id = staging.history_id().to_owned();
-            let listing = staging.listing();
-            staging.decide(self.step(|_, tx| Ok(tx.keep_first_listing(&history_id, listing)?))?);
-        }
         tracing::info!(
             space_id = self.link.space_id,
             seq = staging.last_seq(),
@@ -1733,7 +1728,6 @@ impl Folder {
             return Ok(());
         }
         let head = Some(staging.last_seq());
-        let listing = staging.listing();
         let Stream::Replaying(mut staging) =
             std::mem::replace(&mut self.stream, Stream::Following { head })
         else {
@@ -1755,7 +1749,6 @@ impl Folder {
             .unwrap_or_default();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
-            tx.forget_first_listing()?;
             if recovering {
                 (engine.commits).recover(
                     &mut engine.trees,
@@ -1766,13 +1759,7 @@ impl Folder {
                     now_ms,
                 );
             } else if first_link {
-                (engine.commits).first_link(
-                    &mut engine.trees,
-                    &mut engine.ids,
-                    now_ms,
-                    listing,
-                    prior,
-                );
+                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms, prior);
                 engine.recovery_cause = Some(crate::RecoveryCause {
                     trigger: crate::RecoveryTrigger::NoSyncState,
                     restore_point_ms: None,

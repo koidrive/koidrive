@@ -36,7 +36,6 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
-use koidrive_engine::first_link::Listing;
 use koidrive_fs::FileId;
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
@@ -518,34 +517,6 @@ impl Tx<'_> {
         Ok(self
             .0
             .query_row("SELECT COUNT(*) FROM remote_nodes", [], |row| row.get(0))?)
-    }
-
-    /// The listing that decides the first link in `history_id`: the one kept for it already, or else `listing`,
-    /// which is kept from now on. A listing kept for another history is dropped.
-    pub fn keep_first_listing(&self, history_id: &str, listing: Listing) -> Result<Listing> {
-        self.0.execute(
-            "DELETE FROM first_listing WHERE history_id != ?1",
-            [history_id],
-        )?;
-        self.0.execute(
-            "INSERT OR IGNORE INTO first_listing (history_id, live) VALUES (?1, ?2)",
-            params![history_id, listing == Listing::Live],
-        )?;
-        let live: bool = self.0.query_row(
-            "SELECT live FROM first_listing WHERE history_id = ?1",
-            [history_id],
-            |row| row.get(0),
-        )?;
-        Ok(match live {
-            true => Listing::Live,
-            false => Listing::Empty,
-        })
-    }
-
-    /// Drops the kept listing, once R replaced the staging tree it decided.
-    pub fn forget_first_listing(&self) -> Result<()> {
-        self.0.execute("DELETE FROM first_listing", [])?;
-        Ok(())
     }
 
     /// Every node of the synced tree, ordered by `node_id`.
