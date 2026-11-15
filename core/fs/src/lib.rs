@@ -2375,6 +2375,7 @@ pub fn quoted<P: AsRef<Path> + ?Sized>(path: &P) -> impl std::fmt::Display + '_ 
 
 mod effect;
 mod ignore;
+mod mark;
 mod recovered;
 mod resolve;
 mod root;

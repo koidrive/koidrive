@@ -24,11 +24,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use koidrive_engine::classify::Class;
-use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
+use koidrive_engine::commit::{self, Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
-use koidrive_engine::tree::{Content, Kind, LocalNode, Shape, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same_content};
 use koidrive_fs::{Refusal, Snapshot, Unresolved, check_root};
 use koidrive_net::{
     Auth, Backoff, CallError, Cause, ChunkError, DisconnectReason, Event, NotResent, ServerError,
@@ -1666,6 +1666,8 @@ impl Folder {
                 self.refused_nodes.insert(node, why);
             }
         }
+        let given =
+            (flight.map(|flight| commit::given_nodes(&flight.commit, &result))).unwrap_or_default();
         let receive = |engine: &mut Engine, result: CommitResult| {
             (engine.commits.received(result)).map_err(|error| {
                 Stop::Protocol(format!("the result of commit {commit_id}: {error:?}"))
@@ -1688,6 +1690,7 @@ impl Folder {
             if ours {
                 self.step(|engine, _| receive(engine, result))?;
             }
+            self.mark_given(given);
             return self.publish_remote();
         }
         self.remote_nodes = self.step(|engine, tx| {
@@ -1705,7 +1708,19 @@ impl Folder {
             }
             Ok(tx.remote_node_count()?)
         })?;
+        self.mark_given(given);
         Ok(())
+    }
+
+    fn mark_given(&self, given: Vec<(NodeId, NodeId)>) {
+        let trees = &self.engine.trees;
+        let entries = (given.into_iter()).filter_map(|(sent, node)| {
+            let id = [&node, &sent]
+                .into_iter()
+                .find(|id| trees.local().get(id).is_some())?;
+            Some((id.clone(), node))
+        });
+        self.disk.mark(trees, entries);
     }
 
     /// Replaces R with the bootstrap's tree once the log has caught it up (design §4.4). On the first link of the
@@ -1747,6 +1762,12 @@ impl Folder {
         let history = (staging.take_history())
             .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
             .unwrap_or_default();
+        let trees = &self.engine.trees;
+        let unheld: BTreeMap<NodeId, FileIdentity> = (trees.local().iter())
+            .filter(|(id, _)| recovering && trees.synced().get(id).is_none())
+            .map(|(id, node)| (id.clone(), node.identity))
+            .collect();
+        let marks = self.disk.marks(trees, unheld.keys());
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
             if recovering {
@@ -1755,6 +1776,7 @@ impl Folder {
                     device_seq,
                     &cause,
                     &history,
+                    &marks,
                     &mut engine.ids,
                     now_ms,
                 );
@@ -1770,6 +1792,14 @@ impl Folder {
         if recovering {
             self.unreadable.clear();
         }
+        let trees = &self.engine.trees;
+        let adopted = (trees.local().iter())
+            .filter(|(id, node)| {
+                trees.synced().get(id).is_some() && unheld.values().any(|was| *was == node.identity)
+            })
+            .map(|(id, _)| (id.clone(), id.clone()))
+            .collect::<Vec<_>>();
+        self.disk.mark(trees, adopted);
         Ok(())
     }
 

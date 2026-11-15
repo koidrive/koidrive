@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::classify::Trees;
+use crate::classify::{Adopted, Trees};
 use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::names::{name_key, nfc, same_name};
@@ -17,6 +17,10 @@ use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_con
 /// a place it left, where a download made before the store lost track of it may still hold it on
 /// disk (design section 6.4).
 pub type History = BTreeMap<NodeId, Vec<Shape>>;
+
+/// The node each local entry's mark names (design section 6.4), for the entries S does not hold,
+/// keyed by their ID in L. The caller keeps only marks written on the entry as L holds it.
+pub type Marks = BTreeMap<NodeId, NodeId>;
 
 /// The history of a recovery whose log reaches back to the store's cursor: the shape `remote`, R
 /// as the store held it, gives each live node, and then each shape in `log`.
@@ -160,7 +164,7 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
                 continue;
             }
             if renamed {
-                trees.adopt_pending(remote_id.clone());
+                trees.adopt(remote_id.clone(), Adopted::PendingName);
             }
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
@@ -171,6 +175,62 @@ pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
         }
     }
     held
+}
+
+pub(crate) fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) {
+    let mut left = claimed_once(trees, marks);
+    loop {
+        let before = left.len();
+        left.retain(|(local, node)| !follow_mark(trees, history, local, node));
+        if left.len() == before {
+            return;
+        }
+    }
+}
+
+fn claimed_once<'a>(trees: &Trees, marks: &'a Marks) -> Vec<(&'a NodeId, &'a NodeId)> {
+    let mut claims: BTreeMap<&NodeId, usize> = BTreeMap::new();
+    for node in marks.values() {
+        *claims.entry(node).or_default() += 1;
+    }
+    (marks.iter())
+        .filter(|(local, node)| {
+            claims[node] == 1 && (local == node || trees.local().get(node).is_none())
+        })
+        .collect()
+}
+
+fn follow_mark(trees: &mut Trees, history: &History, local: &NodeId, node: &NodeId) -> bool {
+    let Some(entry) = (trees.local().get(local))
+        .filter(|_| trees.synced().get(local).is_none() && !trees.excluded(local))
+        .map(|found| found.shape.clone())
+    else {
+        return false;
+    };
+    let Some(shape) = shape_to_follow(trees, history, node, &entry) else {
+        return false;
+    };
+    if !trees.set_synced_if_valid(node.clone(), Some(shape)) {
+        return false;
+    }
+    trees.adopt(node.clone(), Adopted::Mark);
+    if local != node {
+        rekey(trees, local, node);
+    }
+    true
+}
+
+fn shape_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape) -> Option<Shape> {
+    let remote = (trees.remote().get(node))
+        .filter(|remote| !remote.trashed && remote.shape.kind == entry.kind)?;
+    let logged = history.get(node).filter(|logged| !logged.is_empty());
+    let with_content: Vec<&Shape> = (logged.into_iter().flatten().chain([&remote.shape]))
+        .filter(|shape| shape.kind == entry.kind && same_bytes(&shape.content, &entry.content))
+        .collect();
+    let in_place = (with_content.iter().rev())
+        .find(|shape| shape.parent == entry.parent && shape.name == entry.name);
+    let moved_since = logged.and_then(|_| with_content.last());
+    in_place.or(moved_since).map(|shape| (*shape).clone())
 }
 
 fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {

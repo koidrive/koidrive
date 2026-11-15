@@ -2,7 +2,7 @@
 
 use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
 use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
@@ -3284,6 +3284,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
         seq,
         &cause,
         &History::new(),
+        &Marks::new(),
         &mut engine.ids,
         1_794_268_740_020,
     );
@@ -3419,4 +3420,132 @@ fn a_file_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename() {
     assert_eq!(answered(&world), Vec::<&str>::new());
     assert_eq!(live(&world), ["b"]);
     assert_eq!(only_entry(&world, 1, "b"), downloaded);
+}
+
+fn index_of(world: &World, d: usize, name: &str) -> (u128, usize, usize) {
+    let disk = &world.devices[d].disk;
+    let visible = disk.visible();
+    let ino = (visible.iter().copied())
+        .find(|ino| disk.entries()[ino].name == name)
+        .unwrap_or_else(|| panic!("device {d} holds no {name:?}"));
+    let dirs: Vec<u128> = (visible.iter().copied())
+        .filter(|ino| disk.entries()[ino].content.is_none())
+        .collect();
+    let target = visible.iter().position(|other| *other == ino).unwrap();
+    let parent = dirs
+        .iter()
+        .position(|other| *other == ino)
+        .map_or(0, |at| at + 1);
+    (ino, target, parent)
+}
+
+fn node_named(world: &World, name: &str) -> String {
+    (world.space().nodes().into_iter())
+        .find(|node| node.name == name && node.status == NodeStatus::Live as i32)
+        .unwrap_or_else(|| panic!("the server holds no {name:?}"))
+        .node_id
+}
+
+fn downloaded(world: &mut World) -> u128 {
+    world
+        .run(0, &[(1, Step::CopyStore), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world
+        .run(0, &[(1, DELIVER), (1, EFFECT), (1, EFFECT)])
+        .unwrap();
+    only_entry(world, 1, "a")
+}
+
+fn roll_back(world: &mut World, d: usize) {
+    world
+        .run(0, &[(d, Step::RollBack), (d, Step::Connect)])
+        .unwrap();
+    world.phase(1, &[]).unwrap();
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_and_its_user_moved_follows_the_move() {
+    let mut world = World::new(2);
+    let folder = user(0, 0, 0, "c.txt");
+    world
+        .run(0, &[(1, Step::CopyStore), (0, folder), (0, file("a"))])
+        .unwrap();
+    world.run(0, &commit(0)).unwrap();
+    world.run(0, &[(1, DELIVER)]).unwrap();
+    world.run(0, &[(1, EFFECT); 4]).unwrap();
+    let (moved, target, _) = index_of(&world, 1, "a");
+    let (_, _, parent) = index_of(&world, 1, "c.txt");
+    world.run(0, &[(1, user(3, target, parent, "b"))]).unwrap();
+    roll_back(&mut world, 1);
+    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(live(&world), ["b", "c.txt"]);
+    let file = (world.space().nodes().into_iter())
+        .find(|node| node.name == "b")
+        .unwrap();
+    assert_eq!(file.parent_id, node_named(&world, "c.txt"));
+    assert_eq!(index_of(&world, 1, "b").0, moved);
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_keeps_its_node_when_its_copy_takes_its_old_name() {
+    let mut world = World::new(2);
+    let original = downloaded(&mut world);
+    let node = node_named(&world, "a");
+    world.run(0, &[(1, rename(0, "b"))]).unwrap();
+    let (_, target, _) = index_of(&world, 1, "b");
+    let copy = Step::Copy(Action {
+        kind: 0,
+        target,
+        parent: 0,
+        name: 0,
+        text: 0,
+    });
+    world.run(0, &[(1, copy)]).unwrap();
+    roll_back(&mut world, 1);
+    assert!(world.seen.contains_key("recovery classifies the trees"));
+    assert_eq!(answered(&world).len(), 1, "{:?}", answered(&world));
+    assert_eq!(node_named(&world, "b"), node);
+    assert_eq!(index_of(&world, 1, "b").0, original);
+}
+
+#[test]
+fn a_file_a_store_rollback_forgot_that_an_app_saved_in_place_is_in_sync() {
+    for keeps_mark in [true, false] {
+        let mut world = World::new(2);
+        downloaded(&mut world);
+        let node = node_named(&world, "a");
+        let save = Step::Save {
+            target: 0,
+            keeps_mark,
+        };
+        world.run(0, &[(1, save)]).unwrap();
+        roll_back(&mut world, 1);
+        assert_eq!(
+            answered(&world),
+            Vec::<&str>::new(),
+            "keeps_mark {keeps_mark}"
+        );
+        assert_eq!(live(&world), ["a"]);
+        assert_eq!(node_named(&world, "a"), node);
+        only_entry(&world, 1, "a");
+    }
+}
+
+#[test]
+fn a_file_this_device_created_that_a_store_rollback_forgot_and_its_user_renamed_follows_the_rename()
+{
+    let mut world = World::new(2);
+    world
+        .run(0, &[(1, Step::CopyStore), (1, file("a"))])
+        .unwrap();
+    world.run(0, &commit(1)).unwrap();
+    let created = only_entry(&world, 1, "a");
+    let node = node_named(&world, "a");
+    world.run(0, &[(1, rename(0, "b"))]).unwrap();
+    roll_back(&mut world, 1);
+    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(live(&world), ["b"]);
+    assert_eq!(node_named(&world, "b"), node);
+    assert_eq!(only_entry(&world, 1, "b"), created);
 }

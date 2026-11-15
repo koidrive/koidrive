@@ -865,3 +865,31 @@ fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_resto
     assert!(remote.names().contains(&"notes.txt".to_owned()), "server names: {:?}", remote.names());
     assert_eq!(fs::read(&path).unwrap(), b"written on a");
 }
+
+#[test]
+fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_users_rename() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    drop(a);
+    fs::rename(site.root.join("two.txt"), site.root.join("renamed.txt")).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(shown(&site).is_empty());
+    assert_eq!(remote.names(), ["renamed.txt"]);
+    assert_eq!(names(&site.root), ["renamed.txt"]);
+}

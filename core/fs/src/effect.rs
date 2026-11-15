@@ -11,6 +11,7 @@ use koidrive_ignore::PLATFORM_FILES;
 use rustix::fs::{Access, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
+use crate::mark;
 use crate::resolve::{Base, Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
 use crate::root::{
     Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, write_marker_at,
@@ -68,6 +69,8 @@ pub struct Effect {
     /// Names the effect's staging and quarantine entries, and its trash entry,
     /// so it must be a single file name.
     pub id: String,
+    /// The node the effect is for. A file it places and a folder it creates are marked with it.
+    pub node: String,
     pub action: Action,
 }
 
@@ -546,7 +549,9 @@ impl Space {
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
                     Err(err) => return denied(err.into()),
                 }
-                let identity = stat_at(parent.fd(), name)?.id;
+                let folder = mark::open(parent.fd(), name)?.ok_or(io::ErrorKind::NotFound)?;
+                let identity = stat_fd(folder.as_fd())?.id;
+                mark::write(folder.as_fd(), &effect.node)?;
                 hook(Step::Placed);
                 Outcome::Done {
                     identity: Some(identity),
@@ -556,7 +561,7 @@ impl Space {
                 let staging = open!(self.private(&[STAGING_DIR]));
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
-                self.place(&staging, &effect.id, &parent, name, hook)?
+                self.place(&staging, effect, &parent, name, hook)?
             }
             Action::WriteFile {
                 at,
@@ -661,7 +666,7 @@ impl Space {
         }
         let outcome = match target {
             Some((staging, (target, new_name))) => {
-                match self.place(&staging, &effect.id, &target, new_name, hook)? {
+                match self.place(&staging, effect, &target, new_name, hook)? {
                     placed if is_denied(&placed) => {
                         return self.returned(
                             &quarantine,
@@ -692,15 +697,18 @@ impl Space {
     fn place(
         &self,
         staging: &Folder,
-        id: &str,
+        effect: &Effect,
         target: &Folder,
         name: &OsStr,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
         resolve!(self.recheck(target));
         self.recheck(staging)?;
-        let identity = stat_at(staging.fd(), OsStr::new(id))?.id;
-        match rename_no_replace(staging.fd(), OsStr::new(id), target.fd(), name) {
+        let id = OsStr::new(&effect.id);
+        let staged = mark::open(staging.fd(), id)?.ok_or(io::ErrorKind::NotFound)?;
+        let identity = stat_fd(staged.as_fd())?.id;
+        mark::write(staged.as_fd(), &effect.node)?;
+        match rename_no_replace(staging.fd(), id, target.fd(), name) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 return Ok(failed(Reason::Taken));
@@ -810,9 +818,7 @@ impl Space {
             let outcome = match place {
                 Some(at) if staged => {
                     let placed = match self.parent(at) {
-                        Ok((target, name)) => {
-                            self.place(&staging, &effect.id, &target, name, hook)?
-                        }
+                        Ok((target, name)) => self.place(&staging, effect, &target, name, hook)?,
                         Err(Unresolved::Io { err, .. }) if refused(&err) => failed(Reason::Denied),
                         Err(err) => unresolved(err)?,
                     };
