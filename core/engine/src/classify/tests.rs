@@ -106,7 +106,7 @@ fn a_reclaim_that_cannot_keep_s_valid_changes_nothing() {
     assert_eq!(trees.state(), before);
 }
 
-fn a_server_folder_in_a_discarded_folder(folders: usize) -> (Trees, Vec<NodeId>) {
+fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Trees, Vec<NodeId>) {
     let mut trees = Trees::new("root");
     let mut ino = 0;
     let mut add = |trees: &mut Trees, id: String, shape: Shape, server: bool| {
@@ -118,7 +118,10 @@ fn a_server_folder_in_a_discarded_folder(folders: usize) -> (Trees, Vec<NodeId>)
         };
         if server {
             trees.set_remote(id.clone(), remote(shape.clone()));
-            trees.set_synced(id.clone(), Some(shape.clone()));
+            match waiting {
+                true => trees.wait(id.clone(), Some(shape.clone()), Origin::Other),
+                false => trees.set_synced(id.clone(), Some(shape.clone())),
+            }
         }
         let local = LocalNode {
             shape,
@@ -167,18 +170,20 @@ fn a_server_folder_in_a_discarded_folder(folders: usize) -> (Trees, Vec<NodeId>)
 
 #[test]
 fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time() {
-    let took = |folders| {
-        let (trees, ids) = a_server_folder_in_a_discarded_folder(folders);
+    let took = |folders, waiting| {
+        let (trees, ids) = a_server_folder_in_a_discarded_folder(folders, waiting);
         let started = std::time::Instant::now();
         assert!(ids.iter().all(|id| trees.is_discarded(id)));
         assert!(trees.discard_state("f") == Some(Discard::Kept));
         started.elapsed()
     };
-    let (five_thousand, fifty_thousand) = (took(10), took(100));
-    assert!(
-        fifty_thousand < five_thousand * 30,
-        "checking 50,000 discarded server copies took {fifty_thousand:?}, and 5,000 took {five_thousand:?}"
-    );
+    for waiting in [false, true] {
+        let (five_thousand, fifty_thousand) = (took(10, waiting), took(100, waiting));
+        assert!(
+            fifty_thousand < five_thousand * 30,
+            "checking 50,000 discarded server copies took {fifty_thousand:?}, and 5,000 took {five_thousand:?}, with S updates waiting: {waiting}"
+        );
+    }
 }
 
 #[test]

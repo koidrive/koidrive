@@ -126,33 +126,64 @@ pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a 
     None
 }
 
-#[derive(Clone, Debug, Default)]
-struct Discards {
-    shapes: TrackedMap<NodeId, Shape>,
+trait Placed {
+    fn parent(&self) -> Option<&NodeId>;
+}
+
+impl Placed for Shape {
+    fn parent(&self) -> Option<&NodeId> {
+        Some(&self.parent)
+    }
+}
+
+impl Placed for Waiting {
+    fn parent(&self) -> Option<&NodeId> {
+        self.shape.as_ref().map(|shape| &shape.parent)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ByParent<V> {
+    entries: TrackedMap<NodeId, V>,
     below: BTreeMap<NodeId, BTreeSet<NodeId>>,
 }
 
-impl Discards {
+impl<V> Default for ByParent<V> {
+    fn default() -> Self {
+        Self {
+            entries: TrackedMap::default(),
+            below: BTreeMap::new(),
+        }
+    }
+}
+
+impl<V: Placed + Clone + PartialEq> ByParent<V> {
     fn children(&self, id: &str) -> impl Iterator<Item = &NodeId> {
         self.below.get(id).into_iter().flatten()
     }
 
-    fn insert(&mut self, id: NodeId, shape: Shape) {
+    fn insert(&mut self, id: NodeId, entry: V) {
         self.unlink(&id);
-        self.below
-            .entry(shape.parent.clone())
-            .or_default()
-            .insert(id.clone());
-        self.shapes.insert(id, shape);
+        if let Some(parent) = entry.parent() {
+            self.below
+                .entry(parent.clone())
+                .or_default()
+                .insert(id.clone());
+        }
+        self.entries.insert(id, entry);
     }
 
-    fn remove(&mut self, id: &str) -> Option<Shape> {
+    fn remove(&mut self, id: &str) -> Option<V> {
         self.unlink(id);
-        self.shapes.remove(id)
+        self.entries.remove(id)
     }
 
     fn unlink(&mut self, id: &str) {
-        let Some(parent) = self.shapes.get(id).map(|shape| shape.parent.clone()) else {
+        let Some(parent) = self
+            .entries
+            .get(id)
+            .and_then(|entry| entry.parent().cloned())
+        else {
             return;
         };
         if let Some(children) = self.below.get_mut(&parent) {
@@ -164,36 +195,45 @@ impl Discards {
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&NodeId) -> bool) {
-        let gone: Vec<NodeId> = self.shapes.keys().filter(|id| !keep(id)).cloned().collect();
+        let gone: Vec<NodeId> = self
+            .entries
+            .keys()
+            .filter(|id| !keep(id))
+            .cloned()
+            .collect();
         for id in gone {
             self.remove(&id);
         }
     }
 
-    fn take_changes(&mut self) -> Vec<(NodeId, Option<Shape>)> {
-        self.shapes.take_changes()
+    fn take_all(&mut self) -> BTreeMap<NodeId, V> {
+        self.below.clear();
+        self.entries.take_all()
+    }
+
+    fn take_changes(&mut self) -> Vec<(NodeId, Option<V>)> {
+        self.entries.take_changes()
     }
 }
 
-impl std::ops::Deref for Discards {
-    type Target = BTreeMap<NodeId, Shape>;
+impl<V> std::ops::Deref for ByParent<V> {
+    type Target = BTreeMap<NodeId, V>;
 
-    fn deref(&self) -> &BTreeMap<NodeId, Shape> {
-        &self.shapes
+    fn deref(&self) -> &BTreeMap<NodeId, V> {
+        &self.entries
     }
 }
 
-impl From<BTreeMap<NodeId, Shape>> for Discards {
-    fn from(shapes: BTreeMap<NodeId, Shape>) -> Self {
+impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
+    fn from(entries: BTreeMap<NodeId, V>) -> Self {
         let mut below: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
-        for (id, shape) in &shapes {
-            below
-                .entry(shape.parent.clone())
-                .or_default()
-                .insert(id.clone());
+        for (id, entry) in &entries {
+            if let Some(parent) = entry.parent() {
+                below.entry(parent.clone()).or_default().insert(id.clone());
+            }
         }
         Self {
-            shapes: shapes.into(),
+            entries: entries.into(),
             below,
         }
     }
@@ -290,7 +330,7 @@ pub struct Trees {
     unsearched: TrackedSet<NodeId>,
     reverted: TrackedSet<NodeId>,
     parked_as: TrackedMap<NodeId, NodeId>,
-    waiting: TrackedMap<NodeId, Waiting>,
+    waiting: ByParent<Waiting>,
     /// The nodes whose content the commit in flight creates or updates, each with whether S's content
     /// changed since the commit was built.
     watched: TrackedMap<NodeId, bool>,
@@ -302,7 +342,7 @@ pub struct Trees {
     trashed_here: TrackedMap<NodeId, u64>,
     removed_here: TrackedMap<NodeId, u64>,
     /// See [`TreesState::discarded`].
-    discarded: Discards,
+    discarded: ByParent<Shape>,
     adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
@@ -394,12 +434,12 @@ impl Trees {
             unsearched: TrackedSet::default(),
             reverted: TrackedSet::default(),
             parked_as: TrackedMap::default(),
-            waiting: TrackedMap::default(),
+            waiting: ByParent::default(),
             watched: TrackedMap::default(),
             watched_positions: TrackedMap::default(),
             trashed_here: TrackedMap::default(),
             removed_here: TrackedMap::default(),
-            discarded: Discards::default(),
+            discarded: ByParent::default(),
             adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
@@ -1696,8 +1736,9 @@ impl Trees {
         self.reverted.retain(|id| r.get(id).is_some());
         let waiting: Vec<NodeId> = self.waiting.keys().cloned().collect();
         for id in waiting {
-            if let Some(waiting) = self.waiting.get_mut(&id) {
+            if let Some(mut waiting) = self.waiting.get(&id).cloned() {
                 waiting.origin = Origin::Other;
+                self.waiting.insert(id, waiting);
             }
         }
     }
@@ -1747,10 +1788,17 @@ impl Trees {
     }
 
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
-        (self.synced_children(id)).all(|child| match self.l.get(child) {
-            Some(node) if node.shape.parent == id || !self.discarded.contains_key(child) => true,
-            _ => self.as_the_server_holds(child, seen),
-        })
+        let synced = self.synced_children(id).map(|child| (child, false));
+        let waiting = self.waiting.children(id).map(|child| (child, true));
+        synced
+            .chain(waiting)
+            .all(|(child, waiting)| match self.l.get(child) {
+                Some(node) if node.shape.parent == id => true,
+                Some(node) if !self.discarded.contains_key(child) => {
+                    !waiting || (self.s.live(child)).is_some_and(|s| node.shape.same_position(s))
+                }
+                _ => self.as_the_server_holds(child, seen),
+            })
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {
