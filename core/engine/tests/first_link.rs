@@ -2618,9 +2618,10 @@ fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_se
     assert!(trees.local().get("x").is_none());
 }
 
-#[test]
-fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_trashes_what_arrived_inside()
-{
+fn a_taken_along_server_folder_after_the_server_changes(
+    changed: &[&str],
+    change: impl Fn(&mut RemoteNode),
+) -> Trees {
     let mut trees = trees(
         &[("f", dir(ROOT, "new")), ("x", dir(ROOT, "server"))],
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 5))],
@@ -2638,10 +2639,14 @@ fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_trashes_w
     assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
     trees.set_synced("c".into(), Some(file("x", "child", 5)));
     trees.set_local("c".into(), local_node(file("x", "child", 5), 50));
-    for id in ["x", "c"] {
+    for id in changed {
         let mut node = trees.remote().get(id).unwrap().clone();
-        node.trashed = true;
-        trees.set_remote(id.into(), node);
+        change(&mut node);
+        node.content_rev += 1;
+        node.meta_rev += 1;
+        node.edit_rev += 1;
+        node.meta_edit_rev += 1;
+        trees.set_remote((*id).into(), node);
     }
     trees.set_rules(&[] as &[&str], None);
     run_effects(
@@ -2651,7 +2656,47 @@ fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_trashes_w
         &mut ids,
         100,
     );
+    trees
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_trashes_what_arrived_inside()
+{
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["x", "c"], |node| {
+        node.trashed = true
+    });
     assert_eq!(local(&trees), []);
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_edits_what_arrived_inside() {
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["c"], |node| {
+        node.shape.content = Some(content(6))
+    });
+    assert_eq!(
+        local(&trees),
+        [
+            ("c".into(), "x".into(), "child".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+    assert_eq!(trees.local().get("c").unwrap().shape, file("x", "child", 6));
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_moves_what_arrived_inside_out()
+ {
+    let trees = a_taken_along_server_folder_after_the_server_changes(&["c"], |node| {
+        node.shape.parent = ROOT.into();
+        node.shape.name = "out".into();
+    });
+    assert_eq!(
+        local(&trees),
+        [
+            ("c".into(), ROOT.into(), "out".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
 }
 
 #[test]
