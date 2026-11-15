@@ -1694,6 +1694,7 @@ impl Trees {
     /// a scan reads it again ([`Trees::set_rules_known`]) or L no longer holds it. Meanwhile nothing is planned for a
     /// node below it ([`Trees::held`]).
     pub fn set_rules_unknown(&mut self, id: &str) {
+        self.forget_reclaims();
         if id == self.l.root || self.l.get(id).is_some() {
             self.unknown_rules.insert(id.to_owned());
         }
@@ -1836,6 +1837,9 @@ impl Trees {
     }
 
     fn reclaimed_in_this_pass(&self, id: &str) -> bool {
+        if !self.keeping.borrow().open.is_empty() {
+            return self.reclaimed(id);
+        }
         let known =
             (self.reclaimed_this_pass.borrow().as_ref()).and_then(|pass| pass.get(id).copied());
         if let Some(reclaimed) = known {
