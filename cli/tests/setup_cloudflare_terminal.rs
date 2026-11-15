@@ -1094,7 +1094,7 @@ fn uninstall_does_not_stop_a_service_for_another_server() {
             let mut command = home.command();
             command.args(["server", "delete", "--interactive", "--yes"]);
             if named {
-                command.args(["--bucket", "synthetic-bucket"]);
+                command.args(["--bucket", "synthetic-bucket", "--jurisdiction", "eu"]);
             }
             let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
             let text = String::from_utf8(output.stdout).unwrap();
@@ -1343,6 +1343,8 @@ fn a_legacy_bucket_only_uninstall_resumes_only_for_the_confirmed_saved_bucket() 
             "--yes",
             "--bucket",
             bucket,
+            "--jurisdiction",
+            "eu",
         ]);
         let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
         let text = String::from_utf8(output.stdout).unwrap();
@@ -1368,6 +1370,79 @@ fn a_legacy_bucket_only_uninstall_resumes_only_for_the_confirmed_saved_bucket() 
 }
 
 #[test]
+fn named_bucket_uninstall_resumes_require_the_saved_jurisdiction() {
+    for phase in [
+        Value::Null,
+        json!({"phase":"cloud","server":null}),
+        json!({"phase":"service","server":null}),
+        json!({"phase":"complete"}),
+    ] {
+        for (saved_jurisdiction, requested) in [
+            ("default", Some("eu")),
+            ("eu", None),
+            ("eu", Some("default")),
+            ("eu", Some("us")),
+        ] {
+            let home = Home::new(&[], &[]);
+            home.save_uninstall();
+            home.state.lock().unwrap().failure = Some(Failure::UninstallBucketGone);
+            home.service_for("https://another.example.com/");
+            let path = home.paths().state_dir.join("setup-state.json");
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved["script"] = json!("");
+            saved["script_created_on"] = Value::Null;
+            saved["jurisdiction"] = json!(saved_jurisdiction);
+            if !phase.is_null() {
+                saved["uninstall"] = phase.clone();
+            }
+            let before = saved.to_string();
+            fs::write(&path, &before).unwrap();
+            executable(
+                &home.path().join(if cfg!(target_os = "macos") {
+                    "bin/open"
+                } else {
+                    "bin/xdg-open"
+                }),
+                "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n",
+            );
+            let mut command = home.command();
+            command.args([
+                "server",
+                "delete",
+                "--interactive",
+                "--yes",
+                "--bucket",
+                "synthetic-bucket",
+            ]);
+            if let Some(requested) = requested {
+                command.args(["--jurisdiction", requested]);
+            }
+            let output = terminal_with_stdout(command, &[], Some(home.path()), false, None);
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                !output.status.success(),
+                "saved {saved_jurisdiction}, requested {requested:?}: {text}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), before);
+            assert!(
+                text.contains(&format!("the {saved_jurisdiction} jurisdiction")),
+                "{text}"
+            );
+            assert!(home.paths().state_dir.join("service-running").exists());
+            assert!(!home.path().join("service-calls").exists());
+            assert!(
+                home.state
+                    .lock()
+                    .unwrap()
+                    .requests
+                    .iter()
+                    .all(|request| !request.contains("/workers/") && !request.contains("/r2/"))
+            );
+        }
+    }
+}
+
+#[test]
 fn bucket_only_uninstall_resumes_the_same_command_after_a_scan_failure() {
     let run = |home: &Home| {
         executable(
@@ -1386,6 +1461,8 @@ fn bucket_only_uninstall_resumes_the_same_command_after_a_scan_failure() {
             "--yes",
             "--bucket",
             "synthetic-bucket",
+            "--jurisdiction",
+            "eu",
         ]);
         terminal_with_stdout(command, &[], Some(home.path()), false, None)
     };
@@ -1498,6 +1575,7 @@ fn legacy_uninstall_without_worker_identity_keeps_the_service_and_progress() {
         text.contains("does not say whether this operation included a Worker"),
         "{text}"
     );
+    assert!(text.contains("--jurisdiction eu"), "{text}");
     assert!(!text.contains("The uninstall is complete."), "{text}");
     assert_eq!(fs::read_to_string(path).unwrap(), before);
     assert!(home.paths().state_dir.join("service-running").exists());

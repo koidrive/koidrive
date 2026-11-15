@@ -1036,7 +1036,9 @@ pub async fn server(
                 state.step == Step::Uninstalling
                     && (bucket.is_none()
                         || state.script.is_empty()
-                            && bucket.as_deref() == Some(state.bucket.as_str()))
+                            && bucket
+                                .as_deref()
+                                .is_some_and(|bucket| state.matches_bucket(bucket, jurisdiction)))
                     && matches!(
                         state.uninstall,
                         Some(
@@ -1101,7 +1103,11 @@ fn connected(paths: &Paths) -> bool {
 /// not finished: the file is that run's only record of what it created.
 fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliError {
     let resource = if state.step == Step::Uninstalling && state.script.is_empty() {
-        format!("the bucket {}", state.bucket)
+        format!(
+            "the bucket {} in the {} jurisdiction",
+            state.bucket,
+            state.jurisdiction.as_str()
+        )
     } else {
         state.script.clone()
     };
@@ -2154,7 +2160,7 @@ impl Session {
                     && state.step == Step::Uninstalling
                     && state.script.is_empty()
                     && state.uninstall.is_none()
-                    && bucket == Some(state.bucket.as_str()) =>
+                    && bucket.is_some_and(|bucket| state.matches_bucket(bucket, jurisdiction)) =>
             {
                 confirm(&self.terminal, &format!("Continue deleting only the saved bucket {} in the {} jurisdiction? This does not delete a Worker or change this device's background service.", state.bucket, state.jurisdiction.as_str()), yes, "--yes").await?;
                 state.uninstall = Some(UninstallProgress::Cloud { server: None });
@@ -2167,7 +2173,9 @@ impl Session {
                     && (bucket.is_none()
                         || state.script.is_empty()
                             && state.uninstall.is_some()
-                            && bucket == Some(state.bucket.as_str())) =>
+                            && bucket.is_some_and(|bucket| {
+                                state.matches_bucket(bucket, jurisdiction)
+                            })) =>
             {
                 println!(
                     "Continuing the uninstall that stopped earlier ({}).",
@@ -2224,7 +2232,8 @@ impl Session {
         if state.uninstall.is_none() {
             let script = if state.script.is_empty() {
                 legacy_worker.ok_or_else(|| {
-                    let recovery = format!("Saved uninstall progress does not say whether this operation included a Worker. Keep the saved progress. If it included a Worker, run koi server delete --interactive --worker <deleted-worker-name> with that Worker's name. For a bucket-only operation, run koi server delete --interactive --bucket {} and confirm that the background service should stay unchanged.", crate::pairing::shell_word(&state.bucket));
+                    let jurisdiction = if state.jurisdiction == Jurisdiction::Default { String::new() } else { format!(" --jurisdiction {}", state.jurisdiction.as_str()) };
+                    let recovery = format!("Saved uninstall progress does not say whether this operation included a Worker. Keep the saved progress. If it included a Worker, run koi server delete --interactive --worker <deleted-worker-name> with that Worker's name. For a bucket-only operation, run koi server delete --interactive --bucket {}{jurisdiction} and confirm that the background service should stay unchanged.", crate::pairing::shell_word(&state.bucket));
                     CliError::from(format!("{recovery} Saved progress: {}", file.path().display())).human(recovery)
                 })?
             } else {

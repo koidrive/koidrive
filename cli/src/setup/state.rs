@@ -41,6 +41,12 @@ pub struct SetupState {
     pub uninstall: Option<UninstallProgress>,
 }
 
+impl SetupState {
+    pub fn matches_bucket(&self, bucket: &str, jurisdiction: Jurisdiction) -> bool {
+        self.bucket == bucket && self.jurisdiction == jurisdiction
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UninstallProgress {
@@ -134,6 +140,31 @@ mod tests {
         assert!(human.contains("Do not delete"));
         assert!(!human.contains(&file.path().display().to_string()));
         assert_eq!(error.code, koidrive_ipc::Code::Failed);
+    }
+
+    #[test]
+    fn bucket_identity_includes_its_name_and_jurisdiction() {
+        let jurisdictions = [
+            Jurisdiction::Default,
+            Jurisdiction::Eu,
+            Jurisdiction::Us,
+            Jurisdiction::Fedramp,
+            Jurisdiction::FedrampHigh,
+        ];
+        for saved in jurisdictions {
+            let state = SetupState {
+                bucket: "saved-bucket".into(),
+                jurisdiction: saved,
+                ..SetupState::default()
+            };
+            for requested in jurisdictions {
+                assert_eq!(
+                    state.matches_bucket("saved-bucket", requested),
+                    saved == requested
+                );
+                assert!(!state.matches_bucket("another-bucket", requested));
+            }
+        }
     }
 
     #[test]
