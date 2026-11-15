@@ -56,7 +56,7 @@ Property: from any reachable state, after quiescence starts, every device eventu
 
 Property: a node trashed by a delete whose author had seen its latest state stays trashed unless a later op revives it. Every op a device sends derives from one specific user action on that device that has not been propagated yet (an edit, move, rename, create or delete it observed on disk), or from a user's restore request.
 
-The engine sends ops only for L ≠ S, L changes only through observations, and S moves only toward what was sent or what R says. Two paths could make a known file look new, and both are guarded: a crash, handled by effect recovery (§2.8, §5.3), and a lost store, handled as a first link that matches local files against R before anything is uploaded (§6.4).
+The engine sends ops only for L ≠ S, L changes only through observations, and S moves only toward what was sent or what R says. Two paths could make a known file look new, and both are guarded: a crash, handled by effect recovery (§2.8, §5.3), and a lost store, handled as a first link that matches local files against R before anything is uploaded and holds the unmatched ones when the server counts commits of this device or the root marker counts effects the store lacks (§6.4).
 
 ## 3.6 Moves
 

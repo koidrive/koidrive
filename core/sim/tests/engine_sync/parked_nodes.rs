@@ -380,7 +380,7 @@ fn a_parked_file_forked_from_a_node_the_server_deleted_is_created_after_its_comm
         Cut::None,
         &[],
         Answer::Publish,
-        true,
+        Some(PriorSync::Shown),
     )
     .unwrap();
 }

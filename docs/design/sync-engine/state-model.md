@@ -214,7 +214,7 @@ An S update above that would orphan a node, take a sibling's name key or close a
 A conflict opens a question about a pair of files. The question holds nothing, so both files keep syncing.
 
 - An `UpdateContent n` answered with `CONFLICT_COPY` Y, and a file this device created or moved that the server answered with `APPLIED_RENAMED` because a file n held the name, open a question: n is the original, Y or the renamed file the copy. Only the device whose write the server turned aside asks.
-- A create sent because the person answered Publish to a first link's question (§6.4) opens none. The commit layer records the entries that answer released until the server applies their create, across several commits and a forgotten commit. A later move of such a file that takes a conflict name asks as any move does.
+- A create sent because the person answered Publish to a first link's question (§6.4), or because a fresh first link sent an unmatched entry without one, opens none. The commit layer records those entries until the server applies their create, across several commits and a forgotten commit. A later move of such a file that takes a conflict name asks as any move does.
 - The question records both node IDs and their revisions in R, and is persisted with the other open questions (§6.1).
 - Before each commit, and while the question is open, the engine compares the pair with R and L. The question ends when R no longer holds either file live at the meta revision it was asked with, or when L moved or deleted either file that S, or its waiting update, holds. When R holds another content revision of either file, the question is asked again under a new ID, and an answer to the old ID changes nothing.
 - Keep both ends the question. Keep the original sends `Delete(Y)`. Keep the copy first sends `UpdateContent n` with Y's content, so n's own content stays in its version history; once that result has arrived and the download of §2.5 has brought the new content to L, it sends `Delete(Y)`.
@@ -238,7 +238,7 @@ The store writes, per `handle` call and in one transaction:
 - the nodes recorded as trashed or edited here, and the seqs of the last acknowledged commits by slot (§4.4);
 - parked nodes with the name of their parked entry, and held and problem nodes;
 - the queued restores with the outcomes of those that ended;
-- the entries a Publish answer to a first link released, until the server applies their create (§2.7);
+- the entries a Publish answer to a first link released, or a fresh first link sent, until the server applies their create (§2.7);
 - the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
 - every open question with what it holds;
 - the ID generator's state (`IdGen::state`).

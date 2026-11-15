@@ -6,7 +6,7 @@ use std::path::Path;
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Halt, InFlight, Reconnect};
 use koidrive_engine::effects::{Base, BatchLimit, Dir, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::first_link::Listing;
+use koidrive_engine::first_link::{Listing, PriorSync};
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::question::{
@@ -3229,7 +3229,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     trees.settle();
     let mut commits = Commits::default();
     let mut ids = IdGen::new(333);
-    commits.first_link(&mut trees, &mut ids, 1, Listing::Live);
+    commits.first_link(&mut trees, &mut ids, 1, Listing::Live, PriorSync::Shown);
     let question = commits.questions()[0].id.clone();
     assert!(commits.decide(&question, Answer::Discard));
     assert!(
@@ -3737,7 +3737,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         trees.settle();
         let mut commits = Commits::default();
         let mut ids = IdGen::new(335);
-        commits.first_link(&mut trees, &mut ids, 1, Listing::Live);
+        commits.first_link(&mut trees, &mut ids, 1, Listing::Live, PriorSync::Shown);
         let question = commits.questions()[0].id.clone();
         assert!(commits.decide(&question, Answer::Discard));
         assert!(

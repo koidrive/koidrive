@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koidrive_engine::classify::Class;
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
+use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{Content, Kind, LocalNode, Shape, same_content};
 use koidrive_fs::{Refusal, Snapshot, Unresolved, check_root};
@@ -1761,7 +1762,17 @@ impl Folder {
                     now_ms,
                 );
             } else if first_link {
-                (engine.commits).first_link(&mut engine.trees, &mut engine.ids, now_ms, listing);
+                let prior = match device_seq {
+                    0 => PriorSync::Fresh,
+                    _ => PriorSync::Shown,
+                };
+                (engine.commits).first_link(
+                    &mut engine.trees,
+                    &mut engine.ids,
+                    now_ms,
+                    listing,
+                    prior,
+                );
                 engine.recovery_cause = Some(crate::RecoveryCause {
                     trigger: crate::RecoveryTrigger::NoSyncState,
                     restore_point_ms: None,

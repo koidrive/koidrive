@@ -542,6 +542,17 @@ fn linked(remote: &mut Remote, name: &str) -> (Site, Device) {
     (site, device)
 }
 
+fn synced_before(remote: &mut Remote, name: &str) -> Site {
+    let (earlier, mut device) = linked(remote, name);
+    let path = earlier.root.join("earlier.txt");
+    device.create(remote, &path, b"earlier");
+    fs::remove_file(&path).unwrap();
+    device.rescan();
+    device.rest(remote);
+    drop(device);
+    Site::new(remote, name)
+}
+
 /// The names in a folder besides `.koidrive`, in order.
 fn names(root: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(root)
@@ -737,10 +748,10 @@ fn take_the_name_and_apply(
 /// Device `b` links a folder holding an entry whose name only folds like the name of a file the space holds, and one more file,
 /// and answers the question its first link asks. Returns its site and device and the space's file name.
 fn a_first_link_with_a_name_clash(remote: &mut Remote, theirs: &str, mine: &str) -> (Site, Device) {
+    let site = synced_before(remote, "b");
     let (site_a, mut a) = linked(remote, "a");
     a.create(remote, &site_a.root.join(theirs), b"written on a");
 
-    let site = Site::new(remote, "b");
     fs::write(site.root.join(mine), b"already here").unwrap();
     fs::write(site.root.join("mine.txt"), b"mine").unwrap();
     let mut b = site.start();

@@ -74,6 +74,43 @@ fn a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of
 }
 
 #[test]
+fn a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question() {
+    for (theirs, mine) in [
+        ("notes.txt", "Notes.txt"),
+        ("r\u{e9}sum\u{e9}.txt", "re\u{301}sume\u{301}.txt"),
+        ("stra\u{df}e.txt", "STRASSE.txt"),
+        ("notes.txt", "notes.txt"),
+    ] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join(theirs), b"written on a");
+        let site = Site::new(&remote, "b");
+        fs::write(site.root.join(mine), b"already here").unwrap();
+        fs::write(site.root.join("mine.txt"), b"mine").unwrap();
+        let mut b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        sync(&mut remote, (&site_a, &mut a), (&site, &mut b));
+
+        assert_eq!(b.folder.view().questions, 0, "{mine}");
+        assert_eq!(a.folder.view().questions, 0, "{mine}");
+        assert_eq!(remote.names().len(), 3, "{mine}: {:?}", remote.names());
+        for root in [&site.root, &site_a.root] {
+            let on_disk = files(root);
+            let mut texts: Vec<&str> = on_disk.iter().map(|(_, text)| text.as_str()).collect();
+            texts.sort();
+            assert_eq!(texts, ["already here", "mine", "written on a"], "{mine}: {on_disk:?}");
+            assert!(
+                (on_disk.iter()).any(|(path, text)| path == theirs && text == "written on a"),
+                "{mine}: {on_disk:?}"
+            );
+        }
+        assert_eq!(b.state(), FolderState::UpToDate);
+        assert_eq!(a.state(), FolderState::UpToDate);
+    }
+}
+
+#[test]
 fn discarding_what_a_first_link_holds_moves_it_to_the_local_trash_and_downloads_the_space() {
     let mut remote = Remote::new();
     let (site, mut b) = a_first_link_with_a_name_clash(&mut remote, "notes.txt", "Notes.txt");
@@ -138,9 +175,9 @@ fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder
  {
     for unknown in ["build.log", "link"] {
         let mut remote = Remote::new();
+        let site = synced_before(&mut remote, "b");
         let (site_a, mut a) = linked(&mut remote, "a");
         a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
-        let site = Site::new(&remote, "b");
         fs::create_dir(site.root.join("held")).unwrap();
         fs::write(site.root.join("held/a.txt"), b"listed").unwrap();
         let entry = site.root.join("held").join(unknown);
@@ -196,10 +233,10 @@ fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder
 fn a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the_person_publishes_it()
  {
     let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
 
-    let site = Site::new(&remote, "b");
     fs::write(site.root.join("mine.txt"), b"mine").unwrap();
     let mut b = site.start();
     b.connect(&remote);
@@ -255,7 +292,8 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
     assert_eq!(a.run(&mut remote), ["list", "subscribe", "upload", "send"]);
     assert_eq!(a.folder.view().questions, 0, "the space was empty");
 
-    let site = Site::new(&remote, "b");
+    let site = synced_before(&mut remote, "b");
+    let head = remote.space.head_seq();
     fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
     fs::write(site.root.join("mine.txt"), b"already here").unwrap();
     fs::create_dir(site.root.join("shared")).unwrap();
@@ -267,7 +305,7 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
     b.settle();
     b.run(&mut remote);
     assert!(b.sent.is_empty(), "nothing is sent before an answer");
-    assert_eq!(remote.space.head_seq(), 1);
+    assert_eq!(remote.space.head_seq(), head);
     let local = b.folder.engine.trees.local();
     let notes = (local.iter()).find(|(_, node)| node.shape.name == "notes.txt");
     assert!(
@@ -303,11 +341,69 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
     .map(|(path, text)| (path.to_owned(), text.to_owned()));
     assert_eq!(files(&site.root), both);
     assert_eq!(files(&site_a.root), both);
-    assert_eq!(remote.space.head_seq(), 2);
+    assert_eq!(remote.space.head_seq(), head + 1);
     assert_eq!(a.state(), FolderState::UpToDate);
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
+
+#[test]
+fn a_fresh_first_link_adopts_what_the_space_holds_alike_and_sends_the_rest() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("shared")).unwrap();
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
+    a.create(&mut remote, &site_a.root.join("shared/plan.txt"), b"a plan from a");
+
+    let site = Site::new(&remote, "b");
+    fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
+    fs::write(site.root.join("mine.txt"), b"already here").unwrap();
+    fs::create_dir(site.root.join("shared")).unwrap();
+    fs::write(site.root.join("shared/draft.txt"), b"a draft from b").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    sync(&mut remote, (&site_a, &mut a), (&site, &mut b));
+
+    let both = [
+        ("mine.txt", "already here"),
+        ("notes.txt", "written on a"),
+        ("shared/draft.txt", "a draft from b"),
+        ("shared/plan.txt", "a plan from a"),
+    ]
+    .map(|(path, text)| (path.to_owned(), text.to_owned()));
+    assert_eq!(files(&site.root), both);
+    assert_eq!(files(&site_a.root), both);
+    assert_eq!(b.folder.view().questions, 0);
+    assert_eq!(
+        remote.names(),
+        ["draft.txt", "mine.txt", "notes.txt", "plan.txt", "shared"]
+    );
+    assert_eq!(a.state(), FolderState::UpToDate);
+    assert_eq!(b.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_first_link_of_a_folder_whose_marker_counts_effects_holds_what_the_space_lacks() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
+    let site = Site::new(&remote, "b");
+    let marker = Marker {
+        space_id: remote.space.space_id().to_owned(),
+        effects: 3,
+    };
+    write_marker(&site.root, &marker).unwrap();
+    fs::write(site.root.join("old.txt"), b"an old copy").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent before an answer");
+    assert_eq!(b.folder.view().questions, 1);
+    assert_eq!(remote.names(), ["notes.txt"]);
+    assert_eq!(names(&site.root), ["notes.txt", "old.txt"]);
+}
 
 enum Before {
     Replay,

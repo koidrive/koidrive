@@ -79,7 +79,7 @@ Deletions made on your other devices are applied here without asking, and the re
 
 ### The first link can hold files
 
-Sync also asks after the first link of a folder to a space that already held live files or folders, when the comparison holds some of the folder's files, as [Link a folder](folders.md#link-a-folder) describes. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
+Sync also asks after the first link of a folder, when the comparison holds some of the folder's files: files at a name the space's trash holds, or the folder's other files when it synced with the space before, as [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
 
 ### A conflict opens a decision
 

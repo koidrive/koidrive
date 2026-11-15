@@ -41,6 +41,16 @@ pub enum Listing {
     Live,
 }
 
+/// Whether the server shows that this device synced the space before the store it links with, by
+/// counting commits it accepted from the device in the current history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PriorSync {
+    /// The server accepted no commit from this device.
+    Fresh,
+    /// The server accepted commits from this device that no store remembers.
+    Shown,
+}
+
 /// Matches L against R from the root down, and returns the topmost local nodes that match
 /// nothing. A local entry matches the live node of R at the same parent with
 /// exactly its name and kind, and for a file the same content. A folder also matches a folder R
@@ -181,6 +191,12 @@ fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
 fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
     let mut items = items.into_iter();
     items.next().filter(|_| items.next().is_none())
+}
+
+pub(crate) fn below(trees: &Trees, tops: &[NodeId]) -> Vec<NodeId> {
+    (tops.iter())
+        .flat_map(|top| unsynced(trees, top).into_keys())
+        .collect()
 }
 
 pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
