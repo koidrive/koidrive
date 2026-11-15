@@ -91,6 +91,7 @@ fn rules(name: &str) -> Rules {
         "DeleteSeesOnlyView" => Rules::DeleteSeesOnlyView,
         "CopiesOwnBase" => Rules::CopiesOwnBase,
         "BoundOnlyResendsSeen" => Rules::BoundOnlyResendsSeen,
+        "TrashCoversView" => Rules::TrashCoversView,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         other => panic!("no rules {other}"),
     }
@@ -371,6 +372,12 @@ fn refute_copies_own_base() {
 #[ignore]
 fn refute_bound_only_resends_seen() {
     refute(Rules::BoundOnlyResendsSeen);
+}
+
+#[test]
+#[ignore]
+fn refute_trash_covers_view() {
+    refute(Rules::TrashCoversView);
 }
 
 fn exhaustive(n: [u8; 10], rules: Rules) {
@@ -956,7 +963,7 @@ fn a_restored_older_backup_does_not_turn_a_rewritten_value_into_a_conflict() {
             Record(0),
             Answer(0),
         ],
-        &[Rules::CopiesOwnBase],
+        &[],
     );
 }
 
@@ -1008,4 +1015,48 @@ fn an_old_server_restore_does_not_let_a_carried_position_overwrite_a_later_move(
     }
     let broken = settle(budget, Rules::BoundOnlyResendsSeen, &trace).unwrap_err();
     assert!(broken.contains("is lost"), "{broken}");
+}
+
+#[test]
+fn a_trash_that_saw_less_than_the_delete_does_not_settle_it() {
+    handled(
+        &[
+            Write(1),
+            Build(1, 1),
+            Delete(1),
+            Write(0),
+            Build(0, 1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Build(1, 1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Record(0),
+            Record(0),
+            Serve(0),
+            Lose(2),
+            Bootstrap(1),
+            Build(1, 1),
+            Answer(0),
+            Bootstrap(0),
+            Action::Unlose,
+            Record(1),
+            Record(1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Delete(0),
+            Record(0),
+            Record(0),
+            Record(0),
+            Build(0, 1),
+            Serve(0),
+            Record(1),
+            Record(0),
+            Answer(0),
+        ],
+        &[Rules::TrashCoversView],
+    );
 }

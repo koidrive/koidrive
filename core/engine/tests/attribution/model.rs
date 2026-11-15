@@ -321,6 +321,7 @@ pub enum Rules {
     DeleteSeesOnlyView,
     CopiesOwnBase,
     BoundOnlyResendsSeen,
+    TrashCoversView,
 }
 
 impl Rules {
@@ -996,9 +997,24 @@ impl World {
 
     fn covers(&self, d: Dev, rules: Rules) -> bool {
         let dev = &self.devices[d];
-        let view = [dev.s.pos.val, dev.s.content.val];
         rules == Rules::TrashSettlesDelete
-            || dev.r.trashed.and_then(|trash| self.saw(trash, rules)) == Some(view)
+            || dev
+                .r
+                .trashed
+                .is_some_and(|trash| self.trash_covers(d, trash, rules))
+    }
+
+    fn trash_covers(&self, d: Dev, trash: Tok, rules: Rules) -> bool {
+        let dev = &self.devices[d];
+        let view = [dev.s.pos.val, dev.s.content.val];
+        let held = match dev.l {
+            Local::Gone(delete) if rules != Rules::TrashCoversView => {
+                self.values[delete.0 as usize].held
+            }
+            _ => [0; 2],
+        };
+        let trash_held = self.values[trash.0 as usize].held;
+        self.saw(trash, rules) == Some(view) && (0..2).all(|at| held[at] & !trash_held[at] == 0)
     }
 
     fn prove(&mut self, d: Dev, rules: Rules) {
@@ -1393,7 +1409,9 @@ impl World {
     fn bootstrap(&mut self, d: Dev, rules: Rules) -> Result<(), Broken> {
         let log: Vec<u8> = self.server.log.iter().map(|record| record.token).collect();
         let listing = self.server.node();
-        let trash_saw = listing.trashed.and_then(|trash| self.saw(trash, rules));
+        let trash_covers = listing
+            .trashed
+            .is_some_and(|trash| self.trash_covers(d, trash, rules));
         let edited_here = self.edited_here(d, &listing, &self.devices[d].seen, rules);
         let dev = &self.devices[d];
         let own = |token: u8| self.server.authors[token as usize] == Some(d);
@@ -1536,8 +1554,7 @@ impl World {
             }
         }
         let listed = listing.trashed.is_none();
-        let view = [dev.s.pos.val, dev.s.content.val];
-        let covered = rules == Rules::TrashSettlesDelete || trash_saw == Some(view);
+        let covered = rules == Rules::TrashSettlesDelete || trash_covers;
         let lost_delete = !dev.s.live && (listed || !covered) && !kept(dev.s.exist_seq);
         if lost_delete && matches!(dev.l, Local::Gone(_)) && dev.unsent.existence.is_none() {
             dev.unsent.existence = Some(if dev.s.deleted_here {
