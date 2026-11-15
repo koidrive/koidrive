@@ -2157,11 +2157,12 @@ fn keeps_the_mark_invariants(
                 .local()
                 .get(node)
                 .map(|entry| entry.shape.parent.clone());
-            while let Some(at) = above.filter(|at| *at != after.local().root) {
+            while let Some(at) = (above.filter(|at| *at != after.local().root))
+                .filter(|at| after.synced().live(at).is_none())
+            {
                 let folder = after.local().get(&at).expect("an ancestor in L");
                 assert!(
-                    after.synced().live(&at).is_some()
-                        || !mark_of.contains_key(local[folder.identity.ino as usize - 1].0),
+                    !mark_of.contains_key(local[folder.identity.ino as usize - 1].0),
                     "{node} followed its mark inside a marked folder S does not hold\n{}",
                     case()
                 );
