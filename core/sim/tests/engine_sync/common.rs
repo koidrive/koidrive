@@ -1219,9 +1219,13 @@ fn acted_below(
     let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
     let in_kept = |at: &str| kept_with.get(at).map(|shape| shape.parent.clone());
     let removed_from = |at: &str| in_local(at).or_else(|| device.removed_from.get(at).cloned());
-    let as_on_server = |entry: &str| match (trees.local().get(entry), trees.remote().live(entry)) {
-        (Some(local), Some(remote)) => local.shape.same(remote),
-        (local, remote) => local.is_none() && remote.is_none(),
+    let as_agreed = |entry: &str| {
+        let Some(local) = trees.local().get(entry) else {
+            return trees.remote().live(entry).is_none();
+        };
+        let holds = |shape: &Shape| local.shape.same(shape);
+        trees.remote().live(entry).is_some_and(holds)
+            || acknowledged_shape(trees, entry).is_some_and(holds)
     };
     let below_in_r = |node: &str, entry: &str| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
@@ -1255,7 +1259,7 @@ fn acted_below(
             })
     };
     (device.acted.iter())
-        .filter(|entry| !as_on_server(entry) && !kept_by_r7(entry))
+        .filter(|entry| !as_agreed(entry) && !kept_by_r7(entry))
         .any(|entry| {
             reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
         })
