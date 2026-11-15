@@ -128,6 +128,7 @@ A `Move` or `Restore` of a trashed folder also brings back the members of its tr
 A reverted node is one whose local position the server will not take: a move that closes a cycle against R (never sent) or that the server rejects with `CYCLE`, a create or move the server renamed (`APPLIED_RENAMED`, §2.7), or a folder merged into one that L holds elsewhere, with the nodes created in it (§2.7).
 
 - The planner sends no create or move for a reverted node, but sends its content edits and a delete the user makes.
+- A node reverted because its move closes a cycle against R stops being reverted when another device moves, trashes or purges a node and the local position no longer closes a cycle against R. The planner then sends the move, or reverts it again when the move still closes a cycle once the commit's own ops and merges count.
 - The effects of §2.5 make its position on disk equal to R, as for a remote change, but never replace its content.
 - When R no longer has it, the effects remove it only if it holds no unuploaded edit. A file that holds one becomes a new node and the edit is uploaded as a create.
 - A reverted node that the server lost, so that R does not hold it at all, stops being reverted when S forgets it or drops its waiting update (§4.4). It keeps its ID and is created again at the position L holds.

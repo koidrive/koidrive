@@ -329,6 +329,8 @@ pub struct Trees {
     dirty: TrackedSet<NodeId>,
     unsearched: TrackedSet<NodeId>,
     reverted: TrackedSet<NodeId>,
+    cycle_reverted: TrackedSet<NodeId>,
+    cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
     waiting: ByParent<Waiting>,
     /// The nodes whose content the commit in flight creates or updates, each with whether S's content
@@ -434,6 +436,8 @@ impl Trees {
             dirty: TrackedSet::default(),
             unsearched: TrackedSet::default(),
             reverted: TrackedSet::default(),
+            cycle_reverted: TrackedSet::default(),
+            cycles_may_end: false,
             parked_as: TrackedMap::default(),
             waiting: ByParent::default(),
             watched: TrackedMap::default(),
@@ -1041,6 +1045,10 @@ impl Trees {
         }
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
+        self.cycles_may_end |= !made_here
+            && (self.r.get(&id)).is_none_or(|old| {
+                old.shape.parent != node.shape.parent || old.trashed != node.trashed
+            });
         let old = self.r.insert(id.clone(), node);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -1212,6 +1220,7 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &str) {
+        self.cycles_may_end = true;
         self.remote_rules_files.remove(id);
         self.marked.remove(id);
         self.trashed_here.remove(id);
@@ -3463,6 +3472,9 @@ impl Trees {
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self) {
         self.check_finishes();
+        if std::mem::take(&mut self.cycles_may_end) {
+            self.release_cycle_reverts();
+        }
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {
@@ -3620,7 +3632,45 @@ impl Trees {
 
     pub fn revert(&mut self, id: NodeId) {
         self.mark(&id);
+        self.cycle_reverted.remove(&id);
         self.reverted.insert(id);
+    }
+
+    pub(crate) fn revert_for_cycle(&mut self, id: NodeId) {
+        self.revert(id.clone());
+        self.cycle_reverted.insert(id);
+    }
+
+    fn release_cycle_reverts(&mut self) {
+        let released: Vec<NodeId> = (self.cycle_reverted.iter())
+            .filter(|&id| {
+                !self.reverted.contains(id)
+                    || (self.l.get(id))
+                        .is_some_and(|local| !self.closes_a_cycle(id, &local.shape.parent))
+            })
+            .cloned()
+            .collect();
+        for id in released {
+            self.cycle_reverted.remove(&id);
+            if self.reverted.remove(&id) {
+                self.mark(&id);
+            }
+        }
+    }
+
+    fn closes_a_cycle(&self, id: &str, parent: &str) -> bool {
+        let mut folder = Some(parent);
+        for _ in 0..=self.l.len() + self.r.len() {
+            match folder {
+                Some(at) if at == id => return true,
+                Some(at) => {
+                    folder = (self.r.get(at).map(|node| node.shape.parent.as_str()))
+                        .or_else(|| self.l.get(at).map(|node| node.shape.parent.as_str()))
+                }
+                None => return false,
+            }
+        }
+        false
     }
 
     /// The [`Class::Same`] nodes the last [`Trees::settle`] left without searching, because the
@@ -3998,6 +4048,7 @@ impl Trees {
             dirty: (*self.dirty).clone(),
             unsearched: (*self.unsearched).clone(),
             reverted: (*self.reverted).clone(),
+            cycle_reverted: (*self.cycle_reverted).clone(),
             parked_as: (*self.parked_as).clone(),
             waiting: (*self.waiting).clone(),
             watched: (*self.watched).clone(),
@@ -4037,6 +4088,8 @@ impl Trees {
             dirty,
             unsearched,
             reverted,
+            cycle_reverted,
+            cycles_may_end: _,
             parked_as,
             waiting,
             watched,
@@ -4088,6 +4141,7 @@ impl Trees {
             dirty: dirty.take_changes(),
             unsearched: unsearched.take_changes(),
             reverted: reverted.take_changes(),
+            cycle_reverted: cycle_reverted.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
             watched: watched.take_changes(),
@@ -4211,6 +4265,7 @@ impl Trees {
             dirty,
             unsearched,
             reverted,
+            cycle_reverted,
             parked_as,
             waiting,
             watched,
@@ -4245,6 +4300,7 @@ impl Trees {
         self.dirty = dirty.into();
         self.unsearched = unsearched.into();
         self.reverted = reverted.into();
+        self.cycle_reverted = cycle_reverted.into();
         self.parked_as = parked_as.into();
         self.waiting = waiting.into();
         self.watched = watched.into();

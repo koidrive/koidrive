@@ -53,6 +53,9 @@ pub struct TreesState {
     pub unsearched: BTreeSet<NodeId>,
     /// Nodes whose local position the server will not take.
     pub reverted: BTreeSet<NodeId>,
+    /// The reverted nodes whose move closes a cycle against R. Each stops being reverted once
+    /// its local position no longer closes a cycle against R.
+    pub cycle_reverted: BTreeSet<NodeId>,
     /// For a parked node re-keyed while parked, the name of its entry in the parked directory.
     /// Each key is a node L holds as parked.
     pub parked_as: BTreeMap<NodeId, NodeId>,
@@ -241,6 +244,7 @@ pub struct TreesChanges {
     pub dirty: SetChanges<NodeId>,
     pub unsearched: SetChanges<NodeId>,
     pub reverted: SetChanges<NodeId>,
+    pub cycle_reverted: SetChanges<NodeId>,
     pub parked_as: MapChanges<NodeId, NodeId>,
     pub waiting: MapChanges<NodeId, Waiting>,
     pub watched: MapChanges<NodeId, bool>,
@@ -274,6 +278,7 @@ impl TreesChanges {
             dirty,
             unsearched,
             reverted,
+            cycle_reverted,
             parked_as,
             waiting,
             watched,
@@ -303,6 +308,7 @@ impl TreesChanges {
             dirty: set_changes(&before.dirty, dirty),
             unsearched: set_changes(&before.unsearched, unsearched),
             reverted: set_changes(&before.reverted, reverted),
+            cycle_reverted: set_changes(&before.cycle_reverted, cycle_reverted),
             parked_as: map_changes(&before.parked_as, parked_as),
             waiting: map_changes(&before.waiting, waiting),
             watched: map_changes(&before.watched, watched),
