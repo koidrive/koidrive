@@ -516,9 +516,7 @@ fn an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_aga
 
 /// The same L, with the file already at its name when the process stops. `Disk::apply` no longer gets there, so
 /// the test leaves what a process without the check left: the marker written and the staged file renamed to `a`,
-/// with no acknowledgement. The next start finds the effect's file at its name and does not record it. The
-/// observer then reports the file as the user's own, and the engine links it to the equal file the server holds at
-/// `a`, so both devices end with the bytes once.
+/// with no acknowledgement. The next start finds the effect's file at its name and does not record it.
 #[test]
 fn a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start() {
     let mut remote = Remote::new();
