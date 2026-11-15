@@ -1249,10 +1249,11 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
             match current {
                 Some(at) if at == entry => return true,
                 Some(at) => {
-                    let moved_here = (trees.local().get(&at)).is_some_and(|local| {
-                        (acknowledged_shape(trees, &at))
-                            .is_none_or(|held| !local.shape.same_position(held))
-                    }) && !trees.reverted().contains(&at);
+                    let moved_here = device.acted.contains(&at)
+                        && (trees.local().get(&at)).is_some_and(|local| {
+                            (trees.remote().live(&at))
+                                .is_none_or(|remote| !local.shape.same_position(remote))
+                        });
                     if moved_here {
                         return false;
                     }
