@@ -1,5 +1,142 @@
 // SPDX-License-Identifier: Apache-2.0
 
+fn placement_check_after_a_move(
+    cycle: bool,
+    destination: &str,
+    trashed_parent: bool,
+) -> Result<(), TestCaseError> {
+    let mut trees = Trees::new("root");
+    for (id, local_parent, remote_parent) in [
+        ("home", "root", "root"),
+        ("elsewhere", "root", "root"),
+        ("a", "root", if trashed_parent { "x" } else { "root" }),
+        (
+            "p",
+            if trashed_parent { "a" } else { "root" },
+            if cycle { "x" } else { "root" },
+        ),
+        ("x", "p", "home"),
+    ] {
+        let (id, remote) = RemoteNode::from_state(&NodeState {
+            node_id: id.into(),
+            parent_id: remote_parent.into(),
+            name: id.into(),
+            kind: 1,
+            status: if id == "p" && trashed_parent { 2 } else { 1 },
+            ..Default::default()
+        })
+        .unwrap();
+        trees.set_synced(id.clone(), Some(remote.shape.clone()));
+        trees.set_local(
+            id.clone(),
+            LocalNode {
+                shape: koidrive_engine::tree::Shape {
+                    parent: local_parent.into(),
+                    ..remote.shape.clone()
+                },
+                identity: identity(1),
+                parked: false,
+            },
+        );
+        trees.set_remote(id, remote);
+    }
+    assert_eq!(trees.check(), Ok(()));
+    trees.revert("x".into());
+    let local = trees.local().get("x").unwrap();
+    let placed = BTreeMap::from([("x".into(), position(&local.shape))]);
+    let after = koidrive_engine::tree::Shape {
+        parent: destination.into(),
+        ..local.shape.clone()
+    };
+    let record = koidrive_engine::effects::EffectRecord {
+        effect_id: "move".into(),
+        node: "x".into(),
+        counter: 1,
+        effect: Effect::Move {
+            from: Location::At {
+                base: Base::Root,
+                dirs: local_path(&trees, "p")
+                    .into_iter()
+                    .map(|name| koidrive_engine::effects::Dir {
+                        name,
+                        identity: identity(1),
+                    })
+                    .collect(),
+                name: "x".into(),
+            },
+            identity: identity(1),
+            to: Location::At {
+                base: Base::Root,
+                dirs: vec![koidrive_engine::effects::Dir {
+                    name: destination.into(),
+                    identity: identity(1),
+                }],
+                name: "x".into(),
+            },
+        },
+        after: Some(after),
+        recoveries: 0,
+    };
+    assert!(record.applies(&trees, None));
+    let mut state = Effects::default().state();
+    state.in_flight.push(record.clone());
+    let mut effects = Effects::from_state(state).unwrap();
+    let mut device = Device {
+        trees,
+        ids: IdGen::new(7),
+        inos: 1,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::from(["x".into()]),
+        acted: BTreeSet::from(["x".into()]),
+        removed_from: BTreeMap::new(),
+    };
+    let result = placement_check(
+        &device,
+        &record,
+        &BTreeMap::new(),
+        &placed,
+        &BTreeSet::from(["p".into()]),
+    );
+    if result.is_ok() {
+        effects
+            .done(
+                &mut device.trees,
+                None,
+                &record.effect_id,
+                Some(identity(1)),
+            )
+            .unwrap();
+        assert_eq!(
+            device.trees.local().get("x").unwrap().shape.parent,
+            destination
+        );
+        assert_eq!(device.trees.check(), Ok(()));
+    }
+    result
+}
+
+#[test]
+fn a_move_back_to_its_r_position_that_a_cycle_forced_passes_the_placement_check() {
+    assert!(placement_check_after_a_move(true, "home", false).is_ok());
+}
+
+#[test]
+fn a_move_out_of_the_folder_the_user_put_a_node_in_fails_the_placement_check() {
+    let error = placement_check_after_a_move(false, "elsewhere", false).unwrap_err();
+    assert!(error.to_string().contains("effects move it out"));
+}
+
+#[test]
+fn a_cycle_excuses_no_move_but_the_one_back_to_r_from_the_placement_check() {
+    assert!(placement_check_after_a_move(true, "elsewhere", false).is_err());
+}
+
+#[test]
+fn a_folder_the_server_trashed_closes_no_cycle_for_the_placement_check() {
+    assert!(placement_check_after_a_move(false, "home", true).is_err());
+}
+
 #[test]
 fn a_first_link_holds_a_file_whose_name_the_space_holds_until_the_person_answers() {
     for answer in [Answer::Publish, Answer::Discard] {
