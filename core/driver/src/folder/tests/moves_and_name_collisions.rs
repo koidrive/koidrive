@@ -544,13 +544,16 @@ fn a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start() {
     b.scan_until(|b| b.folder.scanned);
     sync(&mut remote, (&site_a, &mut a), (&site, &mut b));
     for root in [&site.root, &site_a.root] {
-        let held = entries(root);
-        let mut texts: Vec<&str> = held
-            .iter()
-            .filter_map(|(_, text)| text.as_deref())
-            .collect();
-        texts.sort();
-        assert_eq!(texts, ["kept on b", "written on a"], "{held:?}");
+        let mut held = entries(root);
+        held.sort();
+        assert_eq!(
+            held,
+            [
+                ("a".to_owned(), Some("written on a".to_owned())),
+                ("f".to_owned(), None),
+                ("f/kept.txt".to_owned(), Some("kept on b".to_owned())),
+            ]
+        );
     }
 }
 

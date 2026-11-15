@@ -2704,11 +2704,8 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
         return;
     };
     let rules_unknown = trees.unknown_rules().contains(from);
-    let children: Vec<NodeId> = trees
-        .local()
-        .iter()
-        .filter(|(_, child)| child.shape.parent == from)
-        .map(|(id, _)| id.clone())
+    let children: Vec<NodeId> = (trees.local_children_placed_or_parked(from))
+        .cloned()
         .collect();
     let parked_name = trees.parked_name(from).to_owned();
     let parked = node.parked;

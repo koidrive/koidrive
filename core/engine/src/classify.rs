@@ -1899,7 +1899,7 @@ impl Trees {
         kept
     }
 
-    fn local_children_placed_or_parked<'a>(
+    pub(crate) fn local_children_placed_or_parked<'a>(
         &'a self,
         id: &'a str,
     ) -> impl Iterator<Item = &'a NodeId> + 'a {
