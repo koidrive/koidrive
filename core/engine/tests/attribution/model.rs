@@ -386,6 +386,9 @@ pub enum Rules {
     RefusedKeepsLostPosition,
     RefusedTakesLostPosition,
     CreateFixes,
+    AllFixes,
+    HeldDeleteResent,
+    HeldFixes,
 }
 
 impl Rules {
@@ -394,18 +397,45 @@ impl Rules {
     }
 
     fn create_from(self) -> bool {
-        matches!(self, Rules::ResentCreateFrom | Rules::CreateFixes)
+        matches!(
+            self,
+            Rules::ResentCreateFrom | Rules::CreateFixes | Rules::AllFixes | Rules::HeldFixes
+        )
     }
 
     fn refused_keeps_lost_position(self) -> bool {
         matches!(
             self,
-            Rules::RefusedKeepsLostPosition | Rules::RefusedTakesLostPosition | Rules::CreateFixes
+            Rules::RefusedKeepsLostPosition
+                | Rules::RefusedTakesLostPosition
+                | Rules::CreateFixes
+                | Rules::AllFixes
+                | Rules::HeldFixes
         )
     }
 
     fn refused_live_takes_lost_position(self) -> bool {
-        matches!(self, Rules::RefusedTakesLostPosition | Rules::CreateFixes)
+        matches!(
+            self,
+            Rules::RefusedTakesLostPosition
+                | Rules::CreateFixes
+                | Rules::AllFixes
+                | Rules::HeldFixes
+        )
+    }
+
+    fn absent_delete_resent(self) -> bool {
+        matches!(
+            self,
+            Rules::AbsentDeleteResent
+                | Rules::AllFixes
+                | Rules::HeldDeleteResent
+                | Rules::HeldFixes
+        )
+    }
+
+    fn delete_needs_held(self) -> bool {
+        matches!(self, Rules::HeldDeleteResent | Rules::HeldFixes)
     }
 
     fn bound_only(self) -> bool {
@@ -1460,13 +1490,22 @@ impl World {
             }
             return Ok(());
         }
-        if let Local::Gone(_) = dev.l
+        if let Local::Gone(gone) = dev.l
             && !dev.s.live
             && dev.s.deleted_here
             && dev.s.exist_seq == 0
         {
             dev.s.exist_seq = r.meta_rev;
-            if r.trashed.is_none() && rules == Rules::AbsentDeleteResent {
+            let held = self.values[gone.0 as usize].held;
+            let unheld = FIELDS.iter().any(|&field| {
+                r.user_set(field)
+                    && !edited_here[slot(field)]
+                    && held[slot(field)] & (1 << r.get(field).0) == 0
+            });
+            if r.trashed.is_none()
+                && rules.absent_delete_resent()
+                && !(rules.delete_needs_held() && unheld)
+            {
                 dev.s.live = true;
                 dev.unsent.existence = Some(Author::Own);
             }
@@ -1537,7 +1576,7 @@ impl World {
                 }
                 self.devices[d].unsent = Unsent::default();
             }
-            (Local::Gone(_), None) => {
+            (Local::Gone(gone), None) => {
                 let deleting = (dev.s.live || rules != Rules::DeleteNeedsSyncedLive)
                     && dev.unsent.existence == Some(Author::Own);
                 if !deleting {
@@ -1551,6 +1590,12 @@ impl World {
                 let old = rules == Rules::LossForgetsDeletedFields;
                 let unseen = FIELDS.iter().any(|&field| {
                     let synced = dev.s.get(field);
+                    if rules.delete_needs_held() {
+                        let held = self.values[gone.0 as usize].held[slot(field)];
+                        return r.user_set(field)
+                            && !edited_here[slot(field)]
+                            && held & (1 << r.get(field).0) == 0;
+                    }
                     r.get(field) != synced.val
                         && r.user_set(field)
                         && !edited_here[slot(field)]

@@ -106,6 +106,9 @@ fn rules(name: &str) -> Rules {
         "RefusedKeepsLostPosition" => Rules::RefusedKeepsLostPosition,
         "RefusedTakesLostPosition" => Rules::RefusedTakesLostPosition,
         "CreateFixes" => Rules::CreateFixes,
+        "AllFixes" => Rules::AllFixes,
+        "HeldDeleteResent" => Rules::HeldDeleteResent,
+        "HeldFixes" => Rules::HeldFixes,
         other => panic!("no rules {other}"),
     }
 }
@@ -174,11 +177,12 @@ const LARGE: [[u8; 10]; 6] = [
     [0, 0, 1, 1, 1, 1, 0, 0, 0, 2],
 ];
 
-const CREATED: [[u8; 10]; 4] = [
+const CREATED: [[u8; 10]; 5] = [
     [0, 0, 0, 1, 1, 0, 0, 0, 0, 1],
     [0, 0, 0, 1, 1, 1, 0, 0, 0, 1],
     [1, 1, 0, 0, 1, 1, 0, 0, 0, 1],
     [0, 0, 1, 1, 1, 1, 0, 0, 0, 1],
+    [1, 1, 1, 0, 0, 1, 0, 1, 0, 1],
 ];
 
 fn budget(n: [u8; 10]) -> Budget {
@@ -424,6 +428,18 @@ fn refute_absent_delete_resent() {
     refute(Rules::AbsentDeleteResent);
 }
 
+#[test]
+#[ignore]
+fn refute_all_fixes() {
+    refute(Rules::AllFixes);
+}
+
+#[test]
+#[ignore]
+fn refute_held_fixes() {
+    refute(Rules::HeldFixes);
+}
+
 fn exhaustive(n: [u8; 10], rules: Rules) {
     exhaustive_from(budget(n), rules);
 }
@@ -572,14 +588,15 @@ const MADE_BY_A: Budget = Budget {
     ..ANY
 };
 
-fn broken_on_main(trace: &[Action], broken: &str) {
-    let found = settle(MADE_BY_A, Rules::Spec, trace).unwrap_err();
+fn broken(rules: Rules, trace: &[Action], broken: &str) {
+    let found = settle(MADE_BY_A, rules, trace).unwrap_err();
     assert!(found.contains(broken), "{found}");
 }
 
 #[test]
 fn a_delete_comes_undone_when_a_resent_create_claims_a_renamed_position() {
-    broken_on_main(
+    broken(
+        Rules::Spec,
         &[
             Move(A),
             Build(A, 1),
@@ -601,7 +618,8 @@ fn a_delete_comes_undone_when_a_resent_create_claims_a_renamed_position() {
 
 #[test]
 fn a_refused_lost_position_create_moves_the_file_back() {
-    broken_on_main(
+    broken(
+        Rules::Spec,
         &[
             Move(A),
             Build(A, 1),
@@ -635,7 +653,8 @@ fn a_refused_lost_position_create_moves_the_file_back() {
 
 #[test]
 fn a_delete_of_a_lost_node_comes_undone_when_another_device_resends_its_create() {
-    broken_on_main(
+    broken(
+        Rules::Spec,
         &[
             Delete(A),
             Lose(1),
@@ -684,9 +703,84 @@ fn a_delete_while_a_lost_position_create_is_in_flight_survives_its_landing() {
 
 #[test]
 fn a_delete_comes_undone_across_a_restore_and_back() {
-    broken_on_main(
+    broken(
+        Rules::Spec,
         &[Delete(A), Lose(1), Bootstrap(A), Action::Unlose, Record(A)],
         "came undone",
+    );
+}
+
+#[test]
+fn a_delete_overrides_a_move_resent_after_its_create_was_refused() {
+    broken(
+        Rules::AllFixes,
+        &[
+            Move(A),
+            Build(A, 1),
+            Write(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Serve(B),
+            Answer(B),
+            Record(B),
+            Lose(1),
+            Bootstrap(B),
+            Build(B, 1),
+            Delete(B),
+            Serve(B),
+            Bootstrap(A),
+            Build(A, 2),
+            Serve(A),
+            Answer(A),
+            Record(A),
+            Answer(B),
+            Record(B),
+            Record(B),
+            Build(B, 1),
+            Serve(B),
+            Record(A),
+            Answer(B),
+            Record(B),
+        ],
+        "device 0's Position Tok(2) is lost",
+    );
+}
+
+#[test]
+fn a_delete_built_before_a_resent_move_lands_overrides_it() {
+    broken(
+        Rules::HeldFixes,
+        &[
+            Move(A),
+            Build(A, 1),
+            Write(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Serve(B),
+            Answer(B),
+            Record(B),
+            Lose(1),
+            Bootstrap(B),
+            Build(B, 1),
+            Delete(B),
+            Serve(B),
+            Bootstrap(A),
+            Build(A, 2),
+            Answer(B),
+            Record(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Record(A),
+            Serve(B),
+            Record(A),
+            Answer(B),
+            Record(B),
+            Record(B),
+        ],
+        "device 0's Position Tok(2) is lost",
     );
 }
 
