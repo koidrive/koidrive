@@ -17,14 +17,15 @@ use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::helper::{
     AccountData, DevicesData, Done, FolderData, Helper, InvitationData, Outcome, Refusal,
     RequestsData, RestoreAskedData, ShareLinkData, ShareLinksData, SharedData, SpaceData,
-    SpacesData, TrashData, UsagesData, VersionsData,
+    SpacesData, TrashData, UpdatedData, UsagesData, VersionsData,
 };
 use crate::profile::Profile;
 use crate::state::{self, Seen};
 use crate::types::{
     Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
     RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
-    ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash,
+    ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash, UpdateResult,
+    UpdateStatus,
 };
 
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -128,6 +129,7 @@ impl DaemonCore {
                     questions: Vec::new(),
                     problems: Vec::new(),
                     notices: Vec::new(),
+                    update: UpdateStatus::Unknown,
                 },
             }),
             reading: Mutex::default(),
@@ -226,6 +228,11 @@ impl DaemonCore {
         if next.progress != sent.progress {
             events.push(SessionEvent::Progress {
                 progress: next.progress.clone(),
+            });
+        }
+        if next.update != sent.update {
+            events.push(SessionEvent::Update {
+                update: next.update.clone(),
             });
         }
         inner.sent = next;
@@ -800,6 +807,22 @@ impl Core for DaemonCore {
             .map_err(|refusal| SessionError::NotSaved {
                 reason: refusal.message,
             })
+    }
+
+    fn update(&self) -> Result<UpdateResult, SessionError> {
+        let done = self
+            .change(&["update"])
+            .map_err(|refusal| SessionError::UpdateFailed {
+                log_path: driver::update::log_path(&self.paths)
+                    .to_string_lossy()
+                    .into_owned(),
+                fallback_command: refusal.next_command(),
+                reason: refusal.message,
+            })?;
+        match done.outcome {
+            Outcome::Unchanged => Err(SessionError::UpdateUnavailable),
+            _ => Ok(done.data::<UpdatedData>()?.result()),
+        }
     }
 
     fn close(&self) {

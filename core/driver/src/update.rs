@@ -77,6 +77,16 @@ pub fn is_development_version(version: &str) -> bool {
         .is_ok_and(|version| version.is_development())
 }
 
+/// Where `koi update` writes the commands it ran and what they printed: `~/Library/Logs/Koidrive/update.log` on macOS,
+/// `update.log` in the state folder elsewhere.
+pub fn log_path(paths: &Paths) -> PathBuf {
+    let home = (std::env::var_os("HOME").map(PathBuf::from)).filter(|home| home.is_absolute());
+    match (cfg!(target_os = "macos"), home) {
+        (true, Some(home)) => home.join("Library/Logs/Koidrive/update.log"),
+        _ => paths.state_dir.join("update.log"),
+    }
+}
+
 /// Whether the update check is on for the profile at `paths`: `[updates]` in its config.toml, unless [`VARIABLE`]
 /// says otherwise. A config.toml that cannot be read leaves it on.
 pub fn is_on(paths: &Paths) -> bool {

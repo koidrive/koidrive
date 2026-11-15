@@ -1,6 +1,97 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[tokio::test]
+async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join(BUNDLE);
+    let run = |program: &str, arguments: &[&OsStr]| {
+        let output = std::process::Command::new(program)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{program}: {output:?}");
+    };
+    run(
+        "/usr/bin/osacompile",
+        &[
+            OsStr::new("-s"),
+            OsStr::new("-o"),
+            app.as_os_str(),
+            OsStr::new("-e"),
+            OsStr::new("on idle"),
+            OsStr::new("-e"),
+            OsStr::new("return 30"),
+            OsStr::new("-e"),
+            OsStr::new("end idle"),
+        ],
+    );
+    let plist = app.join("Contents/Info.plist");
+    for entry in [
+        format!("Add :CFBundleIdentifier string {IDENTIFIER}"),
+        "Add :LSUIElement bool true".to_owned(),
+    ] {
+        run(
+            "/usr/libexec/PlistBuddy",
+            &[OsStr::new("-c"), OsStr::new(&entry), plist.as_os_str()],
+        );
+    }
+    run(
+        "/usr/bin/codesign",
+        &[
+            OsStr::new("-s"),
+            OsStr::new("-"),
+            OsStr::new("--force"),
+            app.as_os_str(),
+        ],
+    );
+    let tools = dir.path().join("tools");
+    let config = Config {
+        system: dir.path().join("system"),
+        user: dir.path().join("user"),
+        work: dir.path().join("work"),
+        release: "http://127.0.0.1:9/releases/download".into(),
+        codesign: tools.join("codesign"),
+        spctl: tools.join("spctl"),
+        hdiutil: tools.join("hdiutil"),
+        ditto: "/usr/bin/ditto".into(),
+        osascript: "/usr/bin/osascript".into(),
+        open: "/usr/bin/open".into(),
+        updater: dir.path().join("updater"),
+        max_download: 1024,
+    };
+    let (_tx, cancel) = watch::channel(false);
+    let control = Control {
+        deadline: Instant::now() + Duration::from_secs(60),
+        cancel,
+    };
+    let inspect = async || {
+        process(
+            &config.osascript,
+            &args(&[
+                OsStr::new("-l"),
+                OsStr::new("JavaScript"),
+                OsStr::new("-e"),
+                OsStr::new(INSPECT_RUNNING),
+                app.as_os_str(),
+            ]),
+            &control,
+        )
+        .await
+        .unwrap()
+    };
+    run("/usr/bin/open", &[OsStr::new("-n"), app.as_os_str()]);
+    let launched = Instant::now() + Duration::from_secs(20);
+    while inspect().await.trim_ascii() != b"running" {
+        assert!(Instant::now() < launched, "the probe app never ran");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(quiesce(&config, &[&app], &control).await.unwrap());
+    assert_eq!(inspect().await.trim_ascii(), b"stopped");
+    assert!(!quiesce(&config, &[&app], &control).await.unwrap());
+}
+
+#[tokio::test]
 async fn malformed_receipt_version_is_rejected_before_namespace_replacement() {
     let f = Fixture::new(None, DMG.to_vec(), 200).await;
     f.old();
@@ -1986,6 +2077,7 @@ async fn pending_retirements_follow_a_new_current_app_across_roots() {
         panic!()
     };
     assert_eq!(path, f.config.user.join(BUNDLE));
+    bundle(&f.installed(), Some("0.1.0"));
     let mut newer = Fixture::versioned("0.3.0", None, DMG.to_vec(), 200).await;
     newer.config.system = f.config.system.clone();
     newer.config.user = f.config.user.clone();
@@ -2011,7 +2103,7 @@ async fn pending_retirements_follow_a_new_current_app_across_roots() {
         fs::read(f.config.user.join(BUNDLE).join("Contents/Helpers/koi")).unwrap(),
         b"0.3.0"
     );
-    assert_eq!(retired.len(), 2);
+    assert_eq!(retired.len(), 3);
     assert!(residue.is_empty());
     for token in retired {
         token.discard().unwrap();
@@ -3060,6 +3152,50 @@ async fn unwritable_system_root_uses_user_applications() {
     assert_eq!(change, AppChange::Installed);
     assert_eq!(path, f.config.user.join(BUNDLE));
     assert!(!f.installed().exists());
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_older_app_only_in_user_applications_is_upgraded_where_it_is() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    let user = f.config.user.join(BUNDLE);
+    bundle(&user, Some("0.1.0"));
+    let AppInstall::Present {
+        path,
+        version,
+        retired,
+        ..
+    } = f.run().await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(path, user);
+    assert_eq!(version.to_string(), TARGET);
+    assert!(!f.installed().exists());
+    assert!(retired.iter().all(|app| app.bundle != f.installed()));
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_older_app_in_an_unwritable_user_applications_is_preserved_beside_a_new_system_app() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    let user = f.config.user.join(BUNDLE);
+    bundle(&user, Some("0.1.0"));
+    fs::set_permissions(&f.config.user, fs::Permissions::from_mode(0o500)).unwrap();
+    let result = f.run().await;
+    fs::set_permissions(&f.config.user, fs::Permissions::from_mode(0o700)).unwrap();
+    let AppInstall::Present {
+        path, preserved, ..
+    } = result.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(path, f.installed());
+    assert_eq!(preserved, vec![user.clone()]);
+    assert_eq!(
+        fs::read(user.join("Contents/Helpers/koi")).unwrap(),
+        b"0.1.0"
+    );
     f.unmounted();
 }
 

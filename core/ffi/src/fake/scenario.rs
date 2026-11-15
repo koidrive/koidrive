@@ -7,11 +7,24 @@ pub(super) struct Script {
     pub activity: FakeActivity,
     pub progress: Option<SyncProgress>,
     pub recent: Vec<RecentChange>,
+    pub update: UpdateStatus,
+    pub update_fails: bool,
 }
 
 pub(super) const DOCUMENTS: &str = "space-documents";
 pub(super) const PHOTOS: &str = "space-photos";
 const DAY_MS: i64 = 86_400_000;
+pub(super) const RUNNING: &str = "0.1.0";
+const NEWEST: &str = "0.1.1";
+
+pub(super) fn update_failure() -> SessionError {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/me".to_owned());
+    SessionError::UpdateFailed {
+        reason: format!("App signature verification failed for the downloaded Koidrive {NEWEST}"),
+        log_path: format!("{home}/Library/Logs/Koidrive/update.log"),
+        fallback_command: Some("brew upgrade --cask koidrive".to_owned()),
+    }
+}
 
 fn file(id: String, path: String, detail: ItemDetail) -> HeldItem {
     HeldItem {
@@ -462,12 +475,17 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
         activity: FakeActivity::Idle,
         progress: None,
         recent: recent(now),
+        update: UpdateStatus::UpToDate {
+            checked_at_ms: now - 3_600_000,
+        },
+        update_fails: false,
     };
     let saved = &mut script.saved;
     match scenario {
         FakeScenario::FirstRun => {
             script.saved = Saved::default();
             script.recent.clear();
+            script.update = UpdateStatus::Unknown;
         }
         FakeScenario::UpToDate => {
             history(saved, now);
@@ -510,6 +528,7 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
                     now - 120_000,
                 );
             }
+            script.update = UpdateStatus::Unknown;
         }
         FakeScenario::MassDelete => mass_delete(saved, now),
         FakeScenario::AmbiguousDisappearance => disappearance(saved, now, 1, 4),
@@ -669,6 +688,14 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
                     folder.state = FolderState::Halted;
                 }
             }
+        }
+        FakeScenario::UpdateAvailable | FakeScenario::UpdateFails => {
+            script.update = UpdateStatus::Available {
+                version: NEWEST.to_owned(),
+                release_url: format!("https://github.com/koidrive/koidrive/releases/tag/v{NEWEST}"),
+                checked_at_ms: now - 3_600_000,
+            };
+            script.update_fails = scenario == FakeScenario::UpdateFails;
         }
     }
     script

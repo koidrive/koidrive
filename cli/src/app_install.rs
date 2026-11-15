@@ -221,7 +221,7 @@ pub(crate) async fn verify_existing(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::QUIESCE;
+pub(crate) use macos::{QUIESCE, writable};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -263,6 +263,7 @@ function run(args) {
     pub(crate) const QUIESCE: &str = r#"ObjC.import('AppKit');
 function run(args) {
     const paths = args.map(p => ObjC.unwrap($(p).stringByStandardizingPath));
+    const asked = [];
     let running = false;
     while (true) {
         const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('dev.koidrive.Koidrive');
@@ -273,7 +274,9 @@ function run(args) {
             if (app.terminated) continue;
             remaining = true;
             running = true;
-            if (!app.terminate()) throw Error('Koidrive refused graceful termination');
+            if (asked.indexOf(app.processIdentifier) >= 0) continue;
+            if (!app.terminate) throw Error('Koidrive refused graceful termination');
+            asked.push(app.processIdentifier);
         }
         if (!remaining) return running ? 'running' : 'stopped';
         $.NSThread.sleepForTimeInterval(0.05);
@@ -2806,7 +2809,7 @@ function run(args) {
         }
     }
 
-    fn writable(root: &Path) -> Result<bool, AppInstallError> {
+    pub(crate) fn writable(root: &Path) -> Result<bool, AppInstallError> {
         match tempfile::Builder::new()
             .prefix(".koidrive-write-")
             .tempdir_in(root)
@@ -3278,7 +3281,12 @@ function run(args) {
         })?;
         control.check()?;
         let system_root = directory(&config.system, false)?;
-        let (root, root_fd) = if writable(&config.system)? {
+        let older_in = |root: &Path| {
+            (installed.iter()).any(|app| app.path.parent() == Some(root) && older(app, &target))
+        };
+        let (root, root_fd) = if writable(&config.system)?
+            && (older_in(&config.system) || !older_in(&config.user) || !writable(&config.user)?)
+        {
             (config.system.clone(), system_root)
         } else {
             (config.user.clone(), directory(&config.user, true)?)

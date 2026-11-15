@@ -61,7 +61,8 @@ The daemon logs at the `info` level. Set `KOIDRIVE_LOG` to change it, for exampl
 
 `koi update` follows links to identify the running executable and its installation method:
 
-- For the Homebrew cask, it runs `brew upgrade --cask koidrive`, and for the formula, `brew upgrade koidrive`. It uses the brew executable of the Homebrew that owns the install, whatever PATH selects. First it refreshes the `koidrive/tap` tap alone, and it runs brew with `HOMEBREW_NO_AUTO_UPDATE=1`, so it doesn't update Homebrew or its other taps. If that brew is missing, the tap can't be refreshed or brew fails, `koi update` says so and prints the command to run.
+- For the Homebrew cask in `/Applications` or `~/Applications`, it updates the app like a manually installed app, described below. The cask declares `auto_updates`, so once the app has updated itself, `brew upgrade` leaves it alone. If the update fails, `koi update` prints `brew upgrade --cask koidrive` as the command to run.
+- For the formula, it runs `brew upgrade koidrive`, and for a cask app in another folder, `brew upgrade --cask koidrive`. It uses the brew executable of the Homebrew that owns the install, whatever PATH selects. First it refreshes the `koidrive/tap` tap alone, and it runs brew with `HOMEBREW_NO_AUTO_UPDATE=1`, so it doesn't update Homebrew or its other taps. If that brew is missing, the tap can't be refreshed or brew fails, `koi update` says so and prints the command to run.
 - For an installer copy, it asks GitHub for the newest release and runs `https://koidrive.com/install.sh` with `KOIDRIVE_INSTALL_DIR` set to the executable's real folder and `KOIDRIVE_VERSION` set to the release.
 - For a manually installed app in `/Applications` or `~/Applications`, it downloads and verifies the release's app, then replaces the older copy. Other app locations get the release's download link.
 - Development builds do not update to releases.
@@ -80,7 +81,7 @@ The daemon asks GitHub once a day whether a newer release is out, and keeps the 
 Update: Koidrive 0.1.2 is out (this device runs 0.1.0). Run: /home/ada/.local/bin/koi update
 ```
 
-The command matches the running executable's installation method. An installer copy names its resolved executable, with shell quoting when needed. A Homebrew cask shows `brew upgrade --cask koidrive`, and a formula shows `brew upgrade koidrive`.
+The command matches the running executable's installation method. An installer copy or a Homebrew cask in an Applications folder names its resolved executable, with shell quoting when needed. A formula shows `brew upgrade koidrive`, and a cask app in another folder shows `brew upgrade --cask koidrive`.
 
 Each check reads Koidrive's public list of releases, `https://api.github.com/repos/koidrive/koidrive/releases`, following its pages with ordinary GitHub requests. It sends the user agent `koidrive` and, for a cached single-page list, the list's ETag, a hash that is the same for everyone. It sends no version, device, account or server address. GitHub sees your IP address, as it does for any download. The check isn't a [usage report](telemetry.md): nothing goes to Koidrive, and turning reports off leaves the check on.
 

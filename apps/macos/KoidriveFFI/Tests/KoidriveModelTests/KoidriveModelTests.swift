@@ -64,6 +64,95 @@ private final class Fetches {
         #expect(SetupModel(app: ready, mode: .addFolder, deviceName: "Mac").step == .folder)
     }
 
+    @Test func anAvailableUpdateInstallsAndThenTheMacIsUpToDate() async throws {
+        let model = AppModel.fake(scenario: .updateAvailable)
+        guard case .available(let version, let releaseUrl, _) = model.state.update else {
+            Issue.record("expected an available update, got \(model.state.update)")
+            return
+        }
+        #expect(version == "0.1.1")
+        #expect(releaseUrl.hasSuffix("/v0.1.1"))
+        #expect(try await model.update() == UpdateResult(from: "0.1.0", to: "0.1.1"))
+        guard case .upToDate = model.state.update else {
+            Issue.record("expected up to date, got \(model.state.update)")
+            return
+        }
+        await #expect(throws: SessionError.UpdateUnavailable) { try await model.update() }
+
+        let fresh = AppModel.fake(scenario: .firstRun)
+        #expect(fresh.state.update == .unknown)
+        await #expect(throws: SessionError.UpdateUnavailable) { try await fresh.update() }
+    }
+
+    @Test func aFailedUpdateNamesItsReasonLogAndTerminalCommandAndStaysAvailable() async throws {
+        let model = AppModel.fake(scenario: .updateFails)
+        let available = model.state.update
+        do {
+            _ = try await model.update()
+            Issue.record("the update should fail")
+        } catch SessionError.UpdateFailed(let reason, let logPath, let fallbackCommand) {
+            #expect(reason.contains("0.1.1"))
+            #expect(logPath.hasSuffix("/Library/Logs/Koidrive/update.log"))
+            #expect(fallbackCommand == "brew upgrade --cask koidrive")
+        }
+        #expect(model.state.update == available)
+
+        let retried = AppModel.fake(scenario: .updateAvailable)
+        let offline = SessionError.UpdateFailed(reason: "GitHub cannot be reached", logPath: "/tmp/update.log", fallbackCommand: nil)
+        try #require(retried.session.fakeCore()).failNext(error: offline)
+        await #expect(throws: offline) { try await retried.update() }
+        #expect(try await retried.update() == UpdateResult(from: "0.1.0", to: "0.1.1"))
+    }
+
+    @Test func theUpdateNoteShowsOnceForEachNewVersionAndNotOnTheFirstLaunch() throws {
+        let suite = "dev.koidrive.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch(_ version: String) -> AppModel {
+            let (session, events) = SyncSession.fakeWithEventStream()
+            return AppModel(session: session, events: events, defaults: defaults, version: version)
+        }
+        #expect(launch("0.1.0").justUpdated == nil)
+        #expect(launch("0.1.0").justUpdated == nil)
+        let updated = launch("0.1.1")
+        #expect(updated.justUpdated == "0.1.1")
+        #expect(launch("0.1.1").justUpdated == "0.1.1")
+        updated.acknowledgeUpdate()
+        #expect(updated.justUpdated == nil)
+        #expect(launch("0.1.1").justUpdated == nil)
+        #expect(launch("0.2.0").justUpdated == "0.2.0")
+        #expect(AppModel.fake().justUpdated == nil)
+    }
+
+    @Test func aDowngradeShowsNoUpdateNoteAndAReleaseIsNewerThanItsPrereleases() throws {
+        let suite = "dev.koidrive.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch(_ version: String) -> AppModel {
+            let (session, events) = SyncSession.fakeWithEventStream()
+            return AppModel(session: session, events: events, defaults: defaults, version: version)
+        }
+        #expect(launch("0.1.0-alpha.9").justUpdated == nil)
+        #expect(launch("0.1.0-alpha.10").justUpdated == "0.1.0-alpha.10")
+        launch("0.1.0-alpha.10").acknowledgeUpdate()
+        #expect(launch("0.1.0").justUpdated == "0.1.0")
+        launch("0.1.0").acknowledgeUpdate()
+        #expect(launch("0.1.0-alpha.10").justUpdated == nil)
+        #expect(launch("0.1.0").justUpdated == "0.1.0")
+    }
+
+    @Test func aSecondUpdateWhileOneRunsWaitsForItInsteadOfStartingAnother() async throws {
+        let model = AppModel.fake(scenario: .updateAvailable)
+        let first = Task.immediate { try await model.update() }
+        #expect(model.updating)
+        let second = try await model.update()
+        #expect(try await first.value == second)
+        #expect(!model.updating)
+        await #expect(throws: SessionError.UpdateUnavailable) {
+            try await model.update()
+        }
+    }
+
     @Test func onlyADebugBuildStartsOnTheFakeScenarioPreference() throws {
         let suite = "dev.koidrive.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

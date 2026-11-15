@@ -741,6 +741,49 @@ fn a_cask_install_hands_the_app_to_homebrew_after_its_login_item_is_gone() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn a_cask_app_outside_the_applications_folders_is_handed_to_homebrew() {
+    let machine = Machine::new();
+    machine.profile();
+    let app = machine.path("Apps/Koidrive.app");
+    let helper = machine.copy_koi("Apps/Koidrive.app/Contents/Helpers/koi");
+    machine.script("Apps/Koidrive.app/Contents/MacOS/Koidrive", "exit 0\n");
+    let owned = machine.path("brew/Caskroom/koidrive/0.1.0/Koidrive.app");
+    fs::create_dir_all(owned.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&app, &owned).unwrap();
+    let brew = machine.script(
+        "brew/bin/brew",
+        &format!(
+            "printf '%s\\n' \"$*\" >> \"$HOME/brew.calls\"\nrm -rf '{}'\n",
+            app.display()
+        ),
+    );
+    let label = format!("dev.koidrive.koi.{}", machine.paths().state_key());
+    machine.write(
+        &format!("Library/LaunchAgents/{label}.plist"),
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array></dict></plist>\n",
+            helper.display()
+        ),
+    );
+
+    let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(
+        fs::read_to_string(machine.path("brew.calls")).unwrap_or_default(),
+        "uninstall --cask koidrive\n",
+        "{envelope:#}"
+    );
+    assert!(!app.exists(), "{envelope:#}");
+    let homebrew = json!({
+        "kind": "homebrew",
+        "argv": [fs::canonicalize(&brew).unwrap().display().to_string(), "uninstall", "--cask", "koidrive"],
+    });
+    assert!(removed(&envelope).contains(&homebrew), "{envelope:#}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn a_service_started_through_a_cask_link_hands_the_app_to_homebrew() {
     let machine = Machine::new();
     machine.profile();

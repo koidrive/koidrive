@@ -9,7 +9,7 @@ use crate::profile::Profile;
 use crate::types::{
     Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
     RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, TelemetrySetting, Trash,
+    Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -213,5 +213,9 @@ impl SyncSession {
     /// offsets of the app's own frames. Ok means the report can be deleted.
     pub fn record_app_crash(&self, report: String) -> Result<(), SessionError> {
         self.core.record_app_crash(&report)
+    }
+
+    pub fn update(&self) -> Result<UpdateResult, SessionError> {
+        self.core.update()
     }
 }

@@ -3,19 +3,39 @@
 use super::*;
 
 #[test]
-fn cli_status_update_metadata_is_unconsumed_by_the_app_fallback() {
-    for update in [
-        serde_json::Value::Null,
-        serde_json::json!({ "state": "unknown", "version": "0.1.0" }),
-        serde_json::json!({ "state": "off", "version": "0.1.0" }),
-        serde_json::json!({
-            "state": "up_to_date", "version": "0.1.0", "checked_at": "2026-11-13T00:00:00Z"
-        }),
-        serde_json::json!({
-            "state": "available", "version": "0.1.0", "latest": "0.2.0",
-            "url": "https://github.com/koidrive/koidrive/releases/tag/v0.2.0",
-            "checked_at": "2026-11-13T00:00:00Z", "command": "koi update"
-        }),
+fn koi_status_tells_the_app_what_the_update_check_found() {
+    let url = "https://github.com/koidrive/koidrive/releases/tag/v0.2.0";
+    for (update, expected) in [
+        (serde_json::Value::Null, driver::Update::Unknown),
+        (
+            serde_json::json!({ "state": "unknown", "version": "0.1.0" }),
+            driver::Update::Unknown,
+        ),
+        (
+            serde_json::json!({ "state": "off", "version": "0.1.0" }),
+            driver::Update::Off,
+        ),
+        (
+            serde_json::json!({
+                "state": "up_to_date", "version": "0.1.0", "checked_at": "2026-11-13T00:00:00Z",
+                "checked_at_ms": 1_794_528_000_000_i64
+            }),
+            driver::Update::UpToDate {
+                checked_at_ms: 1_794_528_000_000,
+            },
+        ),
+        (
+            serde_json::json!({
+                "state": "available", "version": "0.1.0", "latest": "0.2.0", "url": url,
+                "checked_at": "2026-11-13T00:00:00Z", "checked_at_ms": 1_794_528_000_000_i64,
+                "command": "koi update"
+            }),
+            driver::Update::Available {
+                latest: "0.2.0".to_owned(),
+                url: url.to_owned(),
+                checked_at_ms: 1_794_528_000_000,
+            },
+        ),
     ] {
         let mut data = serde_json::json!({
             "account": null, "running": false, "paused": true, "folders": []
@@ -29,7 +49,7 @@ fn cli_status_update_metadata_is_unconsumed_by_the_app_fallback() {
             decisions: Vec::new(),
         };
         let (status, questions) = done.status().unwrap();
-        assert_eq!(status.update, driver::Update::Unknown);
+        assert_eq!(status.update, expected);
         assert!(status.paused);
         assert!(!status.running);
         assert!(questions.is_empty());

@@ -1214,6 +1214,14 @@
             "null"
           ]
         },
+        "checked_at_ms": {
+          "description": "When GitHub last answered the check, in milliseconds since the Unix epoch.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "command": {
           "type": [
             "string",

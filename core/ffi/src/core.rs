@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use crate::types::{
     Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
     RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
-    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash,
+    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult,
 };
 
 pub(crate) fn refuse_line_breaks(password: &str) -> Result<(), SessionError> {
@@ -203,6 +203,12 @@ pub trait Core: Send + Sync {
     /// keeping only what [`koidrive_telemetry::Store::absorb_app_crash`] reads. Ok once the crash is queued or is not to
     /// be recorded, so the app can delete the report; an error leaves the report for the next launch.
     fn record_app_crash(&self, report: &str) -> Result<(), SessionError>;
+
+    /// Updates Koidrive on this Mac to the newest release, as `koi update` does for this install. The updater quits the
+    /// running app before it replaces it and opens it again afterwards, so a call from that app usually ends with
+    /// the app; the call returns when the update leaves the app running. Returns [`SessionError::UpdateUnavailable`]
+    /// when this Mac runs the newest release.
+    fn update(&self) -> Result<UpdateResult, SessionError>;
 
     /// Stops syncing and releases what the core holds outside memory, such as the lock on this
     /// device's sync state, so that the state can be opened again at once. The session calls it

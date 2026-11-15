@@ -623,7 +623,7 @@ fn programs(home: &Path, also: &[PathBuf]) -> Vec<Program> {
                 Some(bundle) => Program::App(bundle),
                 None => continue,
             },
-            Method::Cask { brew } => Program::Homebrew {
+            Method::Cask { brew } | Method::CaskElsewhere { brew } => Program::Homebrew {
                 brew: brew.clone(),
                 cask: true,
                 koi: binary.clone(),

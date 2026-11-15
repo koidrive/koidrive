@@ -344,6 +344,8 @@ extension SessionError {
         case .PasswordLength: String(localized: "Use a password of 8 to 256 characters.")
         case .ShareLinkNotFound: String(localized: "This link no longer exists.")
         case .ShareLinkLimit: String(localized: "This space has as many active links as it can hold. Revoke one to make a new link.")
+        case .UpdateFailed: String(localized: "Koidrive couldn't update.")
+        case .UpdateUnavailable: String(localized: "Koidrive is up to date.")
         case .Failed(let reason): reason
         }
     }
@@ -351,6 +353,7 @@ extension SessionError {
     var detail: String? {
         switch self {
         case .ServerUnreachable(let reason), .NotRevoked(let reason), .NotSaved(let reason): reason
+        case .UpdateFailed(let reason, _, _): reason
         default: nil
         }
     }
