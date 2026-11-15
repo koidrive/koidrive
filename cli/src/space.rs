@@ -1,15 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::SpaceAction;
 use crate::error::CliError;
 use crate::formatting::{count, printable, size};
+use crate::options::short_name;
 use crate::output;
 use crate::profile::signed_in;
 use crate::report::{Done, RefusedSpace, SpaceData, SpacesData, UsageData, UsagesData};
+use clap::Subcommand;
 use koidrive_driver::Paths;
 use koidrive_ipc::Code;
 use koidrive_net::{ApiError, Auth};
 use koidrive_proto::v1::{CreateSpaceRequest, SpaceInfo, SpaceUsage};
+
+#[derive(Subcommand)]
+pub(crate) enum SpaceAction {
+    /// Create a space. Link a folder to it with koi folder link.
+    Create {
+        /// The space's name, at most 255 bytes.
+        #[arg(value_parser = short_name)]
+        name: String,
+    },
+    /// List the spaces of the server.
+    List,
+    /// Show how many bytes each space stores: in live files, in the trash and in old versions.
+    Usage,
+}
 
 /// Runs a space command. Creating a name another space has returns that space, also when another run creates it at the
 /// same time, since koi folder link names a space by its name and the server keeps names unique.

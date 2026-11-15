@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::LogFormat;
 use crate::{diagnostics, logfile};
+use clap::ValueEnum;
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum LogFormat {
+    Text,
+    Json,
+}
 
 pub(crate) fn init_logging(
     daemon: Option<LogFormat>,

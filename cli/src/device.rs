@@ -1,19 +1,58 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::DeviceAction;
 use crate::error::CliError;
-use crate::formatting::{now_ms, printable};
+use crate::formatting::{ago, now_ms, printable};
+use crate::options::RequestArg;
 use crate::profile::{signed_in, unexpected};
 use crate::report::{
     DeviceData, DevicesData, Done, InvitationData, LeftData, NotRemovedData, RevokedData,
 };
 use crate::request::Begun;
 use crate::{ipc, output, pairing, request};
+use clap::Subcommand;
 use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Key, Request, RequestId, Response};
 use koidrive_net::{ApiError, Auth};
 use koidrive_proto::v1::DeviceInfo;
 use serde::{Deserialize, Serialize};
+
+#[derive(Subcommand)]
+pub(crate) enum DeviceAction {
+    /// Show a pairing code that adds another device to this server. It works once, for 10 minutes.
+    Invite {
+        #[command(flatten)]
+        request: RequestArg,
+    },
+    /// List the devices paired with the server, revoked ones included.
+    List,
+    /// Revoke another device, such as a lost one. It stops syncing at once, and the files on it stay there.
+    Revoke {
+        /// The device's ID, as koi device list shows it.
+        #[arg(value_parser = device_id)]
+        id: String,
+    },
+    /// Sign this device out: revoke it on the server and unlink every folder. The files stay where they are.
+    Leave {
+        /// Sign out even if this is the account's last active device or the server does not answer.
+        #[arg(long)]
+        last_device: bool,
+    },
+}
+
+/// A device ID as the server issues it: a lowercase UUID. Checked here so that the argument cannot name another path.
+pub(crate) fn device_id(text: &str) -> Result<String, String> {
+    let id = text.to_ascii_lowercase();
+    let shaped = id.len() == 36
+        && id.char_indices().all(|(at, c)| match at {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if shaped {
+        Ok(id)
+    } else {
+        Err("not a device ID; koi device list shows them".to_owned())
+    }
+}
 
 pub(crate) fn left(not_removed: Vec<koidrive_driver::CleanupFailure>) -> Done {
     let mut text = "Signed out. This device no longer syncs, and the files in its folders stay where they are.\n".to_owned();
@@ -247,18 +286,4 @@ pub(crate) fn device_table(devices: &[DeviceInfo], now_ms: i64) -> String {
         table.push('\n');
     }
     table
-}
-
-/// How long before `now_ms` a time in Unix milliseconds was, or "never" for 0.
-pub(crate) fn ago(ms: i64, now_ms: i64) -> String {
-    if ms == 0 {
-        return "never".to_owned();
-    }
-    let minutes = (now_ms - ms).max(0) / 60_000;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..60 => format!("{minutes} min ago"),
-        60..2880 => format!("{} h ago", minutes / 60),
-        _ => format!("{} days ago", minutes / 1440),
-    }
 }

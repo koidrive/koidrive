@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::options::{DeviceArgs, RequestArg, short_name};
+use crate::device::DeviceAction;
+use crate::folder::FolderAction;
+use crate::logging::LogFormat;
+use crate::options::DeviceArgs;
+use crate::space::SpaceAction;
 use crate::{history, setup, share, telemetry, terminal};
-use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -198,110 +201,14 @@ impl Cli {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum SpaceAction {
-    /// Create a space. Link a folder to it with koi folder link.
-    Create {
-        /// The space's name, at most 255 bytes.
-        #[arg(value_parser = short_name)]
-        name: String,
-    },
-    /// List the spaces of the server.
-    List,
-    /// Show how many bytes each space stores: in live files, in the trash and in old versions.
-    Usage,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum FolderAction {
-    /// Link a folder to a space and start syncing it.
-    Link {
-        /// The folder to sync. It must exist and may already hold files.
-        folder: PathBuf,
-        /// The space's id or name.
-        #[arg(long)]
-        space: String,
-    },
-    /// Stop syncing a folder. Its files stay where they are.
-    Unlink {
-        /// The linked folder.
-        folder: PathBuf,
-    },
-    /// Sync a linked folder again from the start, after fixing the problem that halted it.
-    Restart {
-        /// The linked folder.
-        folder: PathBuf,
-        #[command(flatten)]
-        request: RequestArg,
-    },
-    /// Sync a folder again whose changes the server refused, after fixing the cause the status names.
-    #[command(group = clap::ArgGroup::new("how").required(true).args(["resend", "replan"]))]
-    Retry {
-        /// The linked folder whose changes the server refused.
-        folder: PathBuf,
-        /// Send the refused changes again as they were, for a cause fixed on the server.
-        #[arg(long)]
-        resend: bool,
-        /// Plan the refused changes again into a new commit, for a cause fixed on this device.
-        #[arg(long)]
-        replan: bool,
-        #[command(flatten)]
-        request: RequestArg,
-    },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum ServiceAction {
     /// Install and start the service, after fixing what kept it from running, such as koi switched off in Login Items.
     Start,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum DeviceAction {
-    /// Show a pairing code that adds another device to this server. It works once, for 10 minutes.
-    Invite {
-        #[command(flatten)]
-        request: RequestArg,
-    },
-    /// List the devices paired with the server, revoked ones included.
-    List,
-    /// Revoke another device, such as a lost one. It stops syncing at once, and the files on it stay there.
-    Revoke {
-        /// The device's ID, as koi device list shows it.
-        #[arg(value_parser = device_id)]
-        id: String,
-    },
-    /// Sign this device out: revoke it on the server and unlink every folder. The files stay where they are.
-    Leave {
-        /// Sign out even if this is the account's last active device or the server does not answer.
-        #[arg(long)]
-        last_device: bool,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum LogFormat {
-    Text,
-    Json,
 }
 
 pub(crate) fn schema_version(text: &str) -> Result<u32, String> {
     match text {
         "1" => Ok(1),
         _ => Err("only JSON schema 1 exists".to_owned()),
-    }
-}
-
-/// A device ID as the server issues it: a lowercase UUID. Checked here so that the argument cannot name another path.
-pub(crate) fn device_id(text: &str) -> Result<String, String> {
-    let id = text.to_ascii_lowercase();
-    let shaped = id.len() == 36
-        && id.char_indices().all(|(at, c)| match at {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        });
-    if shaped {
-        Ok(id)
-    } else {
-        Err("not a device ID; koi device list shows them".to_owned())
     }
 }

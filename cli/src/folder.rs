@@ -1,14 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::FolderAction;
 use crate::error::CliError;
 use crate::formatting::printable;
+use crate::options::RequestArg;
 use crate::profile::unexpected;
 use crate::report::{Done, FolderData, UnlinkedData};
 use crate::{ipc, output, report, service};
+use clap::Subcommand;
 use koidrive_driver::{FolderState, FolderStatus, Paths};
 use koidrive_ipc::{Code, Key, Request, Response};
 use std::path::{Path, PathBuf};
+
+#[derive(Subcommand)]
+pub(crate) enum FolderAction {
+    /// Link a folder to a space and start syncing it.
+    Link {
+        /// The folder to sync. It must exist and may already hold files.
+        folder: PathBuf,
+        /// The space's id or name.
+        #[arg(long)]
+        space: String,
+    },
+    /// Stop syncing a folder. Its files stay where they are.
+    Unlink {
+        /// The linked folder.
+        folder: PathBuf,
+    },
+    /// Sync a linked folder again from the start, after fixing the problem that halted it.
+    Restart {
+        /// The linked folder.
+        folder: PathBuf,
+        #[command(flatten)]
+        request: RequestArg,
+    },
+    /// Sync a folder again whose changes the server refused, after fixing the cause the status names.
+    #[command(group = clap::ArgGroup::new("how").required(true).args(["resend", "replan"]))]
+    Retry {
+        /// The linked folder whose changes the server refused.
+        folder: PathBuf,
+        /// Send the refused changes again as they were, for a cause fixed on the server.
+        #[arg(long)]
+        resend: bool,
+        /// Plan the refused changes again into a new commit, for a cause fixed on this device.
+        #[arg(long)]
+        replan: bool,
+        #[command(flatten)]
+        request: RequestArg,
+    },
+}
 
 /// Runs a folder command in the daemon, or on its own when no daemon runs.
 pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, CliError> {

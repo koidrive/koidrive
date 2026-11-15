@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::{Command, DeviceAction, FolderAction};
+use crate::args::Command;
+use crate::device::DeviceAction;
 use crate::dispatch::execute;
 use crate::error::CliError;
+use crate::folder::FolderAction;
 use crate::report::{Done, WithService};
 use crate::{app, app_install, ipc, output, pairing, report, service, setup, terminal};
 use koidrive_driver::{FolderState, Paths};

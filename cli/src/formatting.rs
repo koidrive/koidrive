@@ -1,5 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
+/// How long before `now_ms` a time in Unix milliseconds was, or "never" for 0.
+pub(crate) fn ago(ms: i64, now_ms: i64) -> String {
+    if ms == 0 {
+        return "never".to_owned();
+    }
+    let minutes = (now_ms - ms).max(0) / 60_000;
+    match minutes {
+        0 => "just now".to_owned(),
+        1..60 => format!("{minutes} min ago"),
+        60..2880 => format!("{} h ago", minutes / 60),
+        _ => format!("{} days ago", minutes / 1440),
+    }
+}
+
 pub(crate) fn count(n: u64, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }

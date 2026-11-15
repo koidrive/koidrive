@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::args::{Cli, Command, DeviceAction, SpaceAction, device_id};
+use crate::args::{Cli, Command};
 use crate::daemon::daemon_driver;
 use crate::device::{
-    Invitation, ago, device, device_table, devices, invited, left, refused, replayed,
+    DeviceAction, Invitation, device, device_id, device_table, devices, invited, left, refused,
+    replayed,
 };
 use crate::error::CliError;
 use crate::folder::restarted;
-use crate::formatting::{now_ms, size};
+use crate::formatting::{ago, now_ms, size};
 use crate::lifecycle::{finish_lifecycle, finish_setup, run};
 use crate::logging::log_ansi;
 use crate::options::RequestArg;
@@ -16,7 +17,7 @@ use crate::report::{DeviceData, Done, Envelope, UpdateNoticeData, UsageData};
 use crate::resolve::{
     ITEMS_SHOWN, answer_to, banner, question_brief, question_notice, question_text,
 };
-use crate::space::{space, space_table, usage, usage_done, usage_report};
+use crate::space::{SpaceAction, space, space_table, usage, usage_done, usage_report};
 use crate::status::{folder_text, status_summary, status_text};
 use crate::{
     app, command_path, history, ipc, json_requested, report, schema, service, setup, terminal,

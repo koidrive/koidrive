@@ -248,7 +248,7 @@ const KEEP_BOTH: &str = "keep-both";
 pub(crate) struct Choice {
     pub(crate) word: String,
     pub(crate) effect: String,
-    pub(crate) answer: Answer,
+    answer: Answer,
 }
 
 /// The answers a decision takes, in the order to offer them. A conflict's answers name the node ID of the file to keep,
