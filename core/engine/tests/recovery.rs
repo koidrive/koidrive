@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use proptest::prelude::*;
+
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::first_link::{History, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use koidrive_engine::restore::{Outcome, Rejection, RestoreIntent};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
@@ -2000,6 +2005,168 @@ fn followed(
     history: &[(&str, Shape)],
     marks: &[(&str, &str)],
 ) -> (Trees, Commits, IdGen) {
+    let recovered = recovered_by_marks(local, synced, remote, history, marks);
+    let remote_ids: BTreeSet<&str> = remote.iter().map(|Remote(id, ..)| *id).collect();
+    let own: Vec<&str> = (local.iter().map(|(id, _)| *id))
+        .chain(synced.iter().map(|(id, _)| *id))
+        .filter(|id| !remote_ids.contains(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let relabel: BTreeMap<&str, String> = (own.iter().rev().enumerate())
+        .map(|(i, id)| (*id, format!("~{i}")))
+        .collect();
+    let swap = |id: &str| relabel.get(id).cloned().unwrap_or_else(|| id.to_owned());
+    let moved = |shape: &Shape| Shape {
+        parent: swap(&shape.parent),
+        ..shape.clone()
+    };
+    let other_local: Vec<(String, Shape)> = (local.iter())
+        .map(|(id, shape)| (swap(id), moved(shape)))
+        .collect();
+    let other_synced: Vec<(String, Shape)> = (synced.iter())
+        .map(|(id, shape)| (swap(id), shape.clone()))
+        .collect();
+    let other_marks: Vec<(String, &str)> = (marks.iter())
+        .map(|(local, node)| (swap(local), *node))
+        .collect();
+    let (relabeled, _, _) = recovered_by_marks(
+        &other_local
+            .iter()
+            .map(|(id, shape)| (id.as_str(), shape.clone()))
+            .collect::<Vec<_>>(),
+        &other_synced
+            .iter()
+            .map(|(id, shape)| (id.as_str(), shape.clone()))
+            .collect::<Vec<_>>(),
+        remote,
+        history,
+        &other_marks
+            .iter()
+            .map(|(local, node)| (local.as_str(), *node))
+            .collect::<Vec<_>>(),
+    );
+    keeps_the_mark_invariants(
+        local,
+        synced,
+        remote,
+        history,
+        marks,
+        &recovered.0,
+        &relabeled,
+    );
+    recovered
+}
+
+fn nodes_by_entry(trees: &Trees, entries: usize, remote: &[Remote]) -> Vec<Option<String>> {
+    (0..entries)
+        .map(|i| {
+            let (id, _) =
+                (trees.local().iter()).find(|(_, node)| node.identity.ino == i as u128 + 1)?;
+            let adopted = trees.synced().live(id).is_some()
+                && remote.iter().any(|Remote(node, ..)| node == id);
+            adopted.then(|| id.clone())
+        })
+        .collect()
+}
+
+fn keeps_the_mark_invariants(
+    local: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+    remote: &[Remote],
+    history: &[(&str, Shape)],
+    marks: &[(&str, &str)],
+    after: &Trees,
+    relabeled: &Trees,
+) {
+    let before = trees(local, synced, remote);
+    let in_r: Vec<(&str, &Shape, bool)> = (remote.iter())
+        .map(|Remote(id, shape, trashed, _)| (*id, shape, *trashed))
+        .collect();
+    let case = format!(
+        "local {local:?}\nsynced {synced:?}\nremote {in_r:?}\nhistory {history:?}\nmarks {marks:?}"
+    );
+    let found = nodes_by_entry(after, local.len(), remote);
+    assert_eq!(
+        found,
+        nodes_by_entry(relabeled, local.len(), remote),
+        "the outcome depends on the order of the local IDs\n{case}"
+    );
+    let known = |node: &str| -> Vec<&Shape> {
+        (history.iter())
+            .filter(|(id, _)| *id == node)
+            .map(|(_, shape)| shape)
+            .chain(
+                remote
+                    .iter()
+                    .filter(|Remote(id, ..)| *id == node)
+                    .map(|Remote(_, shape, ..)| shape),
+            )
+            .collect()
+    };
+    for (i, (id, shape)) in local.iter().enumerate() {
+        if before.synced().get(id).is_some() {
+            continue;
+        }
+        let Some((_, node)) = marks.iter().find(|(entry, _)| entry == id) else {
+            continue;
+        };
+        let unique = marks.iter().filter(|(_, other)| other == node).count() == 1;
+        let free = local.iter().all(|(other, _)| other != node || other == id);
+        let live = (remote.iter())
+            .any(|Remote(r, live, trashed, _)| r == node && !trashed && live.kind == shape.kind);
+        let logged = history.iter().any(|(logged, _)| logged == node);
+        let content = (known(node).iter())
+            .any(|known| known.kind == shape.kind && known.content == shape.content);
+        if !(unique && free && live && logged && content) {
+            continue;
+        }
+        assert!(
+            found[i].as_deref().is_none_or(|found| found == *node),
+            "entry {id} with the mark of {node} became {:?}\n{case}",
+            found[i]
+        );
+        for (j, other) in found.iter().enumerate() {
+            assert!(
+                j == i || other.as_deref() != Some(*node),
+                "entry {} took {node}, which the mark of {id} claims\n{case}",
+                local[j].0
+            );
+        }
+    }
+    for (i, node) in found.iter().enumerate() {
+        let Some(node) = node else {
+            continue;
+        };
+        if before.synced().get(local[i].0).is_some() {
+            continue;
+        }
+        let entry = &after.local().get(node).expect("an adopted entry").shape;
+        let held = after.synced().live(node).expect("S holds an adopted entry");
+        assert_eq!(
+            held.content, entry.content,
+            "S gives {node} other content than L\n{case}"
+        );
+        let in_place = (known(node).iter()).any(|known| {
+            known.kind == entry.kind
+                && known.content == entry.content
+                && known.parent == entry.parent
+                && same_name(&known.name, &entry.name)
+        });
+        assert!(
+            !in_place || (held.parent == entry.parent && same_name(&held.name, &entry.name)),
+            "{node} sits at a place the server gave it, but S holds it at {held:?}\n{case}"
+        );
+    }
+}
+
+fn recovered_by_marks(
+    local: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+    remote: &[Remote],
+    history: &[(&str, Shape)],
+    marks: &[(&str, &str)],
+) -> (Trees, Commits, IdGen) {
     let mut trees = trees(local, synced, remote);
     let mut logged = History::new();
     for (id, shape) in history {
@@ -2397,6 +2564,33 @@ fn a_node_a_mark_claims_goes_to_no_other_entry_while_the_mark_cannot_follow() {
 }
 
 #[test]
+fn a_marked_entry_at_its_logged_place_waits_when_s_cannot_hold_it_there() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "a", 1)), ("m", file(ROOT, "z", 3))],
+        &[("m", file(ROOT, "a", 3))],
+        &[live("n", file(ROOT, "b", 1)), live("m", file(ROOT, "w", 3))],
+        &[("n", file(ROOT, "a", 1)), ("n", file(ROOT, "b", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_marked_file_the_user_moved_into_a_new_folder_follows_and_the_folder_is_asked_about() {
+    let (trees, commits, _) = followed(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[live("n", file(ROOT, "f", 1))],
+        &[("n", file(ROOT, "f", 1))],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["new"]);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};
@@ -2485,4 +2679,146 @@ fn a_marked_folder_the_servers_place_cannot_hold_follows_an_older_place_and_its_
         RecoveryGroup::CreatedOnThisDevice,
         &["b-folder", "copy"],
     );
+}
+
+const DIR_NAMES: [&str; 2] = ["p", "q"];
+const FILE_NAMES: [&str; 3] = ["a", "b", "caf\u{e9}"];
+const LOCAL_NAMES: [&str; 6] = ["a", "b", "caf\u{e9}", "cafe\u{301}", "p", "q"];
+
+struct Drawn {
+    local: Vec<(String, Shape)>,
+    synced: Vec<(String, Shape)>,
+    remote: Vec<(String, Shape, bool)>,
+    history: Vec<(String, Shape)>,
+    marks: Vec<(String, String)>,
+}
+
+fn drawn(genes: &[u8]) -> Drawn {
+    let mut genes = genes.iter().copied().chain(std::iter::repeat(0));
+    let mut next = move |n: usize| genes.next().expect("endless") as usize % n;
+    let mut remote: Vec<(String, Shape, bool)> = Vec::new();
+    let mut taken = BTreeSet::new();
+    for d in 0..next(3) {
+        let name = DIR_NAMES[next(2)];
+        if taken.insert((ROOT.to_owned(), name.to_owned())) {
+            remote.push((format!("d{d}"), dir(ROOT, name), false));
+        }
+    }
+    let parents: Vec<String> = std::iter::once(ROOT.to_owned())
+        .chain(remote.iter().map(|(id, ..)| id.clone()))
+        .collect();
+    for f in 0..1 + next(3) {
+        let parent = &parents[next(parents.len())];
+        let name = FILE_NAMES[next(3)];
+        let trashed = next(6) == 0;
+        if trashed || taken.insert((parent.clone(), name.to_owned())) {
+            let shape = file(parent, name, 1 + next(2) as u8);
+            remote.push((format!("n{f}"), shape, trashed));
+        }
+    }
+    let mut history = Vec::new();
+    for (id, shape, _) in &remote {
+        for _ in 0..next(3) {
+            let parent = &parents[next(parents.len())];
+            let logged = match shape.kind {
+                Kind::Dir => dir(parent, DIR_NAMES[next(2)]),
+                Kind::File => file(parent, FILE_NAMES[next(3)], 1 + next(2) as u8),
+            };
+            history.push((id.clone(), logged));
+        }
+        if next(2) == 0 {
+            history.push((id.clone(), shape.clone()));
+        }
+    }
+    let mut local: Vec<(String, Shape)> = Vec::new();
+    let mut folders = vec![ROOT.to_owned()];
+    let mut places = BTreeSet::new();
+    for i in 0..1 + next(4) {
+        let is_dir = next(4) == 0;
+        let parent = folders[next(folders.len())].clone();
+        let name = LOCAL_NAMES[next(6)];
+        if !places.insert((parent.clone(), nfc(name))) {
+            continue;
+        }
+        let kind = if is_dir { Kind::Dir } else { Kind::File };
+        let reused: Vec<&String> = (remote.iter())
+            .filter(|(id, shape, _)| {
+                shape.kind == kind && local.iter().all(|(other, _)| other != id)
+            })
+            .map(|(id, ..)| id)
+            .collect();
+        let id = match next(4) {
+            0 if !reused.is_empty() => reused[next(reused.len())].clone(),
+            _ => format!("e{i}"),
+        };
+        let shape = match kind {
+            Kind::Dir => dir(&parent, name),
+            Kind::File => file(&parent, name, 1 + next(2) as u8),
+        };
+        if is_dir {
+            folders.push(id.clone());
+        }
+        local.push((id, shape));
+    }
+    let mut synced = Vec::new();
+    let mut held = BTreeSet::new();
+    for (id, shape) in &local {
+        if remote.iter().all(|(node, ..)| node != id) || next(3) != 0 {
+            continue;
+        }
+        let at = match shape.kind {
+            Kind::Dir => dir(ROOT, DIR_NAMES[next(2)]),
+            Kind::File => file(ROOT, FILE_NAMES[next(3)], 1 + next(2) as u8),
+        };
+        if held.insert(nfc(&at.name)) {
+            synced.push((id.clone(), at));
+        }
+    }
+    let mut marks = Vec::new();
+    for (id, _) in &local {
+        if next(3) != 0 {
+            let (node, ..) = &remote[next(remote.len())];
+            marks.push((id.clone(), node.clone()));
+        }
+    }
+    Drawn {
+        local,
+        synced,
+        remote,
+        history,
+        marks,
+    }
+}
+
+fn as_str(rows: &[(String, Shape)]) -> Vec<(&str, Shape)> {
+    (rows.iter())
+        .map(|(id, shape)| (id.as_str(), shape.clone()))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(koidrive_test_support::battery_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/recovery.proptest-regressions"),
+        4096,
+    ))]
+
+    #[test]
+    fn a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history(
+        genes in proptest::collection::vec(any::<u8>(), 64),
+    ) {
+        let drawn = drawn(&genes);
+        let remote: Vec<Remote> = (drawn.remote.iter())
+            .map(|(id, shape, trashed)| Remote(id, shape.clone(), *trashed, 1))
+            .collect();
+        let marks: Vec<(&str, &str)> = (drawn.marks.iter())
+            .map(|(local, node)| (local.as_str(), node.as_str()))
+            .collect();
+        followed(
+            &as_str(&drawn.local),
+            &as_str(&drawn.synced),
+            &remote,
+            &as_str(&drawn.history),
+            &marks,
+        );
+    }
 }

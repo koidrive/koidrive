@@ -72,6 +72,7 @@ pub(crate) fn adopt_around(
     history: Option<&History>,
     claimed: &BTreeMap<NodeId, NodeId>,
 ) -> Vec<NodeId> {
+    let claimants: BTreeSet<&NodeId> = claimed.values().collect();
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
         .map(|(id, node)| {
@@ -128,9 +129,8 @@ pub(crate) fn adopt_around(
             let key = (parent.clone(), nfc(&name));
             let matches = |remote_id: &NodeId, shape: &Shape| {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
-                    && claimed
-                        .get(remote_id)
-                        .is_none_or(|claimant| *claimant == id)
+                    && (claimed.get(remote_id))
+                        .map_or(!claimants.contains(&id), |claimant| *claimant == id)
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
                     && shape.kind == local.kind
                     && same_bytes(&shape.content, &local.content)
@@ -188,20 +188,29 @@ pub(crate) fn adopt_around(
     held
 }
 
-pub(crate) fn adopt_by_marks_first(trees: &mut Trees, history: &History, marks: &Marks) {
-    let (_, mut waiting) = follow_marks(trees, history, marks, false);
-    loop {
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    Latest,
+    Older,
+    InNewFolder,
+}
+
+pub(crate) fn adopt_by_marks_first(
+    trees: &mut Trees,
+    history: &History,
+    marks: &Marks,
+) -> BTreeSet<NodeId> {
+    let (_, mut waiting) = follow_marks(trees, history, marks, Pass::Latest);
+    'adopt: loop {
         adopt_around(trees, Some(history), &waiting);
-        let (followed, left) = follow_marks(trees, history, marks, false);
-        waiting = left;
-        if followed {
-            continue;
+        for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
+            let (followed, left) = follow_marks(trees, history, marks, pass);
+            waiting = left;
+            if followed {
+                continue 'adopt;
+            }
         }
-        let (followed, left) = follow_marks(trees, history, marks, true);
-        waiting = left;
-        if !followed {
-            return;
-        }
+        return waiting.into_values().collect();
     }
 }
 
@@ -209,26 +218,106 @@ fn follow_marks(
     trees: &mut Trees,
     history: &History,
     marks: &Marks,
-    older_places: bool,
+    pass: Pass,
 ) -> (bool, BTreeMap<NodeId, NodeId>) {
     let mut followed = false;
     loop {
-        let mut progress = false;
+        let claims = claimed_once(trees, marks);
+        let claimants: BTreeSet<&NodeId> = claims.iter().map(|(local, _)| *local).collect();
         let mut waiting = BTreeMap::new();
-        for (local, node) in claimed_once(trees, marks) {
-            match follow_mark(trees, history, local, node, older_places) {
-                Some(true) => progress = true,
-                Some(false) => {
+        let mut found = Vec::new();
+        for (local, node) in claims.iter().copied() {
+            let Some(entry) = (trees.local().get(local))
+                .filter(|_| !trees.excluded(local))
+                .map(|entry| entry.shape.clone())
+            else {
+                continue;
+            };
+            let shapes = shapes_to_follow(trees, history, node, &entry);
+            if shapes.is_empty() {
+                continue;
+            }
+            let new_folder = match settled_above(trees, &entry.parent) {
+                None => false,
+                Some(chain) => {
+                    let open =
+                        |id: &NodeId| claimants.contains(id) || could_be_a_node(trees, history, id);
+                    if pass != Pass::InNewFolder || chain.iter().any(open) {
+                        waiting.insert(node.clone(), local.clone());
+                        continue;
+                    }
+                    true
+                }
+            };
+            let tried = if pass == Pass::Latest && !new_folder {
+                1
+            } else {
+                shapes.len()
+            };
+            match (shapes.into_iter().take(tried))
+                .find(|shape| trees.fits_synced(node, Some(shape)))
+            {
+                Some(shape) => found.push((local.clone(), node.clone(), shape)),
+                None => {
                     waiting.insert(node.clone(), local.clone());
                 }
-                None => {}
             }
         }
-        followed |= progress;
-        if !progress {
+        let mut places: BTreeMap<(NodeId, String), usize> = BTreeMap::new();
+        for (_, _, shape) in &found {
+            *places
+                .entry((shape.parent.clone(), name_key(&shape.name)))
+                .or_default() += 1;
+        }
+        let (alone, shared): (Vec<_>, Vec<_>) = (found.into_iter())
+            .partition(|(_, _, shape)| places[&(shape.parent.clone(), name_key(&shape.name))] == 1);
+        let updates: Vec<(NodeId, Option<Shape>)> = (alone.iter())
+            .map(|(_, node, shape)| (node.clone(), Some(shape.clone())))
+            .collect();
+        let together = !alone.is_empty() && trees.fits_synced_together(&updates);
+        let held = shared
+            .into_iter()
+            .chain(if together { Vec::new() } else { alone.clone() });
+        waiting.extend(held.map(|(local, node, _)| (node, local)));
+        if !together {
             return (followed, waiting);
         }
+        for (local, node, shape) in alone {
+            trees.set_synced(node.clone(), Some(shape));
+            trees.adopt(node.clone(), Adopted::Mark);
+            if local != node {
+                rekey(trees, &local, &node);
+            }
+        }
+        followed = true;
     }
+}
+
+fn could_be_a_node(trees: &Trees, history: &History, id: &str) -> bool {
+    let Some(entry) = trees.local().get(id) else {
+        return false;
+    };
+    let named =
+        |other: &Shape| other.kind == entry.shape.kind && same_name(&other.name, &entry.shape.name);
+    let pending = |node: &RemoteNode| {
+        (node.pending_for.as_deref()).is_some_and(|stem| same_name(stem, &entry.shape.name))
+    };
+    (trees.remote().iter()).any(|(_, node)| named(&node.shape) || pending(node))
+        || history.values().flatten().any(named)
+}
+
+fn settled_above(trees: &Trees, parent: &NodeId) -> Option<Vec<NodeId>> {
+    let mut chain = Vec::new();
+    let mut at = parent.clone();
+    for _ in 0..=trees.local().len() {
+        if at == trees.local().root || trees.synced().get(&at).is_some() {
+            return (!chain.is_empty()).then_some(chain);
+        }
+        let above = trees.local().get(&at)?.shape.parent.clone();
+        chain.push(at);
+        at = above;
+    }
+    Some(chain)
 }
 
 fn claimed_once<'a>(trees: &Trees, marks: &'a Marks) -> Vec<(&'a NodeId, &'a NodeId)> {
@@ -245,33 +334,6 @@ fn claimed_once<'a>(trees: &Trees, marks: &'a Marks) -> Vec<(&'a NodeId, &'a Nod
         .collect()
 }
 
-fn follow_mark(
-    trees: &mut Trees,
-    history: &History,
-    local: &NodeId,
-    node: &NodeId,
-    older_places: bool,
-) -> Option<bool> {
-    let entry = (trees.local().get(local))
-        .filter(|_| trees.synced().get(local).is_none() && !trees.excluded(local))
-        .map(|found| found.shape.clone())?;
-    let shapes = shapes_to_follow(trees, history, node, &entry);
-    let tried = shapes.len().min(if older_places { usize::MAX } else { 1 });
-    if tried == 0 {
-        return None;
-    }
-    let followed = (shapes.into_iter().take(tried))
-        .any(|shape| trees.set_synced_if_valid(node.clone(), Some(shape)));
-    if !followed {
-        return Some(false);
-    }
-    trees.adopt(node.clone(), Adopted::Mark);
-    if local != node {
-        rekey(trees, local, node);
-    }
-    Some(true)
-}
-
 fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape) -> Vec<Shape> {
     let Some(remote) = (trees.remote().get(node))
         .filter(|remote| !remote.trashed && remote.shape.kind == entry.kind)
@@ -284,13 +346,14 @@ fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape)
         .collect();
     let in_place = (with_content.iter().rev())
         .find(|shape| shape.parent == entry.parent && same_name(&shape.name, &entry.name));
+    if let Some(shape) = in_place {
+        return vec![(*shape).clone()];
+    }
     let since = logged
         .map(|_| with_content.iter().rev())
         .into_iter()
         .flatten();
-    (in_place.into_iter().chain(since))
-        .map(|shape| (*shape).clone())
-        .collect()
+    since.map(|shape| (*shape).clone()).collect()
 }
 
 fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
