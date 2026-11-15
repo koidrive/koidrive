@@ -238,7 +238,7 @@ struct Device {
 }
 
 fn old_wire(d: Dev, rules: Rules) -> bool {
-    rules == Rules::OldServer || (rules == Rules::OldDeleter && d == 1)
+    rules.old_server() || (rules == Rules::OldDeleter && d == 1)
 }
 
 fn slot(field: Field) -> usize {
@@ -319,11 +319,20 @@ pub enum Rules {
     RemovalTakesListedShape,
     HighestHeld,
     DeleteSeesOnlyView,
+    CopiesOwnBase,
+    BoundOnlyResendsSeen,
 }
 
 impl Rules {
+    fn old_server(self) -> bool {
+        matches!(self, Rules::OldServer | Rules::BoundOnlyResendsSeen)
+    }
+
     fn bound_only(self) -> bool {
-        matches!(self, Rules::OldServer | Rules::BoundOnly)
+        matches!(
+            self,
+            Rules::OldServer | Rules::BoundOnly | Rules::BoundOnlyResendsSeen
+        )
     }
 }
 
@@ -429,7 +438,7 @@ impl World {
 
     fn saw(&self, gone: Tok, rules: Rules) -> Option<[Tok; 2]> {
         let value = self.values[gone.0 as usize];
-        let old = rules == Rules::OldServer || value.author.is_some_and(|d| old_wire(d, rules));
+        let old = rules.old_server() || value.author.is_some_and(|d| old_wire(d, rules));
         (!old).then_some(value.seen)
     }
 
@@ -875,12 +884,12 @@ impl World {
                     }
                     if node.pos == to {
                         if node.meta_edit_rev < node.meta_rev {
-                            node.meta_edit_rev =
-                                if matches!(rules, Rules::ClaimAtSeq | Rules::OldServer) {
-                                    seq
-                                } else {
-                                    node.meta_rev
-                                };
+                            node.meta_edit_rev = if rules == Rules::ClaimAtSeq || rules.old_server()
+                            {
+                                seq
+                            } else {
+                                node.meta_rev
+                            };
                             node.meta_editor = Some(d);
                         }
                         Code::Applied
@@ -941,8 +950,7 @@ impl World {
                         Code::Applied
                     } else if node.content == content {
                         if node.edit_rev < node.content_rev {
-                            node.edit_rev = if matches!(rules, Rules::ClaimAtSeq | Rules::OldServer)
-                            {
+                            node.edit_rev = if rules == Rules::ClaimAtSeq || rules.old_server() {
                                 seq
                             } else {
                                 node.content_rev
@@ -1345,6 +1353,29 @@ impl World {
                                 dev.unsent.set(field, None);
                             }
                         }
+                        Some(Author::Own)
+                            if rules != Rules::CopiesOwnBase && {
+                                let mut at = local;
+                                let mut based = false;
+                                for _ in 0..self.values.len() {
+                                    let value = self.values[at.0 as usize];
+                                    if value.author != Some(d) || value.renamed_from.is_some() {
+                                        break;
+                                    }
+                                    at = match field {
+                                        Field::Position => value.pos,
+                                        _ => value.content,
+                                    };
+                                    if at == remote {
+                                        based = true;
+                                        break;
+                                    }
+                                }
+                                based
+                            } =>
+                        {
+                            dev.s.set(field, agreed)
+                        }
                         Some(Author::Own) if field == Field::Content => {
                             dev.copies.push((local, None));
                             dev.take(field, remote);
@@ -1480,6 +1511,16 @@ impl World {
                 },
             );
             if dev.l.get(field) == Some(old.val) && dev.unsent.get(field).is_none() {
+                let newer = old.own
+                    || !rules.bound_only()
+                    || rules == Rules::BoundOnlyResendsSeen
+                    || !known(field)
+                    || kept(listing.rev(field))
+                    || earlier[slot(field)];
+                if !newer {
+                    dev.take(field, agreed);
+                    continue;
+                }
                 dev.unsent.set(
                     field,
                     Some(if old.own { Author::Own } else { Author::Other }),
@@ -1649,7 +1690,7 @@ impl World {
         let copies = *COPIES.get_or_init(|| std::env::var("MODEL_COPIES").is_ok());
         lost.or_else(|| copies.then(|| self.spurious_copy()).flatten())
             .or_else(|| {
-                if rules == Rules::OldServer {
+                if rules.old_server() {
                     None
                 } else {
                     self.undone_delete(rules)

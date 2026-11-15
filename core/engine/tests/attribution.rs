@@ -15,10 +15,14 @@ fn show_from_env() {
     let trace: Vec<Action> = (std::env::var("MODEL_TRACE")
         .unwrap()
         .replace(' ', "")
+        .replace("Unlose", "Unlose()")
         .split(')'))
     .filter(|step| !step.trim_matches(',').is_empty())
     .map(|step| {
         let (name, args) = step.trim_matches(',').split_once('(').unwrap();
+        if name == "Unlose" {
+            return Action::Unlose;
+        }
         let args: Vec<usize> = args.split(',').map(|n| n.parse().unwrap()).collect();
         match name {
             "Write" => Write(args[0]),
@@ -85,6 +89,8 @@ fn rules(name: &str) -> Rules {
         "RemovalTakesListedShape" => Rules::RemovalTakesListedShape,
         "HighestHeld" => Rules::HighestHeld,
         "DeleteSeesOnlyView" => Rules::DeleteSeesOnlyView,
+        "CopiesOwnBase" => Rules::CopiesOwnBase,
+        "BoundOnlyResendsSeen" => Rules::BoundOnlyResendsSeen,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         other => panic!("no rules {other}"),
     }
@@ -353,6 +359,18 @@ fn refute_highest_held() {
 #[ignore]
 fn refute_delete_sees_only_view() {
     refute(Rules::DeleteSeesOnlyView);
+}
+
+#[test]
+#[ignore]
+fn refute_copies_own_base() {
+    refute(Rules::CopiesOwnBase);
+}
+
+#[test]
+#[ignore]
+fn refute_bound_only_resends_seen() {
+    refute(Rules::BoundOnlyResendsSeen);
 }
 
 fn exhaustive(n: [u8; 10], rules: Rules) {
@@ -894,4 +912,100 @@ fn a_user_write_while_a_resent_move_of_resent_content_waits_beats_a_later_delete
         ],
         &[Rules::MoveResultMarksContentResent],
     );
+}
+
+#[test]
+fn a_restored_older_backup_does_not_turn_a_rewritten_value_into_a_conflict() {
+    handled(
+        &[
+            Write(1),
+            Build(1, 1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Delete(1),
+            Build(1, 1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Record(0),
+            Write(0),
+            Record(0),
+            Build(0, 1),
+            Serve(0),
+            Lose(1),
+            Bootstrap(1),
+            Build(1, 1),
+            Answer(0),
+            Bootstrap(0),
+            Action::Unlose,
+            Record(1),
+            Record(1),
+            Record(1),
+            Serve(1),
+            Record(1),
+            Answer(1),
+            Record(0),
+            Delete(0),
+            Record(0),
+            Record(0),
+            Record(0),
+            Build(0, 1),
+            Serve(0),
+            Record(1),
+            Record(0),
+            Answer(0),
+        ],
+        &[Rules::CopiesOwnBase],
+    );
+}
+
+#[test]
+fn an_old_server_restore_does_not_let_a_carried_position_overwrite_a_later_move() {
+    let trace = [
+        Delete(1),
+        Build(1, 1),
+        Serve(1),
+        Record(1),
+        Answer(1),
+        Move(0),
+        Record(0),
+        Build(0, 1),
+        Serve(0),
+        Record(1),
+        Move(1),
+        Build(1, 1),
+        Serve(1),
+        Record(1),
+        Answer(1),
+        Record(0),
+        Record(0),
+        Answer(0),
+        Lose(2),
+        Bootstrap(1),
+        Build(1, 1),
+        Write(0),
+        Bootstrap(0),
+        Build(0, 2),
+        Serve(0),
+        Record(1),
+        Serve(1),
+        Record(1),
+        Answer(1),
+        Record(0),
+        Answer(0),
+        Action::Unlose,
+        Bootstrap(1),
+        Build(1, 1),
+        Serve(1),
+        Record(1),
+        Answer(1),
+        Bootstrap(0),
+    ];
+    let budget = budget([1, 0, 1, 1, 0, 1, 0, 0, 0, 2]);
+    if let Err(broken) = settle(budget, Rules::OldServer, &trace) {
+        panic!("{broken}");
+    }
+    let broken = settle(budget, Rules::BoundOnlyResendsSeen, &trace).unwrap_err();
+    assert!(broken.contains("is lost"), "{broken}");
 }
