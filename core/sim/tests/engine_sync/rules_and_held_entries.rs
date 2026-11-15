@@ -317,6 +317,8 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         fresh_dir_names: false,
         rules: Rules::default(),
         touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
     };
     for (id, parent, name) in [("d", "root", "d"), ("m", "d", "m"), ("c", "m", "c")] {
         let shape = koidrive_engine::tree::Shape {
@@ -471,3 +473,156 @@ fn a_file_deleted_here_with_its_kept_folder_stays_deleted_after_another_device_r
         assert_eq!(live, vec!["b".to_owned()], "{cut:?}");
     }
 }
+
+#[test]
+fn an_edit_after_another_device_purges_a_file_in_a_server_folder_in_a_discarded_folder_keeps_the_folder() {
+    let seed = [act(0, 0, 0, 0, 0), act(1, 0, 1, 2, 0)];
+    let local = [act(0, 0, 0, 6, 0)];
+    let during = [
+        (false, vec![act(6, 0, 0, 0, 0)]),
+        (true, vec![act(8, 0, 0, 0, 0)]),
+        (false, vec![act(6, 0, 0, 0, 0)]),
+        (false, vec![act(7, 0, 0, 0, 0)]),
+        (true, vec![act(9, 0, 0, 0, 1)]),
+    ];
+    let rulings = [
+        Ruling::File(vec![]),
+        Ruling::Exclude(vec![]),
+        Ruling::Exclude(vec!["*.txt"]),
+        Ruling::Exclude(vec!["*.txt"]),
+        Ruling::Exclude(vec!["*.txt"]),
+        Ruling::Exclude(vec![]),
+    ];
+    run_ignoring(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        true,
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "a server folder moved into a discarded folder from a folder deleted here never settles (GUN-781)"]
+fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_settles() {
+    let seed = [
+        act(1, 0, 0, 0, 0),
+        act(1, 0, 0, 5, 0),
+        act(0, 0, 0, 0, 0),
+        act(0, 0, 0, 0, 0),
+        act(0, 0, 5125074381177199187, 3, 0),
+        act(1, 0, 13620712548678903678, 0, 0),
+        act(0, 0, 8770897390828022430, 0, 0),
+    ];
+    let local = [
+        act(1, 0, 0, 2, 0),
+        act(0, 0, 0, 5, 0),
+        act(0, 0, 8593331880432161113, 0, 0),
+        act(0, 0, 164401821770219029, 0, 0),
+    ];
+    let during = [
+        (false, vec![act(0, 0, 18303126742269488846, 0, 0)]),
+        (false, vec![act(0, 0, 15497506449051316537, 0, 0)]),
+        (true, vec![act(8, 4965594241967384804, 8623223411207746126, 0, 0)]),
+        (true, vec![act(4, 9813782166594930651, 23, 4, 3)]),
+        (false, vec![act(7, 7278376959139293227, 13730584698140342588, 1, 3)]),
+        (true, vec![act(9, 13181647493508412243, 6311867364256608202, 4, 1)]),
+    ];
+    let rulings = [
+        Ruling::File(vec![]),
+        Ruling::Exclude(vec!["c.txt"]),
+        Ruling::Exclude(vec!["c.txt"]),
+        Ruling::Exclude(vec!["c.txt"]),
+        Ruling::Exclude(vec!["c.txt"]),
+        Ruling::Exclude(vec![]),
+    ];
+    run_ignoring_answering_after(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::Built,
+        &rulings,
+        Answer::Discard,
+        true,
+        2,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_folder_above() {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
+    };
+    let remote = |shape: koidrive_engine::tree::Shape| RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+    };
+    let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let place = |device: &mut Device, id: &str, shape: koidrive_engine::tree::Shape| {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                shape,
+                identity,
+                parked: false,
+            },
+        );
+    };
+    place(&mut device, "k", folder("root", "k"));
+    device.trees.set_remote("k".into(), remote(folder("root", "k")));
+    let mut parent = "k".to_string();
+    for depth in 1..=8 {
+        let id = format!("a{depth}");
+        place(&mut device, &id, folder(&parent, &id));
+        parent = id;
+    }
+    let file = koidrive_engine::tree::Shape {
+        parent: parent.clone(),
+        name: "f".into(),
+        kind: Kind::File,
+        content: Some(content(1, 0)),
+    };
+    place(&mut device, "f", file);
+    let server = koidrive_engine::tree::Shape {
+        parent: "root".into(),
+        name: "f".into(),
+        kind: Kind::File,
+        content: Some(content(1, 0)),
+    };
+    device.trees.set_remote("f".into(), remote(server));
+    device.act(&act(4, 0, 0, 0, 0));
+    assert!(device.trees.local().get("f").is_none());
+    assert!(acted_below(&device, &BTreeMap::new(), "k"));
+}
+

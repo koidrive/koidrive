@@ -14,10 +14,11 @@ use koidrive_engine::ids::{IdGen, is_uuid_v7};
 use koidrive_proto::v1::{
     ChangeRecord, Changes, ChunkPlan, ChunkRef, ChunkTarget, Commit, CommitRecord, CommitResult,
     Content, DownloadTargets, Error, GetDownloadTargets, GetVersionChunks, ListTrash, ListTree,
-    ListVersions, NodeKind, NodeState, NodeStatus, Op, PrepareUpload, PrepareUploadResult, Resume,
-    ResyncRequired, RpcRequest, RpcResponse, ServerMessage, Target, TrashPage, TreePage,
-    UploadReceipt, VersionChunks, VersionInfo, VersionList, Welcome, chunk_plan, error, op,
-    resync_required, rpc_request, rpc_response, server_message,
+    ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op, PrepareUpload,
+    PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse, ServerMessage, Target,
+    TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo, VersionList, Welcome,
+    change_record, chunk_plan, error, op, resync_required, rpc_request, rpc_response,
+    server_message,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -610,6 +611,42 @@ impl SpaceDo {
             stored.result.seq > floor
                 || latest.get(&stored.device_id) == Some(&stored.request.device_seq)
         });
+    }
+
+    /// Purges `node_id` the way the server's garbage collection does once trash retention ends:
+    /// a trashed node that no node names as its parent leaves the space with its versions, in a
+    /// record of its own. False when the space holds no such node.
+    pub fn purge(&mut self, node_id: &str, now_ms: i64) -> bool {
+        let nodes = &self.state.nodes;
+        let trashed = nodes
+            .get(node_id)
+            .is_some_and(|node| node.status == NodeStatus::Trashed);
+        if !trashed
+            || nodes
+                .values()
+                .any(|node| node.parent_id.as_deref() == Some(node_id))
+        {
+            return false;
+        }
+        self.state.nodes.remove(node_id);
+        self.state
+            .versions
+            .retain(|_, version| version.node_id != node_id);
+        let purged = NodePurged {
+            node_id: node_id.to_owned(),
+        };
+        let seq = self.head_seq + 1;
+        self.log.push(CommitRecord {
+            seq,
+            commit_id: self.state.ids.uuid_v7(now_ms as u64),
+            committed_at_ms: now_ms,
+            changes: vec![ChangeRecord {
+                change: Some(change_record::Change::Purged(purged)),
+            }],
+            ..Default::default()
+        });
+        self.head_seq = seq;
+        true
     }
 
     /// Answers one RPC the way the server's `call` does. A new commit also returns its record.

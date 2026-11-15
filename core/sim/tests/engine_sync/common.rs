@@ -207,6 +207,20 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             }),
             None => return,
         },
+        7 => {
+            let trashed = nodes_with(space, 2, Some(2));
+            match target(&[trashed.as_slice(), files.as_slice()].concat()) {
+                Some(node_id) if trashed.contains(&node_id) => {
+                    space.purge(&node_id, NOW);
+                    return;
+                }
+                Some(node_id) => op::Op::Delete(Delete {
+                    node_id,
+                    requires: None,
+                }),
+                None => return,
+            }
+        }
         6 => {
             let earlier = target(&files).map(|node_id| (versions(space, &node_id), node_id));
             match earlier {
@@ -241,6 +255,11 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
         ..Default::default()
     };
     space.commit(&session, NOW, &commit).unwrap();
+    if action.kind == 7
+        && let Some(op::Op::Delete(delete)) = &commit.ops[0].op
+    {
+        space.purge(&delete.node_id, NOW);
+    }
 }
 
 /// A restore the person asks this device's engine for (kinds 5 and 6), chosen from the server's
@@ -535,6 +554,8 @@ struct Device {
     fresh_dir_names: bool,
     rules: Rules,
     touched: BTreeSet<String>,
+    acted: BTreeSet<String>,
+    removed_from: BTreeMap<String, String>,
 }
 
 impl Device {
@@ -592,6 +613,17 @@ impl Device {
                     .map(|(id, _)| id.clone()),
             )
             .collect();
+        let aimed;
+        let action = match action.kind {
+            8 | 9 => match aim(&self.trees, &nodes, &dirs, action) {
+                Some(found) => {
+                    aimed = found;
+                    &aimed
+                }
+                None => return,
+            },
+            _ => action,
+        };
         let parent = dirs[action.parent % dirs.len()].clone();
         let unique = format!("local-{}", self.inos);
         let name = if action.kind == 0 && self.fresh_dir_names {
@@ -635,7 +667,9 @@ impl Device {
                     identity: self.identity(),
                     parked: false,
                 };
-                self.trees.set_local(self.ids.uuid_v7(NOW as u64), node);
+                let id = self.ids.uuid_v7(NOW as u64);
+                self.acted.insert(id.clone());
+                self.trees.set_local(id, node);
             }
             (2, Some((id, mut node))) if node.shape.kind == Kind::File => {
                 if unseen(&id, Kind::File) {
@@ -644,6 +678,7 @@ impl Device {
                 let written = Some(content(1, action.text));
                 if node.shape.content != written {
                     self.touched.insert(id.clone());
+                    self.acted.insert(id.clone());
                 }
                 node.shape.content = written;
                 self.trees.set_local(id, node);
@@ -654,11 +689,13 @@ impl Device {
                     (true, true) => {}
                     (false, true) if into_ignored => {
                         self.touched.insert(id.clone());
+                        self.acted.insert(id.clone());
                         self.trees.ignore_local(&id)
                     }
                     _ => {
                         if node.shape.parent != parent || node.shape.name != name {
                             self.touched.insert(id.clone());
+                            self.acted.insert(id.clone());
                         }
                         node.shape.parent = parent;
                         node.shape.name = name.into();
@@ -695,9 +732,14 @@ impl Device {
                 }
                 doomed.retain(|node| !kept.contains(node));
                 for folder in &kept {
+                    self.acted.insert(folder.clone());
                     self.trees.ignore_local(folder);
                 }
                 for other in doomed {
+                    if let Some(node) = self.trees.local().get(&other) {
+                        self.removed_from.insert(other.clone(), node.shape.parent.clone());
+                    }
+                    self.acted.insert(other.clone());
                     self.trees.remove_local(&other);
                 }
             }
@@ -717,6 +759,90 @@ impl Device {
                 None => return false,
             }
         }
+    }
+}
+
+fn aim(
+    trees: &Trees,
+    nodes: &[(String, LocalNode)],
+    dirs: &[String],
+    action: &Action,
+) -> Option<Action> {
+    let ids: Vec<&String> = nodes.iter().map(|(id, _)| id).collect();
+    let at = |id: &str| ids.iter().position(|other| *other == id);
+    let dir_at = |id: &str| dirs.iter().position(|other| other == id);
+    let pick = |list: Vec<String>| (!list.is_empty()).then(|| list[action.target % list.len()].clone());
+    let server_dir = |id: &String| (trees.remote().live(id)).is_some_and(|r| r.kind == Kind::Dir);
+    let local_only = |id: &String| *id != trees.local().root && trees.remote().get(id).is_none();
+    let above = |id: &str| {
+        let mut parents = Vec::new();
+        let mut current = trees.local().get(id).map(|node| node.shape.parent.clone());
+        while let Some(parent) = current.filter(|_| parents.len() <= trees.local().len()) {
+            current = trees.local().get(&parent).map(|node| node.shape.parent.clone());
+            parents.push(parent);
+        }
+        parents
+    };
+    if action.kind == 8 {
+        let target = pick(dirs.iter().filter(|dir| server_dir(dir)).cloned().collect())?;
+        let parents: Vec<&String> = (dirs.iter())
+            .filter(|dir| local_only(dir) && **dir != target && !above(dir).contains(&target))
+            .collect();
+        let parent = (*parents.get(action.parent % parents.len().max(1))?).clone();
+        let mut path = local_path(trees, &parent);
+        let name = (0..NAMES.len())
+            .map(|step| (action.name + step) % NAMES.len())
+            .find(|&index| {
+                path.push(NAMES[index].to_owned());
+                let excluded = trees.ignores(&path, Kind::Dir);
+                path.pop();
+                excluded
+            })
+            .unwrap_or(action.name);
+        return Some(Action {
+            kind: 3,
+            target: at(&target)?,
+            parent: dir_at(&parent)?,
+            name,
+            text: action.text,
+        });
+    }
+    let folders: Vec<String> = (dirs.iter())
+        .filter(|dir| server_dir(dir) && above(dir).iter().any(local_only))
+        .cloned()
+        .collect();
+    let folder = pick(folders)?;
+    let below = |kind: Option<Kind>| -> Vec<String> {
+        (nodes.iter())
+            .filter(|(_, node)| node.shape.parent == folder)
+            .filter(|(_, node)| kind.is_none_or(|kind| node.shape.kind == kind))
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    let child = |kind: Option<Kind>| pick(below(kind)).and_then(|id| at(&id));
+    match action.text % 4 {
+        0 => Some(Action {
+            kind: (action.name % 2) as u8,
+            target: 0,
+            parent: dir_at(&folder)?,
+            ..action.clone()
+        }),
+        1 => Some(Action {
+            kind: 2,
+            target: child(Some(Kind::File))?,
+            ..action.clone()
+        }),
+        2 => Some(Action {
+            kind: 4,
+            target: child(None)?,
+            ..action.clone()
+        }),
+        _ => Some(Action {
+            kind: 3,
+            target: child(None)?,
+            parent: 0,
+            ..action.clone()
+        }),
     }
 }
 
@@ -957,6 +1083,103 @@ fn run_cut(
     )
 }
 
+fn server_copy(
+    trees: &Trees,
+    id: &str,
+    kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> bool {
+    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
+        return false;
+    };
+    let mut below = BTreeMap::new();
+    let copy = match (&local.shape.content, &remote.shape.content) {
+        (Some(local), Some(remote)) => koidrive_engine::tree::same_content(local, remote),
+        (None, None) => (trees.local_children(id)).all(|child| server_copy(trees, child, &mut below)),
+        _ => false,
+    };
+    if copy {
+        kept.append(&mut below);
+        kept.insert(id.to_owned(), local.shape.clone());
+    }
+    copy
+}
+
+fn revive(
+    device: &Device,
+    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> BTreeSet<String> {
+    // A discarded entry the user changed, or a discarded folder that holds an entry the answer
+    // did not discard there, is the user's, and so is every discarded folder above it.
+    let trees = &device.trees;
+    let reclaimed = |id: &&String| {
+        let changed = device.touched.contains(*id)
+            && (trees.local().get(id))
+                .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
+        changed
+            || (trees.local_children(id)).any(|child| {
+                !trees.excluded(child)
+                    && (!kept_with.contains_key(child)
+                        || acted_below(device, kept_with, child))
+                    && discarded
+                        .get(child)
+                        .is_none_or(|shown| &shown.parent != *id)
+            })
+    };
+    let mut revived = BTreeSet::new();
+    for id in discarded.keys().filter(reclaimed) {
+        let mut next = Some(id.clone());
+        while let Some(id) = next.take_if(|id| discarded.contains_key(id)) {
+            next = (trees.local().get(&id)).map(|node| node.shape.parent.clone());
+            revived.insert(id);
+        }
+    }
+    revived
+}
+
+type Position = (String, String);
+
+fn position(shape: &koidrive_engine::tree::Shape) -> Position {
+    (shape.parent.clone(), shape.name.clone())
+}
+
+fn positions(trees: &Trees) -> BTreeMap<String, Position> {
+    (trees.local().iter())
+        .map(|(id, node)| (id.clone(), position(&node.shape)))
+        .collect()
+}
+
+fn acted_below(
+    device: &Device,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    id: &str,
+) -> bool {
+    let trees = &device.trees;
+    let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
+        let mut current = Some(entry.to_owned());
+        for _ in 0..=trees.local().len() + kept_with.len() + device.removed_from.len() {
+            match current {
+                Some(at) if at == id => return true,
+                Some(at) => current = parent(&at),
+                None => return false,
+            }
+        }
+        false
+    };
+    let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
+    let in_kept = |at: &str| kept_with.get(at).map(|shape| shape.parent.clone());
+    let removed_from = |at: &str| in_local(at).or_else(|| device.removed_from.get(at).cloned());
+    let as_on_server = |entry: &str| match (trees.local().get(entry), trees.remote().live(entry)) {
+        (Some(local), Some(remote)) => local.shape.same(remote),
+        (local, remote) => local.is_none() && remote.is_none(),
+    };
+    (device.acted.iter())
+        .filter(|entry| !as_on_server(entry))
+        .any(|entry| {
+            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+        })
+}
+
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
 /// local changes, and one more before each of the `during` changes. At the end a node the device
 /// excludes, or cannot place because of an excluded one ([`waits_on_excluded`]), must have R equal
@@ -975,6 +1198,35 @@ fn run_ignoring(
     answer: Answer,
     first_link: bool,
 ) -> Result<Ran, TestCaseError> {
+    run_ignoring_answering_after(
+        seed,
+        local,
+        remote,
+        fits,
+        fresh_dir_names,
+        during,
+        cut,
+        rulings,
+        answer,
+        first_link,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_ignoring_answering_after(
+    seed: &[Action],
+    local: &[Action],
+    remote: &[Action],
+    fits: usize,
+    fresh_dir_names: bool,
+    during: &[(bool, Vec<Action>)],
+    cut: Cut,
+    rulings: &[Ruling],
+    answer: Answer,
+    first_link: bool,
+    answer_after: usize,
+) -> Result<Ran, TestCaseError> {
     let (mut space, mut other) = seeded(seed);
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
@@ -985,6 +1237,8 @@ fn run_ignoring(
         fresh_dir_names,
         rules: Rules::default(),
         touched: BTreeSet::new(),
+        acted: BTreeSet::new(),
+        removed_from: BTreeMap::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -1064,7 +1318,10 @@ fn run_ignoring(
     let (mut deletes, mut removals) = (0, 0);
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
     let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
-    let mut revived: BTreeSet<String> = BTreeSet::new();
+    let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
+    let mut placed: BTreeMap<String, Position> = BTreeMap::new();
+    let mut revived_once: BTreeSet<String> = BTreeSet::new();
+    let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
     let mut pending: Option<Question> = None;
     let mut during = during.iter();
     while !quiet {
@@ -1080,6 +1337,7 @@ fn run_ignoring(
             }
             if *on_device {
                 let before = held(&device.trees);
+                let was = positions(&device.trees);
                 for action in actions {
                     match action.kind {
                         5 | 6 => {
@@ -1088,6 +1346,11 @@ fn run_ignoring(
                             requested += usize::from(asked);
                         }
                         _ => device.act(action),
+                    }
+                }
+                for (id, at) in positions(&device.trees) {
+                    if was.get(&id) != Some(&at) {
+                        placed.insert(id, at);
                     }
                 }
                 let after = held(&device.trees);
@@ -1120,6 +1383,8 @@ fn run_ignoring(
         prop_assert_eq!(device.trees.check(), Ok(()));
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
+        let revived = revive(&device, &discarded, &kept_with);
+        revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
             device
@@ -1148,6 +1413,40 @@ fn run_ignoring(
                 _ => false,
             };
             removals += usize::from(removes);
+            let removed = matches!(
+                record.effect,
+                Effect::RemoveFile { .. } | Effect::RemoveDir { .. }
+            );
+            let held = device.trees.remote().get(&record.node).is_some();
+            let as_discarded = (device.trees.local().get(&record.node))
+                .zip(discarded.get(&record.node))
+                .is_some_and(|(local, shown)| local.shape.kind == Kind::File && local.shape.same(shown));
+            let users = revived.contains(&record.node)
+                && !held
+                && !sent_nodes.contains(&record.node)
+                && !as_discarded;
+            prop_assert!(
+                !(removed && users),
+                "{} is the user's again after the Discard, but the effects remove it",
+                record.node
+            );
+            if let (Effect::Move { .. }, Some(after), Some(local)) = (
+                &record.effect,
+                &record.after,
+                device.trees.local().get(&record.node),
+            ) {
+                let taken_along = kept_with.contains_key(&record.node)
+                    && !acted_below(&device, &kept_with, &record.node);
+                let left_where_put =
+                    !taken_along && placed.get(&record.node) == Some(&position(&local.shape));
+                prop_assert!(
+                    !(left_where_put
+                        && after.parent != local.shape.parent
+                        && revived.contains(&local.shape.parent)),
+                    "{} is where the user put it in a folder that is the user's again, but the effects move it out",
+                    record.node
+                );
+            }
             if let (
                 Effect::CreateDir {
                     at:
@@ -1221,29 +1520,38 @@ fn run_ignoring(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
+                placed.remove(id);
+                revived_once.remove(id);
+                sent_nodes.remove(id);
             }
+            let answered_again: Vec<String> = (kept_with.iter())
+                .filter(|(_, shape)| {
+                    let mut parent = Some(&shape.parent);
+                    for _ in 0..=kept_with.len() {
+                        match parent {
+                            Some(folder) if shown.contains_key(folder) => return true,
+                            Some(folder) => parent = kept_with.get(folder).map(|shape| &shape.parent),
+                            None => return false,
+                        }
+                    }
+                    false
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in answered_again {
+                kept_with.remove(&id);
+            }
+            for folder in shown.keys() {
+                for child in device.trees.local_children(folder) {
+                    if !shown.contains_key(child) && device.trees.excluded(child) {
+                        server_copy(&device.trees, child, &mut kept_with);
+                    }
+                }
+            }
+            device.acted.retain(|id| !kept_with.contains_key(id));
             discarded.extend(shown);
         }
-        // A discarded entry the user changed, or a discarded folder that holds an entry the answer
-        // did not discard there, is the user's, and so is every discarded folder above it.
-        let trees = &device.trees;
-        let reclaimed = |id: &&String| {
-            let changed = device.touched.contains(*id) && trees.local().get(id).is_some();
-            changed
-                || (trees.local_children(id)).any(|child| {
-                    !trees.excluded(child)
-                        && discarded
-                            .get(child)
-                            .is_none_or(|shown| &shown.parent != *id)
-                })
-        };
-        for id in discarded.keys().filter(reclaimed) {
-            let mut next = Some(id.clone());
-            while let Some(id) = next.take_if(|id| discarded.contains_key(id)) {
-                next = (trees.local().get(&id)).map(|node| node.shape.parent.clone());
-                revived.insert(id);
-            }
-        }
+        revived_once.extend(revive(&device, &discarded, &kept_with));
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
             .cloned();
@@ -1252,6 +1560,9 @@ fn run_ignoring(
         }
         let Some(commit) = built else {
             if let Some(question) = guarded {
+                if steps < answer_after {
+                    continue;
+                }
                 if matches!(answer, Answer::Delete | Answer::Publish) {
                     confirmed.extend(members(&question));
                 }
@@ -1265,6 +1576,8 @@ fn run_ignoring(
             quiet = device.trees == before && during.len() == 0;
             continue;
         };
+        let mut sending = Vec::new();
+        let mut positioned = Vec::new();
         for op in &commit.ops {
             let id = match &op.op {
                 Some(op::Op::Delete(delete)) => &delete.node_id,
@@ -1274,10 +1587,14 @@ fn run_ignoring(
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             };
+            sending.push(id.clone());
+            if !matches!(op.op, Some(op::Op::UpdateContent(_))) {
+                positioned.push(id.clone());
+            }
             // A discarded entry the user changed, or a discarded folder the user put an entry in,
             // before the effects moved it to the local trash is the user's new change, which syncs
             // like any other from then on (section 5.2).
-            let changed = revived.contains(id) || device.touched.contains(id);
+            let changed = revived_once.contains(id) || device.touched.contains(id);
             if held_once.contains(id) && !confirmed.contains(id) {
                 prop_assert!(
                     discarded.contains_key(id) && changed,
@@ -1322,6 +1639,8 @@ fn run_ignoring(
         let bringing = restorable(&space, &commit);
         let before = stored(&space);
         let mut committed = space.commit(&me, NOW, &request).map_err(failed)?;
+        placed.retain(|id, _| !positioned.contains(id));
+        sent_nodes.extend(sending);
         let after = stored(&space);
         if cut == Cut::Applied {
             // The response is lost. The server counts the commit, so the device sends the same
