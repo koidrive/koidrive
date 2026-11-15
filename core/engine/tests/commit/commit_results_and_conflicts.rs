@@ -114,6 +114,45 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
 }
 
 #[test]
+fn a_new_folder_takes_the_name_of_a_left_out_file_placed_by_a_merged_folder() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "d")), None, None),
+        (
+            "b",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote(dir(ROOT, "e"))),
+        ),
+        ("c", Some(file("a", "f", 1)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    use op_result::Code;
+    let merged = OpResult {
+        node_id: "b".into(),
+        ..outcome(Code::MergedInto)
+    };
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![merged, outcome(Code::Applied)],
+    );
+    trees.set_remote("c".into(), remote(file("b", "f", 1)));
+    trees.set_local("c".into(), local(file("a", "f", 2), 3));
+    trees.settle();
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(commits.leave_out("c"));
+    trees.set_local("n".into(), local(dir("b", "f"), 4));
+    trees.settle();
+    let created = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        matches!(&ops(&created)[..], [op::Op::CreateDir(create)] if create.name == "f" && create.pending_for.is_empty()),
+        "{:?}",
+        ops(&created)
+    );
+}
+
+#[test]
 fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
     let mut trees = trees(&[(
         "f",

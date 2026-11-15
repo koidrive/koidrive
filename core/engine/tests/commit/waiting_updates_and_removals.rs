@@ -277,6 +277,57 @@ fn a_renamed_waiting_file_put_back_as_s_still_holds_it_keeps_its_content() {
     assert_eq!(ops(&commit), [mv("n", ROOT, "old"), update("n", 0)]);
 }
 
+#[test]
+fn a_new_folder_takes_the_name_a_waiting_node_moves_to_in_the_same_commit() {
+    let mut trees = trees(&[
+        (
+            "h",
+            Some(file(ROOT, "x (2)", 9)),
+            Some(file(ROOT, "x (2)", 9)),
+            Some(remote(file(ROOT, "y", 9))),
+        ),
+        (
+            "n",
+            Some(file(ROOT, "x", 1)),
+            Some(file(ROOT, "old", 0)),
+            Some(remote(file(ROOT, "old", 0))),
+        ),
+    ]);
+    trees.set_local(
+        "h".into(),
+        LocalNode {
+            parked: true,
+            ..local(file(ROOT, "x (2)", 9), 1)
+        },
+    );
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote("n".into(), remote(file(ROOT, "x (2)", 1)));
+    trees.set_remote("z".into(), remote(file(ROOT, "x", 8)));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![
+            OpResult {
+                name: "x (2)".into(),
+                ..outcome(op_result::Code::AppliedRenamed)
+            },
+            outcome(op_result::Code::Applied),
+        ],
+    );
+    trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
+    trees.set_local("p".into(), local(dir(ROOT, "OLD"), 3));
+    trees.settle();
+    assert!(trees.waiting().contains_key("n"));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        (ops(&commit).iter()).any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "p" && create.name == "OLD" && create.pending_for.is_empty())),
+        "{:?}",
+        ops(&commit)
+    );
+}
+
 /// n's update waits and h needs n's place on disk, so n is parked. When the driver fails to park
 /// it, the same move is not planned again until something changes.
 #[test]

@@ -1183,6 +1183,7 @@ impl Commits {
                     &candidates,
                     bound,
                     &skip,
+                    &self.problems,
                     &needed,
                     cap,
                     &answered,
@@ -2489,6 +2490,26 @@ fn in_sync(trees: &Trees, original: &ConflictFile, copy: &ConflictFile) -> bool 
         .all(|file| trees.class(&file.node_id) == Class::InSync)
 }
 
+fn leaving_unsent(
+    scratch: &Scratch,
+    aliases: &BTreeMap<NodeId, NodeId>,
+    problems: &BTreeSet<NodeId>,
+    id: &str,
+) -> bool {
+    let trees = scratch.trees;
+    let (Some(local), Some(parent), Some(name)) =
+        (trees.local().get(id), scratch.parent(id), scratch.name(id))
+    else {
+        return false;
+    };
+    (problems.contains(id) || trees.waiting().contains_key(id))
+        && (aliases
+            .get(&local.shape.parent)
+            .unwrap_or(&local.shape.parent)
+            != parent
+            || name_key(&local.shape.name) != name_key(name))
+}
+
 /// The node other than `other` that R holds live under `parent` with the name key of `name`.
 fn holder(trees: &Trees, parent: &str, name: &str, other: &str) -> Option<NodeId> {
     let key = name_key(name);
@@ -2992,6 +3013,7 @@ fn plan(
     trees: &Trees,
     candidates: &[&NodeId],
     bound: Option<(usize, &str)>,
+    skip: &BTreeSet<NodeId>,
     problems: &BTreeSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
@@ -3024,7 +3046,7 @@ fn plan(
     let mut deleted = BTreeSet::new();
     let mut reverts = Vec::new();
     let mut within = None;
-    for &id in candidates.iter().filter(|id| !problems.contains(**id)) {
+    for &id in candidates.iter().filter(|id| !skip.contains(**id)) {
         if within.is_none() && bound.is_some_and(|(_, bound)| id.as_str() >= bound) {
             within = Some(wants.len());
         }
@@ -3160,7 +3182,7 @@ fn plan(
         }
     }
     let unsettled = |node: &&str| {
-        problems.contains(*node)
+        skip.contains(*node)
             || trees.waiting().contains_key(*node)
             || trees.class(node) == Class::Same
     };
@@ -3516,7 +3538,9 @@ fn plan(
             shape, pending_for, ..
         }) = slot.as_mut()
             && shape.kind == Kind::Dir
-            && (scratch.holders(&shape.parent, &shape.name)).any(|other| moving.contains(other))
+            && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
+                moving.contains(other) || leaving_unsent(&scratch, aliases, problems, other)
+            })
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
             pending_for.get_or_insert_with(|| shape.name.clone());

@@ -6840,6 +6840,50 @@ fn a_write_the_server_kept_is_taken_as_synced_when_its_record_arrives_before_its
     }
 }
 
+#[test]
+fn a_folder_made_at_the_name_a_held_back_rename_leaves_is_not_merged_into_the_renamed_folder() {
+    use Step::{Commit, Scan, Work};
+    let phases = [
+        vec![(0, drawn(0, 0, 0, 2))],
+        vec![
+            (0, drawn(3, 0, 0, 0)),
+            (0, Scan),
+            (0, Commit(Reply::Served)),
+            (1, drawn(0, 0, 0, 0)),
+            (1, Work(0)),
+            (1, drawn(4, 0, 0, 0)),
+            (1, drawn(0, 0, 0, 2)),
+            (1, drawn(1, 0, 1, 0)),
+            (1, Scan),
+            (1, Commit(Reply::Served)),
+            (0, Scan),
+            (0, drawn(0, 0, 7323160739732531270, 2)),
+            (0, Work(14961320405536337275)),
+            (1, drawn(3, 5981320879745048642, 0, 1)),
+            (0, Commit(Reply::Refused(error::Code::LimitExceeded))),
+            (0, Commit(Reply::Served)),
+            (1, Commit(Reply::Served)),
+            (0, Work(0)),
+            (0, Commit(Reply::Served)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_folder_made_at_a_name_another_device_renamed_a_folder_to_is_merged_into_it() {
+    let mut world = converge(2, &[vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))]]).unwrap();
+    let mut steps = vec![(1, rename(0, 0, "b"))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 4]);
+    steps.push((0, folder("b")));
+    steps.push((0, user(1, 0, 2, "ss")));
+    steps.extend(commit(0));
+    world.run(1, &steps).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(paths_on(&world, 0), ["b", "b/c.txt", "b/ss"]);
+}
+
 fn drawn(kind: u8, target: usize, parent: usize, name: usize) -> Step {
     Step::User(Action {
         kind,
