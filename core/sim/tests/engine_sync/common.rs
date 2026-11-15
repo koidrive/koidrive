@@ -1605,14 +1605,16 @@ fn run_ignoring_answering_after(
                 revived_once.remove(id);
                 sent_nodes.remove(id);
             }
+            let mut taken_along = BTreeMap::new();
             for folder in shown.keys() {
                 for child in device.trees.local_children(folder) {
                     if !shown.contains_key(child) && device.trees.excluded(child) {
-                        server_copy(&device.trees, child, &mut kept_with);
+                        server_copy(&device.trees, child, &mut taken_along);
                     }
                 }
             }
-            device.acted.retain(|id| !kept_with.contains_key(id));
+            device.acted.retain(|id| !taken_along.contains_key(id));
+            kept_with.append(&mut taken_along);
             discarded.extend(shown);
         }
         let revived = revive(&device, &discarded, &kept_with);
