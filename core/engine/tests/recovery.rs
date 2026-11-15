@@ -2315,3 +2315,34 @@ fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies()
         ]
     );
 }
+
+#[test]
+fn a_marked_file_keeps_its_node_when_the_claim_of_its_folder_is_released_to_an_unmarked_copy() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "p")),
+            ("copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("n", file("p", "f", 1)),
+        ],
+        &[
+            ("r", dir(ROOT, "r")),
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("n", file("p", "f", 1)),
+        ],
+        &[("a-file", "n"), ("a-folder", "p")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["a-folder", "copy"],
+    );
+}

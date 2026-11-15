@@ -189,16 +189,25 @@ pub(crate) fn adopt_around(
 }
 
 pub(crate) fn adopt_by_marks_first(trees: &mut Trees, history: &History, marks: &Marks) {
+    let mut released = BTreeSet::new();
     let mut claimed = follow_marks(trees, history, marks);
     loop {
+        claimed.retain(|node, _| !released.contains(node));
         adopt_around(trees, Some(history), &claimed);
-        let left = follow_marks(trees, history, marks);
-        if left == claimed {
-            break;
+        let mut left = follow_marks(trees, history, marks);
+        left.retain(|node, _| !released.contains(node));
+        if left != claimed {
+            claimed = left;
+            continue;
         }
-        claimed = left;
+        let highest = (claimed.keys()).min_by_key(|node| {
+            key_path(trees.remote(), node).map_or(usize::MAX, |path| path.len())
+        });
+        let Some(highest) = highest else {
+            return;
+        };
+        released.insert(highest.clone());
     }
-    adopt(trees, Some(history));
 }
 
 fn follow_marks(trees: &mut Trees, history: &History, marks: &Marks) -> BTreeMap<NodeId, NodeId> {
