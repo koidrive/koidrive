@@ -19,8 +19,8 @@ mod reconcile;
 mod release_source;
 
 pub use handoff::follow_newest;
+pub use inventory::homebrew_link;
 pub(crate) use inventory::{Install, Method, on_path};
-pub use inventory::{Installs, homebrew_link};
 
 use homebrew::homebrew;
 use installer::{installer, script_url};

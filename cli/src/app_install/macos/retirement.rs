@@ -1,4 +1,3 @@
-use super::retirement as macos;
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::constants::{BUNDLE, CLEANUP};
 use crate::app_install::macos::control::{Control, io_error};
@@ -12,10 +11,9 @@ use std::ffi::OsStr;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-#[cfg(target_os = "macos")]
 impl RetiredApp {
     pub(crate) fn discard(&self) -> Result<(), AppInstallError> {
-        macos::discard_retired(self)
+        discard_retired(self)
     }
 }
 pub(in crate::app_install) fn discard_retired(retired: &RetiredApp) -> Result<(), AppInstallError> {
