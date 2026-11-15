@@ -3689,13 +3689,28 @@ impl Trees {
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts();
         }
-        if self.rules_known {
-            let changed = match std::mem::take(&mut self.relink) {
-                true => self.dirty.iter().cloned().collect(),
-                false => self.unsettled.clone(),
-            };
-            first_link::adopt_equal_files(self, &changed);
+        let mut unfit = match self.rules_known {
+            true => {
+                let changed = match std::mem::take(&mut self.relink) {
+                    true => self.dirty.iter().cloned().collect(),
+                    false => self.unsettled.clone(),
+                };
+                first_link::adopt_equal_files(self, &changed)
+            }
+            false => Vec::new(),
+        };
+        self.settle_marked();
+        while !unfit.is_empty() {
+            let tried = unfit.len();
+            unfit = first_link::link(self, unfit);
+            if unfit.len() == tried {
+                break;
+            }
+            self.settle_marked();
         }
+    }
+
+    fn settle_marked(&mut self) {
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {

@@ -852,6 +852,54 @@ fn a_local_file_and_an_equal_server_file_that_arrive_in_separate_settles_are_lin
     }
 }
 
+fn settled_below(folders: &[(&str, Shape)]) -> (Trees, IdGen) {
+    let mut child = written("notes", WRITTEN_NS);
+    child.parent = folders.last().expect("a folder").0.into();
+    let mut remote = folders.to_vec();
+    remote.push(("r-file", child.clone()));
+    let remote = trees(&[], &remote);
+    let mut settled = Trees::new(ROOT);
+    settled.rules_scanned();
+    let mut local = folders.to_vec();
+    local.push(("l-file", child));
+    for (ino, (id, shape)) in local.into_iter().enumerate() {
+        settled.set_local(id.into(), local_node(shape, ino as u128 + 1));
+    }
+    for (id, node) in remote.remote().iter() {
+        settled.set_remote(id.clone(), node.clone());
+    }
+    settled.settle();
+    (settled, IdGen::new(7))
+}
+
+fn linked_before_planning(folders: &[(&str, Shape)]) {
+    let (mut trees, mut ids) = settled_below(folders);
+    let limit = BatchLimit {
+        effects: 100,
+        bytes: u64::MAX,
+    };
+    let planned = Effects::default()
+        .plan(&trees, None, &mut ids, NOW, limit)
+        .to_vec();
+    assert!(
+        !(planned.iter()).any(|record| record.node == "l-file" || record.node == "r-file"),
+        "{planned:?}"
+    );
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+    assert_eq!(ops(&mut Commits::default(), &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_file_is_linked_before_planning_when_its_folder_enters_s_in_the_same_settle() {
+    linked_before_planning(&[("p", dir(ROOT, "folder"))]);
+}
+
+#[test]
+fn a_file_is_linked_before_planning_when_its_two_folders_enter_s_in_the_same_settle() {
+    linked_before_planning(&[("g", dir(ROOT, "outer")), ("p", dir("g", "inner"))]);
+}
+
 #[test]
 fn a_read_only_device_downloads_a_conflict_copy_beside_a_local_file_of_the_same_name() {
     let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);

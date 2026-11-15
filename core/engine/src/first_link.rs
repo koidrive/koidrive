@@ -406,7 +406,10 @@ fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape)
     since.map(|shape| (*shape).clone()).collect()
 }
 
-pub(crate) fn adopt_equal_files(trees: &mut Trees, ids: &BTreeSet<NodeId>) {
+pub(crate) fn adopt_equal_files(
+    trees: &mut Trees,
+    ids: &BTreeSet<NodeId>,
+) -> Vec<(NodeId, NodeId)> {
     let found: Vec<(NodeId, NodeId)> = (ids.iter())
         .filter_map(|id| match (trees.local().get(id), trees.remote().get(id)) {
             (Some(local), None) if local.shape.kind == Kind::File => {
@@ -425,22 +428,28 @@ pub(crate) fn adopt_equal_files(trees: &mut Trees, ids: &BTreeSet<NodeId>) {
             _ => None,
         })
         .collect();
-    link(trees, found);
+    link(trees, found)
 }
 
-fn link(trees: &mut Trees, found: Vec<(NodeId, NodeId)>) {
+pub(crate) fn link(trees: &mut Trees, found: Vec<(NodeId, NodeId)>) -> Vec<(NodeId, NodeId)> {
+    let mut unfit = Vec::new();
     for (id, remote_id) in found {
         let Some(remote) = trees.remote().get(&remote_id) else {
             continue;
         };
+        if !equal(trees, &id, &remote_id) {
+            continue;
+        }
         let updates = [
             (remote_id.clone(), Some(remote.shape.clone())),
             (id.clone(), None),
         ];
-        if equal(trees, &id, &remote_id) && set_synced_together(trees, &updates) {
-            rekey(trees, &id, &remote_id);
+        match set_synced_together(trees, &updates) {
+            true => rekey(trees, &id, &remote_id),
+            false => unfit.push((id, remote_id)),
         }
     }
+    unfit
 }
 
 pub(crate) fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {

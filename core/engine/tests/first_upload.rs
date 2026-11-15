@@ -335,6 +335,52 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
     work
 }
 
+fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    let mut parent = ROOT.to_owned();
+    for level in 0..levels {
+        if level % depth == 0 {
+            parent = ROOT.to_owned();
+        }
+        let folder = format!("d{level:06}");
+        let name = format!("folder {level}");
+        let ino = 2 * level as u128 + 1;
+        trees.set_local(
+            folder.clone(),
+            local(parent.clone(), name.clone(), Kind::Dir, ino),
+        );
+        trees.set_remote(folder.clone(), remote(parent, name, Kind::Dir));
+        let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
+        (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+        let shape = file.shape.clone();
+        trees.set_local(format!("l{level:06}"), file);
+        let mut node = remote(folder.clone(), "notes".into(), Kind::File);
+        node.shape = shape;
+        trees.set_remote(format!("r{level:06}"), node);
+        parent = folder;
+    }
+    let before = allocated();
+    trees.settle();
+    let work = allocated() - before;
+    assert!(trees.dirty().is_empty(), "{:?}", trees.work());
+    assert_eq!(trees.synced().len(), 2 * levels);
+    work
+}
+
+#[test]
+fn a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files() {
+    for depth in [1, 10] {
+        let small = first_link_of_nested_folders(2000, depth);
+        let large = first_link_of_nested_folders(20_000, depth);
+        let bytes = large as f64 / small as f64;
+        assert!(
+            bytes < 12.0,
+            "{depth} deep: 2000 folders allocated {small} bytes and 20000 folders {large}, {bytes:.1} times as many"
+        );
+    }
+}
+
 #[test]
 fn a_first_download_takes_work_in_proportion_to_its_files() {
     for per_dir in [1, 100, 5000] {
