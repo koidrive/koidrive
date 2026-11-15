@@ -2260,6 +2260,44 @@ fn a_copy_at_the_old_name_takes_the_node_when_the_renamed_original_cannot_follow
 }
 
 #[test]
+fn a_marked_entry_whose_name_is_the_same_in_nfc_is_in_place_and_follows_the_servers_rename() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "cafe\u{301}", 1))],
+        &[],
+        &[live("n", file(ROOT, "b", 1))],
+        &[("n", file(ROOT, "caf\u{e9}", 1)), ("n", file(ROOT, "b", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "caf\u{e9}", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::Move { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 1)));
+}
+
+#[test]
+fn a_marked_entry_the_user_renamed_by_case_only_commits_the_rename() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "Cafe", 1))],
+        &[],
+        &[live("n", file(ROOT, "cafe", 1))],
+        &[("n", file(ROOT, "cafe", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "cafe", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "Cafe", 1)));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};

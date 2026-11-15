@@ -267,7 +267,7 @@ fn shape_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape) 
         .filter(|shape| shape.kind == entry.kind && same_bytes(&shape.content, &entry.content))
         .collect();
     let in_place = (with_content.iter().rev())
-        .find(|shape| shape.parent == entry.parent && shape.name == entry.name);
+        .find(|shape| shape.parent == entry.parent && same_name(&shape.name, &entry.name));
     let moved_since = logged.and_then(|_| with_content.last());
     in_place.or(moved_since).map(|shape| (*shape).clone())
 }
