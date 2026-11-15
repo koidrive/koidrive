@@ -509,7 +509,6 @@ fn an_edit_after_another_device_purges_a_file_in_a_server_folder_in_a_discarded_
 }
 
 #[test]
-#[ignore = "a server folder moved into a discarded folder from a folder deleted here never settles (GUN-781)"]
 fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_settles() {
     let seed = [
         act(1, 0, 0, 0, 0),
