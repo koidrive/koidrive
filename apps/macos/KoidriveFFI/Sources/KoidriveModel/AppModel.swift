@@ -298,11 +298,15 @@ public final class AppModel {
                 updateCheck = .answered(try await run { try $0.checkForUpdates() })
             } catch SessionError.ReleasesUnreachable {
                 updateCheck = .failed(.unreachable, atMs: Self.nowMs)
-            } catch {
+            } catch SessionError.ReleasesRefused {
                 updateCheck = .failed(.refused, atMs: Self.nowMs)
+            } catch {
+                let error = error as? SessionError ?? .Failed(reason: error.localizedDescription)
+                updateCheck = .failed(.other(error), atMs: Self.nowMs)
             }
         }
         updateCheckInFlight = task
+        updateFailure = nil
         checkingForUpdates = true
         defer {
             updateCheckInFlight = nil

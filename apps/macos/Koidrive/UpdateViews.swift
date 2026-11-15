@@ -217,6 +217,7 @@ private extension UpdateNotice {
         case .checking, .unchecked: nil
         case .checkFailed(.unreachable): String(localized: "Check your internet connection and try again.")
         case .checkFailed(.refused): String(localized: "The update server didn’t answer. Try again later.")
+        case .checkFailed(.other(let error)): error.message
         case .offline: String(localized: "Koidrive checks again when it reconnects.")
         case .off: String(localized: "They were turned off in Koidrive’s settings file.")
         case .upToDate(let checkedAtMs): checked(Date(timeIntervalSince1970: TimeInterval(checkedAtMs) / 1000))

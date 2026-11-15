@@ -137,11 +137,43 @@ import Testing
         #expect(model.updateNotice == .checkFailed(.refused))
         fake.failNext(error: .Failed(reason: "koi is missing"))
         await model.checkForUpdates()
-        #expect(model.updateNotice == .checkFailed(.refused))
+        #expect(model.updateNotice == .checkFailed(.other(.Failed(reason: "koi is missing"))))
 
         let later = Int64(Date.now.timeIntervalSince1970 * 1000) + 60_000
         model.apply(.update(update: .upToDate(checkedAtMs: later)))
         #expect(model.updateNotice == .upToDate(checkedAtMs: later))
+    }
+
+    @Test func aCheckAfterAFailedInstallShowsItsAnswerAndUpdateBringsTheFailureBack() async throws {
+        let model = AppModel.fake(scenario: .updateFails)
+        #expect(await model.installUpdate() == nil)
+        guard case .failed(let failure) = model.updateNotice else {
+            Issue.record("expected the install failure, got \(model.updateNotice)")
+            return
+        }
+        let check = Task.immediate { await model.checkForUpdates() }
+        #expect(model.updateNotice == .checking)
+        #expect(model.popoverUpdateNotice == .checking)
+        await check.value
+        guard case .available(let version, _) = model.updateNotice else {
+            Issue.record("expected the check's answer, got \(model.updateNotice)")
+            return
+        }
+        #expect(version == failure.version)
+        #expect(model.popoverUpdateNotice == model.updateNotice)
+
+        #expect(await model.installUpdate() == nil)
+        guard case .failed(let again) = model.updateNotice else {
+            Issue.record("expected the install failure again, got \(model.updateNotice)")
+            return
+        }
+        #expect(again.logPath == failure.logPath)
+        #expect(again.fallbackCommand == failure.fallbackCommand)
+
+        try #require(model.session.fakeCore()).failNext(error: .ReleasesUnreachable)
+        await model.checkForUpdates()
+        #expect(model.updateNotice == .checkFailed(.unreachable))
+        #expect(model.popoverUpdateNotice == .checkFailed(.unreachable))
     }
 
     @Test func aCheckAnswersWhileSyncIsOfflineAndWhileScheduledChecksAreOff() async throws {

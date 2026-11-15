@@ -13,6 +13,7 @@ public struct UpdateFailure: Equatable, Sendable {
 public enum UpdateCheckFailure: Equatable, Sendable {
     case unreachable
     case refused
+    case other(SessionError)
 }
 
 public enum UpdateCheck: Equatable, Sendable {
