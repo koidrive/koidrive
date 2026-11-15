@@ -2627,7 +2627,7 @@ fn a_taken_along_server_folder_after_the_server_changes(
         &[("x", dir(ROOT, "server")), ("c", file("x", "child", 5))],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Shown);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
