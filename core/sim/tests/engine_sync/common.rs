@@ -1452,8 +1452,11 @@ fn run_ignoring_answering_after(
             ) {
                 let taken_along = kept_with.contains_key(&record.node)
                     && !acted_below(&device, &kept_with, &record.node);
+                let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+                    && (device.trees.remote().live(&record.node))
+                        .is_some_and(|remote| remote.same_position(after));
                 let left_where_put = !taken_along
-                    && !closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+                    && !reverted
                     && placed.get(&record.node) == Some(&position(&local.shape));
                 prop_assert!(
                     !(left_where_put
