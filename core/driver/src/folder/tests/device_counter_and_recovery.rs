@@ -908,3 +908,55 @@ fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
     a.folder.mark_granted(vec!["absent-copy".to_owned()]);
     assert_eq!(marks(&a).get(&id), Some(&id));
 }
+
+#[test]
+fn a_merged_folder_is_marked_when_late_records_or_a_bootstrap_acknowledge_it() {
+    for bootstrap in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        let (site_b, mut b) = linked(&mut remote, "b");
+        fs::create_dir(site_a.root.join("docs")).unwrap();
+        a.rescan();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        let given = node_named(&a, "docs");
+        fs::create_dir(site_b.root.join("docs")).unwrap();
+        b.rescan();
+        b.scan_until(|b| !b.work.is_empty());
+        let Some(Work::Send(commit)) = b.work.pop_front() else {
+            panic!("the directory create is ready");
+        };
+        let sent = match commit.ops[0].op.as_ref().unwrap() {
+            op::Op::CreateDir(create) => create.node_id.clone(),
+            op => panic!("expected a directory create: {op:?}"),
+        };
+        let identity = b.folder.engine.trees.local().get(&sent).unwrap().identity;
+        let result = remote.commit(&b.caller, &commit).unwrap();
+        assert_eq!(result.results[0].code, koidrive_proto::v1::op_result::Code::MergedInto as i32);
+        assert_eq!(result.results[0].node_id, given);
+        assert!(result.seq > b.folder.engine.cursor.as_ref().unwrap().last_seq + 1);
+        if bootstrap {
+            b.event(Event::ResyncRequired(ResyncRequired {
+                reason: Reason::LogTruncated as i32,
+                ..Default::default()
+            })).unwrap();
+            let Some(work @ Work::List) = b.work.pop_front() else {
+                panic!("a bootstrap is requested");
+            };
+            b.perform(work, &mut remote).unwrap();
+        }
+        let step = b.folder.sent(Ok(result));
+        b.take(step).unwrap();
+        assert!(b.folder.engine.trees.local().get(&sent).is_some());
+        assert!(b.folder.engine.trees.local().get(&given).is_none());
+        if bootstrap {
+            b.run(&mut remote);
+        } else {
+            b.pull_at_once(&remote);
+        }
+        let trees = &b.folder.engine.trees;
+        assert_eq!(trees.local().get(&given).unwrap().identity, identity);
+        assert_eq!(b.folder.disk.marks(trees, [&given]).get(&given), Some(&given), "bootstrap: {bootstrap}");
+        assert!(b.folder.engine.commits.in_flight().is_none());
+    }
+}

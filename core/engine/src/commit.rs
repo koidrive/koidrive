@@ -191,7 +191,16 @@ pub struct Commits {
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
     guard: Guard,
-    granted: Vec<NodeId>,
+    granted: Unstored<Vec<NodeId>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Unstored<T>(T);
+
+impl<T> PartialEq for Unstored<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Commits {
@@ -326,7 +335,7 @@ impl Commits {
             questions: questions.into(),
             published: published.into(),
             guard: guard.into(),
-            granted: Vec::new(),
+            granted: Unstored::default(),
         })
     }
 
@@ -1614,7 +1623,7 @@ impl Commits {
     /// The nodes the server gave to the creates, merged folders and conflict copies of each commit acknowledged
     /// since the last call ([`given_nodes`]), for the disk to mark on the entries L holds under them.
     pub fn take_granted(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.granted)
+        std::mem::take(&mut self.granted.0)
     }
 
     fn record_served(&self, trees: &mut Trees, last_seq: u64) {
@@ -1655,7 +1664,7 @@ impl Commits {
             return false;
         };
         let result = flight.result.expect("taken with a result");
-        (self.granted).extend(
+        (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
                 .into_iter()
                 .map(|(_, node)| node),
