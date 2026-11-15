@@ -2688,6 +2688,49 @@ fn a_server_folder_taken_along_by_a_discard_follows_the_server_when_it_moves_wha
 }
 
 #[test]
+fn deleting_a_folder_inside_a_taken_along_server_folder_before_its_entries_arrive_keeps_the_discard()
+ {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "new")), ("x", dir(ROOT, "server"))],
+        &[
+            ("x", dir(ROOT, "server")),
+            ("d", dir("x", "sub")),
+            ("e", file("d", "unseen", 5)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_rules(&[] as &[&str], None);
+    trees.set_synced("d".into(), Some(dir("x", "sub")));
+    trees.settle();
+    assert!(!trees.reclaimed("f"));
+    run_effects(
+        &mut Effects::default(),
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        100,
+    );
+    assert_eq!(
+        local(&trees),
+        [
+            ("d".into(), "x".into(), "sub".into()),
+            ("e".into(), "d".into(), "unseen".into()),
+            ("x".into(), ROOT.into(), "server".into())
+        ]
+    );
+}
+
+#[test]
 fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_path_and_the_folder_is_sent()
  {
     let mut trees = trees(

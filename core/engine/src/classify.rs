@@ -1814,13 +1814,32 @@ impl Trees {
             return true;
         }
         let Some(local) = self.l.get(id) else {
-            return self.r.live(id).is_none();
+            return self.r.live(id).is_none() || self.kept_back(id);
         };
         let holds = |shape: Option<&Shape>| shape.is_some_and(|shape| local.shape.same(shape));
         (holds(self.r.live(id)) || holds(self.acknowledged(id)))
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.as_the_server_holds(child, seen))
             && self.keeps_the_synced_children(id, seen)
+    }
+
+    fn kept_back(&self, id: &str) -> bool {
+        self.remote_children(id).any(|child| {
+            let Some(remote) = self.r.live(child) else {
+                return false;
+            };
+            let local = self.l.get(child);
+            let held = self.acknowledged(child);
+            let in_place = local.is_none_or(|node| {
+                self.reverted.contains(child)
+                    || held.is_some_and(|held| node.shape.same_position(held))
+            });
+            let changed = !self.excluded(child)
+                && (local.is_some_and(|node| node.parked)
+                    || self.reverted.contains(child)
+                    || !same(Some(remote), held));
+            in_place && (changed || self.kept_back(child))
+        })
     }
 
     fn local_children_placed_or_parked<'a>(
