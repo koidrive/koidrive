@@ -237,6 +237,10 @@ struct Device {
     copies: Vec<(Tok, Option<Seq>)>,
 }
 
+fn old_wire(d: Dev, rules: Rules) -> bool {
+    rules == Rules::OldServer || (rules == Rules::OldDeleter && d == 1)
+}
+
 fn slot(field: Field) -> usize {
     match field {
         Field::Position => 0,
@@ -425,9 +429,21 @@ impl World {
 
     fn saw(&self, gone: Tok, rules: Rules) -> Option<[Tok; 2]> {
         let value = self.values[gone.0 as usize];
-        let old_wire =
-            rules == Rules::OldServer || (rules == Rules::OldDeleter && value.author == Some(1));
-        (!old_wire).then_some(value.seen)
+        let old = rules == Rules::OldServer || value.author.is_some_and(|d| old_wire(d, rules));
+        (!old).then_some(value.seen)
+    }
+
+    fn edited_here(&self, d: Dev, node: &Node, seen: &[u8], rules: Rules) -> [bool; 2] {
+        FIELDS.map(|field| {
+            if !old_wire(d, rules) {
+                return node.by(field) == Some(d);
+            }
+            let seq = node.edit(field) as usize;
+            seq > 0
+                && seen
+                    .get(seq - 1)
+                    .is_some_and(|&token| self.server.authors[token as usize] == Some(d))
+        })
     }
 
     fn author(&self, value: Tok) -> Option<Dev> {
@@ -1209,6 +1225,7 @@ impl World {
 
     fn classify(&mut self, d: Dev, rules: Rules) -> Result<(), Broken> {
         let covered = self.covers(d, rules);
+        let edited_here = self.edited_here(d, &self.devices[d].r, &self.devices[d].seen, rules);
         let dev = &mut self.devices[d];
         let r = dev.r;
         match (dev.l, r.trashed) {
@@ -1254,9 +1271,10 @@ impl World {
                     let synced = dev.s.get(field);
                     r.get(field) != synced.val
                         && r.user_set(field)
-                        && r.by(field) != Some(d)
+                        && !edited_here[slot(field)]
                         && (old || r.edit(field) > synced.seq)
                         && (rules == Rules::DeleteSeesOnlyView
+                            || old_wire(d, rules)
                             || dev.held[slot(field)] & (1 << r.get(field).0) == 0)
                 });
                 if unseen {
@@ -1268,7 +1286,7 @@ impl World {
                             && r.user_set(field)
                             && r.edit(field) > dev.s.get(field).seq);
                     if adopts && r.get(field) != dev.s.get(field).val {
-                        let own = !old && r.user_set(field) && r.by(field) == Some(d);
+                        let own = !old && r.user_set(field) && edited_here[slot(field)];
                         dev.s.set(
                             field,
                             Agreed {
@@ -1345,6 +1363,7 @@ impl World {
         let log: Vec<u8> = self.server.log.iter().map(|record| record.token).collect();
         let listing = self.server.node();
         let trash_saw = listing.trashed.and_then(|trash| self.saw(trash, rules));
+        let edited_here = self.edited_here(d, &listing, &self.devices[d].seen, rules);
         let dev = &self.devices[d];
         let own = |token: u8| self.server.authors[token as usize] == Some(d);
         let pairs = |seen: &[u8]| -> Vec<bool> {
@@ -1407,7 +1426,7 @@ impl World {
         let mut lost_own = false;
         for field in FIELDS {
             let old = dev.s.get(field);
-            let held_as_own = listing.user_set(field) && listing.by(field) == Some(d);
+            let held_as_own = listing.user_set(field) && edited_here[slot(field)];
             if matches!(dev.l, Local::Gone(_)) && rules != Rules::LossForgetsDeletedFields {
                 dev.s.set(
                     field,
@@ -1599,8 +1618,9 @@ impl World {
                 && later.renamed_from.is_none()
                 && pred == value
                 && tok != value;
-            let deleted_seen =
-                later.field == Field::Existence && later.seen[slot(info.field)] == value;
+            let deleted_seen = later.field == Field::Existence
+                && (later.seen[slot(info.field)] == value
+                    || later.held[slot(info.field)] & (1 << value.0) != 0);
             (later.renamed_from == Some(value) && self.survived(tok))
                 || (continues && later.field == Field::Existence)
                 || deleted_seen
