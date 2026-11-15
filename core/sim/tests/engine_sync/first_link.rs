@@ -140,6 +140,49 @@ fn a_folder_the_server_trashed_closes_no_cycle_for_the_placement_check() {
     assert!(placement_check_after_a_move(false, "home", true).is_err());
 }
 
+fn sent_move_check_of(parent: &str, name: &str, pending_for: &str) -> Result<(), TestCaseError> {
+    let (_, held) = RemoteNode::from_state(&NodeState {
+        node_id: "x".into(),
+        parent_id: "home".into(),
+        name: "a".into(),
+        kind: 1,
+        status: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let moved = Move {
+        node_id: "x".into(),
+        new_parent_id: parent.into(),
+        new_name: name.into(),
+        pending_for: pending_for.into(),
+        ..Default::default()
+    };
+    sent_move_check(&moved, &held.shape, &BTreeMap::new())
+}
+
+#[test]
+fn a_move_to_the_place_the_disk_holds_passes_the_sent_move_check() {
+    assert!(sent_move_check_of("home", "a", "").is_ok());
+}
+
+#[test]
+fn a_move_aside_to_a_pending_name_for_the_name_the_disk_holds_passes_the_sent_move_check() {
+    assert!(sent_move_check_of("home", "a (pending)", "a").is_ok());
+}
+
+#[test]
+fn a_move_to_a_folder_the_disk_does_not_hold_it_in_fails_the_sent_move_check() {
+    let error = sent_move_check_of("elsewhere", "a", "").unwrap_err();
+    assert!(error.to_string().contains("is sent to a place the disk does not hold it at"));
+    assert!(sent_move_check_of("elsewhere", "a (pending)", "a").is_err());
+}
+
+#[test]
+fn a_move_to_a_name_the_disk_does_not_hold_fails_the_sent_move_check() {
+    assert!(sent_move_check_of("home", "b", "").is_err());
+    assert!(sent_move_check_of("home", "b (pending)", "b").is_err());
+}
+
 #[test]
 fn a_first_link_holds_a_file_whose_name_the_space_holds_until_the_person_answers() {
     for answer in [Answer::Publish, Answer::Discard] {

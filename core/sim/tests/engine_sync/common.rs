@@ -1209,6 +1209,24 @@ fn position(shape: &koidrive_engine::tree::Shape) -> Position {
     (shape.parent.clone(), shape.name.clone())
 }
 
+fn sent_move_check(
+    moved: &Move,
+    local: &Shape,
+    merged_into: &BTreeMap<String, String>,
+) -> Result<(), TestCaseError> {
+    let parent = (merged_into.get(&local.parent)).unwrap_or(&local.parent);
+    let name = Some(&moved.pending_for)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&moved.new_name);
+    prop_assert_eq!(
+        (&moved.new_parent_id, name),
+        (parent, &local.name),
+        "{} is sent to a place the disk does not hold it at",
+        moved.node_id
+    );
+    Ok(())
+}
+
 fn placement_check(
     device: &Device,
     record: &koidrive_engine::effects::EffectRecord,
@@ -1732,13 +1750,7 @@ fn run_ignoring_answering_after(
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
-                let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
-                prop_assert_eq!(
-                    (&moved.new_parent_id, &moved.new_name),
-                    (parent, &local.shape.name),
-                    "{} is sent to a place the disk does not hold it at",
-                    id
-                );
+                sent_move_check(moved, &local.shape, &merged_into)?;
             }
             sending.push(id.clone());
             if !matches!(op.op, Some(op::Op::UpdateContent(_))) {
