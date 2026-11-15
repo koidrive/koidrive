@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory() as scratch:
     after = json.loads(synced.read_text())["strings"]
 
 missing = sorted(set(after) - set(before))
-stale = sorted(key for key, entry in after.items() if entry.get("extractionState") == "stale")
+stale = sorted(set(before) - set(after) | {key for key, entry in after.items() if entry.get("extractionState") == "stale"})
 for key in missing:
     print(f"::error file={catalog}::{json.dumps(key)} is used in the app but missing from the catalog.")
 for key in stale:
