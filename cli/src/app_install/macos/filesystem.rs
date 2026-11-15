@@ -1,5 +1,52 @@
-use super::*;
+use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
+use crate::app_install::macos::control::{Control, io_error};
+use crate::app_install::macos::state::{Identity, OwnedPath, PinnedDirectory};
+use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags};
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
+impl PinnedDirectory {
+    pub(super) fn new(file: File) -> Result<Self, AppInstallError> {
+        let identity = identity(&file.metadata().map_err(io_error)?);
+        Ok(Self { file, identity })
+    }
+}
+pub(super) struct InstallerLock(pub(super) File);
+impl Drop for InstallerLock {
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.0, FlockOperation::Unlock);
+    }
+}
+impl OwnedPath {
+    pub(super) fn capture(path: PathBuf) -> Result<Self, AppInstallError> {
+        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        if metadata.file_type().is_symlink() {
+            return Err(failure(
+                AppInstallFailure::UnsafePath,
+                "Symlinked transaction object",
+            ));
+        }
+        Ok(Self {
+            path,
+            identity: identity(&metadata),
+        })
+    }
+
+    pub(super) fn directory(&self) -> Result<File, AppInstallError> {
+        let file = directory(&self.path, false)?;
+        if identity(&file.metadata().map_err(io_error)?) != self.identity {
+            return Err(failure(
+                AppInstallFailure::ConcurrentChange,
+                "Transaction directory changed",
+            ));
+        }
+        Ok(file)
+    }
+}
 pub(super) fn directory(path: &Path, create: bool) -> Result<File, AppInstallError> {
     let mut fd = rustix::fs::open(
         "/",
@@ -46,122 +93,12 @@ pub(super) fn directory(path: &Path, create: bool) -> Result<File, AppInstallErr
     }
     Ok(fd.into())
 }
-
 pub(super) fn identity(metadata: &fs::Metadata) -> Identity {
     Identity {
         device: metadata.dev(),
         inode: metadata.ino(),
     }
 }
-
-pub(in crate::app_install) fn discard_retired(retired: &RetiredApp) -> Result<(), AppInstallError> {
-    let result = discard_owned(retired);
-    result.map_err(|mut error| {
-        error.residue.push(retired.ownership.parent.join(BUNDLE));
-        error
-    })
-}
-
-fn discard_owned(retired: &RetiredApp) -> Result<(), AppInstallError> {
-    let ownership = &retired.ownership;
-    ownership.current_root.directory()?;
-    unchanged_directory(&ownership.current.path, &ownership.current_handle.file)?;
-    let receipt_root = &ownership.receipt.root_handle.file;
-    unchanged_directory(&ownership.receipt.root, receipt_root)?;
-    let user_lock = regular_at(receipt_root, OsStr::new(".koidrive-app-install.lock"))?;
-    rustix::fs::flock(&user_lock, FlockOperation::NonBlockingLockExclusive)
-        .map_err(|error| failure(AppInstallFailure::ConcurrentChange, error))?;
-    let _user_lock = InstallerLock(user_lock);
-    let mut data = ownership.receipt.data();
-    if !matches!(
-        data.lifecycle,
-        Lifecycle::AwaitingHandoff | Lifecycle::Retiring
-    ) {
-        return Err(failure(
-            AppInstallFailure::Conflict,
-            "App lifecycle is not ready for retirement",
-        ));
-    }
-    let stage = data
-        .stage
-        .as_ref()
-        .ok_or_else(|| io_error("Missing retirement stage"))?;
-    if stage.root.path != ownership.root
-        || stage.parent.path != ownership.parent
-        || stage
-            .transfer
-            .as_ref()
-            .and_then(Transfer::previous)
-            .map(|previous| previous.identity)
-            != Some(ownership.bundle_handle.identity)
-    {
-        return Err(failure(
-            AppInstallFailure::UnsafePath,
-            "Retirement receipt does not match token",
-        ));
-    }
-    if retired.bundle != ownership.parent.join(BUNDLE)
-        || ownership.parent.parent() != Some(ownership.root.as_path())
-    {
-        return Err(failure(
-            AppInstallFailure::UnsafePath,
-            "Retired app path does not match its ownership",
-        ));
-    }
-    let root = &ownership.root_handle.file;
-    let parent = &ownership.parent_handle.file;
-    let bundle = &ownership.bundle_handle.file;
-    unchanged_directory(&ownership.root, root)?;
-    unchanged_directory(&ownership.parent, parent)?;
-    unchanged_directory(&retired.bundle, bundle)?;
-    let entries = rustix::fs::Dir::read_from(parent).map_err(io_error)?;
-    for entry in entries {
-        let entry = entry.map_err(io_error)?;
-        let name = entry.file_name().to_bytes();
-        if name != b"." && name != b".." && name != BUNDLE.as_bytes() {
-            return Err(failure(
-                AppInstallFailure::UnsafePath,
-                "Retired app parent contains an unowned entry",
-            ));
-        }
-    }
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + CLEANUP,
-        cancel,
-    };
-    ownership.current_root.directory()?;
-    unchanged_directory(&ownership.current.path, &ownership.current_handle.file)?;
-    data.lifecycle = Lifecycle::Retiring;
-    ownership.receipt.save(&data)?;
-    unchanged_directory(&ownership.root, root)?;
-    unchanged_directory(&ownership.parent, parent)?;
-    unchanged_directory(&retired.bundle, bundle)?;
-    let mut remaining = 100_000;
-    remove_owned_contents(
-        bundle,
-        ownership.bundle_handle.identity.device,
-        &control,
-        &mut remaining,
-        0,
-    )?;
-    control.check()?;
-    unchanged_directory(&ownership.root, root)?;
-    unchanged_directory(&ownership.parent, parent)?;
-    unchanged_directory(&retired.bundle, bundle)?;
-    rustix::fs::unlinkat(parent, BUNDLE, AtFlags::REMOVEDIR).map_err(io_error)?;
-    let name = ownership.parent.file_name().ok_or_else(|| {
-        failure(
-            AppInstallFailure::UnsafePath,
-            "Retired app parent has no name",
-        )
-    })?;
-    unchanged_directory(&ownership.parent, parent)?;
-    rustix::fs::unlinkat(root, name, AtFlags::REMOVEDIR).map_err(io_error)?;
-    root.sync_all().map_err(io_error)?;
-    ownership.receipt.remove()
-}
-
 pub(super) fn remove_owned_contents(
     directory: &File,
     device: u64,
@@ -256,7 +193,6 @@ pub(super) fn remove_owned_contents(
     }
     Ok(())
 }
-
 pub(super) fn unchanged_directory(path: &Path, fd: &File) -> Result<(), AppInstallError> {
     let current = directory(path, false)?;
     if identity(&current.metadata().map_err(io_error)?)
@@ -269,7 +205,6 @@ pub(super) fn unchanged_directory(path: &Path, fd: &File) -> Result<(), AppInsta
     }
     Ok(())
 }
-
 pub(super) async fn lock(root: &File, control: &Control) -> Result<InstallerLock, AppInstallError> {
     let name = ".koidrive-app-install.lock";
     let fd = match rustix::fs::openat(
@@ -321,7 +256,6 @@ pub(super) async fn lock(root: &File, control: &Control) -> Result<InstallerLock
     }
     Ok(guard)
 }
-
 pub(crate) fn writable(root: &Path) -> Result<bool, AppInstallError> {
     match tempfile::Builder::new()
         .prefix(".koidrive-write-")
@@ -339,4 +273,69 @@ pub(crate) fn writable(root: &Path) -> Result<bool, AppInstallError> {
         }
         Err(error) => Err(io_error(error)),
     }
+}
+pub(super) fn private_work(path: &Path, create: bool) -> Result<File, AppInstallError> {
+    let file = directory(path, create)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+        return Err(failure(
+            AppInstallFailure::UnsafePath,
+            "Installer work root is not private",
+        ));
+    }
+    Ok(file)
+}
+pub(super) fn regular_at(root: &File, name: &OsStr) -> Result<File, AppInstallError> {
+    let file = File::from(
+        rustix::fs::openat(
+            root,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?,
+    );
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+    {
+        return Err(failure(
+            AppInstallFailure::UnsafePath,
+            "Unsafe transaction file",
+        ));
+    }
+    Ok(file)
+}
+pub(super) fn observed(path: &Path) -> Result<Option<Identity>, AppInstallError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            Ok(Some(identity(&metadata)))
+        }
+        Ok(_) => Err(failure(
+            AppInstallFailure::UnsafePath,
+            "Unexpected transaction object",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(error)),
+    }
+}
+pub(super) fn only_entries(root: &File, allowed: &[&OsStr]) -> Result<(), AppInstallError> {
+    for entry in rustix::fs::Dir::read_from(root).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if !allowed
+            .iter()
+            .any(|allowed| allowed.as_encoded_bytes() == name.to_bytes())
+        {
+            return Err(failure(
+                AppInstallFailure::UnsafePath,
+                "Transaction contains an unowned entry",
+            ));
+        }
+    }
+    Ok(())
 }

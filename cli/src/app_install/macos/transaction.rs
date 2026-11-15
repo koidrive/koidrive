@@ -1,11 +1,79 @@
-use super::*;
+use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
+use crate::app_install::facts::{AppLaunch, CommitChange, CommitFact};
+use crate::app_install::macos::attempt::Attempt;
+use crate::app_install::macos::config::Config;
+use crate::app_install::macos::constants::{BUNDLE, CLEANUP, SIGNER};
+use crate::app_install::macos::control::{
+    CancelOnDrop, Control, Registry, args, io_error, process,
+};
+use crate::app_install::macos::download::download;
+use crate::app_install::macos::filesystem::{
+    directory, identity, lock, observed, private_work, unchanged_directory, writable,
+};
+use crate::app_install::macos::lifecycle::{capture_ui, complete_lifecycle, open, quiesce};
+use crate::app_install::macos::receipt::begin_receipt;
+use crate::app_install::macos::recovery::{recover, recover_receipt, refresh_tokens};
+use crate::app_install::macos::state::{
+    Lifecycle, OwnedMount, OwnedPath, PreviousBundle, Receipt, Stage, Staged, Transfer,
+    VerifiedBundle, WorkState,
+};
+use crate::app_install::macos::verification::{
+    current, inventory, signature_args, unchanged_bundle, verification_error, verify,
+};
+use crate::app_install::outcome::{AppChange, AppInstall, AppLaunchResult, RetiredApp};
+use rustix::fs::RenameFlags;
+use semver::Version;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time::Instant;
 
+#[cfg(test)]
+pub(super) async fn ensure_with(
+    config: Config,
+    target: Version,
+    launch: AppLaunch,
+    deadline: Instant,
+) -> Result<AppInstall, AppInstallError> {
+    ensure_registered(config, target, launch, deadline, &Registry::default()).await
+}
+pub(in crate::app_install) async fn ensure_registered(
+    config: Config,
+    target: Version,
+    launch: AppLaunch,
+    deadline: Instant,
+    registry: &Registry,
+) -> Result<AppInstall, AppInstallError> {
+    let deadline = deadline.min(Instant::now() + Duration::from_secs(300));
+    if deadline <= Instant::now() {
+        return Err(failure(
+            AppInstallFailure::Deadline,
+            "App installation deadline exceeded",
+        ));
+    }
+    let (tx, rx) = watch::channel(false);
+    let registration = registry.register(tx.clone());
+    let guard = CancelOnDrop(tx);
+    let task = tokio::spawn(async move {
+        let _registration = registration;
+        let control = Control {
+            deadline,
+            cancel: rx,
+        };
+        transaction(config, target, launch, control, deadline).await
+    });
+    let result = task
+        .await
+        .map_err(|error| failure(AppInstallFailure::Io, error))?;
+    drop(guard);
+    result
+}
 fn older(app: &VerifiedBundle, target: &Version) -> bool {
     app.version
         .as_ref()
         .is_none_or(|version| version.cmp_precedence(target).is_lt())
 }
-
 pub(super) async fn stage_copy(
     config: &Config,
     receipt: &Receipt,
@@ -61,7 +129,6 @@ pub(super) async fn stage_copy(
         parent_fd,
     })
 }
-
 pub(super) async fn exchange(
     config: &Config,
     receipt: &Receipt,
@@ -158,7 +225,6 @@ pub(super) async fn exchange(
     staged.parent_fd.sync_all().map_err(io_error)?;
     complete_lifecycle(receipt, config, control).await
 }
-
 async fn upgrade_alternatives(
     config: &Config,
     work_root: &File,
@@ -261,7 +327,6 @@ async fn upgrade_alternatives(
     }
     Ok((tokens, preserved, reopened))
 }
-
 pub(super) async fn transaction(
     config: Config,
     target: Version,
@@ -289,7 +354,6 @@ pub(super) async fn transaction(
         Err(error) => Err(attempt.fail(error)),
     }
 }
-
 async fn transaction_inner(
     config: Config,
     target: Version,

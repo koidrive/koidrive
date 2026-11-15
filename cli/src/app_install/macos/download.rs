@@ -1,4 +1,14 @@
-use super::*;
+use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
+use crate::app_install::macos::config::Config;
+use crate::app_install::macos::control::{Control, io_error};
+use crate::app_install::macos::filesystem::identity;
+use crate::app_install::macos::state::{OwnedPath, VerifiedDmg};
+use semver::Version;
+use sha2::{Digest, Sha256};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::time::Duration;
 
 fn checksum(bytes: &[u8], asset: &str) -> Result<[u8; 32], AppInstallError> {
     let text = std::str::from_utf8(bytes)
@@ -34,7 +44,6 @@ fn checksum(bytes: &[u8], asset: &str) -> Result<[u8; 32], AppInstallError> {
         )
     })
 }
-
 pub(super) async fn download(
     config: &Config,
     target: &Version,
@@ -99,7 +108,6 @@ pub(super) async fn download(
     }
     Ok(VerifiedDmg(path))
 }
-
 async fn fetch(
     client: &reqwest::Client,
     url: &str,

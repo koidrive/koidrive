@@ -1,5 +1,70 @@
-use super::*;
+use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
+use crate::app_install::macos::config::Config;
+use crate::app_install::macos::constants::{BUNDLE, IDENTIFIER, REQUIREMENT};
+use crate::app_install::macos::control::{Control, args, io_error, process};
+use crate::app_install::macos::filesystem::{directory, identity, unchanged_directory};
+use crate::app_install::macos::state::{PinnedDirectory, VerifiedBundle};
+use rustix::fs::{Mode, OFlags};
+use semver::Version;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use tokio::sync::watch;
+use tokio::time::Instant;
 
+pub(crate) struct VerifiedHelper {
+    config: Config,
+    app: VerifiedBundle,
+    binary: PathBuf,
+    root: PinnedDirectory,
+    bundle: PinnedDirectory,
+    helper_file: File,
+}
+impl VerifiedHelper {
+    pub(crate) fn path(&self) -> &Path {
+        &self.binary
+    }
+
+    pub(crate) fn version(&self) -> Option<&Version> {
+        self.app.version.as_ref()
+    }
+
+    pub(crate) fn require_version(&self, expected: &str) -> Result<(), AppInstallError> {
+        if self.version().map(ToString::to_string).as_deref() != Some(expected) {
+            return Err(failure(
+                AppInstallFailure::ConcurrentChange,
+                "App version changed since installation verification",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn check(&self, deadline: Instant) -> Result<(), AppInstallError> {
+        let (_tx, cancel) = watch::channel(false);
+        let control = Control { deadline, cancel };
+        unchanged_directory(self.app.path.parent().unwrap(), &self.root.file)?;
+        unchanged_directory(&self.app.path, &self.bundle.file)?;
+        unchanged_bundle(&self.config, &self.app, &control).await?;
+        let helper = File::from(
+            rustix::fs::open(
+                &self.binary,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io_error)?,
+        );
+        if identity(&helper.metadata().map_err(io_error)?)
+            != identity(&self.helper_file.metadata().map_err(io_error)?)
+        {
+            return Err(failure(
+                AppInstallFailure::ConcurrentChange,
+                "App helper changed since verification",
+            ));
+        }
+        Ok(())
+    }
+}
 pub(super) fn signature_args(path: &Path, requirement: &str, deep: bool) -> Vec<OsString> {
     let mut arguments = args(&[OsStr::new("--verify")]);
     if deep {
@@ -13,7 +78,6 @@ pub(super) fn signature_args(path: &Path, requirement: &str, deep: bool) -> Vec<
     ]));
     arguments
 }
-
 pub(super) fn safe_tree(bundle: &Path, control: &Control) -> Result<(), AppInstallError> {
     let metadata = fs::symlink_metadata(bundle).map_err(io_error)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -65,7 +129,6 @@ pub(super) fn safe_tree(bundle: &Path, control: &Control) -> Result<(), AppInsta
     }
     Ok(())
 }
-
 pub(in crate::app_install) async fn verify_helper(
     config: Config,
     helper: &Path,
@@ -109,9 +172,16 @@ pub(in crate::app_install) async fn verify_helper(
     verified.check(deadline).await?;
     Ok(verified)
 }
-
 mod bundle {
-    use super::*;
+    use super::{
+        AppInstallError, AppInstallFailure, Config, Control, IDENTIFIER, REQUIREMENT,
+        VerifiedBundle, args, failure, identity, io_error, process, safe_tree, signature_args,
+        verification_error,
+    };
+    use semver::Version;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::Path;
 
     pub(in crate::app_install::macos) async fn verify(
         config: &Config,
@@ -213,7 +283,6 @@ mod bundle {
     }
 }
 pub(super) use bundle::verify;
-
 pub(super) fn verification_error(error: AppInstallError, message: &str) -> AppInstallError {
     if matches!(
         error.kind,
@@ -227,7 +296,6 @@ pub(super) fn verification_error(error: AppInstallError, message: &str) -> AppIn
         )
     }
 }
-
 pub(super) async fn inventory(
     config: &Config,
     control: &Control,
@@ -250,7 +318,6 @@ pub(super) async fn inventory(
     }
     Ok(installed)
 }
-
 pub(super) async fn unchanged_bundle(
     config: &Config,
     app: &VerifiedBundle,
@@ -265,7 +332,6 @@ pub(super) async fn unchanged_bundle(
     }
     Ok(())
 }
-
 pub(super) fn current<'a>(
     installed: &'a [VerifiedBundle],
     target: &Version,

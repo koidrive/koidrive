@@ -1,73 +1,21 @@
-use super::*;
-
-pub(super) fn private_work(path: &Path, create: bool) -> Result<File, AppInstallError> {
-    let file = directory(path, create)?;
-    let metadata = file.metadata().map_err(io_error)?;
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
-        return Err(failure(
-            AppInstallFailure::UnsafePath,
-            "Installer work root is not private",
-        ));
-    }
-    Ok(file)
-}
-
-pub(super) fn regular_at(root: &File, name: &OsStr) -> Result<File, AppInstallError> {
-    let file = File::from(
-        rustix::fs::openat(
-            root,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?,
-    );
-    let metadata = file.metadata().map_err(io_error)?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-    {
-        return Err(failure(
-            AppInstallFailure::UnsafePath,
-            "Unsafe transaction file",
-        ));
-    }
-    Ok(file)
-}
-
-pub(super) fn observed(path: &Path) -> Result<Option<Identity>, AppInstallError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            Ok(Some(identity(&metadata)))
-        }
-        Ok(_) => Err(failure(
-            AppInstallFailure::UnsafePath,
-            "Unexpected transaction object",
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io_error(error)),
-    }
-}
-
-pub(super) fn only_entries(root: &File, allowed: &[&OsStr]) -> Result<(), AppInstallError> {
-    for entry in rustix::fs::Dir::read_from(root).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
-        let name = entry.file_name();
-        if matches!(name.to_bytes(), b"." | b"..") {
-            continue;
-        }
-        if !allowed
-            .iter()
-            .any(|allowed| allowed.as_encoded_bytes() == name.to_bytes())
-        {
-            return Err(failure(
-                AppInstallFailure::UnsafePath,
-                "Transaction contains an unowned entry",
-            ));
-        }
-    }
-    Ok(())
-}
+use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
+use crate::app_install::macos::config::Config;
+use crate::app_install::macos::constants::BUNDLE;
+use crate::app_install::macos::control::io_error;
+use crate::app_install::macos::filesystem::{
+    identity, private_work, regular_at, unchanged_directory,
+};
+use crate::app_install::macos::state::{
+    Lifecycle, OwnedPath, PinnedDirectory, Receipt, ReceiptData, Transfer, WorkState,
+};
+use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
+use semver::Version;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 impl Receipt {
     pub(super) fn path(&self) -> PathBuf {
@@ -312,7 +260,6 @@ impl Receipt {
         Ok(())
     }
 }
-
 pub(super) fn begin_receipt(
     config: &Config,
     work_root: &File,
