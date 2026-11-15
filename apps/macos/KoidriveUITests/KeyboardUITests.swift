@@ -16,7 +16,7 @@ final class KeyboardUITests: XCTestCase {
         XCTAssert(keepCopy.waitForExistence(timeout: 20))
         window.staticTexts["Versions"].click()
 
-        tab(until: keepCopy, in: app)
+        tab(until: keepCopy, in: window, app: app)
         app.typeKey(" ", modifierFlags: [])
         let settled = window.staticTexts.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "now has the copy", "now has the copy")).firstMatch
         XCTAssert(settled.waitForExistence(timeout: 10))
@@ -33,37 +33,36 @@ final class KeyboardUITests: XCTestCase {
         XCTAssert(remove.waitForExistence(timeout: 20))
         window.staticTexts["Server"].click()
 
-        tab(until: window.buttons["Sign Out…"], in: app)
-        tab(until: remove, in: app)
-        let add = window.buttons["Add a Device…"]
-        tab(until: add, in: app)
+        tab(until: window.buttons["Sign Out…"], in: window, app: app)
+        tab(until: window.buttons["Add a Device…"], in: window, app: app)
         app.typeKey(" ", modifierFlags: [])
         let code = window.staticTexts.matching(NSPredicate(format: "value == %@ OR label == %@", "Pairing code", "Pairing code")).firstMatch
         XCTAssert(code.waitForExistence(timeout: 10))
+        tab(until: remove, in: window, app: app)
     }
 
     @MainActor
     private func launch(_ scenario: String, _ arguments: String...) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-FakeScenario", scenario, "-AppleKeyboardUIMode", "2"] + arguments
+        app.launchArguments = ["-FakeScenario", scenario] + arguments
         app.launch()
         addTeardownBlock { app.terminate() }
         return app
     }
 
     @MainActor
-    private func tab(until element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        var visited = [describeFocus(in: app)]
+    private func tab(until element: XCUIElement, in window: XCUIElement, app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        var visited = [describeFocus(in: window)]
         for _ in 0..<30 where !focused(element) {
             app.typeKey(.tab, modifierFlags: [])
-            visited.append(describeFocus(in: app))
+            visited.append(describeFocus(in: window))
         }
         XCTAssert(focused(element), "Tab never reached \(element). Focus went through: \(visited)", file: file, line: line)
     }
 
     @MainActor
-    private func describeFocus(in app: XCUIApplication) -> String {
-        let current = app.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == true")).firstMatch
+    private func describeFocus(in window: XCUIElement) -> String {
+        let current = window.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == true")).firstMatch
         return current.exists ? "\(current.elementType.rawValue):\(current.label):\(current.identifier)" : "none"
     }
 
