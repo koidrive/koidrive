@@ -556,6 +556,7 @@ struct Device {
     touched: BTreeSet<String>,
     acted: BTreeSet<String>,
     removed_from: BTreeMap<String, String>,
+    kept_back: BTreeSet<String>,
 }
 
 impl Device {
@@ -739,6 +740,7 @@ impl Device {
                     if let Some(node) = self.trees.local().get(&other) {
                         self.removed_from.insert(other.clone(), node.shape.parent.clone());
                     }
+                    self.kept_back.remove(&other);
                     self.acted.insert(other.clone());
                     self.trees.remove_local(&other);
                 }
@@ -1227,7 +1229,21 @@ fn acted_below(
         trees.remote().live(entry).is_some_and(holds)
             || acknowledged_shape(trees, entry).is_some_and(holds)
     };
-    let below_in_r = |node: &str, entry: &str| {
+    let kept_back = |entry: &str| {
+        device.kept_back.contains(entry)
+            && trees.local().get(entry).is_none()
+            && trees.remote().live(entry).is_some()
+    };
+    (device.acted.iter())
+        .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
+        .any(|entry| {
+            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+        })
+}
+
+fn kept_by_r7(device: &Device, entry: &str) -> bool {
+    let trees = &device.trees;
+    let below_in_r = |node: &str| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
             match current {
@@ -1247,22 +1263,23 @@ fn acted_below(
         }
         false
     };
-    let kept_by_r7 = |entry: &str| {
-        trees.local().get(entry).is_none()
-            && trees.remote().live(entry).is_some()
-            && (trees.remote().iter()).any(|(node, remote)| {
-                !remote.trashed
-                    && trees.local().get(node).is_none()
-                    && !device.removed_from.contains_key(node)
-                    && !trees.excluded(node)
-                    && below_in_r(node, entry)
-            })
-    };
-    (device.acted.iter())
-        .filter(|entry| !as_agreed(entry) && !kept_by_r7(entry))
-        .any(|entry| {
-            reaches(entry, &in_local) || reaches(entry, &in_kept) || reaches(entry, &removed_from)
+    trees.local().get(entry).is_none()
+        && trees.remote().live(entry).is_some()
+        && (trees.remote().iter()).any(|(node, remote)| {
+            !remote.trashed
+                && trees.local().get(node).is_none()
+                && !device.removed_from.contains_key(node)
+                && !trees.excluded(node)
+                && below_in_r(node)
         })
+}
+
+fn note_kept_back(device: &mut Device) {
+    let kept: Vec<String> = (device.removed_from.keys())
+        .filter(|entry| kept_by_r7(device, entry))
+        .cloned()
+        .collect();
+    device.kept_back.extend(kept);
 }
 
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
@@ -1324,6 +1341,7 @@ fn run_ignoring_answering_after(
         touched: BTreeSet::new(),
         acted: BTreeSet::new(),
         removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -1464,6 +1482,7 @@ fn run_ignoring_answering_after(
         prop_assert_eq!(device.trees.check(), Ok(()));
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
+        note_kept_back(&mut device);
         let revived = revive(&device, &discarded, &kept_with);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();

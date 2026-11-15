@@ -90,6 +90,7 @@ fn placement_check_after_a_move(
         touched: BTreeSet::from(["x".into()]),
         acted: BTreeSet::from(["x".into()]),
         removed_from: BTreeMap::new(),
+        kept_back: BTreeSet::new(),
     };
     let result = placement_check(
         &device,
