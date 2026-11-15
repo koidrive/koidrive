@@ -2483,20 +2483,23 @@ fn in_sync(trees: &Trees, original: &ConflictFile, copy: &ConflictFile) -> bool 
 }
 
 fn leaving_unsent(
-    trees: &Trees,
+    scratch: &Scratch,
     aliases: &BTreeMap<NodeId, NodeId>,
     problems: &BTreeSet<NodeId>,
     id: &str,
 ) -> bool {
-    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
+    let trees = scratch.trees;
+    let (Some(local), Some(parent), Some(name)) =
+        (trees.local().get(id), scratch.parent(id), scratch.name(id))
+    else {
         return false;
     };
     (problems.contains(id) || trees.waiting().contains_key(id))
         && (aliases
             .get(&local.shape.parent)
             .unwrap_or(&local.shape.parent)
-            != &remote.shape.parent
-            || name_key(&local.shape.name) != name_key(&remote.shape.name))
+            != parent
+            || name_key(&local.shape.name) != name_key(name))
 }
 
 /// The node other than `other` that R holds live under `parent` with the name key of `name`.
@@ -3528,7 +3531,7 @@ fn plan(
         }) = slot.as_mut()
             && shape.kind == Kind::Dir
             && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
-                moving.contains(other) || leaving_unsent(trees, aliases, problems, other)
+                moving.contains(other) || leaving_unsent(&scratch, aliases, problems, other)
             })
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
