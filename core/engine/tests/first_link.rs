@@ -2445,7 +2445,7 @@ fn a_server_folder_taken_along_by_a_discard_goes_home_into_the_folder_the_user_d
         ],
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live, PriorSync::Shown);
     let asked = question(&commits);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
     let mut moved = trees.local().get("x").unwrap().clone();
