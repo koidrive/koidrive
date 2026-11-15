@@ -55,15 +55,12 @@ extension AppModel {
         if let installingVersion { return .updating(version: installingVersion) }
         if let updateFailure { return .failed(updateFailure) }
         if checkingForUpdates { return .checking }
+        if case .available = newestUpdate { return Self.notice(newestUpdate) }
         switch updateCheck {
         case .failed(let failure, _): return .checkFailed(failure)
         case .answered(let update): return Self.notice(update)
-        case nil: break
+        case nil: return state.status == .offline ? .offline : Self.notice(state.update)
         }
-        if case .available = state.update {
-            return Self.notice(state.update)
-        }
-        return state.status == .offline ? .offline : Self.notice(state.update)
     }
 
     /// The update notice in the menu bar popover, which shows only what the person can act on, just did or asked for.

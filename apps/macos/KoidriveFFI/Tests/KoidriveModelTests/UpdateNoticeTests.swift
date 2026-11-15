@@ -144,6 +144,21 @@ import Testing
         #expect(model.updateNotice == .upToDate(checkedAtMs: later))
     }
 
+    @Test func aFailedCheckKeepsShowingAReleaseTheDaemonAlreadyKnows() async throws {
+        let model = AppModel.fake(scenario: .updateAvailable)
+        let available = UpdateNotice.available(
+            version: "0.1.1", releaseURL: URL(string: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1"))
+        let fake = try #require(model.session.fakeCore())
+        for failure in [SessionError.ReleasesRefused, .ReleasesUnreachable, .Failed(reason: "koi is missing")] {
+            fake.failNext(error: failure)
+            await model.checkForUpdates()
+            #expect(model.updateNotice == available)
+            #expect(model.popoverUpdateNotice == available)
+            model.dismissUpdateCheck()
+            #expect(model.popoverUpdateNotice == available)
+        }
+    }
+
     @Test func aCheckAfterAFailedInstallShowsItsAnswerAndUpdateBringsTheFailureBack() async throws {
         let model = AppModel.fake(scenario: .updateFails)
         #expect(await model.installUpdate() == nil)
@@ -172,8 +187,11 @@ import Testing
 
         try #require(model.session.fakeCore()).failNext(error: .ReleasesUnreachable)
         await model.checkForUpdates()
-        #expect(model.updateNotice == .checkFailed(.unreachable))
-        #expect(model.popoverUpdateNotice == .checkFailed(.unreachable))
+        guard case .available(version, _) = model.updateNotice else {
+            Issue.record("expected the known release after a failed check, got \(model.updateNotice)")
+            return
+        }
+        #expect(model.popoverUpdateNotice == model.updateNotice)
     }
 
     @Test func aCheckAnswersWhileSyncIsOfflineAndWhileScheduledChecksAreOff() async throws {
