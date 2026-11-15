@@ -44,16 +44,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use koidrive_chunk::ChunkerConfig;
+use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Displaced as EngineDisplaced, Effect as EngineEffect,
     EffectRecord, Location as EngineLocation, location_of,
 };
+use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, Kind, LocalNode};
+use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
-    Action, Base, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId, Location, Marker,
-    Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
+    Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
+    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -262,6 +264,7 @@ pub(crate) struct Disk {
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
     hook: Hook,
+    brought_back: BroughtBack,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -374,6 +377,7 @@ impl Disk {
             rescan_after: None,
             batch: BATCH,
             hook,
+            brought_back: BroughtBack::Entries(HashSet::new()),
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -421,6 +425,10 @@ impl Disk {
                 Ok(())
             })?;
         }
+        if let Err(err) = disk.space.repair_brought_back() {
+            tracing::warn!(space_id = link.space_id, %err, "could not repair what a recovery brought back");
+        }
+        disk.brought_back = disk.space.brought_back()?;
         if marker < cleared {
             return Err(Stop::DiskBehind { marker, cleared });
         }
@@ -727,6 +735,39 @@ impl Disk {
     pub fn refuses(&self, effect: &EngineEffect) -> Option<Refusal> {
         let (action, _) = action(effect).ok()?;
         self.space.refuses(&action).ok().flatten()
+    }
+
+    pub fn marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
+        let brought_back = |identity: &_| self.brought_back.holds(file_id(*identity));
+        (ids.into_iter())
+            .filter(|id| !first_link::at_or_under(trees, id, brought_back))
+            .filter_map(|id| {
+                let (at, expected) = self.place_of(trees, id)?;
+                match self.space.mark_of(&at, expected) {
+                    Ok(node) => Some((id.clone(), node?)),
+                    Err(err) => {
+                        tracing::warn!(space_id = self.space_id, id, %err, "could not read a node mark");
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {
+        for (id, node) in entries {
+            let Some((at, expected)) = self.place_of(trees, &id) else {
+                continue;
+            };
+            if let Err(err) = self.space.mark(&at, expected, &node) {
+                tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
+            }
+        }
+    }
+
+    fn place_of(&self, trees: &Trees, id: &str) -> Option<(Location, FileId)> {
+        let at = location(&location_of(trees, id)?).ok()?;
+        Some((at, file_id(trees.local().get(id)?.identity)))
     }
 
     /// Asks the observer to reset `paths` to L and scan them again.
@@ -1378,6 +1419,7 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
     let (action, contents) = action(&record.effect).map_err(bad)?;
     let effect = Effect {
         id: record.effect_id.clone(),
+        node: record.node.clone(),
         action,
     };
     Ok((effect, contents))

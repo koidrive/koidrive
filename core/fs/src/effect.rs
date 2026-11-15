@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -11,9 +12,11 @@ use koidrive_ignore::PLATFORM_FILES;
 use rustix::fs::{Access, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
+use crate::mark;
 use crate::resolve::{Base, Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
 use crate::root::{
-    Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, write_marker_at,
+    Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, replace_file,
+    write_marker_at,
 };
 use crate::trash::TRASH_DIR;
 use crate::{Entry, EntryKind, FileId, Stat, list, stat_at, stat_fd};
@@ -23,6 +26,26 @@ pub const STAGING_DIR: &str = "staging";
 /// The folder inside the private folder that holds displaced entries until
 /// they are compared. It is never swept.
 pub const QUARANTINE_DIR: &str = "quarantine";
+const BROUGHT_BACK: &str = "brought-back.json";
+const BROUGHT_BACK_TEMP: &str = "brought-back.json.tmp";
+
+/// What [`Space::brought_back`] read of the entries a store rollback brought back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroughtBack {
+    Entries(HashSet<FileId>),
+    /// The record exists but cannot be read, so no entry is known not to be one of them.
+    Unreadable,
+}
+
+impl BroughtBack {
+    /// Whether `id` may be an entry a store rollback brought back.
+    pub fn holds(&self, id: FileId) -> bool {
+        match self {
+            BroughtBack::Entries(ids) => ids.contains(&id),
+            BroughtBack::Unreadable => true,
+        }
+    }
+}
 
 /// An entry an effect displaces, as the caller last observed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +91,8 @@ pub struct Effect {
     /// Names the effect's staging and quarantine entries, and its trash entry,
     /// so it must be a single file name.
     pub id: String,
+    /// The node the effect is for. A file it places and a folder it creates are marked with it.
+    pub node: String,
     pub action: Action,
 }
 
@@ -471,26 +496,100 @@ impl Space {
     /// name made from `name` of its private name and identity, and returns the paths they took. A
     /// store older than the disk does not know what the disk parked, or what the last effect the
     /// root marker counts left in quarantine when it stopped between its steps, and scans read
-    /// neither directory (design §6.4).
+    /// neither directory (design §6.4). Before it moves any, it adds their identities to the set
+    /// [`Space::brought_back`] reads, since the place each takes is not one the user gave it.
     pub fn bring_back_all(
         &self,
         name: impl Fn(&OsStr, FileId) -> OsString,
         now: SystemTime,
     ) -> io::Result<Vec<PathBuf>> {
         let root = self.root_folder()?;
+        let held = [PARKED_DIR, QUARANTINE_DIR].map(|dir| self.private(&[dir]));
+        let [parked, quarantine] = held.map(|private| -> io::Result<_> {
+            let private = private?;
+            let entries = list(private.fd())?;
+            Ok((private, entries))
+        });
+        let held = [parked?, quarantine?];
+        if held.iter().all(|(_, entries)| entries.is_empty()) {
+            return Ok(Vec::new());
+        }
+        if let BroughtBack::Entries(mut brought_back) = self.brought_back()? {
+            for (private, entries) in &held {
+                for entry in entries {
+                    brought_back.insert(stat_at(private.fd(), entry)?.id);
+                }
+            }
+            let ids: Vec<_> = (brought_back.iter())
+                .map(|id| (id.dev, id.ino, id.birth_ns))
+                .collect();
+            replace_file(
+                self.private(&[])?.fd(),
+                BROUGHT_BACK,
+                BROUGHT_BACK_TEMP,
+                &serde_json::to_vec(&ids)?,
+                Flush::Barrier,
+            )?;
+        }
         let mut moved = Vec::new();
-        for dir in [PARKED_DIR, QUARANTINE_DIR] {
-            let private = self.private(&[dir])?;
-            for entry in list(private.fd())? {
-                let stat = stat_at(private.fd(), &entry)?;
-                let original = name(&entry, stat.id);
+        for (private, entries) in &held {
+            for entry in entries {
+                let stat = stat_at(private.fd(), entry)?;
+                let original = name(entry, stat.id);
                 let folder = stat.file_type == FileType::Directory;
                 moved.push(
-                    self.move_to_recovered_name(&private, &entry, &root, &original, folder, now)?,
+                    self.move_to_recovered_name(private, entry, &root, &original, folder, now)?,
                 );
             }
         }
         Ok(moved)
+    }
+
+    /// The identities of the entries [`Space::bring_back_all`] moved. The record is never pruned,
+    /// since no scan can show that an entry and everything in it lost the mark it had. Recovery does not find an entry by its node mark when the
+    /// entry, or a folder it is in, is one of them (design §6.4). The set is kept on disk, so a
+    /// stop between bringing entries back and recovering keeps it. A record that cannot be read
+    /// is [`BroughtBack::Unreadable`], and a later bring-back leaves it so.
+    pub fn brought_back(&self) -> io::Result<BroughtBack> {
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let file =
+            match rustix::fs::openat(self.private(&[])?.fd(), BROUGHT_BACK, flags, Mode::empty()) {
+                Ok(file) => file,
+                Err(Errno::NOENT) => return Ok(BroughtBack::Entries(HashSet::new())),
+                Err(_) => return Ok(BroughtBack::Unreadable),
+            };
+        let Ok(ids) = serde_json::from_reader::<_, Vec<(u64, u128, Option<i64>)>>(File::from(file))
+        else {
+            return Ok(BroughtBack::Unreadable);
+        };
+        Ok(BroughtBack::Entries(
+            (ids.into_iter())
+                .map(|(dev, ino, birth_ns)| FileId { dev, ino, birth_ns })
+                .collect(),
+        ))
+    }
+
+    /// Replaces a record [`Space::brought_back`] cannot read with the identities of every entry
+    /// of the root, so no entry it may have held is found by its node mark.
+    pub fn repair_brought_back(&self) -> io::Result<()> {
+        if self.brought_back()? != BroughtBack::Unreadable {
+            return Ok(());
+        }
+        let root = self.root_folder()?;
+        let mut ids = Vec::new();
+        for entry in list(root.fd())? {
+            if entry != PRIVATE_DIR {
+                let id = stat_at(root.fd(), &entry)?.id;
+                ids.push((id.dev, id.ino, id.birth_ns));
+            }
+        }
+        replace_file(
+            self.private(&[])?.fd(),
+            BROUGHT_BACK,
+            BROUGHT_BACK_TEMP,
+            &serde_json::to_vec(&ids)?,
+            Flush::Barrier,
+        )
     }
 
     /// Begins an effect section after checking that the root is held. It
@@ -546,7 +645,9 @@ impl Space {
                     Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
                     Err(err) => return denied(err.into()),
                 }
-                let identity = stat_at(parent.fd(), name)?.id;
+                let folder = mark::open(parent.fd(), name)?.ok_or(io::ErrorKind::NotFound)?;
+                let identity = stat_fd(folder.as_fd())?.id;
+                mark::write(folder.as_fd(), &effect.node);
                 hook(Step::Placed);
                 Outcome::Done {
                     identity: Some(identity),
@@ -556,7 +657,7 @@ impl Space {
                 let staging = open!(self.private(&[STAGING_DIR]));
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
-                self.place(&staging, &effect.id, &parent, name, hook)?
+                self.place(&staging, effect, &parent, name, hook)?
             }
             Action::WriteFile {
                 at,
@@ -661,7 +762,7 @@ impl Space {
         }
         let outcome = match target {
             Some((staging, (target, new_name))) => {
-                match self.place(&staging, &effect.id, &target, new_name, hook)? {
+                match self.place(&staging, effect, &target, new_name, hook)? {
                     placed if is_denied(&placed) => {
                         return self.returned(
                             &quarantine,
@@ -692,15 +793,18 @@ impl Space {
     fn place(
         &self,
         staging: &Folder,
-        id: &str,
+        effect: &Effect,
         target: &Folder,
         name: &OsStr,
         hook: &mut dyn FnMut(Step),
     ) -> io::Result<Outcome> {
         resolve!(self.recheck(target));
         self.recheck(staging)?;
-        let identity = stat_at(staging.fd(), OsStr::new(id))?.id;
-        match rename_no_replace(staging.fd(), OsStr::new(id), target.fd(), name) {
+        let id = OsStr::new(&effect.id);
+        let staged = mark::open(staging.fd(), id)?.ok_or(io::ErrorKind::NotFound)?;
+        let identity = stat_fd(staged.as_fd())?.id;
+        mark::write(staged.as_fd(), &effect.node);
+        match rename_no_replace(staging.fd(), id, target.fd(), name) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 return Ok(failed(Reason::Taken));
@@ -810,9 +914,7 @@ impl Space {
             let outcome = match place {
                 Some(at) if staged => {
                     let placed = match self.parent(at) {
-                        Ok((target, name)) => {
-                            self.place(&staging, &effect.id, &target, name, hook)?
-                        }
+                        Ok((target, name)) => self.place(&staging, effect, &target, name, hook)?,
                         Err(Unresolved::Io { err, .. }) if refused(&err) => failed(Reason::Denied),
                         Err(err) => unresolved(err)?,
                     };

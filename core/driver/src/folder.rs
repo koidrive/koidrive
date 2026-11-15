@@ -13,7 +13,7 @@
 //! A future owns what it needs and borrows only the session and the transfer client, so none holds the store or
 //! the engine across an await.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::future::Future;
 use std::io;
@@ -28,7 +28,7 @@ use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt, Reconnect};
 use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
-use koidrive_engine::tree::{Content, Kind, LocalNode, Shape, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same_content};
 use koidrive_fs::{Refusal, Snapshot, Unresolved, check_root};
 use koidrive_net::{
     Auth, Backoff, CallError, Cause, ChunkError, DisconnectReason, Event, NotResent, ServerError,
@@ -1470,6 +1470,8 @@ impl Folder {
             Ok((out, unanswered(tx)?))
         })?;
         self.questions = questions;
+        let granted = self.engine.commits.take_granted();
+        self.mark_granted(granted);
         #[cfg(test)]
         if let Some(left) = &mut self.crash_after {
             if *left == 0 {
@@ -1708,6 +1710,14 @@ impl Folder {
         Ok(())
     }
 
+    fn mark_granted(&self, granted: Vec<NodeId>) {
+        let trees = &self.engine.trees;
+        let entries = (granted.into_iter())
+            .filter(|node| trees.local().get(node).is_some())
+            .map(|node| (node.clone(), node));
+        self.disk.mark(trees, entries);
+    }
+
     /// Replaces R with the bootstrap's tree once the log has caught it up (design §4.4). On the first link of the
     /// folder, with no cursor in the store, R waits for the first scan, and the engine then matches L against it
     /// (§6.4): what both hold alike is adopted, and the rest of L is held until the person publishes or discards it.
@@ -1747,6 +1757,13 @@ impl Folder {
         let history = (staging.take_history())
             .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
             .unwrap_or_default();
+        let trees = &self.engine.trees;
+        let unheld: BTreeMap<NodeId, FileIdentity> = (trees.local().iter())
+            .filter(|(id, _)| recovering && trees.synced().get(id).is_none())
+            .map(|(id, node)| (id.clone(), node.identity))
+            .collect();
+        let marks = self.disk.marks(trees, unheld.keys());
+        let unheld: HashSet<FileIdentity> = unheld.into_values().collect();
         self.remote_nodes = self.step(|engine, tx| {
             engine.replace_remote(tx, staging)?;
             if recovering {
@@ -1755,6 +1772,7 @@ impl Folder {
                     device_seq,
                     &cause,
                     &history,
+                    &marks,
                     &mut engine.ids,
                     now_ms,
                 );
@@ -1770,6 +1788,14 @@ impl Folder {
         if recovering {
             self.unreadable.clear();
         }
+        let trees = &self.engine.trees;
+        let adopted = (trees.local().iter())
+            .filter(|(id, node)| {
+                trees.synced().get(id).is_some() && unheld.contains(&node.identity)
+            })
+            .map(|(id, _)| (id.clone(), id.clone()))
+            .collect::<Vec<_>>();
+        self.disk.mark(trees, adopted);
         Ok(())
     }
 

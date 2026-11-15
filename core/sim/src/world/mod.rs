@@ -69,10 +69,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
-use koidrive_engine::first_link::{self, History};
+use koidrive_engine::first_link::{self, History, Marks};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, NodeId, RemoteNode, Shape, same, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Error, ListVersions, Move, NodeKind, NodeState, NodeStatus,
     PrepareUpload, Resume, UploadReceipt, change_record, chunk_plan, error, op, op_result,
@@ -167,6 +167,29 @@ pub enum Reply {
     NoChunks,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    MakeDir,
+    MakeFile,
+    Overwrite,
+    Rename,
+    Delete,
+    Copy,
+    Save { keeps_mark: bool },
+}
+
+impl Act {
+    fn of(kind: u8) -> Act {
+        match kind % 5 {
+            0 => Act::MakeDir,
+            1 => Act::MakeFile,
+            2 => Act::Overwrite,
+            3 => Act::Rename,
+            _ => Act::Delete,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     User(Action),
@@ -202,6 +225,14 @@ pub enum Step {
     /// owner can (RFC 0003), so every connection breaks and every device recovers (section 6.4).
     Rewind,
     CopyStore,
+    /// The user copies the target file to the parent and name the action picks.
+    Copy(Action),
+    /// The user saves the target file as an app that writes a new file and renames it over the old
+    /// one does, which keeps the mark or not.
+    Save {
+        target: usize,
+        keeps_mark: bool,
+    },
     /// Answers the device's first open recovery question with the answer the number picks among
     /// those it offers (section 6.4).
     Answer(usize),
@@ -390,7 +421,8 @@ fn resent_over_revert(
 
 /// Applies the result of the commit in flight to R when it is the next commit, and acknowledges
 /// the commit once R holds its records (section 2.7).
-fn acknowledge(engine: &mut Engine) -> Result<(), Failure> {
+fn acknowledge(device: &mut Device) -> Result<(), Failure> {
+    let engine = &mut device.engine;
     let next = (engine.commits.in_flight())
         .and_then(|flight| Some((flight.commit.commit_id.clone(), flight.result.clone()?)));
     if let Some((commit_id, result)) =
@@ -409,6 +441,15 @@ fn acknowledge(engine: &mut Engine) -> Result<(), Failure> {
     engine
         .commits
         .acknowledge(&mut engine.trees, engine.cursor.seq);
+    let trees = &engine.trees;
+    for node in engine.commits.take_granted() {
+        let Some(local) = trees.local().get(&node) else {
+            continue;
+        };
+        if let Some(at) = location_of(trees, &node) {
+            device.disk.mark(&at, local.identity.ino, &node);
+        }
+    }
     Ok(())
 }
 
@@ -833,7 +874,19 @@ impl World {
                 device.left = true;
                 device.link = None;
             }
-            Step::User(action) => self.act(d, action),
+            Step::User(action) => self.act(d, action, Act::of(action.kind)),
+            Step::Copy(action) => self.act(d, action, Act::Copy),
+            Step::Save { target, keeps_mark } => {
+                let action = Action {
+                    kind: 0,
+                    target: *target,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                };
+                let keeps_mark = *keeps_mark;
+                self.act(d, &action, Act::Save { keeps_mark });
+            }
             Step::Answer(choice) => {
                 self.answer(d, *choice)?;
             }
@@ -920,7 +973,7 @@ impl World {
         })
     }
 
-    fn act(&mut self, d: usize, action: &Action) {
+    fn act(&mut self, d: usize, action: &Action, act: Act) {
         let disk = &mut self.devices[d].disk;
         let visible = disk.visible();
         let dirs: Vec<Place> = std::iter::once(Place::Root)
@@ -947,14 +1000,14 @@ impl World {
             .collect();
         let write = self.writes + 1;
         let mut touched: Vec<u128> = Vec::new();
-        match (action.kind % 5, target) {
-            (0, _) => {
+        match (act, target) {
+            (Act::MakeDir, _) => {
                 if let Some(new) = disk.create(place, name, None) {
                     self.named[d].insert(name);
                     touched = std::iter::once(new).chain(above).collect();
                 }
             }
-            (1, _) => {
+            (Act::MakeFile, _) => {
                 let content = content(d as u8, action.text % TEXTS, write);
                 if let Some(new) = disk.create(place, name, Some(content)) {
                     self.named[d].insert(name);
@@ -963,7 +1016,7 @@ impl World {
                     touched = std::iter::once(new).chain(above).collect();
                 }
             }
-            (2, Some(ino)) => {
+            (Act::Overwrite, Some(ino)) => {
                 let entry = &disk.entries()[&ino];
                 let fresh = (0..TEXTS)
                     .map(|i| content(d as u8, (action.text % TEXTS + i) % TEXTS, write))
@@ -978,7 +1031,7 @@ impl World {
                     touched = itself;
                 }
             }
-            (3, Some(ino)) => {
+            (Act::Rename, Some(ino)) => {
                 if disk.rename(ino, place, name).is_ok() {
                     self.named[d].insert(name);
                     let moved = disk.entries()[&ino].content.as_ref().map(|c| c.mtime_ns);
@@ -988,17 +1041,31 @@ impl World {
                     touched = itself.into_iter().chain(above).collect();
                 }
             }
-            (4, Some(ino)) => {
+            (Act::Delete, Some(ino)) => {
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(|content| content.mtime_ns));
+            }
+            (Act::Copy, Some(ino)) => {
+                if let Some(new) = disk.copy(ino, place, name) {
+                    self.named[d].insert(name);
+                    (self.copied).extend(disk.entries()[&new].content.as_ref().map(|c| c.mtime_ns));
+                    touched = std::iter::once(new).chain(above).collect();
+                }
+            }
+            (Act::Save { keeps_mark }, Some(ino)) => {
+                if let Some(new) = disk.save(ino, keeps_mark) {
+                    touched = std::iter::once(new)
+                        .chain(itself.into_iter().skip(1))
+                        .collect();
+                }
             }
             _ => {}
         }
         let local = self.devices[d].engine.trees.local();
         if let Some(own) = touched.first() {
-            let change = match action.kind % 5 {
-                2 => Change::Edited,
-                3 => Change::Moved,
+            let change = match act {
+                Act::Overwrite => Change::Edited,
+                Act::Rename => Change::Moved,
                 _ => Change::Made,
             };
             self.actions[d].insert(self.clock, (*own, change));
@@ -1940,7 +2007,32 @@ impl World {
                         ids,
                         ..
                     } = &mut device.engine;
-                    commits.recover(trees, device_seq, &cause, &history, ids, NOW as u64);
+                    let disk = &mut device.disk;
+                    let unheld: Vec<(NodeId, u128)> = (trees.local().iter())
+                        .filter(|(id, _)| trees.synced().get(id).is_none())
+                        .map(|(id, node)| (id.clone(), node.identity.ino))
+                        .collect();
+                    let brought_back =
+                        |identity: &FileIdentity| disk.brought_back.contains(&identity.ino);
+                    let marks: Marks = (unheld.iter())
+                        .filter(|(id, _)| !first_link::at_or_under(trees, id, brought_back))
+                        .filter_map(|(id, ino)| {
+                            let node = disk.mark_of(&location_of(trees, id)?, *ino)?;
+                            Some((id.clone(), node))
+                        })
+                        .collect();
+                    commits.recover(trees, device_seq, &cause, &history, &marks, ids, NOW as u64);
+                    let unheld: BTreeSet<u128> = unheld.into_iter().map(|(_, ino)| ino).collect();
+                    let adopted = (trees.local().iter())
+                        .filter(|(id, node)| {
+                            trees.synced().get(id).is_some() && unheld.contains(&node.identity.ino)
+                        })
+                        .filter_map(|(id, node)| {
+                            Some((location_of(trees, id)?, node.identity.ino, id))
+                        });
+                    for (at, ino, id) in adopted {
+                        disk.mark(&at, ino, id);
+                    }
                     for (id, node) in trees.local().iter() {
                         let (Some(here), Some(there)) = (
                             node.shape.content.as_ref(),
@@ -1983,8 +2075,7 @@ impl World {
                         if flight.is_some_and(|f| f.commit.commit_id == record.commit_id) {
                             note(&mut self.seen, "own commit replayed before its result");
                         }
-                        let engine = &mut self.devices[d].engine;
-                        acknowledge(engine)?;
+                        acknowledge(&mut self.devices[d])?;
                     } else {
                         note(&mut self.seen, "records arrive twice");
                     }
@@ -2014,7 +2105,7 @@ impl World {
                                 _ => "result arrives before earlier commits",
                             },
                         );
-                        device.engine.commits.received(result).map_err(refused)?
+                        device.engine.commits.received(result).map_err(refused)?;
                     }
                     Err(error) => match device
                         .engine
@@ -2075,7 +2166,7 @@ impl World {
                 }
             }
         }
-        acknowledge(&mut self.devices[d].engine)?;
+        acknowledge(&mut self.devices[d])?;
         self.devices[d].persist()?;
         Ok(true)
     }
@@ -3841,6 +3932,7 @@ mod tests {
             0,
             &cause,
             &History::new(),
+            &Marks::new(),
             &mut engine.ids,
             NOW as u64,
         );

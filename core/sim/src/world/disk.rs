@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::effects::{Base, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::tree::{Content, FileIdentity, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, NodeId, same_content};
 
 /// Where an entry sits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,6 +36,13 @@ pub struct Entry {
     /// The manifest digest of every content this file has held, so that a user overwrite never
     /// brings back bytes the file held before.
     pub held: Vec<Vec<u8>>,
+    pub mark: Option<Mark>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub node: NodeId,
+    pub ino: u128,
 }
 
 /// Why the disk did not do an effect.
@@ -100,6 +107,7 @@ pub struct Disk {
     trash: BTreeSet<String>,
     binned: BTreeSet<i64>,
     marker: u64,
+    pub(super) brought_back: BTreeSet<u128>,
 }
 
 impl Disk {
@@ -156,6 +164,7 @@ impl Disk {
             let entry = self.entries.get_mut(&ino).expect("listed");
             entry.place = Place::Root;
             entry.name = free;
+            self.brought_back.insert(ino);
         }
         for (ino, entry) in std::mem::take(&mut self.quarantine).into_values() {
             let name = self.recovered(&entry.name);
@@ -165,6 +174,7 @@ impl Disk {
                 ..entry
             };
             self.entries.insert(ino, entry);
+            self.brought_back.insert(ino);
         }
     }
 
@@ -234,9 +244,54 @@ impl Disk {
             name: name.to_owned(),
             content,
             held,
+            mark: None,
         };
         self.entries.insert(self.inos, entry);
         Some(self.inos)
+    }
+
+    pub fn copy(&mut self, ino: u128, place: Place, name: &str) -> Option<u128> {
+        let source = self
+            .entries
+            .get(&ino)
+            .filter(|entry| entry.content.is_some())?
+            .clone();
+        let copy = self.create(place, name, source.content)?;
+        self.entries.get_mut(&copy).expect("created").mark = source.mark;
+        Some(copy)
+    }
+
+    pub fn save(&mut self, ino: u128, keeps_mark: bool) -> Option<u128> {
+        self.entries.get(&ino)?.content.as_ref()?;
+        let mut saved = self.entries.remove(&ino).expect("checked above");
+        if !keeps_mark {
+            saved.mark = None;
+        }
+        self.inos += 1;
+        self.entries.insert(self.inos, saved);
+        Some(self.inos)
+    }
+
+    pub fn mark(&mut self, at: &Location, ino: u128, node: &str) {
+        if self.found(at).is_ok_and(|found| found == Some(ino)) {
+            self.marked(ino, node);
+        }
+    }
+
+    pub fn mark_of(&self, at: &Location, ino: u128) -> Option<NodeId> {
+        if !self.found(at).is_ok_and(|found| found == Some(ino)) {
+            return None;
+        }
+        let mark = self.entries[&ino].mark.as_ref()?;
+        (mark.ino == ino).then(|| mark.node.clone())
+    }
+
+    fn marked(&mut self, ino: u128, node: &str) {
+        let mark = Mark {
+            node: node.to_owned(),
+            ino,
+        };
+        self.entries.get_mut(&ino).expect("an entry").mark = Some(mark);
     }
 
     /// Replaces a file's content in place and returns the content it held.
@@ -322,6 +377,7 @@ impl Disk {
                     return Ok(None);
                 }
                 let ino = self.create(place, &name, None).ok_or(Refused::Taken)?;
+                self.marked(ino, &record.node);
                 Ok(Some(identity(ino)))
             }
             Effect::WriteFile {
@@ -341,8 +397,9 @@ impl Disk {
                     return Ok(None);
                 }
                 let ino = self.create(place, &name, Some(content.clone()));
-                if ino.is_some() {
+                if let Some(ino) = ino {
                     self.staged.remove(id);
+                    self.marked(ino, &record.node);
                 }
                 if until == Cut::Done {
                     *trashed = self
@@ -424,11 +481,16 @@ impl Disk {
             };
         };
         let outcome = match &record.effect {
-            Effect::WriteFile { at, content, .. } if staged => (self.locate(at))
-                .ok()
-                .and_then(|(place, name)| self.create(place, &name, Some(content.clone())))
-                .map(|ino| Some(identity(ino)))
-                .ok_or(Refused::Overtaken),
+            Effect::WriteFile { at, content, .. } if staged => {
+                let placed = (self.locate(at).ok())
+                    .and_then(|(place, name)| self.create(place, &name, Some(content.clone())));
+                if let Some(ino) = placed {
+                    self.marked(ino, &record.node);
+                }
+                placed
+                    .map(|ino| Some(identity(ino)))
+                    .ok_or(Refused::Overtaken)
+            }
             Effect::WriteFile { at, content, .. } => {
                 (self.written(at, content).map(Some)).ok_or(Refused::Overtaken)
             }

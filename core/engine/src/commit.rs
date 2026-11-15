@@ -13,7 +13,7 @@ use prost::Message;
 
 use crate::classify::{Class, Origin, Trees, Waiting, path};
 use crate::effects;
-use crate::first_link::{self, History, PriorSync};
+use crate::first_link::{self, History, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
 use crate::names::{MAX_NAME_BYTES, name_key, nfc};
@@ -191,6 +191,16 @@ pub struct Commits {
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
     guard: Guard,
+    granted: Unstored<Vec<NodeId>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Unstored<T>(T);
+
+impl<T> PartialEq for Unstored<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Commits {
@@ -229,6 +239,7 @@ impl Commits {
             questions,
             published,
             guard,
+            granted: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -324,6 +335,7 @@ impl Commits {
             questions: questions.into(),
             published: published.into(),
             guard: guard.into(),
+            granted: Unstored::default(),
         })
     }
 
@@ -538,18 +550,20 @@ impl Commits {
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
     /// scan of the disk (section 6.4). `device_seq` is the server's count of this device's commits
     /// there, which the next commit continues, and `history` the shapes the log gave nodes since
-    /// the store's cursor, by which an entry the store lost track of is found. The commit in flight is dropped: the tree changes it
+    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
     /// device changed it since S. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
     /// same S whenever L or R changes. A restore asked for before the reset that R shows done ends
     /// as restored, and the others are held under one question.
+    #[allow(clippy::too_many_arguments)]
     pub fn recover(
         &mut self,
         trees: &mut Trees,
         device_seq: u64,
         cause: &RecoveryCause,
         history: &History,
+        marks: &Marks,
         ids: &mut IdGen,
         now_ms: u64,
     ) {
@@ -565,11 +579,12 @@ impl Commits {
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
-        first_link::adopt(trees, Some(history));
+        let waiting = first_link::adopt_by_marks_first(trees, history, marks);
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .filter(|id| !waiting.contains(*id))
             .filter_map(|id| {
                 let local = trees.local().get(id).map(|node| &node.shape);
                 let live = trees.remote().live(id);
@@ -1608,6 +1623,12 @@ impl Commits {
         !recovering && self.acknowledge_flight(trees, last_seq)
     }
 
+    /// The nodes the server gave to the creates, merged folders and conflict copies of each commit acknowledged
+    /// since the last call ([`given_nodes`]), for the disk to mark on the entries L holds under them.
+    pub fn take_granted(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.granted.0)
+    }
+
     fn record_served(&self, trees: &mut Trees, last_seq: u64) {
         let Some(flight) = (self.in_flight.as_ref()).filter(|flight| flight.result.is_none())
         else {
@@ -1646,6 +1667,11 @@ impl Commits {
             return false;
         };
         let result = flight.result.expect("taken with a result");
+        (self.granted.0).extend(
+            given_nodes(&flight.commit, &result)
+                .into_iter()
+                .map(|(_, node)| node),
+        );
         let commit_id = &flight.commit.commit_id;
         let (sent, questions): (Vec<Question>, Vec<Question>) = std::mem::take(self.questions.get_mut()).into_iter().partition(|question| {
             matches!(&question.kind, QuestionKind::Recovery { sent_in: Some(sent), .. } if sent == commit_id)
@@ -2634,6 +2660,34 @@ fn holder(trees: &Trees, parent: &str, name: &str, other: &str) -> Option<NodeId
                 && name_key(&node.shape.name) == key
         })
         .map(|(id, _)| id.clone())
+}
+
+/// The entries `result` gives a node, each as the ID `commit` sent for it and the node's ID: a
+/// create the server applied, a folder create it merged into another folder, and a content update
+/// it kept as a conflict copy.
+pub fn given_nodes(commit: &proto::Commit, result: &proto::CommitResult) -> Vec<(NodeId, NodeId)> {
+    use op_result::Code;
+    (commit.ops.iter().zip(&result.results))
+        .filter_map(|(sent, outcome)| {
+            let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);
+            let (id, given) = match (sent.op.as_ref()?, code) {
+                (op::Op::CreateDir(create), Code::MergedInto) => {
+                    (&create.node_id, &outcome.node_id)
+                }
+                (op::Op::CreateDir(create), Code::Applied | Code::AppliedRenamed) => {
+                    (&create.node_id, &create.node_id)
+                }
+                (op::Op::CreateFile(create), Code::Applied | Code::AppliedRenamed) => {
+                    (&create.node_id, &create.node_id)
+                }
+                (op::Op::UpdateContent(update), Code::ConflictCopy) => {
+                    (&update.node_id, &outcome.node_id)
+                }
+                _ => return None,
+            };
+            Some((id.clone(), given.clone()))
+        })
+        .collect()
 }
 
 /// Gives the local node `from` the ID `to`; its children follow, and so does a folder's unknown

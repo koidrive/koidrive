@@ -386,6 +386,7 @@ fn move_into_and_out_of_the_parked_folder() {
     let parked = Location::Parked("node-1".into());
     let park = Effect {
         id: ID.into(),
+        node: "node".into(),
         action: Action::Move {
             from: at(vec![common::dir("a", &found[0])], "f.txt"),
             id: found[1].id,
@@ -398,6 +399,7 @@ fn move_into_and_out_of_the_parked_folder() {
 
     let unpark = Effect {
         id: "e2".into(),
+        node: "node".into(),
         action: Action::Move {
             from: parked,
             id: found[1].id,
@@ -482,6 +484,7 @@ fn parked_effects_need_the_parked_folder_identity() {
     let file = Snapshot::scan(parked.join("node-1")).unwrap().entries[Path::new("f.txt")];
     let effect = Effect {
         id: ID.into(),
+        node: "node".into(),
         action: Action::RemoveFile {
             displaced: Displaced {
                 at: Location::At {
@@ -1051,6 +1054,7 @@ fn a_file_moved_and_rewritten_into_a_folder_the_system_does_not_allow_is_put_bac
         let found = entries(root, &["docs", "docs/report.txt", "locked"]);
         let effect = Effect {
             id: ID.into(),
+            node: "node".into(),
             action: Action::WriteFile {
                 at: at(vec![dir("locked", &found[2])], "report.txt"),
                 replaces: Some(Displaced {

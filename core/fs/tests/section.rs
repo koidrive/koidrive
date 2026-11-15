@@ -36,6 +36,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
     let docs = |name: &str| at(vec![dir("docs", &found[0])], name);
     let effect = |id: &str, action| Effect {
         id: id.into(),
+        node: "node".into(),
         action,
     };
     vec![

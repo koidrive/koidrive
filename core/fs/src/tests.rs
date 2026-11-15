@@ -1036,6 +1036,134 @@ fn an_entry_an_effect_left_in_quarantine_is_moved_to_the_root_under_its_recovere
     assert_eq!(fs::read_dir(&quarantine).unwrap().count(), 0);
 }
 
+#[test]
+fn the_entries_a_store_rollback_brings_back_are_remembered() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    space.private(&[QUARANTINE_DIR]).unwrap();
+    let private = root.join(PRIVATE_DIR);
+    let folder = private.join(PARKED_DIR).join("n1");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside.txt"), "kept").unwrap();
+    fs::set_permissions(folder.join("inside.txt"), fs::Permissions::from_mode(0o444)).unwrap();
+    let file = private.join(QUARANTINE_DIR).join("effect-7");
+    fs::write(&file, "displaced").unwrap();
+    let id = |path: &Path| {
+        let meta = fs::symlink_metadata(path).unwrap();
+        (meta.dev(), u128::from(meta.ino()))
+    };
+    let ids = |space: &Space| {
+        let BroughtBack::Entries(ids) = space.brought_back().unwrap() else {
+            panic!("the record is unreadable");
+        };
+        let mut ids: Vec<_> = (ids.into_iter()).map(|id| (id.dev, id.ino)).collect();
+        ids.sort();
+        ids
+    };
+    let mut expected = vec![id(&folder), id(&file)];
+    expected.sort();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+    assert_eq!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .len(),
+        2
+    );
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    assert_eq!(ids(&space), expected);
+
+    let later = private.join(PARKED_DIR).join("n3");
+    fs::write(&later, "later").unwrap();
+    expected.push(id(&later));
+    expected.sort();
+    assert_eq!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ids(&space), expected);
+    space.repair_brought_back().unwrap();
+    assert_eq!(ids(&space), expected);
+}
+
+#[test]
+fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    let private = root.join(PRIVATE_DIR);
+    fs::write(private.join("brought-back.json"), "[[1,2,nu").unwrap();
+    fs::write(private.join(PARKED_DIR).join("n1"), "parked").unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+    assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
+    let moved = space
+        .bring_back_all(|held, _| held.to_owned(), now)
+        .unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
+    assert!(BroughtBack::Unreadable.holds(FileId {
+        dev: 1,
+        ino: 2,
+        birth_ns: None
+    }));
+
+    space.repair_brought_back().unwrap();
+    let id = |path: PathBuf| {
+        let meta = fs::symlink_metadata(path).unwrap();
+        (meta.dev(), u128::from(meta.ino()))
+    };
+    let expected: std::collections::BTreeSet<_> =
+        [id(root.join(&moved[0])), id(root.join("docs"))].into();
+    let BroughtBack::Entries(repaired) = space.brought_back().unwrap() else {
+        panic!("the record is still unreadable");
+    };
+    let repaired: std::collections::BTreeSet<_> =
+        repaired.into_iter().map(|id| (id.dev, id.ino)).collect();
+    assert_eq!(repaired, expected);
+}
+
+#[test]
+fn an_unreadable_entry_is_still_brought_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    space.private(&[QUARANTINE_DIR]).unwrap();
+    let held = root.join(PRIVATE_DIR).join(PARKED_DIR).join("n1");
+    fs::write(&held, "locked").unwrap();
+    fs::set_permissions(&held, fs::Permissions::from_mode(0o000)).unwrap();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+    let moved = space
+        .bring_back_all(|held, _| held.to_owned(), now)
+        .unwrap();
+
+    assert_eq!(moved.len(), 1);
+    let brought = fs::symlink_metadata(root.join(&moved[0])).unwrap();
+    assert_eq!(brought.permissions().mode() & 0o777, 0o000);
+}
+
 #[derive(Clone, Default)]
 struct Lines(std::sync::Arc<std::sync::Mutex<BTreeMap<PathBuf, Vec<u8>>>>);
 

@@ -190,6 +190,7 @@ fn replacement(entries: &[Entry]) -> Effect {
     let at = at(vec![dir("docs", &entries[0])], "report.txt");
     Effect {
         id: ID.into(),
+        node: "node".into(),
         action: Action::WriteFile {
             at: at.clone(),
             replaces: Some(Displaced {
@@ -203,6 +204,7 @@ fn replacement(entries: &[Entry]) -> Effect {
 fn folder_removal(entries: &[Entry]) -> Effect {
     Effect {
         id: ID.into(),
+        node: "node".into(),
         action: Action::RemoveDir {
             at: at(vec![dir("docs", &entries[0])], "empty"),
             id: entries[1].id,
@@ -246,6 +248,7 @@ pub const SCENARIOS: [Scenario; 7] = [
         },
         build: |entries| Effect {
             id: ID.into(),
+            node: "node".into(),
             action: Action::WriteFile {
                 at: at(vec![dir("docs", &entries[0])], "new.txt"),
                 replaces: None,
@@ -265,6 +268,7 @@ pub const SCENARIOS: [Scenario; 7] = [
         setup: |root, _| fs::create_dir(root.join("docs")).unwrap(),
         build: |entries| Effect {
             id: ID.into(),
+            node: "node".into(),
             action: Action::CreateDir {
                 at: at(vec![dir("docs", &entries[0])], "sub"),
             },
@@ -289,6 +293,7 @@ pub const SCENARIOS: [Scenario; 7] = [
         },
         build: |entries| Effect {
             id: ID.into(),
+            node: "node".into(),
             action: Action::Move {
                 from: at(vec![dir("docs", &entries[0])], "a.txt"),
                 id: entries[1].id,
@@ -319,6 +324,7 @@ pub const SCENARIOS: [Scenario; 7] = [
         },
         build: |entries| Effect {
             id: ID.into(),
+            node: "node".into(),
             action: Action::RemoveFile {
                 displaced: Displaced {
                     at: at(vec![dir("docs", &entries[0])], "report.txt"),

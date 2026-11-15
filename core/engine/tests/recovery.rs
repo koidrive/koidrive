@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use proptest::prelude::*;
+
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
-use koidrive_engine::first_link::{History, PriorSync};
+use koidrive_engine::first_link::{History, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use koidrive_engine::restore::{Outcome, Rejection, RestoreIntent};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
@@ -102,7 +107,15 @@ fn recovered(trees: &mut Trees, device_seq: u64) -> (Commits, IdGen) {
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     assert_eq!(commits.build(trees, &mut ids, NOW, OLD, "me", 9), None);
-    commits.recover(trees, device_seq, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        trees,
+        device_seq,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     (commits, ids)
 }
@@ -706,6 +719,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         0,
         &rewind(),
         &History::new(),
+        &Marks::new(),
         &mut IdGen::new(7),
         NOW,
     );
@@ -800,7 +814,15 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
         ..Default::default()
     };
     assert_eq!(commits.connected(&welcome), Reconnect::Recovery);
-    commits.recover(&mut trees, 4, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        4,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     assert_eq!(commits.in_flight(), None);
     assert_eq!(commits.accepted(), 4);
@@ -838,7 +860,15 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
     };
     commits.received(result).unwrap();
     commits.acknowledge(&mut trees, 2);
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
 }
@@ -858,7 +888,15 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
         let sent = ops(&mut commits, &mut trees, &mut ids);
         assert_eq!(sent, [("restore", NODE.to_owned())]);
         commits.enter_recovery(rewind());
-        commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+        commits.recover(
+            &mut trees,
+            0,
+            &rewind(),
+            &History::new(),
+            &Marks::new(),
+            &mut ids,
+            NOW,
+        );
         trees.settle();
         let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -894,7 +932,15 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("before".into(), intent.clone()));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["before"]);
     assert!(commits.restore("later".into(), intent));
@@ -937,7 +983,15 @@ fn a_restore_the_rewound_tree_already_shows_is_done() {
     let intent = RestoreIntent::from_trash(NODE.into(), None, None).unwrap();
     assert!(commits.restore("request".into(), intent));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     assert!(commits.questions().is_empty(), "{:?}", commits.questions());
     let [ended] = commits.resolved() else {
         panic!("{:?}", commits.resolved());
@@ -1320,7 +1374,15 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("request".into(), intent));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
     assert!(commits.decide(&question.id, Answer::Repeat));
     assert_eq!(
@@ -1526,7 +1588,15 @@ fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rew
     assert!(trees.waiting().contains_key("d"));
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[NODE, "d"]);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -1928,7 +1998,15 @@ fn a_removal_planned_before_a_rewind() -> Stale {
     trees.settle();
     let mut commits = Commits::default();
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     Stale {
         trees,
@@ -2057,7 +2135,15 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
         commits,
         ..
     } = &mut stale;
-    commits.recover(trees, 0, &rewind(), &History::new(), ids, NOW);
+    commits.recover(
+        trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        ids,
+        NOW,
+    );
     trees.settle();
     refused(&mut stale);
 }
@@ -2069,7 +2155,15 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
     let (mut commits, mut ids, mut effects) =
         (Commits::default(), IdGen::new(3), Effects::default());
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &History::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &rewind(),
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle();
     let record = (effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -2140,4 +2234,1080 @@ fn a_mark_s_dropped_goes_when_the_user_deletes_the_folder() {
         created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
         []
     );
+}
+
+fn followed(
+    local: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+    remote: &[Remote],
+    history: &[(&str, Shape)],
+    marks: &[(&str, &str)],
+) -> (Trees, Commits, IdGen) {
+    let recovered = recovered_by_marks(local, synced, remote, history, marks);
+    let remote_ids: BTreeSet<&str> = remote.iter().map(|Remote(id, ..)| *id).collect();
+    let own: Vec<&str> = (local.iter().map(|(id, _)| *id))
+        .chain(synced.iter().map(|(id, _)| *id))
+        .filter(|id| !remote_ids.contains(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let relabel: BTreeMap<&str, String> = (own.iter().rev().enumerate())
+        .map(|(i, id)| (*id, format!("~{i}")))
+        .collect();
+    let swap = |id: &str| relabel.get(id).cloned().unwrap_or_else(|| id.to_owned());
+    let moved = |shape: &Shape| Shape {
+        parent: swap(&shape.parent),
+        ..shape.clone()
+    };
+    let other_local: Vec<(String, Shape)> = (local.iter())
+        .map(|(id, shape)| (swap(id), moved(shape)))
+        .collect();
+    let other_synced: Vec<(String, Shape)> = (synced.iter())
+        .map(|(id, shape)| (swap(id), shape.clone()))
+        .collect();
+    let other_marks: Vec<(String, &str)> = (marks.iter())
+        .map(|(local, node)| (swap(local), *node))
+        .collect();
+    let (relabeled, _, _) = recovered_by_marks(
+        &other_local
+            .iter()
+            .map(|(id, shape)| (id.as_str(), shape.clone()))
+            .collect::<Vec<_>>(),
+        &other_synced
+            .iter()
+            .map(|(id, shape)| (id.as_str(), shape.clone()))
+            .collect::<Vec<_>>(),
+        remote,
+        history,
+        &other_marks
+            .iter()
+            .map(|(local, node)| (local.as_str(), *node))
+            .collect::<Vec<_>>(),
+    );
+    keeps_the_mark_invariants(
+        local, synced, remote, history, marks, &recovered, &relabeled,
+    );
+    recovered
+}
+
+fn nodes_by_entry(trees: &Trees, entries: usize, remote: &[Remote]) -> Vec<Option<String>> {
+    let by_ino: BTreeMap<u128, &String> = (trees.local().iter())
+        .map(|(id, node)| (node.identity.ino, id))
+        .collect();
+    let in_r: BTreeSet<&str> = remote.iter().map(|Remote(id, ..)| *id).collect();
+    (0..entries)
+        .map(|i| {
+            let id = by_ino.get(&(i as u128 + 1))?;
+            let adopted = trees.synced().live(id).is_some() && in_r.contains(id.as_str());
+            adopted.then(|| (*id).clone())
+        })
+        .collect()
+}
+
+fn keeps_the_mark_invariants(
+    local: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+    remote: &[Remote],
+    history: &[(&str, Shape)],
+    marks: &[(&str, &str)],
+    (after, asked, _): &(Trees, Commits, IdGen),
+    relabeled: &Trees,
+) {
+    let before = trees(local, synced, remote);
+    let case = || {
+        let in_r: Vec<(&str, &Shape, bool)> = (remote.iter())
+            .map(|Remote(id, shape, trashed, _)| (*id, shape, *trashed))
+            .collect();
+        format!(
+            "local {local:?}\nsynced {synced:?}\nremote {in_r:?}\nhistory {history:?}\nmarks {marks:?}"
+        )
+    };
+    let found = nodes_by_entry(after, local.len(), remote);
+    assert!(
+        found == nodes_by_entry(relabeled, local.len(), remote),
+        "the outcome depends on the order of the local IDs\n{}",
+        case()
+    );
+    let mut known: BTreeMap<&str, Vec<&Shape>> = BTreeMap::new();
+    for (id, shape) in history {
+        known.entry(id).or_default().push(shape);
+    }
+    for Remote(id, shape, ..) in remote {
+        known.entry(id).or_default().push(shape);
+    }
+    let in_r: BTreeMap<&str, (&Shape, bool)> = (remote.iter())
+        .map(|Remote(id, shape, trashed, _)| (*id, (shape, *trashed)))
+        .collect();
+    let logged: BTreeSet<&str> = history.iter().map(|(id, _)| *id).collect();
+    let local_ids: BTreeSet<&str> = local.iter().map(|(id, _)| *id).collect();
+    let mark_of: BTreeMap<&str, &str> = marks.iter().copied().collect();
+    let mut claims: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, node) in marks {
+        *claims.entry(node).or_default() += 1;
+    }
+    let holder: BTreeMap<&str, usize> = (found.iter().enumerate())
+        .filter_map(|(i, node)| Some((node.as_deref()?, i)))
+        .collect();
+    for (i, (id, shape)) in local.iter().enumerate() {
+        if before.synced().get(id).is_some() {
+            continue;
+        }
+        let Some(node) = mark_of.get(id).copied() else {
+            continue;
+        };
+        let unique = claims[node] == 1;
+        let free = !local_ids.contains(node) || node == *id;
+        let live =
+            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
+        let content = (known.get(node).into_iter().flatten())
+            .any(|known| known.kind == shape.kind && known.content == shape.content);
+        if !(unique && free && live && logged.contains(node) && content) {
+            continue;
+        }
+        assert!(
+            found[i].as_deref().is_none_or(|found| found == node),
+            "entry {id} with the mark of {node} became {:?}\n{}",
+            found[i],
+            case()
+        );
+        assert!(
+            holder.get(node).is_none_or(|j| *j == i),
+            "entry {} took {node}, which the mark of {id} claims\n{}",
+            local[holder[node]].0,
+            case()
+        );
+    }
+    for (i, node) in found.iter().enumerate() {
+        let Some(node) = node else {
+            continue;
+        };
+        if before.synced().get(local[i].0).is_some() {
+            continue;
+        }
+        if mark_of.contains_key(local[i].0) {
+            let mut above = after
+                .local()
+                .get(node)
+                .map(|entry| entry.shape.parent.clone());
+            while let Some(at) = (above.filter(|at| *at != after.local().root))
+                .filter(|at| after.synced().live(at).is_none())
+            {
+                let folder = after.local().get(&at).expect("an ancestor in L");
+                assert!(
+                    !mark_of.contains_key(local[folder.identity.ino as usize - 1].0),
+                    "{node} followed its mark inside a marked folder S does not hold\n{}",
+                    case()
+                );
+                above = Some(folder.shape.parent.clone());
+            }
+        }
+        let entry = &after.local().get(node).expect("an adopted entry").shape;
+        let held = after.synced().live(node).expect("S holds an adopted entry");
+        assert!(
+            held.content == entry.content,
+            "S gives {node} other content than L\n{}",
+            case()
+        );
+        let in_place = (known.get(node.as_str()).into_iter().flatten()).any(|known| {
+            known.kind == entry.kind
+                && known.content == entry.content
+                && known.parent == entry.parent
+                && same_name(&known.name, &entry.name)
+        });
+        assert!(
+            !in_place || (held.parent == entry.parent && same_name(&held.name, &entry.name)),
+            "{node} sits at a place the server gave it, but S holds it at {held:?}\n{}",
+            case()
+        );
+        let moved = held.parent != entry.parent || !same_name(&held.name, &entry.name);
+        let current =
+            (in_r.get(node.as_str())).is_some_and(|(live, _)| live.content == entry.content);
+        assert!(
+            !moved
+                || (current
+                    && asked
+                        .questions()
+                        .iter()
+                        .any(|question| question.holds().any(|held| held == node))),
+            "{node} was adopted away from every place the server gave it without a question, or with content R does not give it\n{}",
+            case()
+        );
+    }
+    for (id, entry) in after.local().iter() {
+        let Some(live) = after.remote().live(id) else {
+            continue;
+        };
+        if (marks.iter()).any(|(local, node)| local == id && node != id) {
+            continue;
+        }
+        let agrees = live.kind == entry.shape.kind
+            && live.content == entry.shape.content
+            && live.parent == entry.shape.parent
+            && same_name(&live.name, &entry.shape.name);
+        assert!(
+            !agrees || after.synced().live(id).is_some() || after.waiting().get(id).is_some(),
+            "{id} sits where R′ has it, but S holds nothing for it\n{}",
+            case()
+        );
+    }
+}
+
+fn recovered_by_marks(
+    local: &[(&str, Shape)],
+    synced: &[(&str, Shape)],
+    remote: &[Remote],
+    history: &[(&str, Shape)],
+    marks: &[(&str, &str)],
+) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(local, synced, remote);
+    let mut logged = History::new();
+    for (id, shape) in history {
+        logged.entry((*id).into()).or_default().push(shape.clone());
+    }
+    let marks: Marks = (marks.iter())
+        .map(|(local, node)| ((*local).into(), (*node).into()))
+        .collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    (trees, commits, ids)
+}
+
+fn local_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
+    trees.local().get(id).map(|node| &node.shape)
+}
+
+#[test]
+fn a_marked_entry_the_user_renamed_is_its_node_and_the_rename_is_committed() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "b", 1))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[("n", file(ROOT, "a", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.local().get("entry"), None);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_marked_entry_at_a_place_the_server_moved_it_from_follows_the_server() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "a", 1))],
+        &[],
+        &[live("n", file(ROOT, "b", 1))],
+        &[("n", file(ROOT, "a", 1)), ("n", file(ROOT, "b", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::Move { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 1)));
+}
+
+#[test]
+fn a_marked_entry_the_user_renamed_whose_content_the_server_replaced_is_asked_about_as_new() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "x", 1))],
+        &[],
+        &[live("n", file(ROOT, "c", 2))],
+        &[
+            ("n", file(ROOT, "a", 1)),
+            ("n", file(ROOT, "b", 1)),
+            ("n", file(ROOT, "b", 2)),
+            ("n", file(ROOT, "c", 2)),
+        ],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_marked_entry_whose_content_the_server_never_gave_its_node_is_held() {
+    let (trees, commits, _) = followed(
+        &[("entry", file(ROOT, "b", 2))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[("n", file(ROOT, "a", 1))],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+    assert_eq!(trees.synced().get("n"), None);
+}
+
+#[test]
+fn two_entries_with_one_mark_are_both_held() {
+    let (trees, commits, _) = followed(
+        &[("one", file(ROOT, "b", 1)), ("two", file(ROOT, "c", 1))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[("n", file(ROOT, "a", 1))],
+        &[("one", "n"), ("two", "n")],
+    );
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["one", "two"],
+    );
+    assert_eq!(trees.synced().get("n"), None);
+}
+
+#[test]
+fn a_mark_of_a_node_l_holds_leaves_the_node_to_its_own_entry() {
+    let (trees, commits, _) = followed(
+        &[("n", file(ROOT, "a", 1)), ("copy", file(ROOT, "b", 1))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[("n", file(ROOT, "a", 1))],
+        &[("copy", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["copy"]);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+}
+
+#[test]
+fn a_mark_of_a_node_r_does_not_hold_live_or_of_another_kind_is_not_followed() {
+    for remote in [
+        Remote("n", file(ROOT, "a", 1), true, 1),
+        live("n", dir(ROOT, "a")),
+        live("other", file(ROOT, "a", 1)),
+    ] {
+        let (trees, commits, _) = followed(
+            &[("entry", file(ROOT, "b", 1))],
+            &[],
+            &[remote],
+            &[("n", file(ROOT, "a", 1))],
+            &[("entry", "n")],
+        );
+        asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+        assert_eq!(trees.synced().get("n"), None);
+    }
+}
+
+#[test]
+fn without_the_nodes_history_a_marked_entry_only_follows_at_the_servers_place() {
+    let (trees, commits, _) = followed(
+        &[("entry", file(ROOT, "b", 1))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+    assert_eq!(trees.synced().get("n"), None);
+    let (trees, commits, _) = followed(
+        &[("entry", file(ROOT, "a", 1))],
+        &[],
+        &[live("n", file(ROOT, "a", 1))],
+        &[],
+        &[("entry", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+}
+
+#[test]
+fn a_marked_entry_whose_shape_s_cannot_hold_is_held() {
+    let (trees, commits, _) = followed(
+        &[("entry", file(ROOT, "z", 1)), ("m", file(ROOT, "a", 3))],
+        &[("m", file(ROOT, "a", 3))],
+        &[live("n", file(ROOT, "b", 2)), live("m", file(ROOT, "a", 3))],
+        &[("n", file(ROOT, "a", 1)), ("n", file(ROOT, "b", 2))],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["entry"]);
+    assert_eq!(trees.synced().get("n"), None);
+}
+
+#[test]
+fn a_marked_file_the_user_moved_out_of_its_marked_folder_follows_once_the_folder_does() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("a-file", file(ROOT, "f", 1)), ("b-folder", dir(ROOT, "d"))],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n"), ("b-folder", "d")],
+    );
+    assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_marked_file_the_user_renamed_in_an_unmarked_folder_follows_once_the_folder_is_adopted() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 1)),
+            ("b-folder", dir(ROOT, "d")),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_at_the_old_name_in_an_unmarked_folder_leaves_the_node_to_the_renamed_original() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 1)),
+            ("b-folder", dir(ROOT, "d")),
+            ("c-copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["c-copy"]);
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_at_the_old_name_takes_the_node_when_the_renamed_original_cannot_follow_its_mark() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file("b-folder", "g", 2)),
+            ("b-folder", dir(ROOT, "d")),
+            ("c-copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[live("d", dir(ROOT, "d")), live("n", file("d", "f", 1))],
+        &[("d", dir(ROOT, "d")), ("n", file("d", "f", 1))],
+        &[("a-file", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["a-file"]);
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("d", "f", 1)));
+}
+
+#[test]
+fn a_marked_entry_whose_name_is_the_same_in_nfc_is_in_place_and_follows_the_servers_rename() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "cafe\u{301}", 1))],
+        &[],
+        &[live("n", file(ROOT, "b", 1))],
+        &[("n", file(ROOT, "caf\u{e9}", 1)), ("n", file(ROOT, "b", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(groups(&commits), []);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "caf\u{e9}", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::Move { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 1)));
+}
+
+#[test]
+fn a_marked_entry_the_user_renamed_by_case_only_commits_the_rename() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "Cafe", 1))],
+        &[],
+        &[live("n", file(ROOT, "cafe", 1))],
+        &[("n", file(ROOT, "cafe", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "cafe", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "Cafe", 1)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("n", file(ROOT, "x", 1)),
+            ("renamed", file(ROOT, "b", 2)),
+            ("copy", file(ROOT, "a", 2)),
+        ],
+        &[],
+        &[live("m", file(ROOT, "x", 1)), live("n", file(ROOT, "a", 2))],
+        &[("m", file(ROOT, "x", 1)), ("n", file(ROOT, "a", 2))],
+        &[("n", "m"), ("renamed", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["copy"]);
+    assert_eq!(local_shape(&trees, "m"), Some(&file(ROOT, "x", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".to_owned())]
+    );
+}
+
+#[test]
+fn a_marked_folder_takes_an_older_place_and_its_file_whose_content_the_server_replaced_waits() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "p")),
+            ("s-folder", dir(ROOT, "s")),
+            ("there", file("s-folder", "f", 2)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("s", dir(ROOT, "s")),
+            live("n", file("s", "f", 2)),
+        ],
+        &[
+            ("r", dir(ROOT, "r")),
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("s", dir(ROOT, "s")),
+            ("n", file("p", "f", 1)),
+            ("n", file("s", "f", 2)),
+        ],
+        &[("a-file", "n"), ("a-folder", "p")],
+    );
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "p")));
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "q")));
+    assert_eq!(trees.synced().get("n"), None);
+    asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["p"]);
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["a-file", "b-folder", "there"],
+    );
+}
+
+#[test]
+fn a_node_a_mark_claims_goes_to_no_other_entry_while_the_mark_cannot_follow() {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "b")),
+            ("i-folder", dir("b-folder", "i")),
+            ("s-folder", dir(ROOT, "s")),
+            ("there", file("s-folder", "f", 2)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("b", dir("r", "b")),
+            live("u", dir(ROOT, "u")),
+            live("i", dir("u", "i")),
+            live("s", dir(ROOT, "s")),
+            live("n", file("s", "f", 2)),
+        ],
+        &[
+            ("b", dir(ROOT, "b")),
+            ("b", dir("r", "b")),
+            ("i", dir("b", "i")),
+            ("i", dir("u", "i")),
+            ("n", file("i", "f", 1)),
+            ("n", file("s", "f", 2)),
+        ],
+        &[("a-file", "n"), ("a-folder", "b")],
+    );
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(trees.local().get("n"), None);
+    assert_eq!(local_shape(&trees, "b"), Some(&dir(ROOT, "q")));
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["a-file", "b-folder", "i-folder", "there"],
+    );
+}
+
+#[test]
+fn a_marked_entry_at_its_logged_place_waits_when_s_cannot_hold_it_there() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[("entry", file(ROOT, "a", 1)), ("m", file(ROOT, "z", 3))],
+        &[("m", file(ROOT, "a", 3))],
+        &[live("n", file(ROOT, "b", 1)), live("m", file(ROOT, "w", 3))],
+        &[("n", file(ROOT, "a", 1)), ("n", file(ROOT, "b", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(trees.synced().get("n"), None);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_marked_file_the_user_moved_into_a_new_folder_follows_and_the_folder_is_asked_about() {
+    let (trees, commits, _) = followed(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[live("n", file(ROOT, "f", 1))],
+        &[("n", file(ROOT, "f", 1))],
+        &[("entry", "n")],
+    );
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["new"]);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
+fn a_marked_file_moved_into_a_new_folder_named_like_a_files_pending_name_follows() {
+    let mut trees = trees(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[
+            live("n", file(ROOT, "f", 1)),
+            live("p", file(ROOT, "fresh (pending)", 2)),
+        ],
+    );
+    mark(&mut trees, "p", "fresh");
+    let mut logged = History::new();
+    logged
+        .entry("n".into())
+        .or_default()
+        .push(file(ROOT, "f", 1));
+    let marks: Marks = [("entry".to_owned(), "n".to_owned())].into_iter().collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
+fn a_marked_file_moved_into_a_new_folder_named_like_a_server_folder_elsewhere_follows() {
+    let (trees, _, _) = followed(
+        &[("entry", file("new", "f", 1)), ("new", dir(ROOT, "fresh"))],
+        &[],
+        &[
+            live("n", file(ROOT, "f", 1)),
+            live("o", dir(ROOT, "other")),
+            live("o2", dir("o", "fresh")),
+        ],
+        &[("n", file(ROOT, "f", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
+}
+
+#[test]
+fn a_marked_file_in_a_marked_folder_moved_into_a_new_folder_keeps_its_place() {
+    let (trees, _, _) = followed(
+        &[
+            ("z", dir(ROOT, "new")),
+            ("y", dir("z", "d")),
+            ("f", file("y", "a", 1)),
+        ],
+        &[],
+        &[live("n", dir(ROOT, "d")), live("m", file("n", "b", 1))],
+        &[
+            ("n", dir(ROOT, "d")),
+            ("m", file("n", "a", 1)),
+            ("m", file("n", "b", 1)),
+        ],
+        &[("y", "n"), ("f", "m")],
+    );
+    assert_eq!(trees.synced().live("n"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.synced().live("m"), Some(&file("n", "a", 1)));
+}
+
+#[test]
+fn a_file_in_a_marked_folder_that_cannot_follow_waits_with_it() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("folder", dir(ROOT, "fresh")),
+            ("entry", file("folder", "a", 1)),
+            ("m", file(ROOT, "z", 3)),
+        ],
+        &[("m", file(ROOT, "p", 3))],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("n", file(ROOT, "b", 1)),
+            live("m", file(ROOT, "w", 3)),
+        ],
+        &[
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("n", file("p", "a", 1)),
+            ("n", file(ROOT, "b", 1)),
+        ],
+        &[("folder", "p"), ("entry", "n")],
+    );
+    assert_eq!(trees.synced().get("p"), None);
+    assert_eq!(trees.synced().get("n"), None);
+    let question = (commits.questions().iter())
+        .find(|question| question.holds().any(|id| id == "folder"))
+        .expect("a question about the folder")
+        .clone();
+    assert!(question.holds().any(|id| id == "entry"));
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.iter().any(|(kind, id)| *kind == "move" && id == "n"));
+}
+
+#[test]
+fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_to_its_name() {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "x"))],
+        &[],
+        &[live("p", dir(ROOT, "x (pending)"))],
+    );
+    mark(&mut trees, "p", "x");
+    let mut logged = History::new();
+    logged
+        .entry("p".into())
+        .or_default()
+        .push(dir(ROOT, "x (pending)"));
+    let marks: Marks = [("f".to_owned(), "p".to_owned())].into_iter().collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    assert_eq!(groups(&commits), []);
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "x")));
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "x (pending)")));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "p".to_owned())]
+    );
+}
+
+#[test]
+fn a_waiting_marked_entry_takes_no_other_node_at_its_place() {
+    let (trees, _, _) = followed(
+        &[
+            ("d-folder", dir(ROOT, "d")),
+            ("entry", file(ROOT, "renamed", 1)),
+        ],
+        &[],
+        &[
+            live("d", dir(ROOT, "d")),
+            live("n", file("d", "orig", 1)),
+            live("m", file(ROOT, "renamed", 1)),
+        ],
+        &[("n", file("d", "orig", 1))],
+        &[("entry", "n")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "renamed", 1)));
+    assert_eq!(trees.synced().live("n"), Some(&file("d", "orig", 1)));
+    assert_eq!(trees.local().get("m"), None);
+}
+
+#[test]
+fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
+    use koidrive_engine::commit::given_nodes;
+    use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};
+    let sent = |op| Op { op: Some(op) };
+    let commit = Commit {
+        ops: vec![
+            sent(op::Op::CreateFile(CreateFile {
+                node_id: "file".into(),
+                ..Default::default()
+            })),
+            sent(op::Op::CreateDir(CreateDir {
+                node_id: "dir".into(),
+                ..Default::default()
+            })),
+            sent(op::Op::CreateDir(CreateDir {
+                node_id: "merged".into(),
+                ..Default::default()
+            })),
+            sent(op::Op::UpdateContent(UpdateContent {
+                node_id: "edited".into(),
+                ..Default::default()
+            })),
+            sent(op::Op::CreateFile(CreateFile {
+                node_id: "refused".into(),
+                ..Default::default()
+            })),
+        ],
+        ..Default::default()
+    };
+    let outcome = |code: op_result::Code, node: &str| OpResult {
+        code: code as i32,
+        node_id: node.into(),
+        ..Default::default()
+    };
+    let result = CommitResult {
+        results: vec![
+            outcome(op_result::Code::Applied, ""),
+            outcome(op_result::Code::AppliedRenamed, ""),
+            outcome(op_result::Code::MergedInto, "theirs"),
+            outcome(op_result::Code::ConflictCopy, "copy"),
+            outcome(op_result::Code::Rejected, ""),
+        ],
+        ..Default::default()
+    };
+    let pair = |sent: &str, node: &str| (sent.to_owned(), node.to_owned());
+    assert_eq!(
+        given_nodes(&commit, &result),
+        [
+            pair("file", "file"),
+            pair("dir", "dir"),
+            pair("merged", "theirs"),
+            pair("edited", "copy")
+        ]
+    );
+}
+
+#[test]
+fn a_marked_folder_the_servers_place_cannot_hold_follows_an_older_place_and_its_marked_child_follows()
+ {
+    let (trees, commits, _) = followed(
+        &[
+            ("a-file", file(ROOT, "g", 1)),
+            ("a-folder", dir(ROOT, "q")),
+            ("b-folder", dir(ROOT, "p")),
+            ("copy", file("b-folder", "f", 1)),
+        ],
+        &[],
+        &[
+            live("r", dir(ROOT, "r")),
+            live("p", dir("r", "p")),
+            live("n", file("p", "f", 1)),
+        ],
+        &[
+            ("r", dir(ROOT, "r")),
+            ("p", dir(ROOT, "p")),
+            ("p", dir("r", "p")),
+            ("n", file("p", "f", 1)),
+        ],
+        &[("a-file", "n"), ("a-folder", "p")],
+    );
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "g", 1)));
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "p")));
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "q")));
+    asked(
+        &commits,
+        RecoveryGroup::CreatedOnThisDevice,
+        &["b-folder", "copy"],
+    );
+}
+
+const DIR_NAMES: [&str; 2] = ["p", "q"];
+const FILE_NAMES: [&str; 3] = ["a", "b", "caf\u{e9}"];
+const LOCAL_NAMES: [&str; 6] = ["a", "b", "caf\u{e9}", "cafe\u{301}", "p", "q"];
+
+struct Drawn {
+    local: Vec<(String, Shape)>,
+    synced: Vec<(String, Shape)>,
+    remote: Vec<(String, Shape, bool)>,
+    history: Vec<(String, Shape)>,
+    marks: Vec<(String, String)>,
+}
+
+fn drawn(genes: &[u8]) -> Drawn {
+    let mut genes = genes.iter().copied().chain(std::iter::repeat(0));
+    let mut next = move |n: usize| genes.next().expect("endless") as usize % n;
+    let mut remote: Vec<(String, Shape, bool)> = Vec::new();
+    let mut taken = BTreeSet::new();
+    for d in 0..next(3) {
+        let name = DIR_NAMES[next(2)];
+        if taken.insert((ROOT.to_owned(), name.to_owned())) {
+            remote.push((format!("d{d}"), dir(ROOT, name), false));
+        }
+    }
+    let parents: Vec<String> = std::iter::once(ROOT.to_owned())
+        .chain(remote.iter().map(|(id, ..)| id.clone()))
+        .collect();
+    for f in 0..1 + next(3) {
+        let parent = &parents[next(parents.len())];
+        let name = FILE_NAMES[next(3)];
+        let trashed = next(6) == 0;
+        if trashed || taken.insert((parent.clone(), name.to_owned())) {
+            let shape = file(parent, name, 1 + next(2) as u8);
+            remote.push((format!("n{f}"), shape, trashed));
+        }
+    }
+    let mut history = Vec::new();
+    for (id, shape, _) in &remote {
+        for _ in 0..next(3) {
+            let parent = &parents[next(parents.len())];
+            let logged = match shape.kind {
+                Kind::Dir => dir(parent, DIR_NAMES[next(2)]),
+                Kind::File => file(parent, FILE_NAMES[next(3)], 1 + next(2) as u8),
+            };
+            history.push((id.clone(), logged));
+        }
+        if next(2) == 0 {
+            history.push((id.clone(), shape.clone()));
+        }
+    }
+    let mut local: Vec<(String, Shape)> = Vec::new();
+    let mut folders = vec![ROOT.to_owned()];
+    let mut places = BTreeSet::new();
+    for i in 0..1 + next(4) {
+        let is_dir = next(4) == 0;
+        let parent = folders[next(folders.len())].clone();
+        let name = LOCAL_NAMES[next(6)];
+        if !places.insert((parent.clone(), nfc(name))) {
+            continue;
+        }
+        let kind = if is_dir { Kind::Dir } else { Kind::File };
+        let reused: Vec<&String> = (remote.iter())
+            .filter(|(id, shape, _)| {
+                shape.kind == kind && local.iter().all(|(other, _)| other != id)
+            })
+            .map(|(id, ..)| id)
+            .collect();
+        let id = match next(4) {
+            0 if !reused.is_empty() => reused[next(reused.len())].clone(),
+            _ => format!("e{i}"),
+        };
+        let shape = match kind {
+            Kind::Dir => dir(&parent, name),
+            Kind::File => file(&parent, name, 1 + next(2) as u8),
+        };
+        if is_dir {
+            folders.push(id.clone());
+        }
+        local.push((id, shape));
+    }
+    let mut synced = Vec::new();
+    let mut held = BTreeSet::new();
+    for (id, shape) in &local {
+        if remote.iter().all(|(node, ..)| node != id) || next(3) != 0 {
+            continue;
+        }
+        let at = match shape.kind {
+            Kind::Dir => dir(ROOT, DIR_NAMES[next(2)]),
+            Kind::File => file(ROOT, FILE_NAMES[next(3)], 1 + next(2) as u8),
+        };
+        if held.insert(nfc(&at.name)) {
+            synced.push((id.clone(), at));
+        }
+    }
+    let mut marks = Vec::new();
+    for (id, _) in &local {
+        if next(3) != 0 {
+            let (node, ..) = &remote[next(remote.len())];
+            marks.push((id.clone(), node.clone()));
+        }
+    }
+    Drawn {
+        local,
+        synced,
+        remote,
+        history,
+        marks,
+    }
+}
+
+fn as_str(rows: &[(String, Shape)]) -> Vec<(&str, Shape)> {
+    (rows.iter())
+        .map(|(id, shape)| (id.as_str(), shape.clone()))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(koidrive_test_support::battery_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/recovery.proptest-regressions"),
+        4096,
+    ))]
+
+    #[test]
+    fn a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history(
+        genes in proptest::collection::vec(any::<u8>(), 64),
+    ) {
+        let drawn = drawn(&genes);
+        let remote: Vec<Remote> = (drawn.remote.iter())
+            .map(|(id, shape, trashed)| Remote(id, shape.clone(), *trashed, 1))
+            .collect();
+        let marks: Vec<(&str, &str)> = (drawn.marks.iter())
+            .map(|(local, node)| (local.as_str(), node.as_str()))
+            .collect();
+        followed(
+            &as_str(&drawn.local),
+            &as_str(&drawn.synced),
+            &remote,
+            &as_str(&drawn.history),
+            &marks,
+        );
+    }
+}
+
+#[test]
+fn a_marked_file_at_its_place_in_a_moved_folder_whose_mark_cannot_follow_is_settled_to_r() {
+    let (trees, _, _) = followed(
+        &[
+            ("c", dir(ROOT, "c")),
+            ("p", dir("c", "a")),
+            ("n", file("p", "a", 1)),
+        ],
+        &[("c", dir(ROOT, "c"))],
+        &[
+            live("c", dir(ROOT, "c")),
+            live("p", dir(ROOT, "A")),
+            live("n", file("p", "a", 1)),
+        ],
+        &[],
+        &[("p", "p"), ("n", "n")],
+    );
+    let settled = (trees.synced().live("n")).or_else(|| trees.waiting().get("n")?.shape.as_ref());
+    assert_eq!(settled, Some(&file("p", "a", 1)));
+}
+
+#[test]
+fn a_file_whose_mark_names_another_node_is_not_settled_to_its_own_id_while_the_mark_waits() {
+    let (trees, _, _) = followed(
+        &[("d0", dir(ROOT, "q")), ("n0", file("d0", "a", 1))],
+        &[],
+        &[
+            live("d0", dir(ROOT, "p")),
+            live("n0", file("d0", "a", 1)),
+            live("n1", file(ROOT, "b", 1)),
+        ],
+        &[("n1", file(ROOT, "b", 1))],
+        &[("d0", "d0"), ("n0", "n1")],
+    );
+    assert_eq!(trees.synced().live("n0"), None);
+    assert!(trees.waiting().get("n0").is_none());
 }
