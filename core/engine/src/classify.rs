@@ -2216,7 +2216,10 @@ impl Trees {
         let fits = |shape: &Shape| !server || !self.under_discarded(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
-        if (held(placed) || held(remote)) && fits(synced) || !self.ignored(id) {
+        if (held(placed) || held(remote)) && fits(synced)
+            || !self.ignored(id)
+            || self.trashed_while_parked(id)
+        {
             return None;
         }
         let at = |shape: &Shape| {
@@ -3644,6 +3647,24 @@ impl Trees {
         self.l.get(id).is_some_and(|node| node.parked)
     }
 
+    pub(crate) fn trashed_while_parked(&self, id: &str) -> bool {
+        let mut current = id;
+        for _ in 0..self.l.len() {
+            match self.l.get(current) {
+                Some(node) if node.parked => break,
+                Some(node) => current = &node.shape.parent,
+                None => return false,
+            }
+        }
+        self.parked(current) && self.trashed_unchanged_below(id)
+    }
+
+    fn trashed_unchanged_below(&self, id: &str) -> bool {
+        self.r.get(id).is_some_and(|remote| remote.trashed)
+            && self.acknowledged_class(id) == Class::Remote
+            && (self.local_children(id)).all(|child| self.trashed_unchanged_below(child))
+    }
+
     /// Nodes whose local position the server will not take: a move that closes a cycle against R,
     /// a create or move the server renamed, a folder merged into one L holds elsewhere with the
     /// nodes created in it, and folders L deleted on the way from such a node to the root. The
@@ -3930,7 +3951,7 @@ impl Trees {
             next += 1;
             below.extend(self.s_names.children(&folder).cloned());
         }
-        if !below.iter().all(|node| self.ignored(node)) {
+        if !(below.iter()).all(|node| self.ignored(node) && !self.trashed_while_parked(node)) {
             return Vec::new();
         }
         for node in below.iter().rev() {
