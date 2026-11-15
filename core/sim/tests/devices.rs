@@ -6672,6 +6672,20 @@ fn a_folder_made_at_the_name_a_held_back_rename_leaves_is_not_merged_into_the_re
     converge(3, &phases).unwrap();
 }
 
+#[test]
+fn a_folder_made_at_a_name_another_device_renamed_a_folder_to_is_merged_into_it() {
+    let mut world = converge(2, &[vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))]]).unwrap();
+    let mut steps = vec![(1, rename(0, 0, "b"))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 4]);
+    steps.push((0, folder("b")));
+    steps.push((0, user(1, 0, 2, "ss")));
+    steps.extend(commit(0));
+    world.run(1, &steps).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(paths_on(&world, 0), ["b", "b/c.txt", "b/ss"]);
+}
+
 fn drawn(kind: u8, target: usize, parent: usize, name: usize) -> Step {
     Step::User(Action {
         kind,

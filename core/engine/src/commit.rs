@@ -2481,6 +2481,15 @@ fn in_sync(trees: &Trees, original: &ConflictFile, copy: &ConflictFile) -> bool 
         .all(|file| trees.class(&file.node_id) == Class::InSync)
 }
 
+fn leaving_unsent(trees: &Trees, problems: &BTreeSet<NodeId>, id: &str) -> bool {
+    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
+        return false;
+    };
+    problems.contains(id)
+        && (local.shape.parent != remote.shape.parent
+            || name_key(&local.shape.name) != name_key(&remote.shape.name))
+}
+
 /// The node other than `other` that R holds live under `parent` with the name key of `name`.
 fn holder(trees: &Trees, parent: &str, name: &str, other: &str) -> Option<NodeId> {
     let key = name_key(name);
@@ -3508,13 +3517,8 @@ fn plan(
             shape, pending_for, ..
         }) = slot.as_mut()
             && shape.kind == Kind::Dir
-            && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
-                moving.contains(other)
-                    || (trees.local().get(other)).is_some_and(|node| {
-                        node.shape.parent != shape.parent
-                            || name_key(&node.shape.name) != name_key(&shape.name)
-                    })
-            })
+            && (scratch.holders(&shape.parent, &shape.name))
+                .any(|other| moving.contains(other) || leaving_unsent(trees, problems, other))
         {
             let name = scratch.free_name(&shape.parent, &shape.name);
             pending_for.get_or_insert_with(|| shape.name.clone());
