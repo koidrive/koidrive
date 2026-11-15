@@ -11,7 +11,7 @@ use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::names::name_key;
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, Tree, same_content};
+use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content};
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
 /// a place it left, where a download made before the store lost track of it may still hold it on
@@ -184,16 +184,28 @@ fn only<T>(items: impl IntoIterator<Item = T>) -> Option<T> {
 }
 
 pub(crate) fn trashed_there(trees: &Trees, tops: Vec<NodeId>) -> Vec<NodeId> {
-    let trashed: BTreeSet<(&str, String)> = (trees.remote().iter())
+    let trashed: BTreeSet<Vec<String>> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
-        .map(|(_, node)| (node.shape.parent.as_str(), name_key(&node.shape.name)))
+        .filter_map(|(id, _)| key_path(trees.remote(), id))
         .collect();
     (tops.into_iter())
-        .filter(|id| {
-            let shape = &trees.local().get(id).expect("a local entry").shape;
-            trashed.contains(&(shape.parent.as_str(), name_key(&shape.name)))
-        })
+        .filter(|id| key_path(trees.local(), id).is_some_and(|path| trashed.contains(&path)))
         .collect()
+}
+
+fn key_path<N: Node>(tree: &Tree<N>, id: &str) -> Option<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut current = id;
+    for _ in 0..=tree.len() {
+        if current == tree.root {
+            keys.reverse();
+            return Some(keys);
+        }
+        let shape = tree.get(current)?.shape();
+        keys.push(name_key(&shape.name));
+        current = &shape.parent;
+    }
+    None
 }
 
 /// Whether the question holds what a first link found on this device and nothing on the server.

@@ -442,3 +442,34 @@ fn the_first_listing_is_kept_until_the_first_link_classifies() {
     assert_eq!(kept_listing(&site, &history_id, koidrive_engine::first_link::Listing::Live), koidrive_engine::first_link::Listing::Live);
 }
 
+
+#[test]
+fn a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held() {
+    for with_a_file in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        fs::create_dir(site_a.root.join("Docs")).unwrap();
+        a.create(&mut remote, &site_a.root.join("Docs/X.docx"), b"x");
+        let site = Site::new(&remote, "b");
+        fs::create_dir(site.root.join("Docs")).unwrap();
+        fs::write(site.root.join("Docs/X.docx"), b"x").unwrap();
+        fs::remove_dir_all(site_a.root.join("Docs")).unwrap();
+        a.rescan();
+        a.rest(&mut remote);
+        let b = listed(&mut remote, &site);
+        fs::create_dir(site_a.root.join("Docs")).unwrap();
+        if with_a_file {
+            fs::write(site_a.root.join("Docs/New.docx"), b"new").unwrap();
+        }
+        a.rescan();
+        a.rest(&mut remote);
+        let b = after_the_first_listing(&mut remote, &site, b, Before::Replay);
+        let held: Vec<_> = (shown(&site).into_iter())
+            .flat_map(|question| question.items.into_iter().map(|item| item.path))
+            .collect();
+        assert_eq!(held, ["Docs/X.docx"], "with a file: {with_a_file}");
+        assert!(!remote.names().contains(&"X.docx".to_owned()));
+        assert_eq!(b.folder.view().questions, 1);
+    }
+}
+
