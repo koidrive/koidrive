@@ -43,6 +43,10 @@ on:
         description: Also run the tests marked #[ignore]
         type: boolean
         default: false
+      release:
+        description: Build the tests with the release profile
+        type: boolean
+        default: false
       os:
         description: Operating systems to run on
         type: choice
@@ -61,6 +65,7 @@ env:
   SEED: ${{ inputs.seed }}
   FEATURES: ${{ inputs.features }}
   IGNORED: ${{ inputs.ignored }}
+  RELEASE: ${{ inputs.release }}
 
 defaults:
   run:
@@ -135,12 +140,15 @@ jobs:
             echo "::error::$CRATE is not a package of the workspace at $SHA."
             exit 1
           fi
-          cargo test --locked --no-run -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+          profile=()
+          [ "$RELEASE" != "true" ] || profile=(--release)
+          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
       - name: Run the tests
         run: |
           out="$RUNNER_TEMP/heavy-tests"
           mkdir -p "$out/logs" "$out/regressions"
           cargo_args=(--locked --no-fail-fast -p "$CRATE")
+          [ "$RELEASE" != "true" ] || cargo_args+=(--release)
           [ -z "$FEATURES" ] || cargo_args+=(--features "$FEATURES")
           [ -z "$TEST" ] || cargo_args+=(--test "$TEST")
           test_args=()
