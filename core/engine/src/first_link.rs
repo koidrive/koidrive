@@ -415,6 +415,9 @@ pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
             if !free || remote.trashed || remote.shape.kind != Kind::File {
                 return None;
             }
+            let mtime_ns = (remote.shape.content.as_ref())
+                .map(|content| content.mtime_ns)
+                .filter(|mtime_ns| mtime_ns % 1_000_000_000 != 0)?;
             let name = nfc(&remote.shape.name);
             let id =
                 (trees.local_holders(&remote.shape.parent, &remote.shape.name)).find(|id| {
@@ -422,8 +425,8 @@ pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
                         node.shape.kind == Kind::File
                             && nfc(&node.shape.name) == name
                             && same_bytes(&remote.shape.content, &node.shape.content)
-                            && (remote.shape.content.as_ref()).map(|content| content.mtime_ns)
-                                == (node.shape.content.as_ref()).map(|content| content.mtime_ns)
+                            && (node.shape.content.as_ref())
+                                .is_some_and(|content| content.mtime_ns == mtime_ns)
                     }) && !held.contains(*id)
                         && !trees.excluded(id)
                         && trees.synced().get(id).is_none()

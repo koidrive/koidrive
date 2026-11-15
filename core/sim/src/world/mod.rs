@@ -8,9 +8,8 @@
 //! After the schedule the faults stop and the devices run until nothing is left to do.
 //!
 //! The oracle uses the harness's own records and the server's state, never the engine's
-//! bookkeeping. Every user write carries a tag in its content's `mtime_ns`, which the engine
-//! does not compare, so two files with the same bytes are still two writes. A broken property is
-//! a [`Failure`] of one of two kinds.
+//! bookkeeping. Every user write carries a tag in its content's `mtime_ns`, so two files with the
+//! same bytes are still two writes. A broken property is a [`Failure`] of one of two kinds.
 //!
 //! [`Failure::Broken`]: a write is lost, or a state or a call is refused.
 //!
