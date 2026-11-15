@@ -2008,6 +2008,27 @@ fn act(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Action 
     }
 }
 
+fn the_server_drops_part_of_a_discarded_folder(
+    before: Vec<(bool, Vec<Action>)>,
+    moved: Action,
+    gap: Vec<(bool, Vec<Action>)>,
+    purged: Action,
+    changed: Action,
+    excluded: Vec<&'static str>,
+) -> (Vec<(bool, Vec<Action>)>, Vec<Ruling>) {
+    let during: Vec<(bool, Vec<Action>)> = (before.into_iter())
+        .chain([(true, vec![moved])])
+        .chain(gap)
+        .chain([(false, vec![purged]), (true, vec![changed])])
+        .collect();
+    let rulings: Vec<Ruling> = [Ruling::File(vec![])]
+        .into_iter()
+        .chain((2..during.len()).map(|_| Ruling::Exclude(excluded.clone())))
+        .chain([Ruling::Exclude(vec![])])
+        .collect();
+    (during, rulings)
+}
+
 /// The folder `a` with the file `c.txt` in it.
 fn a_folder_with_a_file() -> Vec<Action> {
     vec![act(0, 0, 0, 0, 0), act(1, 0, 1, 3, 0)]

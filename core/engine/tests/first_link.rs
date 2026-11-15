@@ -3066,25 +3066,18 @@ fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_fo
 }
 
 #[test]
-fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_leaves_the_folder_discarded()
  {
-    let (mut sent, trees) =
+    let (sent, trees) =
         a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
             let mut moved = trees.local().get("c").unwrap().clone();
             moved.shape.parent = ROOT.into();
             moved.shape.name = "moved".into();
             trees.set_local_changed("c".into(), moved);
         });
-    sent.sort();
-    assert_eq!(
-        sent,
-        [
-            ("create dir", "f".to_owned()),
-            ("move", "c".to_owned()),
-            ("move", "x".to_owned())
-        ]
-    );
-    assert_eq!(trees.local().get("x").unwrap().shape, dir("f", "ignored"));
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(trees.local().get("x").unwrap().shape, dir("p", "server"));
+    assert!(trees.local().get("f").is_none());
     assert_eq!(
         trees.local().get("c").unwrap().shape,
         file(ROOT, "moved", 5)

@@ -1907,14 +1907,10 @@ impl Trees {
     }
 
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
-        let synced = self.synced_children(id).map(|child| (child, false));
-        let waiting = self.waiting.children(id).map(|child| (child, true));
-        synced
-            .chain(waiting)
-            .all(|(child, waiting)| match self.l.get(child) {
-                Some(node) if node.shape.parent == id => true,
-                Some(node) if !self.discarded.contains_key(child) => {
-                    !waiting || (self.s.live(child)).is_some_and(|s| node.shape.same_position(s))
+        (self.synced_children(id).chain(self.waiting.children(id))).all(|child| {
+            match self.l.get(child) {
+                Some(node) if node.shape.parent == id || !self.discarded.contains_key(child) => {
+                    true
                 }
                 Some(node)
                     if (self.discarded.get(child)).is_some_and(|shape| node.shape.same(shape)) =>
@@ -1922,7 +1918,8 @@ impl Trees {
                     true
                 }
                 _ => self.as_the_server_holds(child, seen),
-            })
+            }
+        })
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {
