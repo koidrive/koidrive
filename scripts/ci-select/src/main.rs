@@ -613,7 +613,13 @@ mod tests {
     fn a_sim_test_change_runs_the_suites_that_build_the_sim() {
         assert_eq!(
             running(&["core/sim/tests/devices.rs"]),
-            jobs(&["driver_integration", "rust_driver", "rust_lint", "rust_sim"])
+            jobs(&[
+                "driver_integration",
+                "rust_driver",
+                "rust_engine",
+                "rust_lint",
+                "rust_sim"
+            ])
         );
     }
 

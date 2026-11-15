@@ -1432,10 +1432,12 @@ version = "0.0.0-dev"
 dependencies = [
  "koidrive-ignore",
  "koidrive-proto",
+ "koidrive-sim",
  "koidrive-test-support",
  "proptest",
  "prost",
  "serde",
+ "sha2",
  "unicode-normalization",
 ]
 
