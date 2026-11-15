@@ -1817,14 +1817,15 @@ impl Trees {
         if !left.is_empty() && self.drop_together(&left) {
             dropped.append(&mut left);
         }
-        let released = |id: &NodeId| reclaimed.contains(id) && !left.contains(id);
+        let left: BTreeSet<NodeId> = left.into_iter().collect();
+        let released: BTreeSet<&NodeId> = reclaimed.difference(&left).collect();
         let kept_with_released: Vec<NodeId> = (self.discarded.iter())
             .filter(|(id, _)| self.r.get(id).is_some())
             .filter(|(_, shape)| {
                 let mut parent = Some(&shape.parent);
                 for _ in 0..=self.discarded.len() {
                     match parent {
-                        Some(dir) if released(dir) => return true,
+                        Some(dir) if released.contains(dir) => return true,
                         Some(dir) if self.r.get(dir).is_some() => {
                             parent = self.discarded.get(dir).map(|shape| &shape.parent)
                         }
@@ -1838,7 +1839,7 @@ impl Trees {
         for id in kept_with_released {
             self.discarded.remove(&id);
         }
-        for id in reclaimed.iter().filter(|id| released(id)) {
+        for id in released {
             self.discarded.remove(id);
         }
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);
