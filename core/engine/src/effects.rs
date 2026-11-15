@@ -735,7 +735,8 @@ pub(crate) fn kept_out(trees: &Trees, id: &str) -> bool {
 /// not clear it from S, and what S holds under it may wait for it to be back on disk. Any other
 /// such node is not one until the update is made: a node L holds is then one S does not, which is
 /// created again ([`Trees::forget_lost`]), and one L lacks is downloaded again. An excluded node
-/// is never one.
+/// is one only while it sits in the parked directory unchanged since the server trashed it
+/// ([`Trees::trashed_while_parked`]).
 fn candidate(trees: &Trees, id: &str) -> bool {
     let forgets = (trees.waiting().get(id)).is_some_and(|waiting| waiting.shape.is_none())
         && (trees.local().get(id).is_some() || !trees.reverted().contains(id));
@@ -751,7 +752,10 @@ fn candidate(trees: &Trees, id: &str) -> bool {
             && trees.remote().live(id).is_none()
             && !trees.edited(id))
         || trees.is_discarded(id);
-    changed && !forgets && !trees.excluded(id) && !trees.reclaimed(id)
+    changed
+        && !forgets
+        && (!trees.excluded(id) || trees.trashed_while_parked(id))
+        && !trees.reclaimed(id)
 }
 
 /// Why a node stays as it is for as long as this device's rules do (section 5.10).

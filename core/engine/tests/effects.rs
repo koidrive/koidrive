@@ -1849,6 +1849,63 @@ fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out
     assert_in_sync(&mut trees);
 }
 
+fn parked_folder_with_a_file_the_server_trashed(edited: bool) -> (Trees, Disk) {
+    let (mut trees, mut disk) = space(&[
+        ("d", Some(dir(ROOT, "b")), None),
+        ("x", Some(dir("d", "ß")), None),
+        ("f", Some(file("x", "f", 1)), None),
+    ]);
+    for (id, shape) in [
+        ("d", dir(ROOT, "b")),
+        ("x", dir("d", "ss")),
+        ("f", file("x", "f", 1)),
+    ] {
+        let mut trashed = remote(shape);
+        trashed.trashed = true;
+        trashed.trash_group = "other-device".into();
+        trees.set_remote(id.into(), trashed);
+    }
+    let mut local = trees.local().get("x").unwrap().clone();
+    local.parked = true;
+    trees.set_local("x".into(), local);
+    let entry = disk.entries.get_mut(&2).unwrap();
+    entry.area = Area::Parked;
+    entry.name = "x".into();
+    if edited {
+        let mut local = trees.local().get("f").unwrap().clone();
+        local.shape.content = Some(content(2));
+        trees.set_local("f".into(), local);
+        disk.entries.get_mut(&3).unwrap().content = Some(content(2));
+    }
+    trees.set_rules(
+        &[] as &[&str],
+        Some(koidrive_engine::ignore::RuleFile::parse(b"ss/\n")),
+    );
+    trees.check().unwrap();
+    disk.matches(&trees).unwrap();
+    (trees, disk)
+}
+
+#[test]
+fn a_parked_folder_the_server_trashed_is_removed_with_the_file_in_it_although_the_rules_leave_it_out()
+ {
+    let (mut trees, mut disk) = parked_folder_with_a_file_the_server_trashed(false);
+    assert!(trees.excluded("f"));
+    converge(&mut trees, &mut disk, 10).unwrap();
+    assert_eq!(trees.local().get("x"), None);
+    assert_eq!(trees.local().get("f"), None);
+}
+
+#[test]
+fn a_parked_folder_the_server_trashed_keeps_a_file_edited_in_it_while_the_rules_leave_it_out() {
+    let (mut trees, mut disk) = parked_folder_with_a_file_the_server_trashed(true);
+    converge(&mut trees, &mut disk, 10).unwrap();
+    assert_eq!(
+        trees.local().live("f").and_then(|f| f.content.clone()),
+        Some(content(2))
+    );
+}
+
 #[test]
 fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_excluded_r_position() {
     let renamed = "a (conflict from me 2026-11-09)";

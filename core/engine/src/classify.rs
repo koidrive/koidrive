@@ -3648,9 +3648,21 @@ impl Trees {
     }
 
     pub(crate) fn trashed_while_parked(&self, id: &str) -> bool {
-        self.parked(id)
-            && self.r.get(id).is_some_and(|remote| remote.trashed)
+        let mut current = id;
+        for _ in 0..self.l.len() {
+            match self.l.get(current) {
+                Some(node) if node.parked => break,
+                Some(node) => current = &node.shape.parent,
+                None => return false,
+            }
+        }
+        self.parked(current) && self.trashed_unchanged_below(id)
+    }
+
+    fn trashed_unchanged_below(&self, id: &str) -> bool {
+        self.r.get(id).is_some_and(|remote| remote.trashed)
             && self.acknowledged_class(id) == Class::Remote
+            && (self.local_children(id)).all(|child| self.trashed_unchanged_below(child))
     }
 
     /// Nodes whose local position the server will not take: a move that closes a cycle against R,
