@@ -486,7 +486,7 @@ impl Space {
         for dir in [PARKED_DIR, QUARANTINE_DIR] {
             let private = self.private(&[dir])?;
             for entry in list(private.fd())? {
-                if let Some(held) = mark::open(private.fd(), &entry)? {
+                if let Ok(Some(held)) = mark::open(private.fd(), &entry) {
                     mark::clear(held.as_fd());
                 }
                 let stat = stat_at(private.fd(), &entry)?;

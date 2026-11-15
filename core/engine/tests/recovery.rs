@@ -2693,6 +2693,34 @@ fn a_file_in_a_marked_folder_that_cannot_follow_waits_with_it() {
 }
 
 #[test]
+fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_to_its_name() {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "x"))],
+        &[],
+        &[live("p", dir(ROOT, "x (pending)"))],
+    );
+    mark(&mut trees, "p", "x");
+    let mut logged = History::new();
+    logged
+        .entry("p".into())
+        .or_default()
+        .push(dir(ROOT, "x (pending)"));
+    let marks: Marks = [("f".to_owned(), "p".to_owned())].into_iter().collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    assert_eq!(groups(&commits), []);
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "x")));
+    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "x (pending)")));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "p".to_owned())]
+    );
+}
+
+#[test]
 fn a_waiting_marked_entry_takes_no_other_node_at_its_place() {
     let (trees, _, _) = followed(
         &[

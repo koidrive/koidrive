@@ -1070,6 +1070,27 @@ fn an_entry_brought_back_under_a_recovered_name_loses_its_mark() {
     }
 }
 
+#[test]
+fn an_entry_whose_mark_cannot_be_cleared_is_still_brought_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    space.private(&[PARKED_DIR]).unwrap();
+    let held = root.join(PRIVATE_DIR).join(PARKED_DIR).join("n1");
+    fs::write(&held, "locked").unwrap();
+    fs::set_permissions(&held, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let moved = space
+        .bring_back_all(|held, _| held.to_owned(), now)
+        .unwrap();
+
+    assert_eq!(moved.len(), 1);
+    assert!(fs::symlink_metadata(root.join(&moved[0])).is_ok());
+}
+
 #[derive(Clone, Default)]
 struct Lines(std::sync::Arc<std::sync::Mutex<BTreeMap<PathBuf, Vec<u8>>>>);
 
