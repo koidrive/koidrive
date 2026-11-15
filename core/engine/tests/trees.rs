@@ -391,6 +391,25 @@ fn settling_takes_a_name_swap_made_on_both_sides_together() {
 }
 
 #[test]
+fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() {
+    let mut trees = Trees::new(ROOT);
+    trees.set_synced("e".into(), Some(dir(ROOT, "a")));
+    trees.set_local("e".into(), local(dir(ROOT, "x"), 1));
+    let mut trashed = remote(dir(ROOT, "a"));
+    trashed.trashed = true;
+    trees.set_remote("e".into(), trashed);
+    same_change(&mut trees, "c", dir("e", "ss"), dir(ROOT, "A"), 2);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    assert_eq!(trees.check(), Ok(()));
+    assert!(trees.ignored("e") && !trees.ignored("c"));
+    trees.settle();
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.synced().get("c"), Some(&dir(ROOT, "A")));
+    assert_eq!(trees.synced().live("e"), None);
+    assert!(trees.work().iter().all(|(id, _)| id != "c"));
+}
+
+#[test]
 fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
     let mut trees = Trees::new(ROOT);
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));

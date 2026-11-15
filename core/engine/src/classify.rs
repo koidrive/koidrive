@@ -3706,21 +3706,37 @@ impl Trees {
     }
 
     /// S := R together for a non-empty set of `pending` nodes whose updates leave S valid, when one
-    /// exists. Returns the nodes it updated, or an empty set.
+    /// exists. An excluded node that [`Trees::released`] lets go and whose S entry holds the name
+    /// one of them takes may leave S in the same set. Returns the pending nodes it updated, or an
+    /// empty set.
     fn take_remote_together(&mut self, pending: &[NodeId]) -> BTreeSet<NodeId> {
-        let (taken, unsearched) = self.search_together(pending);
+        let mut targets: BTreeMap<&str, Option<&Shape>> = (pending.iter())
+            .map(|id| (id.as_str(), self.r.live(id)))
+            .collect();
+        for shape in pending.iter().filter_map(|id| self.r.live(id)) {
+            for holder in self.s_names.holders(&shape.parent, &shape.name) {
+                if !targets.contains_key(holder.as_str()) && self.released(holder).is_some() {
+                    targets.insert(holder, None);
+                }
+            }
+        }
+        let (taken, unsearched) = self.search_together(&targets);
+        let updates: Vec<(NodeId, Option<Shape>)> = (taken.iter())
+            .map(|id| (id.clone(), targets[id.as_str()].cloned()))
+            .collect();
         self.unsearched.clear();
         self.unsearched.extend(unsearched);
-        for id in &taken {
-            let next = self.r.live(id).cloned();
-            self.set_synced_unmarked(id, next);
+        for (id, next) in updates {
+            self.set_synced_unmarked(&id, next);
         }
         debug_assert_eq!(self.s.check(Names::ByKey), Ok(()));
-        taken
+        (taken.into_iter())
+            .filter(|id| pending.contains(id))
+            .collect()
     }
 
-    /// Finds a non-empty set of `pending` nodes whose updates leave S valid when made together, and
-    /// the nodes it did not search.
+    /// Finds a non-empty set of the nodes of `targets` whose updates to their target shapes leave S
+    /// valid when made together, and the nodes it did not search.
     ///
     /// Nodes outside the candidates keep their S shape. A candidate whose update breaks S because
     /// of such a fixed node alone (a fixed child, a fixed parent that is not a live directory, a
@@ -3730,9 +3746,13 @@ impl Trees {
     /// candidates holding its new name key in S. Those links split the candidates into groups
     /// where any valid set's part in one group is valid on its own, so searching every subset of
     /// each group, up to [`SETTLE_GROUP_LIMIT`] members, finds a valid set whenever one exists.
-    fn search_together(&self, pending: &[NodeId]) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
+    fn search_together(
+        &self,
+        targets: &BTreeMap<&str, Option<&Shape>>,
+    ) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
         let root = self.s.root.as_str();
-        let mut candidates: BTreeSet<&str> = pending.iter().map(String::as_str).collect();
+        let target = |id: &str| targets.get(id).copied().flatten();
+        let mut candidates: BTreeSet<&str> = targets.keys().copied().collect();
         loop {
             let never: Vec<&str> = candidates
                 .iter()
@@ -3740,7 +3760,7 @@ impl Trees {
                 .filter(|&id| {
                     let fixed = |other: &&str| !candidates.contains(other);
                     let fixed_child = self.s_names.children(id).any(|c| fixed(&c.as_str()));
-                    let Some(shape) = self.r.live(id) else {
+                    let Some(shape) = target(id) else {
                         return fixed_child;
                     };
                     (fixed_child && shape.kind != Kind::Dir)
@@ -3769,7 +3789,7 @@ impl Trees {
         let mut next: BTreeMap<(&str, bool), &str> = BTreeMap::new();
         let mut links: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for &id in &candidates {
-            for (taken, shape) in [(true, self.r.live(id)), (false, self.s.live(id))] {
+            for (taken, shape) in [(true, target(id)), (false, self.s.live(id))] {
                 let Some(up) = shape
                     .and_then(|shape| self.above(&shape.parent, &candidates))
                     .filter(|up| *up != root)
@@ -3780,7 +3800,7 @@ impl Trees {
                 links.entry(id).or_default().push(up);
                 links.entry(up).or_default().push(id);
             }
-            if let Some(shape) = self.r.live(id) {
+            if let Some(shape) = target(id) {
                 for other in self.s_names.holders(&shape.parent, &shape.name) {
                     let other = other.as_str();
                     if other != id && candidates.contains(other) {
@@ -3819,7 +3839,7 @@ impl Trees {
                 };
                 let entry = |id: &str| {
                     if taken(id) {
-                        self.r.live(id)
+                        target(id)
                     } else {
                         self.s.live(id)
                     }
