@@ -1224,7 +1224,16 @@ fn acted_below(
         for _ in 0..=trees.remote().len() {
             match current {
                 Some(at) if at == entry => return true,
-                Some(at) => current = trees.remote().live(&at).map(|remote| remote.parent.clone()),
+                Some(at) => {
+                    let remote = trees.remote().live(&at);
+                    let moved_here = (trees.local().get(&at)).zip(remote).is_some_and(
+                        |(local, remote)| !local.shape.same_position(remote),
+                    );
+                    if moved_here {
+                        return false;
+                    }
+                    current = remote.map(|remote| remote.parent.clone());
+                }
                 None => return false,
             }
         }
@@ -1237,6 +1246,7 @@ fn acted_below(
                 !remote.trashed
                     && trees.local().get(node).is_none()
                     && !device.removed_from.contains_key(node)
+                    && !trees.excluded(node)
                     && below_in_r(node, entry)
             })
     };
