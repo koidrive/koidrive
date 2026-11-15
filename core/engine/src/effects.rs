@@ -310,7 +310,7 @@ impl Effects {
     ///
     /// An excluded node ([`Trees::excluded`]) gets no effect and is never parked, and neither is a
     /// node whose own place an excluded node holds. A parked node that the rules now leave out is
-    /// moved back to the position L keeps for it, or to its R position when it cannot take that one, and nothing is planned while the rules are
+    /// moved back to the position L keeps for it, or to its R position when it cannot take that one or is reverted, and nothing is planned while the rules are
     /// unknown ([`Trees::rules_known`]), or for a node below a folder whose rules are unknown
     /// ([`Trees::held`]). A `.koiignore` file that R
     /// holds and the disk does not yet is written before any other effect below its folder
