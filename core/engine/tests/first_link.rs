@@ -3407,3 +3407,25 @@ fn a_file_moved_out_of_a_server_folder_in_a_discarded_folder_keeps_the_move_when
         file(ROOT, "child", 9)
     );
 }
+
+#[test]
+fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_folder_keeps_the_move_when_another_device_moves_and_trashes_it()
+ {
+    let (sent, trees) =
+        a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
+            let mut moved = trees.local().get("c").unwrap().clone();
+            moved.shape.parent = ROOT.into();
+            moved.shape.name = "moved".into();
+            trees.set_local_changed("c".into(), moved);
+            let mut trashed = trees.remote().get("c").unwrap().clone();
+            trashed.shape.parent = ROOT.into();
+            trashed.shape.name = "remote-moved".into();
+            trashed.trashed = true;
+            trees.set_remote("c".into(), trashed);
+        });
+    assert_eq!(sent, [("move", "c".to_owned())]);
+    assert_eq!(
+        trees.local().get("c").unwrap().shape,
+        file(ROOT, "moved", 5)
+    );
+}
