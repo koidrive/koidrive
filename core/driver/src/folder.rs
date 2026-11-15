@@ -1787,6 +1787,7 @@ impl Folder {
         })?;
         if recovering {
             self.unreadable.clear();
+            self.disk.forget_brought_back();
         }
         let trees = &self.engine.trees;
         let adopted = (trees.local().iter())

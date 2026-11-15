@@ -11,7 +11,9 @@ use crate::commit::rekey;
 use crate::ids::IdGen;
 use crate::names::{name_key, nfc, same_name};
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
-use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content};
+use crate::tree::{
+    Content, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content,
+};
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
 /// a place it left, where a download made before the store lost track of it may still hold it on
@@ -310,6 +312,26 @@ fn folder_places(trees: &Trees, history: &History) -> BTreeSet<(NodeId, String)>
         .map(|shape| (shape.parent.clone(), name_key(&shape.name)))
         .chain(pending)
         .collect()
+}
+
+/// Whether the entry of L `id` is, or is inside, an entry `is_entry` names. A store rollback's
+/// recovery does not find an entry by its node mark there, since the place a brought-back entry
+/// takes is not one the user gave it (design §6.4).
+pub fn at_or_under(trees: &Trees, id: &str, is_entry: impl Fn(&FileIdentity) -> bool) -> bool {
+    let mut at = id;
+    for _ in 0..=trees.local().len() {
+        let Some(node) = (at != trees.local().root)
+            .then(|| trees.local().get(at))
+            .flatten()
+        else {
+            return false;
+        };
+        if is_entry(&node.identity) {
+            return true;
+        }
+        at = &node.shape.parent;
+    }
+    false
 }
 
 fn settled_above(trees: &Trees, parent: &NodeId) -> Option<Vec<NodeId>> {

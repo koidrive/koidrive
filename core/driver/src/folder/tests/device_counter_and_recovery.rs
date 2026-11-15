@@ -910,6 +910,112 @@ fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
 }
 
 #[test]
+fn a_read_only_download_a_store_rollback_brings_back_keeps_its_server_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    assert_eq!(a.folder.disk.marks(&a.folder.engine.trees, [&node]).get(&node), Some(&node));
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    let private = parked.join(&node);
+    fs::rename(site.root.join("two.txt"), &private).unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o444)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
+}
+
+#[test]
+fn a_stop_between_bringing_back_and_recovering_keeps_the_server_name() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    assert_eq!(a.folder.disk.marks(&a.folder.engine.trees, [&node]).get(&node), Some(&node));
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    fs::rename(site.root.join("two.txt"), parked.join(&node)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    drop(site.start());
+    assert!(!parked.join(&node).exists());
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
+}
+
+#[test]
+fn publishing_a_folder_a_store_rollback_brought_back_moves_no_child_it_did_not_ask_about() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    fs::create_dir(other.root.join("docs")).unwrap();
+    b.create(&mut remote, &other.root.join("docs/two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let folder = node_named(&a, "docs");
+    let child = node_named(&a, "two.txt");
+    assert_eq!(a.folder.disk.marks(&a.folder.engine.trees, [&folder, &child]).len(), 2);
+    fs::rename(other.root.join("docs/two.txt"), other.root.join("two.txt")).unwrap();
+    b.rescan();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    assert_eq!(remote.tree().get("two.txt"), Some(&child));
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    fs::rename(site.root.join("docs"), parked.join(&folder)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(shown(&site).len(), 1);
+    answer(&site, Answer::Publish);
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.tree().get("two.txt"), Some(&child));
+}
+
+#[test]
 fn a_merged_folder_is_marked_when_late_records_or_a_bootstrap_acknowledge_it() {
     for bootstrap in [false, true] {
         let mut remote = Remote::new();

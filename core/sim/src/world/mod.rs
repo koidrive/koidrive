@@ -72,7 +72,7 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::first_link::{self, History, Marks};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, NodeId, RemoteNode, Shape, same, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Error, ListVersions, Move, NodeKind, NodeState, NodeStatus,
     PrepareUpload, Resume, UploadReceipt, change_record, chunk_plan, error, op, op_result,
@@ -2012,13 +2012,17 @@ impl World {
                         .filter(|(id, _)| trees.synced().get(id).is_none())
                         .map(|(id, node)| (id.clone(), node.identity.ino))
                         .collect();
+                    let brought_back =
+                        |identity: &FileIdentity| disk.brought_back.contains(&identity.ino);
                     let marks: Marks = (unheld.iter())
+                        .filter(|(id, _)| !first_link::at_or_under(trees, id, brought_back))
                         .filter_map(|(id, ino)| {
                             let node = disk.mark_of(&location_of(trees, id)?, *ino)?;
                             Some((id.clone(), node))
                         })
                         .collect();
                     commits.recover(trees, device_seq, &cause, &history, &marks, ids, NOW as u64);
+                    disk.brought_back.clear();
                     let unheld: BTreeSet<u128> = unheld.into_iter().map(|(_, ino)| ino).collect();
                     let adopted = (trees.local().iter())
                         .filter(|(id, node)| {

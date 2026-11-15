@@ -1037,8 +1037,8 @@ fn an_entry_an_effect_left_in_quarantine_is_moved_to_the_root_under_its_recovere
 }
 
 #[test]
-fn an_entry_brought_back_under_a_recovered_name_loses_its_mark() {
-    use std::os::fd::AsFd;
+fn the_entries_a_store_rollback_brings_back_are_remembered_until_forgotten() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     fs::create_dir_all(&root).unwrap();
@@ -1046,49 +1046,81 @@ fn an_entry_brought_back_under_a_recovered_name_loses_its_mark() {
     space.private(&[PARKED_DIR]).unwrap();
     space.private(&[QUARANTINE_DIR]).unwrap();
     let private = root.join(PRIVATE_DIR);
-    fs::create_dir(private.join(PARKED_DIR).join("n1")).unwrap();
-    fs::write(private.join(QUARANTINE_DIR).join("effect-7"), "displaced").unwrap();
-    let held = [
-        private.join(PARKED_DIR).join("n1"),
-        private.join(QUARANTINE_DIR).join("effect-7"),
-    ];
-    for (path, node) in held.iter().zip(["n1", "n2"]) {
-        let entry = fs::File::open(path).unwrap();
-        mark::write(entry.as_fd(), node);
-        assert_eq!(mark::read(entry.as_fd()).unwrap().as_deref(), Some(node));
-    }
-
+    let folder = private.join(PARKED_DIR).join("n1");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside.txt"), "kept").unwrap();
+    fs::set_permissions(folder.join("inside.txt"), fs::Permissions::from_mode(0o444)).unwrap();
+    let file = private.join(QUARANTINE_DIR).join("effect-7");
+    fs::write(&file, "displaced").unwrap();
+    let id = |path: &Path| {
+        let meta = fs::symlink_metadata(path).unwrap();
+        (meta.dev(), u128::from(meta.ino()))
+    };
+    let ids = |space: &Space| {
+        let mut ids: Vec<_> = (space.brought_back().unwrap().into_iter())
+            .map(|id| (id.dev, id.ino))
+            .collect();
+        ids.sort();
+        ids
+    };
+    let mut expected = vec![id(&folder), id(&file)];
+    expected.sort();
     let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    let moved = space
-        .bring_back_all(|held, _| held.to_owned(), now)
-        .unwrap();
 
-    assert_eq!(moved.len(), 2);
-    for path in moved {
-        let entry = fs::File::open(root.join(path)).unwrap();
-        assert_eq!(mark::read(entry.as_fd()).unwrap(), None);
-    }
+    assert_eq!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .len(),
+        2
+    );
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    assert_eq!(ids(&space), expected);
+
+    let later = private.join(PARKED_DIR).join("n3");
+    fs::write(&later, "later").unwrap();
+    expected.push(id(&later));
+    expected.sort();
+    assert_eq!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        space
+            .bring_back_all(|held, _| held.to_owned(), now)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ids(&space), expected);
+
+    space.forget_brought_back().unwrap();
+    assert_eq!(ids(&space), []);
 }
 
 #[test]
-fn an_entry_whose_mark_cannot_be_cleared_is_still_brought_back() {
+fn an_unreadable_entry_is_still_brought_back() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     fs::create_dir_all(&root).unwrap();
     let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
     space.private(&[PARKED_DIR]).unwrap();
+    space.private(&[QUARANTINE_DIR]).unwrap();
     let held = root.join(PRIVATE_DIR).join(PARKED_DIR).join("n1");
     fs::write(&held, "locked").unwrap();
     fs::set_permissions(&held, fs::Permissions::from_mode(0o000)).unwrap();
-
     let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
     let moved = space
         .bring_back_all(|held, _| held.to_owned(), now)
         .unwrap();
 
     assert_eq!(moved.len(), 1);
-    assert!(fs::symlink_metadata(root.join(&moved[0])).is_ok());
+    let brought = fs::symlink_metadata(root.join(&moved[0])).unwrap();
+    assert_eq!(brought.permissions().mode() & 0o777, 0o000);
 }
 
 #[derive(Clone, Default)]

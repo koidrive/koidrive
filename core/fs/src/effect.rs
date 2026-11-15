@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -14,7 +15,8 @@ use rustix::io::Errno;
 use crate::mark;
 use crate::resolve::{Base, Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
 use crate::root::{
-    Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, write_marker_at,
+    Flush, Marker, PRIVATE_DIR, flush, remove_if_present, rename_no_replace, replace_file,
+    write_marker_at,
 };
 use crate::trash::TRASH_DIR;
 use crate::{Entry, EntryKind, FileId, Stat, list, stat_at, stat_fd};
@@ -24,6 +26,8 @@ pub const STAGING_DIR: &str = "staging";
 /// The folder inside the private folder that holds displaced entries until
 /// they are compared. It is never swept.
 pub const QUARANTINE_DIR: &str = "quarantine";
+const BROUGHT_BACK: &str = "brought-back.json";
+const BROUGHT_BACK_TEMP: &str = "brought-back.json.tmp";
 
 /// An entry an effect displaces, as the caller last observed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,30 +478,78 @@ impl Space {
     /// name made from `name` of its private name and identity, and returns the paths they took. A
     /// store older than the disk does not know what the disk parked, or what the last effect the
     /// root marker counts left in quarantine when it stopped between its steps, and scans read
-    /// neither directory (design §6.4). Each entry loses its node mark, since the name it takes is
-    /// not one the user gave it.
+    /// neither directory (design §6.4). Before it moves any, it adds their identities to the set
+    /// [`Space::brought_back`] reads, since the place each takes is not one the user gave it.
     pub fn bring_back_all(
         &self,
         name: impl Fn(&OsStr, FileId) -> OsString,
         now: SystemTime,
     ) -> io::Result<Vec<PathBuf>> {
         let root = self.root_folder()?;
+        let held = [PARKED_DIR, QUARANTINE_DIR].map(|dir| self.private(&[dir]));
+        let [parked, quarantine] = held.map(|private| -> io::Result<_> {
+            let private = private?;
+            let entries = list(private.fd())?;
+            Ok((private, entries))
+        });
+        let held = [parked?, quarantine?];
+        let mut brought_back = self.brought_back()?;
+        for (private, entries) in &held {
+            for entry in entries {
+                brought_back.insert(stat_at(private.fd(), entry)?.id);
+            }
+        }
+        if held.iter().all(|(_, entries)| entries.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<_> = (brought_back.iter())
+            .map(|id| (id.dev, id.ino, id.birth_ns))
+            .collect();
+        replace_file(
+            self.private(&[])?.fd(),
+            BROUGHT_BACK,
+            BROUGHT_BACK_TEMP,
+            &serde_json::to_vec(&ids)?,
+            Flush::Barrier,
+        )?;
         let mut moved = Vec::new();
-        for dir in [PARKED_DIR, QUARANTINE_DIR] {
-            let private = self.private(&[dir])?;
-            for entry in list(private.fd())? {
-                if let Ok(Some(held)) = mark::open(private.fd(), &entry) {
-                    mark::clear(held.as_fd());
-                }
-                let stat = stat_at(private.fd(), &entry)?;
-                let original = name(&entry, stat.id);
+        for (private, entries) in &held {
+            for entry in entries {
+                let stat = stat_at(private.fd(), entry)?;
+                let original = name(entry, stat.id);
                 let folder = stat.file_type == FileType::Directory;
                 moved.push(
-                    self.move_to_recovered_name(&private, &entry, &root, &original, folder, now)?,
+                    self.move_to_recovered_name(private, entry, &root, &original, folder, now)?,
                 );
             }
         }
         Ok(moved)
+    }
+
+    /// The identities of the entries [`Space::bring_back_all`] moved since the last
+    /// [`Space::forget_brought_back`]. Recovery does not find an entry by its node mark when the
+    /// entry, or a folder it is in, is one of them (design §6.4). The set is kept on disk, so a
+    /// stop between bringing entries back and recovering keeps it.
+    pub fn brought_back(&self) -> io::Result<HashSet<FileId>> {
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let file =
+            match rustix::fs::openat(self.private(&[])?.fd(), BROUGHT_BACK, flags, Mode::empty()) {
+                Ok(file) => file,
+                Err(Errno::NOENT) => return Ok(HashSet::new()),
+                Err(err) => return Err(err.into()),
+            };
+        let ids: Vec<(u64, u128, Option<i64>)> = serde_json::from_reader(File::from(file))
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        Ok((ids.into_iter())
+            .map(|(dev, ino, birth_ns)| FileId { dev, ino, birth_ns })
+            .collect())
+    }
+
+    /// Empties the set [`Space::brought_back`] reads, once recovery has used it.
+    pub fn forget_brought_back(&self) -> io::Result<()> {
+        let private = self.private(&[])?;
+        remove_if_present(private.fd(), BROUGHT_BACK)?;
+        flush(private.fd(), Flush::Plain)
     }
 
     /// Begins an effect section after checking that the root is held. It

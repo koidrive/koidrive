@@ -49,7 +49,7 @@ use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Displaced as EngineDisplaced, Effect as EngineEffect,
     EffectRecord, Location as EngineLocation, location_of,
 };
-use koidrive_engine::first_link::Marks;
+use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
@@ -264,6 +264,7 @@ pub(crate) struct Disk {
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
     hook: Hook,
+    brought_back: HashSet<FileId>,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -376,6 +377,7 @@ impl Disk {
             rescan_after: None,
             batch: BATCH,
             hook,
+            brought_back: HashSet::new(),
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -423,6 +425,7 @@ impl Disk {
                 Ok(())
             })?;
         }
+        disk.brought_back = disk.space.brought_back()?;
         if marker < cleared {
             return Err(Stop::DiskBehind { marker, cleared });
         }
@@ -732,7 +735,9 @@ impl Disk {
     }
 
     pub fn marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
+        let brought_back = |identity: &_| self.brought_back.contains(&file_id(*identity));
         (ids.into_iter())
+            .filter(|id| !first_link::at_or_under(trees, id, brought_back))
             .filter_map(|id| {
                 let (at, expected) = self.place_of(trees, id)?;
                 match self.space.mark_of(&at, expected) {
@@ -744,6 +749,15 @@ impl Disk {
                 }
             })
             .collect()
+    }
+
+    pub fn forget_brought_back(&mut self) {
+        match self.space.forget_brought_back() {
+            Ok(()) => self.brought_back.clear(),
+            Err(err) => {
+                tracing::warn!(space_id = self.space_id, %err, "could not forget what a recovery brought back")
+            }
+        }
     }
 
     pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {

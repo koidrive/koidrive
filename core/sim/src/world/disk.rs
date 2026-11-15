@@ -107,6 +107,7 @@ pub struct Disk {
     trash: BTreeSet<String>,
     binned: BTreeSet<i64>,
     marker: u64,
+    pub(super) brought_back: BTreeSet<u128>,
 }
 
 impl Disk {
@@ -163,17 +164,17 @@ impl Disk {
             let entry = self.entries.get_mut(&ino).expect("listed");
             entry.place = Place::Root;
             entry.name = free;
-            entry.mark = None;
+            self.brought_back.insert(ino);
         }
         for (ino, entry) in std::mem::take(&mut self.quarantine).into_values() {
             let name = self.recovered(&entry.name);
             let entry = Entry {
                 place: Place::Root,
                 name,
-                mark: None,
                 ..entry
             };
             self.entries.insert(ino, entry);
+            self.brought_back.insert(ino);
         }
     }
 
