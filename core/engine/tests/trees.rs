@@ -438,6 +438,50 @@ fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it(
 }
 
 #[test]
+fn settling_a_rotation_beside_a_released_folder_searches_the_rotation_on_its_own() {
+    let mut trees = Trees::new(ROOT);
+    for i in 0..11 {
+        let from = dir(ROOT, &format!("y{i}"));
+        let to = dir(ROOT, &format!("y{}", (i + 1) % 11));
+        same_change(&mut trees, &format!("r{i:02}"), from, to, 100 + i as u128);
+    }
+    trees.set_synced("e".into(), Some(dir("r00", "a")));
+    trees.set_local("e".into(), local(dir("r00", "x"), 1));
+    let mut trashed = remote(dir("r00", "a"));
+    trashed.trashed = true;
+    trees.set_remote("e".into(), trashed);
+    same_change(&mut trees, "c", dir("e", "ss"), dir("r00", "A"), 2);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.settle();
+    assert_eq!(trees.synced().get("r00"), Some(&dir(ROOT, "y1")));
+    assert!(trees.unsearched().is_empty(), "{:?}", trees.unsearched());
+}
+
+#[test]
+fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settle() {
+    let mut trees = Trees::new(ROOT);
+    trees.set_synced("e".into(), Some(dir(ROOT, "a")));
+    trees.set_local("e".into(), local(dir(ROOT, "x"), 1));
+    trees.set_remote("e".into(), remote(dir(ROOT, "b")));
+    trees.set_synced("h".into(), Some(file(ROOT, "X", 4)));
+    trees.set_local("h".into(), local(file(ROOT, "h2", 4), 4));
+    trees.set_remote("h".into(), remote(file(ROOT, "X", 4)));
+    same_change(&mut trees, "f", file(ROOT, "b", 3), file(ROOT, "g", 3), 3);
+    same_change(&mut trees, "c", dir("e", "ss"), dir(ROOT, "A"), 2);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.settle();
+    trees.settle();
+    assert_eq!(trees.synced().get("e"), Some(&dir(ROOT, "b")));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"")));
+    trees.settle();
+    assert!(
+        trees.work().contains(&("e".to_owned(), Class::Local)),
+        "{:?}",
+        trees.work()
+    );
+}
+
+#[test]
 fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
     let mut trees = Trees::new(ROOT);
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));

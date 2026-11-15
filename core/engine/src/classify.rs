@@ -3711,14 +3711,29 @@ impl Trees {
         let mut targets: BTreeMap<&str, Option<&Shape>> = (pending.iter())
             .map(|id| (id.as_str(), self.r.live(id)))
             .collect();
-        for shape in pending.iter().filter_map(|id| self.r.live(id)) {
-            for holder in self.s_names.holders(&shape.parent, &shape.name) {
-                if !targets.contains_key(holder.as_str()) && self.released(holder).is_some() {
-                    targets.insert(holder, None);
+        let (mut taken, mut unsearched) = self.search_together(&targets);
+        if taken.is_empty() {
+            let mut released = Vec::new();
+            for shape in pending.iter().filter_map(|id| self.r.live(id)) {
+                for holder in self.s_names.holders(&shape.parent, &shape.name) {
+                    if !targets.contains_key(holder.as_str())
+                        && let Some(options) = self.released(holder)
+                    {
+                        released.push((holder, options));
+                    }
                 }
             }
+            let fitting = (released.iter()).find_map(|(holder, options)| {
+                let next = (options.iter()).find(|next| self.fits_synced(holder, next.as_ref()))?;
+                Some(((*holder).clone(), next.clone()))
+            });
+            if let Some((holder, next)) = fitting {
+                self.set_synced_unmarked(&holder, next);
+                return BTreeSet::from([holder]);
+            }
+            targets.extend(released.iter().map(|(holder, _)| (holder.as_str(), None)));
+            (taken, unsearched) = self.search_together(&targets);
         }
-        let (taken, unsearched) = self.search_together(&targets);
         let updates: Vec<(NodeId, Option<Shape>)> = (taken.iter())
             .map(|id| (id.clone(), targets[id.as_str()].cloned()))
             .collect();
