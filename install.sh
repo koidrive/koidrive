@@ -12,16 +12,19 @@ main() {
     no_setup=${KOIDRIVE_NO_SETUP:-0}
     no_modify_path=${KOIDRIVE_NO_MODIFY_PATH:-0}
     no_app=0
+    verbose=${KOIDRIVE_VERBOSE:-0}
     for option do
         case "$option" in
             --no-setup) no_setup=1 ;;
             --no-modify-path) no_modify_path=1 ;;
             --no-app) no_app=1 ;;
+            --verbose) verbose=1 ;;
             -h|--help)
-                printf '%s\n' 'Usage: sh install.sh [--no-setup] [--no-modify-path] [--no-app]' \
+                printf '%s\n' 'Usage: sh install.sh [--no-setup] [--no-modify-path] [--no-app] [--verbose]' \
                     '  --no-setup          Install without guided setup (KOIDRIVE_NO_SETUP=1)' \
                     '  --no-modify-path    Leave shell profiles unchanged (KOIDRIVE_NO_MODIFY_PATH=1)' \
-                    '  --no-app            Pass --no-app to guided setup on macOS'
+                    '  --no-app            Pass --no-app to guided setup on macOS' \
+                    '  --verbose           Print each download check (KOIDRIVE_VERBOSE=1)'
                 return
                 ;;
             *) fail "Unknown option: $option. Run with --help for usage" ;;
@@ -80,7 +83,15 @@ main() {
     fetch() {
         curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$tmp/$1" -- "$download/$1"
     }
-    printf 'Downloading %s (%s)\n' "$archive" "$version"
+    detail() {
+        if [ "$verbose" = 1 ]; then printf '%s\n' "$*"; fi
+    }
+    if [ "$version" = latest ]; then
+        printf 'Downloading the newest Koidrive\n'
+    else
+        printf 'Downloading Koidrive %s\n' "$version"
+    fi
+    detail "Downloading $archive from $download"
     fetch "$archive"
     fetch SHA256SUMS
     fetch SHA256SUMS.sig || fail 'Could not download SHA256SUMS.sig, so the release cannot be verified; the existing installation has not changed. Retry, or set KOIDRIVE_VERSION to v0.1.0-alpha.4 or later'
@@ -88,7 +99,7 @@ main() {
         printf '%s\n' 'koidrive namespaces="koidrive-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHrojC3pUxk7xAzY+3xU5cpMnCpa2jPxjMu/xH/xL/+n' > "$tmp/allowed-signers"
         ssh-keygen -Y verify -f "$tmp/allowed-signers" -I koidrive -n koidrive-release -s "$tmp/SHA256SUMS.sig" < "$tmp/SHA256SUMS" >/dev/null 2>&1 ||
             fail 'SHA256SUMS is not signed with the Koidrive release key; the existing installation has not changed'
-        printf 'Signature verified for SHA256SUMS\n'
+        detail 'Signature verified for SHA256SUMS'
     else
         printf 'Warning: ssh-keygen from OpenSSH 8.1 or later was not found, so the release signature was not checked\n' >&2
     fi
@@ -105,13 +116,15 @@ main() {
         actual=$(shasum -a 256 "$tmp/$archive")
     fi
     [ "${actual%% *}" = "$expected" ] || fail 'Checksum mismatch; the existing installation has not changed'
-    printf 'SHA256 verified for %s\n' "$archive"
+    detail "SHA256 verified for $archive"
     tar -xzOf "$tmp/$archive" koi > "$tmp/koi"
     [ -s "$tmp/koi" ] || fail 'The tarball contains no koi binary'
     if [ "$os" = apple-darwin ]; then
         codesign --verify --strict -R '=identifier "koi" and anchor apple generic and certificate leaf[subject.OU] = "656SPP5XR8" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' "$tmp/koi" ||
             fail "The downloaded koi is not signed with Koidrive's Developer ID; the existing installation has not changed"
+        detail 'Developer ID signature verified for koi'
     fi
+    printf 'Checked the download\n'
 
     install_dir=${KOIDRIVE_INSTALL_DIR:-$HOME/.local/bin}
     case "$install_dir" in /*) ;; *) fail 'KOIDRIVE_INSTALL_DIR must be an absolute path' ;; esac
@@ -305,7 +318,11 @@ main() {
         printf 'Starting guided setup with %s/koi\n' "$install_dir"
         "$install_dir/koi" "$@" < /dev/tty
     else
-        printf 'To set up Koidrive, run: %s/koi %s\n' "$(shell_quote "$install_dir")" "$*"
+        status=0
+        "$install_dir/koi" status --check >/dev/null 2>&1 || status=$?
+        if [ "$status" = 4 ]; then
+            printf 'To set up Koidrive, run: %s/koi %s\n' "$(shell_quote "$install_dir")" "$*"
+        fi
     fi
 }
 

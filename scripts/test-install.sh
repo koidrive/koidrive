@@ -393,7 +393,7 @@ for platform in 'Darwin arm64 1 aarch64-apple-darwin' 'Darwin x86_64 1 aarch64-a
     read -r os arch arm64 selected <<EOF
 $platform
 EOF
-    PATH="$tmp/bin:$PATH" KOIDRIVE_TEST_OS=$os KOIDRIVE_TEST_ARCH=$arch KOIDRIVE_TEST_ARM64=$arm64 sh "$installer" > "$tmp/arch.log" 2>&1
+    PATH="$tmp/bin:$PATH" KOIDRIVE_TEST_OS=$os KOIDRIVE_TEST_ARCH=$arch KOIDRIVE_TEST_ARM64=$arm64 KOIDRIVE_VERBOSE=1 sh "$installer" > "$tmp/arch.log" 2>&1
     cat "$tmp/arch.log"
     grep -F "Downloading koidrive-$selected.tar.gz" "$tmp/arch.log"
     cmp "$binary" "$HOME/.local/bin/koi"

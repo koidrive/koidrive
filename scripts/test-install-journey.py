@@ -70,6 +70,11 @@ class InstallJourney(unittest.TestCase):
                 echo 'koi 0.0.0 Koidrive sync client'
                 exit
             fi
+            if [ "${1:-}" = status ]; then
+                printf '%s\\n' "$*" >> "$HOME/status.calls"
+                [ "${2:-}" = --check ] || exit 0
+                exit "${TEST_STATUS_EXIT:-4}"
+            fi
             printf '%s\\n' "$0" "$@" > "$HOME/setup.args"
             [ -t 0 ] && [ -t 2 ] || exit 91
             printf 'SETUP_READY\\n'
@@ -199,7 +204,20 @@ class InstallJourney(unittest.TestCase):
         self.assertEqual((self.home / "setup.answer").read_text(), "continue\n")
         profile = self.home / ".zprofile"
         self.assertIn(f"Updated {profile}:\n+ {profile.read_text()}", output)
-        self.assertIn("Signature verified for SHA256SUMS\nSHA256 verified", output)
+        self.assertIn(f"Downloading Koidrive 0.0.0\nChecked the download\nInstalled koi to {self.home}/.local/bin/koi\n", output)
+        self.assertNotIn("verified", output)
+
+    def test_verbose_prints_each_download_check(self):
+        for options, env in ((("--verbose",), {}), ((), {"KOIDRIVE_VERBOSE": "1"})):
+            with self.subTest(options=options, env=env):
+                output = self.successful_install("--no-setup", *options, env=env)
+                self.assertIn("Signature verified for SHA256SUMS\nSHA256 verified for koidrive-aarch64-apple-darwin.tar.gz\n", output)
+                self.assertIn("Developer ID signature verified for koi\nChecked the download\n", output)
+
+    def test_a_set_up_device_gets_no_setup_instructions(self):
+        output = self.successful_install("--no-setup", env={"TEST_STATUS_EXIT": "0"})
+        self.assertNotIn("To set up Koidrive", output)
+        self.assertEqual((self.home / "status.calls").read_text(), "status --check\n")
 
     def test_no_app_is_forwarded_to_setup(self):
         self.successful_install("--no-app")
@@ -590,6 +608,7 @@ exec /bin/mv "$@"''')
                 echo 'koi 0.0.0 Koidrive sync client'
                 exit
             fi
+            [ "${1:-}" != status ] || exit 4
             exec /bin/sleep 600
         """))
         self.publish(self.fixture)
