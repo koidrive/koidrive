@@ -10372,3 +10372,58 @@ fn a_file_a_restore_took_after_a_rollback_and_created_again_stays_one_file() {
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_rename_a_restore_lost_survives_a_resend_the_server_refuses_for_the_deleted_file() {
+    let mut world = world(2);
+    world.phase(0, &[(0, BACKUP), (0, file("a"))]).unwrap();
+    let mut lost = vec![(0, rename(0, 0, "A"))];
+    lost.extend(commit(0));
+    lost.extend([
+        (1, overwrite(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (1, DELIVER),
+        (1, DELIVER),
+        (0, RESTORE),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, DELIVER),
+        (1, DELIVER),
+        (1, SCAN),
+        (1, COMMIT),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, DELIVER),
+        (0, DELIVER),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (0, DELIVER),
+        (0, delete(0)),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (1, COMMIT),
+        (1, DELIVER),
+        (1, DELIVER),
+        (1, DELIVER),
+    ]);
+    world.run(1, &lost).unwrap();
+    world.phase(2, &[]).unwrap();
+    for device in &world.devices {
+        let entries: Vec<(&str, Option<i64>)> = (device.disk.entries().values())
+            .map(|entry| {
+                (
+                    entry.name.as_str(),
+                    entry.content.as_ref().map(|c| c.mtime_ns),
+                )
+            })
+            .collect();
+        assert_eq!(entries, [("A", Some(2))]);
+    }
+}
