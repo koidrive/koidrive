@@ -307,6 +307,13 @@ pub struct RemoteRecord {
     pub moved_in_lost_commit: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct Keeping {
+    open: BTreeSet<NodeId>,
+    done: BTreeMap<NodeId, bool>,
+    cut: bool,
+}
+
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -400,7 +407,7 @@ pub struct Trees {
     creates: BTreeSet<NodeId>,
     ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
-    keeping: RefCell<BTreeSet<NodeId>>,
+    keeping: RefCell<Keeping>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -1859,9 +1866,17 @@ impl Trees {
     }
 
     fn kept_back(&self, id: &str) -> bool {
-        if !self.keeping.borrow_mut().insert(id.to_owned()) {
-            return false;
-        }
+        let outer_cut = {
+            let mut keeping = self.keeping.borrow_mut();
+            if let Some(&kept) = keeping.done.get(id) {
+                return kept;
+            }
+            if !keeping.open.insert(id.to_owned()) {
+                keeping.cut = true;
+                return false;
+            }
+            std::mem::take(&mut keeping.cut)
+        };
         let mut below = vec![id];
         let mut kept = false;
         while let Some(at) = below.pop().filter(|_| !kept) {
@@ -1872,7 +1887,15 @@ impl Trees {
                     .map(String::as_str),
             );
         }
-        self.keeping.borrow_mut().remove(id);
+        let mut keeping = self.keeping.borrow_mut();
+        keeping.open.remove(id);
+        if !keeping.cut {
+            keeping.done.insert(id.to_owned(), kept);
+        }
+        keeping.cut |= outer_cut;
+        if keeping.open.is_empty() {
+            *keeping = Keeping::default();
+        }
         kept
     }
 
