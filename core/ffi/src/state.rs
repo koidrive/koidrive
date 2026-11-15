@@ -40,7 +40,7 @@ pub(crate) fn session_state(
     }
 }
 
-fn update(update: &driver::Update) -> UpdateStatus {
+pub(crate) fn update(update: &driver::Update) -> UpdateStatus {
     match update {
         driver::Update::Available {
             latest,

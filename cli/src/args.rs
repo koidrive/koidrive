@@ -172,6 +172,9 @@ pub(crate) enum Command {
         #[arg(long, hide = true)]
         no_app: bool,
     },
+    /// Ask GitHub now whether a newer release is out, through background sync when it runs.
+    #[command(name = "_check-updates", hide = true)]
+    CheckUpdates,
 }
 
 impl Command {

@@ -28,12 +28,17 @@ public final class AppModel {
     public private(set) var updating = false
     public internal(set) var updateFailure: UpdateFailure?
     public internal(set) var installingVersion: String?
+    public private(set) var checkingForUpdates = false
+    public private(set) var checkedUpdate: UpdateStatus?
+    public private(set) var failedUpdateCheck: FailedUpdateCheck?
+    public private(set) var showsUpdateCheck = false
     public let session: SyncSession
     @ObservationIgnored public let version: String
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var consumer: Task<Void, Never>?
     @ObservationIgnored private var realRoots: [String: String?] = [:]
     @ObservationIgnored private var updateInFlight: Task<UpdateResult, Error>?
+    @ObservationIgnored private var updateCheckInFlight: Task<Void, Never>?
     private static let acknowledgedVersion = "AcknowledgedVersion"
 
     /// With `defaults`, the model remembers there which version's update note the person saw; without, it shows none.
@@ -279,6 +284,40 @@ public final class AppModel {
         }
         return try await task.value
     }
+
+    public func checkForUpdates() async {
+        showsUpdateCheck = true
+        if let updateCheckInFlight {
+            return await updateCheckInFlight.value
+        }
+        let task = Task {
+            do {
+                checkedUpdate = try await run { try $0.checkForUpdates() }
+                failedUpdateCheck = nil
+            } catch SessionError.ReleasesUnreachable {
+                failedUpdateCheck = FailedUpdateCheck(failure: .unreachable, atMs: Self.nowMs)
+            } catch SessionError.ReleasesRefused {
+                failedUpdateCheck = FailedUpdateCheck(failure: .refused, atMs: Self.nowMs)
+            } catch {
+                let error = error as? SessionError ?? .Failed(reason: error.localizedDescription)
+                failedUpdateCheck = FailedUpdateCheck(failure: .other(error), atMs: Self.nowMs)
+            }
+        }
+        updateCheckInFlight = task
+        updateFailure = nil
+        checkingForUpdates = true
+        defer {
+            updateCheckInFlight = nil
+            checkingForUpdates = false
+        }
+        await task.value
+    }
+
+    public func dismissUpdateCheck() {
+        showsUpdateCheck = false
+    }
+
+    private static var nowMs: Int64 { Int64(Date.now.timeIntervalSince1970 * 1000) }
 
     private static func isNewer(_ version: String, than other: String) -> Bool {
         func split(_ version: String) -> (String, String?) {

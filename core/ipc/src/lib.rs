@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use koidrive_driver::{
     Account, Answer, CleanupFailure, Credential, Expiry, FolderStatus, LinkApproval, Paths,
-    Question, RestoreRequest, RestoreStatus, Secret, SharedLink, Status,
+    Question, RestoreRequest, RestoreStatus, Secret, SharedLink, Status, Update,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,8 @@ pub enum Request {
     RevokeShareLink {
         link: Secret,
     },
+    /// `Driver::check_for_updates_now`.
+    CheckForUpdates,
     /// Runs `run` once for `request_id`: a later request with the same ID and key gets the first response, and one
     /// with another key fails as stale.
     Once {
@@ -216,6 +218,11 @@ pub enum Response {
     ShareLinkRevoked {
         link: SharedLink,
         already: bool,
+    },
+    /// GitHub's answer to [`Request::CheckForUpdates`], and the Koidrive version it was compared with.
+    UpdateChecked {
+        update: Update,
+        version: String,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
@@ -313,6 +320,10 @@ pub enum Reason {
     NoSuchLink,
     /// The space has as many active share links as the server allows.
     ShareLinkLimit,
+    /// GitHub cannot be reached to ask for the newest release.
+    ReleasesUnreachable,
+    /// GitHub did not send the list of releases, for example because it limits the rate.
+    ReleasesRefused,
 }
 
 impl Reason {

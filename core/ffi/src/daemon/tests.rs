@@ -273,6 +273,47 @@ fn while_no_daemon_answers_koi_status_says_whether_an_update_is_out() {
 }
 
 #[test]
+fn checking_for_updates_runs_koi_and_reads_its_answer_or_why_github_gave_none() {
+    let koi = Koi::new(signed_in(true));
+    let url = "https://github.com/koidrive/koidrive/releases/tag/v0.2.0";
+    koi.answer(
+        "_check-updates",
+        printed(
+            "_check-updates",
+            "ok",
+            json!({ "update": {
+                "state": "available",
+                "version": "0.1.0",
+                "latest": "0.2.0",
+                "url": url,
+                "checked_at": "2026-11-15T00:00:00Z",
+                "checked_at_ms": 1_794_528_000_000_i64,
+            } }),
+        ),
+    );
+    assert_eq!(
+        koi.core.check_for_updates(),
+        Ok(UpdateStatus::Available {
+            version: "0.2.0".into(),
+            release_url: url.into(),
+            checked_at_ms: 1_794_528_000_000,
+        })
+    );
+    assert_eq!(koi.calls_of("_check-updates"), ["_check-updates"]);
+    for (reason, expected) in [
+        ("releases_unreachable", SessionError::ReleasesUnreachable),
+        ("releases_refused", SessionError::ReleasesRefused),
+    ] {
+        let mut refusal = refused_because("_check-updates", reason);
+        refusal["error"]["code"] = json!("unavailable");
+        refusal["error"]["retryable"] = json!(true);
+        published("_check-updates", &refusal);
+        koi.answer("_check-updates", refusal);
+        assert_eq!(koi.core.check_for_updates(), Err(expected));
+    }
+}
+
+#[test]
 fn an_update_runs_koi_update_and_names_the_newest_release_it_installed() {
     let koi = Koi::new(signed_in(true));
     koi.answer(

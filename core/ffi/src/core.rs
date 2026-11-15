@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use crate::types::{
     Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
     RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
-    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult,
+    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
 };
 
 pub(crate) fn refuse_line_breaks(password: &str) -> Result<(), SessionError> {
@@ -209,6 +209,9 @@ pub trait Core: Send + Sync {
     /// the app; the call returns when the update leaves the app running. Returns [`SessionError::UpdateUnavailable`]
     /// when this Mac runs the newest release.
     fn update(&self) -> Result<UpdateResult, SessionError>;
+
+    /// Asks GitHub now, through the sync daemon when it runs, whether a newer Koidrive release is out.
+    fn check_for_updates(&self) -> Result<UpdateStatus, SessionError>;
 
     /// Stops syncing and releases what the core holds outside memory, such as the lock on this
     /// device's sync state, so that the state can be opened again at once. The session calls it

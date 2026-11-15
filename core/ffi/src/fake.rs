@@ -127,6 +127,8 @@ struct State {
     version: String,
     update: UpdateStatus,
     update_fails: bool,
+    released: Option<String>,
+    update_checks: u64,
 }
 
 impl Saved {
@@ -269,6 +271,8 @@ impl FakeCore {
                 version: scenario::RUNNING.to_owned(),
                 update: UpdateStatus::Unknown,
                 update_fails: false,
+                released: None,
+                update_checks: 0,
             }),
             events,
         }
@@ -640,6 +644,16 @@ impl FakeCore {
         let mut state = self.lock();
         state.update = update;
         self.publish(&mut state, &[Part::Update], false);
+    }
+
+    /// Makes GitHub list `version` as the newest release for the next update checks.
+    pub fn set_released(&self, version: Option<String>) {
+        self.lock().released = version;
+    }
+
+    /// How many update checks reached the core.
+    pub fn update_checks(&self) -> u64 {
+        self.lock().update_checks
     }
 
     /// Makes the next call that can fail return `error` instead.
@@ -1248,6 +1262,40 @@ impl Core for FakeCore {
         };
         self.publish(&mut state, &[Part::Update], false);
         Ok(UpdateResult { from, to: version })
+    }
+
+    fn check_for_updates(&self) -> Result<UpdateStatus, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        state.update_checks += 1;
+        let checked_at_ms = now_ms();
+        let answer = match (&state.released, &state.update) {
+            (Some(version), _) if *version != state.version => UpdateStatus::Available {
+                version: version.clone(),
+                release_url: format!(
+                    "https://github.com/koidrive/koidrive/releases/tag/v{version}"
+                ),
+                checked_at_ms,
+            },
+            (
+                None,
+                UpdateStatus::Available {
+                    version,
+                    release_url,
+                    ..
+                },
+            ) => UpdateStatus::Available {
+                version: version.clone(),
+                release_url: release_url.clone(),
+                checked_at_ms,
+            },
+            _ => UpdateStatus::UpToDate { checked_at_ms },
+        };
+        if state.update != UpdateStatus::Off {
+            state.update = answer.clone();
+            self.publish(&mut state, &[Part::Update], false);
+        }
+        Ok(answer)
     }
 
     fn dismiss_notice(&self, notice_id: &str) -> Result<(), SessionError> {

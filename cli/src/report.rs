@@ -641,6 +641,12 @@ pub struct UpdateNoticeData {
     pub checked_at_ms: Option<i64>,
 }
 
+/// What `koi _check-updates` heard from GitHub.
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct UpdateCheckData {
+    pub update: UpdateNoticeData,
+}
+
 /// `unknown` until a check has had an answer, and `off` when config.toml or `KOIDRIVE_UPDATE_CHECK` turns it off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

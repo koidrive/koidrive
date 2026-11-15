@@ -2181,3 +2181,35 @@ fn the_table_marks_this_device_and_revoked_ones() {
         )
     );
 }
+
+#[tokio::test]
+async fn an_update_check_names_the_version_the_daemon_compared_the_release_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let listener = koidrive_ipc::bind(&paths.socket()).unwrap();
+    let served = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        koidrive_ipc::read_line(&mut stream).await.unwrap();
+        let checked = Response::UpdateChecked {
+            update: koidrive_driver::Update::Available {
+                latest: "0.1.1".into(),
+                url: "https://github.com/koidrive/koidrive/releases/tag/v0.1.1".into(),
+                checked_at_ms: 1_763_000_000_000,
+            },
+            version: "0.1.0".into(),
+        };
+        koidrive_ipc::write_line(&mut stream, &checked)
+            .await
+            .unwrap();
+    });
+
+    let done = crate::update::check_updates(&paths).await.unwrap();
+    served.await.unwrap();
+
+    assert_eq!(done.data["update"]["version"], "0.1.0");
+    assert_eq!(done.data["update"]["latest"], "0.1.1");
+    assert_eq!(
+        done.text,
+        "Koidrive 0.1.1 is out (this device runs 0.1.0).\n"
+    );
+}

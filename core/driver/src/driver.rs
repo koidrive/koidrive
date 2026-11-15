@@ -34,7 +34,7 @@ use crate::paths::{Paths, PathsError};
 use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
 use crate::status::{Account, FolderState, FolderStatus, Status};
-use crate::update::{self, Updates};
+use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
 const SERVER_WAIT: Duration = Duration::from_secs(10);
@@ -1757,6 +1757,11 @@ impl Driver {
     /// instead. Calling it while the check runs does nothing, and [`Driver::stop`] stops it.
     pub fn check_for_updates(&self) {
         self.inner.updates.start(self.inner.changed.clone());
+    }
+
+    /// Asks GitHub now whether a newer Koidrive release is out. The answer is kept only while update checks are on.
+    pub async fn check_for_updates_now(&self) -> Result<Update, update::CheckError> {
+        self.inner.updates.check_now(&self.inner.changed).await
     }
 
     /// Stops every folder and the update check, and waits for the folders' tasks to end, also those an earlier stop or

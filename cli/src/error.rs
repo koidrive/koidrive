@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use koidrive_cloudflare::{ApiError as CloudflareError, OauthError};
+use koidrive_driver::update::CheckError;
 use koidrive_driver::{ConfigError, CredentialError, DriverError, PathsError, SET_UP_AGAIN};
 use koidrive_ipc::{Code, Next, Reason};
 use koidrive_net::{ApiError, Resend, ServerError};
@@ -129,6 +130,20 @@ impl CliError {
             "The server refused the request: {}",
             error.message()
         ))
+    }
+}
+
+impl From<CheckError> for CliError {
+    fn from(error: CheckError) -> Self {
+        let reason = match error {
+            CheckError::Unreachable => Some(Reason::ReleasesUnreachable),
+            CheckError::Refused => Some(Reason::ReleasesRefused),
+            CheckError::Url => None,
+        };
+        CliError {
+            reason,
+            ..CliError::new(Code::Unavailable, error.to_string())
+        }
     }
 }
 

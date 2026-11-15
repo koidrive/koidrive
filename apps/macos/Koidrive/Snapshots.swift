@@ -484,12 +484,22 @@ enum Snapshots {
         let checkingOffline = make(.offline)
         let off = make(.upToDate)
         off.session.fakeCore()?.setUpdate(update: .off)
+        let checkedUpToDate = make(.upToDate)
+        await checkedUpToDate.checkForUpdates()
+        let checkFound = make(.upToDate)
+        checkFound.session.fakeCore()?.setReleased(version: "0.1.1")
+        await checkFound.checkForUpdates()
+        let checkFailed = make(.upToDate)
+        checkFailed.session.fakeCore()?.failNext(error: .ReleasesUnreachable)
+        await checkFailed.checkForUpdates()
         try? await Task.sleep(for: .milliseconds(200))
         return [
             ("1-available", make(.updateAvailable), nil),
             ("3-updating", make(.updateAvailable), .updating(version: "0.1.1")), ("4-updated", updated, nil),
             ("5-failed", unsigned, nil), ("6-failed-homebrew", failed, nil), ("7-up-to-date", make(.upToDate), nil),
-            ("8-checking", checking, nil), ("9-offline", checkingOffline, nil), ("10-off", off, nil),
+            ("8-not-checked-yet", checking, nil), ("9-offline", checkingOffline, nil), ("10-off", off, nil),
+            ("11-check-running", make(.upToDate), .checking), ("12-check-up-to-date", checkedUpToDate, nil),
+            ("13-check-found-update", checkFound, nil), ("14-check-failed", checkFailed, nil),
         ]
     }
 

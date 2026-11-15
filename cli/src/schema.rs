@@ -9,8 +9,8 @@ use crate::report::{
     AccountData, AnsweredData, ChoicesData, DaemonLine, DevicesData, DiagnosticsData, Empty,
     Envelope, FolderData, HelpData, InvitationData, LeftData, RequestsData, RestoreAskedData,
     RevokedData, SCHEMA_VERSION, SetupData, ShareLinkData, ShareLinksData, SharedData, SpaceData,
-    SpacesData, StatusData, TrashData, UnlinkedData, UpdatedData, UsagesData, VersionInfoData,
-    VersionsData, WithApp, WithService,
+    SpacesData, StatusData, TrashData, UnlinkedData, UpdateCheckData, UpdatedData, UsagesData,
+    VersionInfoData, VersionsData, WithApp, WithService,
 };
 use crate::telemetry::{ChoiceData, TelemetryStatusData};
 
@@ -60,6 +60,7 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "telemetry preview" => &[of::<Map<String, Value>>],
         "diagnose" => &[of::<DiagnosticsData>],
         "update" => &[of::<UpdatedData>],
+        "_check-updates" => &[of::<UpdateCheckData>],
         "uninstall" => &[of::<crate::uninstall::UninstalledData>],
         _ => return None,
     })
