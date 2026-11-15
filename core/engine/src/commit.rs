@@ -2712,7 +2712,7 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
 }
 
 /// The keep rule (R7): a node that changed remotely, or that L still has but must move to its R
-/// position because it is reverted or parked, keeps every node L deleted on the way it will hang
+/// position because it is reverted, parked or taken along by a first link's Discard, keeps every node L deleted on the way it will hang
 /// from the root, by setting S := ⊥ for them, so they are downloaded again. A kept node that S
 /// cannot drop yet, because S still has children under it, is reverted instead, so the effects
 /// bring it back at its R position, and it goes into `needed` so it is not deleted. A reverted node
@@ -2723,7 +2723,8 @@ fn keep(trees: &mut Trees, id: &str, needed: &mut BTreeSet<NodeId>) {
     let reverted = trees
         .local()
         .get(id)
-        .is_some_and(|node| node.parked || trees.reverted().contains(id));
+        .is_some_and(|node| node.parked || trees.reverted().contains(id))
+        || trees.is_discarded(id);
     if trees.remote().live(id).is_none()
         || (!reverted && same(trees.remote().live(id), trees.acknowledged(id)))
     {
@@ -2749,7 +2750,7 @@ fn keep(trees: &mut Trees, id: &str, needed: &mut BTreeSet<NodeId>) {
                 let moved = trees
                     .acknowledged(&current)
                     .is_none_or(|held| !local.shape.same_position(held));
-                if moved && !trees.reverted().contains(&current) {
+                if moved && !trees.reverted().contains(&current) && !trees.is_discarded(&current) {
                     return;
                 }
             }

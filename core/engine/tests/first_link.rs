@@ -2430,6 +2430,68 @@ fn a_server_file_moved_into_a_folder_before_the_folder_is_discarded_goes_back_wh
 }
 
 #[test]
+fn a_server_folder_taken_along_by_a_discard_goes_home_into_the_folder_the_user_deleted_around_it() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("h", dir(ROOT, "home")),
+            ("x", dir("h", "server")),
+            ("g", file("h", "gone", 4)),
+        ],
+        &[
+            ("h", dir(ROOT, "home")),
+            ("x", dir("h", "server")),
+            ("g", file("h", "gone", 4)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, Listing::Live);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.remove_local("g");
+    trees.remove_local("h");
+    trees.set_rules(&[] as &[&str], None);
+    let mut effects = Effects::default();
+    let mut sent = Vec::new();
+    for ino in 100..150 {
+        trees.settle();
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        effects
+            .done(
+                &mut trees,
+                commits.in_flight(),
+                &record.effect_id,
+                Some(identity),
+            )
+            .unwrap();
+    }
+    assert_eq!(sent, [("delete", "g".to_owned())]);
+    assert!(trees.local().get("f").is_none());
+    assert_eq!(trees.local().get("h").unwrap().shape, dir(ROOT, "home"));
+    assert_eq!(trees.local().get("x").unwrap().shape, dir("h", "server"));
+    assert_eq!(trees.synced().get("x"), Some(&dir("h", "server")));
+}
+
+#[test]
 fn a_server_folder_moved_into_a_discarded_folder_goes_back_with_what_the_server_added_to_it() {
     let mut trees = trees(
         &[
