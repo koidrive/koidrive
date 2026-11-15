@@ -1169,6 +1169,7 @@ fn placement_check(
     kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
     placed: &BTreeMap<String, Position>,
     revived: &BTreeSet<String>,
+    aliases: &BTreeMap<String, String>,
 ) -> Result<(), TestCaseError> {
     if let (Effect::Move { .. }, Some(after), Some(local)) = (
         &record.effect,
@@ -1185,6 +1186,7 @@ fn placement_check(
         prop_assert!(
             !(left_where_put
                 && after.parent != local.shape.parent
+                && aliases.get(&local.shape.parent) != Some(&after.parent)
                 && revived.contains(&local.shape.parent)),
             "{} is where the user put it in a folder that is the user's again, but the effects move it out",
             record.node
@@ -1507,7 +1509,8 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
-            placement_check(&device, &record, &kept_with, &placed, &revived)?;
+            let aliases = commits.state().aliases;
+            placement_check(&device, &record, &kept_with, &placed, &revived, &aliases)?;
             if let (
                 Effect::CreateDir {
                     at:
