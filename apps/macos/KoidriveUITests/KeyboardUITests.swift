@@ -14,6 +14,7 @@ final class KeyboardUITests: XCTestCase {
         XCTAssert(window.waitForExistence(timeout: 20))
         let keepCopy = window.buttons["Keep Copy"]
         XCTAssert(keepCopy.waitForExistence(timeout: 20))
+        window.staticTexts["Versions"].click()
 
         tab(until: keepCopy, in: app)
         app.typeKey(" ", modifierFlags: [])
@@ -30,6 +31,7 @@ final class KeyboardUITests: XCTestCase {
         XCTAssert(window.waitForExistence(timeout: 20))
         let remove = window.buttons["Remove…"]
         XCTAssert(remove.waitForExistence(timeout: 20))
+        window.staticTexts["Server"].click()
 
         tab(until: window.buttons["Sign Out…"], in: app)
         tab(until: remove, in: app)
@@ -51,13 +53,18 @@ final class KeyboardUITests: XCTestCase {
 
     @MainActor
     private func tab(until element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        var visited: [String] = []
+        var visited = [describeFocus(in: app)]
         for _ in 0..<30 where !focused(element) {
             app.typeKey(.tab, modifierFlags: [])
-            let current = app.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == true")).firstMatch
-            visited.append(current.exists ? "\(current.elementType.rawValue):\(current.label)" : "none")
+            visited.append(describeFocus(in: app))
         }
         XCTAssert(focused(element), "Tab never reached \(element). Focus went through: \(visited)", file: file, line: line)
+    }
+
+    @MainActor
+    private func describeFocus(in app: XCUIApplication) -> String {
+        let current = app.descendants(matching: .any).matching(NSPredicate(format: "hasKeyboardFocus == true")).firstMatch
+        return current.exists ? "\(current.elementType.rawValue):\(current.label):\(current.identifier)" : "none"
     }
 
     @MainActor
