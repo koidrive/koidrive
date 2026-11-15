@@ -406,6 +406,37 @@ fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape)
     since.map(|shape| (*shape).clone()).collect()
 }
 
+pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
+    let created: Vec<(NodeId, NodeId, Shape)> = (trees.dirty_others().iter())
+        .filter_map(|remote_id| {
+            let remote = trees.remote().get(remote_id)?;
+            let free =
+                trees.local().get(remote_id).is_none() && trees.synced().get(remote_id).is_none();
+            if !free || remote.trashed || remote.shape.kind != Kind::File {
+                return None;
+            }
+            let name = nfc(&remote.shape.name);
+            let id =
+                (trees.local_holders(&remote.shape.parent, &remote.shape.name)).find(|id| {
+                    trees.local().get(id).is_some_and(|node| {
+                        node.shape.kind == Kind::File
+                            && nfc(&node.shape.name) == name
+                            && same_bytes(&remote.shape.content, &node.shape.content)
+                    }) && !held.contains(*id)
+                        && !trees.excluded(id)
+                        && trees.synced().get(id).is_none()
+                        && trees.remote().get(id).is_none()
+                })?;
+            Some((id.clone(), remote_id.clone(), remote.shape.clone()))
+        })
+        .collect();
+    for (id, remote_id, shape) in created {
+        if trees.set_synced_if_valid(remote_id.clone(), Some(shape)) {
+            rekey(trees, &id, &remote_id);
+        }
+    }
+}
+
 fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => same_content(a, b),

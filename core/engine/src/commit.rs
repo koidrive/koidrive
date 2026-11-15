@@ -1064,6 +1064,13 @@ impl Commits {
         if self.halted.is_some() || !trees.rules_known() {
             return None;
         }
+        let held: BTreeSet<NodeId> = self
+            .questions
+            .iter()
+            .flat_map(Question::holds)
+            .cloned()
+            .collect();
+        first_link::adopt_equal_files(trees, &held);
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
         let released = self.ask_recovery(trees, cause, left, ids, now_ms);

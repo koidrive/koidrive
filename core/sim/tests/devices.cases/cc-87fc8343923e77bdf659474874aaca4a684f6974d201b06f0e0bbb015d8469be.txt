@@ -1,0 +1,1 @@
+cc 87fc8343923e77bdf659474874aaca4a684f6974d201b06f0e0bbb015d8469be # one write in two files: a device sends a file a restore took again over an equal file R holds at its place (GUN-811)
