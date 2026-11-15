@@ -296,3 +296,103 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
     let problems: Vec<&str> = commits.problems().iter().map(String::as_str).collect();
     assert_eq!(problems, ["a", "e"]);
 }
+
+#[test]
+fn a_move_into_a_new_folder_survives_a_split_commit_that_merges_the_folder() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        ("b", None, Some(dir("a", "b")), Some(remote(dir("a", "b")))),
+        (
+            "c",
+            Some(dir("n", "c")),
+            Some(dir("a", "c")),
+            Some(remote_at(dir("b", "c"), 2)),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let whole = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&whole), [create_dir("n", ROOT, "a"), mv("c", "n", "c")]);
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        second.as_ref().map(ops),
+        Some(vec![mv("c", "a", "c"), delete("b")])
+    );
+}
+
+#[test]
+fn a_trashed_folder_moved_into_a_new_folder_comes_back_with_its_trash_group_after_a_split_commit_that_merges_the_folder() {
+    let mut trees = trees(&[
+        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        (
+            "b",
+            Some(dir("n", "b")),
+            Some(dir("a", "b")),
+            Some(trashed(dir("a", "b"))),
+        ),
+        (
+            "c",
+            Some(dir("n", "c")),
+            Some(dir("a", "c")),
+            Some(remote(dir("a", "c"))),
+        ),
+        (
+            "d",
+            Some(dir("b", "d")),
+            Some(dir("b", "d")),
+            Some(trashed(dir("b", "d"))),
+        ),
+        ("n", Some(dir(ROOT, "a")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let whole = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&whole),
+        [create_dir("n", ROOT, "a"), mv("b", "n", "b"), mv("c", "n", "c")]
+    );
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
+        Ok(Failure::Split)
+    );
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&first), [create_dir("n", ROOT, "a")]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![OpResult {
+            node_id: "a".into(),
+            ..outcome(op_result::Code::MergedInto)
+        }],
+    );
+    let second = build(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        second.as_ref().map(ops),
+        Some(vec![mv("b", "a", "b"), mv("d", "b", "d")])
+    );
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); 2],
+    );
+    trees.set_remote_made_here("b".into(), remote_at(dir("a", "b"), 2));
+    trees.set_remote_made_here("d".into(), remote_at(dir("b", "d"), 2));
+    trees.settle();
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert_eq!(trees.synced().live("b"), Some(&dir("a", "b")));
+    assert_eq!(trees.synced().live("d"), Some(&dir("b", "d")));
+    assert_eq!(trees.local().get("d").map(|node| &node.shape), Some(&dir("b", "d")));
+}
