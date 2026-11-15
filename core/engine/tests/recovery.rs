@@ -2199,6 +2199,9 @@ fn keeps_the_mark_invariants(
         let Some(live) = after.remote().live(id) else {
             continue;
         };
+        if (marks.iter()).any(|(local, node)| local == id && node != id) {
+            continue;
+        }
         let agrees = live.kind == entry.shape.kind
             && live.content == entry.shape.content
             && live.parent == entry.shape.parent
@@ -3052,4 +3055,21 @@ fn a_marked_file_at_its_place_in_a_moved_folder_whose_mark_cannot_follow_is_sett
     );
     let settled = (trees.synced().live("n")).or_else(|| trees.waiting().get("n")?.shape.as_ref());
     assert_eq!(settled, Some(&file("p", "a", 1)));
+}
+
+#[test]
+fn a_file_whose_mark_names_another_node_is_not_settled_to_its_own_id_while_the_mark_waits() {
+    let (trees, _, _) = followed(
+        &[("d0", dir(ROOT, "q")), ("n0", file("d0", "a", 1))],
+        &[],
+        &[
+            live("d0", dir(ROOT, "p")),
+            live("n0", file("d0", "a", 1)),
+            live("n1", file(ROOT, "b", 1)),
+        ],
+        &[("n1", file(ROOT, "b", 1))],
+        &[("d0", "d0"), ("n0", "n1")],
+    );
+    assert_eq!(trees.synced().live("n0"), None);
+    assert!(trees.waiting().get("n0").is_none());
 }
