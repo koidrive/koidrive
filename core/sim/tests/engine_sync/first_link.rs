@@ -91,6 +91,7 @@ fn placement_check_after_a_move(
         acted: BTreeSet::from(["x".into()]),
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     let result = placement_check(
         &device,
@@ -254,4 +255,59 @@ fn a_discarded_folder_the_user_moved_a_synced_file_into_before_the_answer_conver
         Some(PriorSync::Shown),
     )
     .unwrap();
+}
+
+fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
+    let mut device = Device {
+        trees: Trees::new("root"),
+        ids: IdGen::new(7),
+        inos: 0,
+        fresh_dir_names: false,
+        rules: Rules::default(),
+        touched: BTreeSet::new(),
+        acted: BTreeSet::from(["k".into(), "m".into()]),
+        removed_from: BTreeMap::from([("k".into(), "root".into())]),
+        kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
+    };
+    let remote = |id: &str, parent: &str| {
+        RemoteNode::from_state(&NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: id.into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })
+        .unwrap()
+        .1
+    };
+    let moved = remote("m", "root");
+    device.trees.set_local(
+        "m".into(),
+        LocalNode {
+            shape: moved.shape.clone(),
+            identity: identity(1),
+            parked: false,
+        },
+    );
+    device.relocated.insert("m".into(), moved.shape.clone());
+    if server_took_the_move {
+        device.trees.set_remote("m".into(), moved);
+        note_kept_back(&mut device);
+    }
+    for (id, parent) in [("k", "root"), ("m", "k"), ("u", "m")] {
+        device.trees.set_remote(id.into(), remote(id, parent));
+    }
+    kept_by_r7(&device, "k")
+}
+
+#[test]
+fn the_keep_rule_walk_stops_at_a_folder_the_users_pending_move_takes_out() {
+    assert!(!keep_rule_walk_reaches_a_deleted_folder(false));
+}
+
+#[test]
+fn the_keep_rule_walk_passes_a_folder_whose_move_the_server_took_before_moving_it_back() {
+    assert!(keep_rule_walk_reaches_a_deleted_folder(true));
 }

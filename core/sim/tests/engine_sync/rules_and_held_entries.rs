@@ -320,6 +320,7 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         acted: BTreeSet::new(),
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     for (id, parent, name) in [("d", "root", "d"), ("m", "d", "m"), ("c", "m", "c")] {
         let shape = koidrive_engine::tree::Shape {
@@ -570,6 +571,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         acted: BTreeSet::new(),
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     let remote = |shape: koidrive_engine::tree::Shape| RemoteNode {
         shape,

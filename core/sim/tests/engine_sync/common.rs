@@ -557,6 +557,7 @@ struct Device {
     acted: BTreeSet<String>,
     removed_from: BTreeMap<String, String>,
     kept_back: BTreeSet<String>,
+    relocated: BTreeMap<String, koidrive_engine::tree::Shape>,
 }
 
 impl Device {
@@ -694,12 +695,16 @@ impl Device {
                         self.trees.ignore_local(&id)
                     }
                     _ => {
-                        if node.shape.parent != parent || node.shape.name != name {
+                        let moves = node.shape.parent != parent || node.shape.name != name;
+                        if moves {
                             self.touched.insert(id.clone());
                             self.acted.insert(id.clone());
                         }
                         node.shape.parent = parent;
                         node.shape.name = name.into();
+                        if moves {
+                            self.relocated.insert(id.clone(), node.shape.clone());
+                        }
                         self.trees.set_local(id, node);
                     }
                 }
@@ -741,6 +746,7 @@ impl Device {
                         self.removed_from.insert(other.clone(), node.shape.parent.clone());
                     }
                     self.kept_back.remove(&other);
+                    self.relocated.remove(&other);
                     self.acted.insert(other.clone());
                     self.trees.remove_local(&other);
                 }
@@ -1249,11 +1255,8 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
             match current {
                 Some(at) if at == entry => return true,
                 Some(at) => {
-                    let moved_here = device.acted.contains(&at)
-                        && (trees.local().get(&at)).is_some_and(|local| {
-                            (trees.remote().live(&at))
-                                .is_none_or(|remote| !local.shape.same_position(remote))
-                        });
+                    let moved_here = (device.relocated.get(&at))
+                        .is_some_and(|to| relocation_stands(trees, &at, to));
                     if moved_here {
                         return false;
                     }
@@ -1275,7 +1278,14 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
         })
 }
 
+fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape) -> bool {
+    (trees.local().get(id)).is_some_and(|local| local.shape.same_position(to))
+        && !(trees.remote().live(id)).is_some_and(|remote| remote.same_position(to))
+}
+
 fn note_kept_back(device: &mut Device) {
+    let trees = &device.trees;
+    device.relocated.retain(|id, to| relocation_stands(trees, id, to));
     let kept: Vec<String> = (device.removed_from.keys())
         .filter(|entry| kept_by_r7(device, entry))
         .cloned()
@@ -1343,6 +1353,7 @@ fn run_ignoring_answering_after(
         acted: BTreeSet::new(),
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
+        relocated: BTreeMap::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
