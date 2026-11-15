@@ -545,8 +545,8 @@ impl Space {
         Ok(moved)
     }
 
-    /// The identities of the entries [`Space::bring_back_all`] moved that recovery still keeps
-    /// ([`Space::keep_brought_back`]). Recovery does not find an entry by its node mark when the
+    /// The identities of the entries [`Space::bring_back_all`] moved. The record is never pruned,
+    /// since no scan can show that an entry and everything in it lost the mark it had. Recovery does not find an entry by its node mark when the
     /// entry, or a folder it is in, is one of them (design §6.4). The set is kept on disk, so a
     /// stop between bringing entries back and recovering keeps it. A record that cannot be read
     /// is [`BroughtBack::Unreadable`], and a later bring-back leaves it so.
@@ -569,22 +569,26 @@ impl Space {
         ))
     }
 
-    /// Replaces the set [`Space::brought_back`] reads with `ids`, which recovery keeps.
-    pub fn keep_brought_back(&self, ids: &HashSet<FileId>) -> io::Result<()> {
-        let private = self.private(&[])?;
-        if ids.is_empty() {
-            remove_if_present(private.fd(), BROUGHT_BACK)?;
-            return flush(private.fd(), Flush::Plain);
+    /// Replaces a record [`Space::brought_back`] cannot read with the identities of every entry
+    /// of the root, so no entry it may have held is found by its node mark.
+    pub fn repair_brought_back(&self) -> io::Result<()> {
+        if self.brought_back()? != BroughtBack::Unreadable {
+            return Ok(());
         }
-        let ids: Vec<_> = (ids.iter())
-            .map(|id| (id.dev, id.ino, id.birth_ns))
-            .collect();
+        let root = self.root_folder()?;
+        let mut ids = Vec::new();
+        for entry in list(root.fd())? {
+            if entry != PRIVATE_DIR {
+                let id = stat_at(root.fd(), &entry)?.id;
+                ids.push((id.dev, id.ino, id.birth_ns));
+            }
+        }
         replace_file(
-            private.fd(),
+            self.private(&[])?.fd(),
             BROUGHT_BACK,
             BROUGHT_BACK_TEMP,
             &serde_json::to_vec(&ids)?,
-            Flush::Plain,
+            Flush::Barrier,
         )
     }
 

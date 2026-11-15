@@ -1796,9 +1796,6 @@ impl Folder {
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect::<Vec<_>>();
         self.disk.mark(trees, adopted);
-        if recovering {
-            self.disk.keep_brought_back(trees);
-        }
         Ok(())
     }
 

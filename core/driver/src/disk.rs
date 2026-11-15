@@ -425,6 +425,9 @@ impl Disk {
                 Ok(())
             })?;
         }
+        if let Err(err) = disk.space.repair_brought_back() {
+            tracing::warn!(space_id = link.space_id, %err, "could not repair what a recovery brought back");
+        }
         disk.brought_back = disk.space.brought_back()?;
         if marker < cleared {
             return Err(Stop::DiskBehind { marker, cleared });
@@ -736,14 +739,8 @@ impl Disk {
 
     pub fn marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
         let brought_back = |identity: &_| self.brought_back.holds(file_id(*identity));
-        self.read_marks(
-            trees,
-            (ids.into_iter()).filter(|id| !first_link::at_or_under(trees, id, brought_back)),
-        )
-    }
-
-    fn read_marks<'a>(&self, trees: &Trees, ids: impl IntoIterator<Item = &'a NodeId>) -> Marks {
         (ids.into_iter())
+            .filter(|id| !first_link::at_or_under(trees, id, brought_back))
             .filter_map(|id| {
                 let (at, expected) = self.place_of(trees, id)?;
                 match self.space.mark_of(&at, expected) {
@@ -755,34 +752,6 @@ impl Disk {
                 }
             })
             .collect()
-    }
-
-    pub fn keep_brought_back(&mut self, trees: &Trees) {
-        let brought_back = |identity: &_| self.brought_back.holds(file_id(*identity));
-        let inside = (trees.local().iter().map(|(id, _)| id))
-            .filter(|id| first_link::at_or_under(trees, id, brought_back));
-        let astray: Vec<NodeId> = (self.read_marks(trees, inside).into_iter())
-            .filter(|(id, node)| id != node || trees.synced().get(id).is_none())
-            .map(|(id, _)| id)
-            .collect();
-        let kept: HashSet<FileId> = match &self.brought_back {
-            BroughtBack::Entries(ids) => (ids.iter().copied())
-                .filter(|entry| {
-                    (astray.iter()).any(|id| {
-                        first_link::at_or_under(trees, id, |identity| file_id(*identity) == *entry)
-                    })
-                })
-                .collect(),
-            BroughtBack::Unreadable => (astray.iter())
-                .filter_map(|id| Some(file_id(trees.local().get(id)?.identity)))
-                .collect(),
-        };
-        match self.space.keep_brought_back(&kept) {
-            Ok(()) => self.brought_back = BroughtBack::Entries(kept),
-            Err(err) => {
-                tracing::warn!(space_id = self.space_id, %err, "could not record what a recovery brought back")
-            }
-        }
     }
 
     pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {

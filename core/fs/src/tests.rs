@@ -1037,7 +1037,7 @@ fn an_entry_an_effect_left_in_quarantine_is_moved_to_the_root_under_its_recovere
 }
 
 #[test]
-fn the_entries_a_store_rollback_brings_back_are_remembered_until_forgotten() {
+fn the_entries_a_store_rollback_brings_back_are_remembered() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
@@ -1096,20 +1096,13 @@ fn the_entries_a_store_rollback_brings_back_are_remembered_until_forgotten() {
             .is_empty()
     );
     assert_eq!(ids(&space), expected);
-
-    let BroughtBack::Entries(all) = space.brought_back().unwrap() else {
-        panic!("the record is unreadable");
-    };
-    let one: std::collections::HashSet<FileId> = all.into_iter().take(1).collect();
-    space.keep_brought_back(&one).unwrap();
-    assert_eq!(space.brought_back().unwrap(), BroughtBack::Entries(one));
-
-    space.keep_brought_back(&Default::default()).unwrap();
-    assert_eq!(ids(&space), []);
+    space.repair_brought_back().unwrap();
+    assert_eq!(ids(&space), expected);
 }
 
 #[test]
-fn a_partial_record_of_brought_back_entries_stays_unreadable() {
+fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
+    use std::os::unix::fs::MetadataExt;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     fs::create_dir_all(&root).unwrap();
@@ -1118,16 +1111,14 @@ fn a_partial_record_of_brought_back_entries_stays_unreadable() {
     let private = root.join(PRIVATE_DIR);
     fs::write(private.join("brought-back.json"), "[[1,2,nu").unwrap();
     fs::write(private.join(PARKED_DIR).join("n1"), "parked").unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
     let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
 
     assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
-    assert_eq!(
-        space
-            .bring_back_all(|held, _| held.to_owned(), now)
-            .unwrap()
-            .len(),
-        1
-    );
+    let moved = space
+        .bring_back_all(|held, _| held.to_owned(), now)
+        .unwrap();
+    assert_eq!(moved.len(), 1);
     assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
     assert!(BroughtBack::Unreadable.holds(FileId {
         dev: 1,
@@ -1135,11 +1126,19 @@ fn a_partial_record_of_brought_back_entries_stays_unreadable() {
         birth_ns: None
     }));
 
-    space.keep_brought_back(&Default::default()).unwrap();
-    assert_eq!(
-        space.brought_back().unwrap(),
-        BroughtBack::Entries(Default::default())
-    );
+    space.repair_brought_back().unwrap();
+    let id = |path: PathBuf| {
+        let meta = fs::symlink_metadata(path).unwrap();
+        (meta.dev(), u128::from(meta.ino()))
+    };
+    let expected: std::collections::BTreeSet<_> =
+        [id(root.join(&moved[0])), id(root.join("docs"))].into();
+    let BroughtBack::Entries(repaired) = space.brought_back().unwrap() else {
+        panic!("the record is still unreadable");
+    };
+    let repaired: std::collections::BTreeSet<_> =
+        repaired.into_iter().map(|id| (id.dev, id.ino)).collect();
+    assert_eq!(repaired, expected);
 }
 
 #[test]

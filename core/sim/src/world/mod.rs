@@ -2033,29 +2033,6 @@ impl World {
                     for (at, ino, id) in adopted {
                         disk.mark(&at, ino, id);
                     }
-                    let brought_back =
-                        |identity: &FileIdentity| disk.brought_back.contains(&identity.ino);
-                    let astray: Vec<&NodeId> = (trees.local().iter())
-                        .filter(|(id, _)| first_link::at_or_under(trees, id, brought_back))
-                        .filter(|(id, node)| {
-                            let mark = location_of(trees, id)
-                                .and_then(|at| disk.mark_of(&at, node.identity.ino));
-                            mark.is_some_and(|mark| {
-                                mark != **id || trees.synced().get(id).is_none()
-                            })
-                        })
-                        .map(|(id, _)| id)
-                        .collect();
-                    let kept: BTreeSet<u128> = (disk.brought_back.iter().copied())
-                        .filter(|entry| {
-                            (astray.iter()).any(|id| {
-                                first_link::at_or_under(trees, id, |identity| {
-                                    identity.ino == *entry
-                                })
-                            })
-                        })
-                        .collect();
-                    disk.brought_back = kept;
                     for (id, node) in trees.local().iter() {
                         let (Some(here), Some(there)) = (
                             node.shape.content.as_ref(),

@@ -895,6 +895,61 @@ fn a_file_a_store_copied_before_its_download_forgot_keeps_its_node_through_the_u
 }
 
 #[test]
+fn an_unreadable_entry_a_store_rollback_brought_back_stays_out_of_marks_once_readable() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let node = node_named(&a, "two.txt");
+    drop(a);
+    let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
+    fs::create_dir_all(&parked).unwrap();
+    let private = parked.join(&node);
+    fs::rename(site.root.join("two.txt"), &private).unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o000)).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    let ledger = site.root.join(koidrive_fs::PRIVATE_DIR).join("brought-back.json");
+    assert!(ledger.exists());
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    for _ in 0..16 {
+        if a.folder.engine.commits.halted().is_none() {
+            break;
+        }
+        let work = a.work.pop_front().expect("recovery has work");
+        a.perform(work, &mut remote).unwrap();
+    }
+    assert!(a.folder.engine.commits.halted().is_none());
+    assert!(!site.root.join("two.txt").exists());
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(ledger.exists());
+    eprintln!("L entries after unreadable recovery: {}", a.folder.engine.trees.local().len());
+    let brought = fs::read_dir(&site.root).unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.file_name().unwrap() != koidrive_fs::PRIVATE_DIR)
+        .expect("the unreadable recovered entry");
+    fs::set_permissions(brought, fs::Permissions::from_mode(0o444)).unwrap();
+    drop(a);
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["two.txt"]);
+}
+
+#[test]
 fn a_stale_record_of_brought_back_entries_leaves_a_users_rename_to_its_mark() {
     let mut remote = Remote::new();
     let (site, a) = linked(&mut remote, "a");
@@ -920,7 +975,6 @@ fn a_stale_record_of_brought_back_entries_leaves_a_users_rename_to_its_mark() {
     a.run(&mut remote);
     assert!(shown(&site).is_empty());
     assert_eq!(remote.names(), ["renamed.txt"]);
-    assert!(!record.exists());
 }
 
 #[test]
