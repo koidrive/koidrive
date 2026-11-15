@@ -1215,6 +1215,7 @@ fn placement_check(
     kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
     placed: &BTreeMap<String, Position>,
     revived: &BTreeSet<String>,
+    merged_into: &BTreeMap<String, String>,
 ) -> Result<(), TestCaseError> {
     if let (Effect::Move { .. }, Some(after), Some(local)) = (
         &record.effect,
@@ -1231,6 +1232,7 @@ fn placement_check(
         prop_assert!(
             !(left_where_put
                 && after.parent != local.shape.parent
+                && merged_into.get(&local.shape.parent) != Some(&after.parent)
                 && revived.contains(&local.shape.parent)),
             "{} is where the user put it in a folder that is the user's again, but the effects move it out",
             record.node
@@ -1476,6 +1478,7 @@ fn run_ignoring_answering_after(
     let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut placed: BTreeMap<String, Position> = BTreeMap::new();
+    let mut merged_into: BTreeMap<String, String> = BTreeMap::new();
     let mut revived_once: BTreeSet<String> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
     let mut pending: Option<Question> = None;
@@ -1587,7 +1590,7 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
-            placement_check(&device, &record, &kept_with, &placed, &revived)?;
+            placement_check(&device, &record, &kept_with, &placed, &revived, &merged_into)?;
             if let (
                 Effect::CreateDir {
                     at:
@@ -1731,6 +1734,17 @@ fn run_ignoring_answering_after(
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             };
+            if let Some(op::Op::Move(moved)) = &op.op
+                && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
+            {
+                let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
+                prop_assert_eq!(
+                    (&moved.new_parent_id, &moved.new_name),
+                    (parent, &local.shape.name),
+                    "{} is sent to a place the disk does not hold it at",
+                    id
+                );
+            }
             sending.push(id.clone());
             if !matches!(op.op, Some(op::Op::UpdateContent(_))) {
                 positioned.push(id.clone());
@@ -1801,6 +1815,13 @@ fn run_ignoring_answering_after(
         }
         let result = committed.result;
         prop_assert_eq!(result.seq, last_seq + 1);
+        for (op, outcome) in commit.ops.iter().zip(&result.results) {
+            if let Some(op::Op::CreateDir(create)) = &op.op
+                && outcome.code == op_result::Code::MergedInto as i32
+            {
+                merged_into.insert(create.node_id.clone(), outcome.node_id.clone());
+            }
+        }
         let ended = commits.resolved().len();
         if cut == Cut::Answered {
             commits.received(result.clone()).unwrap();

@@ -99,6 +99,7 @@ fn placement_check_after_a_move(
         &BTreeMap::new(),
         &placed,
         &BTreeSet::from(["p".into()]),
+        &BTreeMap::new(),
     );
     if result.is_ok() {
         effects
