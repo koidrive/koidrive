@@ -25,7 +25,7 @@ public enum UpdateNotice: Equatable, Sendable {
 extension AppModel {
     /// The update line in Settings.
     public var updateNotice: UpdateNotice {
-        if updating, case .available(let version, _, _) = state.update { return .updating(version: version) }
+        if let installingVersion { return .updating(version: installingVersion) }
         if let updateFailure { return .failed(updateFailure) }
         switch state.update {
         case .available(let version, let releaseUrl, _):
@@ -51,6 +51,8 @@ extension AppModel {
     public func installUpdate() async -> UpdateResult? {
         guard case .available(let version, _, _) = state.update, !updating else { return nil }
         updateFailure = nil
+        installingVersion = version
+        defer { installingVersion = nil }
         do {
             return try await update()
         } catch SessionError.UpdateUnavailable {

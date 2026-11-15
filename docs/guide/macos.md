@@ -56,7 +56,7 @@ Koidrive checks for a new release once a day. When one is out, the menu bar show
 
 Choose **Update** to update the app and `koi` together. Koidrive quits and reopens on the new version, and the menu bar says it updated. Your Mac must be online to update.
 
-If the update fails, the version you have keeps working. **Show Log** opens `~/Library/Logs/Koidrive/update.log`, and **Try Again** retries. For a Homebrew install, the notice also shows `brew upgrade --cask koidrive` with **Copy**, to update from Terminal. [Updates](service.md#updates) covers the update check and how to turn it off.
+If the update fails, the version you have keeps working. **Show Log** opens `~/Library/Logs/Koidrive/update.log`, and **Try Again** retries. For a Homebrew install, the notice shows `brew upgrade --cask koidrive` with **Copy** in place of **Try Again**, to update from Terminal. [Updates](service.md#updates) covers the update check and how to turn it off.
 
 ## Share links
 

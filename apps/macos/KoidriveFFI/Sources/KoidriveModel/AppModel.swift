@@ -27,6 +27,7 @@ public final class AppModel {
     /// Whether an `update()` is running.
     public private(set) var updating = false
     public internal(set) var updateFailure: UpdateFailure?
+    public internal(set) var installingVersion: String?
     public let session: SyncSession
     @ObservationIgnored public let version: String
     @ObservationIgnored private let defaults: UserDefaults?

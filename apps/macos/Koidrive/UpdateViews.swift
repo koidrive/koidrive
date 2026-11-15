@@ -202,8 +202,10 @@ private extension UpdateNotice {
         case .updated: String(localized: "Koidrive reopened after the update.")
         case .failed(let failure) where failure.fallbackCommand != nil:
             String(localized: "Koidrive \(running) still works. You can also update with Homebrew in Terminal:")
-        case .failed:
-            popover ? String(localized: "Koidrive \(running) still works.") : String(localized: "Koidrive \(running) still works. The log has the details.")
+        case .failed(let failure):
+            popover || failure.logPath == nil
+                ? String(localized: "Koidrive \(running) still works.")
+                : String(localized: "Koidrive \(running) still works. The log has the details.")
         }
     }
 

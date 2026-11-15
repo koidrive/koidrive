@@ -42,8 +42,10 @@ import Testing
 
     @Test func installingAnUpdateShowsUpdatingAndThenTheNewState() async throws {
         let model = AppModel.fake(scenario: .updateAvailable)
-        let install = Task { await model.installUpdate() }
-        await Task.yield()
+        let install = Task.immediate { await model.installUpdate() }
+        #expect(model.updateNotice == .updating(version: "0.1.1"))
+        #expect(model.popoverUpdateNotice == .updating(version: "0.1.1"))
+        model.apply(.update(update: .upToDate(checkedAtMs: 1)))
         #expect(model.updateNotice == .updating(version: "0.1.1"))
         #expect(model.popoverUpdateNotice == .updating(version: "0.1.1"))
         #expect(await model.installUpdate() == nil)
