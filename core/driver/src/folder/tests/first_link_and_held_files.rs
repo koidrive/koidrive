@@ -407,10 +407,12 @@ fn a_first_link_of_a_folder_whose_marker_counts_effects_holds_what_the_space_lac
 
 #[test]
 fn a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_space_deleted_since_deleted() {
-    for found_marker in [false, true] {
+    for (kept, found_marker) in [(true, false), (true, true), (false, false), (false, true)] {
         let mut remote = Remote::new();
         let (site_a, mut a) = linked(&mut remote, "a");
-        a.create(&mut remote, &site_a.root.join("kept.txt"), b"kept");
+        if kept {
+            a.create(&mut remote, &site_a.root.join("kept.txt"), b"kept");
+        }
         a.create(&mut remote, &site_a.root.join("old.txt"), b"written on a");
         let old = node_named(&a, "old.txt");
         drop(a);
@@ -418,7 +420,8 @@ fn a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_sp
         fs::remove_file(site_b.root.join("old.txt")).unwrap();
         b.rescan();
         b.rest(&mut remote);
-        assert_eq!(remote.names(), ["kept.txt"]);
+        let space: Vec<&str> = if kept { vec!["kept.txt"] } else { vec![] };
+        assert_eq!(remote.names(), space);
         assert!(remote.space.purge(&old, NOW));
         assert_eq!(koidrive_fs::read_marker(&site_a.root).unwrap().unwrap().effects, 0);
 
@@ -446,16 +449,19 @@ fn a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_sp
         c.scan_until(|c| c.folder.scanned);
         c.rest(&mut remote);
 
-        assert_eq!(names(&site.root), ["kept.txt", "old.txt"], "found_marker={found_marker}");
+        let case = format!("kept={kept}, found_marker={found_marker}");
+        let mut on_disk = space.clone();
+        on_disk.push("old.txt");
+        assert_eq!(names(&site.root), on_disk, "{case}");
         match found_marker {
             true => {
-                assert!(c.sent.is_empty(), "nothing is sent before an answer");
-                assert_eq!(c.folder.view().questions, 1);
-                assert_eq!(remote.names(), ["kept.txt"]);
+                assert!(c.sent.is_empty(), "nothing is sent before an answer: {case}");
+                assert_eq!(c.folder.view().questions, 1, "{case}");
+                assert_eq!(remote.names(), space, "{case}");
             }
             false => {
-                assert_eq!(c.folder.view().questions, 0);
-                assert_eq!(remote.names(), ["kept.txt", "old.txt"]);
+                assert_eq!(c.folder.view().questions, 0, "{case}");
+                assert_eq!(remote.names(), on_disk, "{case}");
             }
         }
     }

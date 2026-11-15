@@ -195,14 +195,17 @@ fn a_fresh_first_link_sends_a_file_whose_name_the_space_holds_as_a_conflict_copy
 
 #[test]
 fn a_first_link_that_shows_an_earlier_sync_keeps_a_file_the_space_deleted_and_purged_deleted() {
-    let seed = [act(1, 0, 0, 2, 0), act(1, 0, 0, 3, 0), act(7, 1, 0, 0, 0)];
+    let kept = [act(1, 0, 0, 2, 0), act(1, 0, 0, 3, 0), act(7, 1, 0, 0, 0)];
+    let emptied = [act(1, 0, 0, 3, 0), act(7, 0, 0, 0, 0)];
     let local = [act(1, 0, 0, 3, 0)];
-    for (prior, answer, asked, live) in [
-        (PriorSync::Shown, Answer::Discard, 1, vec!["b"]),
-        (PriorSync::Fresh, Answer::Discard, 0, vec!["b", "c.txt"]),
+    for (seed, prior, answer, asked, live) in [
+        (&kept[..], PriorSync::Shown, Answer::Discard, 1, vec!["b"]),
+        (&kept[..], PriorSync::Fresh, Answer::Discard, 0, vec!["b", "c.txt"]),
+        (&emptied[..], PriorSync::Shown, Answer::Discard, 1, vec![]),
+        (&emptied[..], PriorSync::Fresh, Answer::Discard, 0, vec!["c.txt"]),
     ] {
         let ran = run_ignoring(
-            &seed,
+            seed,
             &local,
             &[],
             MAX_OPS,
@@ -220,7 +223,7 @@ fn a_first_link_that_shows_an_earlier_sync_keeps_a_file_the_space_deleted_and_pu
             .map(|node| node.name)
             .collect();
         names.sort();
-        assert_eq!(names, live, "{prior:?}");
+        assert_eq!(names, live, "{prior:?} {seed:?}");
     }
 }
 

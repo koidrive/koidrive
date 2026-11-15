@@ -505,9 +505,9 @@ impl Commits {
 
     /// Matches L against R on the first link of the folder, once R holds the server's tree and L
     /// the first scan's (section 6.4): every local entry R holds at the same path with the same
-    /// kind and content is adopted. When `listing` held live nodes and `prior` shows that this
-    /// device synced the space before, the others are held under one question about what was
-    /// created on this device. Otherwise only those at a name R's trash holds are held, and the
+    /// kind and content is adopted. When `prior` shows that this device synced the space before,
+    /// the others are held under one question about what was created on this device, whatever
+    /// `listing` held. Otherwise only those at a name R's trash holds are held, and the
     /// rest are sent as a Publish answer sends them, so a name the space holds gives them a
     /// conflict name without a question.
     pub fn first_link(
@@ -520,7 +520,7 @@ impl Commits {
     ) {
         let tops = first_link::adopt(trees, None);
         let (held, sent): (Vec<NodeId>, Vec<NodeId>) = match (listing, prior) {
-            (Listing::Live, PriorSync::Shown) => (tops, Vec::new()),
+            (_, PriorSync::Shown) => (tops, Vec::new()),
             _ => tops.into_iter().partition(first_link::trashed_there(trees)),
         };
         self.published.extend(first_link::below(trees, &sent));

@@ -10,7 +10,7 @@ koi folder link ~/Koidrive --space Koidrive
 
 The first sync compares the folder with the space, path by path. Files that both hold alike stay as they are, and the space's other files download. The folder's other files and folders upload without a question. If the space already has a file with the same name and other content, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name), so both files are kept. A file or folder at a path the space's trash holds is held, with the new folder it is in, since the space records a deletion at that path.
 
-If the folder synced with the space before and the space held files or folders when sync first read it, sync holds every file and folder that the space doesn't have or that differs from it, since another device may have deleted them since. Sync asks one question about the held files and uploads none of them until you answer it with `koi resolve`:
+If the folder synced with the space before, sync holds every file and folder that the space doesn't have or that differs from it, since another device may have deleted them since. Sync asks one question about the held files and uploads none of them until you answer it with `koi resolve`:
 
 - `publish` uploads the held files. If the space already has a file with the same name, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name).
 - `discard` moves the held files to the [local trash](sync-rules.md#the-local-trash) and downloads the space's files at their paths.
