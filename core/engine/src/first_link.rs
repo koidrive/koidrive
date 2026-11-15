@@ -7,12 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::Trees;
-use crate::commit::rekey;
+use crate::commit::{rekey, set_synced_together};
 use crate::ids::IdGen;
-use crate::names::{name_key, nfc, same_name};
+use crate::names::{conflict_originals, name_key, nfc, same_name};
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use crate::tree::{
-    Content, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same_content,
+    Content, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same, same_content,
 };
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
@@ -406,38 +406,85 @@ fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape)
     since.map(|shape| (*shape).clone()).collect()
 }
 
-pub(crate) fn adopt_equal_files(trees: &mut Trees, held: &BTreeSet<NodeId>) {
-    let created: Vec<(NodeId, NodeId, Shape)> = (trees.dirty_others().iter())
-        .filter_map(|remote_id| {
-            let remote = trees.remote().get(remote_id)?;
-            let free =
-                trees.local().get(remote_id).is_none() && trees.synced().get(remote_id).is_none();
-            if !free || remote.trashed || remote.shape.kind != Kind::File {
-                return None;
-            }
-            let mtime_ns = (remote.shape.content.as_ref())
-                .map(|content| content.mtime_ns)
-                .filter(|mtime_ns| mtime_ns % 10_000_000 != 0)?;
-            let name = nfc(&remote.shape.name);
-            let id =
-                (trees.local_holders(&remote.shape.parent, &remote.shape.name)).find(|id| {
-                    trees.local().get(id).is_some_and(|node| {
-                        node.shape.kind == Kind::File
-                            && nfc(&node.shape.name) == name
-                            && same_bytes(&remote.shape.content, &node.shape.content)
-                            && (node.shape.content.as_ref())
-                                .is_some_and(|content| content.mtime_ns == mtime_ns)
-                    }) && !held.contains(*id)
-                        && !trees.excluded(id)
-                        && trees.synced().get(id).is_none()
-                        && trees.remote().get(id).is_none()
-                })?;
-            Some((id.clone(), remote_id.clone(), remote.shape.clone()))
+pub(crate) fn adopt_equal_files(trees: &mut Trees) {
+    let found = (trees.dirty_others().iter())
+        .filter_map(|remote_id| Some((equal_file(trees, remote_id)?, remote_id.clone())))
+        .collect();
+    link_equal_files(trees, found);
+}
+
+pub(crate) fn adopt_restored_files(trees: &mut Trees, ids: &BTreeSet<NodeId>) {
+    let found = (ids.iter())
+        .filter_map(|id| {
+            let local = &trees.local().get(id)?.shape;
+            let remote_id = (trees.remote_holders_of_key(&local.parent, &name_key(&local.name)))
+                .find(|remote_id| equal(trees, id, remote_id))?;
+            Some((id.clone(), remote_id.clone()))
         })
         .collect();
-    for (id, remote_id, shape) in created {
-        if trees.set_synced_if_valid(remote_id.clone(), Some(shape)) {
-            rekey(trees, &id, &remote_id);
+    link_equal_files(trees, found);
+}
+
+pub(crate) fn equal_file(trees: &Trees, remote_id: &str) -> Option<NodeId> {
+    let remote = &trees.remote().get(remote_id)?.shape;
+    let names = std::iter::once(remote.name.clone()).chain(conflict_originals(&remote.name));
+    names.into_iter().find_map(|name| {
+        (trees.local_holders(&remote.parent, &name))
+            .find(|id| equal(trees, id, remote_id))
+            .cloned()
+    })
+}
+
+fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {
+    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(remote_id)) else {
+        return false;
+    };
+    let (local, remote_shape) = (&local.shape, &remote.shape);
+    let free = trees.local().get(remote_id).is_none() && trees.synced().get(remote_id).is_none();
+    let unsynced = match trees.synced().get(id) {
+        None => true,
+        Some(_) => same(Some(local), trees.synced().live(id)) && trees.waiting().get(id).is_none(),
+    };
+    let named = same_name(&local.name, &remote_shape.name)
+        || conflict_originals(&remote_shape.name).contains(&nfc(&local.name));
+    free && !remote.trashed
+        && remote_shape.kind == Kind::File
+        && local.kind == Kind::File
+        && local.parent == remote_shape.parent
+        && named
+        && same_bytes(&remote_shape.content, &local.content)
+        && unsynced
+        && !trees.held(id)
+        && !trees.excluded(id)
+        && trees.remote().get(id).is_none()
+        && trees.fits_synced_together(&updates(trees, id, remote_id))
+}
+
+fn updates(trees: &Trees, id: &str, remote_id: &str) -> Vec<(NodeId, Option<Shape>)> {
+    let shape = trees
+        .remote()
+        .get(remote_id)
+        .map(|remote| remote.shape.clone());
+    let mut updates = vec![(remote_id.to_owned(), shape)];
+    if trees.synced().get(id).is_some() {
+        updates.push((id.to_owned(), None));
+    }
+    updates
+}
+
+fn link_equal_files(trees: &mut Trees, found: Vec<(NodeId, NodeId)>) {
+    for (id, remote_id) in found {
+        if !equal(trees, &id, &remote_id) {
+            continue;
+        }
+        let renamed = (trees.local().get(&id).zip(trees.remote().get(&remote_id)))
+            .is_some_and(|(local, remote)| !same_name(&local.shape.name, &remote.shape.name));
+        if !set_synced_together(trees, &updates(trees, &id, &remote_id)) {
+            continue;
+        }
+        rekey(trees, &id, &remote_id);
+        if renamed {
+            trees.revert(remote_id);
         }
     }
 }

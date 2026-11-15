@@ -579,6 +579,7 @@ impl Commits {
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
+        self.hold(trees);
         let waiting = first_link::adopt_by_marks_first(trees, history, marks);
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
@@ -609,6 +610,10 @@ impl Commits {
             trees.wait(id, shape, Origin::Other);
         }
         let mut groups = recovery::classify(trees);
+        if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
+            first_link::adopt_restored_files(trees, restored);
+            restored.retain(|id| trees.local().get(id).is_some());
+        }
         if let Some(created) = groups.remove(&RecoveryGroup::CreatedOnThisDevice) {
             let tops = (created.iter())
                 .filter(|id| {
@@ -1078,13 +1083,7 @@ impl Commits {
         if self.halted.is_some() || !trees.rules_known() {
             return None;
         }
-        let held: BTreeSet<NodeId> = self
-            .questions
-            .iter()
-            .flat_map(Question::holds)
-            .cloned()
-            .collect();
-        first_link::adopt_equal_files(trees, &held);
+        first_link::adopt_equal_files(trees);
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
         let released = self.ask_recovery(trees, cause, left, ids, now_ms);
@@ -2592,7 +2591,7 @@ fn update_synced(
 
 /// Sets S for every node of `updates` when S stays a valid tree with all of them. Returns whether it
 /// did.
-fn set_synced_together(trees: &mut Trees, updates: &[(NodeId, Option<Shape>)]) -> bool {
+pub(crate) fn set_synced_together(trees: &mut Trees, updates: &[(NodeId, Option<Shape>)]) -> bool {
     if !trees.fits_synced_together(updates) {
         return false;
     }

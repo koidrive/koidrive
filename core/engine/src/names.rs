@@ -97,6 +97,59 @@ pub fn conflict_name(name: &str, device_name: &str, at_ms: i64, attempt: u32) ->
     nfc(&chars.into_iter().collect::<String>())
 }
 
+pub(crate) fn conflict_originals(name: &str) -> Vec<String> {
+    const FROM: &str = " (conflict from ";
+    if !name.contains(FROM) {
+        return Vec::new();
+    }
+    let name = nfc(name);
+    let exts = std::iter::once("").chain(name.rfind('.').map(|dot| &name[dot..]));
+    let mut originals = Vec::new();
+    for ext in exts {
+        let Some(body) = (name.strip_suffix(ext)).and_then(|body| body.strip_suffix(')')) else {
+            continue;
+        };
+        for (at, _) in body.match_indices(FROM) {
+            let original = format!("{}{ext}", &body[..at]);
+            let tail = &body[at + FROM.len()..];
+            let numbered = (tail.rsplit_once(' ')).and_then(|(rest, attempt)| {
+                Some((
+                    rest,
+                    attempt.parse::<u32>().ok().filter(|&attempt| attempt > 1)?,
+                ))
+            });
+            for (rest, attempt) in std::iter::once((tail, 1)).chain(numbered) {
+                let Some((device, date)) = rest.rsplit_once(' ') else {
+                    continue;
+                };
+                let Some(at_ms) = date_ms(date) else {
+                    continue;
+                };
+                if conflict_name(&original, device, at_ms, attempt) == name
+                    && !originals.contains(&original)
+                {
+                    originals.push(original.clone());
+                }
+            }
+        }
+    }
+    originals
+}
+
+fn date_ms(date: &str) -> Option<i64> {
+    if date.len() != "YYYY-MM-DD".len() {
+        return None;
+    }
+    let mut parts = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * (month + 9).rem_euclid(12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400_000)
+}
+
 fn utc_date(at_ms: i64) -> String {
     let days = at_ms.div_euclid(86_400_000);
     let z = days + 719_468;
@@ -162,6 +215,39 @@ mod tests {
             "{} bytes",
             decomposing.len()
         );
+    }
+
+    #[test]
+    fn finds_the_names_a_conflict_name_was_made_from() {
+        let at = 1_794_268_740_000;
+        for (original, device, attempt) in [
+            ("a.tar.gz", "Mac/Book", 1),
+            (".bashrc", "pc", 2),
+            ("ß", "device-2", 2),
+            ("Cafe\u{301}.txt", "x (conflict from y 2026-11-09)", 3),
+            ("notes", "", 1),
+        ] {
+            let copy = conflict_name(original, device, at, attempt);
+            assert!(
+                conflict_originals(&copy).contains(&nfc(original)),
+                "{copy:?}"
+            );
+        }
+        assert_eq!(
+            conflict_originals("a (conflict from d 2026-11-09) (conflict from d 2026-11-09)"),
+            ["a", "a (conflict from d 2026-11-09)"]
+        );
+        for name in [
+            "a",
+            "a (conflict from d 2026-11-09",
+            "a (conflict from d 2026-13-09)",
+            "a (conflict from d 2026-11-09 1)",
+            "a (conflict from d 2026-11-09 +2)",
+            "a.txt (conflict from d 2026-11-09)",
+            "a (conflict from d 26-11-09)",
+        ] {
+            assert_eq!(conflict_originals(name), Vec::<String>::new(), "{name:?}");
+        }
     }
 
     #[test]

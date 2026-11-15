@@ -575,6 +575,32 @@ fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_c
 }
 
 #[test]
+fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
+    let mut trees = trees(
+        &[("new", file(ROOT, "new", 2))],
+        &[("new", file(ROOT, "new", 2))],
+        &[live("theirs", file(ROOT, "new", 2))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    assert!(trees.local().get("new").is_none() && trees.synced().get("new").is_none());
+    assert_eq!(trees.class("theirs"), Class::InSync);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_file_the_rewind_removed_beside_other_bytes_at_its_place_is_asked_about() {
+    let mut trees = trees(
+        &[("new", file(ROOT, "new", 2))],
+        &[("new", file(ROOT, "new", 2))],
+        &[live("theirs", file(ROOT, "new", 3))],
+    );
+    let (commits, _) = recovered(&mut trees, 0);
+    asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["new"]);
+}
+
+#[test]
 fn discarding_a_file_the_rewind_removed_moves_it_to_the_local_trash() {
     let mut trees = trees(
         &[("new", file(ROOT, "new", 2))],

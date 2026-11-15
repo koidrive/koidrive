@@ -10427,3 +10427,68 @@ fn a_rename_a_restore_lost_survives_a_resend_the_server_refuses_for_the_deleted_
         assert_eq!(entries, [("A", Some(2))]);
     }
 }
+
+#[test]
+fn a_file_the_server_renamed_and_a_rollback_sends_again_stays_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, Backup), (2, u(0, 0, 0, 6, 0)), (2, CopyStore)],
+        vec![
+            (2, u(1, 0, 0, 5, 0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (0, Work(0)),
+            (0, Restore),
+            (2, RollBack),
+            (0, Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_file_a_rolled_back_store_knows_under_an_old_id_is_linked_to_the_servers_copy() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, u(1, 0, 0, 2, 0)),
+            (0, CopyStore),
+            (0, u(1, 0, 0, 3, 0)),
+            (0, u(0, 0, 0, 0, 0)),
+            (0, Backup),
+        ],
+        vec![
+            (0, Restore),
+            (1, CopyStore),
+            (0, RollBack),
+            (0, u(0, 0, 2246066218544114869, 0, 0)),
+        ],
+        vec![
+            (1, RollBack),
+            (1, Work(0)),
+            (1, Connect),
+            (1, Deliver(0)),
+            (1, Answer(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

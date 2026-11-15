@@ -9,6 +9,7 @@ use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
 use koidrive_engine::first_link::{History, PriorSync, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::names::conflict_name;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape};
@@ -759,6 +760,55 @@ fn a_held_entry_the_rules_leave_out_for_a_while_stays_held_until_the_person_answ
             ("create file", "l-notes".to_owned()),
         ]
     );
+}
+
+fn unlinked(local: &str, remote: &str, digest: u8) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(
+        &[("l-file", file(ROOT, local, 1))],
+        &[("r-file", file(ROOT, remote, digest))],
+    );
+    trees.rules_scanned();
+    trees.settle();
+    (Commits::default(), trees, IdGen::new(7))
+}
+
+#[test]
+fn a_file_the_server_holds_under_its_conflict_name_with_the_same_bytes_is_linked_and_takes_that_name()
+ {
+    let copy = conflict_name("ß", "pc", NOW as i64, 2);
+    let (mut commits, mut trees, mut ids) = unlinked("ß", &copy, 1);
+    let mut effects = Effects::default();
+    assert_eq!(
+        effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .first(),
+        None
+    );
+    let done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    assert!(
+        matches!(&done[..], [(node, Effect::Move { .. })] if node == "r-file"),
+        "{done:?}"
+    );
+    assert_eq!(local(&trees), [("r-file".into(), ROOT.into(), copy)]);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_file_is_sent_beside_a_server_file_whose_name_only_looks_like_its_conflict_name() {
+    for (name, digest) in [
+        (conflict_name("ß", "pc", NOW as i64, 2), 2),
+        ("ß (conflict from pc 2026-13-09)".into(), 1),
+        ("ß (conflict from pc 2026-11-09 1)".into(), 1),
+        ("ß (copy)".into(), 1),
+        (conflict_name("s", "pc", NOW as i64, 1), 1),
+    ] {
+        let (mut commits, mut trees, mut ids) = unlinked("ß", &name, digest);
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("create file", "l-file".to_owned())],
+            "{name}"
+        );
+    }
 }
 
 /// An entry created after the first link, beside the held ones, is an ordinary create.
