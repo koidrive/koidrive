@@ -109,6 +109,7 @@ fn rules(name: &str) -> Rules {
         "AllFixes" => Rules::AllFixes,
         "HeldDeleteResent" => Rules::HeldDeleteResent,
         "HeldFixes" => Rules::HeldFixes,
+        "HeldPositionFixes" => Rules::HeldPositionFixes,
         other => panic!("no rules {other}"),
     }
 }
@@ -177,12 +178,13 @@ const LARGE: [[u8; 10]; 6] = [
     [0, 0, 1, 1, 1, 1, 0, 0, 0, 2],
 ];
 
-const CREATED: [[u8; 10]; 5] = [
+const CREATED: [[u8; 10]; 6] = [
     [0, 0, 0, 1, 1, 0, 0, 0, 0, 1],
     [0, 0, 0, 1, 1, 1, 0, 0, 0, 1],
     [1, 1, 0, 0, 1, 1, 0, 0, 0, 1],
     [0, 0, 1, 1, 1, 1, 0, 0, 0, 1],
     [1, 1, 1, 0, 0, 1, 0, 1, 0, 1],
+    [1, 0, 1, 1, 0, 1, 0, 0, 0, 2],
 ];
 
 fn budget(n: [u8; 10]) -> Budget {
@@ -438,6 +440,12 @@ fn refute_all_fixes() {
 #[ignore]
 fn refute_held_fixes() {
     refute(Rules::HeldFixes);
+}
+
+#[test]
+#[ignore]
+fn refute_held_position_fixes() {
+    refute(Rules::HeldPositionFixes);
 }
 
 fn exhaustive(n: [u8; 10], rules: Rules) {
@@ -768,6 +776,46 @@ fn a_delete_built_before_a_resent_move_lands_overrides_it() {
             Serve(B),
             Bootstrap(A),
             Build(A, 2),
+            Answer(B),
+            Record(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Record(A),
+            Serve(B),
+            Record(A),
+            Answer(B),
+            Record(B),
+            Record(B),
+        ],
+        "device 0's Position Tok(2) is lost",
+    );
+}
+
+#[test]
+fn a_delete_after_a_move_overrides_the_position_its_resent_create_carries() {
+    broken(
+        Rules::HeldPositionFixes,
+        &[
+            Move(A),
+            Lose(1),
+            Bootstrap(A),
+            Build(A, 1),
+            Bootstrap(B),
+            Build(B, 1),
+            Serve(A),
+            Answer(A),
+            Serve(B),
+            Record(B),
+            Lose(1),
+            Answer(B),
+            Bootstrap(B),
+            Build(B, 1),
+            Move(B),
+            Delete(B),
+            Serve(B),
+            Bootstrap(A),
+            Build(A, 1),
             Answer(B),
             Record(B),
             Build(B, 1),

@@ -23,6 +23,7 @@ struct Value {
     seen: [Tok; 2],
     held: [u32; 2],
     renamed_from: Option<Tok>,
+    lost_position: Option<Tok>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -389,6 +390,7 @@ pub enum Rules {
     AllFixes,
     HeldDeleteResent,
     HeldFixes,
+    HeldPositionFixes,
 }
 
 impl Rules {
@@ -399,7 +401,11 @@ impl Rules {
     fn create_from(self) -> bool {
         matches!(
             self,
-            Rules::ResentCreateFrom | Rules::CreateFixes | Rules::AllFixes | Rules::HeldFixes
+            Rules::ResentCreateFrom
+                | Rules::CreateFixes
+                | Rules::AllFixes
+                | Rules::HeldFixes
+                | Rules::HeldPositionFixes
         )
     }
 
@@ -411,6 +417,7 @@ impl Rules {
                 | Rules::CreateFixes
                 | Rules::AllFixes
                 | Rules::HeldFixes
+                | Rules::HeldPositionFixes
         )
     }
 
@@ -421,6 +428,7 @@ impl Rules {
                 | Rules::CreateFixes
                 | Rules::AllFixes
                 | Rules::HeldFixes
+                | Rules::HeldPositionFixes
         )
     }
 
@@ -431,11 +439,19 @@ impl Rules {
                 | Rules::AllFixes
                 | Rules::HeldDeleteResent
                 | Rules::HeldFixes
+                | Rules::HeldPositionFixes
         )
     }
 
     fn delete_needs_held(self) -> bool {
-        matches!(self, Rules::HeldDeleteResent | Rules::HeldFixes)
+        matches!(
+            self,
+            Rules::HeldDeleteResent | Rules::HeldFixes | Rules::HeldPositionFixes
+        )
+    }
+
+    fn delete_gives_way_to_lost_position(self) -> bool {
+        self == Rules::HeldPositionFixes
     }
 
     fn bound_only(self) -> bool {
@@ -497,6 +513,7 @@ impl World {
             seen: [Tok(0), Tok(1)],
             held: [0; 2],
             renamed_from: None,
+            lost_position: None,
         };
         let device = |d: Dev| {
             let agreed = |val| Agreed {
@@ -762,6 +779,7 @@ impl World {
                     seen,
                     held: [0; 2],
                     renamed_from: None,
+                    lost_position: None,
                 });
                 let dev = &mut w.devices[d];
                 dev.l.set(field, value);
@@ -806,6 +824,9 @@ impl World {
                     seen,
                     held,
                     renamed_from: None,
+                    lost_position: w.devices[d].lost_position.filter(|&lost| {
+                        rules.delete_gives_way_to_lost_position() && held[0] & (1 << lost.0) == 0
+                    }),
                 });
                 let dev = &mut w.devices[d];
                 if rules != Rules::DeleteSeesSynced {
@@ -1496,12 +1517,13 @@ impl World {
             && dev.s.exist_seq == 0
         {
             dev.s.exist_seq = r.meta_rev;
-            let held = self.values[gone.0 as usize].held;
-            let unheld = FIELDS.iter().any(|&field| {
-                r.user_set(field)
-                    && !edited_here[slot(field)]
-                    && held[slot(field)] & (1 << r.get(field).0) == 0
-            });
+            let gone = self.values[gone.0 as usize];
+            let unheld = gone.lost_position == Some(r.pos)
+                || FIELDS.iter().any(|&field| {
+                    r.user_set(field)
+                        && !edited_here[slot(field)]
+                        && gone.held[slot(field)] & (1 << r.get(field).0) == 0
+                });
             if r.trashed.is_none()
                 && rules.absent_delete_resent()
                 && !(rules.delete_needs_held() && unheld)
@@ -1591,10 +1613,12 @@ impl World {
                 let unseen = FIELDS.iter().any(|&field| {
                     let synced = dev.s.get(field);
                     if rules.delete_needs_held() {
-                        let held = self.values[gone.0 as usize].held[slot(field)];
-                        return r.user_set(field)
-                            && !edited_here[slot(field)]
-                            && held & (1 << r.get(field).0) == 0;
+                        let gone = self.values[gone.0 as usize];
+                        let lost = field == Field::Position && gone.lost_position == Some(r.pos);
+                        return lost
+                            || r.user_set(field)
+                                && !edited_here[slot(field)]
+                                && gone.held[slot(field)] & (1 << r.get(field).0) == 0;
                     }
                     r.get(field) != synced.val
                         && r.user_set(field)
@@ -2318,6 +2342,7 @@ impl World {
                 seen: value.seen.map(tok),
                 held: value.held.map(set),
                 renamed_from: value.renamed_from.map(tok),
+                lost_position: value.lost_position.map(tok),
                 ..*value
             }
             .hash(&mut h);
