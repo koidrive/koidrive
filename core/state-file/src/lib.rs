@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use rustix::fs::{self, AtFlags, Dir, FileType, FlockOperation, Mode, OFlags, flock};
@@ -37,6 +38,12 @@ impl AtomicFile {
                 io::Error::new(io::ErrorKind::InvalidInput, "a state file needs a name")
             })?
             .to_owned();
+        if is_stage(destination.as_bytes()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a state-file destination cannot use the staging namespace",
+            ));
+        }
         let directory = open_directory(parent(path))?;
         let lock = DirectoryLock::new(&directory)?;
         recover_locked(&directory)?;
@@ -80,7 +87,26 @@ impl AtomicFile {
 
     /// Syncs the contents, publishes atomically, and syncs the parent directory.
     /// `Create` never replaces an existing destination. Failure after publication can leave the complete file.
-    pub fn finish(mut self, publish: Publish) -> io::Result<File> {
+    pub fn finish(self, publish: Publish) -> io::Result<File> {
+        self.finish_with_legacy(publish, &[])
+    }
+
+    /// Publishes the file, then removes obsolete sibling stages while the directory is locked.
+    /// Callers must own the legacy names. Names cannot escape the directory, name the destination,
+    /// or overlap the helper's staging namespace. A cleanup failure can follow complete publication.
+    pub fn finish_with_legacy(mut self, publish: Publish, legacy: &[&OsStr]) -> io::Result<File> {
+        for name in legacy {
+            if Path::new(name).file_name() != Some(*name)
+                || name.as_bytes().contains(&0)
+                || *name == self.destination.as_os_str()
+                || is_stage(name.as_bytes())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid legacy stage name",
+                ));
+            }
+        }
         self.file.sync_all()?;
         let _lock = DirectoryLock::new(&self.directory)?;
         let stage = self.stage.as_ref().unwrap();
@@ -106,6 +132,12 @@ impl AtomicFile {
             }
         }
         self.stage = None;
+        for name in legacy {
+            match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         self.directory.sync_all()?;
         flock(&self.file, FlockOperation::Unlock)?;
         self.file.try_clone()
@@ -125,12 +157,18 @@ impl Drop for AtomicFile {
 
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_with_legacy(path, bytes, &[])
+}
+
+/// Replaces a state file and removes obsolete sibling stages owned by the caller.
+pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Result<()> {
     let stage = AtomicFile::prepare(path)?;
     stage.as_file().write_all(bytes)?;
-    stage.finish(Publish::Replace).map(drop)
+    stage.finish_with_legacy(Publish::Replace, legacy).map(drop)
 }
 
 /// Removes this helper's abandoned stages, but never a stage locked by a live writer.
+/// Inaccessible stages are left untouched so they cannot block other publications.
 /// Call before disclosing a directory's contents. A missing directory needs no recovery.
 /// Returns the number of removed stages so inventory can recognize otherwise empty state directories.
 pub fn recover(dir: &Path) -> io::Result<usize> {
@@ -184,31 +222,51 @@ fn same_inode(directory: &File, name: &std::ffi::OsStr, file: &File) -> io::Resu
     Ok((named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino))
 }
 
+fn is_stage(name: &[u8]) -> bool {
+    name.strip_prefix(PREFIX.as_bytes())
+        .and_then(|name| name.strip_suffix(SUFFIX.as_bytes()))
+        .is_some_and(|random| {
+            random.len() == RANDOM_BYTES * 2 && random.iter().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
 fn recover_locked(directory: &File) -> io::Result<usize> {
-    use std::os::unix::ffi::OsStrExt;
     let mut recovered = 0;
     for entry in Dir::read_from(directory)? {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(random) = name
-            .to_bytes()
-            .strip_prefix(PREFIX.as_bytes())
-            .and_then(|name| name.strip_suffix(SUFFIX.as_bytes()))
-        else {
-            continue;
-        };
-        if random.len() != RANDOM_BYTES * 2 || !random.iter().all(|byte| byte.is_ascii_hexdigit()) {
+        if !is_stage(name.to_bytes()) {
             continue;
         }
-        let file = match fs::openat(
-            directory,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(file) => File::from(file),
-            Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => continue,
+        let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(named) => named,
+            Err(rustix::io::Errno::NOENT) => continue,
             Err(error) => return Err(error.into()),
+        };
+        if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
+            || named.st_uid != rustix::process::getuid().as_raw()
+        {
+            continue;
+        }
+        let mut file = None;
+        for access in [OFlags::RDONLY, OFlags::WRONLY] {
+            match fs::openat(
+                directory,
+                name,
+                access | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(opened) => {
+                    file = Some(File::from(opened));
+                    break;
+                }
+                Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {}
+                Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let Some(file) = file else {
+            continue;
         };
         let metadata = fs::fstat(&file)?;
         if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile

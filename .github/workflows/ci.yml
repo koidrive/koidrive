@@ -872,10 +872,44 @@ jobs:
           fi
           python3 scripts/check-store-upgrades.py "$BASE" HEAD
 
+  state-io:
+    if: github.event_name != 'push'
+    name: state file safety (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install the repository toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: state-io
+      - name: Prove the lints reject the unsafe writers and borrowed locks
+        run: nice -n 10 python3 scripts/test-state-io.py -v
+      - name: Reject new raw state-file writes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$EVENT" = merge_group ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+          else
+            BASE=$(git rev-parse HEAD^1)
+          fi
+          nice -n 10 python3 scripts/check-state-io.py "$BASE"
+
+
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, pick-macos, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, runner-hook, installer, comments, store-upgrade]
+    needs: [changes, pick-macos, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, runner-hook, installer, comments, store-upgrade, state-io]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled

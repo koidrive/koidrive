@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::FileExt;
@@ -156,7 +157,10 @@ impl Leaving {
         serde_json::to_writer(&mut bytes, &intent).map_err(io::Error::other)?;
         let staged = koidrive_state_file::AtomicFile::prepare(&path)?;
         staged.as_file().write_all(&bytes)?;
-        let file = staged.finish(koidrive_state_file::Publish::Replace)?;
+        let file = staged.finish_with_legacy(
+            koidrive_state_file::Publish::Replace,
+            &[OsStr::new("leaving.next")],
+        )?;
         Ok(Self {
             intent,
             phase: Phase::Prepared,
@@ -189,6 +193,28 @@ impl Leaving {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_successful_sign_out_save_removes_the_previous_releases_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Leaving::begin(dir.path(), Intent::default()).unwrap());
+        let legacy = dir.path().join("leaving.next");
+        fs::write(&legacy, b"0{\"links\":[],\"resume\":false}").unwrap();
+        let intent = Intent {
+            resume: true,
+            resume_updates: true,
+            ..Intent::default()
+        };
+        let mut expected = vec![b'0'];
+        serde_json::to_writer(&mut expected, &intent).unwrap();
+        drop(Leaving::begin(dir.path(), intent).unwrap());
+        assert_eq!(fs::read(dir.path().join("leaving")).unwrap(), expected);
+        assert!(!legacy.exists());
+        let saved = Leaving::load(dir.path()).unwrap().unwrap();
+        assert!(saved.phase == Phase::Prepared);
+        assert!(saved.intent.resume);
+        assert!(saved.intent.resume_updates);
+    }
 
     #[test]
     fn a_failed_parent_sync_keeps_the_journal_until_retry() {

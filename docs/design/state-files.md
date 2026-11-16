@@ -8,14 +8,16 @@ Each stage holds an inode lock. Recovery holds the directory lock and removes on
 
 Dropping a stage removes it. A killed process cannot run cleanup, so the next `prepare` or explicit `recover` removes its abandoned stages. Code that lists or discloses a state directory calls `recover` first. The telemetry store also recognizes staging names from earlier writers when it removes reports from dead runs.
 
+Recovery opens read-only or write-only stages and leaves inaccessible stages untouched. A destination cannot use the helper's reserved staging namespace. `finish_with_legacy` and `write_with_legacy` remove explicitly named obsolete siblings after publication, under the directory lock. They reject names that escape the directory, name the destination, or overlap the helper's stages. The caller must hold the ownership lock shared with historical writers.
+
 ## Checks
 
 | Rule | Enforcement |
 | --- | --- |
 | State-file publication has one owner. | `AtomicFile` owns its stage, inode lock, destination, and directory descriptor. |
-| New `std::fs` and `tokio::fs` writes and renames are rejected outside that owner. | `scripts/check-state-io.py` uses Clippy's resolved `disallowed_methods` diagnostics and rejects new calls. Its error names the helper to use. |
-| A mutex guard or a `RefCell` borrow cannot span an await. | Clippy's `await_holding_lock` and `await_holding_refcell_ref` run with errors enabled. |
+| New direct writes, renames, copies, hard links and tempfile publications are rejected outside that owner. | `scripts/check-state-io.py` uses Clippy's resolved `disallowed_methods` diagnostics and rejects new calls. Its error names the helper to use. |
+| A synchronous mutex guard or a `RefCell` borrow cannot span an await. | Clippy's `await_holding_lock` and `await_holding_refcell_ref` run with errors enabled. |
 
-Run `python3 scripts/test-state-io.py -v` to check the lint regressions, and `python3 scripts/check-state-io.py <base>` to check a committed change. `--inventory <file>` records every compiler-resolved direct-I/O diagnostic. The check compiles production libraries and binaries on Linux and macOS. Test fixture writes are not product persistence.
+Run `python3 scripts/test-state-io.py -v` to check the lint regressions, and `python3 scripts/check-state-io.py <base>` to check a committed change. `--inventory <file>` records every compiler-resolved direct-I/O diagnostic and the named lifecycle and historical setup exceptions. The check compiles production libraries and binaries on Linux and macOS with the CI features. Test fixture writes are not product persistence. Its jobs are dependencies of the required `ci-report` job.
 
-The direct-I/O check allows unchanged calls. Changing a call, its local imports, or its compilation conditions triggers a recheck. Build-script outputs are not runtime state. The check does not identify arbitrary writes through `File`, external processes, or direct syscalls, and it does not prove that a synchronous function avoids network I/O. Those boundaries need an API that withholds the corresponding capability.
+The direct-I/O check allows unchanged calls. Changing a call, its local imports, or its compilation conditions triggers a recheck. Build-script outputs are identified by Cargo's target kind, not by the source filename. The lifecycle checkpoint exception pins its function and method. Historical setup stages remain because setup has no cross-process lease that distinguishes an old process's stage from an orphan. The check does not identify arbitrary writes through `File`, external processes, or direct syscalls, and it does not prove that a synchronous function avoids network I/O. Those boundaries need an API that withholds the corresponding capability.

@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import hashlib
 import importlib.util
 import json
 import os
@@ -19,10 +20,28 @@ LOCK_LINTS = {"clippy::await_holding_lock", "clippy::await_holding_refcell_ref"}
 IO_LINT = "clippy::disallowed_methods"
 IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
 CONDITIONAL = re.compile(r"#\s*!?\s*\[\s*cfg(?:_attr)?\s*\([^]]*\)\s*\]", re.S)
-SUPPRESSION = re.compile(r"\b(?:allow|expect)\s*\([^)]*(?:clippy::(?:disallowed_methods|await_holding_lock|await_holding_refcell_ref|all|style|suspicious)|\bwarnings)\b", re.S)
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
 LEXER_SPEC.loader.exec_module(LEXER)
+
+# Lifecycle and historical setup cleanup follow-ups: GUN-928 and GUN-930.
+LIFECYCLE_EXCEPTION = {
+    "name": "lifecycle checkpoint publication",
+    "file": "core/driver/src/lifecycle.rs",
+    "line": 183,
+    "function_start": 172,
+    "function_end": 190,
+    "function_sha256": "71663a7a398a485e912b332633084934293b16a20ece23968efa1fc9d8e60182",
+    "follow_up": "GUN-928",
+    "reason": "The restart regression faults the legacy staging name; migrate both after the protected driver changes land.",
+}
+SETUP_LEGACY_EXCEPTION = {
+    "name": "historical setup stage",
+    "file": "cli/src/setup/state.rs",
+    "artifact": "setup-state.json.tmp",
+    "follow_up": "GUN-930",
+    "reason": "Setup state has no cross-process lease, so an old CLI's temp file cannot be distinguished from an orphan.",
+}
 
 
 def git(*arguments):
@@ -70,16 +89,75 @@ def imports(text):
     return [text[match.start():text.find(";", match.start()) + 1] for match in IMPORT.finditer(text)]
 
 
+def suppression_records(text):
+    tokens = []
+    comments = LEXER.comment_spans(text, "rust", tokens)
+    masked = list(text)
+    for start, end in comments:
+        masked[start:end] = ["\n" if char == "\n" else " " for char in text[start:end]]
+    masked = "".join(masked)
+    words, locations, cursor = [], [], 0
+    for word, _, _ in tokens:
+        offset = masked.find(word, cursor)
+        if offset < 0:
+            raise ValueError("Cannot locate a Rust token while checking suppressions")
+        cursor = offset + len(word)
+        words.append(word)
+        locations.append(text.count("\n", 0, offset) + 1)
+    for index, word in enumerate(words):
+        if word != "#":
+            continue
+        opening = index + 1
+        if opening < len(words) and words[opening] == "!":
+            opening += 1
+        if opening >= len(words) or words[opening] != "[":
+            continue
+        end, depth = opening + 1, 1
+        while end < len(words) and depth:
+            depth += (words[end] == "[") - (words[end] == "]")
+            end += 1
+        for position in range(opening + 1, end - 1):
+            if words[position] not in ("allow", "expect") or words[position + 1] != "(":
+                continue
+            closing, depth = position + 2, 1
+            while closing < end and depth:
+                depth += (words[closing] == "(") - (words[closing] == ")")
+                closing += 1
+            arguments = words[position + 2:closing - 1]
+            blocked = set()
+            for item, argument in enumerate(arguments):
+                if argument == "warnings":
+                    blocked.add("warnings")
+                if arguments[item:item + 3] == ["clippy", ":", ":"] and item + 3 < len(arguments):
+                    lint = arguments[item + 3]
+                    if lint == "disallowed_method":
+                        lint = "disallowed_methods"
+                    if lint in {"disallowed_methods", "await_holding_lock", "await_holding_refcell_ref", "all", "style", "suspicious"}:
+                        blocked.add("clippy::" + lint)
+            if blocked:
+                yield tuple(sorted(blocked)), locations[position]
+
+
 def new_suppressions(before, after):
-    old = [match.group() for match in SUPPRESSION.finditer(before)]
-    for match in SUPPRESSION.finditer(after):
-        if match.group() in old:
-            old.remove(match.group())
+    old = [record for record, _ in suppression_records(before)]
+    for record, line in suppression_records(after):
+        if record in old:
+            old.remove(record)
         else:
-            yield after.count("\n", 0, match.start()) + 1
+            yield line
 
 
-def introduced(diagnostic, files):
+def lifecycle_exception(span, diagnostic, text):
+    policy = LIFECYCLE_EXCEPTION
+    if span["file_name"] != policy["file"] or span["line_start"] != policy["line"]:
+        return False
+    if diagnostic.get("message") != "use of a disallowed method `std::fs::rename`":
+        return False
+    function = "\n".join(text.splitlines()[policy["function_start"] - 1:policy["function_end"]])
+    return hashlib.sha256(function.encode()).hexdigest() == policy["function_sha256"]
+
+
+def introduced(diagnostic, files, build_script=False):
     code = (diagnostic.get("code") or {}).get("code")
     if code in LOCK_LINTS:
         return True
@@ -90,8 +168,13 @@ def introduced(diagnostic, files):
         raise ValueError("A state-I/O diagnostic has no source span")
     for span in spans:
         path = span["file_name"]
-        if path == HELPER or Path(path).name == "build.rs":
+        if path == HELPER or build_script:
             continue
+        if path == LIFECYCLE_EXCEPTION["file"]:
+            text = files[path][1] if path in files else (ROOT / path).read_text()
+            if lifecycle_exception(span, diagnostic, text):
+                continue
+            return True
         if path not in files:
             continue
         before, after = files[path]
@@ -124,6 +207,7 @@ def check(base, inventory=None):
     env = dict(os.environ, CLIPPY_CONF_DIR=str(CONFIG))
     command = [
         "nice", "-n", "10", "cargo", "clippy", "--workspace", "--lib", "--bins", "--locked",
+        "--features", "koidrive-cli/test-install-inventory,koidrive-cli/test-setup",
         "--message-format=json", "--", "-W", IO_LINT,
         "-D", "clippy::await_holding_lock", "-D", "clippy::await_holding_refcell_ref",
     ]
@@ -138,7 +222,7 @@ def check(base, inventory=None):
         if message.get("reason") != "compiler-message":
             continue
         diagnostic = message["message"]
-        is_new = introduced(diagnostic, files)
+        is_new = introduced(diagnostic, files, "custom-build" in message["target"]["kind"])
         if (diagnostic.get("code") or {}).get("code") == IO_LINT:
             recorded.append({
                 "message": diagnostic["message"],
@@ -160,7 +244,10 @@ def check(base, inventory=None):
     for failure in failures:
         print(failure, file=sys.stderr)
     if inventory is not None:
-        Path(inventory).write_text(json.dumps(recorded, indent=2) + "\n")
+        Path(inventory).write_text(json.dumps({
+            "diagnostics": recorded,
+            "exceptions": [LIFECYCLE_EXCEPTION, SETUP_LEGACY_EXCEPTION],
+        }, indent=2) + "\n")
     print(f"State I/O: {diagnostics} introduced violations; {legacy} existing or helper/build-output diagnostics.")
     return bool(failures)
 

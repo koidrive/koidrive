@@ -462,7 +462,12 @@ pub(crate) fn load(path: &Path) -> Option<Checked> {
 }
 
 fn save(path: &Path, checked: &Checked) -> io::Result<()> {
-    koidrive_state_file::write(path, &serde_json::to_vec(checked)?)
+    let legacy = path.with_extension("json.new");
+    koidrive_state_file::write_with_legacy(
+        path,
+        &serde_json::to_vec(checked)?,
+        &[legacy.file_name().expect("the update cache has a name")],
+    )
 }
 
 fn now_ms() -> i64 {
@@ -1686,6 +1691,36 @@ mod tests {
         assert!(checked.due() > now_ms());
         assert_eq!(checked.etag.as_deref(), Some("\"same\""));
         assert_eq!(checked.release, release("99.0.0"));
+    }
+
+    #[test]
+    fn a_successful_update_save_removes_the_previous_releases_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let previous = Checked::default().after(
+            Answer::Releases {
+                etag: None,
+                release: None,
+            },
+            100,
+        );
+        save(&path, &previous).unwrap();
+        let legacy = path.with_extension("json.new");
+        fs::write(&legacy, serde_json::to_vec(&previous).unwrap()).unwrap();
+        let current = previous.after(
+            Answer::Releases {
+                etag: Some("\"current\"".into()),
+                release: release("99.0.0"),
+            },
+            200,
+        );
+        save(&path, &current).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec(&current).unwrap()
+        );
+        assert_eq!(load(&path), Some(current));
+        assert!(!legacy.exists());
     }
 
     #[test]

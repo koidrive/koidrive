@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -22,9 +23,9 @@ def diagnostic(path="core/telemetry/src/store.rs", start=1, end=None, code=guard
 
 
 class ChangedIo(unittest.TestCase):
-    def introduced(self, before, after, **kwargs):
+    def introduced(self, before, after, build_script=False, **kwargs):
         item = diagnostic(**kwargs)
-        return guard.introduced(item, {item["spans"][0]["file_name"]: (before, after)})
+        return guard.introduced(item, {item["spans"][0]["file_name"]: (before, after)}, build_script)
 
     def test_an_existing_call_is_not_a_new_violation(self):
         self.assertFalse(self.introduced("fs::write(path, bytes);", "fs::write(path, bytes);"))
@@ -62,7 +63,11 @@ class ChangedIo(unittest.TestCase):
         self.assertFalse(self.introduced("", "fs::rename(a, b);", path=guard.HELPER))
 
     def test_build_outputs_are_not_runtime_state(self):
-        self.assertFalse(self.introduced("", "fs::write(a, b);", path="cli/build.rs"))
+        self.assertFalse(self.introduced("", "fs::write(a, b);", path="cli/build.rs", build_script=True))
+
+    def test_a_runtime_module_named_build_rs_is_checked(self):
+        self.assertTrue(self.introduced("", "fs::write(a, b);", path="core/driver/src/build.rs"))
+        self.assertTrue(self.introduced("", "fs::write(a, b);", path="cli/build.rs"))
 
     def test_a_new_suppression_fails(self):
         self.assertEqual(list(guard.new_suppressions("", "#[allow(clippy::disallowed_methods)]")), [1])
@@ -76,13 +81,81 @@ class ChangedIo(unittest.TestCase):
         allow = "#[allow(clippy::disallowed_methods)]"
         self.assertEqual(list(guard.new_suppressions(allow, allow + "\n" + allow)), [2])
 
+    def test_deprecated_lint_aliases_are_suppressions_too(self):
+        self.assertEqual(list(guard.new_suppressions("", "#[allow(clippy::disallowed_method)]")), [1])
+
+    def test_comments_cannot_end_a_suppression_early(self):
+        self.assertEqual(list(guard.new_suppressions("", "#[allow(/* ) */ clippy::disallowed_methods)]")), [1])
+        self.assertEqual(list(guard.new_suppressions("", "#[cfg_attr(any(), allow(/* ) */ clippy::disallowed_method))]")), [1])
+
+    def test_nested_cfg_attr_suppressions_are_checked(self):
+        text = '#[cfg_attr(feature = "nested", cfg_attr(unix, expect(clippy::await_holding_lock)))]'
+        self.assertEqual(list(guard.new_suppressions("", text)), [1])
+
+    def test_rust_strings_comments_and_expect_methods_are_not_attributes(self):
+        for text in [
+            'value.expect("clippy::all");',
+            'value.expect("warnings");',
+            '// allow(clippy::disallowed_methods)\nfn run() {}',
+            'let message = r#"#[allow(clippy::all)]"#;',
+            '#[doc = "#[allow(clippy::all)]"] fn run() {}',
+        ]:
+            self.assertEqual(list(guard.new_suppressions("", text)), [], text)
+
+    def test_the_lifecycle_exception_pins_the_exact_function_and_method(self):
+        policy = guard.LIFECYCLE_EXCEPTION
+        text = (guard.ROOT / policy["file"]).read_text()
+        item = diagnostic(path=policy["file"], start=policy["line"])
+        item["message"] = "use of a disallowed method `std::fs::rename`"
+        self.assertFalse(guard.introduced(item, {policy["file"]: (text, text)}))
+        changed = text.replace('with_extension("json.tmp")', 'with_extension("other.tmp")', 1)
+        self.assertNotEqual(text, changed)
+        self.assertTrue(guard.introduced(item, {policy["file"]: (text, changed)}))
+        item["message"] = "use of a disallowed method `std::fs::write`"
+        self.assertTrue(guard.introduced(item, {policy["file"]: (text, text)}))
+
+    def test_state_io_gates_the_required_ci_report(self):
+        workflow = (guard.ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("\n  state-io:\n", 1)[1].split("\n  ci-report:\n", 1)[0]
+        report = workflow.split("\n  ci-report:\n", 1)[1]
+        self.assertIn("state-io", report.split("needs: [", 1)[1].split("]", 1)[0].split(", "))
+        self.assertIn("nice -n 10 python3 scripts/test-state-io.py -v", job)
+        self.assertIn('nice -n 10 python3 scripts/check-state-io.py "$BASE"', job)
+        self.assertIn("BASE=$(git rev-parse HEAD^1)", job)
+        self.assertIn("merge_group", job)
+        self.assertIn("-D", SCRIPT.read_text())
+        self.assertIn("koidrive-cli/test-install-inventory,koidrive-cli/test-setup", SCRIPT.read_text())
+
 
 class CompilerProof(unittest.TestCase):
-    def compile(self, name, lints):
+    def compile(self, name, lints, dependencies=()):
         with tempfile.TemporaryDirectory() as output:
+            arguments = []
+            if dependencies:
+                checked = subprocess.run([
+                    "nice", "-n", "10", "cargo", "check", "--locked", "--message-format=json",
+                    *[argument for name in dependencies for argument in ("-p", name)],
+                ], cwd=guard.ROOT, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                artifacts = [json.loads(line) for line in checked.stdout.splitlines()]
+                found = set()
+                directories = set()
+                for artifact in artifacts:
+                    if artifact.get("reason") != "compiler-artifact":
+                        continue
+                    for filename in artifact["filenames"]:
+                        if filename.endswith(".rmeta"):
+                            directories.add(str(Path(filename).parent))
+                            if artifact["target"]["name"] in dependencies:
+                                dependency = artifact["target"]["name"]
+                                found.add(dependency)
+                                arguments.extend(["--extern", f"{dependency}={filename}"])
+                self.assertEqual(found, set(dependencies))
+                for directory in sorted(directories):
+                    arguments.extend(["-L", f"dependency={directory}"])
             return subprocess.run([
                 "nice", "-n", "10", "clippy-driver", "--edition=2024", "--crate-type=lib",
-                "--out-dir", output, str(guard.CONFIG / name), *lints,
+                "--emit=metadata", "--out-dir", output, str(guard.CONFIG / name), *arguments, *lints,
             ], env=dict(os.environ, CLIPPY_CONF_DIR=str(guard.CONFIG)), capture_output=True, text=True)
 
     def test_past_573_write_and_rename_fail_with_the_replacement_named(self):
@@ -98,6 +171,14 @@ class CompilerProof(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("await_holding_lock", result.stderr)
         self.assertIn("await_holding_refcell_ref", result.stderr)
+
+    def test_previous_service_persistence_and_alternate_persist_methods_fail(self):
+        result = self.compile("past-persist.rs", ["-D", "clippy::disallowed_methods"], ("tempfile",))
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        for method in ["NamedTempFile::persist", "NamedTempFile::persist_noclobber", "TempPath::persist", "TempPath::persist_noclobber"]:
+            self.assertIn(method, result.stderr)
+        self.assertIn("koidrive_state_file::AtomicFile", result.stderr)
+        self.assertNotIn("error[E", result.stderr)
 
 
 if __name__ == "__main__":
