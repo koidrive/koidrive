@@ -178,7 +178,10 @@ impl Engine {
                 identity: identity(ino),
                 parked: false,
             };
-            if self.trees.local().get(&id) != Some(&node) {
+            let seen = (self.trees.local().get(&id)).is_some_and(|known| {
+                known.shape == node.shape && known.identity == node.identity && !known.parked
+            });
+            if !seen {
                 self.trees.set_local_changed(id, node);
             }
         }
