@@ -4950,7 +4950,7 @@ impl<'a> Scratch<'a> {
                 .local()
                 .get(node)
                 .map(|local| local.shape.parent.as_str()),
-            false => scratch.parent(node),
+            false => (self.moves.get(node).map(String::as_str)).or_else(|| scratch.parent(node)),
         };
         let mut needed = BTreeSet::new();
         for kept in
