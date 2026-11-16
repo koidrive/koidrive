@@ -8,7 +8,7 @@ On a terminal, `koi setup` asks one question: join with a pairing code from a de
 
 ## 2. The login is OAuth with PKCE on a loopback port
 
-The CLI is a public OAuth client with no secret: Authorization Code with PKCE (S256), redirecting to `http://127.0.0.1:<port>/oauth/callback`. Cloudflare gives third-party clients no device-code grant. A machine without a browser joins with a pairing code instead, since a server needs one login, not one per device. It can also log in with `--no-browser`, which prints the login page and reads back the address the browser ended on, or forward `--port` over SSH. Cloudflare revokes the whole grant when a code or a refresh token is used twice, so the CLI never resends either. A failed exchange or refresh ends the command.
+The CLI is a public OAuth client with no secret: Authorization Code with PKCE (S256), redirecting to `http://127.0.0.1:<port>/oauth/callback`. Cloudflare's authorization server lists the device-code grant ([OpenID configuration](https://dash.cloudflare.com/.well-known/openid-configuration)), but the Koidrive client is not registered for it. A machine without a browser on its screen (an SSH session, or Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`) prints the login page and reads back the address the browser ended on, as `--no-browser` does and as a failed browser launch does. A second device can also join with a pairing code, since a server needs one login, not one per device. Cloudflare revokes the whole grant when a code or a refresh token is used twice, so the CLI never resends either. A failed exchange or refresh ends the command.
 
 ## 3. The grant reaches the whole account, so it lives for one command
 
@@ -22,7 +22,7 @@ R2 cannot be enabled through the API. When listing buckets fails with error 1004
 
 ### 4.2 The CLI embeds its release's server bundle
 
-`server/scripts/pack-bundle.mjs` builds the Worker with `wrangler deploy --dry-run` and packs it with the web assets and a manifest read from `server/wrangler.jsonc`. `cli/build.rs` embeds that directory. The button deploy and the CLI deploy therefore run the same configuration.
+`server/scripts/pack-bundle.mjs` builds the Worker with `wrangler deploy --dry-run` and packs it with the web assets and a manifest read from `server/wrangler.jsonc`. `cli/build.rs` embeds that directory. A Wrangler deploy and the CLI deploy therefore run the same configuration.
 
 ### 4.3 The upload goes through the Workers API
 

@@ -14,7 +14,7 @@ To deploy by hand instead, deploy with Wrangler as [Deploying and upgrading a Ko
 
 To claim a server you deployed by hand without questions, for example in a script:
 
-1. Open `<your server>/setup` in a browser. The server writes a one-time claim code, valid for one hour, to the Worker's log. Find it as in step 3 above.
+1. Open `<your server>/setup` in a browser. The server writes a one-time claim code, valid for one hour, to the Worker's log. Find it in **Observability** as above.
 2. Claim the server with this device. Give the server's address, the claim code and your name:
 
    ```sh

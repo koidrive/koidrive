@@ -10,7 +10,7 @@ Run these in `server/`:
 2. Build the viewer with `pnpm build:web`. The output goes to `server/web/dist/`, which is not committed.
 3. Type-check it with `pnpm typecheck`, which also checks the server.
 
-You rarely run step 2 by hand. `wrangler.jsonc` names `pnpm build:web` as its `build.command`, so `wrangler dev`, `wrangler deploy` and the deploy button build the viewer first. `pnpm test` builds it before the tests run.
+You rarely run step 2 by hand. `wrangler.jsonc` names `pnpm build:web` as its `build.command`, so `wrangler dev`, `wrangler deploy` and the dry run that packs `koi`'s server bundle build the viewer first. `pnpm test` builds it before the tests run.
 
 ## Keep the build inside the CSP
 
@@ -28,4 +28,4 @@ The page renders every name with `textContent`, never as HTML.
 
 ## Add a page
 
-Add the page's HTML entry to `rolldownOptions.input` in `server/web/vite.config.ts`. Each entry builds to its own directory under `dist/`. Keep the package inside `server/`, because the deploy button copies only that directory into the new repository.
+Add the page's HTML entry to `rolldownOptions.input` in `server/web/vite.config.ts`. Each entry builds to its own directory under `dist/`. Keep the package inside `server/`, because [`server/` builds on its own](design/deploy-and-upgrade.md#1-server-builds-on-its-own).

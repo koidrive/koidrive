@@ -57,16 +57,16 @@ If setup stops halfway, run `koi setup` again. A connected device skips the conn
 | `--plain` | Numbered, line-oriented questions without color or animation. Enter a number to select an option. `KOI_PLAIN=1`, narrow terminals, and `TERM=dumb` do the same. A nonempty `NO_COLOR` turns off color only |
 | `--interactive` | Runs the guided setup even where setup would otherwise ask nothing. Fails with exit status 2 without a terminal, and can't be used with `--json` |
 | `--no-browser` | Prints the Cloudflare login page's address instead of opening a browser. Needs `--interactive` |
-| `--port <port>` | The local port for the Cloudflare login callback, for example to forward it over SSH |
+| `--port <port>` | The local port for the Cloudflare login callback |
 | `--telemetry on` or `off` | Stores the usage-report choice without asking |
 | `--no-app` | Skips installing and opening the macOS app |
 | `--folder`, `--space`, `--pairing-code-stdin`, `--accept-existing-files` | Run a [scripted setup](#scripted-setup) |
 
 Claim codes, pairing codes and pasted login callback addresses are hidden while you type.
 
-`--no-browser` and `--port` apply to the Cloudflare login of `koi server deploy --interactive` and `koi server add-device --interactive`. With `--no-browser`, open the printed address on any device, log in, and select **Authorize**. The browser then fails to load a page on `127.0.0.1`. Copy that page's address and paste it into the terminal.
+Over SSH, on a Linux machine without a desktop, with `--no-browser`, or when the browser doesn't open, setup prints the Cloudflare login page's address. Open it on any device, log in, and select **Authorize**. The browser then fails to load a page on `127.0.0.1`. Copy that page's address and paste it into the terminal.
 
-If opening the browser fails, the command prints the full address to open. If no tab appears despite a successful browser request, run the command again with `--interactive --no-browser`.
+If no tab appears despite a successful browser request, run the command again with `--interactive --no-browser`.
 
 ## Without a terminal, setup asks nothing
 
@@ -80,7 +80,7 @@ Without a terminal on stdin and stderr, with `--json`, or with the `CI` environm
 
 ## The Cloudflare login and what it may do
 
-**Log in with Cloudflare** in `koi setup`, `koi server deploy --interactive`, `add-device`, `upgrade` and `delete` log in with any Cloudflare account. The consent page names Koidrive and shows that it verified ownership of koidrive.com.
+**Log in with Cloudflare** in `koi setup`, and `koi server deploy`, `add-device`, `upgrade` and `delete` with `--interactive`, work with any Cloudflare account. The consent page names Koidrive and shows that it verified ownership of koidrive.com.
 
 The login asks for four permissions: reading the account's settings, managing its Workers, writing to its R2 buckets, and keeping access while the command runs (`account-settings.read`, `workers-scripts.admin`, `workers-r2.write` and `offline_access`). Koidrive revokes the login when the command ends. If it can't, it says so, and you can revoke it under **Manage OAuth authorizations** in the Cloudflare dashboard.
 
