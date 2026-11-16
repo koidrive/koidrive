@@ -8,7 +8,8 @@ On a terminal, `koi setup` asks **How do you want to connect?** Use the arrow ke
 
 1. **I deployed a server.** Enter your server's address, such as `https://koidrive.alice.workers.dev`.
    - A new server has no owner yet. Setup asks it for a one-time claim code, which the server writes to its Worker's log. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code at **Claim code**. Setup claims the server, and this device becomes your first device. Your name on the server is your login name. If the code is wrong or has expired, setup asks again.
-   - If the server already has an owner, setup asks for a pairing code. On a signed-in device, run `koi device invite`, or open **Settings**, **Account**, **Add a Device…** in the macOS app.
+   - If setup stops while it claims the server, run it again within the hour and enter the same code. Setup finishes the claim.
+   - If the server already has an owner, setup asks for a pairing code. On a signed-in device, run `koi device invite`, or open **Settings**, **Account**, **Add a Device…** in the macOS app. If no signed-in device is left, [add a device with a recovery key](../deploy.md#if-you-lose-every-device).
    - If setup can't reach the address, or it isn't a Koidrive server, setup asks again.
 2. **Enter a pairing code** from another device, written as `<code>@<host>`. On that device, run `koi device invite`. For a code without the host, choose **I deployed a server** and enter the server's address first.
 
@@ -62,9 +63,9 @@ If setup stops halfway, run `koi setup` again. A connected device skips the conn
 
 Claim codes, pairing codes and pasted login callback addresses are hidden while you type.
 
-With `--no-browser`, open the printed address on any device, log in, and select **Authorize**. The browser then fails to load a page on `127.0.0.1`. Copy that page's address and paste it into the terminal.
+`--no-browser` and `--port` apply to the Cloudflare login of `koi server deploy --interactive` and `koi server add-device --interactive`. With `--no-browser`, open the printed address on any device, log in, and select **Authorize**. The browser then fails to load a page on `127.0.0.1`. Copy that page's address and paste it into the terminal.
 
-If opening the browser fails, setup prints the full address to open. If no tab appears despite a successful browser request, rerun with `--interactive --no-browser`.
+If opening the browser fails, the command prints the full address to open. If no tab appears despite a successful browser request, run the command again with `--interactive --no-browser`.
 
 ## Without a terminal, setup asks nothing
 

@@ -93,6 +93,10 @@ impl Paths {
         self.state_dir.join("credential.json")
     }
 
+    pub fn pending_claim(&self) -> PathBuf {
+        self.state_dir.join("pending-claim.json")
+    }
+
     pub fn lock(&self) -> PathBuf {
         self.state_dir.join("lock")
     }

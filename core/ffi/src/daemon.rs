@@ -485,7 +485,11 @@ impl Core for DaemonCore {
             });
         }
         if !info.claimed {
-            self.runtime().block_on(api.request_claim_code()).ok();
+            self.runtime()
+                .block_on(api.request_claim_code())
+                .map_err(|error| SessionError::Failed {
+                    reason: error.to_string(),
+                })?;
         }
         let server = ServerInfo {
             url: api.base().as_str().trim_end_matches('/').to_owned(),

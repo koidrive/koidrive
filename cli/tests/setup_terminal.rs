@@ -1591,6 +1591,39 @@ fn an_address_without_a_server_is_asked_again() {
 }
 
 #[test]
+fn a_claim_that_did_not_finish_is_finished_with_its_code() {
+    let home = Home::new(&[]);
+    home.claimed.store(true, Ordering::Relaxed);
+    fs::write(
+        home.paths().pending_claim(),
+        serde_json::json!({"server": home.server, "code_sha256": "", "request_id": "r"})
+            .to_string(),
+    )
+    .unwrap();
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&home.server)),
+        step(CLAIM, line("ABCD-EFGH-JKLM")),
+        step(TELEMETRY, no(false)),
+    ];
+    let args = ["--name", "Laptop"];
+    let output = home.setup(&steps, &args, &[("USER", "alice")], true, false, None);
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("the claim did not finish"), "{text}");
+    assert!(!text.contains(CODE), "{text}");
+    let server = home.server.trim_end_matches('/');
+    assert_eq!(
+        server_requests(&home),
+        [
+            "GET /v1/server".to_owned(),
+            format!("claim {server} ABCD-EFGH-JKLM alice Laptop"),
+        ]
+    );
+    assert_eq!(home.links().len(), 1);
+}
+
+#[test]
 fn a_server_with_an_owner_takes_a_pairing_code_without_its_host() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
@@ -1604,6 +1637,10 @@ fn a_server_with_an_owner_takes_a_pairing_code_without_its_host() {
     let text = shown(output.clone());
     assert!(output.status.success(), "{text}");
     assert!(text.contains("This server already has an owner."), "{text}");
+    assert!(
+        text.contains("docs/deploy.md#if-you-lose-every-device"),
+        "{text}"
+    );
     let server = home.server.trim_end_matches('/');
     assert_eq!(
         server_requests(&home),

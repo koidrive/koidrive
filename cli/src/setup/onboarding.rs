@@ -244,32 +244,39 @@ async fn deployed(paths: &Paths, device_name: &str, terminal: &Terminal) -> Resu
         let info = api.server_info().await;
         drop(progress);
         match info {
-            Ok(info) => break (api, info.claimed),
+            Ok(info) if !info.server_version.is_empty() => break (api, info.claimed),
             Err(ApiError::Transport(_)) => terminal.message(&format!(
                 "Koidrive could not reach {}. Check the address and your connection.",
                 printable(&address)
             )),
-            Err(_) => terminal.message(&format!(
+            _ => terminal.message(&format!(
                 "{} does not answer as a Koidrive server. Check the address.",
                 printable(&address)
             )),
         }
     };
     let server = api.base().as_str().trim_end_matches('/').to_owned();
-    if claimed {
+    if claimed && koidrive_driver::claim_pending(paths, api.base()) {
+        terminal.message("This device started to claim this server, and the claim did not finish. Enter the same claim code to finish it.");
+    } else if claimed {
         crate::telemetry::set_flow(SetupFlow::Pairing);
         terminal.message("This server already has an owner. On a device that is signed in to it, run koi device invite.");
+        terminal.message(&format!(
+            "If it is yours and no signed-in device is left, add this device with a recovery key: {}",
+            crate::error::RECOVERY_STEPS
+        ));
         let code = terminal.input("Pairing code", true).await?;
         return join(paths, &code, Some(&server), device_name, terminal).await;
+    } else {
+        match api.request_claim_code().await {
+            Ok(()) => terminal.message("Your server wrote a one-time claim code to its log."),
+            Err(_) => terminal.message(&format!(
+                "Open {}/setup in a browser. Your server then writes a one-time claim code to its log.",
+                printable(&server)
+            )),
+        }
+        terminal.message("In the Cloudflare dashboard, open Workers & Pages, select your Worker, open Observability, and search for \"Koidrive claim code\".");
     }
-    match api.request_claim_code().await {
-        Ok(()) => terminal.message("Your server wrote a one-time claim code to its log."),
-        Err(_) => terminal.message(&format!(
-            "Open {}/setup in a browser. Your server then writes a one-time claim code to its log.",
-            printable(&server)
-        )),
-    }
-    terminal.message("In the Cloudflare dashboard, open Workers & Pages, select your Worker, open Observability, and search for \"Koidrive claim code\".");
     loop {
         let answer = terminal.input("Claim code", true).await?;
         let code = answer.trim();

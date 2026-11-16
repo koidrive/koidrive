@@ -33,6 +33,7 @@ mod leave;
 mod lifecycle;
 mod observe;
 mod paths;
+mod pending_claim;
 pub mod policy;
 mod progress;
 mod question;
@@ -57,6 +58,7 @@ pub use folder::MAX_FORMAT;
 pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use observe::{FsObserver, Observation, Observed, Observer, RulesChange};
 pub use paths::{Paths, PathsError};
+pub use pending_claim::claim_pending;
 pub use question::{
     Answer, HeldItem, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
 };
