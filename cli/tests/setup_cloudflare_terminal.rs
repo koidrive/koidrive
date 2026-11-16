@@ -83,6 +83,7 @@ struct State {
     subdomain_conflicts: usize,
     subdomain_attempts: Vec<String>,
     subdomain_race: bool,
+    stalled_connection_closed: Arc<AtomicBool>,
     base: String,
     collide_create: bool,
     failure: Option<Failure>,
@@ -592,8 +593,13 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                     ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Listing unavailable"}],"result":null}).to_string().into_bytes())
                 },
                 ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainStalled) => {
+                    let closed = state.stalled_connection_closed.clone();
                     drop(state);
-                    std::thread::sleep(Duration::from_secs(12));
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(25));
+                        closed.store(true, Ordering::Relaxed);
+                        drop(stream);
+                    });
                     return;
                 },
                 ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainMalformed) => {
@@ -2517,6 +2523,12 @@ fn a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded() 
         let state = home.state.lock().unwrap();
         assert_eq!(state.subdomain_attempts.len(), attempts);
         assert!(state.buckets.is_empty());
+        if failure == Some(Failure::SubdomainStalled) {
+            assert!(
+                !state.stalled_connection_closed.load(Ordering::Relaxed),
+                "setup waited for the fixture to close instead of timing out"
+            );
+        }
     }
 }
 

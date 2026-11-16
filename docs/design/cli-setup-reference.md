@@ -63,7 +63,7 @@ Migrations follow Wrangler's rule. A script with no tag gets every step. A scrip
 |---|---|
 | Browser login | 10 minutes |
 | R2 enabled in the dashboard | 30 minutes |
-| Server answers after an upload | 90 seconds |
+| Server answers after an upload | 5 minutes |
 | Claim on a server that already runs the key claim | 60 seconds per key |
 | Claim on an unclaimed or just-upgraded server | 330 seconds per key |
 | `setup_attempts` after an upgrade | 330 seconds, polled every 5 seconds |

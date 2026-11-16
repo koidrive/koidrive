@@ -13,7 +13,7 @@ On a terminal, `koi setup` asks **How do you want to connect?** Use the arrow ke
 1. **Log in with Cloudflare.** Setup opens the Cloudflare login in your browser. Select the account for Koidrive and select **Authorize**. With no Koidrive server in that account, setup deploys one and claims it, and this device becomes your first device. With one, setup adds this device to it, and with several, it asks which one. [The Cloudflare login and what it may do](#the-cloudflare-login-and-what-it-may-do) describes the login.
 2. **I deployed a server** by hand with Wrangler, as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes. Enter your server's address, such as `https://koidrive.alice.workers.dev`.
    - A new server has no owner yet. Setup asks it for a one-time claim code, which the server writes to its Worker's log. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code at **Claim code**. Setup claims the server, and this device becomes your first device. Your name on the server is your login name. If the code is wrong or has expired, setup asks again.
-   - If setup stops while it claims the server, run it again within the hour, choose **Finish the previous claim** and enter the same code. You can choose **Enter a pairing code** instead if another device is signed in.
+   - If setup stops while it claims the server, run it again within the hour. If the server has an owner, choose **Finish the previous claim** and enter the same code. You can choose **Enter a pairing code** instead if another device is signed in. If the server is still unclaimed, setup requests a claim code directly. Enter the code from the Worker's log.
    - If the server already has an owner, setup asks for a pairing code. On a signed-in device, run `koi device invite`, or open **Settings**, **Account**, **Add a Device…** in the macOS app. If no signed-in device is left, [add a device with a recovery key](../deploy.md#if-you-lose-every-device).
    - If setup can't reach the address, or it isn't a Koidrive server, setup asks again.
 3. **Enter a pairing code** from another device, written as `<code>@<host>`. On that device, run `koi device invite`. For a code without the host, choose **I deployed a server** and enter the server's address first.
@@ -62,7 +62,7 @@ If setup stops halfway, run `koi setup` again. A connected device skips the conn
 | `--interactive` | Runs the guided setup even where setup would otherwise ask nothing. Fails with exit status 2 without a terminal, and can't be used with `--json` |
 | `--no-browser` | Prints the Cloudflare login page's address instead of opening a browser. Needs `--interactive` |
 | `--port <port>` | The local port for the Cloudflare login callback |
-| `--subdomain <name>` | The workers.dev subdomain to register if the account has none. Skips the name question |
+| `--subdomain <name>` | Registers this workers.dev subdomain if the account has none, or adds a random suffix if the name is taken. Skips the name question. Check the printed address |
 | `--telemetry on` or `off` | Stores the usage-report choice without asking |
 | `--no-app` | Skips installing and opening the macOS app |
 | `--folder`, `--space`, `--pairing-code-stdin`, `--accept-existing-files` | Run a [scripted setup](#scripted-setup) |
