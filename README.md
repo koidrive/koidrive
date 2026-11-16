@@ -116,7 +116,7 @@ The install command above sets up the Mac app for you. To install it by hand:
 
 **Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs for managing folders, devices, storage use, problems and app preferences. The [Mac app guide](docs/guide/macos.md) walks through setup and everyday use, including adding another Mac.
 
-The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, limits and how to remove everything.
+The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, limits and how to remove everything. Ask questions in [Discussions](https://github.com/koidrive/koidrive/discussions) and report bugs in [Issues](https://github.com/koidrive/koidrive/issues).
 
 ## Repository layout
 
