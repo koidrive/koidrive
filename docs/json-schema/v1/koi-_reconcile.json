@@ -508,6 +508,20 @@
     },
     "Item": {
       "properties": {
+        "device_id": {
+          "description": "For a file of a conflict, the device that wrote its current version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_name": {
+          "description": "That device's name, when the account's device list names it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "files": {
           "format": "uint64",
           "minimum": 0,

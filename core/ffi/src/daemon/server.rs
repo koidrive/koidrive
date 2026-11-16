@@ -687,6 +687,7 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
             path: "Archive".into(),
             files: 1_200,
             device_id: None,
+            device_name: None,
             size: None,
             modified_at_ms: None,
         }],

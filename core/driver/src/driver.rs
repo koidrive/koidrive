@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -32,13 +32,17 @@ use crate::ignore::{Matcher, has_sync_entries, local_rules, matcher};
 use crate::leave::{Leaving, Phase};
 use crate::paths::{Paths, PathsError};
 use crate::pending_claim;
-use crate::question::{Answer, Limit, Question, QuestionKind};
+use crate::question::{Answer, HeldItem, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
 use crate::status::{Account, FolderState, FolderStatus, Status};
 use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
 const SERVER_WAIT: Duration = Duration::from_secs(10);
+
+const DEVICES_WAIT: Duration = Duration::from_secs(3);
+
+const DEVICES_RELIST: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinkApproval {
@@ -299,10 +303,17 @@ struct Inner {
     changed: Arc<watch::Sender<()>>,
     progressed: Arc<watch::Sender<()>>,
     totals: Arc<Mutex<crate::progress::Sum>>,
+    devices: tokio::sync::Mutex<Devices>,
     #[cfg(test)]
     observe_fault: Option<Arc<crate::folder::ObserveFault>>,
     #[cfg(test)]
     restart_stopped: Mutex<Option<RestartStopped>>,
+}
+
+#[derive(Default)]
+struct Devices {
+    names: HashMap<String, String>,
+    listed_at: Option<Instant>,
 }
 
 #[cfg(test)]
@@ -570,6 +581,7 @@ impl Driver {
                 changed: Arc::new(watch::Sender::new(())),
                 progressed: Arc::new(watch::Sender::new(())),
                 totals: Arc::default(),
+                devices: tokio::sync::Mutex::default(),
                 #[cfg(test)]
                 observe_fault: None,
                 #[cfg(test)]
@@ -1415,8 +1427,14 @@ impl Driver {
     }
 
     /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
-    /// current version in the folder's remote tree.
-    pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
+    /// current version in the folder's remote tree and the name of the device that wrote it.
+    pub async fn questions(&self) -> Result<Vec<Question>, DriverError> {
+        let mut questions = self.open_questions()?;
+        self.name_writers(&mut questions).await;
+        Ok(questions)
+    }
+
+    fn open_questions(&self) -> Result<Vec<Question>, DriverError> {
         let mut questions = Vec::new();
         for space_id in self.space_ids() {
             let open = self.read_store(&space_id, |store| {
@@ -1442,6 +1460,59 @@ impl Driver {
             questions.extend(open.into_iter().flatten());
         }
         Ok(questions)
+    }
+
+    async fn name_writers(&self, questions: &mut [Question]) {
+        let mut writers: Vec<&mut HeldItem> = (questions.iter_mut())
+            .flat_map(|question| question.items.iter_mut())
+            .filter(|item| item.device_id.is_some())
+            .collect();
+        if writers.is_empty() {
+            return;
+        }
+        let mut devices = self.inner.devices.lock().await;
+        let unknown = (writers.iter())
+            .filter_map(|item| item.device_id.as_ref())
+            .any(|id| !devices.names.contains_key(id));
+        if unknown
+            && devices
+                .listed_at
+                .is_none_or(|at| at.elapsed() >= DEVICES_RELIST)
+        {
+            devices.listed_at = Some(Instant::now());
+            match tokio::time::timeout(DEVICES_WAIT, self.device_names()).await {
+                Ok(Ok(names)) => devices.names = names,
+                Ok(Err(error)) => {
+                    tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
+                }
+                Err(_) => tracing::info!(
+                    "listing the account's devices took over {} seconds; conflicts name no writers",
+                    DEVICES_WAIT.as_secs()
+                ),
+            }
+        }
+        for item in &mut writers {
+            item.device_name =
+                (item.device_id.as_ref()).and_then(|id| devices.names.get(id).cloned());
+        }
+    }
+
+    async fn device_names(&self) -> Result<HashMap<String, String>, DriverError> {
+        let auth = self.signed_in()?;
+        let mut names = HashMap::new();
+        let mut cursor = String::new();
+        let mut seen = HashSet::new();
+        loop {
+            let page = auth.api().list_devices(&auth, &cursor).await?;
+            names.extend((page.devices.into_iter()).map(|device| (device.device_id, device.name)));
+            if page.next_cursor.is_empty() {
+                return Ok(names);
+            }
+            if !seen.insert(page.next_cursor.clone()) {
+                return Err(ApiError::Decode("DeviceList").into());
+            }
+            cursor = page.next_cursor;
+        }
     }
 
     /// The question `question_id` once it has an answer, while the answer waits for the engine or after the engine took
@@ -2393,6 +2464,7 @@ mod tests {
                 path: "old".into(),
                 files: 1_001,
                 device_id: None,
+                device_name: None,
                 size: None,
                 modified_at_ms: None,
             }],
@@ -2436,12 +2508,12 @@ mod tests {
         assert_eq!(folder.questions, 1);
     }
 
-    #[test]
-    fn questions_take_only_the_answers_they_offer() {
+    #[tokio::test]
+    async fn questions_take_only_the_answers_they_offer() {
         let (_dir, paths, _root) = profile(&[mass_delete("q1"), mass_delete("q2")]);
         let driver = Driver::open(paths.clone()).unwrap();
         assert_eq!(
-            driver.questions().unwrap(),
+            driver.questions().await.unwrap(),
             [mass_delete("q1"), mass_delete("q2")]
         );
 
@@ -2458,15 +2530,16 @@ mod tests {
                 given: Answer::Restore
             })
         ));
-        assert_eq!(driver.questions().unwrap(), [mass_delete("q2")]);
+        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q2")]);
         assert_eq!(driver.status().folders[0].questions, 1);
 
         let stored = driver.stored_questions(SPACE).unwrap().unwrap();
         assert_eq!(stored[0].answer.as_ref().unwrap().answer, "restore");
     }
 
-    #[test]
-    fn the_same_answer_again_changes_nothing_until_the_engine_drops_the_question_without_it() {
+    #[tokio::test]
+    async fn the_same_answer_again_changes_nothing_until_the_engine_drops_the_question_without_it()
+    {
         let (_dir, paths, _root) = profile(&[mass_delete("q1"), mass_delete("q2")]);
         let driver = Driver::open(paths.clone()).unwrap();
         let store = || Store::open(paths.store(SPACE).unwrap()).unwrap();
@@ -2504,11 +2577,11 @@ mod tests {
             driver.answer("q2", Answer::Delete),
             Err(DriverError::QuestionNotFound(_))
         ));
-        assert_eq!(driver.questions().unwrap(), [mass_delete("q3")]);
+        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q3")]);
     }
 
-    #[test]
-    fn a_question_asked_again_after_the_engine_took_its_answer_reads_as_unanswered() {
+    #[tokio::test]
+    async fn a_question_asked_again_after_the_engine_took_its_answer_reads_as_unanswered() {
         let (_dir, paths, _root) = profile(&[mass_delete("q1")]);
         let driver = Driver::open(paths.clone()).unwrap();
         let store = || Store::open(paths.store(SPACE).unwrap()).unwrap();
@@ -2530,7 +2603,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(driver.answered_question("q1").unwrap(), None);
-        assert_eq!(driver.questions().unwrap(), [mass_delete("q1")]);
+        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q1")]);
         assert_eq!(driver.answer("q1", Answer::Restore).unwrap(), Answered::Now);
     }
 
@@ -2609,8 +2682,8 @@ mod tests {
         driver.stop().await;
     }
 
-    #[test]
-    fn a_conflict_stored_without_its_versions_reads_them_from_the_remote_tree() {
+    #[tokio::test]
+    async fn a_conflict_stored_without_its_versions_reads_them_from_the_remote_tree() {
         use koidrive_engine::question::{ConflictFile, Revisions};
         use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 
@@ -2626,6 +2699,7 @@ mod tests {
             path: path.into(),
             files: 1,
             device_id: Some(device_id.into()),
+            device_name: None,
             size: None,
             modified_at_ms: None,
         };
@@ -2675,7 +2749,115 @@ mod tests {
             modified_at_ms: Some(1_794_442_400_123),
             ..item("n-original", "notes.txt", "d2")
         };
-        assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
+        assert_eq!(
+            driver.questions().await.unwrap(),
+            [expected, mass_delete("q1")]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflict_names_the_devices_that_wrote_its_files_from_the_account_device_list() {
+        use koidrive_engine::question::{ConflictFile, Revisions};
+        use koidrive_proto::v1::{DeviceInfo, DeviceList, NodeState, VersionInfo};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let devices = DeviceList {
+            devices: vec![
+                DeviceInfo {
+                    device_id: "d1".into(),
+                    name: "Ada's MacBook Air".into(),
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    device_id: "d2".into(),
+                    name: "agent-box".into(),
+                    revoked_at_ms: 5,
+                    ..Default::default()
+                },
+            ],
+            next_cursor: String::new(),
+        };
+        let (server, served) = serve_each(
+            vec![
+                access_token(),
+                (200, prost::Message::encode_to_vec(&devices)),
+            ],
+            Paths::under(&base.join("profile")).credential(),
+        )
+        .await;
+        let paths = linked_with_server(&base, server);
+        let file = |node_id: &str| ConflictFile {
+            node_id: node_id.into(),
+            revisions: Revisions {
+                content_rev: 1,
+                meta_rev: 1,
+            },
+        };
+        let item = |node_id: &str, path: &str| HeldItem {
+            node_id: node_id.into(),
+            path: path.into(),
+            files: 1,
+            device_id: None,
+            device_name: None,
+            size: None,
+            modified_at_ms: None,
+        };
+        let conflict = Question {
+            recovery_cause: None,
+            id: "c1".into(),
+            lineage: "c1".into(),
+            space_id: SPACE.into(),
+            asked_at_ms: 10,
+            kind: QuestionKind::Conflict {
+                original: file("n-original"),
+                copy: file("n-copy"),
+                sent_in: None,
+            },
+            items: vec![
+                item("n-copy", "notes (conflict).txt"),
+                item("n-original", "notes.txt"),
+            ],
+        };
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                for (node_id, device_id) in [("n-copy", "d1"), ("n-original", "d2")] {
+                    tx.put_remote_node(&NodeState {
+                        node_id: node_id.into(),
+                        current: Some(VersionInfo {
+                            device_id: device_id.into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })?;
+                }
+                tx.put_question(&StoredQuestion {
+                    question_id: "c1".into(),
+                    asked_at_ms: 10,
+                    body: serde_json::to_vec(&conflict).unwrap(),
+                    answer: None,
+                })
+            })
+            .unwrap();
+
+        let driver = Driver::open(paths).unwrap();
+        let writers = |questions: Vec<Question>| -> Vec<(String, Option<String>)> {
+            (questions.into_iter())
+                .flat_map(|question| question.items)
+                .map(|item| (item.device_id.unwrap(), item.device_name))
+                .collect()
+        };
+        let named = [
+            ("d1".to_owned(), Some("Ada's MacBook Air".to_owned())),
+            ("d2".to_owned(), Some("agent-box".to_owned())),
+        ];
+        assert_eq!(writers(driver.questions().await.unwrap()), named);
+        assert_eq!(writers(driver.questions().await.unwrap()), named);
+        let requested: Vec<String> = (served.await.unwrap().into_iter())
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(requested, ["/v1/token", "/v1/devices"]);
     }
 
     #[tokio::test]
@@ -4189,7 +4371,7 @@ mod tests {
                 let (driver, stop, reads) = (driver.clone(), stop.clone(), reads.clone());
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::SeqCst) {
-                        let _ = driver.questions();
+                        let _ = driver.open_questions();
                         let _ = driver.answered_question("q1");
                         let _ = driver.answer("q1", Answer::Delete);
                         let _ = driver.restores(SPACE);

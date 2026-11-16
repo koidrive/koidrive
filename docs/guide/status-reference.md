@@ -83,12 +83,12 @@ Sync also asks after the first link of a folder, when the comparison holds some 
 
 ### A conflict opens a decision
 
-When two devices change the same file, the server keeps both changes as two files (see [Conflicts](conflicts.md)). The device whose change got the conflict name also opens a decision. `koi status` and `koi resolve` show both files and the device that wrote each one:
+When two devices change the same file, the server keeps both changes as two files (see [Conflicts](conflicts.md)). The device whose change got the conflict name also opens a decision. `koi status` and `koi resolve` show both files and the name of the device that wrote each one:
 
 ```
   019c...: Reports/report.txt has a conflict copy
-    Original: Reports/report.txt, written by device 019a...
-    Conflict copy: 'Reports/report (conflict from laptop 2026-11-10).txt', written by device 019b...
+    Original: Reports/report.txt, written by desktop
+    Conflict copy: 'Reports/report (conflict from laptop 2026-11-10).txt', written by laptop (this device)
   Keep Reports/report.txt and move 'Reports/report (conflict from laptop 2026-11-10).txt' to the trash:
     koi resolve 019c... keep-node:019d...
   Give Reports/report.txt the content of 'Reports/report (conflict from laptop 2026-11-10).txt', keeping the old content in its version history, and move 'Reports/report (conflict from laptop 2026-11-10).txt' to the trash:

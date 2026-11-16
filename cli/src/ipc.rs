@@ -147,6 +147,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
         }
         Request::Questions => driver
             .questions()
+            .await
             .map(|questions| Response::Questions { questions }),
         Request::AnsweredQuestion { question_id } => driver
             .answered_question(&question_id)
@@ -322,7 +323,7 @@ async fn watch(
     loop {
         let questions = match asked.take().filter(|_| change == Change::Progress) {
             Some(questions) => Ok(questions),
-            None => driver.questions(),
+            None => driver.questions().await,
         };
         let state = match questions {
             Ok(questions) => {
@@ -900,7 +901,7 @@ pub(crate) mod tests {
                 .transaction(|tx| tx.take_answer("q1"))
                 .unwrap()
         );
-        assert!(driver.questions().unwrap().is_empty());
+        assert!(driver.questions().await.unwrap().is_empty());
         assert_eq!(
             answer("q1", Answer::Delete).await,
             Response::AlreadyAnswered
@@ -1001,7 +1002,7 @@ pub(crate) mod tests {
                 })
             })
             .unwrap();
-        assert_eq!(driver.questions().unwrap(), [replacement]);
+        assert_eq!(driver.questions().await.unwrap(), [replacement]);
         let Response::Error { code, next, .. } = answer().await else {
             panic!("the dropped answer was reported as taken");
         };

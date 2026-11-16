@@ -208,30 +208,26 @@ fn conflict_path(question: &Question, node_id: &str) -> String {
         .unwrap_or_else(|| format!("node {}", printable(node_id)))
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Writers<'a> {
-    Detailed,
-    RelativeTo(Option<&'a str>),
-}
-
-fn conflict_files(question: &Question, indent: &str, writers: Writers<'_>) -> String {
+fn conflict_files(question: &Question, indent: &str, this_device: Option<&str>) -> String {
     let QuestionKind::Conflict { original, copy, .. } = &question.kind else {
         return String::new();
     };
     [("Original", original), ("Conflict copy", copy)]
         .into_iter()
         .map(|(role, file)| {
-            let writer = (question.items.iter())
-                .find(|item| item.node_id == file.node_id)
-                .and_then(|item| item.device_id.as_deref())
-                .map_or("an unknown device".to_owned(), |device_id| match writers {
-                    Writers::Detailed => format!("device {}", printable(device_id)),
-                    Writers::RelativeTo(Some(current)) if current == device_id => {
-                        "this device".to_owned()
-                    }
-                    Writers::RelativeTo(Some(_)) => "another device".to_owned(),
-                    Writers::RelativeTo(None) => "a device".to_owned(),
-                });
+            let item = (question.items.iter()).find(|item| item.node_id == file.node_id);
+            let device_id = item.and_then(|item| item.device_id.as_deref());
+            let name = (item.and_then(|item| item.device_name.as_deref())).map(printable);
+            let writer = match (device_id, name) {
+                (None, _) => "an unknown device".to_owned(),
+                (Some(id), Some(name)) if Some(id) == this_device => {
+                    format!("{name} (this device)")
+                }
+                (Some(_), Some(name)) => name,
+                (Some(id), None) if Some(id) == this_device => "this device".to_owned(),
+                (Some(_), None) if this_device.is_some() => "another device".to_owned(),
+                (Some(_), None) => "a device".to_owned(),
+            };
             format!(
                 "{indent}{role}: {}, written by {writer}\n",
                 conflict_path(question, &file.node_id)
@@ -336,17 +332,13 @@ fn answer_effect(answer: Answer) -> &'static str {
 }
 
 /// How `koi status` shows a decision under its folder: what it is about, its first path, and how to make it.
-pub(crate) fn question_brief(question: &Question) -> String {
-    question_brief_with_writers(question, Writers::Detailed)
-}
-
-pub(crate) fn question_brief_with_writers(question: &Question, writers: Writers<'_>) -> String {
+pub(crate) fn question_brief(question: &Question, this_device: Option<&str>) -> String {
     format!(
         "  {}: {}{}\n{}{}",
         printable(&question.id),
         question_summary(question),
         first_path(question),
-        conflict_files(question, "    ", writers),
+        conflict_files(question, "    ", this_device),
         resolve_commands(question, "  ")
     )
 }
@@ -365,10 +357,10 @@ enum QuestionPresentation<'a> {
 }
 
 fn question_text_presented(question: &Question, presentation: QuestionPresentation<'_>) -> String {
-    let (scope, writers, inspection) = match presentation {
+    let (scope, this_device, inspection) = match presentation {
         QuestionPresentation::Detailed => (
             format!("  space {}", printable(&question.space_id)),
-            Writers::Detailed,
+            None,
             "",
         ),
         QuestionPresentation::Standalone { folder, device } => (
@@ -376,7 +368,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
                 Some(folder) => format!("  folder {}", output::path(Path::new(&folder.path))),
                 None => format!("  space {}", printable(&question.space_id)),
             },
-            Writers::RelativeTo(device),
+            device,
             if folder.is_none() {
                 "  Inspect context: koi status --verbose\n"
             } else {
@@ -388,7 +380,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
         "{}{scope}  {}\n{inspection}{}{}",
         printable(&question.id),
         question_summary(question),
-        conflict_files(question, "    ", writers),
+        conflict_files(question, "    ", this_device),
         resolve_commands(question, "  ")
     );
     if let QuestionKind::Conflict { .. } = question.kind {
