@@ -14,7 +14,7 @@ public final class AppModel {
     /// Questions not shown to the person yet. Every unanswered question counts as unseen when the
     /// app launches.
     public private(set) var unseenQuestionIDs: Set<String>
-    /// Whether this profile sends anonymous usage reports, read again after every session call.
+    /// Whether this profile sends usage reports, read again after every session call.
     public private(set) var telemetry: TelemetrySetting {
         didSet { telemetryChanged?(telemetry) }
     }

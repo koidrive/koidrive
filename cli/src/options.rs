@@ -17,7 +17,7 @@ pub struct DeviceArgs {
     /// A name for this device, shown on the others, at most 255 bytes. Defaults to this machine's host name.
     #[arg(long, value_parser = short_name)]
     pub(crate) name: Option<String>,
-    /// Turn anonymous usage reports on or off for this machine, without being asked (see koi telemetry).
+    /// Turn usage reports on or off for this machine, without being asked (see koi telemetry).
     #[arg(long, value_enum)]
     pub(crate) telemetry: Option<telemetry::Switch>,
 }

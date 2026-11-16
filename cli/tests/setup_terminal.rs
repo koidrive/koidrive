@@ -28,7 +28,7 @@ const SPACE: &str = "Which shared folder should sync here?";
 const NAME: &str = "Shared folder name";
 const PATH: &str = "Folder to sync";
 const FILES: &str = "What should Koidrive do?";
-const TELEMETRY: &str = "Send anonymous usage reports?";
+const TELEMETRY: &str = "Send usage reports?";
 
 struct Step {
     wait: Vec<&'static str>,
@@ -274,6 +274,9 @@ impl Home {
                             "server":"https://files.example.com/", "user_id":"owner",
                             "device_id":"0190a0b0-0000-7000-8000-000000000001", "device_name":"Laptop"
                         }})
+                    }
+                    "pair" => {
+                        serde_json::json!({"response":"error", "code":"wrong_code", "message":"this pairing code is not valid"})
                     }
                     "status" => {
                         let folders = linked.lock().unwrap().clone();
@@ -868,6 +871,7 @@ fn keyboard_ctrl_c_through_controlling_proxies_restores_input_and_reaps_helpers(
                 let mut steps = full(rich, if rich { "n" } else { "n\n" });
                 steps.truncate(stage + 1);
                 steps[stage].input = "\u{3}".into();
+                steps.push(step(TELEMETRY, no(rich)));
                 let output = terminal_run(
                     home.path(),
                     &steps,
@@ -986,7 +990,7 @@ fn rich_cancellation_is_not_repeated_in_verbose_output() {
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let output = terminal_run(
         home.path(),
-        &[step(ROUTE, "\u{3}")],
+        &[step(ROUTE, "\u{3}"), step(TELEMETRY, no(true))],
         &["setup", "--verbose"],
         &[],
         true,
@@ -1004,7 +1008,7 @@ fn rich_cancellation_is_not_repeated_when_stdout_is_redirected() {
     let home = tempfile::tempdir_in("/tmp").unwrap();
     let output = terminal_run(
         home.path(),
-        &[step(ROUTE, "\u{3}")],
+        &[step(ROUTE, "\u{3}"), step(TELEMETRY, no(true))],
         &["setup"],
         &[],
         true,
@@ -1020,14 +1024,17 @@ fn rich_cancellation_is_not_repeated_when_stdout_is_redirected() {
 
 #[test]
 fn raw_ctrl_c_cancels_rich_selection() {
-    let (home, output) = session(&[step(ROUTE, "\u{3}")], &[], &[], false, true, None);
+    let steps = [step(ROUTE, "\u{3}"), step(TELEMETRY, no(true))];
+    let (home, output) = session(&steps, &[], &[], false, true, None);
     assert_eq!(
         output.status.code(),
         Some(130),
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert!(!home.path().join("state/koidrive/telemetry").exists());
+    let state = home.path().join("state/koidrive/telemetry");
+    assert!(nothing_held(&state));
+    assert!(!state.join("queue-v2.json").exists());
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
     assert!(!text.contains("cancelled on the terminal"), "{text}");
@@ -1040,6 +1047,9 @@ fn eof_closes_each_plain_and_rich_prompt_without_granting_consent() {
             let (home, mut steps) = folder_choices(rich, "");
             steps.truncate(stage + 1);
             steps[stage].input = "\u{4}".into();
+            if stage < 6 {
+                steps.push(step(TELEMETRY, "\u{4}"));
+            }
             let output = home.setup(&steps, &[], &[], true, rich, None);
             let text = String::from_utf8(output.stdout).unwrap();
             assert_eq!(
@@ -1060,7 +1070,8 @@ fn eof_closes_each_plain_and_rich_prompt_without_granting_consent() {
             );
             let state = home.path().join("state/koidrive/telemetry");
             assert!(!state.join("settings.json").exists());
-            assert_eq!(state.join("prompt.json").exists(), stage == 6);
+            assert!(nothing_held(&state));
+            assert!(state.join("prompt.json").exists());
         }
     }
 }
@@ -1090,6 +1101,7 @@ fn eof_at_the_final_question_keeps_setup_successful() {
 fn raw_ctrl_c_cancels_rich_pairing_and_telemetry() {
     let mut code = pairing(true);
     code[1].input = "\u{3}".into();
+    code.push(step(TELEMETRY, no(true)));
     for steps in [code, full(true, "\u{3}")] {
         let (home, output) = session(&steps, &[], &[], true, true, None);
         assert_eq!(
@@ -1098,12 +1110,12 @@ fn raw_ctrl_c_cancels_rich_pairing_and_telemetry() {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        assert!(
-            !home
-                .path()
-                .join("state/koidrive/telemetry/settings.json")
-                .exists()
-        );
+        let state = home.path().join("state/koidrive/telemetry");
+        let settings = fs::read(state.join("settings.json")).map(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["enabled"].clone()
+        });
+        assert!(settings.is_err() || settings.unwrap() == false);
+        assert!(nothing_held(&state));
         let text = String::from_utf8(output.stdout).unwrap();
         assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
         assert!(!text.contains("cancelled on the terminal"), "{text}");
@@ -1283,8 +1295,7 @@ fn telemetry_is_asked_after_pairing_succeeds() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{text}");
     assert!(
-        text.find("This device is connected").unwrap()
-            < text.find("Send anonymous usage reports").unwrap(),
+        text.find("This device is connected").unwrap() < text.find(TELEMETRY).unwrap(),
         "{text}"
     );
     assert!(
@@ -1302,35 +1313,269 @@ fn telemetry_is_asked_after_pairing_succeeds() {
     assert_eq!(settings["enabled"], false);
 }
 
-#[test]
-fn failed_setup_does_not_ask_about_telemetry() {
-    let steps = [
-        step(ROUTE, "2\n"),
-        step(CODE, line("not-a-code")),
-        step(TELEMETRY, "n\n"),
+fn posthog() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let received = bodies.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            received
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap());
+            let response = "HTTP/1.1 200 OK\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{\"status\":\"Ok\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    (url, bodies)
+}
+
+fn nothing_held(state: &Path) -> bool {
+    fs::read_dir(state.join("held")).map_or(true, |mut entries| entries.next().is_none())
+}
+
+fn sent_events(bodies: &Mutex<Vec<serde_json::Value>>) -> Vec<serde_json::Value> {
+    (bodies.lock().unwrap().iter())
+        .flat_map(|body| body["batch"].as_array().unwrap().clone())
+        .collect()
+}
+
+fn setup_steps(events: &[serde_json::Value]) -> Vec<(String, String, String)> {
+    (events.iter())
+        .filter(|event| event["event"] == "setup_step")
+        .map(|event| {
+            let property = |name: &str| event["properties"][name].as_str().unwrap().to_owned();
+            (property("flow"), property("step"), property("outcome"))
+        })
+        .collect()
+}
+
+fn pair_step(outcome: &str) -> Vec<(String, String, String)> {
+    vec![("pairing".into(), "pair".into(), outcome.into())]
+}
+
+type AtQuestion = Arc<Mutex<Option<(Vec<serde_json::Value>, serde_json::Value)>>>;
+
+struct Reporting {
+    home: Home,
+    bodies: Arc<Mutex<Vec<serde_json::Value>>>,
+    at_question: AtQuestion,
+}
+
+impl Reporting {
+    fn state(&self) -> std::path::PathBuf {
+        self.home.path().join("state/koidrive/telemetry")
+    }
+
+    fn settings(&self) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(self.state().join("settings.json")).unwrap()).unwrap()
+    }
+
+    fn at_question(&self) -> (Vec<serde_json::Value>, serde_json::Value) {
+        self.at_question
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the question was not asked")
+    }
+}
+
+fn reporting_setup(mut steps: Vec<Step>, paired: bool, rich: bool) -> (Reporting, Output) {
+    let home = Home::new(&[]);
+    let (url, bodies) = posthog();
+    let at_question = Arc::new(Mutex::new(None));
+    let question = steps.last_mut().unwrap();
+    assert_eq!(question.wait, [TELEMETRY]);
+    let (seen, sent, dir, endpoint) = (
+        at_question.clone(),
+        bodies.clone(),
+        home.path().to_owned(),
+        url.clone(),
+    );
+    question.before_answer = Some(Box::new(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let preview = koi(&dir)
+            .args(["telemetry", "preview", "--json"])
+            .env("KOIDRIVE_TELEMETRY_URL", &endpoint)
+            .env("KOIDRIVE_TELEMETRY_TOKEN", "phc_test")
+            .output()
+            .unwrap();
+        let preview: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        *seen.lock().unwrap() = Some((sent_events(&sent), preview["data"].clone()));
+    }));
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
     ];
-    let (home, output) = setup(&steps, &[], &[], false);
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert!(!output.status.success(), "{text}");
-    assert!(!text.contains("Send anonymous usage reports"), "{text}");
-    assert!(!home.path().join("state/koidrive/telemetry").exists());
+    let output = home.setup(&steps, &[], &vars, paired, rich, None);
+    let reporting = Reporting {
+        home,
+        bodies,
+        at_question,
+    };
+    (reporting, output)
 }
 
 #[test]
-fn opting_in_after_setup_enables_future_reports_without_recording_the_setup() {
-    let (home, output) = setup(&full(false, "y\n"), &[], &[], true);
-    assert!(output.status.success());
-    let settings: serde_json::Value = serde_json::from_slice(
-        &fs::read(home.path().join("state/koidrive/telemetry/settings.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(settings["enabled"], true);
+fn a_yes_after_a_successful_setup_sends_its_steps_and_nothing_left_before_the_answer() {
+    let (run, output) = reporting_setup(full(false, "y\n"), true, false);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    let (sent_before, preview) = run.at_question();
     assert!(
-        !home
-            .path()
-            .join("state/koidrive/telemetry/queue-v2.json")
-            .exists()
+        sent_before.is_empty(),
+        "sent before the answer: {sent_before:?}"
     );
+    let previewed: Vec<_> = preview["batch"].as_array().unwrap().clone();
+    assert_eq!(setup_steps(&previewed), pair_step("ok"), "{preview}");
+    let sent = sent_events(&run.bodies);
+    assert_eq!(setup_steps(&sent), pair_step("ok"), "{sent:?}");
+    let id = run.settings()["install_id"].clone();
+    assert_eq!(run.settings()["enabled"], true);
+    for event in sent.iter().chain(&previewed) {
+        assert_eq!(event["properties"]["distinct_id"], id);
+    }
+    assert!(nothing_held(&run.state()));
+}
+
+#[test]
+fn a_setup_asking_while_another_run_waits_keeps_and_sends_its_own_steps() {
+    let home = Home::new(&[]);
+    let other = koidrive_telemetry::Store::new(&home.path().join("state/koidrive"))
+        .hold()
+        .unwrap()
+        .unwrap();
+    let (url, bodies) = posthog();
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+    ];
+    let output = home.setup(&full(false, "y\n"), &[], &vars, true, false, None);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert_eq!(setup_steps(&sent_events(&bodies)), pair_step("ok"));
+    let store = koidrive_telemetry::Store::new(&home.path().join("state/koidrive"));
+    assert_eq!(store.held().unwrap().len(), 1);
+    store.forget(other).unwrap();
+    assert!(nothing_held(&home.path().join("state/koidrive/telemetry")));
+}
+
+#[test]
+fn a_yes_after_a_failed_setup_sends_the_failed_step() {
+    let (run, output) = reporting_setup(full(false, "y\n"), false, false);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{text}");
+    let (sent_before, preview) = run.at_question();
+    assert!(
+        sent_before.is_empty(),
+        "sent before the answer: {sent_before:?}"
+    );
+    assert_eq!(
+        setup_steps(preview["batch"].as_array().unwrap()),
+        pair_step("failed")
+    );
+    assert_eq!(setup_steps(&sent_events(&run.bodies)), pair_step("failed"));
+    assert_eq!(run.settings()["enabled"], true);
+    assert!(nothing_held(&run.state()));
+}
+
+#[test]
+fn a_no_after_an_aborted_setup_deletes_what_it_kept_and_sends_nothing() {
+    let mut steps = pairing(true);
+    steps[1].input = "\u{3}".into();
+    steps.push(step(TELEMETRY, no(true)));
+    let (run, output) = reporting_setup(steps, true, true);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(130), "{text}");
+    let (sent_before, preview) = run.at_question();
+    assert!(
+        sent_before.is_empty(),
+        "sent before the answer: {sent_before:?}"
+    );
+    assert!(
+        (preview["batch"].as_array().unwrap().iter())
+            .any(|event| event["properties"]["c.command.setup"] == 1),
+        "{preview}"
+    );
+    assert!(sent_events(&run.bodies).is_empty());
+    assert_eq!(run.settings()["enabled"], false);
+    assert!(run.settings()["install_id"].is_null());
+    assert!(nothing_held(&run.state()));
+    for file in ["queue-v2.json", "prompt.json"] {
+        assert!(!run.state().join(file).exists(), "{file}");
+    }
+}
+
+#[test]
+fn an_unanswered_question_deletes_what_the_setup_kept_and_asks_again_later() {
+    let (run, output) = reporting_setup(full(false, "\u{4}"), true, false);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    let (sent_before, preview) = run.at_question();
+    assert!(sent_before.is_empty());
+    assert_eq!(
+        setup_steps(preview["batch"].as_array().unwrap()),
+        pair_step("ok")
+    );
+    assert!(sent_events(&run.bodies).is_empty());
+    assert!(!run.state().join("settings.json").exists());
+    assert!(nothing_held(&run.state()));
+    assert!(!run.state().join("queue-v2.json").exists());
+    assert!(run.state().join("prompt.json").exists());
+    let preview = koi(run.home.path())
+        .args(["telemetry", "preview"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("Nothing waits to be sent."));
+}
+
+#[test]
+fn json_and_ci_setups_never_ask_keep_or_send() {
+    for (args, vars) in [
+        (vec!["setup", "--json"], vec![]),
+        (vec!["setup"], vec![("CI", "1")]),
+    ] {
+        let home = Home::new(&[]);
+        let (url, bodies) = posthog();
+        let mut vars = vars;
+        vars.extend([
+            ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+            ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+        ]);
+        let output = terminal_run(
+            home.path(),
+            &[],
+            &args,
+            &vars,
+            false,
+            None,
+            TerminalInput::Direct,
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(!text.contains(TELEMETRY), "{text}");
+        assert!(!text.contains("Send reports?"), "{text}");
+        assert!(
+            !home.path().join("state/koidrive/telemetry").exists(),
+            "{args:?}"
+        );
+        assert!(sent_events(&bodies).is_empty());
+    }
 }
 
 #[test]
@@ -1357,10 +1602,11 @@ fn explicit_choice_and_environment_do_not_prompt_after_setup() {
     ] {
         let mut steps = full(false, "");
         steps.pop();
-        let (_, output) = setup(&steps, &args, &vars, true);
+        let (home, output) = setup(&steps, &args, &vars, true);
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(output.status.success(), "{text}");
-        assert!(!text.contains("Send anonymous usage reports"), "{text}");
+        assert!(!text.contains(TELEMETRY), "{text}");
+        assert!(nothing_held(&home.path().join("state/koidrive/telemetry")));
     }
 }
 
@@ -1783,6 +2029,7 @@ fn cancelling_a_folder_question_keeps_the_device_and_links_nothing() {
                 ];
                 steps.truncate(stage + 1);
                 steps[stage].input = key.into();
+                steps.push(step(TELEMETRY, no(rich)));
                 let output = home.setup(&steps, &[], &[], true, rich, None);
                 let text = shown(output.clone());
                 assert_eq!(

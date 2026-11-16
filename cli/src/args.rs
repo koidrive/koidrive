@@ -131,7 +131,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: share::ShareAction,
     },
-    /// Show, turn on or off, preview or reset the anonymous usage reports this machine sends.
+    /// Show, turn on or off, preview, reset or mark internal the usage reports this machine sends.
     #[command(arg_required_else_help = true)]
     Telemetry {
         #[command(subcommand)]

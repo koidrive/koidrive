@@ -27,7 +27,7 @@ use url::Url;
 const ROUTE: &str = "How do you want to connect?";
 const SPACES: &str = "Which shared folder should sync here?";
 const SERVERS: &str = "Which server should this device use?";
-const CONSENT: &str = "Send anonymous usage reports?";
+const CONSENT: &str = "Send usage reports?";
 const ACCOUNT: &str = "0123456789abcdef";
 const DEVICE: &str = "0190a0b0-0000-7000-8000-000000000001";
 
@@ -504,7 +504,7 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
         ("POST", "/oauth2/token", _) => ("application/json", json!({
             "access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600, "scope":SCOPES.join(" ")
         }).to_string().into_bytes()),
-        ("POST", "/oauth2/revoke" | "/telemetry", _) => ("application/json", b"{}".to_vec()),
+        ("POST", "/oauth2/revoke" | "/telemetry" | "/telemetry/batch/", _) => ("application/json", b"{}".to_vec()),
         (_, _, Some("/v1/server")) => proto(ServerInfo {
             server_version: env!("CARGO_PKG_VERSION").into(), proto_min: 1, proto_max: 1,
             data_path: 1, claimed: true, setup_attempts: true, ..Default::default()
@@ -1844,9 +1844,10 @@ fn rendered(raw: &[u8]) -> String {
 fn complete(home: &Home, text: &str) {
     let rendered = rendered(&fs::read(home.path().join("terminal.ansi")).unwrap());
     for visible in [
-        "Preview: koi telemetry preview. Turn off: koi telemetry off.",
-        "Reports include usage counts, crash locations, hourly sync totals, OS, and Koidrive version.",
+        "Yes also sends the reports of this setup. Preview: koi telemetry preview.",
+        "Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.",
         "No file names, paths, contents, error messages, server address, or account.",
+        "Reports carry your IP address, which estimates your country and city.",
         "This device is connected",
         "~/Koidrive is linked",
         "Background sync is running",

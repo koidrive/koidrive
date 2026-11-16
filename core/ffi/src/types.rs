@@ -717,7 +717,7 @@ pub struct AppCrashStamp {
     pub generation: String,
 }
 
-/// Whether this profile sends anonymous usage reports (docs/guide/telemetry.md).
+/// Whether this profile sends usage reports (docs/guide/telemetry.md).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Record)]
 pub struct TelemetrySetting {
     /// Reports are recorded and sent: the stored choice, unless an environment variable decides.

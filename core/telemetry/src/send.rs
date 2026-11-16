@@ -221,6 +221,7 @@ pub fn batch(
         let mut properties = common(id, environment);
         if let Some(origin) = origin {
             properties.insert("koi_version".into(), json!(origin.koi_version));
+            properties.insert("channel".into(), json!(origin.koi_version.channel()));
             properties.insert("client".into(), json!(origin.client));
         }
         properties.extend(fields);
@@ -248,6 +249,7 @@ pub fn old_batch(
         let mut properties = common(id, environment);
         properties.insert("schema".into(), json!(1));
         properties.remove("koi_version");
+        properties.remove("channel");
         properties
     };
     let mut uuids = uuids.iter().map(|uuid| json!(uuid.as_str()));
@@ -293,11 +295,12 @@ fn common(id: &InstallId, environment: &Environment) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("distinct_id".into(), json!(id));
     properties.insert("$process_person_profile".into(), json!(false));
-    properties.insert("$geoip_disable".into(), json!(true));
     properties.insert("schema".into(), json!(SCHEMA));
     properties.insert("client".into(), json!(environment.client));
     properties.insert("koi_version".into(), json!(environment.koi_version));
+    properties.insert("channel".into(), json!(environment.koi_version.channel()));
     properties.insert("build".into(), json!(environment.build));
+    properties.insert("internal".into(), json!(environment.internal));
     properties.insert("os".into(), json!(environment.os));
     if let Some(version) = environment.os_version {
         properties.insert("os_major".into(), json!(version.major));
@@ -446,6 +449,7 @@ mod tests {
             os_version: Some(OsVersion { major: 6, minor: 8 }),
             distro: Some(Distro::Debian),
             arch: Arch::Arm64,
+            internal: false,
         };
         let id = InstallId::try_from("00000000000000000000000000000000".to_owned()).unwrap();
         let uuids: Vec<_> = (0..reports.hours.len() + reports.events.len())
@@ -467,7 +471,7 @@ mod tests {
             ),
         });
         let fixture = match SCHEMA {
-            2 => include_str!("../tests/fixtures/report-schema-v2.json"),
+            3 => include_str!("../tests/fixtures/report-schema-v3.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
         let expected: Value = serde_json::from_str(fixture).unwrap();
@@ -502,6 +506,14 @@ mod tests {
         let body = batch("phc_test", &id, &environment(), &store.peek().unwrap(), &[]);
         let properties = &body["batch"][0]["properties"];
         assert_eq!(properties["koi_version"], "0.1.0-alpha.9", "{body}");
+        assert_eq!(properties["channel"], "prerelease", "{body}");
+        assert_eq!(body["batch"][0]["properties"]["channel"], "prerelease");
+        let dev = Version::parse("0.0.0-dev+abc123").unwrap();
+        assert_eq!(dev.channel(), crate::schema::Channel::Dev);
+        assert_eq!(
+            Version::parse("0.1.0+abc").unwrap().channel(),
+            crate::schema::Channel::Release
+        );
         assert_eq!(properties["client"], "cli_command", "{body}");
     }
 
@@ -552,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_is_anonymous_posthog_events() {
+    fn a_batch_is_posthog_events_without_a_person_profile() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
         queued(&store, HOUR);
@@ -570,7 +582,9 @@ mod tests {
         for event in events {
             assert_eq!(event["properties"]["distinct_id"], id.as_str());
             assert_eq!(event["properties"]["$process_person_profile"], false);
-            assert_eq!(event["properties"]["$geoip_disable"], true);
+            assert!(event["properties"].get("$geoip_disable").is_none());
+            assert_eq!(event["properties"]["internal"], false);
+            assert_eq!(event["properties"]["channel"], "release");
             assert!(event["properties"].get("at").is_none());
         }
         assert_eq!(events[0]["timestamp"], "2025-11-12T00:00:00Z");

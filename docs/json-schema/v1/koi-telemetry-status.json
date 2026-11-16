@@ -784,6 +784,10 @@
             "null"
           ]
         },
+        "internal": {
+          "description": "Whether reports are marked internal.",
+          "type": "boolean"
+        },
         "mode": {
           "$ref": "#/$defs/TelemetryMode"
         },
@@ -818,7 +822,8 @@
         "waiting_hours",
         "waiting_days",
         "waiting_events",
-        "sends"
+        "sends",
+        "internal"
       ],
       "type": "object"
     }

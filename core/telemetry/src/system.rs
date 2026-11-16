@@ -14,6 +14,8 @@ pub struct Environment {
     pub os_version: Option<OsVersion>,
     pub distro: Option<Distro>,
     pub arch: Arch,
+    /// The install is marked internal, by `koi telemetry internal on` or `KOIDRIVE_TELEMETRY=internal`.
+    pub internal: bool,
 }
 
 impl Environment {
@@ -64,6 +66,7 @@ impl Environment {
             } else {
                 Arch::Other
             },
+            internal: false,
         }
     }
 }

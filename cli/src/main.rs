@@ -180,6 +180,16 @@ fn main() -> ExitCode {
     let pending_paths = paths.clone();
     let telemetry_paths = paths.clone();
     let telemetry = telemetry_of(&command_args);
+    let sets_up = matches!(
+        command_args,
+        Command::Setup { .. }
+            | Command::Join { .. }
+            | Command::Server {
+                action: setup::ServerAction::Deploy { .. }
+                    | setup::ServerAction::AddDevice { .. }
+                    | setup::ServerAction::Claim { .. }
+            }
+    );
     let ask = guided
         && !daemon_run
         && !matches!(command_args, Command::Uninstall { .. })
@@ -209,7 +219,7 @@ fn main() -> ExitCode {
         tokio::select! {
             done = async move {
                 if let Some((name, flow, switch)) = telemetry {
-                    telemetry::start(&paths, switch, name, flow).await;
+                    telemetry::start(&paths, switch, name, flow, ask).await;
                 }
                 let mut outcome = run(paths, command_args, json, verbose, work_terminal.clone()).await;
                 if let Err(error) = &outcome {
@@ -231,9 +241,9 @@ fn main() -> ExitCode {
                     None
                 };
                 let exit = finish(command_name, json, verbose, outcome, pending);
-                if ask && prompt_eligible
-                    && let Err(error) = telemetry::ask(&telemetry_paths, &work_terminal).await
-                {
+                if !(ask && (sets_up || prompt_eligible)) {
+                    telemetry::forget();
+                } else if let Err(error) = telemetry::ask(&telemetry_paths, &work_terminal).await {
                     return finish(command_name, json, verbose, Err(error), Vec::new());
                 }
                 if let Some(summary) = summary {
@@ -248,6 +258,7 @@ fn main() -> ExitCode {
                     Code::Interrupted,
                     if status == 143 { "stopped by SIGTERM; what the command already did stays done" } else { "interrupted by Ctrl-C; what the command already did stays done" },
                 ).human(format!("{}. Changes already made were kept. Run koi status to check this device before continuing.", if status == 143 { "Stopped" } else { "Interrupted" }));
+                telemetry::forget();
                 telemetry::flush();
                 let _ = finish(&command, json, verbose, Err(error), Vec::new());
                 let _ = io::Write::flush(&mut io::stdout());

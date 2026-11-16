@@ -12,7 +12,7 @@ use crate::report::{
     SpacesData, StatusData, TrashData, UnlinkedData, UpdateCheckData, UpdatedData, UsagesData,
     VersionInfoData, VersionsData, WithApp, WithService,
 };
-use crate::telemetry::{ChoiceData, TelemetryStatusData};
+use crate::telemetry::{ChoiceData, InternalData, TelemetryStatusData};
 
 type Data = fn(&mut SchemaGenerator) -> Schema;
 
@@ -58,6 +58,7 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "telemetry status" => &[of::<TelemetryStatusData>],
         "telemetry on" | "telemetry off" | "telemetry reset" => &[of::<ChoiceData>],
         "telemetry preview" => &[of::<Map<String, Value>>],
+        "telemetry internal" => &[of::<InternalData>],
         "diagnose" => &[of::<DiagnosticsData>],
         "update" => &[of::<UpdatedData>],
         "_check-updates" => &[of::<UpdateCheckData>],
