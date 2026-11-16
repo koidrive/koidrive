@@ -66,6 +66,14 @@ fn holds(snapshot: &Snapshot, paths: &[&str]) {
     }
 }
 
+fn permissions_block_reads() -> bool {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return false;
+    }
+    true
+}
+
 const VOLUME_FILES: [&str; 2] = ["report.docx", "Slides/deck.key"];
 
 fn fill(at: &Path) {
@@ -327,6 +335,9 @@ fn renames_pair_entries_of_one_volume_only_also_on_byte_identical_copies() {
 
 #[test]
 fn an_unreadable_folder_moved_on_one_copy_of_a_disk_keeps_what_it_held_there() {
+    if !permissions_block_reads() {
+        return;
+    }
     let Some(mut disks) = Disks::new() else {
         return;
     };
@@ -432,6 +443,9 @@ fn a_disk_ejected_from_another_disk_stays_there_when_a_folder_above_both_moves()
 
 #[test]
 fn an_unreadable_folder_on_a_disk_in_a_moved_folder_keeps_what_it_held() {
+    if !permissions_block_reads() {
+        return;
+    }
     let Some(mut disks) = Disks::new() else {
         return;
     };
@@ -462,6 +476,9 @@ fn an_unreadable_folder_on_a_disk_in_a_moved_folder_keeps_what_it_held() {
 
 #[test]
 fn a_disk_whose_root_cannot_be_opened_is_read_once_it_can_be() {
+    if !permissions_block_reads() {
+        return;
+    }
     let Some(mut disks) = Disks::new() else {
         return;
     };
