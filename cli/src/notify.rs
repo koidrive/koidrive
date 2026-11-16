@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_driver::{Driver, Question};
 
 /// The decisions open when it is called are the baseline, so call it before the folders start.
-pub async fn decisions(driver: Driver) -> impl Future<Output = ()> {
+pub fn decisions(driver: Driver) -> impl Future<Output = ()> {
     let mut watch = driver.watch();
-    let mut open = driver.questions().await.unwrap_or_default();
+    let mut open = driver.questions().unwrap_or_default();
     async move {
         while watch.changed().await.is_ok() {
-            let Ok(questions) = driver.questions().await else {
+            let Ok(questions) = driver.questions() else {
                 continue;
             };
             let folders: BTreeMap<String, String> = (driver.status().folders.into_iter())

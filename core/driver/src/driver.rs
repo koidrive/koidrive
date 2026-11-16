@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -32,15 +32,13 @@ use crate::ignore::{Matcher, has_sync_entries, local_rules, matcher};
 use crate::leave::{Leaving, Phase};
 use crate::paths::{Paths, PathsError};
 use crate::pending_claim;
-use crate::question::{Answer, HeldItem, Limit, Question, QuestionKind};
+use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
 use crate::status::{Account, FolderState, FolderStatus, Status};
 use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
 const SERVER_WAIT: Duration = Duration::from_secs(10);
-
-const DEVICES_WAIT: Duration = Duration::from_secs(3);
 
 const DEVICES_RELIST: Duration = Duration::from_secs(60);
 
@@ -303,7 +301,7 @@ struct Inner {
     changed: Arc<watch::Sender<()>>,
     progressed: Arc<watch::Sender<()>>,
     totals: Arc<Mutex<crate::progress::Sum>>,
-    devices: tokio::sync::Mutex<Devices>,
+    devices: Mutex<Devices>,
     #[cfg(test)]
     observe_fault: Option<Arc<crate::folder::ObserveFault>>,
     #[cfg(test)]
@@ -581,7 +579,7 @@ impl Driver {
                 changed: Arc::new(watch::Sender::new(())),
                 progressed: Arc::new(watch::Sender::new(())),
                 totals: Arc::default(),
-                devices: tokio::sync::Mutex::default(),
+                devices: Mutex::default(),
                 #[cfg(test)]
                 observe_fault: None,
                 #[cfg(test)]
@@ -1428,9 +1426,9 @@ impl Driver {
 
     /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
     /// current version in the folder's remote tree and the name of the device that wrote it.
-    pub async fn questions(&self) -> Result<Vec<Question>, DriverError> {
+    pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
         let mut questions = self.open_questions()?;
-        self.name_writers(&mut questions).await;
+        self.name_writers(&mut questions);
         Ok(questions)
     }
 
@@ -1462,56 +1460,54 @@ impl Driver {
         Ok(questions)
     }
 
-    async fn name_writers(&self, questions: &mut [Question]) {
-        let mut writers: Vec<&mut HeldItem> = (questions.iter_mut())
+    fn name_writers(&self, questions: &mut [Question]) {
+        let mut devices = self.inner.devices.lock().unwrap();
+        let mut unknown = false;
+        for item in questions
+            .iter_mut()
             .flat_map(|question| question.items.iter_mut())
-            .filter(|item| item.device_id.is_some())
-            .collect();
-        if writers.is_empty() {
+        {
+            let Some(device_id) = &item.device_id else {
+                continue;
+            };
+            item.device_name = devices.names.get(device_id).cloned();
+            unknown |= item.device_name.is_none();
+        }
+        if !unknown
+            || devices
+                .listed_at
+                .is_some_and(|at| at.elapsed() < DEVICES_RELIST)
+        {
             return;
         }
-        let mut devices = self.inner.devices.lock().await;
-        let unknown = (writers.iter())
-            .filter_map(|item| item.device_id.as_ref())
-            .any(|id| !devices.names.contains_key(id));
-        if unknown
-            && devices
-                .listed_at
-                .is_none_or(|at| at.elapsed() >= DEVICES_RELIST)
-        {
-            devices.listed_at = Some(Instant::now());
-            match tokio::time::timeout(DEVICES_WAIT, self.device_names()).await {
-                Ok(Ok(names)) => devices.names = names,
-                Ok(Err(error)) => {
-                    tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
-                }
-                Err(_) => tracing::info!(
-                    "listing the account's devices took over {} seconds; conflicts name no writers",
-                    DEVICES_WAIT.as_secs()
-                ),
-            }
-        }
-        for item in &mut writers {
-            item.device_name =
-                (item.device_id.as_ref()).and_then(|id| devices.names.get(id).cloned());
-        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        devices.listed_at = Some(Instant::now());
+        let driver = self.clone();
+        runtime.spawn(async move { driver.list_device_names().await });
     }
 
-    async fn device_names(&self) -> Result<HashMap<String, String>, DriverError> {
-        let auth = self.signed_in()?;
-        let mut names = HashMap::new();
-        let mut cursor = String::new();
-        let mut seen = HashSet::new();
-        loop {
-            let page = auth.api().list_devices(&auth, &cursor).await?;
-            names.extend((page.devices.into_iter()).map(|device| (device.device_id, device.name)));
-            if page.next_cursor.is_empty() {
-                return Ok(names);
+    async fn list_device_names(&self) {
+        let listed = match self.signed_in() {
+            Ok(auth) => auth
+                .api()
+                .all_devices(&auth)
+                .await
+                .map_err(DriverError::from),
+            Err(error) => Err(error),
+        };
+        match listed {
+            Ok(devices) => {
+                self.inner.devices.lock().unwrap().names = (devices.into_iter())
+                    .filter(|device| !device.name.trim().is_empty())
+                    .map(|device| (device.device_id, device.name))
+                    .collect();
+                self.changed();
             }
-            if !seen.insert(page.next_cursor.clone()) {
-                return Err(ApiError::Decode("DeviceList").into());
+            Err(error) => {
+                tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
             }
-            cursor = page.next_cursor;
         }
     }
 
@@ -2508,12 +2504,12 @@ mod tests {
         assert_eq!(folder.questions, 1);
     }
 
-    #[tokio::test]
-    async fn questions_take_only_the_answers_they_offer() {
+    #[test]
+    fn questions_take_only_the_answers_they_offer() {
         let (_dir, paths, _root) = profile(&[mass_delete("q1"), mass_delete("q2")]);
         let driver = Driver::open(paths.clone()).unwrap();
         assert_eq!(
-            driver.questions().await.unwrap(),
+            driver.questions().unwrap(),
             [mass_delete("q1"), mass_delete("q2")]
         );
 
@@ -2530,16 +2526,15 @@ mod tests {
                 given: Answer::Restore
             })
         ));
-        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q2")]);
+        assert_eq!(driver.questions().unwrap(), [mass_delete("q2")]);
         assert_eq!(driver.status().folders[0].questions, 1);
 
         let stored = driver.stored_questions(SPACE).unwrap().unwrap();
         assert_eq!(stored[0].answer.as_ref().unwrap().answer, "restore");
     }
 
-    #[tokio::test]
-    async fn the_same_answer_again_changes_nothing_until_the_engine_drops_the_question_without_it()
-    {
+    #[test]
+    fn the_same_answer_again_changes_nothing_until_the_engine_drops_the_question_without_it() {
         let (_dir, paths, _root) = profile(&[mass_delete("q1"), mass_delete("q2")]);
         let driver = Driver::open(paths.clone()).unwrap();
         let store = || Store::open(paths.store(SPACE).unwrap()).unwrap();
@@ -2577,11 +2572,11 @@ mod tests {
             driver.answer("q2", Answer::Delete),
             Err(DriverError::QuestionNotFound(_))
         ));
-        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q3")]);
+        assert_eq!(driver.questions().unwrap(), [mass_delete("q3")]);
     }
 
-    #[tokio::test]
-    async fn a_question_asked_again_after_the_engine_took_its_answer_reads_as_unanswered() {
+    #[test]
+    fn a_question_asked_again_after_the_engine_took_its_answer_reads_as_unanswered() {
         let (_dir, paths, _root) = profile(&[mass_delete("q1")]);
         let driver = Driver::open(paths.clone()).unwrap();
         let store = || Store::open(paths.store(SPACE).unwrap()).unwrap();
@@ -2603,7 +2598,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(driver.answered_question("q1").unwrap(), None);
-        assert_eq!(driver.questions().await.unwrap(), [mass_delete("q1")]);
+        assert_eq!(driver.questions().unwrap(), [mass_delete("q1")]);
         assert_eq!(driver.answer("q1", Answer::Restore).unwrap(), Answered::Now);
     }
 
@@ -2682,8 +2677,8 @@ mod tests {
         driver.stop().await;
     }
 
-    #[tokio::test]
-    async fn a_conflict_stored_without_its_versions_reads_them_from_the_remote_tree() {
+    #[test]
+    fn a_conflict_stored_without_its_versions_reads_them_from_the_remote_tree() {
         use koidrive_engine::question::{ConflictFile, Revisions};
         use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 
@@ -2749,10 +2744,7 @@ mod tests {
             modified_at_ms: Some(1_794_442_400_123),
             ..item("n-original", "notes.txt", "d2")
         };
-        assert_eq!(
-            driver.questions().await.unwrap(),
-            [expected, mass_delete("q1")]
-        );
+        assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
     }
 
     #[tokio::test]
@@ -2852,8 +2844,20 @@ mod tests {
             ("d1".to_owned(), Some("Ada's MacBook Air".to_owned())),
             ("d2".to_owned(), Some("agent-box".to_owned())),
         ];
-        assert_eq!(writers(driver.questions().await.unwrap()), named);
-        assert_eq!(writers(driver.questions().await.unwrap()), named);
+        let mut watch = driver.watch();
+        watch.borrow_and_update();
+        assert_eq!(
+            writers(driver.questions().unwrap()),
+            [("d1".to_owned(), None), ("d2".to_owned(), None)]
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while writers(driver.questions().unwrap()) != named {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(writers(driver.questions().unwrap()), named);
         let requested: Vec<String> = (served.await.unwrap().into_iter())
             .map(|(path, _)| path)
             .collect();

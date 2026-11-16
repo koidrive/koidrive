@@ -38,7 +38,7 @@ pub(crate) async fn daemon(paths: Paths, json: bool) -> Result<Done, CliError> {
         failed(DaemonStart::Signals);
         error.to_string()
     })?;
-    let notifications = notify::decisions(driver.clone()).await;
+    let notifications = notify::decisions(driver.clone());
     driver.start();
     driver.check_for_updates();
     let newest = tokio::spawn(update::follow_newest(driver.paths().clone()));
