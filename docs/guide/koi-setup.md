@@ -4,6 +4,8 @@
 
 R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
+For a new account, setup registers a workers.dev subdomain from the account's name and prints the address.
+
 ## Connect this device and link a folder
 
 On a terminal, `koi setup` asks **How do you want to connect?** Use the arrow keys and Enter:

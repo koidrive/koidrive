@@ -44,6 +44,11 @@ enum Failure {
     OauthProtocol,
     CloudflareRefused,
     CloudflareProtocol,
+    SubdomainRefused,
+    SubdomainReadRefused,
+    SubdomainStalled,
+    SubdomainMalformed,
+    SubdomainUnavailable,
     UninstallScan,
     UninstallBucketGone,
 }
@@ -73,6 +78,10 @@ struct State {
     folder_state: Option<FolderState>,
     denied: bool,
     r2_disabled: usize,
+    subdomain: Option<String>,
+    subdomain_conflicts: usize,
+    subdomain_attempts: Vec<String>,
+    subdomain_race: bool,
     base: String,
     collide_create: bool,
     failure: Option<Failure>,
@@ -149,6 +158,7 @@ esac
         );
         let state = Arc::new(Mutex::new(State {
             scripts: scripts.iter().map(|name| (*name).into()).collect(),
+            subdomain: Some("synthetic".into()),
             spaces: spaces
                 .iter()
                 .enumerate()
@@ -577,7 +587,48 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                     status = "503 Service Unavailable";
                     ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Listing unavailable"}],"result":null}).to_string().into_bytes())
                 },
-                ("GET", "/workers/subdomain") => cf(json!({"subdomain":"synthetic"})),
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainStalled) => {
+                    drop(state);
+                    std::thread::sleep(Duration::from_secs(12));
+                    return;
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainMalformed) => {
+                    ("text/html", b"<html>unavailable</html>".to_vec())
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainUnavailable) => {
+                    status = "503 Service Unavailable";
+                    ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Unavailable"}],"result":null}).to_string().into_bytes())
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainReadRefused) => {
+                    status = "403 Forbidden";
+                    ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Workers Admin scope required"}],"result":null}).to_string().into_bytes())
+                },
+                ("GET", "/workers/subdomain") => match &state.subdomain {
+                    Some(subdomain) => cf(json!({"subdomain":subdomain})),
+                    None => {
+                        status = "404 Not Found";
+                        ("application/json", json!({"success":false,"errors":[{"code":10007,"message":"No workers.dev subdomain"}],"result":null}).to_string().into_bytes())
+                    }
+                },
+                ("PUT", "/workers/subdomain") => {
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let subdomain = request["subdomain"].as_str().unwrap().to_owned();
+                    state.subdomain_attempts.push(subdomain.clone());
+                    if state.failure == Some(Failure::SubdomainRefused) {
+                        status = "403 Forbidden";
+                        ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Workers Admin scope required"}],"result":null}).to_string().into_bytes())
+                    } else if state.subdomain_conflicts > 0 {
+                        state.subdomain_conflicts -= 1;
+                        if state.subdomain_race {
+                            state.subdomain = Some("other-process".into());
+                        }
+                        status = "409 Conflict";
+                        ("application/json", json!({"success":false,"errors":[{"code":10031,"message":"Subdomain is unavailable"}],"result":null}).to_string().into_bytes())
+                    } else {
+                        state.subdomain = Some(subdomain.clone());
+                        cf(json!({"subdomain":subdomain}))
+                    }
+                },
                 ("GET", _) if suffix.ends_with("/settings") => cf(json!({"bindings":[{"type":"r2_bucket","name":"BUCKET","bucket_name":"synthetic-bucket"}]})),
                 ("POST", _) if suffix.ends_with("/assets-upload-session") => cf(json!({"jwt":"synthetic-upload-token","buckets":[]})),
                 ("GET", _) if suffix.ends_with("/secrets") => cf(json!([])),
@@ -2242,6 +2293,147 @@ fn test_setup_rejects_remote_or_ambiguous_endpoints_before_opening_a_browser() {
     }
     assert!(home.state.lock().unwrap().requests.is_empty());
     assert!(!home.path().join("browser-url").exists());
+}
+
+#[test]
+fn a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup() {
+    for rich in [true, false] {
+        let home = Home::new(&[], &[]);
+        {
+            let mut state = home.state.lock().unwrap();
+            state.r2_disabled = 2;
+            state.subdomain = None;
+        }
+        let text = home.run(rich, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+        assert!(text.contains("personal.workers.dev"), "{text}");
+        assert!(
+            text.contains("Setup complete. Add files to ~/Koidrive."),
+            "{text}"
+        );
+        let state = home.state.lock().unwrap();
+        assert_eq!(state.subdomain_attempts, ["personal"]);
+        let created_domain = state
+            .requests
+            .iter()
+            .position(|r| r.ends_with("/workers/subdomain") && r.starts_with("PUT "))
+            .unwrap();
+        let created_bucket = state
+            .requests
+            .iter()
+            .position(|r| r.ends_with("/r2/buckets") && r.starts_with("POST "))
+            .unwrap();
+        let uploaded = state
+            .requests
+            .iter()
+            .position(|r| r.contains("/workers/scripts/") && r.starts_with("PUT "))
+            .unwrap();
+        assert!(
+            created_domain < created_bucket && created_bucket < uploaded,
+            "{:?}",
+            state.requests
+        );
+        assert_eq!(state.links.len(), 1);
+    }
+}
+
+#[test]
+fn a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.subdomain_conflicts = 1;
+    }
+    let text = home.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain_attempts.len(), 2);
+    assert_eq!(state.subdomain_attempts[0], "personal");
+    assert!(state.subdomain_attempts[1].starts_with("personal-"));
+    assert!(
+        text.contains(&format!(
+            "{}.workers.dev",
+            state.subdomain.as_ref().unwrap()
+        )),
+        "{text}"
+    );
+    drop(state);
+
+    let existing = Home::new(&[], &[]);
+    existing.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    let state = existing.state.lock().unwrap();
+    assert!(state.subdomain_attempts.is_empty());
+    assert_eq!(state.subdomain.as_deref(), Some("synthetic"));
+}
+
+#[test]
+fn a_refused_workers_dev_creation_stops_before_creating_storage_or_uploading() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.failure = Some(Failure::SubdomainRefused);
+    }
+    let output = terminal(
+        home.setup_command(false, Browser::Opens),
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
+        Some(home.path()),
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("Workers Admin scope required"), "{text}");
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain_attempts, ["personal"]);
+    assert!(state.buckets.is_empty());
+    assert!(
+        !state
+            .requests
+            .iter()
+            .any(|r| r.starts_with("PUT ") && r.contains("/workers/scripts/"))
+    );
+}
+
+#[test]
+fn a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.subdomain_conflicts = 1;
+        state.subdomain_race = true;
+    }
+    home.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain.as_deref(), Some("other-process"));
+    assert_eq!(state.subdomain_attempts.len(), 1);
+    drop(state);
+    for (failure, conflicts, attempts) in [
+        (None, 10, 5),
+        (Some(Failure::SubdomainReadRefused), 0, 0),
+        (Some(Failure::SubdomainMalformed), 0, 0),
+        (Some(Failure::SubdomainUnavailable), 0, 0),
+        (Some(Failure::SubdomainStalled), 0, 0),
+    ] {
+        let home = Home::new(&[], &[]);
+        {
+            let mut state = home.state.lock().unwrap();
+            state.subdomain = None;
+            state.subdomain_conflicts = conflicts;
+            state.failure = failure;
+        }
+        let output = terminal(
+            home.setup_command(false, Browser::Opens),
+            &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
+            Some(home.path()),
+        );
+        assert!(
+            !output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let state = home.state.lock().unwrap();
+        assert_eq!(state.subdomain_attempts.len(), attempts);
+        assert!(state.buckets.is_empty());
+    }
 }
 
 #[test]

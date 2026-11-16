@@ -835,6 +835,28 @@ async fn workers_dev_is_enabled_and_the_subdomain_read() {
     assert_eq!(fake.calls().len(), 2);
 }
 
+#[tokio::test]
+async fn a_workers_dev_subdomain_is_created_with_the_requested_name() {
+    let fake = Fake::start(vec![reply(
+        "PUT",
+        &format!("/accounts/{ACCOUNT}/workers/subdomain"),
+        200,
+        ok(json!({"subdomain":"hello-koidrive"})),
+    )])
+    .await;
+    let name = fake
+        .client()
+        .create_workers_subdomain(ACCOUNT, "hello-koidrive")
+        .await
+        .unwrap();
+    assert_eq!(name, "hello-koidrive");
+    assert_eq!(fake.seen()[0].json(), json!({"subdomain":"hello-koidrive"}));
+    assert_eq!(
+        fake.seen()[0].authorization.as_deref(),
+        Some(&format!("Bearer {TOKEN}")[..])
+    );
+}
+
 fn prototype_hash(contents: &[u8], extension: &str) -> String {
     let digest = Sha256::digest(format!("{}{extension}", STANDARD.encode(contents)));
     digest

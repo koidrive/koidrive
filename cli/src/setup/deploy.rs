@@ -64,6 +64,51 @@ pub(super) fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliE
 }
 
 impl Session {
+    async fn require_subdomain(&mut self) -> Result<(), CliError> {
+        let account = self.account().to_owned();
+        let base = workers_subdomain_name(&self.account.name);
+        let mut candidate = base.clone();
+        for _ in 0..5 {
+            match self.fresh().await?.workers_subdomain(&account).await {
+                Ok(subdomain) => {
+                    self.subdomain = Some(subdomain);
+                    return Ok(());
+                }
+                Err(error) if error.has_code(10007) => {}
+                Err(error) => {
+                    return Err(CliError::from(error)
+                        .context("cannot read the account's workers.dev subdomain"));
+                }
+            }
+            match self
+                .fresh()
+                .await?
+                .create_workers_subdomain(&account, &candidate)
+                .await
+            {
+                Ok(subdomain) => {
+                    self.terminal
+                        .message(&format!("Using {subdomain}.workers.dev"));
+                    self.subdomain = Some(subdomain);
+                    return Ok(());
+                }
+                Err(error) if error.has_code(10031) => {
+                    let mut bytes = [0u8; 4];
+                    getrandom::fill(&mut bytes)
+                        .expect("the operating system provides random bytes");
+                    let suffix: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                    let prefix = base[..base.len().min(54)].trim_end_matches('-');
+                    candidate = format!("{prefix}-{suffix}");
+                }
+                Err(error) => {
+                    return Err(CliError::from(error)
+                        .context("cannot create the account's workers.dev subdomain"));
+                }
+            }
+        }
+        Err("could not find an available workers.dev subdomain; run setup again".into())
+    }
+
     /// Waits until R2 is enabled on the account. R2 cannot be enabled through the API, so the user completes the
     /// dashboard's checkout (section 4.1).
     async fn require_r2(&mut self) -> Result<(), CliError> {
@@ -272,6 +317,7 @@ impl Session {
     ) -> Result<(), CliError> {
         let file = StateFile::new(paths);
         let bundle = embedded_bundle()?;
+        self.require_subdomain().await?;
         let mut key = None;
         let terminal = self.terminal.clone();
         let progress = terminal
@@ -483,6 +529,24 @@ impl Session {
                 CliError::from(error).context(format!("cannot turn on workers.dev for {script}"))
             })?;
         wait_until_serving(url, None).await
+    }
+}
+
+pub(super) fn workers_subdomain_name(account: &str) -> String {
+    let mut name = String::new();
+    for c in account.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_alphanumeric() || c == '-' {
+            name.push(c);
+        } else if !name.ends_with('-') {
+            name.push('-');
+        }
+    }
+    let name = name.trim_start_matches('-');
+    let name = name[..name.len().min(63)].trim_end_matches('-');
+    if name.is_empty() {
+        "koidrive".to_owned()
+    } else {
+        name.to_owned()
     }
 }
 

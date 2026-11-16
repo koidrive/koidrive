@@ -5,7 +5,9 @@ use std::time::Duration;
 use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Next};
 
-use super::deploy::{create_bucket, free_name, keep_script_name, new_bucket_name};
+use super::deploy::{
+    create_bucket, free_name, keep_script_name, new_bucket_name, workers_subdomain_name,
+};
 use super::onboarding::{Route, choices};
 use super::servers::{Downgrade, downgrade};
 use super::session::{guarded, read_answer};
@@ -19,6 +21,31 @@ use serde_json::json;
 
 use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
 use super::*;
+
+#[test]
+fn account_names_become_workers_dev_labels() {
+    for (account, expected) in [
+        (
+            "Hello@koidrive.com's Account",
+            "hello-koidrive-com-s-account",
+        ),
+        (" --Ada's Account-- ", "ada-s-account"),
+        ("서울", "koidrive"),
+        ("", "koidrive"),
+    ] {
+        assert_eq!(workers_subdomain_name(account), expected);
+    }
+    for account in ["a".repeat(100), format!("{}-zz", "a".repeat(62))] {
+        let label = workers_subdomain_name(&account);
+        assert!(label.len() <= 63);
+        assert!(!label.starts_with('-') && !label.ends_with('-'));
+        assert!(
+            label
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        );
+    }
+}
 
 #[tokio::test]
 async fn interrupted_login_preserves_raw_text_and_offers_a_human_next_step() {
