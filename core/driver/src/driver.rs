@@ -2454,7 +2454,7 @@ mod tests {
                     space_name: "Projects".into(),
                     root: root.clone(),
                     root_dev: 1,
-                    root_identity: None,
+                    root_volume: None,
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
@@ -3203,6 +3203,125 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn an_ejected_disk_whose_mount_point_stays_resumes_under_its_old_or_a_new_device_number()
+    {
+        use std::process::Command;
+
+        struct Mounted(Vec<PathBuf>);
+        impl Drop for Mounted {
+            fn drop(&mut self) {
+                for at in &self.0 {
+                    let _ = Command::new("hdiutil")
+                        .args(["detach", "-quiet", "-force"])
+                        .arg(at)
+                        .output();
+                }
+            }
+        }
+        let hdiutil = |args: &[&std::ffi::OsStr]| {
+            let out = Command::new("hdiutil").args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "hdiutil {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let elsewhere = base.join("Elsewhere");
+        let _mounted = Mounted(vec![root.clone(), elsewhere.clone()]);
+        let image = |name: &str| {
+            let image = base.join(name);
+            hdiutil(&[
+                "create".as_ref(),
+                "-quiet".as_ref(),
+                "-size".as_ref(),
+                "20m".as_ref(),
+                "-fs".as_ref(),
+                "APFS".as_ref(),
+                "-volname".as_ref(),
+                name.as_ref(),
+                image.as_ref(),
+            ]);
+            image
+        };
+        let attach = |image: &Path, at: &Path| {
+            fs::create_dir_all(at).unwrap();
+            hdiutil(&[
+                "attach".as_ref(),
+                "-quiet".as_ref(),
+                "-nobrowse".as_ref(),
+                "-mountpoint".as_ref(),
+                at.as_ref(),
+                image.as_ref(),
+            ]);
+        };
+        let detach = |at: &Path| {
+            let mut failures = Vec::new();
+            while failures.len() < 10 {
+                let out = Command::new("hdiutil")
+                    .args(["detach", "-force"])
+                    .arg(at)
+                    .output()
+                    .unwrap();
+                if out.status.success() {
+                    return;
+                }
+                failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            panic!("hdiutil detach -force {}: {failures:?}", at.display());
+        };
+        let disk = image("disk.dmg");
+        let other = image("other.dmg");
+        attach(&disk, &root);
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &root, "d1");
+        let store = paths.store(SPACE).unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        eventually("the folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        let lifecycle = (driver.inner.folders.lock().unwrap())
+            .get(SPACE)
+            .unwrap()
+            .status
+            .clone();
+        let waits_for_its_disk = || {
+            let folder = driver.status().folders[0].clone();
+            folder.state == FolderState::Halted
+                && folder
+                    .problem
+                    .is_some_and(|problem| problem.contains("another disk"))
+        };
+        let syncs = || driver.status().folders[0].state != FolderState::Halted;
+
+        detach(&root);
+        eventually("the folder waits for its disk", waits_for_its_disk).await;
+        assert!(!lifecycle.needs_restart());
+        attach(&disk, &root);
+        eventually("the folder syncs again", syncs).await;
+        assert!(!lifecycle.needs_restart());
+
+        detach(&root);
+        eventually("the folder waits for its disk again", waits_for_its_disk).await;
+        attach(&other, &elsewhere);
+        attach(&disk, &root);
+        let dev = fs::metadata(&root).unwrap().dev();
+        eventually("the folder syncs under the device number it has now", syncs).await;
+        assert!(!lifecycle.needs_restart());
+        let link = (Store::open(&store).unwrap().transaction(|tx| tx.link()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(link.root_dev, dev);
+        driver.stop().await;
+    }
+
     #[tokio::test]
     async fn a_pending_start_cannot_skip_a_restarts_root_reset() {
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -3386,7 +3505,7 @@ mod tests {
             space_name: "Projects".into(),
             root: root.to_path_buf(),
             root_dev: fs::metadata(root).unwrap().dev(),
-            root_identity: None,
+            root_volume: None,
             server_url: NOWHERE.into(),
             device_id: device_id.into(),
             linked_at_ms: 1,

@@ -65,6 +65,39 @@ fn a_placed_file_and_a_created_folder_carry_the_mark_of_their_node() {
 }
 
 #[test]
+fn a_mark_written_under_another_device_number_still_names_its_node() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(scenario("write_new"), root);
+    apply_one(&bind(root), &effect, &mut |_| {}).unwrap();
+    let path = root.join("docs/new.txt");
+    let meta = fs::symlink_metadata(&path).unwrap();
+    let birth = entries(root, &["docs/new.txt"])[0]
+        .id
+        .birth_ns
+        .map_or_else(|| "-".to_owned(), |birth| birth.to_string());
+    let renumbered = format!("1 node {} {} {birth}", meta.dev() + 3, meta.ino());
+    rustix::fs::setxattr(
+        &path,
+        NAME,
+        renumbered.as_bytes(),
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    assert_eq!(mark_of(root, "docs/new.txt").as_deref(), Some("node"));
+    let other_file = format!("1 node {} {} {birth}", meta.dev(), meta.ino() + 1);
+    rustix::fs::setxattr(
+        &path,
+        NAME,
+        other_file.as_bytes(),
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    assert_eq!(mark_of(root, "docs/new.txt"), None);
+}
+
+#[test]
 fn a_moved_entry_keeps_its_mark_and_a_copy_of_it_has_none() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

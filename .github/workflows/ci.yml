@@ -367,6 +367,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: cargo test --workspace --exclude koidrive-driver --exclude koidrive-engine --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
+      - name: Test root identities on btrfs and ext4
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v mkfs.btrfs > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq btrfs-progs
+          fi
+          image="$RUNNER_TEMP/btrfs.img"
+          truncate -s 256M "$image"
+          mkfs.btrfs -q "$image"
+          sudo mkdir -p /mnt/koidrive-btrfs
+          sudo mount -o loop,user_subvol_rm_allowed "$image" /mnt/koidrive-btrfs
+          sudo chown "$USER" /mnt/koidrive-btrfs
+          KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo test --locked -p koidrive-fs --test root a_btrfs_snapshot -- --show-output
+          KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo test --locked -p koidrive-fs --test root an_ext4_disk -- --show-output
       - name: Test the regression-case splitter
         run: |
           python3 scripts/test-split-proptest-regressions.py -v

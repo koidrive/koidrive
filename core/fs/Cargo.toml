@@ -20,5 +20,5 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 koidrive-engine = { path = "../engine" }
-rustix = { version = "1.1.6", features = ["process"] }
+rustix = { version = "1.1.6", features = ["process", "system"] }
 tempfile = "3.27.0"

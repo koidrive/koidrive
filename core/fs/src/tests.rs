@@ -1054,13 +1054,13 @@ fn the_entries_a_store_rollback_brings_back_are_remembered() {
     fs::write(&file, "displaced").unwrap();
     let id = |path: &Path| {
         let meta = fs::symlink_metadata(path).unwrap();
-        (meta.dev(), u128::from(meta.ino()))
+        u128::from(meta.ino())
     };
     let ids = |space: &Space| {
         let BroughtBack::Entries(ids) = space.brought_back().unwrap() else {
             panic!("the record is unreadable");
         };
-        let mut ids: Vec<_> = (ids.into_iter()).map(|id| (id.dev, id.ino)).collect();
+        let mut ids: Vec<_> = (ids.into_iter()).map(|id| id.ino).collect();
         ids.sort();
         ids
     };
@@ -1101,6 +1101,38 @@ fn the_entries_a_store_rollback_brings_back_are_remembered() {
 }
 
 #[test]
+fn a_record_of_brought_back_entries_written_with_device_numbers_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    let space = Space::bind(open_root(&root).unwrap(), &root).unwrap();
+    let private = root.join(PRIVATE_DIR);
+    fs::create_dir_all(&private).unwrap();
+    fs::write(
+        private.join("brought-back.json"),
+        "[[16777231,9,null],[16777231,12,1700000000000000000]]",
+    )
+    .unwrap();
+
+    let BroughtBack::Entries(ids) = space.brought_back().unwrap() else {
+        panic!("the record is unreadable");
+    };
+    assert_eq!(
+        ids,
+        HashSet::from([
+            FileId {
+                ino: 9,
+                birth_ns: None
+            },
+            FileId {
+                ino: 12,
+                birth_ns: Some(1_700_000_000_000_000_000)
+            },
+        ])
+    );
+}
+
+#[test]
 fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
     use std::os::unix::fs::MetadataExt;
     let dir = tempfile::tempdir().unwrap();
@@ -1121,7 +1153,6 @@ fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
     assert_eq!(moved.len(), 1);
     assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
     assert!(BroughtBack::Unreadable.holds(FileId {
-        dev: 1,
         ino: 2,
         birth_ns: None
     }));
@@ -1129,15 +1160,14 @@ fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
     space.repair_brought_back().unwrap();
     let id = |path: PathBuf| {
         let meta = fs::symlink_metadata(path).unwrap();
-        (meta.dev(), u128::from(meta.ino()))
+        u128::from(meta.ino())
     };
     let expected: std::collections::BTreeSet<_> =
         [id(root.join(&moved[0])), id(root.join("docs"))].into();
     let BroughtBack::Entries(repaired) = space.brought_back().unwrap() else {
         panic!("the record is still unreadable");
     };
-    let repaired: std::collections::BTreeSet<_> =
-        repaired.into_iter().map(|id| (id.dev, id.ino)).collect();
+    let repaired: std::collections::BTreeSet<_> = repaired.into_iter().map(|id| id.ino).collect();
     assert_eq!(repaired, expected);
 }
 
@@ -1466,4 +1496,84 @@ fn a_folder_swapped_for_one_holding_its_entries_is_reidentified_by_a_rescan_of_i
             path: PathBuf::from("photos")
         }]
     );
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_folder_swapped_for_another_volume_while_it_opens_is_not_published() {
+    use std::process::Command;
+
+    struct Mounts(Vec<PathBuf>);
+    impl Drop for Mounts {
+        fn drop(&mut self) {
+            for at in &self.0 {
+                let _ = Command::new("hdiutil")
+                    .arg("detach")
+                    .arg(at)
+                    .arg("-force")
+                    .output();
+            }
+        }
+    }
+    let hdiutil = |args: &[&std::ffi::OsStr]| {
+        let output = Command::new("hdiutil").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let attach = |image: &Path, at: &Path| {
+        fs::create_dir_all(at).unwrap();
+        hdiutil(&[
+            "attach".as_ref(),
+            "-quiet".as_ref(),
+            "-nobrowse".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_ref(),
+            image.as_ref(),
+        ]);
+    };
+    let detach = |at: &Path| hdiutil(&["detach".as_ref(), "-quiet".as_ref(), at.as_ref()]);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let nested = root.join("nested");
+    let elsewhere = dir.path().join("elsewhere");
+    fs::create_dir(&root).unwrap();
+    let a = dir.path().join("a.dmg");
+    let b = dir.path().join("b.dmg");
+    for image in [&a, &b] {
+        hdiutil(&[
+            "create".as_ref(),
+            "-quiet".as_ref(),
+            "-size".as_ref(),
+            "20m".as_ref(),
+            "-fs".as_ref(),
+            "APFS".as_ref(),
+            image.as_ref(),
+        ]);
+    }
+    let _mounts = Mounts(vec![nested.clone(), elsewhere.clone()]);
+    attach(&b, &elsewhere);
+    fs::write(elsewhere.join("impostor.txt"), b"other volume").unwrap();
+    detach(&elsewhere);
+    attach(&a, &nested);
+    fs::write(nested.join("original.txt"), b"original volume").unwrap();
+    let before = stat_path(&nested).unwrap();
+    let mut snapshot = Snapshot::default();
+    let mut swapped = false;
+    let result = snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
+        if matches!(cut, Cut::OpeningDir(path) if path == Path::new("nested")) && !swapped {
+            detach(&nested);
+            attach(&a, &elsewhere);
+            attach(&b, &nested);
+            swapped = true;
+        }
+    });
+    let after = stat_path(&nested).unwrap();
+    assert!(swapped);
+    assert_eq!(before.id.ino, after.id.ino);
+    assert_ne!(before.dev, after.dev);
+    assert!(matches!(result, Err(Error::Changed)), "{result:?}");
+    assert!(snapshot.entries.is_empty(), "{:?}", snapshot.entries);
 }

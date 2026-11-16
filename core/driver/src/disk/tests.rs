@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::future::Future;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -2579,7 +2580,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
     let entry = parked.join(running.engine.trees.parked_name(fork));
     fs::write(&entry, b"the person's own c.txt").unwrap();
     let content = disk_content(&entry);
-    let meta = fs::metadata(&entry).unwrap();
+    let id = koidrive_fs::id_of(fs::File::open(&entry).unwrap().as_fd()).unwrap();
     batch(&mut running, |trees| {
         trees.set_local(
             fork.into(),
@@ -2592,10 +2593,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
                     kind: Kind::File,
                     content: Some(content),
                 },
-                identity: FileIdentity {
-                    ino: meta.ino().into(),
-                    birth_ns: None,
-                },
+                identity: crate::engine::file_identity(id),
                 parked: true,
             },
         )
