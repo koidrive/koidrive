@@ -73,14 +73,11 @@ fn rules(name: &str) -> Rules {
         "LandedResendIsOwn" => Rules::LandedResendIsOwn,
         "ResendRecordEndsOwn" => Rules::ResendRecordEndsOwn,
         "NodeAuthor" => Rules::NodeAuthor,
-        "TrashedRecordProves" => Rules::TrashedRecordProves,
         "ClaimAtSeq" => Rules::ClaimAtSeq,
         "LossForgetsDeletedFields" => Rules::LossForgetsDeletedFields,
-        "SupersededDeleteGivesUp" => Rules::SupersededDeleteGivesUp,
         "DeleteSeesSynced" => Rules::DeleteSeesSynced,
         "ResendRevivesSeenValue" => Rules::ResendRevivesSeenValue,
         "DeleteDropsResends" => Rules::DeleteDropsResends,
-        "StaleTrashProves" => Rules::StaleTrashProves,
         "DeleteNeedsSyncedLive" => Rules::DeleteNeedsSyncedLive,
         "SeqDelete" => Rules::SeqDelete,
         "SupersededDropsOwn" => Rules::SupersededDropsOwn,
@@ -90,12 +87,10 @@ fn rules(name: &str) -> Rules {
         "OldServer" => Rules::OldServer,
         "OldDeleter" => Rules::OldDeleter,
         "DeletedAdoptsRecords" => Rules::DeletedAdoptsRecords,
-        "RevivalMarksPosition" => Rules::RevivalMarksPosition,
         "BoundOnly" => Rules::BoundOnly,
         "RemovalTakesListedShape" => Rules::RemovalTakesListedShape,
         "HighestHeld" => Rules::HighestHeld,
         "DeleteSeesOnlyView" => Rules::DeleteSeesOnlyView,
-        "CopiesOwnBase" => Rules::CopiesOwnBase,
         "BoundOnlyResendsSeen" => Rules::BoundOnlyResendsSeen,
         "TrashCoversView" => Rules::TrashCoversView,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
@@ -278,12 +273,6 @@ fn refute_node_author() {
 
 #[test]
 #[ignore]
-fn refute_trashed_record_proves() {
-    refute(Rules::TrashedRecordProves);
-}
-
-#[test]
-#[ignore]
 fn refute_claim_at_seq() {
     refute(Rules::ClaimAtSeq);
 }
@@ -292,12 +281,6 @@ fn refute_claim_at_seq() {
 #[ignore]
 fn refute_loss_forgets_deleted_fields() {
     refute(Rules::LossForgetsDeletedFields);
-}
-
-#[test]
-#[ignore]
-fn refute_superseded_delete_gives_up() {
-    refute(Rules::SupersededDeleteGivesUp);
 }
 
 #[test]
@@ -316,12 +299,6 @@ fn refute_resend_revives_seen_value() {
 #[ignore]
 fn refute_delete_drops_resends() {
     refute(Rules::DeleteDropsResends);
-}
-
-#[test]
-#[ignore]
-fn refute_stale_trash_proves() {
-    refute(Rules::StaleTrashProves);
 }
 
 #[test]
@@ -368,12 +345,6 @@ fn refute_deleted_adopts_records() {
 
 #[test]
 #[ignore]
-fn refute_revival_marks_position() {
-    refute(Rules::RevivalMarksPosition);
-}
-
-#[test]
-#[ignore]
 fn refute_bound_only() {
     refute(Rules::BoundOnly);
 }
@@ -400,12 +371,6 @@ fn refute_highest_held() {
 #[ignore]
 fn refute_delete_sees_only_view() {
     refute(Rules::DeleteSeesOnlyView);
-}
-
-#[test]
-#[ignore]
-fn refute_copies_own_base() {
-    refute(Rules::CopiesOwnBase);
 }
 
 #[test]
