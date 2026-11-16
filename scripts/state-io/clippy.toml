@@ -1,0 +1,6 @@
+disallowed-methods = [
+    { path = "std::fs::write", reason = "Use koidrive_state_file::write for state files; the helper owns staging, publication and crash cleanup." },
+    { path = "std::fs::rename", reason = "Use koidrive_state_file::AtomicFile for state publication; do not manage state-file temporary names here." },
+    { path = "tokio::fs::write", reason = "Use koidrive_state_file::write in spawn_blocking for state files." },
+    { path = "tokio::fs::rename", reason = "Use koidrive_state_file::AtomicFile in spawn_blocking for state publication." },
+]

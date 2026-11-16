@@ -15,6 +15,7 @@ members = [
     "core/net",
     "core/proto",
     "core/sim",
+    "core/state-file",
     "core/store",
     "core/telemetry",
     "core/test-support",

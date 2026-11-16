@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use koidrive_store::Link;
@@ -152,20 +152,11 @@ impl Leaving {
 
     pub fn begin(state: &Path, intent: Intent) -> io::Result<Self> {
         let path = state.join("leaving");
-        let next = state.join("leaving.next");
         let mut bytes = vec![b'0'];
         serde_json::to_writer(&mut bytes, &intent).map_err(io::Error::other)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&next)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&next, &path)?;
-        File::open(state)?.sync_all()?;
+        let staged = koidrive_state_file::AtomicFile::prepare(&path)?;
+        staged.as_file().write_all(&bytes)?;
+        let file = staged.finish(koidrive_state_file::Publish::Replace)?;
         Ok(Self {
             intent,
             phase: Phase::Prepared,

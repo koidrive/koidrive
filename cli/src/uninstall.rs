@@ -269,7 +269,8 @@ impl Run {
             });
         }
         let mut gone = Vec::new();
-        let emptied = fs::read_dir(real)
+        let emptied = koidrive_state_file::recover(real)
+            .and_then(|_| fs::read_dir(real))
             .and_then(|entries| {
                 let mut names = (entries.map(|entry| entry.map(|entry| entry.file_name())))
                     .collect::<io::Result<Vec<_>>>()?;
@@ -334,8 +335,11 @@ fn is_state_entry(name: &str) -> bool {
 }
 
 fn is_state(dir: &Path) -> bool {
-    fs::symlink_metadata(dir.join(".koidrive")).is_err()
-        && fs::read_dir(dir).is_ok_and(|entries| {
+    if fs::symlink_metadata(dir.join(".koidrive")).is_ok() {
+        return false;
+    }
+    koidrive_state_file::recover(dir).is_ok_and(|recovered| recovered > 0)
+        || fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 entry.file_type().is_ok_and(|kind| !kind.is_dir())
                     && entry.file_name().to_str().is_some_and(is_state_entry)
@@ -822,11 +826,10 @@ fn record(paths: &Paths, found: &Found, run: &mut Run) {
         owner: found.owner.clone(),
     };
     let path = paths.state_dir.join(RECORD);
-    let written = tempfile::NamedTempFile::new_in(&paths.state_dir).and_then(|mut file| {
-        file.write_all(&serde_json::to_vec(&record).expect("the record serializes"))?;
-        file.as_file().sync_all()?;
-        file.persist(&path).map(drop).map_err(|error| error.error)
-    });
+    let written = koidrive_state_file::write(
+        &path,
+        &serde_json::to_vec(&record).expect("the record serializes"),
+    );
     if let Err(error) = written {
         run.problems
             .push(format!("cannot write {}: {error}", shown_folder(&path)));
@@ -1089,17 +1092,15 @@ fn strip_path_line(profile: &Path) -> io::Result<bool> {
         return Ok(true);
     }
     let target = fs::canonicalize(profile)?;
-    let dir = target.parent().unwrap_or(Path::new("/"));
-    let mut staged = tempfile::NamedTempFile::new_in(dir)?;
-    staged.write_all(rest.as_bytes())?;
+    let staged = koidrive_state_file::AtomicFile::prepare(&target)?;
+    staged.as_file().write_all(rest.as_bytes())?;
     if !rest.is_empty() && text.ends_with('\n') {
-        staged.write_all(b"\n")?;
+        staged.as_file().write_all(b"\n")?;
     }
     staged
         .as_file()
         .set_permissions(fs::metadata(&target)?.permissions())?;
-    staged.as_file().sync_all()?;
-    staged.persist(&target).map_err(|error| error.error)?;
+    staged.finish(koidrive_state_file::Publish::Replace)?;
     Ok(true)
 }
 

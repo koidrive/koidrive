@@ -5,8 +5,8 @@
 //! it runs, with no request of its own. `koi update` asks again at once with [`check_now`].
 
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -462,11 +462,7 @@ pub(crate) fn load(path: &Path) -> Option<Checked> {
 }
 
 fn save(path: &Path, checked: &Checked) -> io::Result<()> {
-    let temp = path.with_extension("json.new");
-    let mut file = File::create(&temp)?;
-    file.write_all(&serde_json::to_vec(checked)?)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)
+    koidrive_state_file::write(path, &serde_json::to_vec(checked)?)
 }
 
 fn now_ms() -> i64 {

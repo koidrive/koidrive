@@ -212,8 +212,7 @@ impl Credential {
 
 pub(crate) struct NewCredentialFile {
     path: PathBuf,
-    temp: PathBuf,
-    file: File,
+    file: koidrive_state_file::AtomicFile,
 }
 
 impl NewCredentialFile {
@@ -227,15 +226,20 @@ impl NewCredentialFile {
                 path: path.to_path_buf(),
                 source,
             })?;
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-        let _ = fs::remove_file(&temp);
-        let file = create_excluded(&temp, path).inspect_err(|_| {
-            let _ = fs::remove_file(&temp);
+        let file = koidrive_state_file::AtomicFile::prepare(path).map_err(|source| {
+            CredentialError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        exclude_from_backups(file.as_file()).map_err(|source| {
+            CredentialError::NotExcludedFromBackups {
+                path: path.to_path_buf(),
+                source,
+            }
         })?;
         Ok(Self {
             path: path.to_path_buf(),
-            temp,
             file,
         })
     }
@@ -249,21 +253,20 @@ impl NewCredentialFile {
         self.finish(Ok(bytes), true)
     }
 
-    fn finish(mut self, bytes: io::Result<Vec<u8>>, replace: bool) -> Result<(), CredentialError> {
+    fn finish(self, bytes: io::Result<Vec<u8>>, replace: bool) -> Result<(), CredentialError> {
         let io = |source| CredentialError::Io {
             path: self.path.clone(),
             source,
         };
         let written = (|| {
-            self.file.write_all(&bytes?)?;
-            self.file.sync_all()?;
-            if replace {
-                fs::rename(&self.temp, &self.path)
+            self.file.as_file().write_all(&bytes?)?;
+            let publish = if replace {
+                koidrive_state_file::Publish::Replace
             } else {
-                fs::hard_link(&self.temp, &self.path)
-            }
+                koidrive_state_file::Publish::Create
+            };
+            self.file.finish(publish).map(drop)
         })();
-        let _ = fs::remove_file(&self.temp);
         match written {
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(CredentialError::Exists {
@@ -272,14 +275,7 @@ impl NewCredentialFile {
             }
             other => other.map_err(io)?,
         }
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        File::open(dir).and_then(|dir| dir.sync_all()).map_err(io)
-    }
-}
-
-impl Drop for NewCredentialFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.temp);
+        Ok(())
     }
 }
 
@@ -455,24 +451,6 @@ pub(crate) const BACKUP_EXCLUSION: (&str, &[u8]) = (
     b"bplist00_\x10\x11com.apple.backupd\x08\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x1c",
 );
 
-fn create_excluded(temp: &Path, path: &Path) -> Result<File, CredentialError> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(temp)
-        .map_err(|source| CredentialError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    exclude_from_backups(&file).map_err(|source| CredentialError::NotExcludedFromBackups {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(file)
-}
-
 fn exclude_from_backups(file: &File) -> io::Result<()> {
     #[cfg(test)]
     if tests::REFUSE_EXCLUSION.get() {
@@ -621,10 +599,12 @@ pub(crate) mod tests {
     #[test]
     fn the_credential_file_is_excluded_before_its_first_byte() {
         let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
-        let temp = home.path().join(".credential.tmp");
-        let file = create_excluded(&temp, &home.path().join("credential.json")).unwrap();
+        let staged = NewCredentialFile::create(&home.path().join("credential.json")).unwrap();
+        let file = staged.file.as_file();
         assert_eq!(file.metadata().unwrap().len(), 0);
-        assert!(time_machine_excludes(&temp));
+        let mut value = [0; 64];
+        let len = rustix::fs::fgetxattr(file, BACKUP_EXCLUSION.0, &mut value).unwrap();
+        assert_eq!(&value[..len], BACKUP_EXCLUSION.1);
     }
 
     #[cfg(target_os = "macos")]

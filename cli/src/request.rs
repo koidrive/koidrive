@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{DirBuilder, File};
+use std::fs::DirBuilder;
 use std::io::{self, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -113,19 +113,19 @@ pub(crate) fn request_file(paths: &Paths, id: &RequestId) -> PathBuf {
 fn write(path: &Path, value: &impl Serialize, replace: bool) -> io::Result<bool> {
     let dir = path.parent().expect("a record has a directory");
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    let mut temp = tempfile::Builder::new().prefix(".").tempfile_in(dir)?;
-    temp.write_all(&serde_json::to_vec(value).expect("a record serializes"))?;
-    temp.as_file().sync_all()?;
-    if replace {
-        temp.persist(path).map_err(|error| error.error)?;
+    let temp = koidrive_state_file::AtomicFile::prepare(path)?;
+    temp.as_file()
+        .write_all(&serde_json::to_vec(value).expect("a record serializes"))?;
+    let publish = if replace {
+        koidrive_state_file::Publish::Replace
     } else {
-        match temp.persist_noclobber(path) {
-            Ok(_) => {}
-            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-            Err(error) => return Err(error.error),
-        }
+        koidrive_state_file::Publish::Create
+    };
+    match temp.finish(publish) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && !replace => return Ok(false),
+        Err(error) => return Err(error),
     }
-    File::open(dir)?.sync_all()?;
     Ok(true)
 }
 
