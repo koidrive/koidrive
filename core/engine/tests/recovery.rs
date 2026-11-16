@@ -4451,3 +4451,14 @@ fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
     trees.settle();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
+
+#[test]
+fn a_given_up_folder_this_device_deleted_is_not_downloaded_before_its_trash_again() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new"))]);
+    assert_eq!(effects(&mut trees, &mut ids), []);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "e".into())]
+    );
+}
