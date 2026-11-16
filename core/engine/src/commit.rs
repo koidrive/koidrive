@@ -3822,7 +3822,9 @@ fn plan(
             else {
                 continue;
             };
-            let Some((carried, bundle)) = scratch.compensation(want, answers, trees, &wants) else {
+            let Some((carried, bundle)) =
+                scratch.compensation(want, answers, trees, &wants, &moving)
+            else {
                 continue;
             };
             let order = match want {
@@ -3953,7 +3955,7 @@ fn plan(
                 priced(&scratch, want) + priced(&scratch, &aside),
             );
             let bundled = scratch
-                .compensation(&aside, answers, trees, &wants)
+                .compensation(&aside, answers, trees, &wants, &moving)
                 .is_none_or(|(carried, bundle)| !carried.is_empty() || !bundle.is_empty());
             if bundled
                 || (finishes && emitted > 0 && !whole)
@@ -4010,7 +4012,7 @@ fn plan(
             {
                 return None;
             }
-            let bundle = scratch.compensation(want, answers, trees, &wants)?;
+            let bundle = scratch.compensation(want, answers, trees, &wants, &moving)?;
             Some((at, bundle))
         });
         let Some((at, (carried, bundle))) = forced else {
@@ -4856,6 +4858,7 @@ impl<'a> Scratch<'a> {
         answers: &BTreeSet<NodeId>,
         trees: &Trees,
         wants: &[Option<Want>],
+        moving: &BTreeSet<NodeId>,
     ) -> Option<(Vec<usize>, Vec<Want>)> {
         let Want::Move {
             id, parent, name, ..
@@ -4918,8 +4921,11 @@ impl<'a> Scratch<'a> {
             }
             let leaving: Vec<usize> = (wants.iter().enumerate())
                 .filter(|(at, slot)| {
-                    matches!(slot, Some(Want::Move { id: moved, .. })
-                        if !answers.contains(moved) && !carried.contains(at) && scratch.inside(moved, top))
+                    matches!(slot, Some(moved @ Want::Move { id: moved_id, .. })
+                        if moved_id != id
+                            && (!answers.contains(moved_id) || self.fit(moved, moving) != Fit::Valid)
+                            && !carried.contains(at)
+                            && scratch.inside(moved_id, top))
                 })
                 .map(|(at, _)| at)
                 .collect();
