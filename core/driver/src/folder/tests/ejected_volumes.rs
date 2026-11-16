@@ -309,19 +309,21 @@ fn a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_serve
     fs::rename(site.root.join("p"), site.root.join("p2")).unwrap();
     disks.moved(&site.root.join("p"), &site.root.join("p2"));
     observed(&mut a, &mut remote);
-    let synced = |remote: &Remote| {
+    let synced = |remote: &Remote, at: &str, gone: &str| {
         let files = user_files(remote);
-        assert_eq!(files.get("p2/Data/keep.docx"), Some(&keep), "{files:?}");
+        assert_eq!(files.get(&format!("{at}/Data/keep.docx")), Some(&keep), "{files:?}");
         assert!(
-            !files.keys().any(|path| path.starts_with("p/") || path.ends_with("on-the-disk.txt")),
+            !(files.keys()).any(|path| path.starts_with(gone) || path.ends_with("on-the-disk.txt")),
             "{files:?}"
         );
     };
-    synced(&remote);
+    synced(&remote, "p2", "p/");
     assert_eq!(held(&a), [("p2/Data".to_owned(), HeldDiskKind::MountedOver)]);
 
-    disks.detach(&site.root.join("p2/Data"));
+    fs::rename(site.root.join("p2"), site.root.join("p")).unwrap();
+    disks.moved(&site.root.join("p2"), &site.root.join("p"));
+    disks.detach(&site.root.join("p/Data"));
     observed(&mut a, &mut remote);
-    synced(&remote);
+    synced(&remote, "p", "p2/");
     assert_eq!(held(&a), []);
 }
