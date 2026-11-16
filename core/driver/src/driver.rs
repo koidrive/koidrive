@@ -726,7 +726,7 @@ impl Driver {
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
             setup_attempt: String::new(),
-            request_id: pending_claim::request_id(&pending, api.base(), code)
+            request_id: pending_claim::request_id(&self.inner._lock, &pending, api.base(), code)
                 .map_err(io_error(&pending))?,
         };
         let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
@@ -734,7 +734,7 @@ impl Driver {
             Err(error) => {
                 if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed)
                 {
-                    pending_claim::forget(&pending, api.base(), code)
+                    pending_claim::forget(&self.inner._lock, &pending, api.base(), code)
                         .map_err(io_error(&pending))?;
                 }
                 return Err(error.into());
@@ -753,7 +753,7 @@ impl Driver {
             device_name,
             "claimed the server",
         )?;
-        if let Err(error) = pending_claim::clear(&pending) {
+        if let Err(error) = pending_claim::clear(&self.inner._lock, &pending) {
             tracing::warn!(%error, "could not remove the finished claim's record");
         }
         Ok(account)

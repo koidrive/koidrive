@@ -489,6 +489,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let _lock = self.lock(true)?;
+        koidrive_state_file::recover(&self.dir.join(HELD))?;
         self.remove_unanswered()?;
         let mut kept = Vec::new();
         for run in self.held_runs()? {
@@ -895,7 +896,17 @@ impl Store {
     }
 
     fn lock(&self, wait: bool) -> io::Result<File> {
-        self.flock("lock", wait)
+        let lock = self.flock("lock", wait)?;
+        koidrive_state_file::recover(&self.dir)?;
+        for name in [
+            "settings.json.tmp",
+            "prompt.json.tmp",
+            "queue.json.tmp",
+            "queue-v2.json.tmp",
+        ] {
+            remove(&self.dir.join(name))?;
+        }
+        Ok(lock)
     }
 
     fn send_lock(&self) -> io::Result<File> {
@@ -936,9 +947,7 @@ fn read<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
 }
 
 fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec(value)?)?;
-    fs::rename(&temporary, path)
+    koidrive_state_file::write(path, &serde_json::to_vec(value)?)
 }
 
 fn remove(path: &Path) -> io::Result<()> {
@@ -1063,6 +1072,72 @@ mod tests {
         drop(hold);
         assert!(store.held().unwrap().is_empty());
         assert_eq!(held_files(dir.path()), 0);
+    }
+
+    #[test]
+    fn crashed_legacy_and_atomic_held_writes_are_removed_before_listing() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        for mode in ["legacy", "atomic"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut child = Child(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "store::tests::crashed_held_write_worker",
+                        "--nocapture",
+                    ])
+                    .env("KOI_HELD_CRASH_DIR", dir.path())
+                    .env("KOI_HELD_CRASH_MODE", mode)
+                    .stdin(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    assert_eq!(status.code(), Some(73));
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "crash worker timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let store = Store::new(dir.path());
+            assert_eq!(held_files(dir.path()), 3, "{mode} did not leave a stage");
+            assert!(store.held().unwrap().is_empty());
+            assert_eq!(held_files(dir.path()), 0, "{mode} left unconsented bytes");
+            store.set(true).unwrap();
+            assert!(store.peek().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn crashed_held_write_worker() {
+        use std::io::Write;
+        let Some(dir) = std::env::var_os("KOI_HELD_CRASH_DIR") else {
+            return;
+        };
+        let store = Store::new(Path::new(&dir));
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        let path = store.held_path(&hold.run);
+        let bytes = fs::read(&path).unwrap();
+        if std::env::var("KOI_HELD_CRASH_MODE").unwrap() == "legacy" {
+            fs::write(path.with_extension("json.tmp"), bytes).unwrap();
+        } else {
+            let stage = koidrive_state_file::AtomicFile::prepare(&path).unwrap();
+            stage.as_file().write_all(&bytes).unwrap();
+            std::mem::forget(stage);
+        }
+        std::process::exit(73);
     }
 
     #[test]

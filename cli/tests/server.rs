@@ -25,6 +25,10 @@ use url::Url;
 
 mod schema;
 
+#[cfg(target_os = "linux")]
+#[path = "support/executable.rs"]
+mod fixture;
+
 const WAIT: Duration = Duration::from_secs(30);
 
 fn server_url() -> Url {
@@ -185,8 +189,7 @@ impl Machine {
     #[cfg(target_os = "linux")]
     fn install(&mut self) {
         let koi = self.path(".local/bin/koi");
-        fs::create_dir_all(koi.parent().unwrap()).unwrap();
-        fs::copy(&self.koi, &koi).unwrap();
+        fixture::executable(&koi, File::open(&self.koi).unwrap());
         self.koi = koi;
     }
 

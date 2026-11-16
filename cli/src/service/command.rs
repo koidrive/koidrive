@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -12,9 +12,7 @@ pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
     let failed = |error: io::Error| format!("cannot write {}: {error}", path.display());
     let dir = path.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(dir).map_err(failed)?;
-    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(failed)?;
-    file.write_all(text.as_bytes()).map_err(failed)?;
-    file.persist(path).map_err(|error| failed(error.error))?;
+    koidrive_state_file::write(path, text.as_bytes()).map_err(failed)?;
     Ok(true)
 }
 

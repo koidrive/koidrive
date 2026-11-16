@@ -1345,6 +1345,7 @@ dependencies = [
  "koidrive-ipc",
  "koidrive-net",
  "koidrive-proto",
+ "koidrive-state-file",
  "koidrive-store",
  "koidrive-telemetry",
  "libc",
@@ -1400,6 +1401,7 @@ dependencies = [
  "koidrive-net",
  "koidrive-proto",
  "koidrive-sim",
+ "koidrive-state-file",
  "koidrive-store",
  "koidrive-telemetry",
  "koidrive-test-support",
@@ -1551,6 +1553,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "koidrive-state-file"
+version = "0.0.0-dev"
+dependencies = [
+ "getrandom 0.4.3",
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
 name = "koidrive-store"
 version = "0.0.0-dev"
 dependencies = [
@@ -1570,6 +1581,7 @@ name = "koidrive-telemetry"
 version = "0.0.0-dev"
 dependencies = [
  "getrandom 0.4.3",
+ "koidrive-state-file",
  "reqwest",
  "rustix",
  "serde",

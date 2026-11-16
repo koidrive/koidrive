@@ -244,3 +244,14 @@ fn only_what_koidrive_writes_leaves_a_state_folder() {
         assert!(!is_state_entry(name), "{name}");
     }
 }
+
+#[test]
+fn an_abandoned_helper_stage_is_removed_before_state_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = koidrive_state_file::AtomicFile::prepare(&dir.path().join(RECORD)).unwrap();
+    staged.as_file().write_all(b"unpublished state").unwrap();
+    rustix::fs::flock(staged.as_file(), rustix::fs::FlockOperation::Unlock).unwrap();
+    assert!(is_state(dir.path()));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    assert!(!dir.path().join(RECORD).exists());
+}

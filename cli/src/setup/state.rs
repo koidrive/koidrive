@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::{self, DirBuilder};
+use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 use koidrive_cloudflare::Jurisdiction;
@@ -97,17 +97,10 @@ impl StateFile {
         let write = || -> io::Result<()> {
             let dir = self.path.parent().expect("the state file has a directory");
             DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-            let temporary = self.path.with_extension("json.tmp");
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec_pretty(state).expect("the state serializes"))?;
-            file.sync_all()?;
-            fs::rename(&temporary, &self.path)?;
-            fs::File::open(dir)?.sync_all()
+            koidrive_state_file::write(
+                &self.path,
+                &serde_json::to_vec_pretty(state).expect("the state serializes"),
+            )
         };
         write().map_err(|error| CliError::from(format!("cannot write {}: {error}", self.path.display()))
             .human(format!("Could not save setup progress: {error}. Check local file permissions and available storage. Cloud changes may already have happened. Check the affected server in your account before repeating them. Run koi diagnose to collect a report.")))

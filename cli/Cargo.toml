@@ -41,6 +41,7 @@ koidrive-ipc = { path = "../core/ipc" }
 koidrive-net = { path = "../core/net" }
 koidrive-proto = { path = "../core/proto" }
 koidrive-store = { path = "../core/store" }
+koidrive-state-file = { path = "../core/state-file" }
 koidrive-telemetry = { path = "../core/telemetry" }
 getrandom = "0.4.3"
 reqwest = { version = "0.13.5", default-features = false }

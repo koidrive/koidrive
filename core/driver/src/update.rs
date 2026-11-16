@@ -5,8 +5,8 @@
 //! it runs, with no request of its own. `koi update` asks again at once with [`check_now`].
 
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -462,11 +462,12 @@ pub(crate) fn load(path: &Path) -> Option<Checked> {
 }
 
 fn save(path: &Path, checked: &Checked) -> io::Result<()> {
-    let temp = path.with_extension("json.new");
-    let mut file = File::create(&temp)?;
-    file.write_all(&serde_json::to_vec(checked)?)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)
+    let legacy = path.with_extension("json.new");
+    koidrive_state_file::write_with_legacy(
+        path,
+        &serde_json::to_vec(checked)?,
+        &[legacy.file_name().expect("the update cache has a name")],
+    )
 }
 
 fn now_ms() -> i64 {
@@ -1690,6 +1691,36 @@ mod tests {
         assert!(checked.due() > now_ms());
         assert_eq!(checked.etag.as_deref(), Some("\"same\""));
         assert_eq!(checked.release, release("99.0.0"));
+    }
+
+    #[test]
+    fn a_successful_update_save_removes_the_previous_releases_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let previous = Checked::default().after(
+            Answer::Releases {
+                etag: None,
+                release: None,
+            },
+            100,
+        );
+        save(&path, &previous).unwrap();
+        let legacy = path.with_extension("json.new");
+        fs::write(&legacy, serde_json::to_vec(&previous).unwrap()).unwrap();
+        let current = previous.after(
+            Answer::Releases {
+                etag: Some("\"current\"".into()),
+                release: release("99.0.0"),
+            },
+            200,
+        );
+        save(&path, &current).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec(&current).unwrap()
+        );
+        assert_eq!(load(&path), Some(current));
+        assert!(!legacy.exists());
     }
 
     #[test]
