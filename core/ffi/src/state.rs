@@ -159,7 +159,7 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 driver::HeldDiskKind::MountedOver => ProblemKind::DiskMountedOver,
             };
             found.push((
-                format!("disk-{space}-{}", disk.path),
+                format!("disk-{space}-{}", koidrive_fs::quoted(&disk.path)),
                 format!("{kind:?}"),
                 Problem {
                     id: String::new(),

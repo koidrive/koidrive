@@ -249,3 +249,79 @@ fn two_copies_of_one_disk_image_mounted_at_once_keep_their_own_files() {
     assert_eq!(last.get("B/S/h.txt"), after.get("B/S/g.txt"), "{last:?}");
     assert!(!last.contains_key("A/S/g.txt"), "{last:?}");
 }
+
+fn upgraded_with_a_disk_mounted(stopped: bool) {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let mut remote = Remote::new();
+    let (site, a, _image) = with_disk(&mut disks, &mut remote, "Disk");
+    let tree = user_files(&remote);
+    drop(a);
+    let mut store = Store::open(&site.db).unwrap();
+    store
+        .transaction(|tx| tx.set_volume_mounts(&BTreeMap::new()))
+        .unwrap();
+    drop(store);
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(user_files(&remote), tree);
+    assert_eq!(held(&a), []);
+
+    let at = site.root.join("Disk");
+    if stopped {
+        drop(a);
+        disks.detach(&at);
+        a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+    } else {
+        disks.detach(&at);
+        observed(&mut a, &mut remote);
+    }
+    assert_eq!(user_files(&remote), tree);
+    assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
+}
+
+#[test]
+fn a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_syncs_stays_on_the_server() {
+    upgraded_with_a_disk_mounted(false);
+}
+
+#[test]
+fn a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_is_stopped_stays_on_the_server() {
+    upgraded_with_a_disk_mounted(true);
+}
+
+#[test]
+fn a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_server() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    on_the_disk(&site.root, &["p/Data/keep.docx"]);
+    observed(&mut a, &mut remote);
+    let keep = user_files(&remote)["p/Data/keep.docx"].clone();
+    let image = disks.image("Over");
+    disks.attach(&image, &site.root.join("p/Data"));
+    on_the_disk(&site.root.join("p/Data"), &["on-the-disk.txt"]);
+    observed(&mut a, &mut remote);
+    fs::rename(site.root.join("p"), site.root.join("p2")).unwrap();
+    disks.moved(&site.root.join("p"), &site.root.join("p2"));
+    observed(&mut a, &mut remote);
+    let synced = |remote: &Remote| {
+        let files = user_files(remote);
+        assert_eq!(files.get("p2/Data/keep.docx"), Some(&keep), "{files:?}");
+        assert!(
+            !files.keys().any(|path| path.starts_with("p/") || path.ends_with("on-the-disk.txt")),
+            "{files:?}"
+        );
+    };
+    synced(&remote);
+    assert_eq!(held(&a), [("p2/Data".to_owned(), HeldDiskKind::MountedOver)]);
+
+    disks.detach(&site.root.join("p2/Data"));
+    observed(&mut a, &mut remote);
+    synced(&remote);
+    assert_eq!(held(&a), []);
+}

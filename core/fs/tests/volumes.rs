@@ -500,3 +500,86 @@ fn the_watcher_takes_a_volume_back_when_it_is_mounted_again() {
         }
     }
 }
+
+fn moved_above_a_volume_mounted_over_synced_files(scanned_before_the_move: bool) {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let disk = disks.image("Over");
+    write(&root.join("p/Data/keep.docx"), "keep");
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.attach(&disk, &root.join("p/Data"));
+    write(&root.join("p/Data/vol.txt"), "on the disk");
+    if scanned_before_the_move {
+        assert_eq!(rescan(&mut snapshot, &root, &[""]).changes, []);
+    }
+    fs::rename(root.join("p"), root.join("p2")).unwrap();
+    disks.moved(&root.join("p"), &root.join("p2"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(
+        found.changes,
+        [Change::Renamed {
+            from: "p".into(),
+            to: "p2".into(),
+            kind: EntryKind::Dir
+        }]
+    );
+    holds(&snapshot, &["p2/Data/keep.docx"]);
+    assert!(!snapshot.entries.contains_key(Path::new("p2/Data/vol.txt")));
+    assert_eq!(
+        snapshot.detached.get(Path::new("p2/Data")),
+        Some(&Detached::Covered)
+    );
+
+    fs::rename(root.join("p2"), root.join("p")).unwrap();
+    disks.moved(&root.join("p2"), &root.join("p"));
+    disks.detach(&root.join("p/Data"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(
+        found.changes,
+        [Change::Renamed {
+            from: "p2".into(),
+            to: "p".into(),
+            kind: EntryKind::Dir
+        }]
+    );
+    assert!(snapshot.detached.is_empty());
+    holds(&snapshot, &["p/Data/keep.docx"]);
+}
+
+#[test]
+fn a_folder_above_a_volume_mounted_over_synced_files_moves_with_them() {
+    moved_above_a_volume_mounted_over_synced_files(true);
+}
+
+#[test]
+fn a_folder_moved_while_a_volume_is_mounted_over_synced_files_in_it_keeps_them() {
+    moved_above_a_volume_mounted_over_synced_files(false);
+}
+
+#[test]
+fn a_volume_known_as_a_plain_folder_is_taken_as_that_volume() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let disk = disks.image("Known");
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(&disk, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    snapshot.entries.get_mut(Path::new("Disk")).unwrap().mount = None;
+    assert_eq!(rescan(&mut snapshot, &root, &[""]).changes, []);
+    assert!(mounted(&snapshot, "Disk"));
+    assert!(snapshot.detached.is_empty());
+
+    disks.detach(&root.join("Disk"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(removals(&found.changes), Vec::<&Change>::new());
+    assert_eq!(away(&snapshot), ["Disk"]);
+    holds(
+        &snapshot,
+        &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+}

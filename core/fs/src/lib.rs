@@ -942,40 +942,47 @@ impl Snapshot {
             }
         }
         let (left_out, mut still_left_out) = take_left_out(&mut old, &scan.left_out);
+        let mount_names: BTreeSet<OsString> = (scan.new.iter())
+            .filter(|(_, now)| now.mount.is_some())
+            .filter_map(|(path, _)| path.file_name().map(OsStr::to_os_string))
+            .collect();
         let mut held_from = BTreeMap::new();
         for (path, known) in &old {
-            if known.mount.is_none()
-                || scan.new.contains_key(path)
-                || (scan.unreadable.iter()).any(|blocked| path.starts_with(blocked))
+            let held = scan.mounts.contains_key(path);
+            if held
+                && (scan.new.contains_key(path)
+                    || (scan.unreadable.iter()).any(|blocked| path.starts_with(blocked)))
             {
+                continue;
+            }
+            let hides_children = known.kind == EntryKind::Dir
+                && known.mount.is_none()
+                && path
+                    .file_name()
+                    .is_some_and(|name| mount_names.contains(name))
+                && (old.range(path.clone()..).nth(1))
+                    .is_some_and(|(inside, _)| inside.starts_with(path));
+            if !held && !hides_children {
                 continue;
             }
             let Some(at) = moved_to(path, &old, &scan.new, &self.entries) else {
                 continue;
             };
-            if (scan.new.get(&at)).is_some_and(|now| known.is_back(now)) {
+            let now = scan.new.get(&at);
+            let keep = match known.mount {
+                Some(_) => !now.is_some_and(|now| known.is_back(now)),
+                None => now.is_some_and(|now| {
+                    now.mount.is_some()
+                        && (held || now.id != known.id || now.mount == Some(Mount::Unidentified))
+                }),
+            };
+            if !keep {
                 continue;
             }
             scan.new.insert(at.clone(), *known);
-            scan.detached.push((at.clone(), Detached::Away));
+            scan.detached.push((at.clone(), known.detached()));
             scan.unreadable.push(at.clone());
             held_from.insert(at, path.clone());
-        }
-        let covering: Vec<PathBuf> = (scan.new.iter())
-            .filter(|(path, now)| {
-                now.mount.is_some()
-                    && (old.get(*path)).is_some_and(|before| {
-                        before.kind == EntryKind::Dir && before.mount.is_none()
-                    })
-                    && (old.range((*path).clone()..).nth(1))
-                        .is_some_and(|(inside, _)| inside.starts_with(path))
-            })
-            .map(|(path, _)| path.clone())
-            .collect();
-        for path in covering {
-            scan.new.insert(path.clone(), old[&path]);
-            scan.detached.push((path.clone(), Detached::Covered));
-            scan.unreadable.push(path);
         }
         let unreadable = std::mem::take(&mut scan.unreadable);
         for blocked in &unreadable {
