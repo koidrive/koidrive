@@ -1160,7 +1160,7 @@ fn server_copy(
                     && trees.local().get(child).is_none()
                     && device.removed_from.contains_key(child)
                     && !removed_left_out.contains(child)
-                    && !device.kept_back.contains(child)
+                    && !(device.kept_back.contains(child) && acknowledged_shape(trees, child).is_none())
                     && !kept_by_r7(device, child)
             });
             !removed
@@ -1420,6 +1420,24 @@ fn note_kept_back(device: &mut Device) {
     device.kept_back.extend(kept);
 }
 
+fn note_unacknowledged_taken_along_kept_back(
+    device: &mut Device,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) {
+    let trees = &device.trees;
+    let kept: Vec<String> = (kept_with.keys())
+        .filter(|id| {
+            device.removed_from.contains_key(*id)
+                && trees.local().get(id).is_none()
+                && trees.remote().live(id).is_some()
+                && acknowledged_shape(trees, id).is_none()
+                && !trees.excluded(id)
+        })
+        .cloned()
+        .collect();
+    device.kept_back.extend(kept);
+}
+
 /// [`run_cut`] with changes to the ignore rules: the first of `rulings` is made before the offline
 /// local changes, and one more before each of the `during` changes. At the end a node the device
 /// excludes, or cannot place because of an excluded one ([`waits_on_excluded`]), must have R equal
@@ -1646,6 +1664,7 @@ fn run_ignoring_answering_after(
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
+        note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
         let revived = revive(&device, &discarded, &kept_with);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
@@ -1770,6 +1789,7 @@ fn run_ignoring_answering_after(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
+                device.acted.remove(id);
                 placed.remove(id);
                 revived_once.remove(id);
                 sent_nodes.remove(id);

@@ -520,6 +520,92 @@ fn a_first_link_discard_gives_back_the_folder_when_the_user_edits_inside_a_serve
     .unwrap();
 }
 
+#[test]
+fn a_first_link_discard_takes_along_a_server_folder_after_the_keep_rule_brings_back_a_file_deleted_in_it()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(true, vec![act(0, 0, 0, 3, 0)])],
+        act(8, 0, 0, 0, 0),
+        vec![
+            (false, vec![act(1, 0, 0, 0, 0)]),
+            (false, vec![act(4, 16998930721721672818, 0, 0, 0)]),
+        ],
+        act(7, 394369, 0, 0, 0),
+        act(9, 0, 0, 0, 2),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 0, 0),
+            act(1, 0, 7214111189693794999, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 0, 0),
+        ],
+        &[act(0, 0, 0, 0, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        9,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_leaves_a_server_folder_to_the_user_once_the_rules_stop_keeping_back_a_delete_in_it()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (false, vec![act(0, 0, 7102054750434410170, 2, 0)]),
+            (
+                true,
+                vec![
+                    act(3, 10671660887448527019, 10242677703864011517, 2, 0),
+                    act(4, 12125739356159939665, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(8, 0, 0, 0, 0),
+        vec![(false, vec![act(2, 3394935901777304464, 0, 0, 0)])],
+        act(7, 544876195332911984, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["a"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 5, 0),
+            act(1, 0, 12486383627201936880, 3, 0),
+            act(1, 0, 9437286109419346847, 2, 0),
+            act(0, 0, 2651891447982760259, 2, 0),
+        ],
+        &[
+            act(0, 0, 0, 3, 0),
+            act(1, 0, 1024634189188085383, 2, 0),
+            act(1, 0, 3876941951795470939, 0, 0),
+            act(1, 0, 9574629332979124862, 2, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),
