@@ -204,19 +204,22 @@ pub(crate) fn adopt_by_marks_first(
     ids: &mut IdGen,
     now_ms: u64,
 ) {
-    let marks: Marks = (marks.iter())
-        .map(|(local, node)| {
-            let elsewhere = local != node
-                && trees.synced().get(local).is_none()
+    let given_up: BTreeMap<NodeId, NodeId> = (claimed_once(trees, marks).into_iter())
+        .filter(|(local, node)| {
+            local != node
                 && trees.remote().get(local).is_some()
-                && !trees.excluded(local);
-            if !elsewhere {
-                return (local.clone(), node.clone());
-            }
-            let fresh = ids.uuid_v7(now_ms);
-            rekey(trees, local, &fresh);
-            (fresh, node.clone())
+                && !trees.excluded(local)
+                && (trees.local().get(local)).is_some_and(|entry| {
+                    !shapes_to_follow(trees, history, node, &entry.shape).is_empty()
+                })
         })
+        .map(|(local, _)| (local.clone(), ids.uuid_v7(now_ms)))
+        .collect();
+    for (local, fresh) in &given_up {
+        rekey(trees, local, fresh);
+    }
+    let marks: Marks = (marks.iter())
+        .map(|(local, node)| (given_up.get(local).unwrap_or(local).clone(), node.clone()))
         .collect();
     let marks = &marks;
     let folders = folder_places(trees, history);

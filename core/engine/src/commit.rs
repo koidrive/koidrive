@@ -550,7 +550,7 @@ impl Commits {
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
     /// scan of the disk (section 6.4). `device_seq` is the server's count of this device's commits
     /// there, which the next commit continues, and `history` the shapes the log gave nodes since
-    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark names a node other than its ID, where R holds that ID, takes a new ID first, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
+    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark claims a node other than its ID, where R holds that ID, takes a new ID first, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
     /// device changed it since S. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the

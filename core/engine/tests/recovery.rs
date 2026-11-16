@@ -2376,6 +2376,22 @@ fn keeps_the_mark_invariants(
     let holder: BTreeMap<&str, usize> = (found.iter().enumerate())
         .filter_map(|(i, node)| Some((node.as_deref()?, i)))
         .collect();
+    let claimable = |shape: &Shape, node: &str| {
+        let live =
+            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
+        let content = (known.get(node).into_iter().flatten())
+            .any(|known| known.kind == shape.kind && known.content == shape.content);
+        claims[node] == 1 && live && logged.contains(node) && content
+    };
+    let gives_up = |holder: &str| {
+        before.synced().get(holder).is_none()
+            && (local.iter()).any(|(id, shape)| {
+                *id == holder
+                    && mark_of.get(id).is_some_and(|node| {
+                        node != id && !local_ids.contains(node) && claimable(shape, node)
+                    })
+            })
+    };
     for (i, (id, shape)) in local.iter().enumerate() {
         if before.synced().get(id).is_some() {
             continue;
@@ -2383,15 +2399,8 @@ fn keeps_the_mark_invariants(
         let Some(node) = mark_of.get(id).copied() else {
             continue;
         };
-        let unique = claims[node] == 1;
-        let given_up = (mark_of.get(node)).is_some_and(|other| *other != node)
-            && before.synced().get(node).is_none();
-        let free = !local_ids.contains(node) || node == *id || given_up;
-        let live =
-            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
-        let content = (known.get(node).into_iter().flatten())
-            .any(|known| known.kind == shape.kind && known.content == shape.content);
-        if !(unique && free && live && logged.contains(node) && content) {
+        let free = !local_ids.contains(node) || node == *id || gives_up(node);
+        if !(free && claimable(shape, node)) {
             continue;
         }
         assert!(
@@ -3375,6 +3384,56 @@ fn an_entry_marked_with_the_id_another_marked_entry_gives_up_is_adopted_as_that_
     );
     assert_eq!(local_shape(&trees, "n1"), Some(&file("d0", "c", 2)));
     assert_eq!(trees.local().get("e0"), None);
+}
+
+#[test]
+fn a_file_whose_mark_names_a_trashed_node_keeps_its_id_under_a_folder_renamed_here() {
+    let (trees, commits, _) = followed(
+        &[("f", dir(ROOT, "p")), ("n1", file("f", "b", 2))],
+        &[],
+        &[
+            live("f", dir(ROOT, "q")),
+            live("n1", file("f", "b", 2)),
+            Remote("n2", file(ROOT, "a", 2), true, 1),
+        ],
+        &[("n2", file(ROOT, "a", 2))],
+        &[("n1", "n2")],
+    );
+    assert!(trees.local().get("n1").is_some());
+    assert!(
+        commits
+            .questions()
+            .iter()
+            .all(|question| question.holds().all(|id| id != "n1"))
+    );
+}
+
+#[test]
+fn publish_moves_no_server_file_out_of_a_folder_whose_mark_names_a_trashed_node() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("f", dir(ROOT, "p")),
+            ("d1", dir("f", "q")),
+            ("n1", file("d1", "b", 1)),
+        ],
+        &[],
+        &[
+            live("f", dir(ROOT, "q")),
+            live("d1", dir("f", "q")),
+            live("n1", file("d1", "b", 1)),
+            Remote("d9", dir(ROOT, "r"), true, 1),
+        ],
+        &[("d9", dir(ROOT, "r"))],
+        &[("d1", "d9")],
+    );
+    let asked: Vec<String> = (commits.questions().iter())
+        .map(|question| question.id.clone())
+        .collect();
+    for id in asked {
+        commits.decide(&id, Answer::Publish);
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.contains(&("move", "n1".to_owned())), "{sent:?}");
 }
 
 #[test]
