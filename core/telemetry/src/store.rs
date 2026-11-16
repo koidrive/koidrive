@@ -19,6 +19,8 @@ pub const MAX_EVENTS: usize = 500;
 const QUEUE: &str = "queue-v2.json";
 const MAX_APP_CRASH_REPORTS: usize = 64;
 const OLD_QUEUE: &str = "queue.json";
+const HELD: &str = "held.json";
+const HELD_LOCK: &str = "held.lock";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,6 +34,37 @@ pub struct Settings {
     /// the app last read the setting and is sent only while that generation is still in force.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
+    /// Reports carry `internal: true`, set by `koi telemetry internal on` on the machines of people who build Koidrive.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub internal: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// The reports of a run that asks whether to send them, kept apart from the queue until [`Store::answer`] or
+/// [`Store::forget`]. It holds `held.lock` while its process lives, so what a run that died kept is known to be
+/// unanswered.
+#[derive(Debug)]
+pub struct Hold {
+    id: InstallId,
+    _lock: File,
+}
+
+impl Hold {
+    /// The install id the reports go under once the answer is yes.
+    pub fn id(&self) -> &InstallId {
+        &self.id
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Held {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<InstallId>,
+    #[serde(default)]
+    queue: Queue,
 }
 
 /// What the app writes into its crash reports each time it reads the setting.
@@ -358,6 +391,10 @@ impl Store {
     /// queue goes too.
     pub fn set(&self, on: bool) -> io::Result<Settings> {
         let _lock = self.lock(true)?;
+        self.choose(on, None)
+    }
+
+    fn choose(&self, on: bool, id: Option<InstallId>) -> io::Result<Settings> {
         let (mut settings, replaced) = match self.settings() {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => (Settings::default(), true),
             settings => (settings?, false),
@@ -371,11 +408,122 @@ impl Store {
             self.remove_queues()?;
         }
         if on {
-            settings.install_id.get_or_insert_with(InstallId::generate);
+            settings
+                .install_id
+                .get_or_insert_with(|| id.unwrap_or_else(InstallId::generate));
         }
         write(&self.dir.join("settings.json"), &settings)?;
         remove(&self.dir.join("prompt.json"))?;
         Ok(settings)
+    }
+
+    /// Marks reports internal or not, whether or not they are on.
+    pub fn mark_internal(&self, internal: bool) -> io::Result<Settings> {
+        let _lock = self.lock(true)?;
+        let mut settings = self.settings()?;
+        settings.internal = internal;
+        write(&self.dir.join("settings.json"), &settings)?;
+        Ok(settings)
+    }
+
+    /// Whether reports are marked internal, with this profile's mark and the process's environment.
+    pub fn internal(&self, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> io::Result<bool> {
+        Ok(consent::internal(var, self.settings()?.internal))
+    }
+
+    /// Starts keeping this run's reports apart until its question is answered. None while another live run keeps
+    /// its own. What a run that died kept is deleted.
+    pub fn hold(&self) -> io::Result<Option<Hold>> {
+        let lock = match self.flock(HELD_LOCK, false) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let _lock = self.lock(true)?;
+        let id = (self.settings()?.install_id).unwrap_or_else(InstallId::generate);
+        let held = Held {
+            id: Some(id.clone()),
+            queue: Queue::default(),
+        };
+        write(&self.dir.join(HELD), &held)?;
+        Ok(Some(Hold { id, _lock: lock }))
+    }
+
+    /// Adds to what `hold` keeps. Dropped once the kept reports were deleted, as by `koi telemetry off`.
+    pub fn keep(&self, hold: &Hold, pending: Pending) -> io::Result<()> {
+        if pending.hours.values().all(HourlyReport::is_empty) && pending.events.is_empty() {
+            return Ok(());
+        }
+        let _lock = self.lock(true)?;
+        let mut held = self.read_held()?;
+        if held.id.as_ref() != Some(&hold.id) {
+            return Ok(());
+        }
+        let events = (pending.events.into_iter())
+            .map(|event| Queued {
+                event,
+                origin: self.origin.clone(),
+            })
+            .collect();
+        held.queue.put(pending.hours.into_values(), events);
+        held.queue.trim(crate::this_hour());
+        write(&self.dir.join(HELD), &held)
+    }
+
+    /// What a live run keeps until its question is answered, with the install id a yes sends it under.
+    pub fn held(&self) -> io::Result<Option<(InstallId, Batch)>> {
+        if !self.dir.join(HELD).exists() {
+            return Ok(None);
+        }
+        match self.flock(HELD_LOCK, false) {
+            Ok(_unanswered) => {
+                let _lock = self.lock(true)?;
+                remove(&self.dir.join(HELD))?;
+                return Ok(None);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+        let held = self.read_held()?;
+        Ok(held.id.map(|id| {
+            let batch = Batch {
+                hours: held.queue.hours.into_values().collect(),
+                events: held.queue.events,
+            };
+            (id, batch)
+        }))
+    }
+
+    /// Stores the answer to a run's question. Yes queues what `hold` kept under its install id. No deletes it with
+    /// the install id and everything else waiting, as [`Store::set`] does.
+    pub fn answer(&self, hold: Hold, on: bool) -> io::Result<Settings> {
+        let _lock = self.lock(true)?;
+        let held = self.read_held()?;
+        remove(&self.dir.join(HELD))?;
+        let settings = self.choose(on, Some(hold.id.clone()))?;
+        if on && held.id.is_some() && held.id == settings.install_id {
+            let mut queue = self.queue()?;
+            queue.put(held.queue.hours.into_values(), held.queue.events);
+            queue.trim(crate::this_hour());
+            write(&self.dir.join(QUEUE), &queue)?;
+        }
+        Ok(settings)
+    }
+
+    /// Deletes what `hold` kept, for a question left unanswered.
+    pub fn forget(&self, hold: Hold) -> io::Result<()> {
+        let _lock = self.lock(true)?;
+        if self.read_held()?.id.as_ref() == Some(&hold.id) {
+            remove(&self.dir.join(HELD))?;
+        }
+        Ok(())
+    }
+
+    fn read_held(&self) -> io::Result<Held> {
+        match read(&self.dir.join(HELD)) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(Held::default()),
+            read => read,
+        }
     }
 
     /// Deletes everything waiting to be sent and then draws a new install id, or none without an id.
@@ -676,6 +824,7 @@ impl Store {
     }
 
     fn remove_queues(&self) -> io::Result<()> {
+        remove(&self.dir.join(HELD))?;
         remove(&self.dir.join(QUEUE))?;
         remove(&self.dir.join(OLD_QUEUE))
     }
@@ -749,6 +898,94 @@ mod tests {
     use super::*;
     use crate::Recorder;
     use crate::schema::{Command, Counter, Failure, SourceFile};
+
+    fn counted(command: Command) -> Pending {
+        let recorder = Recorder::on();
+        recorder.count(Counter::Command(command), 1);
+        recorder.take()
+    }
+
+    #[test]
+    fn a_yes_queues_what_was_held_under_the_id_the_preview_showed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        assert!(store.peek().unwrap().is_empty());
+        let (shown, held) = store.held().unwrap().unwrap();
+        assert_eq!(&shown, hold.id());
+        assert_eq!(held.hours[0].counters["command"]["setup"], 1);
+        let settings = store.answer(hold, true).unwrap();
+        assert_eq!(settings.enabled, Some(true));
+        assert_eq!(settings.install_id, Some(shown));
+        assert_eq!(
+            store.peek().unwrap().hours[0].counters["command"]["setup"],
+            1
+        );
+        assert!(store.held().unwrap().is_none());
+        assert!(!dir.path().join("telemetry/held.json").exists());
+    }
+
+    #[test]
+    fn a_no_or_no_answer_deletes_what_was_held() {
+        for answer in [Some(false), None] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path());
+            let hold = store.hold().unwrap().unwrap();
+            store.keep(&hold, counted(Command::Setup)).unwrap();
+            match answer {
+                Some(on) => drop(store.answer(hold, on).unwrap()),
+                None => store.forget(hold).unwrap(),
+            }
+            assert!(store.held().unwrap().is_none());
+            assert!(store.peek().unwrap().is_empty());
+            assert!(!dir.path().join("telemetry/held.json").exists());
+            assert_eq!(store.settings().unwrap().enabled, answer);
+        }
+    }
+
+    #[test]
+    fn what_a_run_that_died_held_is_deleted_and_never_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        assert!(store.hold().unwrap().is_none(), "two runs held at once");
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        drop(hold);
+        assert!(store.held().unwrap().is_none());
+        assert!(!dir.path().join("telemetry/held.json").exists());
+        let next = store.hold().unwrap().unwrap();
+        store.answer(next, true).unwrap();
+        assert!(store.peek().unwrap().is_empty());
+    }
+
+    #[test]
+    fn turning_reports_off_meanwhile_drops_what_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        store.set(false).unwrap();
+        store.keep(&hold, counted(Command::Join)).unwrap();
+        assert!(store.held().unwrap().is_none());
+        store.answer(hold, true).unwrap();
+        assert!(store.peek().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_internal_mark_survives_turning_reports_off_and_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        assert!(!store.internal(|_| None).unwrap());
+        store.mark_internal(true).unwrap();
+        store.set(false).unwrap();
+        store.set(true).unwrap();
+        store.reset().unwrap();
+        assert!(store.internal(|_| None).unwrap());
+        assert_eq!(store.settings().unwrap().enabled, Some(true));
+        store.mark_internal(false).unwrap();
+        assert!(!store.internal(|_| None).unwrap());
+    }
 
     #[test]
     fn an_earlier_release_queue_stays_when_it_cannot_be_read_after_its_batch_went() {
@@ -848,6 +1085,7 @@ mod tests {
                 enabled: Some(false),
                 install_id: None,
                 generation: off.generation.clone(),
+                internal: false,
             }
         );
         assert!(store.peek().unwrap().is_empty());

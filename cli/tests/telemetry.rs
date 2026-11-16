@@ -171,7 +171,7 @@ fn noninteractive_setup_never_asks_about_reports() {
     ] {
         let home = tempfile::tempdir().unwrap();
         let text = stdout(&koi(home.path(), &args, &vars));
-        assert!(!text.contains("Send anonymous usage reports"), "{text}");
+        assert!(!text.contains("Send usage reports"), "{text}");
         assert!(!home.path().join("state/koidrive/telemetry").exists());
     }
 }

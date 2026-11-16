@@ -35,4 +35,4 @@ For setup and everyday sync on a Mac, use the [Mac app guide](macos.md). The fol
 - [Background service and files](service.md): the service on Linux and macOS, running the daemon yourself, `koi update` and the update check, and the files on this machine.
 - [JSON output](json-output.md): the envelope, decisions, retries and exit statuses.
 - [Limits](limits.md): what the Workers Free plan allows, and Koidrive's own limits.
-- [Usage reports](telemetry.md): what the anonymous usage reports hold, and how to turn them off.
+- [Usage reports](telemetry.md): what usage reports hold, and how to turn them off.

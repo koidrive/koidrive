@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA: u16 = 2;
+pub const SCHEMA: u16 = 3;
 
 /// What one install recorded in one UTC hour. Its keys are always those of a [`Counter`], a [`Level`] or a [`Measure`]: only a
 /// [`Recorder`](crate::Recorder) fills it, and reading one from JSON keeps only the keys of the closed set.
@@ -759,6 +759,16 @@ pub enum Build {
     Dev,
 }
 
+/// Which line of releases a version belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    Dev,
+    /// An alpha, beta or release candidate: a version with a pre-release part, such as `0.1.0-alpha.3`.
+    Prerelease,
+    Release,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Os {
@@ -896,6 +906,14 @@ impl Version {
     /// Whether this is the fixed local development version, with optional build metadata.
     pub fn is_development(&self) -> bool {
         self.0.split('+').next() == Some("0.0.0-dev")
+    }
+
+    pub fn channel(&self) -> Channel {
+        match self.0.split('+').next().unwrap_or_default() {
+            _ if self.is_development() => Channel::Dev,
+            version if version.contains('-') => Channel::Prerelease,
+            _ => Channel::Release,
+        }
     }
 
     pub fn parse(value: &str) -> Result<Self, Invalid> {

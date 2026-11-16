@@ -26,7 +26,7 @@ Setup links the folder and starts background sync. If you cancel a folder questi
 
 The daemon checks the folder again before it links it. If the folder was replaced, or files you didn't approve arrived while setup waited, it refuses the link, and you run `koi setup` again.
 
-The last question is **Send anonymous usage reports?**, unless you already chose or an environment variable decides it. Press Enter for Yes. [Usage reports](telemetry.md) lists what they hold.
+The last question is **Send usage reports?**, unless you already chose or an environment variable decides it. Setup asks it at the end of the run, whether setup succeeded, failed or was cancelled. Until you answer, the reports of this setup wait on your machine. Yes sends them and later reports. No, or closing the question, deletes them. Press Enter for Yes. [Usage reports](telemetry.md) lists what they hold.
 
 When background sync is running, setup ends with:
 

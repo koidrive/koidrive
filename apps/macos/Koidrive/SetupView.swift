@@ -189,7 +189,7 @@ private struct ServerStep: View {
             if setup.asksForUsageReports {
                 Toggle(isOn: $setup.sendsUsageReports) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Send anonymous usage reports")
+                        Text("Send usage reports")
                             .foregroundStyle(Color.text)
                         Text("It never shares file names, paths or contents.")
                             .font(.callout)

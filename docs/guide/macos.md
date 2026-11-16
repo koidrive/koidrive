@@ -48,7 +48,7 @@ Open **Settings** from the menu bar:
 - In **Account**, check your server and devices, generate a pairing code with **Add a Device…**, remove another device or sign out. Signing out unlinks this Mac's folders but keeps their files.
 - In **Storage**, check each space's storage use and choose **Refresh** to reload it.
 - In **Problems**, read what stopped or failed and follow the advice for the affected folder or file.
-- In **General**, choose whether Koidrive opens at login and sends anonymous usage reports, and see whether Koidrive is up to date.
+- In **General**, choose whether Koidrive opens at login and sends usage reports, and see whether Koidrive is up to date.
 
 ## Update Koidrive
 

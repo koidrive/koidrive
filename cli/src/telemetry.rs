@@ -14,7 +14,7 @@ use koidrive_telemetry::schema::{
     magnitude,
 };
 use koidrive_telemetry::{
-    Environment, Event, InstallId, Mode, Origin, Recorder, Sent, Source, Store, Uploader,
+    Environment, Event, Hold, InstallId, Mode, Origin, Recorder, Sent, Source, Store, Uploader,
     install_panic_hook, should_ask,
 };
 use schemars::JsonSchema;
@@ -38,7 +38,7 @@ pub enum Switch {
 pub enum TelemetryAction {
     /// Show whether usage reports are sent, why, and what waits to be sent.
     Status,
-    /// Send anonymous usage reports.
+    /// Send usage reports.
     On,
     /// Stop sending usage reports, and delete the install id and everything not sent yet.
     Off,
@@ -46,6 +46,11 @@ pub enum TelemetryAction {
     Preview,
     /// Draw a new install id and delete everything not sent yet.
     Reset,
+    /// Mark this machine's reports as internal, for machines of people who build Koidrive.
+    Internal {
+        #[arg(value_enum)]
+        state: Switch,
+    },
 }
 
 /// The recorder of this run, the install id its sums belong to and the flow its setup steps belong to.
@@ -57,6 +62,7 @@ struct Run {
     /// The setup flow this run is in, once it is known: `koi setup` learns it from the person's choice.
     flow: Mutex<Option<SetupFlow>>,
     command: schema::Command,
+    hold: Mutex<Option<Hold>>,
 }
 
 static RUN: OnceLock<Run> = OnceLock::new();
@@ -75,6 +81,7 @@ pub async fn start(
     switch: Option<Switch>,
     command: schema::Command,
     flow: Option<SetupFlow>,
+    asks: bool,
 ) {
     let client = match command {
         schema::Command::Daemon => Client::CliDaemon,
@@ -103,8 +110,22 @@ pub async fn start(
                 .ok()
         })
         .flatten();
+    let undecided = asks
+        && store
+            .settings()
+            .is_ok_and(|settings| should_ask(var, settings.enabled));
+    let hold = undecided
+        .then(|| {
+            (store.hold())
+                .inspect_err(
+                    |error| tracing::debug!(%error, "telemetry cannot be kept until the answer"),
+                )
+                .ok()
+                .flatten()
+        })
+        .flatten();
     let recorder = Recorder::off();
-    recorder.record_for(id.as_ref());
+    recorder.record_for(hold.as_ref().map(Hold::id).or(id.as_ref()));
     recorder.count(Counter::Command(command), 1);
     install_panic_hook(store.clone());
     let _ = RUN.set(Run {
@@ -113,31 +134,60 @@ pub async fn start(
         id: Mutex::new(id),
         flow: Mutex::new(flow),
         command,
+        hold: Mutex::new(hold),
     });
 }
 
 pub async fn ask(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
     let store = Store::new(&paths.state_dir);
-    match store.settings() {
-        Ok(settings) if should_ask(var, settings.enabled) => {
-            match store.begin_prompt() {
-                Ok(true) => {}
-                Ok(false) => return Ok(()),
-                Err(error) => {
-                    tracing::warn!(%error, "the unanswered telemetry question could not be stored");
-                    return Ok(());
-                }
+    let hold = take_hold();
+    let (asked, answer) = match store.settings() {
+        Ok(settings) if should_ask(var, settings.enabled) => match store.begin_prompt() {
+            Ok(true) => (true, question(terminal).await),
+            Ok(false) => (
+                false,
+                Ok(store.settings().ok().and_then(|settings| settings.enabled)),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "the unanswered telemetry question could not be stored");
+                (false, Ok(None))
             }
-            if let Some(on) = question(terminal).await?
-                && let Err(error) = store.set(on)
-            {
-                tracing::warn!(%error, "the telemetry choice could not be stored");
-            }
+        },
+        Ok(settings) => (false, Ok(settings.enabled)),
+        Err(error) => {
+            tracing::warn!(%error, "the telemetry settings cannot be read");
+            (false, Ok(None))
         }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "the telemetry settings cannot be read"),
+    };
+    let choice = answer.as_ref().ok().copied().flatten();
+    let stored = match (choice, hold) {
+        (Some(on), Some(hold)) if asked || on => store.answer(hold, on).map(|_| on),
+        (Some(on), None) if asked => store.set(on).map(|_| on),
+        (_, Some(hold)) => store.forget(hold).map(|()| false),
+        (_, None) => Ok(false),
+    };
+    match stored {
+        Ok(true) => {
+            let _ = tokio::time::timeout(EXIT_SEND, send(&store, Client::CliCommand)).await;
+        }
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, "the telemetry choice could not be stored"),
     }
-    Ok(())
+    answer.map(drop)
+}
+
+pub fn forget() {
+    let Some(run) = RUN.get() else { return };
+    if let Some(hold) = take_hold()
+        && let Err(error) = run.store.forget(hold)
+    {
+        tracing::debug!(%error, "kept telemetry could not be deleted");
+    }
+}
+
+fn take_hold() -> Option<Hold> {
+    RUN.get()
+        .and_then(|run| run.hold.lock().ok().and_then(|mut hold| hold.take()))
 }
 
 pub fn prompt_pending(paths: &Paths) -> bool {
@@ -167,16 +217,20 @@ fn flow() -> Option<SetupFlow> {
 async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     let question = if terminal.setup_guided() {
         terminal.separator();
-        terminal.message("Reports include usage counts, crash locations, hourly sync totals, OS, and Koidrive version.");
+        terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.");
         terminal
             .message("No file names, paths, contents, error messages, server address, or account.");
-        terminal.message("Preview: koi telemetry preview. Turn off: koi telemetry off.");
-        "Send anonymous usage reports?"
+        terminal.message("Reports carry your IP address, which estimates your country and city.");
+        terminal
+            .message("Yes also sends the reports of this setup. Preview: koi telemetry preview.");
+        "Send usage reports?"
     } else {
-        terminal.message("Send anonymous usage reports to the Koidrive project?");
-        terminal.message("Reports hold command and error counts, crash locations, hourly sync totals, and your OS and Koidrive version.");
+        terminal.message("Send usage reports to the Koidrive project?");
+        terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, and your OS and Koidrive version.");
         terminal.message("They never hold file names, paths, contents, error messages, your server address or your account.");
-        terminal.message("Preview: koi telemetry preview. Turn off: koi telemetry off.");
+        terminal.message("They carry your IP address, which estimates your country and city.");
+        terminal
+            .message("Yes also sends the reports of this command. Preview: koi telemetry preview.");
         "Send reports?"
     };
     match terminal.confirm(question, true).await {
@@ -254,8 +308,16 @@ impl Run {
     }
 
     fn flush(&self, mode: Mode) -> usize {
-        let on = matches!(mode, Mode::On | Mode::Debug);
         let pending = self.recorder.take();
+        if let Ok(hold) = self.hold.lock()
+            && let Some(kept) = hold.as_ref()
+        {
+            if let Err(error) = self.store.keep(kept, pending) {
+                tracing::debug!(%error, "telemetry could not be kept until the answer");
+            }
+            return 0;
+        }
+        let on = matches!(mode, Mode::On | Mode::Debug);
         let Ok(mut id) = self.id.lock() else {
             return 0;
         };
@@ -280,7 +342,7 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
     let uploader = Uploader::from_env(var)
         .inspect_err(|error| tracing::debug!(%error, "telemetry cannot be sent"))
         .ok()?;
-    let environment = Environment::detect(client, env!("CARGO_PKG_VERSION"));
+    let environment = environment(store, client);
     koidrive_telemetry::send(
         store,
         uploader.as_ref(),
@@ -291,6 +353,13 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
     .await
     .inspect_err(|error| tracing::debug!(%error, "telemetry could not be read or written"))
     .ok()
+}
+
+fn environment(store: &Store, client: Client) -> Environment {
+    Environment {
+        internal: store.internal(var).unwrap_or_default(),
+        ..Environment::detect(client, env!("CARGO_PKG_VERSION"))
+    }
 }
 
 pub async fn run_daemon(stop: tokio::sync::oneshot::Receiver<()>, driver: Driver) {
@@ -456,6 +525,13 @@ pub(crate) struct TelemetryStatusData {
     waiting_events: usize,
     /// Whether this build can send: it has a project token.
     sends: bool,
+    /// Whether reports are marked internal.
+    internal: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct InternalData {
+    internal: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -514,10 +590,14 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
             let queued = store.peek().map_err(failed)?;
             let old = store.peek_old().map_err(failed)?;
             let sends = Uploader::from_env(var).ok().flatten().is_some();
+            let internal = store.internal(var).map_err(failed)?;
             let mut text = format!("Usage reports: {shown} ({why})\n");
             let mut summary = text.clone();
             if let Some(id) = &settings.install_id {
                 text.push_str(&format!("Install id: {id}\n"));
+            }
+            if internal {
+                text.push_str("Reports are marked internal.\n");
             }
             let events = queued.events.len() + old.events.len();
             let waiting = match old.days.len() {
@@ -555,6 +635,7 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 waiting_days: old.days.len(),
                 waiting_events: events,
                 sends,
+                internal,
             };
             Ok(Done::ok(data, text).human(summary, ""))
         }
@@ -602,25 +683,51 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
             let queued = store.peek().map_err(failed)?;
             let old = store.peek_old().map_err(failed)?;
             let id = store.settings().map_err(failed)?.install_id;
-            let (Some(id), false) = (id, queued.is_empty() && old.is_empty()) else {
-                return Ok(Done::ok(
-                    serde_json::Value::Null,
-                    "Nothing waits to be sent.\n",
-                ));
-            };
+            let held = store.held().map_err(failed)?;
             let token = Uploader::from_env(var)
                 .ok()
                 .flatten()
                 .map(|uploader| uploader.token().to_owned())
                 .unwrap_or_default();
-            let environment = Environment::detect(Client::CliDaemon, env!("CARGO_PKG_VERSION"));
-            let mut body = koidrive_telemetry::old_batch(&token, &id, &environment, &old, &[]);
-            let new = koidrive_telemetry::batch(&token, &id, &environment, &queued, &[]);
-            if let (Some(events), Some(new)) =
-                (body["batch"].as_array_mut(), new["batch"].as_array())
-            {
-                events.extend(new.iter().cloned());
+            let environment = environment(&store, Client::CliDaemon);
+            let mut bodies = Vec::new();
+            if let Some(id) = &id {
+                bodies.push(koidrive_telemetry::old_batch(
+                    &token,
+                    id,
+                    &environment,
+                    &old,
+                    &[],
+                ));
+                bodies.push(koidrive_telemetry::batch(
+                    &token,
+                    id,
+                    &environment,
+                    &queued,
+                    &[],
+                ));
             }
+            if let Some((id, held)) = &held {
+                bodies.push(koidrive_telemetry::batch(
+                    &token,
+                    id,
+                    &environment,
+                    held,
+                    &[],
+                ));
+            }
+            let events: Vec<serde_json::Value> = (bodies.iter())
+                .filter_map(|body| body["batch"].as_array())
+                .flatten()
+                .cloned()
+                .collect();
+            if events.is_empty() {
+                return Ok(Done::ok(
+                    serde_json::Value::Null,
+                    "Nothing waits to be sent.\n",
+                ));
+            }
+            let body = serde_json::json!({ "api_key": token, "historical_migration": false, "batch": events });
             let text = format!(
                 "{}\n",
                 serde_json::to_string_pretty(&body).map_err(|error| error.to_string())?
@@ -629,6 +736,17 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                 presentation: crate::output::Presentation::Literal,
                 ..Done::ok(body, text)
             })
+        }
+        TelemetryAction::Internal { state } => {
+            let internal = store
+                .mark_internal(state == Switch::On)
+                .map_err(failed)?
+                .internal;
+            let text = match internal {
+                true => "Reports from this machine are marked internal.\n",
+                false => "Reports from this machine are not marked internal.\n",
+            };
+            Ok(Done::ok(InternalData { internal }, text))
         }
         TelemetryAction::Reset => match store.reset().map_err(failed)? {
             Some(id) => {
@@ -769,6 +887,7 @@ mod tests {
             id: Mutex::new(None),
             flow: Mutex::new(None),
             command: schema::Command::Daemon,
+            hold: Mutex::new(None),
         };
         run.recorder
             .count(Counter::Command(schema::Command::Daemon), 1);
@@ -802,6 +921,7 @@ mod tests {
             id: Mutex::new(id),
             flow: Mutex::new(None),
             command: schema::Command::Daemon,
+            hold: Mutex::new(None),
         };
         run.flush(Mode::On);
         let changes: [fn(&Store); 2] = [

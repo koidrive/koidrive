@@ -36,8 +36,8 @@ pub const VARIABLE: &str = "KOIDRIVE_TELEMETRY";
 /// The mode, from the first of these that says something:
 ///
 /// 1. `DO_NOT_TRACK` set to anything but an empty value or `0` turns it off.
-/// 2. `KOIDRIVE_TELEMETRY`: `0`, `off` or `false` turns it off, `1`, `on` or `true` on, `debug` to printing. Any
-///    other value turns it off.
+/// 2. `KOIDRIVE_TELEMETRY`: `0`, `off` or `false` turns it off, `1`, `on`, `true` or `internal` on, `debug` to
+///    printing. Any other value turns it off.
 /// 3. The stored choice.
 /// 4. Off.
 pub fn resolve(var: impl Fn(&str) -> Option<OsString>, stored: Option<bool>) -> Status {
@@ -49,7 +49,7 @@ pub fn resolve(var: impl Fn(&str) -> Option<OsString>, stored: Option<bool>) -> 
     }
     if let Some(value) = var(VARIABLE) {
         let mode = match value.to_str().map(str::to_ascii_lowercase).as_deref() {
-            Some("1" | "on" | "true") => Mode::On,
+            Some("1" | "on" | "true" | "internal") => Mode::On,
             Some("debug") => Mode::Debug,
             _ => Mode::Off,
         };
@@ -68,6 +68,16 @@ pub fn resolve(var: impl Fn(&str) -> Option<OsString>, stored: Option<bool>) -> 
             source: Source::Unset,
         },
     }
+}
+
+/// Whether reports are marked internal: by the stored mark or by `KOIDRIVE_TELEMETRY=internal`.
+pub fn internal(var: impl Fn(&str) -> Option<OsString>, stored: bool) -> bool {
+    stored
+        || var(VARIABLE).is_some_and(|value| {
+            value
+                .to_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("internal"))
+        })
 }
 
 /// Whether `koi setup` should ask: nobody chose yet, no variable decides, and the command does not run in CI.
@@ -133,6 +143,21 @@ mod tests {
                 source: Source::Variable
             }
         );
+    }
+
+    #[test]
+    fn the_internal_variable_turns_reports_on_and_marks_them() {
+        let var = vars(&[(VARIABLE, "Internal")]);
+        assert_eq!(
+            resolve(&var, Some(false)),
+            Status {
+                mode: Mode::On,
+                source: Source::Variable
+            }
+        );
+        assert!(internal(&var, false));
+        assert!(internal(vars(&[]), true));
+        assert!(!internal(vars(&[(VARIABLE, "on")]), false));
     }
 
     #[test]

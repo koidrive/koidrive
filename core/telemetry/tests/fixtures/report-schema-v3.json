@@ -5,15 +5,16 @@
       {
         "event": "hourly_report",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-02T01:00:00Z"
       }
@@ -26,10 +27,10 @@
       {
         "event": "hourly_report",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "c.asked.ambiguous_disappearance": 3,
           "c.asked.conflict": 3,
           "c.asked.mass_delete": 3,
@@ -139,6 +140,7 @@
           "c.upload_failed.unavailable": 3,
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "h.download_per_second.bytes": {
             "buckets": [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -290,7 +292,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T00:00:00Z",
         "uuid": "00000000-0000-4000-8000-000000000000"
@@ -298,13 +300,14 @@
       {
         "event": "setup_step",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "cloudflare_code": 10042,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "flow": "cloudflare",
           "koi_version": "0.1.0",
@@ -312,7 +315,7 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 2,
+          "schema": 3,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -322,12 +325,13 @@
       {
         "event": "setup_step",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "flow": "cloudflare",
           "koi_version": "0.1.0",
@@ -335,7 +339,7 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 2,
+          "schema": 3,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -345,12 +349,13 @@
       {
         "event": "panic",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "file": "core/driver/src/folder.rs",
           "frames": [
@@ -362,7 +367,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000003"
@@ -370,20 +375,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "failed",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000004"
@@ -391,20 +397,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "usage",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000005"
@@ -412,20 +419,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "decision_required",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000006"
@@ -433,20 +441,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "auth_required",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000007"
@@ -454,20 +463,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "halted",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000008"
@@ -475,20 +485,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "unavailable",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000009"
@@ -496,20 +507,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "stale_decision",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000a"
@@ -517,20 +529,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "wrong_code",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000b"
@@ -538,20 +551,21 @@
       {
         "event": "command_failed",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "code": "interrupted",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000c"
@@ -559,20 +573,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.withdrawn",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000d"
@@ -580,20 +595,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000e"
@@ -601,20 +617,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.replaced",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000f"
@@ -622,20 +639,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.other_root",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000010"
@@ -643,20 +661,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.placement",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000011"
@@ -664,20 +683,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.claim",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000012"
@@ -685,20 +705,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.no_replace",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000013"
@@ -706,20 +727,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store_behind",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000014"
@@ -727,20 +749,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.disk_behind",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000015"
@@ -748,20 +771,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.record",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000016"
@@ -769,20 +793,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000017"
@@ -790,20 +815,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.io",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000018"
@@ -811,20 +837,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_start",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000019"
@@ -832,20 +859,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_closed",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001a"
@@ -853,20 +881,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.credentials_refused",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001b"
@@ -874,20 +903,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.device_revoked",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001c"
@@ -895,20 +925,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unsupported_version",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001d"
@@ -916,20 +947,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.not_a_member",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001e"
@@ -937,20 +969,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.space_not_found",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001f"
@@ -958,20 +991,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.connection_refused",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000020"
@@ -979,20 +1013,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.recovery",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000021"
@@ -1000,20 +1035,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.refused",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000022"
@@ -1021,20 +1057,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.protocol",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000023"
@@ -1042,20 +1079,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.signed_out",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000024"
@@ -1063,20 +1101,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.start",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000025"
@@ -1084,20 +1123,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unlink",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000026"
@@ -1105,20 +1145,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.call",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000027"
@@ -1126,20 +1167,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.source_changed",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000028"
@@ -1147,20 +1189,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.corrupt",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000029"
@@ -1168,20 +1211,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.refused",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002a"
@@ -1189,20 +1233,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.unavailable",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002b"
@@ -1210,20 +1255,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.no_target",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002c"
@@ -1231,20 +1277,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.io",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002d"
@@ -1252,20 +1299,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.call",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002e"
@@ -1273,20 +1321,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.source_changed",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002f"
@@ -1294,20 +1343,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.corrupt",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000030"
@@ -1315,20 +1365,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.refused",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000031"
@@ -1336,20 +1387,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.unavailable",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000032"
@@ -1357,20 +1409,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.no_target",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000033"
@@ -1378,20 +1431,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.io",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000034"
@@ -1399,20 +1453,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unauthenticated",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000035"
@@ -1420,20 +1475,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.forbidden",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000036"
@@ -1441,20 +1497,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.invalid_argument",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000037"
@@ -1462,20 +1519,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.missing_chunks",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000038"
@@ -1483,20 +1541,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.limit_exceeded",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000039"
@@ -1504,20 +1563,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.quota_exceeded",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003a"
@@ -1525,20 +1585,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.read_only",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003b"
@@ -1546,20 +1607,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.retry_later",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003c"
@@ -1567,20 +1629,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unsupported_version",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003d"
@@ -1588,20 +1651,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.internal",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003e"
@@ -1609,20 +1673,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.history_mismatch",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003f"
@@ -1630,20 +1695,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.stale_device_state",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000040"
@@ -1651,20 +1717,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.head_moved",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000041"
@@ -1672,20 +1739,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.ahead_of_server",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000042"
@@ -1693,20 +1761,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.not_found",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000043"
@@ -1714,20 +1783,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.confirmation_required",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000044"
@@ -1735,20 +1805,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unknown",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000045"
@@ -1756,20 +1827,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unauthenticated",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000046"
@@ -1777,20 +1849,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.forbidden",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000047"
@@ -1798,20 +1871,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.invalid_argument",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000048"
@@ -1819,20 +1893,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.missing_chunks",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000049"
@@ -1840,20 +1915,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.limit_exceeded",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004a"
@@ -1861,20 +1937,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.quota_exceeded",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004b"
@@ -1882,20 +1959,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.read_only",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004c"
@@ -1903,20 +1981,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.retry_later",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004d"
@@ -1924,20 +2003,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unsupported_version",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004e"
@@ -1945,20 +2025,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.internal",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004f"
@@ -1966,20 +2047,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.history_mismatch",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000050"
@@ -1987,20 +2069,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.stale_device_state",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000051"
@@ -2008,20 +2091,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.head_moved",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000052"
@@ -2029,20 +2113,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.ahead_of_server",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000053"
@@ -2050,20 +2135,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.not_found",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000054"
@@ -2071,20 +2157,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.confirmation_required",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000055"
@@ -2092,20 +2179,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unknown",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000056"
@@ -2113,20 +2201,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "too_large.commit",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000057"
@@ -2134,20 +2223,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "too_large.problem_node",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000058"
@@ -2155,20 +2245,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.mass_delete",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000059"
@@ -2176,20 +2267,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.remote_mass_delete",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005a"
@@ -2197,20 +2289,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.ambiguous_disappearance",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005b"
@@ -2218,20 +2311,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.recovery",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005c"
@@ -2239,20 +2333,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.conflict",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005d"
@@ -2260,20 +2355,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.busy",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005e"
@@ -2281,20 +2377,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.profile",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005f"
@@ -2302,20 +2399,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.socket",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000060"
@@ -2323,20 +2421,21 @@
       {
         "event": "problem",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.signals",
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000061"
@@ -2344,13 +2443,14 @@
       {
         "event": "app_crash",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "binary": "17D33ED4-005A-358B-BA17-36B819625055",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "exception": "bad_access",
           "kind": "mach",
@@ -2359,7 +2459,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2,
+          "schema": 3,
           "signal": "sigsegv"
         },
         "timestamp": "1970-01-01T01:02:08Z",
@@ -2368,19 +2468,20 @@
       {
         "event": "app_crash",
         "properties": {
-          "$geoip_disable": true,
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
+          "internal": false,
           "distro": "debian",
           "kind": "other",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 2
+          "schema": 3
         },
         "timestamp": "1970-01-01T01:02:09Z",
         "uuid": "00000000-0000-4000-8000-000000000063"

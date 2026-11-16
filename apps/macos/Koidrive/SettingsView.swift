@@ -695,7 +695,7 @@ struct GeneralSettings: View {
                 .padding(.horizontal, 12)
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Send anonymous usage reports")
+                    Text("Send usage reports")
                         .foregroundStyle(Color.text)
                     Text("It never shares file names, paths or contents.")
                         .font(.callout)
@@ -712,7 +712,7 @@ struct GeneralSettings: View {
                     }
                 }
                 Spacer()
-                Toggle("Send anonymous usage reports", isOn: Binding(get: { app.telemetry.enabled }, set: setTelemetry))
+                Toggle("Send usage reports", isOn: Binding(get: { app.telemetry.enabled }, set: setTelemetry))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)

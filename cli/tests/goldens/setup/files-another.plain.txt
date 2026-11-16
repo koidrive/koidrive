@@ -27,10 +27,11 @@ Preparing ~/Work...
 Starting background sync...
 Background sync is running.
 
-Reports include usage counts, crash locations, hourly sync totals, OS, and Koidrive version.
+Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.
 No file names, paths, contents, error messages, server address, or account.
-Preview: koi telemetry preview. Turn off: koi telemetry off.
-Send anonymous usage reports? [Y/n] y
+Reports carry your IP address, which estimates your country and city.
+Yes also sends the reports of this setup. Preview: koi telemetry preview.
+Send usage reports? [Y/n] y
 
 Setup complete. Add files to ~/Work.
 Check sync: koi status
