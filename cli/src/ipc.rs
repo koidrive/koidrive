@@ -455,7 +455,12 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
         .await?
         {
             Reached::Daemon(response) => *response,
-            Reached::Profile(driver) => handle(&driver, request).await,
+            Reached::Profile(driver) => {
+                if matches!(request, Request::Questions) {
+                    driver.list_writers().await;
+                }
+                handle(&driver, request).await
+            }
         },
     };
     match response {

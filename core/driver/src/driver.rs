@@ -40,6 +40,8 @@ use crate::update::{self, Update, Updates};
 /// How long a sign-out waits for each call to the server before it goes on without it.
 const SERVER_WAIT: Duration = Duration::from_secs(10);
 
+const DEVICES_WAIT: Duration = Duration::from_secs(3);
+
 const DEVICES_RELIST: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -312,6 +314,7 @@ struct Inner {
 struct Devices {
     names: HashMap<String, String>,
     listed_at: Option<Instant>,
+    listing: Option<tokio::task::AbortHandle>,
 }
 
 #[cfg(test)]
@@ -323,6 +326,9 @@ struct RestartStopped {
 impl Drop for Inner {
     fn drop(&mut self) {
         self.updates.stop();
+        if let Some(listing) = self.devices.get_mut().unwrap().listing.take() {
+            listing.abort();
+        }
     }
 }
 
@@ -1426,10 +1432,24 @@ impl Driver {
 
     /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
     /// current version in the folder's remote tree and the name of the device that wrote it.
+    /// A writer the cached device list does not name is unnamed here, and a listing of the account's devices starts in
+    /// the background, at most once a minute, which marks [`Driver::watch`] changed when it names writers.
     pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
-        let mut questions = self.open_questions()?;
-        self.name_writers(&mut questions);
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let (questions, listing) = self.named_questions(runtime.is_some())?;
+        if let (Some(runtime), Some(listing)) = (runtime, listing) {
+            let listing = runtime.spawn(listing).abort_handle();
+            self.inner.devices.lock().unwrap().listing = Some(listing);
+        }
         Ok(questions)
+    }
+
+    /// Lists the account's devices, for at most three seconds, when an open conflict has a writer the cached device list
+    /// does not name, so that a process that reads [`Driver::questions`] once names the writers.
+    pub async fn list_writers(&self) {
+        if let Ok((_, Some(listing))) = self.named_questions(true) {
+            let _ = tokio::time::timeout(DEVICES_WAIT, listing).await;
+        }
     }
 
     fn open_questions(&self) -> Result<Vec<Question>, DriverError> {
@@ -1460,7 +1480,17 @@ impl Driver {
         Ok(questions)
     }
 
-    fn name_writers(&self, questions: &mut [Question]) {
+    fn named_questions(
+        &self,
+        may_list: bool,
+    ) -> Result<
+        (
+            Vec<Question>,
+            Option<impl Future<Output = ()> + Send + 'static>,
+        ),
+        DriverError,
+    > {
+        let mut questions = self.open_questions()?;
         let mut devices = self.inner.devices.lock().unwrap();
         let mut unknown = false;
         for item in questions
@@ -1473,42 +1503,36 @@ impl Driver {
             item.device_name = devices.names.get(device_id).cloned();
             unknown |= item.device_name.is_none();
         }
-        if !unknown
-            || devices
-                .listed_at
-                .is_some_and(|at| at.elapsed() < DEVICES_RELIST)
-        {
-            return;
+        let due = devices
+            .listed_at
+            .is_none_or(|at| at.elapsed() >= DEVICES_RELIST);
+        if !(may_list && unknown && due) {
+            return Ok((questions, None));
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
+        let Ok(auth) = self.signed_in() else {
+            return Ok((questions, None));
         };
         devices.listed_at = Some(Instant::now());
-        let driver = self.clone();
-        runtime.spawn(async move { driver.list_device_names().await });
-    }
-
-    async fn list_device_names(&self) {
-        let listed = match self.signed_in() {
-            Ok(auth) => auth
-                .api()
-                .all_devices(&auth)
-                .await
-                .map_err(DriverError::from),
-            Err(error) => Err(error),
+        let inner = Arc::downgrade(&self.inner);
+        let listing = async move {
+            let listed = auth.api().all_devices(&auth).await;
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            match listed {
+                Ok(listed) => {
+                    inner.devices.lock().unwrap().names = (listed.into_iter())
+                        .filter(|device| !device.name.trim().is_empty())
+                        .map(|device| (device.device_id, device.name))
+                        .collect();
+                    inner.changed.send_replace(());
+                }
+                Err(error) => {
+                    tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
+                }
+            }
         };
-        match listed {
-            Ok(devices) => {
-                self.inner.devices.lock().unwrap().names = (devices.into_iter())
-                    .filter(|device| !device.name.trim().is_empty())
-                    .map(|device| (device.device_id, device.name))
-                    .collect();
-                self.changed();
-            }
-            Err(error) => {
-                tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
-            }
-        }
+        Ok((questions, Some(listing)))
     }
 
     /// The question `question_id` once it has an answer, while the answer waits for the engine or after the engine took
@@ -2747,38 +2771,10 @@ mod tests {
         assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
     }
 
-    #[tokio::test]
-    async fn a_conflict_names_the_devices_that_wrote_its_files_from_the_account_device_list() {
+    fn conflict_written_by_d1_and_d2(paths: &Paths) {
         use koidrive_engine::question::{ConflictFile, Revisions};
-        use koidrive_proto::v1::{DeviceInfo, DeviceList, NodeState, VersionInfo};
+        use koidrive_proto::v1::{NodeState, VersionInfo};
 
-        let dir = tempfile::tempdir().unwrap();
-        let base = fs::canonicalize(dir.path()).unwrap();
-        let devices = DeviceList {
-            devices: vec![
-                DeviceInfo {
-                    device_id: "d1".into(),
-                    name: "Ada's MacBook Air".into(),
-                    ..Default::default()
-                },
-                DeviceInfo {
-                    device_id: "d2".into(),
-                    name: "agent-box".into(),
-                    revoked_at_ms: 5,
-                    ..Default::default()
-                },
-            ],
-            next_cursor: String::new(),
-        };
-        let (server, served) = serve_each(
-            vec![
-                access_token(),
-                (200, prost::Message::encode_to_vec(&devices)),
-            ],
-            Paths::under(&base.join("profile")).credential(),
-        )
-        .await;
-        let paths = linked_with_server(&base, server);
         let file = |node_id: &str| ConflictFile {
             node_id: node_id.into(),
             revisions: Revisions {
@@ -2832,36 +2828,137 @@ mod tests {
                 })
             })
             .unwrap();
+    }
 
-        let driver = Driver::open(paths).unwrap();
-        let writers = |questions: Vec<Question>| -> Vec<(String, Option<String>)> {
-            (questions.into_iter())
-                .flat_map(|question| question.items)
-                .map(|item| (item.device_id.unwrap(), item.device_name))
-                .collect()
+    fn device_list() -> (u16, Vec<u8>) {
+        use koidrive_proto::v1::{DeviceInfo, DeviceList};
+
+        let devices = DeviceList {
+            devices: vec![
+                DeviceInfo {
+                    device_id: "d1".into(),
+                    name: "Ada's MacBook Air".into(),
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    device_id: "d2".into(),
+                    name: "agent-box".into(),
+                    revoked_at_ms: 5,
+                    ..Default::default()
+                },
+            ],
+            next_cursor: String::new(),
         };
-        let named = [
+        (200, prost::Message::encode_to_vec(&devices))
+    }
+
+    fn writers(driver: &Driver) -> Vec<(String, Option<String>)> {
+        (driver.questions().unwrap().into_iter())
+            .flat_map(|question| question.items)
+            .map(|item| (item.device_id.unwrap(), item.device_name))
+            .collect()
+    }
+
+    fn named() -> [(String, Option<String>); 2] {
+        [
             ("d1".to_owned(), Some("Ada's MacBook Air".to_owned())),
             ("d2".to_owned(), Some("agent-box".to_owned())),
-        ];
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_conflict_names_the_devices_that_wrote_its_files_once_the_account_device_list_arrives()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let (server, served) = serve_each(
+            vec![access_token(), device_list()],
+            Paths::under(&base.join("profile")).credential(),
+        )
+        .await;
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths).unwrap();
         let mut watch = driver.watch();
         watch.borrow_and_update();
         assert_eq!(
-            writers(driver.questions().unwrap()),
+            writers(&driver),
             [("d1".to_owned(), None), ("d2".to_owned(), None)]
         );
         tokio::time::timeout(Duration::from_secs(10), async {
-            while writers(driver.questions().unwrap()) != named {
+            while writers(&driver) != named() {
                 watch.changed().await.unwrap();
             }
         })
         .await
         .unwrap();
-        assert_eq!(writers(driver.questions().unwrap()), named);
+        assert_eq!(writers(&driver), named());
         let requested: Vec<String> = (served.await.unwrap().into_iter())
             .map(|(path, _)| path)
             .collect();
         assert_eq!(requested, ["/v1/token", "/v1/devices"]);
+    }
+
+    #[tokio::test]
+    async fn listing_the_writers_names_them_on_the_first_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let (server, served) = serve_each(
+            vec![access_token(), device_list()],
+            Paths::under(&base.join("profile")).credential(),
+        )
+        .await;
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths).unwrap();
+        driver.list_writers().await;
+        assert_eq!(writers(&driver), named());
+        assert_eq!(served.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_device_listing_that_hangs_leaves_the_profile_free_once_the_driver_is_dropped() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let (listed, mut listing) = tokio::sync::mpsc::unbounded_channel();
+        let served = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (path, _) = read_request(&mut socket).await;
+                if path == "/v1/devices" {
+                    held.push(socket);
+                    listed.send(()).unwrap();
+                    continue;
+                }
+                let (status, body) = access_token();
+                let head = format!(
+                    "HTTP/1.1 {status} Reply\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert_eq!(
+            writers(&driver),
+            [("d1".to_owned(), None), ("d2".to_owned(), None)]
+        );
+        listing.recv().await.unwrap();
+        drop(driver);
+        let reopened = Driver::open(paths).unwrap();
+        assert_eq!(writers(&reopened).len(), 2);
+        served.abort();
     }
 
     #[tokio::test]
