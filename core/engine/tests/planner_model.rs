@@ -925,10 +925,35 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
     trees
 }
 
+const HELD: &str = "revival held by a create";
+
+fn main_baseline(class: &str) -> Option<&'static str> {
+    class
+        .contains(HELD)
+        .then_some("a create brings back a folder another device trashed")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Revived {
+    label: String,
+    held: bool,
+}
+
+fn over_the_run(revived: &[Revived]) -> Vec<String> {
+    let mut classes = Vec::new();
+    if revived.iter().any(|revived| !revived.held) {
+        classes.push("revival over the run".to_string());
+    }
+    if revived.iter().any(|revived| revived.held) {
+        classes.push(format!("{HELD} over the run"));
+    }
+    classes
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Verdict {
     rejected: Vec<usize>,
-    revived: Vec<String>,
+    revived: Vec<Revived>,
     made_up: Vec<usize>,
     made_up_by_delete: Vec<usize>,
     lost: Vec<String>,
@@ -1087,7 +1112,7 @@ fn revived(
     before: &SpaceDo,
     commits: &[&proto::Commit],
     after: &SpaceDo,
-) -> Vec<String> {
+) -> Vec<Revived> {
     let root = before.space_id().to_string();
     let targets: BTreeSet<&str> = (commits.iter())
         .flat_map(|commit| commit.ops.iter().map(target))
@@ -1110,11 +1135,16 @@ fn revived(
                 .node(id)
                 .is_some_and(|node| node.status() == NodeStatus::Live)
         })
-        .filter(|id| {
-            let restored = path(id).iter().any(|up| targets.contains(up.as_str()));
-            !restored && !holding.contains(id)
+        .filter_map(|id| {
+            let restored = path(&id).iter().any(|up| targets.contains(up.as_str()));
+            let held = holding.contains(&id);
+            let kept =
+                (0..world.len()).any(|i| world.id(i) == id && world.local_place(i).is_some());
+            (!restored && !(held && kept)).then(|| Revived {
+                label: world.label_of(&root, &id),
+                held,
+            })
         })
-        .map(|id| world.label_of(&root, &id))
         .collect()
 }
 
@@ -1139,7 +1169,7 @@ struct Run {
     sent: Vec<Sent>,
     end: SpaceDo,
     stop: Stop,
-    revived: Vec<String>,
+    revived: Vec<Revived>,
     empty: bool,
     restores: usize,
 }
@@ -1704,8 +1734,12 @@ fn show_runs(world: &World, runs: &[Run]) -> String {
 
 fn kinds(verdicts: &[&Verdict]) -> Vec<&'static str> {
     let mut kinds = Vec::new();
-    if verdicts.iter().any(|verdict| !verdict.revived.is_empty()) {
+    let revivals = || verdicts.iter().flat_map(|verdict| &verdict.revived);
+    if revivals().any(|revived| !revived.held) {
         kinds.push("revival");
+    }
+    if revivals().any(|revived| revived.held) {
+        kinds.push(HELD);
     }
     if verdicts.iter().any(|verdict| !verdict.made_up.is_empty()) {
         kinds.push("made-up name");
@@ -1785,7 +1819,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         .into_iter()
         .filter(|&kind| kind != "made-up name")
     {
-        hard = true;
+        hard |= main_baseline(kind).is_none();
         classes.push(format!("first commit: {kind}"));
         classes.push(format!(
             "first commit: {kind} → {}",
@@ -1798,12 +1832,12 @@ fn check(world: &World, space: &SpaceDo) -> Report {
             || !sent.verdict.lost.is_empty()
             || !sent.verdict.renamed.is_empty()
     }) {
-        hard = true;
         let (resolution, note) = resolve(world, vec![&sent.before], &sent.commit, &root);
         for kind in kinds(&[&sent.verdict])
             .into_iter()
             .filter(|&kind| kind != "made-up name")
         {
+            hard |= main_baseline(kind).is_none();
             classes.push(format!("later commit: {kind}"));
             classes.push(format!("later commit: {kind} → {resolution}"));
         }
@@ -1914,8 +1948,8 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         {
             found.push(format!("under a cap of {fits}: {kind}"));
         }
-        if !capped.revived.is_empty() {
-            found.push(format!("under a cap of {fits}: revival over the run"));
+        for class in over_the_run(&capped.revived) {
+            found.push(format!("under a cap of {fits}: {class}"));
         }
         if capped.empty {
             found.push(format!("under a cap of {fits}: empty commit"));
@@ -1933,7 +1967,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
             _ => {}
         }
         if !found.is_empty() {
-            hard = true;
+            hard |= found.iter().any(|class| main_baseline(class).is_none());
             classes.extend(found);
             notes += &format!(
                 "\n    under a cap of {fits}:{}",
@@ -1955,9 +1989,16 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         classes.push("empty commit".into());
     }
     if let Some(run) = runs.iter().find(|run| !run.revived.is_empty()) {
-        hard = true;
-        classes.push("revival over the run".into());
-        notes += &format!("\n    revived over the run: {:?}", run.revived);
+        for class in over_the_run(&run.revived) {
+            hard |= main_baseline(&class).is_none();
+            classes.push(class);
+        }
+        let labels: Vec<&str> = run
+            .revived
+            .iter()
+            .map(|revived| revived.label.as_str())
+            .collect();
+        notes += &format!("\n    revived over the run: {labels:?}");
     }
     if firsts
         .iter()
@@ -1991,6 +2032,11 @@ fn check(world: &World, space: &SpaceDo) -> Report {
             classes.push("sends nothing while an op is safe".into());
             let shown: Vec<String> = safe.iter().map(|op| world.show_op(&root, op)).collect();
             notes += &format!("\n    safe: [{}]", shown.join(", "));
+        }
+    }
+    for class in &mut classes {
+        if let Some(label) = main_baseline(class) {
+            *class = format!("main baseline, {label}: {class}");
         }
     }
     classes.sort();
@@ -2254,9 +2300,7 @@ fn faults(
             hard.push(kind.to_string());
         }
     }
-    if !run.revived.is_empty() {
-        hard.push("revival over the run".into());
-    }
+    hard.extend(over_the_run(&run.revived));
     if run.empty {
         hard.push("empty commit".into());
     }
@@ -2472,6 +2516,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         }
     }
     let baseline = |fault: &str| match story {
+        _ if main_baseline(fault).is_some() => main_baseline(fault),
         Story::Answer(..) if fault.starts_with("under a cap of") => {
             Some("a split bundle never finishes")
         }
@@ -3240,10 +3285,17 @@ fn a_revival_a_later_commit_hides_is_found_over_the_run() {
     let (created, _, first) = judge(&world, &start, &create);
     let moved = commit(&created, 21, mv(world.id(0), world.id(1), world.label(0)));
     let (end, _, second) = judge(&world, &created, &moved);
-    assert_eq!((first.revived, second.revived), (vec![], vec![]));
+    let burial = |held| Revived {
+        label: "burial".into(),
+        held,
+    };
+    assert_eq!(
+        (first.revived, second.revived),
+        (vec![burial(true)], vec![])
+    );
     assert_eq!(
         revived(&world, &start, &[&create, &moved], &end),
-        ["burial"]
+        [burial(false)]
     );
 }
 
