@@ -583,3 +583,58 @@ fn a_volume_known_as_a_plain_folder_is_taken_as_that_volume() {
         &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
     );
 }
+
+fn scans_of_paths_inside(first: &Path, second: &Path, scanned_while_away: bool) {
+    let mut disks = Disks::new().unwrap();
+    let root = disks.base().join("Sync");
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(first, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.detach(&root.join("Disk"));
+    if scanned_while_away {
+        rescan(&mut snapshot, &root, &[""]);
+    }
+    disks.attach(second, &root.join("Disk"));
+    write(&root.join("Disk/other.txt"), "other");
+    for paths in [
+        &["Disk/report.docx", "Disk/other.txt"][..],
+        &["Disk/Slides/deck.key"],
+        &[""],
+    ] {
+        let found = rescan(&mut snapshot, &root, paths);
+        assert_eq!(
+            removals(&found.changes),
+            Vec::<&Change>::new(),
+            "{first:?} {paths:?}"
+        );
+        assert!(
+            !snapshot.entries.contains_key(Path::new("Disk/other.txt")),
+            "{first:?} {paths:?}"
+        );
+        holds(
+            &snapshot,
+            &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(away(&snapshot), ["Disk"]);
+    disks.detach(&root.join("Disk"));
+}
+
+#[test]
+fn a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there() {
+    let Some(disks) = Disks::new() else {
+        return;
+    };
+    let mut pairs = vec![(disks.image("First"), disks.image("Second"))];
+    #[cfg(target_os = "macos")]
+    pairs.extend([
+        (disks.fat("FATONE"), disks.fat("FATTWO")),
+        (disks.exfat("EXONE"), disks.exfat("EXTWO")),
+    ]);
+    for (first, second) in &pairs {
+        for scanned_while_away in [true, false] {
+            scans_of_paths_inside(first, second, scanned_while_away);
+        }
+    }
+}

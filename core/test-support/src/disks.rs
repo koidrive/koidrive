@@ -193,15 +193,20 @@ fn sudo(args: &[&OsStr]) {
 
 fn unmount(at: &Path) {
     if cfg!(target_os = "macos") {
-        run(
-            "hdiutil",
-            &[
-                "detach".as_ref(),
-                "-quiet".as_ref(),
-                "-force".as_ref(),
-                at.as_ref(),
-            ],
-        );
+        let mut failures = Vec::new();
+        while failures.len() < 10 {
+            let out = Command::new("hdiutil")
+                .args(["detach", "-force"])
+                .arg(at)
+                .output()
+                .unwrap();
+            if out.status.success() {
+                return;
+            }
+            failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        panic!("hdiutil detach -force {}: {failures:?}", at.display());
     } else {
         sudo(&["umount".as_ref(), at.as_ref()]);
     }

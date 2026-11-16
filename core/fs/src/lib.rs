@@ -1208,6 +1208,7 @@ impl Snapshot {
             return Ok(None);
         };
         let mut dir = root.try_clone()?;
+        let mut dev = stat_fd(dir.as_fd())?.dev;
         let mut path = PathBuf::new();
         let mut chain = Vec::new();
         for component in rel.components() {
@@ -1221,6 +1222,23 @@ impl Snapshot {
             };
             path.push(component);
             let stat = stat_fd(dir.as_fd())?;
+            let above = self.entries.get(&path);
+            if stat.dev != dev || above.is_some_and(|above| above.mount.is_some()) {
+                let Some(above) = above else {
+                    return Ok(None);
+                };
+                let now = Entry {
+                    id: stat.id,
+                    mount: (stat.dev != dev).then(|| {
+                        root::volume_id(dir.as_fd()).map_or(Mount::Unidentified, Mount::Volume)
+                    }),
+                    ..*above
+                };
+                if !above.is_back(&now) {
+                    return Ok(None);
+                }
+            }
+            dev = stat.dev;
             chain.push((path.clone(), stat.dev, stat.id));
         }
         let same = chain.last().is_some_and(|(_, _, id)| *id == known.id);
