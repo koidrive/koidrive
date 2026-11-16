@@ -1,0 +1,7 @@
+alpha6.db was written by Store::open and the store API in v0.1.0-alpha.6, commit a20b2a9c52fd53194d7d6550c067a52733e5f84d.
+
+To regenerate it, check out that commit in a separate directory, copy create-alpha6.rs to core/store/tests/create_alpha6_fixture.rs there, and run:
+
+KOIDRIVE_FIXTURE_PATH=/absolute/path/alpha6.db cargo test --locked -p koidrive-store --test create_alpha6_fixture -- --exact create_fixture
+
+The path must not already exist. The fixture contains a link, a remote cursor, and a cached chunk, all using synthetic values.

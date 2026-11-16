@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Store upgrade
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  store-upgrade:
+    name: Store upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - name: Test the guard
+        run: python3 scripts/test-check-store-upgrades.py
+      - name: Check and run upgrade cases
+        env:
+          EVENT: ${{ github.event_name }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$EVENT" = merge_group ]; then
+            BASE="$MERGE_BASE"
+          else
+            BASE="$(git rev-parse HEAD^1)"
+          fi
+          python3 scripts/check-store-upgrades.py "$BASE" HEAD
