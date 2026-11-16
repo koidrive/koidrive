@@ -4427,3 +4427,27 @@ fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_n
     sent.sort();
     assert_eq!(sent, [("create file", "y".into()), ("delete", "f".into())]);
 }
+
+#[test]
+fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new"))]);
+    for (ino, (id, shape)) in [("e", dir("d", "e")), ("f", file("e", "child", 1))]
+        .into_iter()
+        .enumerate()
+    {
+        let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape,
+            identity: FileIdentity {
+                ino: 50 + ino as u128,
+                birth_ns: Some(0),
+            },
+            parked: false,
+        };
+        trees.set_local(id.into(), node);
+    }
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}

@@ -24,7 +24,7 @@ use crate::question::{
 use crate::recovery;
 use crate::restore::{Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent};
 use crate::state::{
-    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, StateError,
+    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, same, same_content};
@@ -194,7 +194,7 @@ pub struct Commits {
     /// until the server applies their create. The person chose to keep them beside what R holds,
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
-    given_up: TrackedMap<NodeId, Revisions>,
+    given_up: TrackedMap<NodeId, GivenUp>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
 }
@@ -1176,10 +1176,11 @@ impl Commits {
             let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
                 return false;
             };
-            remote.content_rev == given.content_rev
-                && remote.meta_rev == given.meta_rev
-                && (trees.local().get(id))
-                    .is_none_or(|local| same(Some(&local.shape), Some(&remote.shape)))
+            remote.content_rev == given.revisions.content_rev
+                && remote.meta_rev == given.revisions.meta_rev
+                && (trees.local().get(id)).is_none_or(|local| {
+                    given.held_here && same(Some(&local.shape), Some(&remote.shape))
+                })
         });
         loop {
             let holding: Vec<NodeId> = (self.given_up.keys())
@@ -1293,12 +1294,17 @@ impl Commits {
             window *= 4;
         };
         for id in given_up {
-            if let Some(node) = trees.remote().get(&id) {
-                let revisions = Revisions {
-                    content_rev: node.content_rev,
-                    meta_rev: node.meta_rev,
+            if let Some(node) = trees.remote().get(&id)
+                && !self.given_up.contains_key(&id)
+            {
+                let given = GivenUp {
+                    revisions: Revisions {
+                        content_rev: node.content_rev,
+                        meta_rev: node.meta_rev,
+                    },
+                    held_here: trees.local().get(&id).is_some(),
                 };
-                self.given_up.insert(id, revisions);
+                self.given_up.insert(id, given);
             }
         }
         for id in reverts {
@@ -2291,18 +2297,21 @@ impl Commits {
                 revisions.content_rev = node.content_rev;
             }
         }
-        let bumped: Vec<(NodeId, Revisions)> = (self.given_up.iter())
+        let bumped: Vec<(NodeId, GivenUp)> = (self.given_up.iter())
             .filter_map(|(id, given)| {
                 let node = trees.remote().get(id)?;
-                let bumped = Revisions {
-                    content_rev: match node.content_rev == result.seq {
-                        true => node.content_rev,
-                        false => given.content_rev,
+                let bumped = GivenUp {
+                    revisions: Revisions {
+                        content_rev: match node.content_rev == result.seq {
+                            true => node.content_rev,
+                            false => given.revisions.content_rev,
+                        },
+                        meta_rev: match node.meta_rev == result.seq {
+                            true => node.meta_rev,
+                            false => given.revisions.meta_rev,
+                        },
                     },
-                    meta_rev: match node.meta_rev == result.seq {
-                        true => node.meta_rev,
-                        false => given.meta_rev,
-                    },
+                    held_here: given.held_here,
                 };
                 (bumped != *given).then(|| (id.clone(), bumped))
             })
@@ -3416,7 +3425,7 @@ fn plan(
     cap: usize,
     answered: &[proto::Op],
     split: &BTreeSet<NodeId>,
-    given_up: &BTreeMap<NodeId, Revisions>,
+    given_up: &BTreeMap<NodeId, GivenUp>,
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
