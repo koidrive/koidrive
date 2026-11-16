@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -433,7 +434,7 @@ class WorkflowBase(unittest.TestCase):
     def run_workflow(self, event):
         workflow = os.path.join(os.path.dirname(CHECK), "..", ".github", "workflows", "ci.yml")
         with open(workflow) as f:
-            job = f.read().split("\n  comments:\n", 1)[1].split("\n  ci-report:\n", 1)[0]
+            job = re.split(r"\n  [A-Za-z0-9_-]+:\n", f.read().split("\n  comments:\n", 1)[1], maxsplit=1)[0]
         script = textwrap.dedent(job.rsplit("        run: |\n", 1)[1])
         with tempfile.TemporaryDirectory() as tmp:
             for name, body in {

@@ -1,0 +1,15 @@
+alpha6.db was written by the driver at v0.1.0-alpha.6, commit a20b2a9c52fd53194d7d6550c067a52733e5f84d.
+
+The generator uses that release's folder test harness: a real temporary disk folder, store and filesystem observer, with koidrive-sim as its server. It syncs Disk/Slides/deck.txt, Disk/original.txt and pending.txt, syncs a second revision of original.txt, renames it to report.txt and syncs the rename, then observes an unsent edit of pending.txt without executing the queued upload. After dropping the device, it checkpoints and exports the closed database with VACUUM INTO. The generator does not insert tree or engine rows; the old driver writes them while syncing.
+
+To regenerate the scenario, extract that exact release into a separate scratch directory. Copy create-alpha6.rs to core/driver/src/folder/tests/create_alpha6_fixture.rs there and append this line to core/driver/src/folder/tests.rs:
+
+include!("tests/create_alpha6_fixture.rs");
+
+Run only the generator, with a new output path and a private target directory:
+
+KOIDRIVE_FIXTURE_PATH=/absolute/path/alpha6.db CARGO_TARGET_DIR=/absolute/path/target nice -n 10 cargo test --locked -p koidrive-driver --lib folder::tests::create_alpha6_upgrade_fixture -- --exact --nocapture
+
+The fixture contains synthetic file contents and test-server records. Regeneration reproduces the scenario, not byte-identical UUIDs, filesystem identities, paths or timestamps. alpha6-inventory.json records table counts for the pinned database. The upgrade guard pins the database hash and checks existing tree rows, pending local state, rename and version records before and after upgrade and reopen.
+
+This fixture does not prove mounted-volume eject or backfill behavior. That requires a driver-level upgrade scenario.
