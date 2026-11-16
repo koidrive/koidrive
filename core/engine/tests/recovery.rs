@@ -3914,3 +3914,35 @@ fn a_new_file_with_the_bytes_of_a_file_this_device_deleted_is_created_beside_the
         );
     }
 }
+
+#[test]
+fn an_edit_below_an_unchanged_folder_of_a_published_trash_group_keeps_the_folders_above_it() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut edited = trees.local().get("b").unwrap().clone();
+    edited.shape = file("c", "child", 2);
+    trees.set_local("b".into(), edited);
+    trees.settle();
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "a".into()), ("update", "b".into())]
+    );
+}
