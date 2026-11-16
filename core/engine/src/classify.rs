@@ -2056,7 +2056,12 @@ impl Trees {
         self.forget_reclaims();
         let mut below = vec![id.to_owned()];
         while let Some(id) = below.pop() {
-            below.extend(self.discarded.children(&id).cloned());
+            let r = &self.r;
+            below.extend(
+                (self.discarded.children(&id))
+                    .filter(|child| r.get(child).is_some())
+                    .cloned(),
+            );
             self.discarded.remove(&id);
         }
     }
