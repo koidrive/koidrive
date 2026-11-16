@@ -109,6 +109,74 @@ pub fn claim_pending(paths: &Paths, server: &Url) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn immutable_legacy_stages_do_not_block_saving_forgetting_or_clearing_claims() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let lease = lease(dir.path());
+        let path = dir.path().join("pending-claim.json");
+        let server = Url::parse("https://koidrive.alice.workers.dev/").unwrap();
+        let other = Url::parse("https://koidrive.bob.workers.dev/").unwrap();
+        let stale = dir.path().join(".pending-claim.json.123.tmp");
+        fs::write(&stale, b"obsolete claim").unwrap();
+        assert!(
+            Command::new("chflags")
+                .arg("uchg")
+                .arg(&stale)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let result = std::panic::catch_unwind(|| -> io::Result<_> {
+            let first = request_id(&lease, &path, &server, "ABCD-EFGH-JKLM")?;
+            let retained = request_id(&lease, &path, &other, "BCDE-FGHJ-KLMN")?;
+            let resumed = request_id(&lease, &path, &server, "ABCD-EFGH-JKLM")?;
+            forget(&lease, &path, &server, "ABCD-EFGH-JKLM")?;
+            let claims = load(&path)?;
+            let retained_again = request_id(&lease, &path, &other, "BCDE-FGHJ-KLMN")?;
+            clear(&lease, &path)?;
+            let absent = !path.exists();
+            clear(&lease, &path)?;
+            let obsolete = fs::read(&stale)?;
+            let protected = fs::remove_file(&stale);
+            Ok((
+                first,
+                retained,
+                resumed,
+                claims,
+                retained_again,
+                absent,
+                obsolete,
+                protected,
+            ))
+        });
+
+        assert!(
+            Command::new("chflags")
+                .arg("nouchg")
+                .arg(&stale)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (first, retained, resumed, claims, retained_again, absent, obsolete, protected) =
+            result.unwrap().unwrap();
+        assert_eq!(first, resumed);
+        assert_eq!(claims.len(), 1);
+        assert!(same(&claims[0], &other, "BCDE-FGHJ-KLMN"));
+        assert_eq!(claims[0].request_id, retained);
+        assert_eq!(retained_again, retained);
+        assert!(absent);
+        assert_eq!(obsolete, b"obsolete claim");
+        assert_eq!(
+            protected.unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
     fn lease(dir: &Path) -> Flock {
         Flock::take(fs::File::create(dir.join("lock")).unwrap())
             .unwrap()

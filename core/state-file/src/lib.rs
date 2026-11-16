@@ -99,6 +99,7 @@ impl AtomicFile {
 
     /// Selects obsolete regular files and symlinks from the anchored directory, then publishes and removes them.
     /// Callers must own the selected names and exclude concurrent writers of those legacy stages.
+    /// Cleanup follows the error contract of [`Self::finish_with_legacy`].
     pub fn finish_with_legacy_matching(
         self,
         publish: Publish,
@@ -113,7 +114,8 @@ impl AtomicFile {
 
     /// Publishes the file, then removes obsolete sibling stages while the directory is locked.
     /// Callers must own the legacy names. Names cannot escape the directory, name the destination,
-    /// or overlap the helper's staging namespace. A cleanup failure can follow complete publication.
+    /// or overlap the helper's staging namespace. Permission-denied obsolete stages are left untouched.
+    /// Other cleanup failures can follow complete publication.
     pub fn finish_with_legacy(mut self, publish: Publish, legacy: &[&OsStr]) -> io::Result<File> {
         validate_legacy(&self.destination, legacy)?;
         self.file.sync_all()?;
@@ -162,10 +164,9 @@ impl AtomicFile {
                     "a legacy name cannot alias the published state file",
                 ));
             }
-            match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
-                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(error.into()),
-            }
+        }
+        for name in legacy {
+            unlink_obsolete(&self.directory, name)?;
         }
         self.directory.sync_all()?;
         flock(&self.file, FlockOperation::Unlock)?;
@@ -190,6 +191,7 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Replaces a state file and removes obsolete sibling stages owned by the caller.
+/// Permission-denied obsolete stages are left untouched; other cleanup failures can follow publication.
 pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Result<()> {
     let stage = AtomicFile::prepare(path)?;
     stage.as_file().write_all(bytes)?;
@@ -199,7 +201,8 @@ pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Re
 /// Removes a state file and obsolete sibling stages, then syncs the directory without allocating a stage.
 /// Selects obsolete regular files and symlinks from the anchored directory. Callers must own the selected
 /// names and exclude concurrent writers of the destination and legacy stages.
-/// Missing files or directories are already removed. A cleanup failure can follow removal of the destination.
+/// Missing files or directories are already removed. Destination removal errors are returned.
+/// Permission-denied obsolete stages are left untouched; other cleanup failures can follow destination removal.
 pub fn remove_with_legacy_matching(
     path: &Path,
     legacy: impl FnMut(&OsStr) -> bool,
@@ -231,11 +234,12 @@ pub fn remove_with_legacy_matching(
             ));
         }
     }
-    for name in std::iter::once(&destination).chain(&legacy) {
-        match fs::unlinkat(&directory, *name, AtFlags::empty()) {
-            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(error.into()),
-        }
+    match fs::unlinkat(&directory, destination, AtFlags::empty()) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(error.into()),
+    }
+    for name in legacy {
+        unlink_obsolete(&directory, name)?;
     }
     directory.sync_all()
 }
@@ -378,12 +382,22 @@ fn is_stage(name: &[u8]) -> bool {
         })
 }
 
+fn unlink_obsolete(directory: &File, name: &OsStr) -> io::Result<bool> {
+    match fs::unlinkat(directory, name, AtFlags::empty()) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn recover_locked(directory: &File) -> io::Result<usize> {
     let mut recovered = 0;
     for entry in Dir::read_from(directory)? {
         let entry = entry?;
-        let name = entry.file_name();
-        if !is_stage(name.to_bytes()) {
+        let name = OsStr::from_bytes(entry.file_name().to_bytes());
+        if !is_stage(name.as_bytes()) {
             continue;
         }
         let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
@@ -424,16 +438,8 @@ fn recover_locked(directory: &File) -> io::Result<usize> {
         }
         match flock(&file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {
-                if same_inode(
-                    directory,
-                    std::ffi::OsStr::from_bytes(name.to_bytes()),
-                    &file,
-                )? {
-                    match fs::unlinkat(directory, name, AtFlags::empty()) {
-                        Ok(()) => recovered += 1,
-                        Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {}
-                        Err(error) => return Err(error.into()),
-                    }
+                if same_inode(directory, name, &file)? {
+                    recovered += usize::from(unlink_obsolete(directory, name)?);
                 }
             }
             Err(rustix::io::Errno::WOULDBLOCK) => {}

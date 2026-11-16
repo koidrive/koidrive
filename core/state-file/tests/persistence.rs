@@ -16,6 +16,153 @@ use koidrive_state_file::{
 
 #[cfg(target_os = "macos")]
 #[test]
+fn immutable_legacy_stages_do_not_block_publication() {
+    let mut publications = Vec::new();
+    for (destination, name) in [
+        ("leaving", "leaving.next"),
+        ("update-check.json", "update-check.json.new"),
+    ] {
+        for publish in [Publish::Create, Publish::Replace] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(destination);
+            if matches!(publish, Publish::Replace) {
+                fs::write(&path, b"old state").unwrap();
+            }
+            let legacy = dir.path().join(name);
+            fs::write(&legacy, b"obsolete state").unwrap();
+            let stage = AtomicFile::prepare(&path).unwrap();
+            stage.as_file().write_all(b"new state").unwrap();
+            assert!(
+                Command::new("chflags")
+                    .arg("uchg")
+                    .arg(&legacy)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+
+            let result = std::panic::catch_unwind(|| {
+                let published = stage.finish_with_legacy(publish, &[OsStr::new(name)]);
+                let saved = fs::read(&path);
+                let obsolete = fs::read(&legacy);
+                let protected = fs::remove_file(&legacy);
+                (published, saved, obsolete, protected)
+            });
+
+            assert!(
+                Command::new("chflags")
+                    .arg("nouchg")
+                    .arg(&legacy)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let (published, saved, obsolete, protected) = result.unwrap();
+            publications.push((destination, publish, published));
+            assert_eq!(saved.unwrap(), b"new state");
+            assert_eq!(obsolete.unwrap(), b"obsolete state");
+            assert_eq!(
+                protected.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+    }
+    assert!(
+        publications.iter().all(|(_, _, result)| result.is_ok()),
+        "{publications:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn immutable_legacy_stages_do_not_block_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let legacy = dir.path().join("state.json.tmp");
+    let removable = dir.path().join("state.json.new");
+    fs::write(&path, b"saved state").unwrap();
+    fs::write(&legacy, b"obsolete state").unwrap();
+    fs::write(&removable, b"removable state").unwrap();
+    assert!(
+        Command::new("chflags")
+            .arg("uchg")
+            .arg(&legacy)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let result = std::panic::catch_unwind(|| {
+        let removed = remove_with_legacy_matching(&path, |name| {
+            name == "state.json.tmp" || name == "state.json.new"
+        });
+        let removed_again = remove_with_legacy_matching(&path, |name| name == "state.json.tmp");
+        let obsolete = fs::read(&legacy);
+        let protected = fs::remove_file(&legacy);
+        (removed, removed_again, obsolete, protected)
+    });
+
+    assert!(
+        Command::new("chflags")
+            .arg("nouchg")
+            .arg(&legacy)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (removed, removed_again, obsolete, protected) = result.unwrap();
+    assert!(removed.is_ok(), "{removed:?}");
+    assert!(removed_again.is_ok(), "{removed_again:?}");
+    assert!(!path.exists());
+    assert!(!removable.exists());
+    assert_eq!(obsolete.unwrap(), b"obsolete state");
+    assert_eq!(
+        protected.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn removing_an_immutable_destination_still_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let legacy = dir.path().join("state.json.tmp");
+    fs::write(&path, b"saved state").unwrap();
+    fs::write(&legacy, b"obsolete state").unwrap();
+    assert!(
+        Command::new("chflags")
+            .arg("uchg")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let result = std::panic::catch_unwind(|| {
+        let removed = remove_with_legacy_matching(&path, |name| name == "state.json.tmp");
+        (removed, fs::read(&path), fs::read(&legacy))
+    });
+
+    assert!(
+        Command::new("chflags")
+            .arg("nouchg")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (removed, saved, obsolete) = result.unwrap();
+    assert_eq!(
+        removed.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(saved.unwrap(), b"saved state");
+    assert_eq!(obsolete.unwrap(), b"obsolete state");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn an_immutable_abandoned_stage_does_not_block_other_writes_or_removals() {
     let dir = tempfile::tempdir().unwrap();
     let stage = dir
