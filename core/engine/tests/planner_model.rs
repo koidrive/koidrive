@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Commits, Failure};
+use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::question::{Answer, RecoveryCause};
+use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, ChunkRef, NodeStatus, op, op_result};
 use koidrive_sim::space::{Role, Session, SpaceDo};
@@ -21,6 +24,7 @@ const COMMITS: usize = 12;
 const CAPS: [usize; 2] = [1, 2];
 const EXAMPLES: usize = 3;
 const CHUNK: [u8; 32] = [7; 32];
+const EDIT: [u8; 32] = [8; 32];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Spot {
@@ -39,6 +43,7 @@ enum Remote {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Local {
     Kept,
+    Edited,
     Removed,
     Into(Spot),
     Onto(usize),
@@ -54,6 +59,7 @@ enum Unseen {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct World {
     synced: Vec<Spot>,
+    files: u64,
     remote: Vec<Remote>,
     local: Vec<Local>,
     created: Vec<(Kind, Local)>,
@@ -62,6 +68,8 @@ struct World {
 
 struct Bounds {
     existing: RangeInclusive<usize>,
+    answered: RangeInclusive<usize>,
+    answered_changes: usize,
     local_changes: usize,
     onto: usize,
     changes: usize,
@@ -72,6 +80,8 @@ struct Bounds {
 
 const FULL: Bounds = Bounds {
     existing: 2..=4,
+    answered: 2..=4,
+    answered_changes: 2,
     local_changes: 3,
     onto: 2,
     changes: 5,
@@ -88,17 +98,21 @@ const FULL: Bounds = Bounds {
 
 const THREE_NODES: Bounds = Bounds {
     existing: 2..=3,
+    answered: 2..=3,
     ..FULL
 };
 
 const FOUR_NODES: Bounds = Bounds {
     existing: 4..=4,
+    answered: 4..=4,
     local_changes: 2,
     ..FULL
 };
 
 const SLICE: Bounds = Bounds {
     existing: 2..=2,
+    answered: 2..=4,
+    answered_changes: 1,
     local_changes: 2,
     onto: 1,
     changes: 3,
@@ -126,12 +140,20 @@ fn node_id(i: usize) -> String {
 }
 
 fn content() -> Content {
+    content_of(CHUNK)
+}
+
+fn edited() -> Content {
+    content_of(EDIT)
+}
+
+fn content_of(hash: [u8; 32]) -> Content {
     let chunk = ChunkRef {
-        hash: CHUNK.to_vec(),
+        hash: hash.to_vec(),
         size: 3,
         encoding: 0,
     };
-    let mut listed = CHUNK.to_vec();
+    let mut listed = hash.to_vec();
     listed.extend(3u32.to_le_bytes());
     Content {
         size: 3,
@@ -238,7 +260,9 @@ impl World {
     }
 
     fn kind(&self, i: usize) -> Kind {
-        if i < self.existing() {
+        if i < self.existing() && self.files & 1 << i != 0 {
+            Kind::File
+        } else if i < self.existing() {
             Kind::Dir
         } else {
             self.created[i - self.existing()].0
@@ -286,7 +310,7 @@ impl World {
 
     fn local_place(&self, i: usize) -> Option<(Spot, String)> {
         match self.local_of(i) {
-            Local::Kept => Some(self.synced_place(i)),
+            Local::Kept | Local::Edited => Some(self.synced_place(i)),
             Local::Removed => None,
             Local::Into(spot) if i < self.existing() && spot == self.synced[i] => {
                 Some((spot, format!("{}1", self.label(i))))
@@ -331,6 +355,67 @@ impl World {
         })
     }
 
+    fn placeable(&self) -> bool {
+        let len = self.len();
+        let file = |spot: Spot| matches!(spot, Spot::In(j) if self.kind(j) == Kind::File);
+        if (0..self.existing()).any(|j| file(self.synced[j]) || file(self.remote_place(j).0)) {
+            return false;
+        }
+        let places: Vec<Option<(Spot, String)>> = (0..len).map(|i| self.local_place(i)).collect();
+        for (i, place) in places.iter().enumerate() {
+            let Some((spot, _)) = place else {
+                continue;
+            };
+            if file(*spot) {
+                return false;
+            }
+            let mut at = *spot;
+            let mut steps = 0;
+            while let Spot::In(up) = at {
+                if up == i || steps > len {
+                    return false;
+                }
+                let Some((above, _)) = &places[up] else {
+                    return false;
+                };
+                at = *above;
+                steps += 1;
+            }
+        }
+        let mut taken = BTreeSet::new();
+        places
+            .iter()
+            .flatten()
+            .all(|place| taken.insert(place.clone()))
+    }
+
+    fn inside(&self, i: usize, top: usize, up: &dyn Fn(usize) -> Option<Spot>) -> bool {
+        let mut at = i;
+        for _ in 0..=self.len() {
+            if at == top {
+                return true;
+            }
+            match up(at) {
+                Some(Spot::In(j)) => at = j,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn after(&self, after: After) -> Option<World> {
+        let mut told = self.clone();
+        match after {
+            After::Nothing => return Some(told),
+            After::Edit(i) => {
+                told.files |= 1 << i;
+                told.local[i] = Local::Edited;
+            }
+            After::Move(i, spot) => told.local[i] = Local::Into(spot),
+        }
+        (told.local != self.local && told.placeable()).then_some(told)
+    }
+
     fn changes(&self) -> usize {
         self.local
             .iter()
@@ -350,6 +435,30 @@ impl World {
     }
 
     fn fits(&self, bounds: &Bounds) -> bool {
+        self.loosely_fits(bounds) && self.pruned()
+    }
+
+    fn pruned(&self) -> bool {
+        let k = self.existing();
+        let len = self.len();
+        if self.local.iter().all(|local| *local == Local::Kept) && self.created.is_empty() {
+            return false;
+        }
+        let places: Vec<Option<(Spot, String)>> = (0..len).map(|i| self.local_place(i)).collect();
+        let referenced = |i: usize| {
+            (0..k).any(|j| self.synced[j] == Spot::In(i) || self.remote_place(j).0 == Spot::In(i))
+                || places
+                    .iter()
+                    .flatten()
+                    .any(|(spot, _)| *spot == Spot::In(i))
+                || (0..len).any(|j| self.local_of(j) == Local::Onto(i))
+        };
+        (0..k).all(|i| {
+            self.local[i] != Local::Kept || self.remote[i] != Remote::Kept || referenced(i)
+        })
+    }
+
+    fn loosely_fits(&self, bounds: &Bounds) -> bool {
         let k = self.existing();
         let len = self.len();
         if !bounds.existing.contains(&k) || self.remote.len() != k || self.local.len() != k {
@@ -403,9 +512,6 @@ impl World {
         {
             return false;
         }
-        if self.local.iter().all(|local| *local == Local::Kept) && self.created.is_empty() {
-            return false;
-        }
         let onto = (0..len).filter(|&i| matches!(self.local_of(i), Local::Onto(_)));
         if onto.count() > bounds.onto {
             return false;
@@ -413,6 +519,7 @@ impl World {
         for i in 0..len {
             let bad = match self.local_of(i) {
                 Local::Kept | Local::Removed => i >= k,
+                Local::Edited => i >= k || self.kind(i) != Kind::File,
                 Local::Into(spot) => {
                     stray(i, spot, len) || matches!(spot, Spot::In(j) if self.kind(j) == Kind::File)
                 }
@@ -422,43 +529,7 @@ impl World {
                 return false;
             }
         }
-        let places: Vec<Option<(Spot, String)>> = (0..len).map(|i| self.local_place(i)).collect();
-        for (i, place) in places.iter().enumerate() {
-            let Some((spot, _)) = place else {
-                continue;
-            };
-            let mut at = *spot;
-            let mut steps = 0;
-            while let Spot::In(up) = at {
-                if up == i || steps > len {
-                    return false;
-                }
-                let Some((above, _)) = &places[up] else {
-                    return false;
-                };
-                at = *above;
-                steps += 1;
-            }
-        }
-        let mut taken = BTreeSet::new();
-        if !places
-            .iter()
-            .flatten()
-            .all(|place| taken.insert(place.clone()))
-        {
-            return false;
-        }
-        let referenced = |i: usize| {
-            (0..k).any(|j| self.synced[j] == Spot::In(i) || self.remote_place(j).0 == Spot::In(i))
-                || places
-                    .iter()
-                    .flatten()
-                    .any(|(spot, _)| *spot == Spot::In(i))
-                || (0..len).any(|j| self.local_of(j) == Local::Onto(i))
-        };
-        (0..k).all(|i| {
-            self.local[i] != Local::Kept || self.remote[i] != Remote::Kept || referenced(i)
-        })
+        self.placeable()
     }
 
     fn canonical(&self) -> World {
@@ -475,6 +546,9 @@ impl World {
         };
         let mut world = World {
             synced: vec![Spot::Root; k],
+            files: (0..k)
+                .filter(|&i| self.files & 1 << i != 0)
+                .fold(0, |files, i| files | 1 << to[i]),
             remote: vec![Remote::Kept; k],
             local: vec![Local::Kept; k],
             created: (self.created.iter())
@@ -541,8 +615,18 @@ impl World {
             let local = self
                 .local_place(i)
                 .map_or("removed".to_string(), |place| self.place(&place));
+            let kind = if self.kind(i) == Kind::File {
+                "file"
+            } else {
+                "dir"
+            };
+            let edited = if self.local[i] == Local::Edited {
+                " edited"
+            } else {
+                ""
+            };
             rows.push(format!(
-                "{} dir: S {} R {} L {}",
+                "{} {kind}: S {} R {} L {}{edited}",
                 self.label(i),
                 self.place(&self.synced_place(i)),
                 remote,
@@ -658,6 +742,17 @@ fn mv(id: String, parent: String, name: String) -> proto::Op {
     }))
 }
 
+fn mkfile(id: String, parent: String, name: String) -> proto::Op {
+    wrap(op::Op::CreateFile(proto::CreateFile {
+        node_id: id,
+        parent_id: parent,
+        name,
+        content: Some(content()),
+        made_over: Vec::new(),
+        source_version_id: String::new(),
+    }))
+}
+
 fn delete(id: String) -> proto::Op {
     wrap(op::Op::Delete(proto::Delete {
         node_id: id,
@@ -688,10 +783,24 @@ fn server(world: &World) -> SpaceDo {
     let mut space = SpaceDo::new(11, NOW as i64);
     let root = space.space_id().to_string();
     let mut ids = IdGen::new(13);
+    let chunks = (content().chunks.into_iter())
+        .chain(edited().chunks)
+        .collect();
+    let upload = proto::PrepareUpload { chunks };
+    space
+        .prepare_upload(&session("me"), NOW as i64, &upload)
+        .unwrap();
+    space.put_chunk(&CHUNK, 3, NOW as i64);
+    space.put_chunk(&EDIT, 3, NOW as i64);
     let made = (0..world.existing())
         .filter(|&i| world.recorded(i))
         .map(|i| {
-            mkdir(
+            let make = if world.kind(i) == Kind::File {
+                mkfile
+            } else {
+                mkdir
+            };
+            make(
                 world.id(i),
                 world.spot_id(&root, world.synced[i]),
                 world.label(i),
@@ -702,25 +811,18 @@ fn server(world: &World) -> SpaceDo {
         other(&mut space, &mut ids, made);
     }
     for i in 0..world.existing() {
-        match world.remote[i] {
-            Remote::Kept | Remote::Forgotten => {}
-            Remote::Trashed => other(&mut space, &mut ids, vec![delete(world.id(i))]),
-            Remote::Into(_) => {
-                let (spot, name) = world.remote_place(i);
-                other(
-                    &mut space,
-                    &mut ids,
-                    vec![mv(world.id(i), world.spot_id(&root, spot), name)],
-                );
-            }
+        if let Remote::Into(_) = world.remote[i] {
+            let (spot, name) = world.remote_place(i);
+            other(
+                &mut space,
+                &mut ids,
+                vec![mv(world.id(i), world.spot_id(&root, spot), name)],
+            );
         }
     }
-    let chunks = content().chunks;
-    let upload = proto::PrepareUpload { chunks };
-    space
-        .prepare_upload(&session("me"), NOW as i64, &upload)
-        .unwrap();
-    space.put_chunk(&CHUNK, 3, NOW as i64);
+    for i in (0..world.existing()).filter(|&i| world.remote[i] == Remote::Trashed) {
+        other(&mut space, &mut ids, vec![delete(world.id(i))]);
+    }
     space
 }
 
@@ -783,17 +885,25 @@ fn settle(planner: &mut Planner, commit_id: &str, result: &proto::CommitResult, 
     }
 }
 
+fn local_shape(world: &World, root: &str, i: usize) -> Option<Shape> {
+    let mut shape = shape(world, root, world.kind(i), world.local_place(i)?);
+    if world.local_of(i) == Local::Edited {
+        shape.content = Some(edited());
+    }
+    Some(shape)
+}
+
 fn trees(world: &World, space: &SpaceDo) -> Trees {
     let root = space.space_id().to_string();
     let mut trees = Trees::new(&root);
     for i in 0..world.len() {
-        if let Some(place) = world.local_place(i) {
+        if let Some(shape) = local_shape(world, &root, i) {
             let identity = FileIdentity {
                 ino: i as u128 + 1,
                 birth_ns: Some(0),
             };
             let node = LocalNode {
-                shape: shape(world, &root, world.kind(i), place),
+                shape,
                 identity,
                 parked: false,
                 left_out_when_placed: false,
@@ -801,8 +911,8 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
             };
             trees.set_local(world.id(i), node);
         }
-        let synced =
-            (i < world.existing()).then(|| shape(world, &root, Kind::Dir, world.synced_place(i)));
+        let synced = (i < world.existing())
+            .then(|| shape(world, &root, world.kind(i), world.synced_place(i)));
         trees.set_synced(world.id(i), synced);
     }
     learn(&mut trees, space);
@@ -871,7 +981,7 @@ fn leaves(world: &World, root: &str, space: &SpaceDo, holder: &str) -> Leave {
     };
     match world.local_of(i) {
         Local::Removed => return Leave::Deletes,
-        Local::Kept => return Leave::Stays,
+        Local::Kept | Local::Edited => return Leave::Stays,
         _ if i < world.existing() => return Leave::Moves,
         _ => {}
     }
@@ -1025,6 +1135,8 @@ struct Run {
     end: SpaceDo,
     stop: Stop,
     revived: Vec<String>,
+    empty: bool,
+    restores: usize,
 }
 
 #[derive(Clone)]
@@ -1110,10 +1222,12 @@ fn run(
     let mut next = first.cloned();
     let mut sent = Vec::new();
     let mut splits = 0;
+    let mut empty = false;
     let stop = loop {
         let Some(mut commit) = next.take() else {
             break Stop::Quiet;
         };
+        empty |= commit.ops.is_empty();
         if sent.len() == COMMITS || splits == COMMITS {
             break Stop::Busy;
         }
@@ -1172,6 +1286,8 @@ fn run(
         end: server,
         stop,
         revived,
+        empty,
+        restores: planner.commits.restores().len(),
     }
 }
 
@@ -1311,6 +1427,13 @@ fn naive(world: &World, root: &str) -> Vec<proto::Op> {
         let id = world.id(i);
         match (world.local_of(i), world.local_place(i)) {
             (Local::Kept, _) => {}
+            (Local::Edited, _) => ops.push(wrap(op::Op::UpdateContent(proto::UpdateContent {
+                node_id: id,
+                content: Some(edited()),
+                resend: false,
+                made_over: Vec::new(),
+                source_version_id: String::new(),
+            }))),
             (Local::Removed, _) | (_, None) => ops.push(delete(id)),
             (_, Some((spot, name))) if i < world.existing() => {
                 ops.push(mv(id, world.spot_id(root, spot), name))
@@ -1318,12 +1441,7 @@ fn naive(world: &World, root: &str) -> Vec<proto::Op> {
             (_, Some((spot, name))) if world.kind(i) == Kind::Dir => {
                 ops.push(mkdir(id, world.spot_id(root, spot), name))
             }
-            (_, Some((spot, name))) => ops.push(wrap(op::Op::CreateFile(proto::CreateFile {
-                node_id: id,
-                parent_id: world.spot_id(root, spot),
-                name,
-                content: Some(content()),
-            }))),
+            (_, Some((spot, name))) => ops.push(mkfile(id, world.spot_id(root, spot), name)),
         }
     }
     ops
@@ -1794,6 +1912,9 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         if !capped.revived.is_empty() {
             found.push(format!("under a cap of {fits}: revival over the run"));
         }
+        if capped.empty {
+            found.push(format!("under a cap of {fits}: empty commit"));
+        }
         match capped.stop {
             Stop::Busy => found.push(format!(
                 "under a cap of {fits}: still sending after {COMMITS} commits"
@@ -1823,6 +1944,10 @@ fn check(world: &World, space: &SpaceDo) -> Report {
     if runs.iter().any(|run| run.stop == Stop::Stalled) {
         hard = true;
         classes.push("acknowledge refused".into());
+    }
+    if runs.iter().any(|run| run.empty) {
+        hard = true;
+        classes.push("empty commit".into());
     }
     if let Some(run) = runs.iter().find(|run| !run.revived.is_empty()) {
         hard = true;
@@ -1889,9 +2014,513 @@ fn check(world: &World, space: &SpaceDo) -> Report {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Story {
+    Restore(usize, Option<Spot>),
+    Answer(usize, Answer, After),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum After {
+    Nothing,
+    Edit(usize),
+    Move(usize, Spot),
+}
+
+#[derive(Default)]
+struct Intent {
+    sure: Vec<(usize, Want)>,
+    open: Vec<(usize, Want)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Want {
+    Live,
+    Under(Spot),
+    Placed,
+    Edited,
+    Gone,
+}
+
+fn restores(world: &World) -> Vec<(World, Story)> {
+    let k = world.existing();
+    let mut worlds = vec![world.clone()];
+    for t in (0..k).filter(|&t| world.remote[t] == Remote::Trashed) {
+        let moved_in = (0..k).filter(|&j| {
+            j != t && world.remote[j] == Remote::Kept && world.synced[j] != Spot::In(t)
+        });
+        worlds.extend(moved_in.map(|j| {
+            let mut told = world.clone();
+            told.remote[j] = Remote::Into(Spot::In(t));
+            told
+        }));
+    }
+    let mut stories = Vec::new();
+    for told in worlds.into_iter().filter(World::remote_acyclic) {
+        let dirs = || (0..k).filter(|&j| told.kind(j) == Kind::Dir);
+        let trashed = |i: usize| told.recorded(i) && !told.remote_live(i);
+        for i in (0..k).filter(|&i| trashed(i) && told.local[i] != Local::Removed) {
+            let into = dirs().filter(|&j| j != i && told.local_place(j).is_some());
+            let targets = [None, Some(Spot::Root)]
+                .into_iter()
+                .chain(into.map(|j| Some(Spot::In(j))));
+            stories.extend(targets.map(|target| (told.clone(), Story::Restore(i, target))));
+        }
+    }
+    stories
+}
+
+fn answers(world: &World) -> Vec<Story> {
+    let k = world.existing();
+    let dirs = || (0..k).filter(|&j| world.kind(j) == Kind::Dir);
+    let mut stories = Vec::new();
+    let synced = |j: usize| (j < k).then(|| world.synced[j]);
+    for t in 0..k {
+        let group: Vec<usize> = (0..k).filter(|&m| world.inside(m, t, &synced)).collect();
+        for answer in [Answer::Publish, Answer::Discard] {
+            stories.push(Story::Answer(t, answer, After::Nothing));
+            for &m in group.iter().filter(|&&m| world.local_place(m).is_some()) {
+                let spots =
+                    std::iter::once(Spot::Root).chain(dirs().filter(|&j| j != m).map(Spot::In));
+                for spot in spots {
+                    let after = After::Move(m, spot);
+                    let Some(told) = world.after(after) else {
+                        continue;
+                    };
+                    let local = |j: usize| told.local_place(j).map(|(spot, _)| spot);
+                    let in_group = group.iter().any(|&g| g != m && told.inside(m, g, &local));
+                    if answer == Answer::Publish || !in_group {
+                        stories.push(Story::Answer(t, answer, after));
+                    }
+                }
+            }
+            if answer == Answer::Publish {
+                let edits = group.iter().filter(|&&f| {
+                    world.local[f] == Local::Kept && world.after(After::Edit(f)).is_some()
+                });
+                stories.extend(edits.map(|&f| Story::Answer(t, answer, After::Edit(f))));
+            }
+        }
+    }
+    stories
+}
+
+fn restored(world: &World, i: usize, target: Option<Spot>) -> Intent {
+    let k = world.existing();
+    let remote = |j: usize| (j < k).then(|| world.remote_place(j).0);
+    let local = |j: usize| world.local_place(j).map(|(spot, _)| spot);
+    let group: Vec<usize> = (0..k).filter(|&j| world.inside(j, i, &remote)).collect();
+    let cycle =
+        |j: usize| world.inside(j, i, &remote) || group.iter().any(|&g| world.inside(j, g, &local));
+    let target = target.unwrap_or(world.remote_place(i).0);
+    if matches!(target, Spot::In(j) if cycle(j)) {
+        return Intent::default();
+    }
+    let mut intent = Intent::default();
+    intent.sure.push((
+        i,
+        match world.local[i] {
+            Local::Kept => Want::Under(target),
+            _ => Want::Live,
+        },
+    ));
+    for &j in group.iter().filter(|&&j| j != i) {
+        match world.local[j] {
+            Local::Kept => intent.sure.push((j, Want::Under(world.remote_place(j).0))),
+            Local::Removed => intent.open.push((j, Want::Gone)),
+            _ => intent.sure.push((j, Want::Placed)),
+        }
+    }
+    let into = (0..world.len()).filter(|&j| {
+        !group.contains(&j)
+            && world.local_of(j) != Local::Kept
+            && group.iter().any(|&g| world.inside(j, g, &local))
+    });
+    intent.sure.extend(into.map(|j| (j, Want::Placed)));
+    intent
+}
+
+fn answered(
+    told: &World,
+    group: &[usize],
+    held: &BTreeSet<String>,
+    kept_back: &BTreeSet<String>,
+    after: After,
+) -> Intent {
+    let local = |j: usize| told.local_place(j).map(|(spot, _)| spot);
+    let synced = |j: usize| (j < told.existing()).then(|| told.synced[j]);
+    let above = |kept: &mut BTreeSet<usize>| {
+        for i in kept.clone() {
+            let mut at = local(i);
+            while let Some(Spot::In(up)) = at {
+                kept.insert(up);
+                at = local(up);
+            }
+        }
+    };
+    let mut kept: BTreeSet<usize> = (0..told.len())
+        .filter(|&i| held.contains(&told.id(i)) && local(i).is_some())
+        .collect();
+    let mut spared: BTreeSet<usize> = (0..told.len())
+        .filter(|&i| kept_back.contains(&told.id(i)))
+        .collect();
+    let mut open = Vec::new();
+    if let After::Edit(i) | After::Move(i, _) = after {
+        let moved = (0..told.len()).filter(|&j| told.inside(j, i, &local));
+        let published =
+            (0..told.existing()).any(|h| held.contains(&told.id(h)) && told.inside(i, h, &synced));
+        if published {
+            kept.extend(moved);
+        } else {
+            spared.extend(moved);
+            above(&mut spared);
+            let want = if after == After::Edit(i) {
+                Want::Edited
+            } else {
+                Want::Placed
+            };
+            open.push((i, want));
+        }
+    }
+    above(&mut kept);
+    let placed = kept.iter().map(|&i| {
+        let want = if after == After::Edit(i) {
+            Want::Edited
+        } else {
+            Want::Placed
+        };
+        (i, want)
+    });
+    let given_up = (group.iter())
+        .filter(|i| !kept.contains(i) && !spared.contains(i))
+        .map(|&i| (i, Want::Gone));
+    let mut intent = Intent {
+        sure: placed.collect(),
+        open: Vec::new(),
+    };
+    if open.is_empty() {
+        intent.sure.extend(given_up);
+    } else {
+        intent.open.extend(open.into_iter().chain(given_up));
+    }
+    intent
+}
+
+fn met(world: &World, root: &str, before: &SpaceDo, end: &SpaceDo, i: usize, want: Want) -> bool {
+    let node = (end.node(&world.id(i))).filter(|node| node.status() == NodeStatus::Live);
+    match want {
+        Want::Live => node.is_some(),
+        Want::Gone => node.is_none(),
+        Want::Under(spot) => node.is_some_and(|node| node.parent_id == world.spot_id(root, spot)),
+        Want::Placed => reached(world, root, end, 1 << i) != 0,
+        Want::Edited => {
+            let was = before.node(&world.id(i)).map_or(0, |was| was.content_rev);
+            reached(world, root, end, 1 << i) != 0
+                && node.is_some_and(|node| node.content_rev > was)
+        }
+    }
+}
+
+fn missed(story: Story, want: Want) -> &'static str {
+    match (story, want) {
+        (_, Want::Live) => "the restored node is not live",
+        (_, Want::Under(_)) => "a node is not live where the restore puts it",
+        (_, Want::Placed) => "a node is not where L holds it",
+        (_, Want::Edited) => "an edit is not kept in place",
+        (Story::Restore(..), Want::Gone) => "a node L removed is live",
+        (Story::Answer(..), Want::Gone) => "a folder the answer gives up is live",
+    }
+}
+
+fn faults(
+    told: &World,
+    root: &str,
+    story: Story,
+    intent: &Intent,
+    run: &Run,
+) -> (Vec<String>, Vec<String>) {
+    let mut hard = Vec::new();
+    let mut soft = Vec::new();
+    let verdicts: Vec<&Verdict> = run.sent.iter().map(|sent| &sent.verdict).collect();
+    for kind in kinds(&verdicts) {
+        if kind == "made-up name" {
+            soft.push(kind.to_string());
+        } else {
+            hard.push(kind.to_string());
+        }
+    }
+    if !run.revived.is_empty() {
+        hard.push("revival over the run".into());
+    }
+    if run.empty {
+        hard.push("empty commit".into());
+    }
+    match run.stop {
+        Stop::Busy => hard.push(format!("still sending after {COMMITS} commits")),
+        Stop::Stalled => hard.push("acknowledge or split refused".into()),
+        Stop::Refused => soft.push("commit refused because the head moved".into()),
+        Stop::Quiet => {}
+    }
+    if run.restores > 0 {
+        hard.push("ends with a restore left".into());
+    }
+    let made_up: BTreeSet<&str> = (run.sent.iter())
+        .flat_map(|sent| {
+            let verdict = &sent.verdict;
+            (verdict.made_up.iter().chain(&verdict.made_up_by_delete))
+                .map(|&at| target(&sent.commit.ops[at]))
+        })
+        .collect();
+    let deleted: BTreeSet<&str> = (run.sent.iter())
+        .flat_map(|sent| &sent.commit.ops)
+        .filter(|op| matches!(op.op, Some(op::Op::Delete(_))))
+        .map(target)
+        .collect();
+    let kept = (intent.sure.iter())
+        .filter(|(i, want)| *want != Want::Gone && deleted.contains(told.id(*i).as_str()));
+    if kept.count() > 0 {
+        hard.push("a commit deletes a node L keeps".into());
+    }
+    for &(i, want) in &intent.sure {
+        if met(told, root, &run.before, &run.end, i, want) {
+            continue;
+        }
+        if made_up.contains(told.id(i).as_str()) {
+            soft.push(format!("made-up name: ends while {}", missed(story, want)));
+        } else {
+            hard.push(format!("ends while {}", missed(story, want)));
+        }
+    }
+    for &(i, want) in &intent.open {
+        if !met(told, root, &run.before, &run.end, i, want) {
+            soft.push(format!("open rule: ends while {}", missed(story, want)));
+        }
+    }
+    (hard, soft)
+}
+
+fn torn(told: &World, intent: &Intent, run: &Run) -> bool {
+    let afters = (run.sent.iter().skip(1).map(|sent| &sent.before)).chain([&run.end]);
+    let given_up: Vec<String> = (intent.sure.iter())
+        .filter(|(_, want)| *want == Want::Gone)
+        .map(|&(i, _)| told.id(i))
+        .collect();
+    afters.take(run.sent.len()).any(|space| {
+        (given_up.iter()).any(|id| {
+            space
+                .node(id)
+                .is_some_and(|node| node.status() == NodeStatus::Live)
+        })
+    })
+}
+
+fn show_story(world: &World, story: Story) -> String {
+    let at = |spot: Spot| match spot {
+        Spot::Root => "root".to_string(),
+        Spot::In(j) => world.label(j),
+    };
+    match story {
+        Story::Restore(i, None) => format!("; restore of {}", world.label(i)),
+        Story::Restore(i, Some(spot)) => {
+            format!("; restore of {} into {}", world.label(i), at(spot))
+        }
+        Story::Answer(t, answer, after) => {
+            let then = match after {
+                After::Nothing => String::new(),
+                After::Edit(i) => format!(", then {} edited", world.label(i)),
+                After::Move(i, _) => format!(
+                    ", then {} moved to {}",
+                    world.label(i),
+                    world
+                        .local_place(i)
+                        .map_or(String::new(), |place| world.place(&place))
+                ),
+            };
+            format!(
+                "; unseen trash of {}, answered {answer:?}{then}",
+                world.label(t)
+            )
+        }
+    }
+}
+
+fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
+    let root = space.space_id().to_string();
+    let (told, before, mut planner, intent) = match story {
+        Story::Restore(i, target) => {
+            let mut planner = Planner::new(world, space);
+            let parent = target.map(|spot| world.spot_id(&root, spot));
+            let intent = RestoreIntent::from_trash(world.id(i), parent, None).unwrap();
+            planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
+            let intent = restored(world, i, target);
+            (world.clone(), space.clone(), planner, intent)
+        }
+        Story::Answer(t, answer, after) => {
+            let told = world
+                .after(after)
+                .expect("a story changes L to a placeable tree");
+            let base = World {
+                files: told.files,
+                ..world.clone()
+            };
+            let mut before = if base.files == world.files {
+                space.clone()
+            } else {
+                server(&base)
+            };
+            let was = trashed(&before);
+            unsee(&base, &mut before, Unseen::Trash(t));
+            let mut planner = Planner::new(&base, &before);
+            let cause = RecoveryCause::rewind(4, NOW as i64);
+            planner.commits.enter_recovery(cause);
+            planner.commits.recover(
+                &mut planner.trees,
+                0,
+                &cause,
+                &History::new(),
+                &Marks::new(),
+                &mut planner.ids,
+                NOW,
+            );
+            planner.trees.settle();
+            let replies: &[Answer] = if answer == Answer::Publish {
+                &[Answer::Publish, Answer::Keep, Answer::Delete]
+            } else {
+                &[Answer::Discard, Answer::Restore]
+            };
+            let mut held = BTreeSet::new();
+            let mut shown = BTreeSet::new();
+            let mut kept_back = BTreeSet::new();
+            for question in planner.commits.questions().to_vec() {
+                let Some(&reply) =
+                    (replies.iter()).find(|reply| question.kind.answers().contains(reply))
+                else {
+                    continue;
+                };
+                if !planner.commits.decide(&question.id, reply) {
+                    continue;
+                }
+                shown.extend(question.holds().cloned());
+                match reply {
+                    Answer::Publish | Answer::Keep => held.extend(question.holds().cloned()),
+                    Answer::Restore => kept_back.extend(question.holds().cloned()),
+                    _ => {}
+                }
+            }
+            if let After::Edit(i) | After::Move(i, _) = after {
+                if shown.contains(&told.id(i)) {
+                    return None;
+                }
+                let mut node = (planner.trees.local().get(&told.id(i)))
+                    .expect("the changed node is in L")
+                    .clone();
+                node.shape = local_shape(&told, &root, i).expect("the changed node stays in L");
+                planner.trees.set_local(told.id(i), node);
+                planner.trees.settle();
+            }
+            let now = trashed(&before);
+            let group: Vec<usize> = (0..told.existing())
+                .filter(|&i| now.contains(&told.id(i)) && !was.contains(&told.id(i)))
+                .collect();
+            let intent = answered(&told, &group, &held, &kept_back, after);
+            (told, before, planner, intent)
+        }
+    };
+    let first = planner.build();
+    let full = run(
+        &told,
+        &before,
+        &planner,
+        first.as_ref(),
+        Unseen::Nothing,
+        usize::MAX,
+    );
+    let (mut hard, mut soft) = faults(&told, &root, story, &intent, &full);
+    if matches!(story, Story::Answer(..)) && torn(&told, &intent, &full) {
+        hard.push("a folder the answer gives up is live after a commit".into());
+    }
+    let mut notes = String::new();
+    let mut runs = 1;
+    let planned = first.as_ref().map_or(0, |commit| commit.ops.len());
+    for fits in CAPS.into_iter().filter(|&fits| fits < planned) {
+        runs += 1;
+        let capped = run(
+            &told,
+            &before,
+            &planner,
+            first.as_ref(),
+            Unseen::Nothing,
+            fits,
+        );
+        let (found, _) = faults(&told, &root, story, &intent, &capped);
+        if !found.is_empty() {
+            hard.extend(
+                found
+                    .into_iter()
+                    .map(|fault| format!("under a cap of {fits}: {fault}")),
+            );
+            notes += &format!(
+                "\n    under a cap of {fits}:{}",
+                show_runs(&told, std::slice::from_ref(&capped))
+            );
+            break;
+        }
+    }
+    let baseline = |fault: &str| match story {
+        Story::Answer(..) if fault.starts_with("under a cap of") => {
+            Some("a split bundle never finishes")
+        }
+        Story::Answer(_, Answer::Discard, _)
+            if fault.contains("a folder the answer gives up is live") =>
+        {
+            Some("Discard brings back a folder it gave up")
+        }
+        _ => None,
+    };
+    let (known, hard): (Vec<String>, Vec<String>) = hard
+        .into_iter()
+        .partition(|fault| baseline(fault).is_some());
+    soft.extend(known.into_iter().map(|fault| {
+        let class = baseline(&fault).expect("partitioned");
+        format!("main baseline, {class}: {fault}")
+    }));
+    let prefix = match story {
+        Story::Restore(..) => "restore",
+        Story::Answer(..) => "answer",
+    };
+    let mut classes: Vec<String> = (hard.iter().chain(&soft))
+        .map(|class| format!("{prefix}: {class}"))
+        .collect();
+    classes.sort();
+    classes.dedup();
+    if classes.is_empty() {
+        classes.push(format!("{prefix}: clean"));
+    }
+    let text = if hard.is_empty() && soft.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}{}{}{}{}",
+            told.describe(),
+            told.show_ranks(),
+            show_story(&told, story),
+            show_runs(&told, std::slice::from_ref(&full)),
+            notes
+        )
+    };
+    Some(Report {
+        runs,
+        hard: !hard.is_empty(),
+        classes,
+        size: told.len() * 100 + told.changes() * 10 + planned,
+        text,
+    })
+}
+
 #[derive(Default)]
 struct Tally {
     worlds: usize,
+    stories: usize,
     runs: usize,
     hard: usize,
     classes: BTreeMap<String, (usize, Vec<(usize, String)>)>,
@@ -1909,6 +2538,17 @@ impl Tally {
 
     fn add(&mut self, report: Report) {
         self.worlds += 1;
+        self.count(report);
+    }
+
+    fn extend(&mut self, report: Option<Report>) {
+        if let Some(report) = report {
+            self.stories += 1;
+            self.count(report);
+        }
+    }
+
+    fn count(&mut self, report: Report) {
         self.runs += report.runs;
         self.hard += usize::from(report.hard);
         for class in report.classes {
@@ -1919,6 +2559,7 @@ impl Tally {
 
     fn merge(&mut self, other: Tally) {
         self.worlds += other.worlds;
+        self.stories += other.stories;
         self.runs += other.runs;
         self.hard += other.hard;
         for (class, (count, examples)) in other.classes {
@@ -1928,8 +2569,8 @@ impl Tally {
 
     fn summary(&self) -> String {
         let mut text = format!(
-            "{} worlds, {} runs, {} hard",
-            self.worlds, self.runs, self.hard
+            "{} worlds, {} stories, {} runs, {} hard",
+            self.worlds, self.stories, self.runs, self.hard
         );
         for (class, (count, examples)) in &self.classes {
             text += &format!("\n{class}: {count}");
@@ -1975,6 +2616,7 @@ fn local_menu(i: usize, k: usize, len: usize) -> Vec<Local> {
 
 struct Fill<'a> {
     bounds: &'a Bounds,
+    strict: bool,
     synced: &'a [Spot],
     remote: &'a [Remote],
     config: &'a [Kind],
@@ -1987,6 +2629,7 @@ impl Fill<'_> {
         if picked.len() == self.menus.len() {
             let world = World {
                 synced: self.synced.to_vec(),
+                files: 0,
                 remote: self.remote.to_vec(),
                 local: picked[..k].to_vec(),
                 created: self
@@ -1997,7 +2640,12 @@ impl Fill<'_> {
                     .collect(),
                 ranks: Vec::new(),
             };
-            if world.fits(self.bounds) {
+            let fits = if self.strict {
+                world.fits(self.bounds)
+            } else {
+                world.loosely_fits(self.bounds)
+            };
+            if fits {
                 visit(world);
             }
             return;
@@ -2014,12 +2662,19 @@ impl Fill<'_> {
     }
 }
 
-fn each_world(bounds: &Bounds, synced: &[Spot], remote: &[Remote], visit: &mut dyn FnMut(World)) {
+fn each_world(
+    bounds: &Bounds,
+    strict: bool,
+    synced: &[Spot],
+    remote: &[Remote],
+    visit: &mut dyn FnMut(World),
+) {
     let k = synced.len();
     for config in bounds.created {
         let len = k + config.len();
         let fill = Fill {
             bounds,
+            strict,
             synced,
             remote,
             config,
@@ -2029,14 +2684,36 @@ fn each_world(bounds: &Bounds, synced: &[Spot], remote: &[Remote], visit: &mut d
     }
 }
 
+fn answering(bounds: &Bounds) -> Bounds {
+    Bounds {
+        existing: bounds.answered.clone(),
+        answered: bounds.answered.clone(),
+        answered_changes: bounds.answered_changes,
+        local_changes: bounds.answered_changes,
+        onto: bounds.onto,
+        changes: bounds.changes,
+        created: bounds.created,
+        nested_created: bounds.nested_created,
+        every_order_up_to: bounds.every_order_up_to,
+    }
+}
+
 fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Tally {
-    let jobs: Vec<(Vec<Spot>, Vec<Remote>)> = (bounds.existing.clone())
+    let answering = answering(bounds);
+    let least = *bounds.existing.start().min(bounds.answered.start());
+    let most = *bounds.existing.end().max(bounds.answered.end());
+    let jobs: Vec<(Vec<Spot>, Vec<Remote>)> = (least..=most)
         .flat_map(|k| {
             (forests(k).into_iter()).flat_map(move |synced| {
                 remotes(k)
                     .into_iter()
                     .map(move |remote| (synced.clone(), remote))
             })
+        })
+        .filter(|(synced, remote)| {
+            bounds.existing.contains(&synced.len())
+                || (answering.existing.contains(&synced.len())
+                    && remote.iter().all(|remote| *remote == Remote::Kept))
         })
         .enumerate()
         .filter(|(at, _)| at % shards == shard)
@@ -2051,6 +2728,7 @@ fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Ta
                 while let Some((synced, remote)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let probe = World {
                         synced: synced.clone(),
+                        files: 0,
                         remote: remote.clone(),
                         local: vec![Local::Kept; synced.len()],
                         created: vec![],
@@ -2059,13 +2737,34 @@ fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Ta
                     if !probe.remote_acyclic() {
                         continue;
                     }
+                    if answering.existing.contains(&synced.len())
+                        && remote.iter().all(|remote| *remote == Remote::Kept)
+                    {
+                        let space = server(&probe);
+                        each_world(&answering, false, synced, remote, &mut |world| {
+                            for story in answers(&world) {
+                                tally.extend(tell(&world, &space, story));
+                            }
+                        });
+                    }
+                    if !bounds.existing.contains(&synced.len()) {
+                        continue;
+                    }
                     let mut spaces: BTreeMap<Vec<usize>, SpaceDo> = BTreeMap::new();
-                    each_world(bounds, synced, remote, &mut |mut world| {
+                    each_world(bounds, true, synced, remote, &mut |mut world| {
                         for ranks in orders(bounds, world.existing(), world.len()) {
                             world.ranks = ranks;
                             let space = (spaces.entry(world.ranks[..world.existing()].to_vec()))
                                 .or_insert_with(|| server(&world));
                             tally.add(check(&world, space));
+                            for (told, story) in restores(&world) {
+                                let space = if told.remote == world.remote {
+                                    space.clone()
+                                } else {
+                                    server(&told)
+                                };
+                                tally.extend(tell(&told, &space, story));
+                            }
                         }
                     });
                 }
@@ -2086,6 +2785,7 @@ fn threads() -> usize {
 fn world(synced: &[Spot], remote: &[Remote], local: &[Local], created: &[(Kind, Local)]) -> World {
     World {
         synced: synced.to_vec(),
+        files: 0,
         remote: remote.to_vec(),
         local: local.to_vec(),
         created: created.to_vec(),
@@ -2275,21 +2975,12 @@ fn the_known_repros_keep_trashed_folders_trashed_and_names_given() {
     assert!(failed.is_empty(), "{failed:?}");
 }
 
-#[test]
-fn a_move_out_after_a_publish_answer_does_not_keep_the_old_folder_live_on_the_server() {
-    use Spot::{In, Root};
-    use koidrive_engine::first_link::{History, Marks};
-    use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryGroup};
+fn moved_after_a_publish_answer(world: &World, moved: usize, to: Spot) -> (World, Run) {
+    use koidrive_engine::question::{QuestionKind, RecoveryGroup};
 
-    let mut world = world(
-        &[Root, In(0), In(1)],
-        &[Remote::Kept, Remote::Kept, Remote::Kept],
-        &[Local::Into(Root), Local::Kept, Local::Kept],
-        &[],
-    );
-    let mut space = server(&world);
-    unsee(&world, &mut space, Unseen::Trash(0));
-    let mut planner = Planner::new(&world, &space);
+    let mut space = server(world);
+    unsee(world, &mut space, Unseen::Trash(0));
+    let mut planner = Planner::new(world, &space);
     let cause = RecoveryCause::rewind(4, NOW as i64);
     planner.commits.enter_recovery(cause);
     assert!(planner.build().is_none());
@@ -2320,23 +3011,196 @@ fn a_move_out_after_a_publish_answer_does_not_keep_the_old_folder_live_on_the_se
         .clone();
     assert_eq!(question.holds().cloned().collect::<Vec<_>>(), [world.id(0)]);
     assert!(planner.commits.decide(&question.id, Answer::Publish));
-    let mut moved = planner.trees.local().get(&world.id(2)).unwrap().clone();
-    moved.shape.parent = space.space_id().into();
-    planner.trees.set_local(world.id(2), moved);
+    let mut told = world.clone();
+    told.local[moved] = Local::Into(to);
+    let mut node = planner.trees.local().get(&world.id(moved)).unwrap().clone();
+    node.shape.parent = told.spot_id(space.space_id(), to);
+    planner.trees.set_local(world.id(moved), node);
     planner.trees.settle();
-    world.local[2] = Local::Into(Root);
-    let first = planner.build().unwrap();
+    let first = planner.build();
     let finished = run(
-        &world,
+        &told,
         &space,
         &planner,
-        Some(&first),
+        first.as_ref(),
         Unseen::Nothing,
         usize::MAX,
     );
+    (told, finished)
+}
+
+fn live_under(end: &SpaceDo, id: &str, parent: &str) -> bool {
+    end.node(id)
+        .is_some_and(|node| node.status() == NodeStatus::Live && node.parent_id == parent)
+}
+
+#[test]
+fn a_move_out_after_a_publish_answer_does_not_keep_the_old_folder_live_on_the_server() {
+    use Spot::{In, Root};
+
+    let world = world(
+        &[Root, In(0), In(1)],
+        &[Remote::Kept, Remote::Kept, Remote::Kept],
+        &[Local::Into(Root), Local::Kept, Local::Kept],
+        &[],
+    );
+    let (world, finished) = moved_after_a_publish_answer(&world, 2, Root);
     assert!(matches!(finished.stop, Stop::Quiet));
+    let root = finished.end.space_id();
+    assert!(live_under(&finished.end, &world.id(0), root));
+    assert!(live_under(&finished.end, &world.id(2), root));
     let old_parent = finished.end.node(&world.id(1)).unwrap();
     assert_eq!(old_parent.status(), NodeStatus::Trashed);
+}
+
+#[test]
+fn a_move_after_a_publish_answer_into_a_trashed_sibling_does_not_stall() {
+    use Spot::{In, Root};
+
+    let world = world(
+        &[Root, In(0), In(1), In(0)],
+        &[Remote::Kept, Remote::Kept, Remote::Kept, Remote::Kept],
+        &[Local::Into(Root), Local::Kept, Local::Kept, Local::Kept],
+        &[],
+    );
+    let (world, finished) = moved_after_a_publish_answer(&world, 2, In(3));
+    assert!(matches!(finished.stop, Stop::Quiet));
+    let root = finished.end.space_id();
+    assert!(live_under(&finished.end, &world.id(0), root));
+    assert!(live_under(&finished.end, &world.id(3), &world.id(0)));
+    assert!(live_under(&finished.end, &world.id(2), &world.id(3)));
+    let old_parent = finished.end.node(&world.id(1)).unwrap();
+    assert_eq!(old_parent.status(), NodeStatus::Trashed);
+}
+
+fn known_stories() -> Vec<(&'static str, World, Story)> {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let kept = Remote::Kept;
+    let chain = world(
+        &[Root, In(0), In(1)],
+        &[kept; 3],
+        &[To(Root), Kept, Kept],
+        &[],
+    );
+    let siblings = world(
+        &[Root, In(0), In(0), In(1)],
+        &[kept; 4],
+        &[To(Root), Kept, Kept, Kept],
+        &[],
+    );
+    let publish = |after| Story::Answer(0, Answer::Publish, after);
+    vec![
+        (
+            "a move out of a published trash group to the root",
+            chain.clone(),
+            publish(After::Move(2, Root)),
+        ),
+        (
+            "a move out of a published trash group into the answered folder",
+            chain.clone(),
+            publish(After::Move(2, In(0))),
+        ),
+        (
+            "a move out of a published trash group into a trashed sibling",
+            siblings,
+            publish(After::Move(3, In(2))),
+        ),
+        (
+            "an edit below an unchanged folder of a published trash group",
+            chain,
+            publish(After::Edit(2)),
+        ),
+    ]
+}
+
+#[test]
+fn the_known_stories_are_stories_of_the_slice() {
+    for (name, world, story) in known_stories() {
+        assert_eq!(world.canonical(), world, "{name}");
+        assert!(world.loosely_fits(&answering(&SLICE)), "{name}");
+        assert!(answers(&world).contains(&story), "{name}");
+    }
+}
+
+#[test]
+fn the_known_stories_keep_what_l_holds_live_and_trash_what_an_answer_gives_up() {
+    let mut failed = Vec::new();
+    for (name, world, story) in known_stories() {
+        let report = tell(&world, &server(&world), story)
+            .expect("the story changes a node no question holds");
+        println!("{name}: {:?}\n  {}", report.classes, report.text);
+        if report.hard {
+            failed.push(name);
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+#[test]
+fn the_story_oracle_follows_the_reference_server() {
+    use Spot::{In, Root};
+    let restored_world = world(
+        &[Root, In(0)],
+        &[Remote::Trashed, Remote::Kept],
+        &[Local::Kept, Local::Kept],
+        &[],
+    );
+    let mut space = server(&restored_world);
+    let root = space.space_id().to_string();
+    let taken = mkdir(node_id(BURIAL), root.clone(), restored_world.label(0));
+    other(&mut space, &mut IdGen::new(17), vec![taken]);
+    let intent = RestoreIntent::from_trash(restored_world.id(0), Some(root.clone()), None).unwrap();
+    let commit = proto::Commit {
+        commit_id: IdGen::new(18).uuid_v7(NOW),
+        history_id: space.history_id().into(),
+        device_seq: 1,
+        base_seq: space.head_seq(),
+        ops: vec![wrap(op::Op::Restore(intent.op().clone()))],
+        ..Default::default()
+    };
+    let (end, result, verdict) = judge(&restored_world, &space, &commit);
+    assert_eq!(
+        result.results[0].code,
+        op_result::Code::AppliedRenamed as i32
+    );
+    assert!(verdict.safe(), "{verdict:?}");
+    assert!(live_under(
+        &end,
+        &restored_world.id(1),
+        &restored_world.id(0)
+    ));
+    for (i, want) in restored(&restored_world, 0, Some(Root)).sure {
+        assert!(
+            met(&restored_world, &root, &space, &end, i, want),
+            "{i} {want:?}"
+        );
+    }
+
+    let merged_world = world(
+        &[Root],
+        &[Remote::Kept],
+        &[Local::Kept],
+        &[(Kind::Dir, Local::Onto(0))],
+    );
+    let space = server(&merged_world);
+    let root = space.space_id().to_string();
+    let commit = proto::Commit {
+        ops: vec![mkdir(
+            merged_world.id(1),
+            root.clone(),
+            merged_world.label(0),
+        )],
+        ..commit
+    };
+    let commit = proto::Commit {
+        base_seq: space.head_seq(),
+        history_id: space.history_id().into(),
+        ..commit
+    };
+    let (end, result, _) = judge(&merged_world, &space, &commit);
+    assert_eq!(result.results[0].code, op_result::Code::MergedInto as i32);
+    assert_eq!(reached(&merged_world, &root, &end, 1 << 1), 1 << 1);
 }
 
 #[test]
