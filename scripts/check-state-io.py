@@ -72,16 +72,20 @@ def call_tokens(text, line, column):
     offset = sum(map(len, lines[:line - 1])) + column - 1
     tokens = []
     LEXER.comment_spans(text[offset:], "rust", tokens)
-    call, depth = [], 0
+    call, closing, macro = [], [], False
+    delimiters = {"(": ")", "[": "]", "{": "}"}
     for token, _, _ in tokens:
-        if depth == 0 and token in (";", ",", "=", "}"):
+        if not closing and token in (";", ",", "=", "}"):
             return None
         call.append(token)
-        if token == "(":
-            depth += 1
-        elif token == ")":
-            depth -= 1
-            if depth == 0:
+        if not closing and token == "!":
+            macro = True
+        if token in delimiters and (closing or token == "(" or macro):
+            closing.append(delimiters[token])
+        elif closing and token in delimiters.values():
+            if closing.pop() != token:
+                return None
+            if not closing:
                 return call
     return None
 

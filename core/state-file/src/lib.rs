@@ -38,7 +38,7 @@ impl AtomicFile {
                 io::Error::new(io::ErrorKind::InvalidInput, "a state file needs a name")
             })?
             .to_owned();
-        if is_stage(destination.as_bytes()) {
+        if is_reserved_stage(destination.as_bytes()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a state-file destination cannot use the staging namespace",
@@ -47,6 +47,12 @@ impl AtomicFile {
         let directory = open_directory(parent(path))?;
         let lock = DirectoryLock::new(&directory)?;
         recover_locked(&directory)?;
+        if aliases_stage(&directory, &destination)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a state-file destination cannot alias a helper stage",
+            ));
+        }
         for _ in 0..16 {
             let mut random = [0; RANDOM_BYTES];
             getrandom::fill(&mut random).map_err(io::Error::other)?;
@@ -98,8 +104,10 @@ impl AtomicFile {
         for name in legacy {
             if Path::new(name).file_name() != Some(*name)
                 || name.as_bytes().contains(&0)
-                || *name == self.destination.as_os_str()
-                || is_stage(name.as_bytes())
+                || name
+                    .as_bytes()
+                    .eq_ignore_ascii_case(self.destination.as_bytes())
+                || is_reserved_stage(name.as_bytes())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -109,6 +117,20 @@ impl AtomicFile {
         }
         self.file.sync_all()?;
         let _lock = DirectoryLock::new(&self.directory)?;
+        if aliases_stage(&self.directory, &self.destination)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a state-file destination cannot alias a helper stage",
+            ));
+        }
+        for name in legacy {
+            if aliases_stage(&self.directory, name)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a legacy name cannot alias a helper stage",
+                ));
+            }
+        }
         let stage = self.stage.as_ref().unwrap();
         if !same_inode(&self.directory, stage, &self.file)? {
             return Err(io::Error::new(
@@ -133,6 +155,12 @@ impl AtomicFile {
         }
         self.stage = None;
         for name in legacy {
+            if same_inode(&self.directory, name, &self.file)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a legacy name cannot alias the published state file",
+                ));
+            }
             match fs::unlinkat(&self.directory, *name, AtFlags::empty()) {
                 Ok(()) | Err(rustix::io::Errno::NOENT) => {}
                 Err(error) => return Err(error.into()),
@@ -220,6 +248,39 @@ fn same_inode(directory: &File, name: &std::ffi::OsStr, file: &File) -> io::Resu
     };
     let opened = fs::fstat(file)?;
     Ok((named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino))
+}
+
+fn aliases_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
+    let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(named) => named,
+        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_reserved_stage(name.to_bytes()) {
+            continue;
+        }
+        let stage = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stage) => stage,
+            Err(rustix::io::Errno::NOENT) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if (named.st_dev, named.st_ino) == (stage.st_dev, stage.st_ino) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_reserved_stage(name: &[u8]) -> bool {
+    name.len() == PREFIX.len() + RANDOM_BYTES * 2 + SUFFIX.len()
+        && name[..PREFIX.len()].eq_ignore_ascii_case(PREFIX.as_bytes())
+        && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX.as_bytes())
+        && name[PREFIX.len()..name.len() - SUFFIX.len()]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn is_stage(name: &[u8]) -> bool {

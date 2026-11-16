@@ -3,6 +3,8 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -83,6 +85,355 @@ fn invalid_legacy_names_cannot_remove_protected_files() {
 }
 
 #[test]
+fn legacy_ascii_case_alias_cannot_remove_a_live_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_path = dir.path().join("first.json");
+    let first = AtomicFile::prepare(&first_path).unwrap();
+    first.as_file().write_all(b"first").unwrap();
+    let live = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let alias = live.file_name().unwrap().to_str().unwrap().to_uppercase();
+    let second_path = dir.path().join("second.json");
+    let second = AtomicFile::prepare(&second_path).unwrap();
+    second.as_file().write_all(b"second").unwrap();
+    let result = second.finish_with_legacy(Publish::Replace, &[OsStr::new(&alias)]);
+    assert_eq!(fs::read(&live).unwrap(), b"first");
+    assert!(!second_path.exists());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    first.finish(Publish::Create).unwrap();
+    assert_eq!(fs::read(first_path).unwrap(), b"first");
+}
+
+#[test]
+fn legacy_ascii_case_alias_cannot_remove_the_destination() {
+    for publish in [Publish::Replace, Publish::Create] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, b"original").unwrap();
+        let stage = AtomicFile::prepare(&path).unwrap();
+        stage.as_file().write_all(b"replacement").unwrap();
+        let result = stage.finish_with_legacy(publish, &[OsStr::new("STATE.JSON")]);
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(stages(dir.path()), 0);
+    }
+}
+
+#[test]
+fn ascii_case_spellings_of_the_staging_namespace_are_reserved() {
+    for name in [
+        ".KOI-STATE-0123456789abcdef0123456789abcdef.tmp",
+        ".koi-state-0123456789abcdef0123456789abcdef.TMP",
+        ".KoI-StAtE-0123456789ABCDEF0123456789ABCDEF.TmP",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, b"protected").unwrap();
+        let result = AtomicFile::prepare(&path);
+        assert_eq!(fs::read(&path).unwrap(), b"protected");
+        assert_eq!(
+            result.err().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        let destination = dir.path().join("state.json");
+        let result = write_with_legacy(&destination, b"new", &[OsStr::new(name)]);
+        assert_eq!(fs::read(&path).unwrap(), b"protected");
+        assert!(!destination.exists());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[test]
+fn destination_inode_alias_cannot_replace_a_live_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_path = dir.path().join("first.json");
+    let first = AtomicFile::prepare(&first_path).unwrap();
+    first.as_file().write_all(b"first").unwrap();
+    let live = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let alias = dir.path().join("ordinary.json");
+    fs::hard_link(&live, &alias).unwrap();
+    let result = AtomicFile::prepare(&alias);
+    assert_eq!(fs::read(&live).unwrap(), b"first");
+    assert_eq!(fs::read(&alias).unwrap(), b"first");
+    assert_eq!(
+        result.err().unwrap().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    first.finish(Publish::Create).unwrap();
+    assert_eq!(fs::read(&first_path).unwrap(), b"first");
+    assert_eq!(fs::read(&alias).unwrap(), b"first");
+}
+
+#[test]
+fn legacy_inode_alias_cannot_remove_a_live_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_path = dir.path().join("first.json");
+    let first = AtomicFile::prepare(&first_path).unwrap();
+    first.as_file().write_all(b"first").unwrap();
+    let live = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let second_path = dir.path().join("second.json");
+    let second = AtomicFile::prepare(&second_path).unwrap();
+    second.as_file().write_all(b"second").unwrap();
+    fs::hard_link(&live, dir.path().join("legacy")).unwrap();
+    let result = second.finish_with_legacy(Publish::Replace, &[OsStr::new("legacy")]);
+    assert_eq!(fs::read(&live).unwrap(), b"first");
+    assert_eq!(fs::read(dir.path().join("legacy")).unwrap(), b"first");
+    assert!(!second_path.exists());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    first.finish(Publish::Create).unwrap();
+    assert_eq!(fs::read(first_path).unwrap(), b"first");
+}
+
+#[test]
+fn legacy_inode_alias_cannot_remove_its_own_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let stage = AtomicFile::prepare(&path).unwrap();
+    stage.as_file().write_all(b"new").unwrap();
+    let live = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::hard_link(live, dir.path().join("legacy")).unwrap();
+    let result = stage.finish_with_legacy(Publish::Replace, &[OsStr::new("legacy")]);
+    assert_eq!(fs::read(dir.path().join("legacy")).unwrap(), b"new");
+    assert!(!path.exists());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(stages(dir.path()), 0);
+}
+
+#[test]
+fn destination_inode_alias_created_after_preparation_cannot_publish() {
+    for publish in [Publish::Replace, Publish::Create] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let stage = AtomicFile::prepare(&path).unwrap();
+        stage.as_file().write_all(b"staged").unwrap();
+        let live = fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::hard_link(live, &path).unwrap();
+        let result = stage.finish(publish);
+        assert_eq!(fs::read(&path).unwrap(), b"staged");
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(stages(dir.path()), 0);
+    }
+}
+
+#[test]
+fn interrupted_create_recovers_its_stage_without_removing_the_destination() {
+    for publish in [Publish::Create, Publish::Replace] {
+        let dir = tempfile::tempdir().unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "subprocess_interrupted_create", "--nocapture"])
+            .env("KOI_STATE_INTERRUPTED_CREATE_DIR", dir.path())
+            .stdin(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let path = dir.path().join("state.json");
+        let abandoned = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".koi-state-")
+            })
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        assert_eq!(fs::read(&abandoned).unwrap(), b"published");
+        assert_eq!(stages(dir.path()), 1);
+        let result = AtomicFile::prepare(&path);
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        assert!(!abandoned.exists());
+        let retry = result.unwrap_or_else(|error| panic!("recovery rejected publication: {error}"));
+        retry.as_file().write_all(b"replacement").unwrap();
+        match publish {
+            Publish::Create => {
+                assert_eq!(
+                    retry.finish(publish).unwrap_err().kind(),
+                    std::io::ErrorKind::AlreadyExists
+                );
+                assert_eq!(fs::read(&path).unwrap(), b"published");
+            }
+            Publish::Replace => {
+                retry.finish(publish).unwrap();
+                assert_eq!(fs::read(&path).unwrap(), b"replacement");
+            }
+        }
+        assert_eq!(stages(dir.path()), 0);
+    }
+}
+
+#[test]
+fn subprocess_interrupted_create() {
+    let Some(dir) = std::env::var_os("KOI_STATE_INTERRUPTED_CREATE_DIR") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let path = dir.join("state.json");
+    let stage = AtomicFile::prepare(&path).unwrap();
+    stage.as_file().write_all(b"published").unwrap();
+    stage.as_file().sync_all().unwrap();
+    let live = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    fs::hard_link(live, path).unwrap();
+    std::process::exit(0);
+}
+
+#[test]
+fn destination_inode_alias_of_an_inaccessible_stage_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let inaccessible = dir
+        .path()
+        .join(".koi-state-0123456789abcdef0123456789abcdef.tmp");
+    let path = dir.path().join("state.json");
+    fs::write(&inaccessible, b"inaccessible").unwrap();
+    fs::hard_link(&inaccessible, &path).unwrap();
+    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o000)).unwrap();
+    let result = AtomicFile::prepare(&path);
+    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::read(&inaccessible).unwrap(), b"inaccessible");
+    assert_eq!(fs::read(&path).unwrap(), b"inaccessible");
+    assert_eq!(
+        result.err().unwrap().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(stages(dir.path()), 1);
+}
+
+#[test]
+fn destination_alias_scan_does_not_skip_abandoned_stage_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let abandoned = dir
+        .path()
+        .join(".koi-state-0123456789abcdef0123456789abcdef.tmp");
+    let path = dir.path().join("state.json");
+    fs::write(&path, b"original").unwrap();
+    fs::write(&abandoned, b"abandoned").unwrap();
+    let stage = AtomicFile::prepare(&path).unwrap();
+    stage.as_file().write_all(b"published").unwrap();
+    assert!(!abandoned.exists());
+    assert_eq!(stages(dir.path()), 1);
+    assert_eq!(fs::read(&path).unwrap(), b"original");
+    stage.finish(Publish::Replace).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"published");
+    assert_eq!(stages(dir.path()), 0);
+}
+
+#[test]
+fn legacy_cleanup_can_remove_an_old_destination_hard_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let legacy = dir.path().join("legacy");
+    let retained = dir.path().join("retained");
+    fs::write(&path, b"original").unwrap();
+    fs::hard_link(&path, &legacy).unwrap();
+    fs::hard_link(&path, &retained).unwrap();
+    write_with_legacy(&path, b"published", &[OsStr::new("legacy")]).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"published");
+    assert_eq!(fs::read(retained).unwrap(), b"original");
+    assert!(!legacy.exists());
+    assert_eq!(stages(dir.path()), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unicode_filesystem_aliases_cannot_replace_or_remove_a_live_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_path = dir.path().join("first.json");
+    let first = AtomicFile::prepare(&first_path).unwrap();
+    first.as_file().write_all(b"first").unwrap();
+    let live = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let name = live.file_name().unwrap().to_str().unwrap();
+    for alias in [name.replacen('k', "K", 1), name.replacen('s', "ſ", 1)] {
+        let alias_path = dir.path().join(&alias);
+        let Ok(metadata) = fs::symlink_metadata(&alias_path) else {
+            continue;
+        };
+        assert_eq!(metadata.ino(), first.as_file().metadata().unwrap().ino());
+        let result = AtomicFile::prepare(&alias_path);
+        assert_eq!(fs::read(&live).unwrap(), b"first");
+        assert_eq!(
+            result.err().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let second_path = dir.path().join("second.json");
+        let second = AtomicFile::prepare(&second_path).unwrap();
+        second.as_file().write_all(b"second").unwrap();
+        let result = second.finish_with_legacy(Publish::Replace, &[OsStr::new(&alias)]);
+        assert_eq!(fs::read(&live).unwrap(), b"first");
+        assert_eq!(fs::read(&alias_path).unwrap(), b"first");
+        assert!(!second_path.exists());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+    first.finish(Publish::Create).unwrap();
+    assert_eq!(fs::read(first_path).unwrap(), b"first");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unicode_destination_alias_cannot_remove_the_publication() {
+    for publish in [Publish::Replace, Publish::Create] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("café-state.json");
+        let alias = "cafe\u{301}-STATE.json";
+        fs::write(&path, b"original").unwrap();
+        let Ok(metadata) = fs::symlink_metadata(dir.path().join(alias)) else {
+            continue;
+        };
+        assert_eq!(metadata.ino(), fs::metadata(&path).unwrap().ino());
+        if matches!(publish, Publish::Create) {
+            fs::remove_file(&path).unwrap();
+        }
+        let stage = AtomicFile::prepare(&path).unwrap();
+        stage.as_file().write_all(b"published").unwrap();
+        let result = stage.finish_with_legacy(publish, &[OsStr::new(alias)]);
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        assert_eq!(fs::read(dir.path().join(alias)).unwrap(), b"published");
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(stages(dir.path()), 0);
+    }
+}
+
+#[test]
+fn ordinary_unicode_destinations_replace_inaccessible_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("café-state.json");
+    fs::write(&path, b"original").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    write(&path, b"published").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"published");
+}
+
+#[test]
 fn legacy_symlink_cleanup_preserves_its_target() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("target");
@@ -92,6 +443,23 @@ fn legacy_symlink_cleanup_preserves_its_target() {
     write_with_legacy(&dir.path().join("state"), b"new", &[OsStr::new("legacy")]).unwrap();
     assert!(legacy.symlink_metadata().is_err());
     assert_eq!(fs::read(target).unwrap(), b"target");
+}
+
+#[test]
+fn legacy_symlink_to_the_destination_is_unlinked_without_removing_the_publication() {
+    for publish in [Publish::Replace, Publish::Create] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let legacy = dir.path().join("legacy");
+        symlink(&path, &legacy).unwrap();
+        let stage = AtomicFile::prepare(&path).unwrap();
+        stage.as_file().write_all(b"published").unwrap();
+        stage
+            .finish_with_legacy(publish, &[OsStr::new("legacy")])
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"published");
+        assert!(legacy.symlink_metadata().is_err());
+    }
 }
 
 #[test]

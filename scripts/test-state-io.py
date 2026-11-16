@@ -85,6 +85,25 @@ class ChangedIo(unittest.TestCase):
         item["spans"][0]["expansion"] = {"span": inner}
         self.assertTrue(guard.introduced(item, {outer["file_name"]: ("", "save!(path);")}))
 
+    def test_unchanged_macro_invocations_ignore_unrelated_edits_for_every_delimiter(self):
+        for invocation in ["save!(path);", "save! { path }", "save![path];"]:
+            item = diagnostic(path="core/driver/src/macros.rs")
+            call = diagnostic(path="cli/src/service/command.rs")["spans"][0]
+            call["is_primary"] = False
+            item["spans"][0]["expansion"] = {"span": call}
+            before = invocation + "\nlet other = 1;"
+            after = invocation + "\nlet other = 2;"
+            with self.subTest(invocation=invocation):
+                self.assertFalse(guard.introduced(item, {call["file_name"]: (before, after)}))
+
+    def test_macro_arguments_and_nested_delimiters_are_compared(self):
+        for opening, closing in [("(", ")"), ("[", "]"), ("{", "}")]:
+            before = f'save!{opening} [path, "}}]"] {closing}'
+            after = f'save!{opening} [other, "}}]"] {closing}'
+            self.assertEqual(guard.call_tokens(before, 1, 1), guard.call_tokens(before + "\nlet other = 1;", 1, 1))
+            self.assertIsNotNone(guard.call_tokens(before, 1, 1))
+            self.assertNotEqual(guard.call_tokens(before, 1, 1), guard.call_tokens(after, 1, 1))
+
     def test_a_new_suppression_fails(self):
         self.assertEqual(list(guard.new_suppressions("", "#[allow(clippy::disallowed_methods)]")), [1])
         self.assertEqual(list(guard.new_suppressions("", "#[expect(\nclippy::await_holding_lock)]")), [1])
