@@ -4291,3 +4291,35 @@ fn a_move_out_of_a_published_trash_group_trashes_its_old_folder_again() {
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
 }
+
+#[test]
+fn a_move_into_the_answered_folder_out_of_its_trash_group_still_goes() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = file("a", "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    for op in [("move", "a"), ("move", "b"), ("delete", "c")] {
+        assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
+    }
+}
