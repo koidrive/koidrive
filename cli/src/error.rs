@@ -321,9 +321,9 @@ impl From<OauthError> for CliError {
             ),
             OauthError::MissingScopes { .. } => "Cloudflare did not grant all required permissions. Start the login again and allow every permission on the consent page.".into(),
             OauthError::Spent => "This Cloudflare login can no longer be refreshed. Start the login again.".into(),
-            OauthError::Transport(_) => "Koidrive could not reach Cloudflare to complete the login request. Check your connection. If you were signing out, inspect Koidrive under Manage OAuth authorizations in the Cloudflare dashboard before repeating the command.".into(),
+            OauthError::Transport(_) => "Koidrive could not reach Cloudflare to complete the login request. Check your connection. If you were signing out, inspect Koidrive under My Profile, Access Management, Connected Applications in the Cloudflare dashboard before repeating the command.".into(),
             OauthError::MalformedTokenResponse => "Koidrive could not read Cloudflare's login response. Start a new login rather than reusing the browser result.".into(),
-            OauthError::RevokeRefused { .. } => "Cloudflare did not confirm that it revoked this login. Revoke Koidrive under Manage OAuth authorizations in the Cloudflare dashboard.".into(),
+            OauthError::RevokeRefused { .. } => "Cloudflare did not confirm that it revoked this login. Revoke Koidrive under My Profile, Access Management, Connected Applications in the Cloudflare dashboard.".into(),
         };
         let code = match &error {
             OauthError::NotCallback | OauthError::StateMismatch | OauthError::MissingCode => {
@@ -1151,7 +1151,7 @@ mod tests {
                     token: "refresh_token",
                     status: 503,
                 },
-                "Manage OAuth authorizations",
+                "My Profile, Access Management, Connected Applications",
                 Code::Failed,
             ),
         ] {

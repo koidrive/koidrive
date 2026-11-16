@@ -1,6 +1,6 @@
 # Deploying and upgrading a Koidrive server
 
-This page deploys the server to your own Cloudflare account with the deploy button or Wrangler, claims it, and upgrades it by hand. `koi server deploy` and `koi server upgrade` do the same steps through a Cloudflare login, which works only for members of the project's test account ([Set up with the Cloudflare login](guide/setup.md#set-up-with-the-cloudflare-login)). The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
+This page deploys the server to your own Cloudflare account with the deploy button or Wrangler, claims it, and upgrades it by hand. `koi server deploy` and `koi server upgrade` do the same steps through a [Cloudflare login](guide/koi-setup.md#the-cloudflare-login-and-what-it-may-do). The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
 
 ## What you need
 

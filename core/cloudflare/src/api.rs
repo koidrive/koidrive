@@ -599,6 +599,26 @@ impl Cloudflare {
         Ok(result.subdomain)
     }
 
+    /// Registers the account's workers.dev subdomain.
+    pub async fn create_workers_subdomain(
+        &self,
+        account: &str,
+        subdomain: &str,
+    ) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct Subdomain {
+            subdomain: String,
+        }
+        let url = self.url(&["accounts", account, "workers", "subdomain"])?;
+        let request = self
+            .request(Method::PUT, url)
+            .json(&json!({ "subdomain": subdomain }));
+        let (result, _): (Subdomain, _) = self
+            .send("create the workers.dev subdomain", request)
+            .await?;
+        Ok(result.subdomain)
+    }
+
     /// Deletes the script and its Durable Object namespaces. A script that does not exist counts as deleted.
     pub async fn delete_script(&self, account: &str, script: &str) -> Result<(), ApiError> {
         let mut url = self.url(&["accounts", account, "workers", "scripts", script])?;

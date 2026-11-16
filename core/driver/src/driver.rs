@@ -740,11 +740,16 @@ impl Driver {
                 return Err(error.into());
             }
         };
+        let user_name = if issued.user_name.is_empty() {
+            user_name.to_owned()
+        } else {
+            issued.user_name.clone()
+        };
         let account = self.adopt(
             file,
             api.base().to_string(),
             issued,
-            Some(user_name.to_owned()),
+            Some(user_name),
             device_name,
             "claimed the server",
         )?;
@@ -4052,6 +4057,38 @@ mod tests {
         drop(driver);
         let reopened = Driver::open(paths).unwrap();
         assert_eq!(reopened.status().account, Some(account));
+    }
+
+    #[tokio::test]
+    async fn a_claim_keeps_the_user_name_returned_by_the_server_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let reply = prost::Message::encode_to_vec(&DeviceCredentials {
+            user_id: "u1".into(),
+            device_id: "d1".into(),
+            refresh_credential: "secret".into(),
+            user_name: "Original name".into(),
+            ..Default::default()
+        });
+        let (server, served) = serve_once(reply).await;
+        let account = driver
+            .claim(&server, "claim-code", "Retried name", "laptop")
+            .await
+            .unwrap();
+        assert_eq!(account.user_name.as_deref(), Some("Original name"));
+        served.await.unwrap();
+        drop(driver);
+        assert_eq!(
+            Driver::open(paths)
+                .unwrap()
+                .status()
+                .account
+                .unwrap()
+                .user_name
+                .as_deref(),
+            Some("Original name")
+        );
     }
 
     #[tokio::test]

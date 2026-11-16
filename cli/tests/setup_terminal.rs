@@ -76,7 +76,7 @@ fn yes(rich: bool, answer: bool) -> String {
 
 fn pairing(rich: bool) -> Vec<Step> {
     vec![
-        step(ROUTE, choose(rich, 1)),
+        step(ROUTE, choose(rich, 2)),
         step(CODE, line("CODE@files.example.com")),
     ]
 }
@@ -1519,7 +1519,7 @@ fn a_deployed_server_is_claimed_with_its_address_and_claim_code() {
     for rich in [false, true] {
         let home = Home::new(&[]);
         let steps = [
-            step(ROUTE, choose(rich, 0)),
+            step(ROUTE, choose(rich, 1)),
             step(ADDRESS, line(&home.server)),
             step(CLAIM, line("ABCD-EFGH-JKLM")),
             step(TELEMETRY, no(rich)),
@@ -1529,7 +1529,7 @@ fn a_deployed_server_is_claimed_with_its_address_and_claim_code() {
         let text = shown(output.clone());
         assert!(output.status.success(), "{text}");
         assert!(text.contains("I deployed a server"), "{text}");
-        assert!(!text.contains("Log in with Cloudflare"), "{text}");
+        assert!(text.contains("Log in with Cloudflare"), "{text}");
         assert!(
             text.contains("search for \"Koidrive claim code\""),
             "{text}"
@@ -1561,7 +1561,7 @@ fn a_deployed_server_is_claimed_with_its_address_and_claim_code() {
 fn a_wrong_claim_code_is_asked_again_after_a_new_code_is_requested() {
     let home = Home::new(&[]);
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
         step(CLAIM, line("WRONG-CODE")),
         step(CLAIM, line("ABCD-EFGH-JKLM")),
@@ -1596,7 +1596,7 @@ fn an_address_without_a_server_is_asked_again() {
     let nowhere = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&nowhere)),
         step(ADDRESS, line(&home.server)),
         step(CLAIM, line("ABCD-EFGH-JKLM")),
@@ -1613,6 +1613,52 @@ fn an_address_without_a_server_is_asked_again() {
 }
 
 #[test]
+fn a_pending_claim_does_not_prevent_pairing_to_an_owned_server() {
+    let home = Home::new(&[]);
+    home.claimed.store(true, Ordering::Relaxed);
+    fs::write(
+        home.paths().pending_claim(),
+        serde_json::json!([{
+            "server": home.server, "code_sha256": "0".repeat(64), "request_id": "old"
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let old = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    fs::File::options()
+        .write(true)
+        .open(home.paths().pending_claim())
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(old))
+        .unwrap();
+    let steps = [
+        step(ROUTE, choose(false, 1)),
+        step(ADDRESS, line(&home.server)),
+        step("How do you want to sign in?", choose(false, 1)),
+        step(CODE, line("K7QM-2XPD")),
+        step(TELEMETRY, no(false)),
+    ];
+    let output = home.setup(
+        &steps,
+        &["--name", "Laptop"],
+        &[("USER", "alice")],
+        true,
+        false,
+        None,
+    );
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(!text.contains(CLAIM), "{text}");
+    assert_eq!(home.links().len(), 1);
+    assert!(
+        server_requests(&home)
+            .iter()
+            .any(|r| r.starts_with("pair ")),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_claim_that_did_not_finish_is_finished_with_its_code() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
@@ -1623,8 +1669,9 @@ fn a_claim_that_did_not_finish_is_finished_with_its_code() {
     )
     .unwrap();
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
+        step("How do you want to sign in?", choose(false, 0)),
         step(CLAIM, line("ABCD-EFGH-JKLM")),
         step(TELEMETRY, no(false)),
     ];
@@ -1656,8 +1703,9 @@ fn another_code_for_a_claim_that_did_not_finish_is_asked_again() {
     )
     .unwrap();
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
+        step("How do you want to sign in?", choose(false, 0)),
         step(CLAIM, line("OTHER-CODE")),
         step(CLAIM, line("ABCD-EFGH-JKLM")),
         step(TELEMETRY, no(false)),
@@ -1685,8 +1733,9 @@ fn a_server_failure_during_a_claim_that_did_not_finish_shows_its_own_error() {
     )
     .unwrap();
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
+        step("How do you want to sign in?", choose(false, 0)),
         step(CLAIM, line("FAILING-CODE")),
         step(TELEMETRY, no(false)),
     ];
@@ -1716,7 +1765,7 @@ fn a_server_with_an_owner_takes_a_pairing_code_without_its_host() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
     let steps = [
-        step(ROUTE, choose(false, 0)),
+        step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
         step(CODE, line("K7QM-2XPD")),
         step(TELEMETRY, no(false)),

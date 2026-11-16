@@ -20,6 +20,23 @@ use serde_json::json;
 use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
 use super::*;
 
+#[test]
+fn requested_subdomains_are_dns_labels_not_account_names() {
+    assert_eq!(subdomain_name("My-Server1").unwrap(), "my-server1");
+    for text in [
+        "alice@example.com's Account",
+        "",
+        "서울",
+        "-bad",
+        "bad-",
+        "two.words",
+    ] {
+        assert!(subdomain_name(text).is_err(), "{text}");
+    }
+    assert!(subdomain_name(&"a".repeat(63)).is_ok());
+    assert!(subdomain_name(&"a".repeat(64)).is_err());
+}
+
 #[tokio::test]
 async fn interrupted_login_preserves_raw_text_and_offers_a_human_next_step() {
     let error = guarded(
@@ -79,34 +96,23 @@ fn interactive_asks_for_the_guide_and_fails_without_terminals() {
 }
 
 #[test]
-fn setup_lists_the_cloudflare_login_only_where_it_works() {
-    let argv = |cloudflare_login| -> Vec<String> {
-        choices(cloudflare_login)
-            .iter()
-            .map(|choice| choice.argv.join(" "))
-            .collect()
-    };
+fn setup_offers_the_cloudflare_login_first() {
+    let argv: Vec<String> = choices()
+        .iter()
+        .map(|choice| choice.argv.join(" "))
+        .collect();
     assert_eq!(
-        argv(false),
+        argv,
         [
-            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
-            "koi join <CODE>",
-            "koi setup --interactive",
-        ]
-    );
-    assert_eq!(
-        argv(true),
-        [
-            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
-            "koi join <CODE>",
             "koi server deploy --interactive",
             "koi server add-device --interactive",
+            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
+            "koi join <CODE>",
             "koi setup --interactive",
         ]
     );
-    assert_eq!(Route::all(false), [Route::Deployed, Route::Pairing]);
     assert_eq!(
-        Route::all(true),
+        Route::ALL,
         [Route::Cloudflare, Route::Deployed, Route::Pairing]
     );
 }

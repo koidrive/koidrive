@@ -2,9 +2,9 @@
 
 The server in `server/` is one Worker with two Durable Object classes, `AccountDO` and `SpaceDO`, and one R2 bucket, all in the owner's Cloudflare account. This page explains how it gets deployed, how the first owner claims it, how an owner who lost every device gets back in, and how storage and protocol versions move forward. The owner's steps are in [deploy.md](../deploy.md), the CLI route in [cli-setup.md](cli-setup.md), and the numbers in [deploy-and-upgrade-reference.md](deploy-and-upgrade-reference.md).
 
-## 1. The deploy button builds `server/` on its own
+## 1. `server/` builds on its own
 
-The button URL names the subdirectory, `https://deploy.workers.cloudflare.com/?url=https://github.com/koidrive/koidrive/tree/<ref>/server`. Cloudflare copies that directory into a new repository in the owner's Git account, creates the resources `wrangler.jsonc` names, and deploys with Workers Builds, which deploys again on every push ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)). So `server/` builds without the rest of the repository: it has its own `package.json`, lockfile and license, commits its generated protobuf code, and imports nothing from outside. It lists no secrets, because the button would ask the owner for each one. `server/scripts/check-deploy.mjs` proves this in CI: it copies `server/` to an empty directory, installs from the lockfile, runs a dry-run deploy and claims a local server. The [deploy test](../deploy-test.md) covers the steps that need a real account.
+`koi` embeds a bundle packed from `server/` ([cli-setup.md](cli-setup.md)), and an owner who deploys by hand runs Wrangler in `server/` ([deploy.md](../deploy.md#deploy)). So `server/` builds without the rest of the repository: it has its own `package.json`, lockfile and license, commits its generated protobuf code, and imports nothing from outside. It lists no secrets, so a deploy asks the owner for none. `server/scripts/check-deploy.mjs` proves this in CI: it copies `server/` to an empty directory, installs from the lockfile, runs a dry-run deploy and claims a local server. The [deploy test](../deploy-test.md) covers the steps that need a real account.
 
 R2 must be enabled on the account first. That is a dashboard checkout that no API or deploy tool can do.
 
@@ -36,4 +36,4 @@ A release tag points to a release commit that `scripts/release-commit.py make` c
 
 ## 6. Owners upgrade by deploying the new release
 
-A button deploy's repository is a copy, not a fork, so GitHub offers no sync. The owner replaces its files with `server/` from the new release, keeps the `name` and `bucket_name` the button wrote, and pushes. With Wrangler, the owner checks out the release, puts back the same two names, and runs `pnpm install --frozen-lockfile` and `pnpm run deploy` in `server/`. A different name deploys a new, empty Worker. `koi server upgrade` does the same through the API ([cli-setup.md section 5](cli-setup.md#5-upgrade-replaces-the-code-and-delete-empties-the-bucket-first)).
+`koi server upgrade` uploads the new release's bundle under the server's Worker and bucket names ([cli-setup.md section 5](cli-setup.md#5-upgrade-replaces-the-code-and-delete-empties-the-bucket-first)). With Wrangler, the owner checks out the release, puts back the same two names in `wrangler.jsonc`, and runs `pnpm install --frozen-lockfile` and `pnpm run deploy` in `server/`. A different name deploys a new, empty Worker.

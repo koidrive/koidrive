@@ -61,6 +61,7 @@ enum Prompt {
     Input {
         question: String,
         secret: bool,
+        default: Option<String>,
     },
     Select {
         question: String,
@@ -189,6 +190,14 @@ impl InputBridge {
 
         let name = rustix::termios::ttyname(input, Vec::new())?;
         let proxy = name.as_c_str() == c"/dev/tty";
+        if proxy
+            && rustix::termios::tcgetsid(&output).ok() != Some(rustix::termios::tcgetsid(input)?)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stdin and stderr are not the same terminal",
+            ));
+        }
         #[cfg(target_os = "macos")]
         let name = if proxy {
             controlling_terminal_name()?
@@ -202,9 +211,7 @@ impl InputBridge {
         )?;
         if proxy {
             let session = rustix::termios::tcgetsid(input)?;
-            if rustix::termios::tcgetsid(&output).ok() != Some(session)
-                || rustix::termios::tcgetsid(&terminal).ok() != Some(session)
-            {
+            if rustix::termios::tcgetsid(&terminal).ok() != Some(session) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "stdin and stderr are not the same terminal",
@@ -614,6 +621,20 @@ impl Terminal {
         self.text(Prompt::Input {
             question: question.into(),
             secret,
+            default: None,
+        })
+        .await
+    }
+
+    pub async fn input_default(
+        &self,
+        question: &str,
+        default: &str,
+    ) -> Result<String, PromptFailure> {
+        self.text(Prompt::Input {
+            question: question.into(),
+            secret: false,
+            default: Some(default.to_owned()),
         })
         .await
     }
@@ -841,14 +862,27 @@ fn line(question: &str, secret: bool) -> Result<String, PromptFailure> {
 
 fn interact(request: Prompt, rich: bool) -> Result<Answer, PromptFailure> {
     match request {
-        Prompt::Input { question, secret } => {
+        Prompt::Input {
+            question,
+            secret,
+            default,
+        } => {
             let question = crate::printable(&question);
             let text = if rich && secret {
                 cliclack::password(question).interact()?
             } else if rich {
-                cliclack::input(question).interact::<String>()?
+                let mut input = cliclack::input(question);
+                if let Some(default) = &default {
+                    input = input.default_input(default);
+                }
+                input.interact::<String>()?
             } else {
-                line(&format!("{question}: "), secret)?
+                let answer = line(&format!("{question}: "), secret)?;
+                if answer.is_empty() {
+                    default.unwrap_or_default()
+                } else {
+                    answer
+                }
             };
             Ok(Answer::Text(text))
         }

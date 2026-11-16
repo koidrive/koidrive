@@ -11,7 +11,7 @@ The commands, Cloudflare calls and limits behind `koi setup`. [cli-setup.md](cli
 | `koi join <code@host>` | Joins the server named in the code. `--server` gives the host for a code without one |
 | `koi server deploy` | Logs in, deploys a new server and claims it. Fails if the account has a server |
 | `koi server add-device` | Logs in and adds this device to the server, without a pairing code |
-| `koi server claim <URL> <CODE> --user <NAME>` | Claims a button deploy with the code its `/setup` page wrote to the Worker's log. Needs no Cloudflare login |
+| `koi server claim <URL> <CODE> --user <NAME>` | Claims a server deployed by hand with the code its `/setup` page wrote to the Worker's log. Needs no Cloudflare login |
 | `koi server upgrade` | Logs in and uploads this CLI's server |
 | `koi server delete` | Logs in, deletes the Worker, then empties and deletes its bucket |
 
@@ -63,7 +63,7 @@ Migrations follow Wrangler's rule. A script with no tag gets every step. A scrip
 |---|---|
 | Browser login | 10 minutes |
 | R2 enabled in the dashboard | 30 minutes |
-| Server answers after an upload | 90 seconds |
+| Server answers after an upload | 5 minutes |
 | Claim on a server that already runs the key claim | 60 seconds per key |
 | Claim on an unclaimed or just-upgraded server | 330 seconds per key |
 | `setup_attempts` after an upgrade | 330 seconds, polled every 5 seconds |
@@ -98,4 +98,4 @@ Every R2 call sends `cf-r2-jurisdiction`. A 404 counts as done, and a missing bu
 
 ## Public OAuth client
 
-Only members of the account that owns a private OAuth client can authorize it. A public client needs a name, a logo, a client URL whose domain is verified with a DNS `TXT` record, and a promotion that cannot be undone ([Create an OAuth client](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/)).
+`CLIENT_ID` is the public client "Koidrive", owned by the account that holds the koidrive.com zone. Any Cloudflare user can authorize it. It allows the grants `authorization_code` and `refresh_token`, the token method `none`, the scopes above and the redirect `http://127.0.0.1:8976/oauth/callback`; Cloudflare accepts any port on `127.0.0.1`. Its client URL `https://koidrive.com` is verified by a DNS `TXT` record `cloudflare_oauth_client_publisher=…` on koidrive.com. Public visibility and the verified domain can't be undone or changed ([Create an OAuth client](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/)).

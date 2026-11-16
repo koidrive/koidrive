@@ -44,6 +44,11 @@ enum Failure {
     OauthProtocol,
     CloudflareRefused,
     CloudflareProtocol,
+    SubdomainRefused,
+    SubdomainReadRefused,
+    SubdomainStalled,
+    SubdomainMalformed,
+    SubdomainUnavailable,
     UninstallScan,
     UninstallBucketGone,
 }
@@ -62,6 +67,7 @@ impl ErrorMode {
 
 #[derive(Default)]
 struct State {
+    account_name: String,
     scripts: Vec<String>,
     spaces: Vec<SpaceInfo>,
     created: Vec<SpaceInfo>,
@@ -73,6 +79,11 @@ struct State {
     folder_state: Option<FolderState>,
     denied: bool,
     r2_disabled: usize,
+    subdomain: Option<String>,
+    subdomain_conflicts: usize,
+    subdomain_attempts: Vec<String>,
+    subdomain_race: bool,
+    stalled_connection_closed: Arc<AtomicBool>,
     base: String,
     collide_create: bool,
     failure: Option<Failure>,
@@ -148,7 +159,9 @@ esac
             "[ \"$1\" = show-user ] || exit 88\nprintf 'yes\\n'\n",
         );
         let state = Arc::new(Mutex::new(State {
+            account_name: "Personal".into(),
             scripts: scripts.iter().map(|name| (*name).into()).collect(),
+            subdomain: Some("synthetic".into()),
             spaces: spaces
                 .iter()
                 .enumerate()
@@ -263,6 +276,7 @@ esac
             .env("TERM", "xterm-256color")
             .env("CLICOLOR_FORCE", "1")
             .env("NO_PROXY", "*")
+            .env("DISPLAY", ":0")
             .env("KOIDRIVE_TEST_SETUP_URL", self.base.as_str())
             .env("KOIDRIVE_TEST_SETUP_BUNDLE", self.path().join("bundle"))
             .env(
@@ -283,6 +297,9 @@ esac
             "http_proxy",
             "https_proxy",
             "all_proxy",
+            "SSH_CONNECTION",
+            "SSH_TTY",
+            "WAYLAND_DISPLAY",
         ] {
             command.env_remove(name);
         }
@@ -295,6 +312,8 @@ esac
             .map(|(question, index)| {
                 let answer = if *question == CONSENT {
                     if rich { "n".into() } else { "n\n".into() }
+                } else if *question == "Your server address:" {
+                    typed(rich, "")
                 } else {
                     pick(rich, *index)
                 };
@@ -305,33 +324,32 @@ esac
     }
 
     fn run_steps(&self, rich: bool, browser: Browser, steps: &[(&str, String)]) -> String {
-        let page = self.path().join("browser-url");
-        if page.exists() {
-            fs::remove_file(page).unwrap();
+        let command = self.setup_command(rich, browser);
+        self.finish_run(rich, command, steps)
+    }
+
+    fn setup_command(&self, rich: bool, browser: Browser) -> Command {
+        for file in ["browser-url", "opener-ran"] {
+            let _ = fs::remove_file(self.path().join(file));
         }
-        if !matches!(browser, Browser::Missing) {
-            executable(
-                &self.path().join(if cfg!(target_os = "macos") {
-                    "bin/open"
-                } else {
-                    "bin/xdg-open"
-                }),
-                &format!(
-                    "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\nexit {}\n",
-                    if matches!(browser, Browser::Fails) {
-                        17
-                    } else {
-                        0
-                    }
-                ),
-            );
+        let opener = self.path().join(if cfg!(target_os = "macos") {
+            "bin/open"
+        } else {
+            "bin/xdg-open"
+        });
+        match browser {
+            Browser::Opens => {
+                executable(&opener, "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n")
+            }
+            Browser::Fails => executable(&opener, ": > \"$HOME/opener-ran\"\nexit 17\n"),
+            Browser::Missing => {}
         }
         let mut command = self.command();
         command.args(["setup", "--interactive", "--no-app", "--name", "Laptop"]);
         if !rich {
             command.arg("--plain");
         }
-        self.finish_run(rich, command, steps)
+        command
     }
 
     fn finish_run(&self, rich: bool, command: Command, steps: &[(&str, String)]) -> String {
@@ -539,7 +557,7 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                 "result":null, "debug":"synthetic-private-response"
             }).to_string().into_bytes())
         },
-        ("GET", "/client/v4/accounts", _) => cf(json!([{"id":ACCOUNT,"name":"Personal"}])),
+        ("GET", "/client/v4/accounts", _) => cf(json!([{"id":ACCOUNT,"name":state.account_name}])),
         _ => {
             let suffix = path.strip_prefix(&format!("/client/v4/accounts/{ACCOUNT}")).unwrap_or("");
             match (method, suffix) {
@@ -574,7 +592,53 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                     status = "503 Service Unavailable";
                     ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Listing unavailable"}],"result":null}).to_string().into_bytes())
                 },
-                ("GET", "/workers/subdomain") => cf(json!({"subdomain":"synthetic"})),
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainStalled) => {
+                    let closed = state.stalled_connection_closed.clone();
+                    drop(state);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(25));
+                        closed.store(true, Ordering::Relaxed);
+                        drop(stream);
+                    });
+                    return;
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainMalformed) => {
+                    ("text/html", b"<html>unavailable</html>".to_vec())
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainUnavailable) => {
+                    status = "503 Service Unavailable";
+                    ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Unavailable"}],"result":null}).to_string().into_bytes())
+                },
+                ("GET", "/workers/subdomain") if state.failure == Some(Failure::SubdomainReadRefused) => {
+                    status = "403 Forbidden";
+                    ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Workers Admin scope required"}],"result":null}).to_string().into_bytes())
+                },
+                ("GET", "/workers/subdomain") => match &state.subdomain {
+                    Some(subdomain) => cf(json!({"subdomain":subdomain})),
+                    None => {
+                        status = "404 Not Found";
+                        ("application/json", json!({"success":false,"errors":[{"code":10007,"message":"No workers.dev subdomain"}],"result":null}).to_string().into_bytes())
+                    }
+                },
+                ("PUT", "/workers/subdomain") => {
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let subdomain = request["subdomain"].as_str().unwrap().to_owned();
+                    state.subdomain_attempts.push(subdomain.clone());
+                    if state.failure == Some(Failure::SubdomainRefused) {
+                        status = "403 Forbidden";
+                        ("application/json", json!({"success":false,"errors":[{"code":10000,"message":"Workers Admin scope required"}],"result":null}).to_string().into_bytes())
+                    } else if state.subdomain_conflicts > 0 {
+                        state.subdomain_conflicts -= 1;
+                        if state.subdomain_race {
+                            state.subdomain = Some("other-process".into());
+                        }
+                        status = "409 Conflict";
+                        ("application/json", json!({"success":false,"errors":[{"code":10031,"message":"Subdomain is unavailable"}],"result":null}).to_string().into_bytes())
+                    } else {
+                        state.subdomain = Some(subdomain.clone());
+                        cf(json!({"subdomain":subdomain}))
+                    }
+                },
                 ("GET", _) if suffix.ends_with("/settings") => cf(json!({"bindings":[{"type":"r2_bucket","name":"BUCKET","bucket_name":"synthetic-bucket"}]})),
                 ("POST", _) if suffix.ends_with("/assets-upload-session") => cf(json!({"jwt":"synthetic-upload-token","buckets":[]})),
                 ("GET", _) if suffix.ends_with("/secrets") => cf(json!([])),
@@ -679,7 +743,7 @@ fn daemon(mut stream: UnixStream, paths: &Paths, state: &Mutex<State>) {
     writeln!(stream, "{response}").unwrap();
 }
 
-fn callback(page: &str) {
+fn authorized(page: &str) -> Url {
     let page = Url::parse(page).unwrap();
     assert_eq!(page.host_str(), Some("127.0.0.1"));
     let pairs: std::collections::HashMap<_, _> = page.query_pairs().into_owned().collect();
@@ -689,6 +753,11 @@ fn callback(page: &str) {
         .query_pairs_mut()
         .append_pair("state", &pairs["state"])
         .append_pair("code", "synthetic-code");
+    redirect
+}
+
+fn callback(page: &str) {
+    let redirect = authorized(page);
     let mut stream = TcpStream::connect(("127.0.0.1", redirect.port().unwrap())).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -751,6 +820,7 @@ fn terminal_with_stdout(
     let mut answered = 0;
     let mut seen = 0;
     let mut called_back = false;
+    let mut paste: Option<Url> = None;
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         let mut bytes = [0; 8192];
@@ -769,27 +839,44 @@ fn terminal_with_stdout(
         let raw_text = String::from_utf8_lossy(&raw);
         let text = console::strip_ansi_codes(&raw_text);
         if !called_back && let Some(home) = home {
-            let page = fs::read_to_string(home.join("browser-url"))
+            let opened = fs::read_to_string(home.join("browser-url"))
                 .ok()
-                .or_else(|| {
-                    text.split_whitespace()
-                        .find(|word| {
-                            word.starts_with("http://127.0.0.1:") && word.contains("/oauth2/auth?")
-                        })
-                        .map(str::to_owned)
-                });
-            if let Some(page) = page.filter(|page| !page.trim().is_empty()) {
-                if let Some(signal) = interrupt {
+                .filter(|page| !page.trim().is_empty());
+            let printed = text
+                .split_whitespace()
+                .find(|word| {
+                    word.starts_with("http://127.0.0.1:") && word.contains("/oauth2/auth?")
+                })
+                .map(str::to_owned);
+            match (interrupt, opened, printed) {
+                (Some(signal), opened, printed) if opened.is_some() || printed.is_some() => {
                     rustix::process::kill_process(
                         rustix::process::Pid::from_child(&child.0),
                         signal,
                     )
                     .unwrap();
-                } else {
-                    callback(page.trim());
+                    called_back = true;
                 }
-                called_back = true;
+                (None, Some(page), _) => {
+                    callback(page.trim());
+                    called_back = true;
+                }
+                (None, None, Some(page)) if text.contains("fails to load") => {
+                    paste = Some(authorized(&page));
+                    called_back = true;
+                }
+                _ => {}
             }
+        }
+        if let Some(address) = &paste
+            && let Some(at) = text.find("fails to load")
+            && ["Callback address", "Address"]
+                .iter()
+                .any(|prompt| text[at..].contains(prompt))
+        {
+            std::thread::sleep(Duration::from_millis(50));
+            master.write_all(format!("{address}\r").as_bytes()).unwrap();
+            paste = None;
         }
         if let Some((question, answer)) = steps.get(answered)
             && let Some(at) = text.get(seen..).and_then(|text| text.find(question))
@@ -2002,9 +2089,15 @@ fn browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url() {
         for rich in [true, false] {
             let home = Home::new(&[], &[]);
             let text = home.run(rich, browser, &[(ROUTE, 0), (CONSENT, 0)]);
+            assert!(text.contains("Couldn't open your browser."), "{text}");
+            assert!(text.contains("Open this page on any device:"), "{text}");
             assert!(
-                text.contains("Couldn't open your browser. Open this page:"),
+                text.contains("copy the address of the page that fails to load"),
                 "{text}"
+            );
+            assert_eq!(
+                home.path().join("opener-ran").exists(),
+                matches!(browser, Browser::Fails)
             );
             assert!(
                 text.contains(home.base.join("oauth2/auth").unwrap().as_str()),
@@ -2017,6 +2110,106 @@ fn browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url() {
             );
         }
     }
+}
+
+#[test]
+fn a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on() {
+    let mut screens = vec![
+        ("SSH_CONNECTION", Some("192.0.2.1 50000 192.0.2.2 22")),
+        ("SSH_TTY", Some("/dev/pts/0")),
+    ];
+    if !cfg!(target_os = "macos") {
+        screens.push(("DISPLAY", None));
+    }
+    for (name, value) in screens {
+        for rich in [true, false] {
+            let home = Home::new(&[], &[]);
+            let mut command = home.setup_command(rich, Browser::Fails);
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+            let text = home.finish_run(
+                rich,
+                command,
+                &[(ROUTE, pick(rich, 0)), (CONSENT, consent(rich))],
+            );
+            assert!(!home.path().join("opener-ran").exists(), "{name}: {text}");
+            assert!(
+                !text.contains("Couldn't open your browser"),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("Open this page on any device:"),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("Setup complete. Add files to ~/Koidrive."),
+                "{name}: {text}"
+            );
+            assert_eq!(home.state.lock().unwrap().links.len(), 1, "{name}: {text}");
+        }
+    }
+    let home = Home::new(&[], &[]);
+    home.setup_command(false, Browser::Fails);
+    let mut command = home.command();
+    command
+        .args(["server", "deploy", "--interactive", "--name", "Laptop"])
+        .env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+    let output = terminal(command, &[], Some(home.path()));
+    let text = console::strip_ansi_codes(&String::from_utf8(output.stdout).unwrap()).into_owned();
+    assert!(output.status.success(), "{text}");
+    assert!(!home.path().join("opener-ran").exists(), "{text}");
+    assert!(
+        text.contains("Open this page on any device, log in with Cloudflare and select Authorize:"),
+        "{text}"
+    );
+    assert!(home.paths().credential().exists(), "{text}");
+}
+
+#[test]
+fn json_output_never_opens_a_browser_and_names_the_login_commands() {
+    let home = Home::new(&[], &[]);
+    home.setup_command(false, Browser::Fails);
+    for ssh in [false, true] {
+        let mut command = home.command();
+        command.args(["setup", "--json", "--no-app"]);
+        if ssh {
+            command.env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let commands: Vec<Vec<&str>> = envelope["data"]["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| {
+                choice["argv"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|arg| arg.as_str().unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(commands[0], ["koi", "server", "deploy", "--interactive"]);
+        assert_eq!(
+            commands[1],
+            ["koi", "server", "add-device", "--interactive"]
+        );
+        let mut command = home.command();
+        command.args(["server", "deploy", "--json"]);
+        if ssh {
+            command.env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["error"]["code"], "auth_required");
+    }
+    assert!(!home.path().join("opener-ran").exists());
+    assert!(home.state.lock().unwrap().requests.is_empty());
 }
 
 #[test]
@@ -2113,6 +2306,233 @@ fn test_setup_rejects_remote_or_ambiguous_endpoints_before_opening_a_browser() {
 }
 
 #[test]
+fn a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup() {
+    for rich in [true, false] {
+        let home = Home::new(&[], &[]);
+        {
+            let mut state = home.state.lock().unwrap();
+            state.r2_disabled = 2;
+            state.subdomain = None;
+            state.account_name = "alice@example.com's Account".into();
+        }
+        let text = home.run(
+            rich,
+            Browser::Opens,
+            &[(ROUTE, 0), ("Your server address:", 0), (CONSENT, 0)],
+        );
+        assert!(
+            text.contains("Setup complete. Add files to ~/Koidrive."),
+            "{text}"
+        );
+        let state = home.state.lock().unwrap();
+        assert_eq!(state.subdomain_attempts.len(), 1);
+        let name = state.subdomain.as_ref().unwrap();
+        assert!(name.starts_with("koidrive-"));
+        assert_eq!(name.len(), 17);
+        assert!(name[9..].bytes().all(|c| c.is_ascii_hexdigit()));
+        assert!(!name.contains("alice") && !name.contains("example"));
+        assert!(
+            text.contains(&format!("https://koidrive.{name}.workers.dev")),
+            "{text}"
+        );
+        let created_domain = state
+            .requests
+            .iter()
+            .position(|r| r.ends_with("/workers/subdomain") && r.starts_with("PUT "))
+            .unwrap();
+        let created_bucket = state
+            .requests
+            .iter()
+            .position(|r| r.ends_with("/r2/buckets") && r.starts_with("POST "))
+            .unwrap();
+        let uploaded = state
+            .requests
+            .iter()
+            .position(|r| r.contains("/workers/scripts/") && r.starts_with("PUT "))
+            .unwrap();
+        assert!(
+            created_domain < created_bucket && created_bucket < uploaded,
+            "{:?}",
+            state.requests
+        );
+        assert_eq!(state.links.len(), 1);
+    }
+}
+
+#[test]
+fn a_workers_dev_name_can_be_edited_or_given_to_server_deploy() {
+    for rich in [true, false] {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().subdomain = None;
+        let command = home.setup_command(rich, Browser::Opens);
+        let text = home.finish_run(
+            rich,
+            command,
+            &[
+                (ROUTE, pick(rich, 0)),
+                ("Your server address:", typed(rich, "my-private-name")),
+                (CONSENT, if rich { "n".into() } else { "n\n".into() }),
+            ],
+        );
+        assert_eq!(
+            home.state.lock().unwrap().subdomain.as_deref(),
+            Some("my-private-name")
+        );
+        assert!(
+            text.contains("https://koidrive.my-private-name.workers.dev"),
+            "{text}"
+        );
+    }
+    let home = Home::new(&[], &[]);
+    home.state.lock().unwrap().subdomain = None;
+    home.setup_command(false, Browser::Opens);
+    let mut command = home.command();
+    command.args([
+        "server",
+        "deploy",
+        "--interactive",
+        "--subdomain",
+        "cli-name",
+    ]);
+    let output = terminal(command, &[], Some(home.path()));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        home.state.lock().unwrap().subdomain.as_deref(),
+        Some("cli-name")
+    );
+}
+
+#[test]
+fn a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.subdomain_conflicts = 1;
+    }
+    let mut command = home.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "my-server"]);
+    let text = home.finish_run(
+        false,
+        command,
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".into())],
+    );
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain_attempts.len(), 2);
+    assert_eq!(state.subdomain_attempts[0], "my-server");
+    assert!(state.subdomain_attempts[1].starts_with("my-server-"));
+    assert!(
+        text.contains(&format!(
+            "{}.workers.dev",
+            state.subdomain.as_ref().unwrap()
+        )),
+        "{text}"
+    );
+    drop(state);
+
+    let existing = Home::new(&[], &[]);
+    let mut command = existing.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "never-rename"]);
+    existing.finish_run(
+        false,
+        command,
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".into())],
+    );
+    let state = existing.state.lock().unwrap();
+    assert!(state.subdomain_attempts.is_empty());
+    assert_eq!(state.subdomain.as_deref(), Some("synthetic"));
+}
+
+#[test]
+fn a_refused_workers_dev_creation_stops_before_creating_storage_or_uploading() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.failure = Some(Failure::SubdomainRefused);
+    }
+    let mut command = home.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "my-server"]);
+    let output = terminal(
+        command,
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
+        Some(home.path()),
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("Workers Admin scope required"), "{text}");
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain_attempts, ["my-server"]);
+    assert!(state.buckets.is_empty());
+    assert!(
+        !state
+            .requests
+            .iter()
+            .any(|r| r.starts_with("PUT ") && r.contains("/workers/scripts/"))
+    );
+}
+
+#[test]
+fn a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded() {
+    let home = Home::new(&[], &[]);
+    {
+        let mut state = home.state.lock().unwrap();
+        state.subdomain = None;
+        state.subdomain_conflicts = 1;
+        state.subdomain_race = true;
+    }
+    home.run(
+        false,
+        Browser::Opens,
+        &[(ROUTE, 0), ("Your server address:", 0), (CONSENT, 0)],
+    );
+    let state = home.state.lock().unwrap();
+    assert_eq!(state.subdomain.as_deref(), Some("other-process"));
+    assert_eq!(state.subdomain_attempts.len(), 1);
+    drop(state);
+    for (failure, conflicts, attempts) in [
+        (None, 10, 5),
+        (Some(Failure::SubdomainReadRefused), 0, 0),
+        (Some(Failure::SubdomainMalformed), 0, 0),
+        (Some(Failure::SubdomainUnavailable), 0, 0),
+        (Some(Failure::SubdomainStalled), 0, 0),
+    ] {
+        let home = Home::new(&[], &[]);
+        {
+            let mut state = home.state.lock().unwrap();
+            state.subdomain = None;
+            state.subdomain_conflicts = conflicts;
+            state.failure = failure;
+        }
+        let mut command = home.setup_command(false, Browser::Opens);
+        command.args(["--subdomain", "my-server"]);
+        let output = terminal(
+            command,
+            &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
+            Some(home.path()),
+        );
+        assert!(
+            !output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let state = home.state.lock().unwrap();
+        assert_eq!(state.subdomain_attempts.len(), attempts);
+        assert!(state.buckets.is_empty());
+        if failure == Some(Failure::SubdomainStalled) {
+            assert!(
+                !state.stalled_connection_closed.load(Ordering::Relaxed),
+                "setup waited for the fixture to close instead of timing out"
+            );
+        }
+    }
+}
+
+#[test]
 fn checkout_waits_for_r2_before_completing_the_same_setup() {
     let home = Home::new(&[], &[]);
     home.state.lock().unwrap().r2_disabled = 2;
@@ -2120,6 +2540,10 @@ fn checkout_waits_for_r2_before_completing_the_same_setup() {
     complete(&home, &text);
     assert!(
         text.contains("Complete the R2 checkout in your browser to continue."),
+        "{text}"
+    );
+    assert!(
+        text.contains("R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing."),
         "{text}"
     );
     assert!(text.contains("R2 is ready"), "{text}");

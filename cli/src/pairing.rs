@@ -69,15 +69,19 @@ pub fn shell_word(text: &str) -> String {
 
 pub fn server_url(text: &str) -> String {
     let text = text.trim();
-    let text = text
-        .trim_end_matches('/')
-        .strip_suffix("/setup")
-        .unwrap_or(text);
-    if text.contains("://") {
+    let server = if text.contains("://") {
         text.to_owned()
     } else {
         format!("https://{text}")
+    };
+    if let Ok(mut url) = Url::parse(&server)
+        && let Some(path) = url.path().trim_end_matches('/').strip_suffix("/setup")
+    {
+        let path = path.to_owned();
+        url.set_path(&path);
+        return url.as_str().trim_end_matches('/').to_owned();
     }
+    server
 }
 
 #[cfg(test)]
@@ -189,6 +193,18 @@ mod tests {
             server_url("https://files.example.com/koidrive/setup"),
             "https://files.example.com/koidrive"
         );
+    }
+
+    #[test]
+    fn a_host_named_setup_is_not_removed_as_a_path() {
+        for (input, expected) in [
+            ("http://setup", "http://setup"),
+            ("https://setup", "https://setup"),
+            ("setup", "https://setup"),
+            ("http://setup/setup", "http://setup"),
+        ] {
+            assert_eq!(server_url(input), expected, "{input}");
+        }
     }
 
     #[test]

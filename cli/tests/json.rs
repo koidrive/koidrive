@@ -512,7 +512,7 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
         "{text}"
     );
     assert!(text.contains("koi join <CODE>"), "{text}");
-    assert!(!text.contains("Cloudflare"), "{text}");
+    assert!(text.contains("koi server deploy --interactive"), "{text}");
 
     let (code, envelope) = profile.json(&["setup", "--json"]);
     assert_eq!(code, 0, "{envelope:#}");
@@ -522,6 +522,8 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
     assert_eq!(
         next,
         [
+            vec!["koi", "server", "deploy", "--interactive"],
+            vec!["koi", "server", "add-device", "--interactive"],
             vec![
                 "koi",
                 "server",
@@ -535,7 +537,7 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
             vec!["koi", "setup", "--interactive"],
         ]
     );
-    assert_eq!(envelope["data"]["choices"].as_array().unwrap().len(), 3);
+    assert_eq!(envelope["data"]["choices"].as_array().unwrap().len(), 5);
 
     let output = profile.output(&["setup", "--interactive"]);
     assert_eq!(output.status.code(), Some(2));
@@ -609,6 +611,58 @@ fn owner_login_commands_never_log_in_under_json_or_without_their_flags() {
             "{args:?}: {stderr}"
         );
         assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn subdomain_choices_survive_scripted_login_guidance_and_invalid_names_stop_early() {
+    let profile = Profile::new();
+    let (code, envelope) =
+        profile.json(&["server", "deploy", "--subdomain", "Private-Name", "--json"]);
+    assert_eq!(code, 4, "{envelope:#}");
+    assert_eq!(
+        argv(&envelope["next_commands"][0]),
+        [
+            "koi",
+            "server",
+            "deploy",
+            "--interactive",
+            "--subdomain",
+            "private-name"
+        ]
+    );
+    let (code, envelope) = profile.json(&["setup", "--subdomain", "private-name", "--json"]);
+    assert_eq!(code, 0, "{envelope:#}");
+    let command: Vec<_> = envelope["data"]["choices"][0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        command,
+        [
+            "koi",
+            "server",
+            "deploy",
+            "--interactive",
+            "--subdomain",
+            "private-name"
+        ]
+    );
+    for args in [
+        vec!["setup", "--subdomain=alice@example.com"],
+        vec!["server", "deploy", "--subdomain=-bad"],
+        vec![
+            "setup",
+            "--subdomain=name",
+            "--folder=/tmp/not-used",
+            "--space=Koidrive",
+            "--json",
+        ],
+        vec!["server", "upgrade", "--subdomain=name"],
+    ] {
+        assert_eq!(profile.output(&args).status.code(), Some(2), "{args:?}");
     }
 }
 

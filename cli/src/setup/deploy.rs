@@ -64,6 +64,76 @@ pub(super) fn unfinished(state: &SetupState, account: &str, file: &Path) -> CliE
 }
 
 impl Session {
+    async fn require_subdomain(&mut self, script: &str) -> Result<(), CliError> {
+        let account = self.account().to_owned();
+        let mut base = self
+            .requested_subdomain
+            .clone()
+            .unwrap_or_else(|| "koidrive".into());
+        let mut candidate = self
+            .requested_subdomain
+            .clone()
+            .unwrap_or_else(|| new_subdomain(&base));
+        for _ in 0..5 {
+            match self.fresh().await?.workers_subdomain(&account).await {
+                Ok(subdomain) => {
+                    self.subdomain = Some(subdomain);
+                    return Ok(());
+                }
+                Err(error) if error.has_code(10007) => {}
+                Err(error) => {
+                    return Err(CliError::from(error)
+                        .context("cannot read the account's workers.dev subdomain"));
+                }
+            }
+            if self.terminal.setup_guided() && self.requested_subdomain.is_none() {
+                loop {
+                    let answer = self
+                        .terminal
+                        .input_default(
+                            &format!(
+                                "Your server address: https://{script}.{candidate}.workers.dev"
+                            ),
+                            &candidate,
+                        )
+                        .await?;
+                    match super::subdomain_name(&answer) {
+                        Ok(name) => {
+                            if name != candidate {
+                                base = name.clone();
+                            }
+                            candidate = name;
+                            break;
+                        }
+                        Err(message) => self.terminal.message(&message),
+                    }
+                }
+            }
+            match self
+                .fresh()
+                .await?
+                .create_workers_subdomain(&account, &candidate)
+                .await
+            {
+                Ok(subdomain) => {
+                    self.terminal.message(&format!(
+                        "Your server address: https://{script}.{subdomain}.workers.dev"
+                    ));
+                    self.subdomain = Some(subdomain);
+                    return Ok(());
+                }
+                Err(error) if error.has_code(10031) => {
+                    candidate = new_subdomain(&base);
+                }
+                Err(error) => {
+                    return Err(CliError::from(error)
+                        .context("cannot create the account's workers.dev subdomain"));
+                }
+            }
+        }
+        Err("could not find an available workers.dev subdomain; run setup again".into())
+    }
+
     /// Waits until R2 is enabled on the account. R2 cannot be enabled through the API, so the user completes the
     /// dashboard's checkout (section 4.1).
     async fn require_r2(&mut self) -> Result<(), CliError> {
@@ -98,6 +168,9 @@ impl Session {
                             terminal.separator();
                             self.terminal
                                 .message("Complete the R2 checkout in your browser to continue.");
+                            self.terminal.message(
+                                "R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.",
+                            );
                             let opening = terminal.progress("Opening your browser...");
                             let opened = open_browser(&page).await;
                             drop(opening);
@@ -112,7 +185,7 @@ impl Session {
                                 "R2 is not enabled on this account. Koidrive keeps your files in R2."
                             );
                             println!(
-                                "Enable it on this page. Its checkout includes free monthly usage and bills use beyond it:\n{page}"
+                                "R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.\nEnable it on this page:\n{page}"
                             );
                             open_browser(&page).await;
                             println!("Waiting for R2...");
@@ -269,6 +342,7 @@ impl Session {
     ) -> Result<(), CliError> {
         let file = StateFile::new(paths);
         let bundle = embedded_bundle()?;
+        self.require_subdomain(&state.script).await?;
         let mut key = None;
         let terminal = self.terminal.clone();
         let progress = terminal
@@ -481,6 +555,14 @@ impl Session {
             })?;
         wait_until_serving(url, None).await
     }
+}
+
+fn new_subdomain(base: &str) -> String {
+    let mut bytes = [0u8; 4];
+    getrandom::fill(&mut bytes).expect("the operating system provides random bytes");
+    let suffix: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let prefix = base[..base.len().min(54)].trim_end_matches('-');
+    format!("{prefix}-{suffix}")
 }
 
 /// Creates the bucket `state.bucket` and records the step. `deploy` saved that name, which only this deploy produces, before
