@@ -3602,6 +3602,14 @@ fn plan(
             _ => None,
         })
         .collect();
+    scratch.restores = (wants.iter())
+        .filter_map(|want| match want {
+            Want::Restore { op, .. } if !op.target_parent_id.is_empty() => {
+                Some((op.node_id.clone(), op.target_parent_id.clone()))
+            }
+            _ => None,
+        })
+        .collect();
     let restored: BTreeSet<&str> = restores.values().map(RestoreIntent::node).collect();
     for node in wants.iter().flat_map(Want::nodes) {
         if restored.contains(node.as_str()) {
@@ -3763,6 +3771,7 @@ fn plan(
             }
             Want::Restore { op, .. } => {
                 scratch.restoring.remove(&op.node_id);
+                scratch.restores.remove(&op.node_id);
                 match restored_at(trees, &op) {
                     Some((parent, name, node)) => {
                         let fit = scratch.fit_at(&op.node_id, parent, name);
@@ -4251,6 +4260,7 @@ struct Scratch<'a> {
     /// holds.
     unsent: BTreeMap<NodeId, usize>,
     restoring: BTreeSet<NodeId>,
+    restores: BTreeMap<NodeId, NodeId>,
     owed: BTreeSet<NodeId>,
     creating: BTreeMap<NodeId, NodeId>,
     moves: BTreeMap<NodeId, NodeId>,
@@ -4271,6 +4281,7 @@ impl<'a> Scratch<'a> {
             pinned: BTreeMap::new(),
             unsent: BTreeMap::new(),
             restoring: BTreeSet::new(),
+            restores: BTreeMap::new(),
             owed: BTreeSet::new(),
             creating: BTreeMap::new(),
             moves: BTreeMap::new(),
@@ -4367,8 +4378,22 @@ impl<'a> Scratch<'a> {
     fn fit(&self, want: &Want, moving: &BTreeSet<NodeId>) -> Fit {
         match self.awaited_return(want, moving) {
             Some(_) => Fit::Wait,
+            None if self.restores_out_of(want) => Fit::Wait,
             None => self.placement(want, moving),
         }
+    }
+
+    fn restores_out_of(&self, want: &Want) -> bool {
+        let Want::Move { id, .. } = want else {
+            return false;
+        };
+        !self.live(id)
+            && (self.restores.iter()).any(|(node, target)| {
+                node != id
+                    && !self.unsent.contains_key(node)
+                    && self.parent(node) != Some(target.as_str())
+                    && self.inside(node, id)
+            })
     }
 
     fn placement(&self, want: &Want, moving: &BTreeSet<NodeId>) -> Fit {
@@ -4418,7 +4443,16 @@ impl<'a> Scratch<'a> {
             Want::Restore { op, .. } => awaited.filter(|node| {
                 let elsewhere = !op.target_parent_id.is_empty()
                     && self.parent(&op.node_id) != Some(op.target_parent_id.as_str());
-                !(elsewhere && self.inside(&op.node_id, node))
+                let together = self
+                    .group(node)
+                    .is_some_and(|group| self.group(&op.node_id) == Some(group));
+                let mut up = self.parent(&op.node_id);
+                let mut held = false;
+                while let Some(folder) = up.filter(|folder| !self.live(folder)) {
+                    held |= moving.contains(folder);
+                    up = self.parent(folder);
+                }
+                !(elsewhere && (together && held || self.inside(&op.node_id, node)))
             }),
             _ => awaited,
         }

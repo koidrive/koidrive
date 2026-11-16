@@ -2162,3 +2162,40 @@ fn a_restore_into_a_file_does_not_hold_back_a_move_into_the_restored_folder() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [restore_op(&intent), moved(&a, &b, "a")]);
 }
+
+#[test]
+fn a_restore_into_a_folder_of_its_own_trash_group_is_sent_before_the_group_comes_back() {
+    let (a, b, c) = (id(1), id(2), id(3));
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            Some(dir(&root(), "a1")),
+            Some(dir(&root(), "a")),
+            Some(trashed(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&a, "b")),
+            Some(dir(&a, "b")),
+            Some(trashed(dir(&a, "b"))),
+        ),
+        (
+            c.clone(),
+            Some(dir(&a, "c")),
+            Some(dir(&b, "c")),
+            Some(trashed(dir(&a, "c"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(b.clone(), Some(c.clone()), None).unwrap();
+    assert!(commits.restore(id(100), intent.clone()));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [
+            restore_op(&intent),
+            moved(&a, &root(), "a1"),
+            moved(&c, &a, "c")
+        ]
+    );
+}
