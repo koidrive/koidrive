@@ -6,7 +6,7 @@ Start with the [Mac app](macos.md) on macOS 26 or later with Apple silicon. For 
 
 ## Words this guide uses
 
-- **Server.** The Worker, the two Durable Object classes and the R2 bucket in your Cloudflare account. Each server has one owner. Teams, with several people on one server, are coming.
+- **Server.** The Worker, the two Durable Object classes and the R2 bucket in your Cloudflare account. Each server has one owner. Team features are coming.
 - **Device.** A computer signed in to the server. Each device has its own credential, which you can revoke.
 - **Space.** A synced file tree on the server. A space has its own trash and keeps old versions of its files.
 - **Linked folder.** A folder on a device that syncs one space. A device links each space to at most one folder.
