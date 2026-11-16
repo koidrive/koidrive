@@ -4317,6 +4317,10 @@ impl<'a> Scratch<'a> {
         }
     }
 
+    fn in_trash(&self, id: &str) -> bool {
+        self.parent(id).is_some() && !self.live(id)
+    }
+
     fn live(&self, id: &str) -> bool {
         match self.nodes.get(id) {
             Some(entry) => entry.live,
@@ -4476,7 +4480,10 @@ impl<'a> Scratch<'a> {
                     && self.moves.contains_key(current)
                     && moving.contains(current)
             } else {
-                self.restoring.contains(current) || moving.contains(current)
+                self.restoring.contains(current)
+                    || moving.contains(current)
+                        && (self.in_trash(parent)
+                            || !self.stalled && !self.ends.cycles.contains(current))
             };
             if awaited {
                 return Some(current);

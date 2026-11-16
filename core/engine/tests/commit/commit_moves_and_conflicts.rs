@@ -1691,3 +1691,23 @@ fn a_create_into_a_folder_moving_into_a_new_folder_past_the_plan_window_waits_fo
     assert_eq!(ops(&commit), [create_dir("g", ROOT, "g")]);
 }
 
+
+#[test]
+fn creates_inside_a_new_folder_in_a_trashed_folder_wait_for_the_trashed_folders_move() {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        ("n", Some(dir("t", "n")), None, None),
+        ("h", Some(file("n", "h", 1)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        matches!(&ops(&first)[..], [moved, op::Op::CreateDir(folder), op::Op::CreateFile(file)] if *moved == mv("t", ROOT, "T2") && folder.node_id == "n" && folder.parent_id == "t" && file.node_id == "h" && file.parent_id == "n"),
+        "{first:?}"
+    );
+}
