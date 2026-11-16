@@ -4234,9 +4234,91 @@ fn publishing_a_folder_whose_subfolder_a_move_leaves_for_a_new_folder_inside_it_
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
-            ("create dir", "n".into()),
             ("move", "a".into()),
+            ("move", "c".into()),
+            ("move", "b".into()),
+            ("delete", "b".into()),
+            ("create dir", "n".into()),
             ("move", "c".into())
         ]
     );
+}
+
+fn moved_here(trees: &mut Trees, id: &str, shape: Shape) {
+    let mut node = trees.local().get(id).expect("a node of L").clone();
+    node.shape = shape;
+    trees.set_local(id.into(), node);
+    trees.settle();
+}
+
+#[test]
+fn a_folder_moved_out_after_a_publish_answer_trashes_again_what_this_device_deleted() {
+    let mut trees = trees(
+        &[("a", dir(ROOT, "new")), ("b", dir("a", "b"))],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    moved_here(&mut trees, "b", dir(ROOT, "b"));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("a", dir(ROOT, "new"), false),
+            ("b", dir(ROOT, "b"), false),
+            ("c", dir("b", "c"), true),
+        ],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a_kept_one_takes() {
+    let mut trees = trees(
+        &[("a", dir(ROOT, "old")), ("c", dir("a", "b"))],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    moved_here(&mut trees, "a", dir(ROOT, "new"));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(sent.contains(&("delete", "b".into())), "{sent:?}");
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("a", dir(ROOT, "new"), false),
+            ("b", dir("a", "b"), true),
+            ("c", dir("a", "b"), false),
+        ],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }

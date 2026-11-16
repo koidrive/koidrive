@@ -2363,6 +2363,9 @@ fn faults(
     if kept.count() > 0 {
         hard.push("a commit deletes a node L keeps".into());
     }
+    if trashes_kept(told, intent, run) {
+        hard.push("a delete takes a node L keeps into the trash".into());
+    }
     for &(i, want) in &intent.sure {
         if met(told, root, &run.before, &run.end, i, want) {
             continue;
@@ -2379,6 +2382,50 @@ fn faults(
         }
     }
     (hard, soft)
+}
+
+fn trashes_kept(told: &World, intent: &Intent, run: &Run) -> bool {
+    let wants = || intent.sure.iter().chain(&intent.open);
+    let gone: BTreeSet<usize> = (wants())
+        .filter(|(_, want)| *want == Want::Gone)
+        .map(|(i, _)| *i)
+        .collect();
+    let kept: BTreeSet<String> = (wants())
+        .filter(|(i, _)| !gone.contains(i) && told.local_place(*i).is_some())
+        .map(|(i, _)| told.id(*i))
+        .collect();
+    run.sent.iter().any(|sent| {
+        (sent.commit.ops.iter().enumerate()).any(|(at, op)| {
+            let Some(op::Op::Delete(delete)) = &op.op else {
+                return false;
+            };
+            let mut space = sent.before.clone();
+            if at > 0 {
+                let before = proto::Commit {
+                    ops: sent.commit.ops[..at].to_vec(),
+                    ..sent.commit.clone()
+                };
+                if apply(&mut space, &before).is_none() {
+                    return false;
+                }
+            }
+            kept.iter().any(|id| {
+                let mut current = space
+                    .node(id)
+                    .filter(|node| node.status() == NodeStatus::Live);
+                for _ in 0..=told.len() {
+                    let Some(node) = current else {
+                        return false;
+                    };
+                    if node.node_id == delete.node_id {
+                        return true;
+                    }
+                    current = space.node(&node.parent_id);
+                }
+                false
+            })
+        })
+    })
 }
 
 fn torn(told: &World, intent: &Intent, run: &Run) -> bool {
