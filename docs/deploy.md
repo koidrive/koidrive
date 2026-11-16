@@ -1,24 +1,20 @@
 # Deploying and upgrading a Koidrive server
 
-This page deploys the server to your own Cloudflare account with the deploy button or Wrangler, claims it, and upgrades it by hand. `koi server deploy` and `koi server upgrade` do the same steps through a [Cloudflare login](guide/koi-setup.md#the-cloudflare-login-and-what-it-may-do). The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
+`koi setup` deploys and claims your server through a [Cloudflare login](guide/koi-setup.md#the-cloudflare-login-and-what-it-may-do), and `koi server upgrade` upgrades it. This page does the same by hand with Wrangler. The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
 
 ## What you need
 
-- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Neither the deploy button nor Wrangler can activate R2, and without it the bucket cannot be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
-- For the deploy button, a GitHub or GitLab account. The button copies the server into a new repository there.
-- For the command line, Node.js and pnpm.
+- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Wrangler can't activate R2, and without it the bucket can't be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
+- Git, Node.js and pnpm.
 - The [Mac app](guide/macos.md) or the [`koi` command](guide/install.md), to claim the server.
 
 ## Deploy
 
-1. Click [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/koidrive/koidrive/tree/main/server). It deploys `server/` from the `main` branch ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)).
-2. Sign in, pick the Git account for the new repository, and keep or change the names of the Worker and the R2 bucket. Write the names down, because an upgrade must keep them.
-3. Deploy. Cloudflare creates the Worker, its two Durable Objects and the R2 bucket, builds the server and deploys it. You enter no secrets.
-4. Note the Worker's address, for example `https://koidrive.<your-subdomain>.workers.dev`.
+1. Clone the repository and check out the release you want.
+2. In `server/`, run `pnpm install --frozen-lockfile` and `pnpm run deploy`. Wrangler asks you to sign in. It names the Worker and the bucket `koidrive` unless you change them in `server/wrangler.jsonc`.
+3. Note the Worker's address, for example `https://koidrive.<your-subdomain>.workers.dev`.
 
 If the deploy stops with an error about the R2 subscription, R2 is not activated yet. Complete the checkout under [What you need](#what-you-need) and deploy again.
-
-To deploy from the command line instead, clone the repository, then in `server/` run `pnpm install --frozen-lockfile` and `pnpm run deploy`. Wrangler asks you to sign in. It names the Worker and the bucket `koidrive` unless you change them in `server/wrangler.jsonc`.
 
 ## Claim your server
 
@@ -45,7 +41,7 @@ Recovery does not sign out your other devices. A lost device keeps working until
 
 ## Upgrade
 
-Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. With the Cloudflare login, `koi server upgrade` does this for you ([Set up](guide/setup.md#upgrade-the-server)). It stops if the new release is older than your server's data.
+Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. `koi server upgrade` does this for you ([Set up](guide/setup.md#upgrade-the-server)). It stops if the new release is older than your server's data.
 
 Upgrade only to a newer release. To see what your server runs, run this in a terminal:
 
@@ -55,13 +51,7 @@ curl -H 'Accept: application/json' https://<your server>/v1/server
 
 `serverVersion` is the release your server runs, and `storage` is the version of its data format. A server deployed from `main` reports `0.0.0-dev`, and its data can be newer than the latest release. Upgrade it only to a release published after the day you deployed it.
 
-If you deployed with the button, your repository is a copy that does not update itself:
-
-1. Download the release's source and take its `server/` directory.
-2. Replace the files in your repository with it, but keep your Worker `name` and your `bucket_name` in `wrangler.jsonc`. With other names, Cloudflare deploys a new, empty server next to yours.
-3. Commit and push. Cloudflare builds and deploys the new release.
-
-If you deployed from the command line:
+To upgrade by hand:
 
 1. Check out the new release.
 2. If you deployed under names other than `koidrive`, put your names back into `server/wrangler.jsonc`. The release's file has the defaults, and deploying with them creates a new, empty server next to yours.
