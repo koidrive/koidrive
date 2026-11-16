@@ -78,7 +78,7 @@ koi update
 To install a given version or into another directory, set `KOIDRIVE_VERSION` or `KOIDRIVE_INSTALL_DIR` for `sh`:
 
 ```sh
-curl -fsSL https://koidrive.com/install.sh | KOIDRIVE_VERSION=v0.1.0-alpha.4 KOIDRIVE_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://koidrive.com/install.sh | KOIDRIVE_VERSION=v0.1.0 KOIDRIVE_INSTALL_DIR="$HOME/bin" sh
 ```
 
 The installer needs `curl`, `tar`, `awk`, `grep`, `sed`, `mktemp`, and `sha256sum` or `shasum`, plus `codesign` on macOS. It checks the release signature with `ssh-keygen` from OpenSSH 8.1 or later; without it, the installer warns and installs without that check. `KOIDRIVE_RELEASE_BASE_URL` replaces `https://github.com/koidrive/koidrive/releases` with an `https://` mirror that serves the same files. The installer refuses files the release key did not sign, but a mirror can serve an older signed release unless `KOIDRIVE_VERSION` names the version.
