@@ -440,7 +440,11 @@ impl Store {
             Err(error) => return Err(error),
         };
         let _lock = self.lock(true)?;
-        let id = (self.settings()?.install_id).unwrap_or_else(InstallId::generate);
+        let settings = self.settings()?;
+        if settings.enabled.is_some() {
+            return Ok(None);
+        }
+        let id = settings.install_id.unwrap_or_else(InstallId::generate);
         let held = Held {
             id: Some(id.clone()),
             queue: Queue::default(),
@@ -957,6 +961,17 @@ mod tests {
         let next = store.hold().unwrap().unwrap();
         store.answer(next, true).unwrap();
         assert!(store.peek().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_choice_stored_before_the_hold_starts_none() {
+        for on in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path());
+            store.set(on).unwrap();
+            assert!(store.hold().unwrap().is_none());
+            assert!(!dir.path().join("telemetry/held.json").exists());
+        }
     }
 
     #[test]

@@ -140,7 +140,6 @@ pub async fn start(
 
 pub async fn ask(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
     let store = Store::new(&paths.state_dir);
-    let hold = take_hold();
     let (asked, answer) = match store.settings() {
         Ok(settings) if should_ask(var, settings.enabled) => match store.begin_prompt() {
             Ok(true) => (true, question(terminal).await),
@@ -160,7 +159,7 @@ pub async fn ask(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
         }
     };
     let choice = answer.as_ref().ok().copied().flatten();
-    let stored = match (choice, hold) {
+    let stored = match (choice, take_hold()) {
         (Some(on), Some(hold)) if asked || on => store.answer(hold, on).map(|_| on),
         (Some(on), None) if asked => store.set(on).map(|_| on),
         (_, Some(hold)) => store.forget(hold).map(|()| false),
