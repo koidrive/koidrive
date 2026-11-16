@@ -77,7 +77,6 @@ fn trees(nodes: &[Row]) -> Trees {
     for (ino, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             let identity = FileIdentity {
-                dev: 1,
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
             };
@@ -491,7 +490,6 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
         content_from_server: false,
         shape: dir(&root(), name),
         identity: FileIdentity {
-            dev: 1,
             ino: 9,
             birth_ns: Some(0),
         },
@@ -1287,7 +1285,6 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
         content_from_server: false,
         shape: dir(&root(), "A"),
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: Some(0),
         },

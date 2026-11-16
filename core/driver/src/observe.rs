@@ -772,7 +772,7 @@ mod tests {
     fn observer(root: &Path) -> FsObserver {
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         FsObserver::start(
             root,
@@ -801,7 +801,7 @@ mod tests {
         };
         let dev = RootAt {
             dev: fs::metadata(dir.path()).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let started = FsObserver::start(
             dir.path(),
@@ -1121,7 +1121,7 @@ mod tests {
         };
         let dev = RootAt {
             dev: fs::metadata(dir.path()).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let started = FsObserver::start(
             dir.path(),
@@ -1516,7 +1516,7 @@ mod tests {
         let tracked = u128::from(fs::metadata(root.join("tracked")).unwrap().ino());
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let mut observer = FsObserver::start(
             root,
@@ -1622,7 +1622,7 @@ mod tests {
         let scanned = known.scanned();
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let mut observer = FsObserver::start(
             root,
@@ -1813,7 +1813,7 @@ mod tests {
 
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let mut observer =
             FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap();
@@ -1847,7 +1847,7 @@ mod tests {
         };
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let matcher = crate::ignore::matcher(&sync).unwrap();
         let mut observer =

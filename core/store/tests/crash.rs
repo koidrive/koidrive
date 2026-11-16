@@ -109,7 +109,6 @@ fn write_input(tx: &Tx<'_>, seq: u64) -> Result<(), Error> {
             node_id: remote(n).node_id,
             shape: shape(n),
             identity: FileId {
-                dev: 1,
                 ino: n.into(),
                 birth_ns: None,
             },

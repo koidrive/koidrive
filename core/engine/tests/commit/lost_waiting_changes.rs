@@ -774,7 +774,6 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
     trees.settle();
     let mut effects = Effects::default();
     let identity = FileIdentity {
-        dev: 1,
         ino: 100,
         birth_ns: Some(0),
     };

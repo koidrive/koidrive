@@ -247,7 +247,6 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
     trees.settle();
     let mut effects = Effects::default();
     let identity = |ino| FileIdentity {
-        dev: 1,
         ino,
         birth_ns: Some(0),
     };
@@ -318,7 +317,6 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
     trees.settle();
     let mut effects = Effects::default();
     let identity = |ino| FileIdentity {
-        dev: 1,
         ino,
         birth_ns: Some(0),
     };
@@ -418,7 +416,6 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
         .cloned()
     {
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };

@@ -418,7 +418,6 @@ fn a_reverted_move_brings_back_the_folders_l_deleted_on_its_way() {
         .cloned()
     {
         let identity = FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         };

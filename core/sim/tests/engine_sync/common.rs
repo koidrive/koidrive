@@ -470,7 +470,6 @@ enum Cut {
 /// birth time.
 fn identity(ino: u64) -> FileIdentity {
     FileIdentity {
-        dev: 1,
         ino: ino.into(),
         birth_ns: ino.is_multiple_of(2).then_some(1_700_000_000_000_000_000),
     }

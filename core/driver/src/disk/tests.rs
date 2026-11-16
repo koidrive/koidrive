@@ -23,8 +23,8 @@ use koidrive_engine::effects::{Base as EngineBase, Dir as EngineDir};
 use koidrive_engine::state::{EffectsState, TreesState};
 use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Shape};
 use koidrive_fs::{
-    FileId, Known, PRIVATE_DIR, QUARANTINE_DIR, STAGING_DIR, Snapshot, TRASH_DIR, read_marker,
-    write_marker,
+    FileId, Known, PRIVATE_DIR, QUARANTINE_DIR, RootAt, STAGING_DIR, Snapshot, TRASH_DIR,
+    read_marker, write_marker,
 };
 use koidrive_net::ServerError;
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, VersionInfo};
@@ -232,6 +232,7 @@ impl Folder {
             space_name: "test".into(),
             root: root.clone(),
             root_dev: fs::metadata(&root).unwrap().dev(),
+            root_volume: None,
             server_url: "https://files.example.com/".into(),
             device_id: "device".into(),
             linked_at_ms: 0,
@@ -646,7 +647,6 @@ fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
             content,
         },
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: None,
         },
@@ -1628,7 +1628,10 @@ fn observe_until(
 }
 
 fn observer(root: &Path, previous: Snapshot) -> FsObserver {
-    let dev = fs::metadata(root).unwrap().dev();
+    let dev = RootAt {
+        dev: fs::metadata(root).unwrap().dev(),
+        volume: None,
+    };
     FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap()
 }
 
@@ -1882,7 +1885,6 @@ fn record(effect: EngineEffect) -> EffectRecord {
 #[test]
 fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
     let no_birth = FileIdentity {
-        dev: 7,
         ino: 8,
         birth_ns: None,
     };
@@ -1924,7 +1926,6 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
             base: Base::Parked {
                 name: "parked-node".into(),
                 id: FileId {
-                    dev: 7,
                     ino: 8,
                     birth_ns: Some(-5)
                 },
@@ -1932,7 +1933,6 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
             dirs: vec![Dir {
                 name: "dossier".into(),
                 id: FileId {
-                    dev: 7,
                     ino: 8,
                     birth_ns: None
                 },
@@ -1994,7 +1994,6 @@ fn a_record_whose_name_is_not_a_file_name_is_never_committed() {
 #[test]
 fn kinds_map_one_to_one() {
     let identity = FileIdentity {
-        dev: 1,
         ino: 2,
         birth_ns: Some(3),
     };
@@ -2594,7 +2593,6 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
                     content: Some(content),
                 },
                 identity: FileIdentity {
-                    dev: meta.dev(),
                     ino: meta.ino().into(),
                     birth_ns: None,
                 },

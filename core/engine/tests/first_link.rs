@@ -50,7 +50,6 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
     let mut trees = Trees::new(ROOT);
     for (ino, (id, shape)) in local.iter().enumerate() {
         let identity = FileIdentity {
-            dev: 1,
             ino: ino as u128 + 1,
             birth_ns: Some(0),
         };
@@ -803,7 +802,6 @@ fn run_beside(local_name: &str, remote: &[(&str, Shape)], read_only: bool) -> Ru
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -1147,7 +1145,6 @@ fn an_entry_created_after_the_first_link_is_sent_at_once() {
         content_from_server: false,
         shape: file("r-docs", "later", 6),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1255,7 +1252,6 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         content_from_server: false,
         shape: file(ROOT, "later", 6),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1316,7 +1312,6 @@ fn discarded(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Vec<(
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -1401,7 +1396,6 @@ fn a_discarded_folder_the_user_puts_an_entry_in_is_asked_about_again() {
         content_from_server: false,
         shape: file("l-new", "later", 6),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1424,7 +1418,6 @@ fn a_discarded_folder_the_user_puts_an_entry_in_is_asked_about_again() {
             removed.push(record.node.clone());
         }
         let identity = FileIdentity {
-            dev: 1,
             ino: 100 + removed.len() as u128,
             birth_ns: Some(0),
         };
@@ -1506,7 +1499,6 @@ fn a_discarded_folder_the_user_moves_a_synced_entry_into_through_a_new_folder_is
         content_from_server: false,
         shape: dir("l-new", "sub"),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1618,7 +1610,6 @@ fn a_discarded_folder_whose_subfolder_the_user_puts_an_entry_in_is_asked_about_a
         content_from_server: false,
         shape: file("l-sub", "later", 6),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1636,7 +1627,6 @@ fn a_discarded_folder_whose_subfolder_the_user_puts_an_entry_in_is_asked_about_a
     {
         touched.push(record.node.clone());
         let identity = FileIdentity {
-            dev: 1,
             ino: 100 + touched.len() as u128,
             birth_ns: Some(0),
         };
@@ -1689,7 +1679,6 @@ fn a_discarded_file_the_user_edits_is_asked_about_again_with_its_folder() {
         content_from_server: false,
         shape: file("l-new", "inside", 5),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1706,7 +1695,6 @@ fn a_discarded_file_the_user_edits_is_asked_about_again_with_its_folder() {
     {
         touched.push(record.node.clone());
         let identity = FileIdentity {
-            dev: 1,
             ino: 100 + touched.len() as u128,
             birth_ns: Some(0),
         };
@@ -1787,7 +1775,6 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         content_from_server: false,
         shape: file(ROOT, "pad", 3),
         identity: FileIdentity {
-            dev: 1,
             ino: 99,
             birth_ns: Some(0),
         },
@@ -1862,7 +1849,6 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
                 content_from_server: false,
                 shape,
                 identity: FileIdentity {
-                    dev: 1,
                     ino,
                     birth_ns: Some(0),
                 },
@@ -2002,7 +1988,6 @@ fn reclaim_with_waiting(
     for (ino, (id, shape)) in synced.iter().enumerate() {
         trees.set_synced((*id).into(), Some(shape.clone()));
         let identity = FileIdentity {
-            dev: 1,
             ino: ino as u128 + 1,
             birth_ns: Some(0),
         };
@@ -2126,7 +2111,6 @@ fn a_discarded_entry_the_rules_leave_out_for_a_while_goes_to_the_local_trash_onc
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -2167,7 +2151,6 @@ fn run_effects(
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -2274,7 +2257,6 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         )),
     );
     let identity = FileIdentity {
-        dev: 1,
         ino: 99,
         birth_ns: Some(0),
     };
@@ -2451,7 +2433,6 @@ fn local_node(shape: Shape, ino: u128) -> LocalNode {
         content_from_server: false,
         shape,
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },
@@ -2518,7 +2499,6 @@ fn discarded_twice_around_a_server_node(
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -2819,7 +2799,6 @@ fn a_server_file_moved_into_a_discarded_folder_and_edited_on_another_device_is_n
                     commits.in_flight(),
                     &record.effect_id,
                     Some(FileIdentity {
-                        dev: 1,
                         ino,
                         birth_ns: Some(0),
                     }),
@@ -2875,7 +2854,6 @@ fn a_server_file_moved_into_a_folder_before_the_folder_is_discarded_goes_back_wh
                     commits.in_flight(),
                     &record.effect_id,
                     Some(FileIdentity {
-                        dev: 1,
                         ino,
                         birth_ns: Some(0),
                     }),
@@ -2939,7 +2917,6 @@ fn a_server_folder_taken_along_by_a_discard_goes_home_into_the_folder_the_user_d
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -3002,7 +2979,6 @@ fn a_server_folder_moved_into_a_discarded_folder_goes_back_with_what_the_server_
                     commits.in_flight(),
                     &record.effect_id,
                     Some(FileIdentity {
-                        dev: 1,
                         ino,
                         birth_ns: Some(0),
                     }),
@@ -3055,7 +3031,6 @@ fn a_server_file_back_where_the_server_holds_it_after_a_discard_goes_when_the_se
                     commits.in_flight(),
                     &record.effect_id,
                     Some(FileIdentity {
-                        dev: 1,
                         ino,
                         birth_ns: Some(0),
                     }),
@@ -3356,7 +3331,6 @@ fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_p
             content_from_server: false,
             shape: file("x", "later", 8),
             identity: FileIdentity {
-                dev: 1,
                 ino: 99,
                 birth_ns: Some(0),
             },
@@ -3423,7 +3397,6 @@ fn a_server_folder_in_a_discarded_folder_changed_after_the_answer(
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -3496,7 +3469,6 @@ fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
             .cloned()
             .unwrap();
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -3523,7 +3495,6 @@ fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -3704,7 +3675,6 @@ fn a_user_folder_parked_below_a_folder_the_server_added_keeps_the_discarded_fold
         .unwrap();
     assert_eq!(download.node, "d");
     let identity = FileIdentity {
-        dev: 1,
         ino: 901,
         birth_ns: Some(0),
     };
@@ -3779,7 +3749,6 @@ fn a_server_folder_added_after_the_discard_and_moved_out_leaves_the_discarded_fo
         .unwrap();
     assert_eq!(download.node, "d");
     let identity = FileIdentity {
-        dev: 1,
         ino: 902,
         birth_ns: Some(0),
     };
@@ -3977,7 +3946,6 @@ fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_stays_in_it_
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -4305,7 +4273,6 @@ mod a_server_file_moved_into_an_asked_folder {
                 break;
             };
             let identity = FileIdentity {
-                dev: 1,
                 ino,
                 birth_ns: Some(0),
             };
@@ -4707,7 +4674,6 @@ mod a_server_file_moved_into_an_asked_folder {
         let mut copied = file(ROOT, "server", 9);
         copied.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
         let identity = FileIdentity {
-            dev: 1,
             ino: 50,
             birth_ns: Some(0),
         };

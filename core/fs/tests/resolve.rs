@@ -185,7 +185,7 @@ fn parked_base_checks_the_parked_folder_identity() {
     let node_id = |path: &Path| {
         use std::os::unix::fs::MetadataExt;
         let meta = fs::symlink_metadata(path).unwrap();
-        (meta.dev(), u128::from(meta.ino()))
+        u128::from(meta.ino())
     };
 
     let parked_scan = Snapshot::scan(&parked).unwrap();
@@ -204,10 +204,7 @@ fn parked_base_checks_the_parked_folder_identity() {
     };
     let (folder, name) = space.parent(&location).unwrap();
     assert_eq!(name, "f.txt");
-    assert_eq!(
-        (folder.id().dev, folder.id().ino),
-        node_id(&parked.join("node-1/sub"))
-    );
+    assert_eq!(folder.id().ino, node_id(&parked.join("node-1/sub")));
     space.recheck(&folder).unwrap();
 
     let parked_entry = Location::Parked("node-2".into());

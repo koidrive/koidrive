@@ -1260,7 +1260,6 @@ mod tests {
         parked.effect = Effect::Move {
             from: Location::Parked("before".into()),
             identity: koidrive_engine::tree::FileIdentity {
-                dev: 1,
                 ino: 1,
                 birth_ns: None,
             },

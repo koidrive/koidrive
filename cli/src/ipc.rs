@@ -737,6 +737,7 @@ pub(crate) mod tests {
                     space_name: "Projects".into(),
                     root: root.clone(),
                     root_dev: 1,
+                    root_volume: None,
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,

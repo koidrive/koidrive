@@ -96,7 +96,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         content_from_server: false,
         shape,
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },
@@ -716,7 +715,6 @@ fn effects_for(trees: &mut Trees, ids: &mut IdGen, node: &str) -> Vec<Effect> {
         let written = trees.local().get(&record.node).is_none()
             || matches!(record.effect, Effect::WriteFile { .. });
         let identity = written.then_some(FileIdentity {
-            dev: 1,
             ino: 100,
             birth_ns: Some(0),
         });

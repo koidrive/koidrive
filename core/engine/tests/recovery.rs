@@ -58,7 +58,6 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             content_from_server: false,
             shape: shape.clone(),
             identity: FileIdentity {
-                dev: 1,
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
             },
@@ -149,7 +148,6 @@ fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(String, Effect)> {
             break;
         };
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -2213,7 +2211,6 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
     let mut effects = Effects::from_state(effects.state()).unwrap();
     assert!(effects.in_flight()[0].applies(&reloaded, None));
     let identity = FileIdentity {
-        dev: 1,
         ino: 9,
         birth_ns: Some(0),
     };

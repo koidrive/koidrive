@@ -4671,7 +4671,6 @@ fn placed(
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
         identity: FileId {
-            dev: 1,
             ino: ino.into(),
             birth_ns: None,
         },

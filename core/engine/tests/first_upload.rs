@@ -68,7 +68,6 @@ fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
             content,
         },
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },
@@ -323,7 +322,6 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
         for effect_id in planned {
             ino += 1;
             let identity = FileIdentity {
-                dev: 1,
                 ino,
                 birth_ns: Some(0),
             };

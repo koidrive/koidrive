@@ -1033,7 +1033,7 @@ mod tests {
         let tree = Tree::new(SPACE, &nodes);
         let dev = RootAt {
             dev: std::fs::metadata(&root).unwrap().dev(),
-            identity: None,
+            volume: None,
         };
         let valid = || {
             [

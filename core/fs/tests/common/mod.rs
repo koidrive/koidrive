@@ -550,9 +550,8 @@ pub fn encode(entries: &[Entry]) -> String {
         .iter()
         .map(|entry| {
             format!(
-                "{} {} {} {} {} {} {}\n",
+                "{} {} {} {} {} {}\n",
                 matches!(entry.kind, EntryKind::Dir),
-                entry.id.dev,
                 entry.id.ino,
                 entry
                     .id
@@ -577,13 +576,12 @@ pub fn decode(text: &str) -> Vec<Entry> {
                     EntryKind::File
                 },
                 id: FileId {
-                    dev: fields[1].parse().unwrap(),
-                    ino: fields[2].parse().unwrap(),
-                    birth_ns: (fields[3] != "-").then(|| fields[3].parse().unwrap()),
+                    ino: fields[1].parse().unwrap(),
+                    birth_ns: (fields[2] != "-").then(|| fields[2].parse().unwrap()),
                 },
-                size: fields[4].parse().unwrap(),
-                mtime_ns: fields[5].parse().unwrap(),
-                executable: fields[6] == "true",
+                size: fields[3].parse().unwrap(),
+                mtime_ns: fields[4].parse().unwrap(),
+                executable: fields[5] == "true",
                 linked: false,
             }
         })

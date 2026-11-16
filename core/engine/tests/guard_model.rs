@@ -720,7 +720,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
 
 fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
-        dev: 1,
         ino,
         birth_ns: Some(0),
     }
