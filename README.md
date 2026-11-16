@@ -59,14 +59,12 @@ Dropbox does much more, and charges per person for it. Koidrive does the core of
 
 | | Koidrive | Dropbox |
 |---|---|---|
-| **Sharing with other people and teams** | No | Shared folders, team folders, groups and roles |
-| **Files on demand** | No. Every synced file is on disk | Online-only files |
-| **Windows, iPhone and Android** | No | Yes |
-| **Web interface** | No | Yes |
-| **Admin tools** | No | Device approvals, remote wipe and account transfer |
+| **Sharing with other people and teams** | Supports share links. Team features are coming. | Shared folders, team folders, groups and roles |
+| **Files on demand** | Not yet. | Online-only files |
+| **Windows and iOS** | Coming | Yes |
+| **Web interface** | Coming | Yes |
+| **Admin tools** | Revoke a lost device with `koi device revoke` | Device approvals, remote wipe and account transfer |
 | **Support** | GitHub issues | Yes |
-
-Choose Dropbox if you share folders with a team or open your files on a phone. Choose Koidrive if you want your folders on your own machines, stored in an account you control, with a bill only from Cloudflare.
 
 ## What it costs
 

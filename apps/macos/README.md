@@ -2,7 +2,7 @@
 
 The full Koidrive sync client for macOS 26 or later on Apple silicon. Use the setup window to connect to your server, sign in this Mac and link a folder. The menu bar shows sync status and notices, opens folders in Finder and lets you pause or resume sync. **Needs You** asks for decisions before risky changes. **Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs. See the [Mac app guide](../../docs/guide/macos.md) for setup and everyday use.
 
-While files sync, the menu shows how many are left to upload and download and how many bytes are done. It shows no recent changes. There is no File Provider extension, so every synced file is on disk.
+While files sync, the menu shows how many are left to upload and download and how many bytes are done. Every synced file is a full copy on disk.
 
 The app carries `koi` in `Contents/Helpers/koi` and shares its device, folders and background service with the CLI. Through `core/ffi` and [UniFFI](https://mozilla.github.io/uniffi-rs/), it runs each change as a `koi --json` command and follows the sync daemon over its socket. While no daemon runs, it reads the state with `koi status`.
 
@@ -65,7 +65,7 @@ Run `scripts/build-ffi.sh` again after every change to `core/ffi` or `cli`. It r
 
 | Path | Contents |
 |---|---|
-| `Koidrive/` | The SwiftUI menu bar app and its windows. User-facing text is in `Localizable.xcstrings`, with English as the base language. |
+| `Koidrive/` | The SwiftUI app: the menu bar, setup, Settings, Needs You, Deleted Files, Version History, Share Link and Shared Links windows. User-facing text is in `Localizable.xcstrings`, with English as the base language. |
 | `project.yml` | The XcodeGen spec for `Koidrive.xcodeproj`. The generated project is not checked in, so edit `project.yml` and run `scripts/generate-project.sh` again after changing it or adding or removing source files. |
 | `KoidriveFFI/` | A Swift package: the `KoidriveFFI` library wraps the Rust core (the generated bindings and the static library as an XCFramework), and `KoidriveModel` holds the app's view models. Both have tests. |
 | `scripts/generate-project.sh` | Generates `Koidrive.xcodeproj` with the pinned XcodeGen. |

@@ -145,7 +145,6 @@ enum WindowID {
 }
 
 extension OpenWindowAction {
-    /// Brings the app forward, which a menu bar app must do itself.
     @MainActor
     func show(_ id: String) {
         self(id: id)

@@ -1039,7 +1039,7 @@ async fn app_updates_verify_the_prepared_helper_before_one_shared_reconcile() {
             dir.path(),
             actual,
             change,
-            Some("The menu bar app could not open".into()),
+            Some("The Mac app could not open".into()),
         );
         let koi = prepared.helper().unwrap();
         assert!(koi.starts_with(dir.path()));

@@ -50,7 +50,7 @@ This prints the new space's ID. `koi folder link --space` finds a space by its n
 
 ## Set up with the Cloudflare login
 
-`koi setup` can do all of this in one guided run on a terminal. It logs in with Cloudflare, deploys a server or finds yours, signs in this machine, and links a folder. The login needs Koidrive's public OAuth client, which isn't available: only members of the project's test account can log in. Everyone else deploys and claims the server as described above. The same login is behind `koi server deploy`, `add-device`, `upgrade` and `delete`. [koi setup](koi-setup.md) describes each question and option.
+`koi setup` can do all of this in one guided run on a terminal. It logs in with Cloudflare, deploys a server or finds yours, signs in this machine, and links a folder. The Cloudflare login is in early access for members of the project's test account. Everyone else deploys and claims the server as described above. The same login is behind `koi server deploy`, `add-device`, `upgrade` and `delete`. [koi setup](koi-setup.md) describes each question and option.
 
 ## Upgrade the server
 
