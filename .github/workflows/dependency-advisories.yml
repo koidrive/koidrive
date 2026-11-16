@@ -1,0 +1,85 @@
+name: Dependency advisories
+
+on:
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  rust-advisories:
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - name: Check workspace RustSec advisories
+        id: audit
+        continue-on-error: true
+        run: nice -n 10 cargo deny --color never --locked --all-features check advisories 2>&1 | tee "$RUNNER_TEMP/rust-advisories.txt"
+      - name: Summarize RustSec findings
+        if: always()
+        env:
+          OUTCOME: ${{ steps.audit.outcome }}
+        run: |
+          {
+            echo '## RustSec advisories for the workspace Cargo.lock'
+            echo "Audit step outcome: ${OUTCOME:-not run}. This check is advisory and does not block merging."
+            echo '```text'
+            if [ -f "$RUNNER_TEMP/rust-advisories.txt" ]; then
+              cat "$RUNNER_TEMP/rust-advisories.txt"
+            else
+              echo 'The audit did not run. Check the setup steps for errors.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  javascript-advisories:
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        with:
+          package_json_file: server/package.json
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Audit the server and web workspace lockfile
+        id: audit
+        continue-on-error: true
+        run: nice -n 10 pnpm audit --audit-level info 2>&1 | tee "$RUNNER_TEMP/javascript-advisories.txt"
+      - name: Summarize JavaScript findings
+        if: always()
+        env:
+          OUTCOME: ${{ steps.audit.outcome }}
+        run: |
+          {
+            echo '## JavaScript advisories for server and server/web'
+            echo "Audit step outcome: ${OUTCOME:-not run}. This check is advisory and does not block merging."
+            echo '```text'
+            if [ -f "$RUNNER_TEMP/javascript-advisories.txt" ]; then
+              cat "$RUNNER_TEMP/javascript-advisories.txt"
+            else
+              echo 'The audit did not run. Check the setup steps for errors.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
