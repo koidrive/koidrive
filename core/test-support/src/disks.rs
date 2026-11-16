@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -218,7 +219,18 @@ fn sudo(args: &[&OsStr]) {
 
 fn unmount(at: &Path) {
     if cfg!(target_os = "macos") {
-        hdiutil(&["detach".as_ref(), "-force".as_ref(), at.as_os_str()]);
+        let dev = |path: &Path| fs::metadata(path).unwrap().dev();
+        assert_ne!(
+            dev(at),
+            dev(at.parent().unwrap()),
+            "no disk mounted at {}",
+            at.display()
+        );
+        let device = format!(
+            "/dev/{}",
+            run("stat", &["-f".as_ref(), "%Sd".as_ref(), at.as_os_str()])
+        );
+        hdiutil(&["detach".as_ref(), "-force".as_ref(), device.as_ref()]);
     } else {
         sudo(&["umount".as_ref(), at.as_ref()]);
     }
