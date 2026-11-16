@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -103,7 +104,7 @@ impl Disks {
 
     fn formatted(&self, name: &str, file_system: &str) -> PathBuf {
         let image = self.base().join(format!("{name}.dmg"));
-        let args = [
+        let mut args: Vec<OsString> = [
             "create",
             "-quiet",
             "-size",
@@ -112,10 +113,21 @@ impl Disks {
             file_system,
             "-volname",
             name,
-        ];
-        let mut args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        args.push(image.as_os_str());
-        run("hdiutil", &args);
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect();
+        if file_system != "APFS" {
+            let mut serial = DefaultHasher::new();
+            image.hash(&mut serial);
+            args.push("-fsargs".into());
+            args.push(format!("-I {:#x}", serial.finish() as u32).into());
+        }
+        args.push(image.clone().into());
+        run(
+            "hdiutil",
+            &args.iter().map(OsString::as_os_str).collect::<Vec<_>>(),
+        );
         image
     }
 
