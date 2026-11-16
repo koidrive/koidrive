@@ -2,7 +2,7 @@
 
 The full Koidrive sync client for macOS 26 or later on Apple silicon. Use the setup window to connect to your server, sign in this Mac and link a folder. The menu bar shows sync status and notices, opens folders in Finder and lets you pause or resume sync. **Needs You** asks for decisions before risky changes. **Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs. See the [Mac app guide](../../docs/guide/macos.md) for setup and everyday use.
 
-While files sync, the menu shows how many are left to upload and download and how many bytes are done. It shows no recent changes. There is no File Provider extension, so every synced file is on disk.
+While files sync, the menu shows how many are left to upload and download and how many bytes are done. Every synced file is a full copy on disk.
 
 The app carries `koi` in `Contents/Helpers/koi` and shares its device, folders and background service with the CLI. Through `core/ffi` and [UniFFI](https://mozilla.github.io/uniffi-rs/), it runs each change as a `koi --json` command and follows the sync daemon over its socket. While no daemon runs, it reads the state with `koi status`.
 
