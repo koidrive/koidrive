@@ -4323,3 +4323,37 @@ fn a_move_into_the_answered_folder_out_of_its_trash_group_still_goes() {
         assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
     }
 }
+
+#[test]
+fn publishing_a_renamed_folder_and_a_folder_moved_into_it_out_of_its_subfolder_sends_both_and_trashes_the_subfolder()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("b", dir("a", "b")),
+            ("c", dir("a", "c")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "c".into()),
+            ("move", "b".into()),
+            ("delete", "b".into())
+        ]
+    );
+}
