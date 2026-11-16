@@ -3406,3 +3406,25 @@ fn a_publish_answer_keeps_a_folder_below_a_folder_renamed_after_the_answer() {
     let sent = report.text.lines().nth(1).unwrap_or_default();
     assert!(!sent.contains("Delete c"), "{}", report.text);
 }
+
+#[test]
+fn a_publish_answer_keeps_a_folder_below_a_new_folder_in_a_folder_renamed_after_the_answer() {
+    use Local::{Into as To, Kept, Onto};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(1), In(2)],
+        &[Remote::Kept; 4],
+        &[To(Root), Kept, To(In(4)), Kept],
+        &[(Kind::Dir, Onto(2))],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Move(1, In(0)));
+    assert!(answers(&world).contains(&story));
+    let report =
+        tell(&world, &server(&world), story).expect("no question holds the renamed folder");
+    let deleted: Vec<&String> = (report.classes.iter())
+        .filter(|class| class.contains("deletes a node L keeps"))
+        .collect();
+    assert!(deleted.is_empty(), "{deleted:?}\n{}", report.text);
+    let sent = report.text.lines().nth(1).unwrap_or_default();
+    assert!(!sent.contains("Delete d"), "{}", report.text);
+}
