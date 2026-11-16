@@ -1519,6 +1519,87 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
     assert_eq!(trees.waiting().get("c"), Some(&waiting));
 }
 
+fn remote_node(shape: Shape) -> RemoteNode {
+    RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        edit_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    }
+}
+
+fn a_reclaimed_folder_that_took_along_a_server_file(server_digest: u8) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    let local = [
+        ("f", dir(ROOT, "a"), 1),
+        ("c", dir("f", "child"), 2),
+        ("k", file("f", "kept", 3), 3),
+    ];
+    for (id, shape, ino) in local {
+        if id != "k" {
+            trees.set_synced(id.into(), Some(shape.clone()));
+        }
+        trees.set_local(id.into(), local_node(shape, ino));
+    }
+    trees.set_remote("p".into(), remote_node(dir(ROOT, "a")));
+    trees.set_remote("c".into(), remote_node(dir("p", "child")));
+    trees.set_remote("k".into(), remote_node(file(ROOT, "kept", server_digest)));
+    trees.settle();
+    let mut state = trees.state();
+    state.discarded.insert("f".into(), dir(ROOT, "a"));
+    state.discarded.insert("k".into(), file("f", "kept", 3));
+    let waiting = Waiting {
+        shape: Some(dir("p", "child")),
+        origin: Origin::Commit(7),
+    };
+    state.waiting.insert("c".into(), waiting);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    assert!(trees.reclaimed("f"));
+    trees
+}
+
+fn effects_on_k(trees: &Trees, commits: &Commits) -> Vec<String> {
+    let mut effects = Effects::default();
+    let mut ids = IdGen::new(9);
+    (effects
+        .plan(trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+        .iter())
+    .filter(|record| record.node == "k")
+    .map(|record| format!("{:?}", record.effect))
+    .collect()
+}
+
+#[test]
+fn a_reclaimed_folder_that_cannot_leave_s_yet_lets_go_of_the_server_entries_it_took_along() {
+    let mut trees = a_reclaimed_folder_that_took_along_a_server_file(3);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(7);
+    commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 1);
+    trees.settle();
+    assert_eq!(effects_on_k(&trees, &commits), Vec::<String>::new());
+    assert_eq!(trees.local().get("k").unwrap().shape, file("f", "kept", 3));
+}
+
+#[test]
+fn a_reclaimed_folder_keeps_the_server_entries_it_took_along_in_place_before_the_next_commit() {
+    let trees = a_reclaimed_folder_that_took_along_a_server_file(3);
+    assert_eq!(
+        effects_on_k(&trees, &Commits::default()),
+        Vec::<String>::new()
+    );
+}
+
 fn reclaim_with_waiting(
     synced: &[(&str, Shape)],
     remote: &[(&str, Shape)],
@@ -3428,4 +3509,206 @@ fn a_file_the_user_moves_out_after_it_arrived_in_a_server_folder_in_a_discarded_
         trees.local().get("c").unwrap().shape,
         file(ROOT, "moved", 5)
     );
+}
+
+#[test]
+fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_takes_the_servers_edit_instead_of_being_created_again()
+ {
+    let mut trees = a_reclaimed_folder_that_took_along_a_server_file(4);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(7);
+    commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 1);
+    trees.settle();
+
+    assert!(trees.synced().get("f").is_some());
+    trees.set_remote("p".into(), remote_node(dir(ROOT, "b")));
+    let mut p = trees.local().get("f").unwrap().clone();
+    p.shape = dir(ROOT, "b");
+    p.identity.ino = 10;
+    trees.set_local("p".into(), p);
+    trees.set_synced("p".into(), Some(dir(ROOT, "b")));
+    let mut c = trees.local().get("c").unwrap().clone();
+    c.shape = dir("p", "child");
+    trees.set_local("c".into(), c);
+    trees.set_synced("c".into(), Some(dir("p", "child")));
+    trees.settle();
+    let first = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 1)
+        .cloned();
+    for q in commits.questions().to_vec() {
+        commits.decide(&q.id, Answer::Publish);
+    }
+    let next = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 1)
+        .cloned();
+    for sent in [first, next].into_iter().flatten() {
+        assert!(!sent.ops.iter().any(|op| matches!(&op.op,
+            Some(op::Op::CreateFile(f)) if f.content.as_ref().is_some_and(|c| c.manifest_digest == vec![3; 32])
+        )), "unchanged server bytes are uploaded as a new local file: {sent:?}");
+    }
+}
+
+#[test]
+fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_stays_in_it_while_the_server_edits_it()
+ {
+    let mut trees = a_reclaimed_folder_that_took_along_a_server_file(4);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 7,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(7);
+    commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 1);
+    let mut effects = Effects::default();
+    let (mut sent, mut done) = (Vec::new(), Vec::new());
+    for ino in 100..200 {
+        trees.settle();
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        (effects.done(
+            &mut trees,
+            commits.in_flight(),
+            &record.effect_id,
+            Some(identity),
+        ))
+        .unwrap();
+        done.push((record.node, record.effect));
+    }
+    assert!(
+        !done.iter().any(|(_, effect)| matches!(effect,
+            Effect::RemoveFile { displaced } if displaced.identity.ino == 3
+        )),
+        "{done:?}"
+    );
+    let k = trees.local().get("k").unwrap();
+    assert_eq!((k.shape.clone(), k.identity.ino), (file("f", "kept", 3), 3));
+    assert!(sent.contains(&("move", "k".to_owned())), "{sent:?}");
+    assert!(sent.iter().all(|(op, _)| *op != "create file"), "{sent:?}");
+}
+
+fn one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(
+    files: usize,
+) -> std::time::Duration {
+    let names: Vec<String> = (0..files).map(|i| format!("y{i}")).collect();
+    let server: Vec<(&str, Shape)> = std::iter::once(("x", dir(ROOT, "server")))
+        .chain(names.iter().map(|name| (name.as_str(), file("x", name, 9))))
+        .collect();
+    let local: Vec<(&str, Shape)> = std::iter::once(("f", dir(ROOT, "new")))
+        .chain(server.iter().cloned())
+        .collect();
+    let mut trees = trees(&local, &server);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let started = std::time::Instant::now();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let planned = Effects::default()
+        .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+        .to_vec();
+    let took = started.elapsed();
+    assert!(
+        planned.iter().any(|record| record.node == "x"),
+        "{planned:?}"
+    );
+    took
+}
+
+#[test]
+fn a_server_folder_a_discard_took_along_is_planned_in_linear_time_once_the_rules_let_it_in() {
+    let (two_hundred, two_thousand) = (
+        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(200),
+        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(2000),
+    );
+    assert!(
+        two_thousand < two_hundred * 30,
+        "a build and a plan with 2,000 taken-along files took {two_thousand:?}, and with 200 {two_hundred:?}"
+    );
+}
+
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(
+    lift_after_effects: bool,
+) {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("g", dir("f", "sub")),
+            ("e", file("g", "e", 4)),
+            ("x", file(ROOT, "server", 9)),
+        ],
+        &[("x", file(ROOT, "server", 9))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_local("n".into(), local_node(file("f", "n", 6), 99));
+    trees.settle();
+    assert!(trees.reclaimed("f"));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.remove_local("n");
+    trees.settle();
+    assert!(!trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    let mut done = Vec::new();
+    if lift_after_effects {
+        done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    }
+    trees.set_rules(&[] as &[&str], None);
+    done.extend(run_effects(
+        &mut effects,
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        200,
+    ));
+    assert!(commits.questions().is_empty());
+    assert!(trees.local().get("f").is_none(), "{done:?}");
+    assert_eq!(
+        trees.local().get("x").unwrap().shape,
+        file(ROOT, "server", 9)
+    );
+}
+
+#[test]
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in_before_the_effects_run()
+ {
+    a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(false);
+}
+
+#[test]
+fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in_after_the_effects_run()
+{
+    a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(true);
 }

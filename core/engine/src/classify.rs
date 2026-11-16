@@ -2,7 +2,7 @@
 
 //! Classifying a node (docs/design/sync-engine.md section 2.3) and the dirty set the planner reads.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_ignore::Status;
@@ -408,6 +408,8 @@ pub struct Trees {
     ready: BTreeSet<NodeId>,
     others: BTreeSet<NodeId>,
     keeping: RefCell<Keeping>,
+    letting_go: Cell<bool>,
+    reclaimed_this_pass: RefCell<Option<HashMap<NodeId, bool>>>,
     /// Nodes whose S position neither placed L nor R holds, which [`Trees::settle`] tries to
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
@@ -492,6 +494,8 @@ impl Trees {
             ready: BTreeSet::new(),
             others: BTreeSet::new(),
             keeping: RefCell::default(),
+            letting_go: Cell::default(),
+            reclaimed_this_pass: RefCell::default(),
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
@@ -787,6 +791,7 @@ impl Trees {
     }
 
     fn mark(&mut self, id: &str) {
+        self.forget_reclaims();
         self.dirty.insert(id.to_owned());
         self.uncreate(id);
         self.others.insert(id.to_owned());
@@ -1689,6 +1694,7 @@ impl Trees {
     /// a scan reads it again ([`Trees::set_rules_known`]) or L no longer holds it. Meanwhile nothing is planned for a
     /// node below it ([`Trees::held`]).
     pub fn set_rules_unknown(&mut self, id: &str) {
+        self.forget_reclaims();
         if id == self.l.root || self.l.get(id).is_some() {
             self.unknown_rules.insert(id.to_owned());
         }
@@ -1707,6 +1713,7 @@ impl Trees {
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
     /// questions), which stay on disk as they are until the person answers.
     pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
+        self.forget_reclaims();
         self.asked = asked;
     }
 
@@ -1797,7 +1804,80 @@ impl Trees {
     }
 
     pub(crate) fn is_discarded(&self, id: &str) -> bool {
-        self.discarded.contains_key(id) && self.left_as_discarded(id) && !self.reclaimed(id)
+        self.discarded.contains_key(id)
+            && !self.no_longer_taken_along(id)
+            && self.left_as_discarded(id)
+            && !self.reclaimed(id)
+    }
+
+    fn no_longer_taken_along(&self, id: &str) -> bool {
+        if self.letting_go.replace(true) {
+            return false;
+        }
+        let gone = self.taken_along_is_the_users(id);
+        self.letting_go.set(false);
+        gone
+    }
+
+    fn taken_along_is_the_users(&self, id: &str) -> bool {
+        let Some(kept) = self.discarded.get(id).filter(|_| self.r.get(id).is_some()) else {
+            return false;
+        };
+        let mut parent = &kept.parent;
+        for _ in 0..=self.discarded.len() {
+            if self.reclaimed_in_this_pass(parent) {
+                return true;
+            }
+            match (self.discarded.get(parent)).filter(|_| self.r.get(parent).is_some()) {
+                Some(kept) => parent = &kept.parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    fn reclaimed_in_this_pass(&self, id: &str) -> bool {
+        if !self.keeping.borrow().open.is_empty() {
+            return self.reclaimed(id);
+        }
+        let known =
+            (self.reclaimed_this_pass.borrow().as_ref()).and_then(|pass| pass.get(id).copied());
+        if let Some(reclaimed) = known {
+            return reclaimed;
+        }
+        let reclaimed = self.reclaimed(id);
+        if let Some(pass) = self.reclaimed_this_pass.borrow_mut().as_mut() {
+            pass.insert(id.to_owned(), reclaimed);
+        }
+        reclaimed
+    }
+
+    pub(crate) fn in_one_pass<T>(&self, pass: impl FnOnce() -> T) -> T {
+        struct Ends<'a>(&'a RefCell<Option<HashMap<NodeId, bool>>>);
+        impl Drop for Ends<'_> {
+            fn drop(&mut self) {
+                self.0.take();
+            }
+        }
+        if self.reclaimed_this_pass.borrow().is_some() {
+            return pass();
+        }
+        *self.reclaimed_this_pass.borrow_mut() = Some(HashMap::new());
+        let _ends = Ends(&self.reclaimed_this_pass);
+        pass()
+    }
+
+    pub(crate) fn in_one_build<T>(&mut self, build: impl FnOnce(&mut Self) -> T) -> T {
+        *self.reclaimed_this_pass.get_mut() = Some(HashMap::new());
+        let built = build(self);
+        *self.reclaimed_this_pass.get_mut() = None;
+        built
+    }
+
+    fn forget_reclaims(&mut self) {
+        if let Some(pass) = self.reclaimed_this_pass.get_mut() {
+            pass.clear();
+        }
     }
 
     fn left_as_discarded(&self, id: &str) -> bool {
@@ -1915,6 +1995,7 @@ impl Trees {
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {
+        self.forget_reclaims();
         let mut below = vec![id.to_owned()];
         while let Some(id) = below.pop() {
             below.extend(self.discarded.children(&id).cloned());
@@ -1959,6 +2040,7 @@ impl Trees {
     }
 
     pub(crate) fn rekey_discarded(&mut self, from: &str, to: &str) {
+        self.forget_reclaims();
         if let Some(shape) = self.discarded.remove(from) {
             self.unsort(to);
             self.discarded.insert(to.to_owned(), shape);
@@ -1980,6 +2062,7 @@ impl Trees {
         ids: impl IntoIterator<Item = NodeId>,
         shown: &BTreeMap<NodeId, Shape>,
     ) {
+        self.forget_reclaims();
         for id in ids {
             if self.end_local_claim(&id) {
                 self.mark(&id);
@@ -1992,6 +2075,7 @@ impl Trees {
     }
 
     pub(crate) fn discard_server_entries_below(&mut self, shown: &BTreeMap<NodeId, Shape>) {
+        self.forget_reclaims();
         let mut kept = Vec::new();
         for folder in shown.keys() {
             for child in self.local_children(folder) {
@@ -2078,29 +2162,51 @@ impl Trees {
         }
         let left: BTreeSet<NodeId> = left.into_iter().collect();
         let released: BTreeSet<&NodeId> = reclaimed.difference(&left).collect();
-        let kept_with_released: Vec<NodeId> = (self.discarded.iter())
-            .filter(|(id, _)| self.r.get(id).is_some())
-            .filter(|(_, shape)| {
-                let mut parent = Some(&shape.parent);
+        let kept_with_reclaimed: Vec<(NodeId, Shape, bool)> = (self.discarded.iter())
+            .filter_map(|(id, kept)| {
+                let remote = self.r.get(id)?;
+                let mut parent = Some(&kept.parent);
                 for _ in 0..=self.discarded.len() {
                     match parent {
-                        Some(dir) if released.contains(dir) => return true,
+                        Some(dir) if reclaimed.contains(dir) => {
+                            let base = Shape {
+                                content: kept.content.clone(),
+                                ..remote.shape.clone()
+                            };
+                            return Some((id.clone(), base, released.contains(dir)));
+                        }
                         Some(dir) if self.r.get(dir).is_some() => {
                             parent = self.discarded.get(dir).map(|shape| &shape.parent)
                         }
-                        _ => return false,
+                        _ => return None,
                     }
                 }
-                false
+                None
             })
-            .map(|(id, _)| id.clone())
             .collect();
-        for id in kept_with_released {
-            self.discarded.remove(&id);
+        let mut bases: Vec<(NodeId, Shape)> = Vec::new();
+        for (id, base, released) in kept_with_reclaimed {
+            if released {
+                self.discarded.remove(&id);
+            }
+            if self.s.get(&id).is_none() && !self.waiting.contains_key(&id) {
+                bases.push((id, base));
+            }
+        }
+        loop {
+            let before = bases.len();
+            bases.retain(|(id, base)| !self.set_synced_if_valid(id.clone(), Some(base.clone())));
+            if bases.len() == before {
+                break;
+            }
+        }
+        for (id, base) in bases {
+            self.wait(id, Some(base), Origin::Other);
         }
         for id in released {
             self.discarded.remove(id);
         }
+        self.forget_reclaims();
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);
         (self.discarded)
             .retain(|id| l.get(id).is_some() || s.get(id).is_some() || waiting.contains_key(id));
@@ -4080,6 +4186,7 @@ impl Trees {
     }
 
     fn set_synced_unmarked(&mut self, id: &str, shape: Option<Shape>) {
+        self.forget_reclaims();
         self.waiting.remove(id);
         if shape.is_some() {
             self.forgotten_shapes.remove(id);
@@ -4292,6 +4399,8 @@ impl Trees {
             ready: _,
             others: _,
             keeping: _,
+            letting_go: _,
+            reclaimed_this_pass: _,
             orphaned: _,
             remote_rules_files: _,
         } = self;

@@ -325,6 +325,17 @@ impl Effects {
         now_ms: u64,
         limit: BatchLimit,
     ) -> &[EffectRecord] {
+        trees.in_one_pass(|| self.plan_in_one_pass(trees, in_flight, ids, now_ms, limit))
+    }
+
+    fn plan_in_one_pass(
+        &mut self,
+        trees: &Trees,
+        in_flight: Option<&InFlight>,
+        ids: &mut IdGen,
+        now_ms: u64,
+        limit: BatchLimit,
+    ) -> &[EffectRecord] {
         if !self.in_flight.is_empty() || !trees.rules_known() || limit.effects == 0 {
             return &[];
         }

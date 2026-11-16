@@ -1188,6 +1188,25 @@ fn revive(
     revived
 }
 
+fn release_taken_along(kept_with: &mut BTreeMap<String, Shape>, revived: &BTreeSet<String>) {
+    let released: Vec<String> = (kept_with.iter())
+        .filter(|(_, shape)| {
+            let mut folder = &shape.parent;
+            for _ in 0..=kept_with.len() {
+                match kept_with.get(folder) {
+                    Some(kept) => folder = &kept.parent,
+                    None => return revived.contains(folder),
+                }
+            }
+            false
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in released {
+        kept_with.remove(&id);
+    }
+}
+
 type Position = (String, String);
 
 fn closes_a_cycle(trees: &Trees, id: &str, parent: &str) -> bool {
@@ -1681,23 +1700,6 @@ fn run_ignoring_answering_after(
                 revived_once.remove(id);
                 sent_nodes.remove(id);
             }
-            let answered_again: Vec<String> = (kept_with.iter())
-                .filter(|(_, shape)| {
-                    let mut parent = Some(&shape.parent);
-                    for _ in 0..=kept_with.len() {
-                        match parent {
-                            Some(folder) if shown.contains_key(folder) => return true,
-                            Some(folder) => parent = kept_with.get(folder).map(|shape| &shape.parent),
-                            None => return false,
-                        }
-                    }
-                    false
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in answered_again {
-                kept_with.remove(&id);
-            }
             let mut taken = BTreeMap::new();
             for folder in shown.keys() {
                 for child in device.trees.local_children(folder) {
@@ -1710,7 +1712,9 @@ fn run_ignoring_answering_after(
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
-        revived_once.extend(revive(&device, &discarded, &kept_with));
+        let revived = revive(&device, &discarded, &kept_with);
+        release_taken_along(&mut kept_with, &revived);
+        revived_once.extend(revived);
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
             .cloned();
