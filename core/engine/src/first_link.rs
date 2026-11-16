@@ -151,7 +151,9 @@ pub(crate) fn adopt_around(
                 )
             };
             let in_trash = (trashed.get(&key)).filter(|_| !remote.contains_key(&key));
-            let in_trash = in_trash.and_then(|ids| only(ids.iter().filter(now)));
+            let in_trash = in_trash.and_then(|ids| {
+                only((ids.iter().filter(now)).filter(|remote_id| !trees.is_removed_here(remote_id)))
+            });
             let found = (remote.get(&key).filter(now))
                 .or_else(|| pending_match.filter(now))
                 .or(in_trash)

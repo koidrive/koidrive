@@ -3722,3 +3722,36 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert!(trees.local().get("new").is_none());
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
 }
+
+#[test]
+fn a_new_folder_at_the_name_of_a_folder_this_device_deleted_is_created_beside_the_trash() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("n", dir("a", "b")),
+            ("m", dir("n", "m")),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "b".into()),
+            ("delete", "b".into()),
+            ("create dir", "n".into()),
+            ("create dir", "m".into())
+        ]
+    );
+}
