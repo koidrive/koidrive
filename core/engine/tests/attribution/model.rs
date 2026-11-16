@@ -405,7 +405,23 @@ pub enum Rules {
     HeldPositionFixes,
 }
 
+const DROPPED: [Rules; 6] = [
+    Rules::TrashedRecordProves,
+    Rules::SupersededDeleteGivesUp,
+    Rules::DeleteDropsResends,
+    Rules::StaleTrashProves,
+    Rules::RevivalMarksPosition,
+    Rules::CopiesOwnBase,
+];
+
 impl Rules {
+    fn weakens(self, rule: Rules) -> bool {
+        if matches!(self, Rules::Main | Rules::OldServer | Rules::OldDeleter) {
+            return false;
+        }
+        DROPPED.contains(&rule) != (self == rule)
+    }
+
     fn old_server(self) -> bool {
         matches!(self, Rules::OldServer | Rules::BoundOnlyResendsSeen)
     }
@@ -838,7 +854,7 @@ impl World {
                 dev.lost_position = None;
                 let resent = |author: Option<Author>| {
                     author.filter(|&author| {
-                        author == Author::Other && rules != Rules::DeleteDropsResends
+                        author == Author::Other && !rules.weakens(Rules::DeleteDropsResends)
                     })
                 };
                 dev.unsent = Unsent {
@@ -861,7 +877,7 @@ impl World {
                 let mut node = w.server.node();
                 w.server.restored.extend(node.trashed.take());
                 node.meta_rev = seq;
-                if rules == Rules::RevivalMarksPosition {
+                if rules.weakens(Rules::RevivalMarksPosition) {
                     node.meta_edit_rev = seq;
                     node.meta_editor = Some(d);
                 }
@@ -1084,12 +1100,12 @@ impl World {
                     }
                     if node.pos == to {
                         if node.meta_edit_rev < node.meta_rev {
-                            node.meta_edit_rev = if rules == Rules::ClaimAtSeq || rules.old_server()
-                            {
-                                seq
-                            } else {
-                                node.meta_rev
-                            };
+                            node.meta_edit_rev =
+                                if rules.weakens(Rules::ClaimAtSeq) || rules.old_server() {
+                                    seq
+                                } else {
+                                    node.meta_rev
+                                };
                             node.meta_editor = Some(d);
                         }
                         Code::Applied
@@ -1139,7 +1155,7 @@ impl World {
                         revives(content)?;
                         node.trashed = None;
                         node.meta_rev = seq;
-                        if rules == Rules::RevivalMarksPosition {
+                        if rules.weakens(Rules::RevivalMarksPosition) {
                             node.meta_edit_rev = seq;
                             node.meta_editor = Some(d);
                         }
@@ -1150,11 +1166,12 @@ impl World {
                         Code::Applied
                     } else if node.content == content {
                         if node.edit_rev < node.content_rev {
-                            node.edit_rev = if rules == Rules::ClaimAtSeq || rules.old_server() {
-                                seq
-                            } else {
-                                node.content_rev
-                            };
+                            node.edit_rev =
+                                if rules.weakens(Rules::ClaimAtSeq) || rules.old_server() {
+                                    seq
+                                } else {
+                                    node.content_rev
+                                };
                             node.editor = Some(d);
                         }
                         Code::Applied
@@ -1220,8 +1237,9 @@ impl World {
         let covered = self.covers(d, rules);
         let dev = &mut self.devices[d];
         let r = dev.r;
-        if r.trashed.is_some() && rules != Rules::TrashedRecordProves {
-            let settled = (dev.flight.is_none() || rules == Rules::StaleTrashProves) && covered;
+        if r.trashed.is_some() && !rules.weakens(Rules::TrashedRecordProves) {
+            let settled =
+                (dev.flight.is_none() || rules.weakens(Rules::StaleTrashProves)) && covered;
             if let (Local::Gone(_), Some(author), true) = (dev.l, dev.unsent.existence, settled) {
                 dev.s.live = false;
                 dev.s.exist_seq = dev.seen.len() as Seq;
@@ -1333,7 +1351,7 @@ impl World {
                 (Op::Create { pos, .. }, _) => dev.take_refused_create(pos, rules, made_here),
                 (_, Code::Rejected) => {}
                 (Op::Delete { .. }, Code::Superseded)
-                    if rules != Rules::SupersededDeleteGivesUp => {}
+                    if !rules.weakens(Rules::SupersededDeleteGivesUp) => {}
                 (Op::Move { to, .. }, Code::Applied | Code::Renamed(_))
                     if matches!(dev.l, Local::Gone(_)) =>
                 {
@@ -1689,7 +1707,7 @@ impl World {
                             }
                         }
                         Some(Author::Own)
-                            if rules != Rules::CopiesOwnBase && {
+                            if !rules.weakens(Rules::CopiesOwnBase) && {
                                 let mut at = local;
                                 let mut based = false;
                                 for _ in 0..self.values.len() {
@@ -1814,7 +1832,7 @@ impl World {
                     && !kept(old.seq)
                     && listing.get(field) != old.val
                     && (!rules.bound_only() || kept(listing.rev(field)) || earlier[slot(field)]);
-                if resend && rules != Rules::DeleteDropsResends {
+                if resend && !rules.weakens(Rules::DeleteDropsResends) {
                     dev.unsent.set(
                         field,
                         Some(if old.own { Author::Own } else { Author::Other }),
@@ -1982,7 +2000,7 @@ impl World {
         }
         let resends = !changed && (rules == Rules::LostCreateResends || !content_here);
         if pre.created {
-            dev.lost_position = (rules != Rules::NoLostPosition
+            dev.lost_position = (!rules.weakens(Rules::NoLostPosition)
                 && dev.unsent.position.is_none()
                 && pre.trashed.is_none()
                 && pre.pos != pos)
