@@ -778,6 +778,26 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// The mount points of other volumes inside the folder, relative to its root, as its scans last saw them.
+    pub fn volume_mounts(&self) -> Result<BTreeSet<PathBuf>> {
+        let mut stmt = self.0.prepare_cached("SELECT path FROM volume_mounts")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(PathBuf::from(OsStr::from_bytes(&row.get::<_, Vec<u8>>(0)?)))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_volume_mounts(&self, mounts: &BTreeSet<PathBuf>) -> Result<()> {
+        self.0.execute("DELETE FROM volume_mounts", [])?;
+        let mut stmt = self
+            .0
+            .prepare_cached("INSERT INTO volume_mounts (path) VALUES (?1)")?;
+        for path in mounts {
+            stmt.execute([path.as_os_str().as_bytes()])?;
+        }
+        Ok(())
+    }
+
     /// Every question, answered or not, oldest first.
     pub fn questions(&self) -> Result<Vec<StoredQuestion>> {
         let mut stmt = self.0.prepare_cached(

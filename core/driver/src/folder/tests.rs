@@ -7,6 +7,7 @@
 include!("tests/common.rs");
 include!("tests/conflict_questions.rs");
 include!("tests/device_counter_and_recovery.rs");
+include!("tests/ejected_volumes.rs");
 include!("tests/first_link_and_held_files.rs");
 include!("tests/ignored_entries_and_moves.rs");
 include!("tests/large_deletion_questions.rs");

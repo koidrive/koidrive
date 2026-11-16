@@ -690,11 +690,16 @@ impl Disk {
             .filter(|(_, stale)| !stale)
             .map(|(change, _)| change)
             .collect();
-        if !changes.is_empty() {
+        let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
+        if !changes.is_empty() || mounts.is_some() {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);
             store.transaction(|tx| -> Result<(), Stop> {
+                if let Some(mounts) = mounts {
+                    tx.set_volume_mounts(&mounts)?;
+                    engine.mounts = mounts;
+                }
                 engine.observe(&changes, now_ms);
                 Ok(engine.checkpoint(tx)?)
             })?;
@@ -1573,6 +1578,7 @@ fn displaced(displaced: &EngineDisplaced) -> Result<Displaced, String> {
             mtime_ns: i128::from(displaced.content.mtime_ns),
             executable: displaced.content.executable,
             linked: false,
+            mount_point: false,
         },
     })
 }

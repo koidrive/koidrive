@@ -75,6 +75,7 @@ pub struct Observation {
     /// platform watcher failed and a rescanning one took over. Rules known from before are stale then, since the new
     /// scans compare with no earlier rules and report no rules file as gone.
     pub all_rules: bool,
+    pub mounts: BTreeSet<PathBuf>,
 }
 
 /// The rules of the `.koiignore` file in `dir`, a folder relative to the root and empty for the root, or `None` when
@@ -653,6 +654,10 @@ impl Observer for FsObserver {
             busy: reads.busy,
             rules,
             all_rules: first,
+            mounts: (self.watcher.snapshot().entries.iter())
+                .filter(|(_, entry)| entry.mount_point)
+                .map(|(path, _)| path.clone())
+                .collect(),
         }))
     }
 
