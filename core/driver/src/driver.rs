@@ -1439,7 +1439,9 @@ impl Driver {
         let (questions, listing) = self.named_questions(runtime.is_some())?;
         if let (Some(runtime), Some(listing)) = (runtime, listing) {
             let listing = runtime.spawn(listing).abort_handle();
-            self.inner.devices.lock().unwrap().listing = Some(listing);
+            if let Some(earlier) = self.inner.devices.lock().unwrap().listing.replace(listing) {
+                earlier.abort();
+            }
         }
         Ok(questions)
     }
