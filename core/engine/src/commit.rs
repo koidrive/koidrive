@@ -4179,6 +4179,13 @@ impl Ends {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Lands {
+    Move,
+    Create(Kind),
+    Restore,
+}
+
 #[derive(Clone)]
 struct Entry {
     parent: NodeId,
@@ -4437,19 +4444,28 @@ impl<'a> Scratch<'a> {
             (self.parent(id).zip(self.name(id)))
                 .is_some_and(|(parent, name)| named.contains(&(parent, name_key(name))))
         };
-        let mut left: Vec<(&str, &str, &str, Option<Kind>)> = (wants.iter())
+        let positioned: BTreeSet<&str> = (wants.iter())
+            .filter_map(|want| match want {
+                Want::Move { id, .. } | Want::Create { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut left: Vec<(&str, &str, &str, Lands)> = (wants.iter())
             .filter_map(|want| match want {
                 Want::Move {
                     id, parent, name, ..
-                } => Some((id.as_str(), parent.as_str(), name.as_str(), None)),
+                } => Some((id.as_str(), parent.as_str(), name.as_str(), Lands::Move)),
                 Want::Create { id, shape, .. } => Some((
                     id.as_str(),
                     shape.parent.as_str(),
                     shape.name.as_str(),
-                    Some(shape.kind),
+                    Lands::Create(shape.kind),
                 )),
-                Want::Restore { op, .. } => (restored_at(self.trees, op))
-                    .map(|(parent, name, _)| (op.node_id.as_str(), parent, name, None)),
+                Want::Restore { op, .. } if !positioned.contains(op.node_id.as_str()) => {
+                    (restored_at(self.trees, op)).map(|(parent, name, _)| {
+                        (op.node_id.as_str(), parent, name, Lands::Restore)
+                    })
+                }
                 _ => None,
             })
             .collect();
@@ -4491,7 +4507,7 @@ impl<'a> Scratch<'a> {
                 }
                 let key = name_key(name);
                 match kind {
-                    Some(Kind::Dir) => {
+                    Lands::Create(Kind::Dir) => {
                         let holder = self.holders(to, name).find(|holder| {
                             !moved.contains(holder.as_str()) && self.kind(holder) == Some(Kind::Dir)
                         });
@@ -4500,11 +4516,15 @@ impl<'a> Scratch<'a> {
                             None => parents.insert(id, to),
                         };
                     }
-                    Some(Kind::File) => {
+                    Lands::Create(Kind::File) => {
                         parents.insert(id, to);
                     }
-                    None if inside(self, &parents, to, id) => return true,
-                    None => {
+                    Lands::Restore if inside(self, &parents, to, id) => {}
+                    Lands::Restore => {
+                        parents.insert(id, to);
+                    }
+                    Lands::Move if inside(self, &parents, to, id) => return true,
+                    Lands::Move => {
                         let stays = self.parent(id) == Some(to)
                             && self.name(id).is_some_and(|held| name_key(held) == key);
                         if self.live(id) && stays {
@@ -4520,7 +4540,7 @@ impl<'a> Scratch<'a> {
             }
         }
         for (id, to, _, kind) in left {
-            if kind.is_some() {
+            if kind != Lands::Move {
                 continue;
             }
             let to = aliases.get(to).copied().unwrap_or(to);
