@@ -15,15 +15,7 @@ use url::Url;
 
 use crate::secret::Secret;
 
-pub const CLIENT_ID: &str = "ba83f6f3a70d657a488265284052a549";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Audience {
-    TestAccount,
-    Everyone,
-}
-
-pub const CLIENT_AUDIENCE: Audience = Audience::TestAccount;
+pub const CLIENT_ID: &str = "6f1270857b9b3da60246032d40329971";
 
 /// The scopes `koi setup` needs (cli-setup.md section 3).
 pub const SCOPES: [&str; 4] = [

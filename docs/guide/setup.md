@@ -8,11 +8,11 @@ On a Mac, follow [Install and set up this Mac](macos.md#install-and-set-up-this-
 
 You need a Cloudflare account with R2 turned on ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)) and the [`koi` command](install.md).
 
-1. Deploy the server with the deploy button, or with `pnpm run deploy` in `server/`, as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes.
-2. Run `koi setup` and choose **I deployed a server**. Enter the server's address. Setup asks the server for a one-time claim code, which the server writes to the Worker's log.
-3. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code. Setup claims the server with this device and links `~/Koidrive` ([koi setup](koi-setup.md)).
+Run `koi setup` and choose **Log in with Cloudflare**. Setup logs in with your Cloudflare account, deploys a server to it and claims the server with this device, then links `~/Koidrive`. If the account already has a Koidrive server, setup adds this device to it. [koi setup](koi-setup.md#the-cloudflare-login-and-what-it-may-do) describes what the login may do. `koi server deploy --interactive` deploys and claims without linking a folder.
 
-To claim without questions, for example in a script:
+To deploy by hand instead, deploy with Wrangler as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes. Then run `koi setup` and choose **I deployed a server**. Enter the server's address. Setup asks the server for a one-time claim code, which the server writes to the Worker's log. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code.
+
+To claim a server you deployed by hand without questions, for example in a script:
 
 1. Open `<your server>/setup` in a browser. The server writes a one-time claim code, valid for one hour, to the Worker's log. Find it as in step 3 above.
 2. Claim the server with this device. Give the server's address, the claim code and your name:
@@ -53,20 +53,14 @@ koi space create Photos
 
 This prints the new space's ID. `koi folder link --space` finds a space by its name, so the server refuses a name you already use. Names are compared exactly after leading and trailing whitespace is removed, so `Photos` and `photos` are two names. `koi space list` lists your spaces with their IDs. Then [link a folder](folders.md#link-a-folder) to the space.
 
-## Set up with the Cloudflare login
-
-`koi server deploy --interactive` logs in with Cloudflare, deploys a server to your account, and claims it with this device. The Cloudflare login is in early access for members of the project's test account, so `koi setup` doesn't offer it. Everyone else deploys and claims the server as described above. The same login is behind `koi server add-device`, `upgrade` and `delete`. [koi setup](koi-setup.md#the-cloudflare-login-and-what-it-may-do) describes what the login may do.
-
 ## Upgrade the server
 
-With the Cloudflare login, run this on a terminal:
+Run this on a terminal:
 
 ```sh
 koi server upgrade --interactive
 ```
 
-It uploads the server version built into your `koi`. Without the login, upgrade as [Deploying and upgrading a Koidrive server](../deploy.md#upgrade) describes. Your files, devices and settings stay. Open sync sessions move to the new version within 5 minutes. The command stops if the server runs a newer release than your `koi`, or stores its data in a newer format. `--allow-downgrade` uploads anyway, but a server older than its data stops answering until a newer one replaces it.
-
-A server deployed with the deploy button deploys again whenever its repository changes, and that would replace the upgrade. The command warns you and asks first. Update that repository too, or answer no. `--yes` goes on without asking.
+It logs in with Cloudflare and uploads the server version built into your `koi`. To upgrade by hand with Wrangler, follow [Deploying and upgrading a Koidrive server](../deploy.md#upgrade). Your files, devices and settings stay. Open sync sessions move to the new version within 5 minutes. The command stops if the server runs a newer release than your `koi`, or stores its data in a newer format. `--allow-downgrade` uploads anyway, but a server older than its data stops answering until a newer one replaces it.
 
 Never go back to an older server version. Once a newer version has moved the server's stored data forward, an older one refuses to start.

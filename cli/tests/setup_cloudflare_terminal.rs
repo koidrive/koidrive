@@ -263,6 +263,7 @@ esac
             .env("TERM", "xterm-256color")
             .env("CLICOLOR_FORCE", "1")
             .env("NO_PROXY", "*")
+            .env("DISPLAY", ":0")
             .env("KOIDRIVE_TEST_SETUP_URL", self.base.as_str())
             .env("KOIDRIVE_TEST_SETUP_BUNDLE", self.path().join("bundle"))
             .env(
@@ -283,6 +284,9 @@ esac
             "http_proxy",
             "https_proxy",
             "all_proxy",
+            "SSH_CONNECTION",
+            "SSH_TTY",
+            "WAYLAND_DISPLAY",
         ] {
             command.env_remove(name);
         }
@@ -305,33 +309,32 @@ esac
     }
 
     fn run_steps(&self, rich: bool, browser: Browser, steps: &[(&str, String)]) -> String {
-        let page = self.path().join("browser-url");
-        if page.exists() {
-            fs::remove_file(page).unwrap();
+        let command = self.setup_command(rich, browser);
+        self.finish_run(rich, command, steps)
+    }
+
+    fn setup_command(&self, rich: bool, browser: Browser) -> Command {
+        for file in ["browser-url", "opener-ran"] {
+            let _ = fs::remove_file(self.path().join(file));
         }
-        if !matches!(browser, Browser::Missing) {
-            executable(
-                &self.path().join(if cfg!(target_os = "macos") {
-                    "bin/open"
-                } else {
-                    "bin/xdg-open"
-                }),
-                &format!(
-                    "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\nexit {}\n",
-                    if matches!(browser, Browser::Fails) {
-                        17
-                    } else {
-                        0
-                    }
-                ),
-            );
+        let opener = self.path().join(if cfg!(target_os = "macos") {
+            "bin/open"
+        } else {
+            "bin/xdg-open"
+        });
+        match browser {
+            Browser::Opens => {
+                executable(&opener, "printf '%s\\n' \"$1\" > \"$HOME/browser-url\"\n")
+            }
+            Browser::Fails => executable(&opener, ": > \"$HOME/opener-ran\"\nexit 17\n"),
+            Browser::Missing => {}
         }
         let mut command = self.command();
         command.args(["setup", "--interactive", "--no-app", "--name", "Laptop"]);
         if !rich {
             command.arg("--plain");
         }
-        self.finish_run(rich, command, steps)
+        command
     }
 
     fn finish_run(&self, rich: bool, command: Command, steps: &[(&str, String)]) -> String {
@@ -679,7 +682,7 @@ fn daemon(mut stream: UnixStream, paths: &Paths, state: &Mutex<State>) {
     writeln!(stream, "{response}").unwrap();
 }
 
-fn callback(page: &str) {
+fn authorized(page: &str) -> Url {
     let page = Url::parse(page).unwrap();
     assert_eq!(page.host_str(), Some("127.0.0.1"));
     let pairs: std::collections::HashMap<_, _> = page.query_pairs().into_owned().collect();
@@ -689,6 +692,11 @@ fn callback(page: &str) {
         .query_pairs_mut()
         .append_pair("state", &pairs["state"])
         .append_pair("code", "synthetic-code");
+    redirect
+}
+
+fn callback(page: &str) {
+    let redirect = authorized(page);
     let mut stream = TcpStream::connect(("127.0.0.1", redirect.port().unwrap())).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -751,6 +759,7 @@ fn terminal_with_stdout(
     let mut answered = 0;
     let mut seen = 0;
     let mut called_back = false;
+    let mut paste: Option<Url> = None;
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         let mut bytes = [0; 8192];
@@ -769,27 +778,44 @@ fn terminal_with_stdout(
         let raw_text = String::from_utf8_lossy(&raw);
         let text = console::strip_ansi_codes(&raw_text);
         if !called_back && let Some(home) = home {
-            let page = fs::read_to_string(home.join("browser-url"))
+            let opened = fs::read_to_string(home.join("browser-url"))
                 .ok()
-                .or_else(|| {
-                    text.split_whitespace()
-                        .find(|word| {
-                            word.starts_with("http://127.0.0.1:") && word.contains("/oauth2/auth?")
-                        })
-                        .map(str::to_owned)
-                });
-            if let Some(page) = page.filter(|page| !page.trim().is_empty()) {
-                if let Some(signal) = interrupt {
+                .filter(|page| !page.trim().is_empty());
+            let printed = text
+                .split_whitespace()
+                .find(|word| {
+                    word.starts_with("http://127.0.0.1:") && word.contains("/oauth2/auth?")
+                })
+                .map(str::to_owned);
+            match (interrupt, opened, printed) {
+                (Some(signal), opened, printed) if opened.is_some() || printed.is_some() => {
                     rustix::process::kill_process(
                         rustix::process::Pid::from_child(&child.0),
                         signal,
                     )
                     .unwrap();
-                } else {
-                    callback(page.trim());
+                    called_back = true;
                 }
-                called_back = true;
+                (None, Some(page), _) => {
+                    callback(page.trim());
+                    called_back = true;
+                }
+                (None, None, Some(page)) if text.contains("fails to load") => {
+                    paste = Some(authorized(&page));
+                    called_back = true;
+                }
+                _ => {}
             }
+        }
+        if let Some(address) = &paste
+            && let Some(at) = text.find("fails to load")
+            && ["Callback address", "Address"]
+                .iter()
+                .any(|prompt| text[at..].contains(prompt))
+        {
+            std::thread::sleep(Duration::from_millis(50));
+            master.write_all(format!("{address}\r").as_bytes()).unwrap();
+            paste = None;
         }
         if let Some((question, answer)) = steps.get(answered)
             && let Some(at) = text.get(seen..).and_then(|text| text.find(question))
@@ -2002,9 +2028,15 @@ fn browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url() {
         for rich in [true, false] {
             let home = Home::new(&[], &[]);
             let text = home.run(rich, browser, &[(ROUTE, 0), (CONSENT, 0)]);
+            assert!(text.contains("Couldn't open your browser."), "{text}");
+            assert!(text.contains("Open this page on any device:"), "{text}");
             assert!(
-                text.contains("Couldn't open your browser. Open this page:"),
+                text.contains("copy the address of the page that fails to load"),
                 "{text}"
+            );
+            assert_eq!(
+                home.path().join("opener-ran").exists(),
+                matches!(browser, Browser::Fails)
             );
             assert!(
                 text.contains(home.base.join("oauth2/auth").unwrap().as_str()),
@@ -2017,6 +2049,106 @@ fn browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url() {
             );
         }
     }
+}
+
+#[test]
+fn a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on() {
+    let mut screens = vec![
+        ("SSH_CONNECTION", Some("192.0.2.1 50000 192.0.2.2 22")),
+        ("SSH_TTY", Some("/dev/pts/0")),
+    ];
+    if !cfg!(target_os = "macos") {
+        screens.push(("DISPLAY", None));
+    }
+    for (name, value) in screens {
+        for rich in [true, false] {
+            let home = Home::new(&[], &[]);
+            let mut command = home.setup_command(rich, Browser::Fails);
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+            let text = home.finish_run(
+                rich,
+                command,
+                &[(ROUTE, pick(rich, 0)), (CONSENT, consent(rich))],
+            );
+            assert!(!home.path().join("opener-ran").exists(), "{name}: {text}");
+            assert!(
+                !text.contains("Couldn't open your browser"),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("Open this page on any device:"),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("Setup complete. Add files to ~/Koidrive."),
+                "{name}: {text}"
+            );
+            assert_eq!(home.state.lock().unwrap().links.len(), 1, "{name}: {text}");
+        }
+    }
+    let home = Home::new(&[], &[]);
+    home.setup_command(false, Browser::Fails);
+    let mut command = home.command();
+    command
+        .args(["server", "deploy", "--interactive", "--name", "Laptop"])
+        .env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+    let output = terminal(command, &[], Some(home.path()));
+    let text = console::strip_ansi_codes(&String::from_utf8(output.stdout).unwrap()).into_owned();
+    assert!(output.status.success(), "{text}");
+    assert!(!home.path().join("opener-ran").exists(), "{text}");
+    assert!(
+        text.contains("Open this page on any device, log in with Cloudflare and select Authorize:"),
+        "{text}"
+    );
+    assert!(home.paths().credential().exists(), "{text}");
+}
+
+#[test]
+fn json_output_never_opens_a_browser_and_names_the_login_commands() {
+    let home = Home::new(&[], &[]);
+    home.setup_command(false, Browser::Fails);
+    for ssh in [false, true] {
+        let mut command = home.command();
+        command.args(["setup", "--json", "--no-app"]);
+        if ssh {
+            command.env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let commands: Vec<Vec<&str>> = envelope["data"]["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| {
+                choice["argv"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|arg| arg.as_str().unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(commands[0], ["koi", "server", "deploy", "--interactive"]);
+        assert_eq!(
+            commands[1],
+            ["koi", "server", "add-device", "--interactive"]
+        );
+        let mut command = home.command();
+        command.args(["server", "deploy", "--json"]);
+        if ssh {
+            command.env("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["error"]["code"], "auth_required");
+    }
+    assert!(!home.path().join("opener-ran").exists());
+    assert!(home.state.lock().unwrap().requests.is_empty());
 }
 
 #[test]

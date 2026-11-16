@@ -79,34 +79,23 @@ fn interactive_asks_for_the_guide_and_fails_without_terminals() {
 }
 
 #[test]
-fn setup_lists_the_cloudflare_login_only_where_it_works() {
-    let argv = |cloudflare_login| -> Vec<String> {
-        choices(cloudflare_login)
-            .iter()
-            .map(|choice| choice.argv.join(" "))
-            .collect()
-    };
+fn setup_offers_the_cloudflare_login_first() {
+    let argv: Vec<String> = choices()
+        .iter()
+        .map(|choice| choice.argv.join(" "))
+        .collect();
     assert_eq!(
-        argv(false),
+        argv,
         [
-            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
-            "koi join <CODE>",
-            "koi setup --interactive",
-        ]
-    );
-    assert_eq!(
-        argv(true),
-        [
-            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
-            "koi join <CODE>",
             "koi server deploy --interactive",
             "koi server add-device --interactive",
+            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
+            "koi join <CODE>",
             "koi setup --interactive",
         ]
     );
-    assert_eq!(Route::all(false), [Route::Deployed, Route::Pairing]);
     assert_eq!(
-        Route::all(true),
+        Route::ALL,
         [Route::Cloudflare, Route::Deployed, Route::Pairing]
     );
 }

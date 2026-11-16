@@ -24,12 +24,20 @@ use crate::terminal::{Progress, Terminal, read_line};
 const DEFAULT_FOLDER: &str = "Koidrive";
 
 /// The ways to set up this machine, which `koi setup` lists when it does not guide.
-pub(super) fn choices(cloudflare_login: bool) -> Vec<Choice> {
+pub(super) fn choices() -> Vec<Choice> {
     let choice = |argv: &[&str], description| Choice {
         argv: Next::of(argv).argv,
         description,
     };
-    let mut choices = vec![
+    vec![
+        choice(
+            &["koi", "server", "deploy", "--interactive"],
+            "Log in with Cloudflare and deploy a server to your account",
+        ),
+        choice(
+            &["koi", "server", "add-device", "--interactive"],
+            "Log in with Cloudflare and add this device to the server there, without a pairing code",
+        ),
         choice(
             &[
                 "koi",
@@ -46,24 +54,11 @@ pub(super) fn choices(cloudflare_login: bool) -> Vec<Choice> {
             &["koi", "join", "<CODE>"],
             "Join a server with a pairing code from a device that is already signed in",
         ),
-    ];
-    if cloudflare_login {
-        choices.extend([
-            choice(
-                &["koi", "server", "deploy", "--interactive"],
-                "Log in with Cloudflare and deploy a server to your account",
-            ),
-            choice(
-                &["koi", "server", "add-device", "--interactive"],
-                "Log in with Cloudflare and add this device to the server there, without a pairing code",
-            ),
-        ]);
-    }
-    choices.push(choice(
-        &["koi", "setup", "--interactive"],
-        "Choose in the guided setup, on a terminal",
-    ));
-    choices
+        choice(
+            &["koi", "setup", "--interactive"],
+            "Choose in the guided setup, on a terminal",
+        ),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,14 +69,7 @@ pub(super) enum Route {
 }
 
 impl Route {
-    pub(super) fn all(cloudflare_login: bool) -> Vec<Route> {
-        let mut routes = Vec::new();
-        if cloudflare_login {
-            routes.push(Route::Cloudflare);
-        }
-        routes.extend([Route::Deployed, Route::Pairing]);
-        routes
-    }
+    pub(super) const ALL: [Route; 3] = [Route::Cloudflare, Route::Deployed, Route::Pairing];
 
     fn label(self) -> &'static str {
         match self {
@@ -114,7 +102,7 @@ pub async fn setup(
     }
     if mode == Mode::Direct {
         not_set_up(paths)?;
-        let choices = choices(super::cloudflare_login());
+        let choices = choices();
         let mut text = "Set up Koidrive on this machine with one of these commands:\n".to_owned();
         for choice in &choices {
             text.push_str(&format!(
@@ -165,15 +153,14 @@ async fn connect(
     verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<(), CliError> {
-    let routes = Route::all(super::cloudflare_login());
-    let labels = routes
+    let labels = Route::ALL
         .iter()
         .map(|route| route.label().to_owned())
         .collect();
     let route = terminal
         .select("How do you want to connect?", labels)
         .await?;
-    match routes.get(route) {
+    match Route::ALL.get(route) {
         Some(Route::Cloudflare) => {
             crate::telemetry::set_flow(SetupFlow::Cloudflare);
             bundled()?;

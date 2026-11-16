@@ -1,17 +1,18 @@
 # koi setup
 
-`koi setup` sets up this machine in one run: it connects to a server, signs this machine in as a device, and links a folder. Deploy your server first, as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes.
+`koi setup` sets up this machine in one run: it connects to a server, signs this machine in as a device, and links a folder. With no server yet, it deploys one to your Cloudflare account.
 
 ## Connect this device and link a folder
 
 On a terminal, `koi setup` asks **How do you want to connect?** Use the arrow keys and Enter:
 
-1. **I deployed a server.** Enter your server's address, such as `https://koidrive.alice.workers.dev`.
+1. **Log in with Cloudflare.** Setup opens the Cloudflare login in your browser. Select the account for Koidrive and select **Authorize**. With no Koidrive server in that account, setup deploys one and claims it, and this device becomes your first device. With one, setup adds this device to it, and with several, it asks which one. [The Cloudflare login and what it may do](#the-cloudflare-login-and-what-it-may-do) describes the login.
+2. **I deployed a server** by hand with Wrangler, as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes. Enter your server's address, such as `https://koidrive.alice.workers.dev`.
    - A new server has no owner yet. Setup asks it for a one-time claim code, which the server writes to its Worker's log. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code at **Claim code**. Setup claims the server, and this device becomes your first device. Your name on the server is your login name. If the code is wrong or has expired, setup asks again.
    - If setup stops while it claims the server, run it again within the hour and enter the same code. Setup finishes the claim.
    - If the server already has an owner, setup asks for a pairing code. On a signed-in device, run `koi device invite`, or open **Settings**, **Account**, **Add a Device…** in the macOS app. If no signed-in device is left, [add a device with a recovery key](../deploy.md#if-you-lose-every-device).
    - If setup can't reach the address, or it isn't a Koidrive server, setup asks again.
-2. **Enter a pairing code** from another device, written as `<code>@<host>`. On that device, run `koi device invite`. For a code without the host, choose **I deployed a server** and enter the server's address first.
+3. **Enter a pairing code** from another device, written as `<code>@<host>`. On that device, run `koi device invite`. For a code without the host, choose **I deployed a server** and enter the server's address first.
 
 Setup uses `~/Koidrive` for your files:
 
@@ -71,13 +72,15 @@ If opening the browser fails, the command prints the full address to open. If no
 
 Without a terminal on stdin and stderr, with `--json`, or with the `CI` environment variable set, `koi setup` asks nothing. Unless `--folder` asks for a scripted setup, it lists the setup commands and exits 0. With `--json` they are in `data.choices` and `next_commands`:
 
-- `koi server claim <server-url> <code> --user <name>` claims the server you deployed. Open `<server-url>/setup` first, then find the code in the Worker's log.
+- `koi server deploy --interactive` logs in with Cloudflare, deploys a server and claims it.
+- `koi server add-device --interactive` logs in with Cloudflare and adds this device to the server in the account.
+- `koi server claim <server-url> <code> --user <name>` claims a server you deployed by hand. Open `<server-url>/setup` first, then find the code in the Worker's log.
 - `koi join <code>` signs this device in with a pairing code.
 - `koi setup --interactive` runs the guided setup on a terminal.
 
 ## The Cloudflare login and what it may do
 
-`koi server deploy --interactive` and `koi server add-device --interactive` log in with Cloudflare. The login works only for members of the project's test account ([Set up with the Cloudflare login](setup.md#set-up-with-the-cloudflare-login)), so `koi setup` doesn't offer it.
+**Log in with Cloudflare** in `koi setup`, `koi server deploy --interactive`, `add-device`, `upgrade` and `delete` log in with any Cloudflare account. The consent page names Koidrive and shows that it verified ownership of koidrive.com.
 
 The login asks for four permissions: reading the account's settings, managing its Workers, writing to its R2 buckets, and keeping access while the command runs (`account-settings.read`, `workers-scripts.admin`, `workers-r2.write` and `offline_access`). Koidrive revokes the login when the command ends. If it can't, it says so, and you can revoke it under **Manage OAuth authorizations** in the Cloudflare dashboard.
 

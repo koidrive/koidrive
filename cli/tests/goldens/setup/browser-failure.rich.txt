@@ -3,8 +3,12 @@
 ◇  How do you want to connect?
 │  Log in with Cloudflare
 │
-│  Couldn't open your browser. Open this page:
+│  Couldn't open your browser.
+│  Open this page on any device:
 │  <AUTHORIZATION_URL>
+│  After you authorize, copy the address of the page that fails to load.
+◇  Callback address
+│  ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪
 ◇  Signed in to Personal
 ◇  Server created
 ◇  This device is connected

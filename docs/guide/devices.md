@@ -32,7 +32,7 @@ Add `--last-device` to confirm signing out anyway. If the server is unreachable,
 
 ## If you lose every device
 
-Your files stay on the server. Without the [Cloudflare login](setup.md#set-up-with-the-cloudflare-login), set a recovery key on the Worker and claim the server with it, as [If you lose every device](../deploy.md#if-you-lose-every-device) in the deploy guide describes.
+Your files stay on the server. Without the [Cloudflare login](koi-setup.md#the-cloudflare-login-and-what-it-may-do), set a recovery key on the Worker and claim the server with it, as [If you lose every device](../deploy.md#if-you-lose-every-device) in the deploy guide describes.
 
 With the Cloudflare login, run this on a terminal, with a `koi` that [includes the server](install.md#build-from-source):
 

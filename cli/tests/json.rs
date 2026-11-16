@@ -512,7 +512,7 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
         "{text}"
     );
     assert!(text.contains("koi join <CODE>"), "{text}");
-    assert!(!text.contains("Cloudflare"), "{text}");
+    assert!(text.contains("koi server deploy --interactive"), "{text}");
 
     let (code, envelope) = profile.json(&["setup", "--json"]);
     assert_eq!(code, 0, "{envelope:#}");
@@ -522,6 +522,8 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
     assert_eq!(
         next,
         [
+            vec!["koi", "server", "deploy", "--interactive"],
+            vec!["koi", "server", "add-device", "--interactive"],
             vec![
                 "koi",
                 "server",
@@ -535,7 +537,7 @@ fn setup_without_a_terminal_lists_the_choices_and_asks_nothing() {
             vec!["koi", "setup", "--interactive"],
         ]
     );
-    assert_eq!(envelope["data"]["choices"].as_array().unwrap().len(), 3);
+    assert_eq!(envelope["data"]["choices"].as_array().unwrap().len(), 5);
 
     let output = profile.output(&["setup", "--interactive"]);
     assert_eq!(output.status.code(), Some(2));

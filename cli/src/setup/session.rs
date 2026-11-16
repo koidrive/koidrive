@@ -141,8 +141,19 @@ pub(super) async fn confirm(
     }
 }
 
+fn browser_on_this_screen() -> bool {
+    let set = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if set("SSH_CONNECTION") || set("SSH_TTY") {
+        return false;
+    }
+    cfg!(target_os = "macos") || set("DISPLAY") || set("WAYLAND_DISPLAY")
+}
+
 /// Opens `url` in the default browser, without a shell. A failure only means the user opens it by hand.
 pub(super) async fn open_browser(url: &Url) -> bool {
+    if !browser_on_this_screen() {
+        return false;
+    }
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -197,10 +208,11 @@ impl Session {
         } else {
             http
         };
-        let loopback = if args.no_browser {
-            None
-        } else {
+        let browser = !args.no_browser && browser_on_this_screen();
+        let loopback = if browser {
             Some(Loopback::bind(args.port).await?)
+        } else {
+            None
         };
         let port = match &loopback {
             Some(loopback) => loopback.port(),
@@ -218,22 +230,22 @@ impl Session {
         };
         let login = Login::new(endpoints, CLIENT_ID, port);
         let page = login.authorize_url();
-        let code = match &loopback {
+        let opened = match &loopback {
+            None => false,
+            Some(_) if terminal.setup_guided() => {
+                let _progress = terminal.progress("Opening your browser...");
+                open_browser(&page).await
+            }
+            Some(_) => {
+                terminal.message(
+                    "Log in with Cloudflare in your browser. If it does not open, open this page:",
+                );
+                terminal.message(page.as_str());
+                open_browser(&page).await
+            }
+        };
+        let code = match loopback.filter(|_| opened) {
             Some(loopback) => {
-                if terminal.setup_guided() {
-                    let progress = terminal.progress("Opening your browser...");
-                    let opened = open_browser(&page).await;
-                    drop(progress);
-                    if !opened {
-                        terminal.separator();
-                        terminal.message("Couldn't open your browser. Open this page:");
-                        terminal.message(page.as_str());
-                    }
-                } else {
-                    terminal.message("Log in with Cloudflare in your browser. If it does not open, open this page:");
-                    terminal.message(page.as_str());
-                    open_browser(&page).await;
-                }
                 let _progress = terminal
                     .setup_guided()
                     .then(|| terminal.progress("Waiting for Cloudflare login..."));
@@ -249,6 +261,9 @@ impl Session {
             None => {
                 if terminal.setup_guided() {
                     terminal.separator();
+                }
+                if browser {
+                    terminal.message("Couldn't open your browser.");
                 }
                 terminal.message(if terminal.setup_guided() {
                     "Open this page on any device:"
@@ -277,10 +292,10 @@ impl Session {
             }
         };
         let _progress = terminal.setup_guided().then(|| {
-            if args.no_browser {
-                terminal.progress("Waiting for Cloudflare login...")
-            } else {
+            if opened {
                 terminal.continue_progress("Waiting for Cloudflare login...")
+            } else {
+                terminal.progress("Waiting for Cloudflare login...")
             }
         });
         let grant = login.exchange(&http, code).await?;
