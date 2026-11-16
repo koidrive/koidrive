@@ -16,13 +16,15 @@ use std::time::{Duration, Instant};
 use koidrive_driver::{Credential, FolderState, FolderStatus, Paths};
 use koidrive_ipc::{Code, Response};
 use koidrive_proto::v1::{
-    AccessToken, CreateSpaceRequest, Error as ProtoError, SpaceInfo, SpaceList, error,
+    AccessToken, CreateSpaceRequest, Error as ProtoError, ServerInfo, SpaceInfo, SpaceList, error,
 };
 use prost::Message;
 
 mod schema;
 
 const ROUTE: &str = "How do you want to connect?";
+const ADDRESS: &str = "Server address";
+const CLAIM: &str = "Claim code";
 const CODE: &str = "Pairing code";
 const SPACE: &str = "Which shared folder should sync here?";
 const NAME: &str = "Shared folder name";
@@ -124,6 +126,7 @@ struct Home {
     collide_create: Arc<AtomicBool>,
     created_by: Arc<Mutex<HashMap<String, SpaceInfo>>>,
     request_hook: RequestHook,
+    claimed: Arc<AtomicBool>,
 }
 
 type RequestHook = Arc<Mutex<Option<Box<dyn FnMut(&str) + Send>>>>;
@@ -154,6 +157,7 @@ impl Home {
             collide_create: Arc::new(AtomicBool::new(false)),
             created_by: Arc::new(Mutex::new(HashMap::new())),
             request_hook: Arc::new(Mutex::new(None)),
+            claimed: Arc::new(AtomicBool::new(false)),
         };
         let (spaces, requests, lose, collide, created_by) = (
             home.spaces.clone(),
@@ -162,7 +166,7 @@ impl Home {
             home.collide_create.clone(),
             home.created_by.clone(),
         );
-        let hook = home.request_hook.clone();
+        let (hook, claimed) = (home.request_hook.clone(), home.claimed.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let creates = Creates {
@@ -170,7 +174,14 @@ impl Home {
                     collide: &collide,
                     created_by: &created_by,
                 };
-                serve(stream.unwrap(), &spaces, &requests, &creates, &hook);
+                serve(
+                    stream.unwrap(),
+                    &spaces,
+                    &requests,
+                    &creates,
+                    &hook,
+                    &claimed,
+                );
             }
         });
         home
@@ -268,7 +279,13 @@ impl Home {
                 let kind = request["request"].as_str().unwrap();
                 let response = match kind {
                     "pair" if paired => {
-                        requests.lock().unwrap().push("pair".into());
+                        let mut requests = requests.lock().unwrap();
+                        requests.push("pair".into());
+                        requests.push(format!(
+                            "pair with {} {}",
+                            request["server"].as_str().unwrap(),
+                            request["code"].as_str().unwrap()
+                        ));
                         let _ = credential(&server).save_new(&paths.credential());
                         serde_json::json!({"response":"paired", "account":{
                             "server":"https://files.example.com/", "user_id":"owner",
@@ -277,6 +294,34 @@ impl Home {
                     }
                     "pair" => {
                         serde_json::json!({"response":"error", "code":"wrong_code", "message":"this pairing code is not valid"})
+                    }
+                    "claim" if paired => {
+                        let (code, name) = (
+                            request["code"].as_str().unwrap(),
+                            request["name"].as_str().unwrap(),
+                        );
+                        requests.lock().unwrap().push(format!(
+                            "claim {} {code} {} {name}",
+                            request["server"].as_str().unwrap(),
+                            request["user_name"].as_str().unwrap()
+                        ));
+                        match code {
+                            "WRONG-CODE" => serde_json::to_value(Response::Error {
+                                message: "the code is wrong or has expired".into(),
+                                human: None,
+                                code: Code::WrongCode,
+                                reason: None,
+                                next: Vec::new(),
+                            })
+                            .unwrap(),
+                            _ => {
+                                let _ = credential(&server).save_new(&paths.credential());
+                                serde_json::json!({"response":"paired", "account":{
+                                    "server":server, "user_id":"owner",
+                                    "device_id":"0190a0b0-0000-7000-8000-000000000001", "device_name":name
+                                }})
+                            }
+                        }
                     }
                     "status" => {
                         let folders = linked.lock().unwrap().clone();
@@ -459,6 +504,7 @@ fn serve(
     requests: &Mutex<Vec<String>>,
     creates: &Creates,
     hook: &RequestHook,
+    claimed: &AtomicBool,
 ) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut first = String::new();
@@ -486,6 +532,15 @@ fn serve(
     }
     let mut status = "200 OK";
     let answer = match (method, path) {
+        ("GET", "/v1/server") => ServerInfo {
+            server_version: "0.1.0".into(),
+            proto_min: 1,
+            proto_max: 1,
+            claimed: claimed.load(Ordering::Relaxed),
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        ("GET", "/setup") => b"A one-time claim code is in this Worker's logs.\n".to_vec(),
         ("POST", "/v1/token") => AccessToken {
             token: "token".into(),
             expires_at_ms: i64::MAX,
@@ -1430,6 +1485,134 @@ fn reporting_setup(mut steps: Vec<Step>, paired: bool, rich: bool) -> (Reporting
         at_question,
     };
     (reporting, output)
+}
+
+fn server_requests(home: &Home) -> Vec<String> {
+    (home.requests().into_iter())
+        .filter(|request| {
+            request.starts_with("GET /v1/server")
+                || request.starts_with("GET /setup")
+                || request.starts_with("claim ")
+                || request.starts_with("pair with ")
+        })
+        .collect()
+}
+
+#[test]
+fn a_deployed_server_is_claimed_with_its_address_and_claim_code() {
+    for rich in [false, true] {
+        let home = Home::new(&[]);
+        let steps = [
+            step(ROUTE, choose(rich, 0)),
+            step(ADDRESS, line(&home.server)),
+            step(CLAIM, line("ABCD-EFGH-JKLM")),
+            step(TELEMETRY, no(rich)),
+        ];
+        let args = ["--name", "Laptop"];
+        let output = home.setup(&steps, &args, &[("USER", "alice")], true, rich, None);
+        let text = shown(output.clone());
+        assert!(output.status.success(), "{text}");
+        assert!(text.contains("I deployed a server"), "{text}");
+        assert!(!text.contains("Log in with Cloudflare"), "{text}");
+        assert!(
+            text.contains("search for \"Koidrive claim code\""),
+            "{text}"
+        );
+        assert!(!text.contains("ABCD-EFGH-JKLM"), "{text}");
+        let server = home.server.trim_end_matches('/');
+        assert_eq!(
+            server_requests(&home),
+            [
+                "GET /v1/server".to_owned(),
+                "GET /setup".to_owned(),
+                format!("claim {server} ABCD-EFGH-JKLM alice Laptop"),
+            ]
+        );
+        let folder = home.path().join("Koidrive");
+        let space = home.space_id("Koidrive");
+        assert_eq!(home.links(), [format!("link {} {space}", folder.display())]);
+        assert_sync_off(&text);
+    }
+}
+
+#[test]
+fn a_wrong_claim_code_is_asked_again_after_a_new_code_is_requested() {
+    let home = Home::new(&[]);
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&home.server)),
+        step(CLAIM, line("WRONG-CODE")),
+        step(CLAIM, line("ABCD-EFGH-JKLM")),
+        step(TELEMETRY, no(false)),
+    ];
+    let args = ["--name", "Laptop"];
+    let output = home.setup(&steps, &args, &[("USER", "alice")], true, false, None);
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("The claim code is wrong or has expired."),
+        "{text}"
+    );
+    let server = home.server.trim_end_matches('/');
+    assert_eq!(
+        server_requests(&home),
+        [
+            "GET /v1/server".to_owned(),
+            "GET /setup".to_owned(),
+            format!("claim {server} WRONG-CODE alice Laptop"),
+            "GET /setup".to_owned(),
+            format!("claim {server} ABCD-EFGH-JKLM alice Laptop"),
+        ]
+    );
+    assert_eq!(home.links().len(), 1);
+}
+
+#[test]
+fn an_address_without_a_server_is_asked_again() {
+    let home = Home::new(&[]);
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let nowhere = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&nowhere)),
+        step(ADDRESS, line(&home.server)),
+        step(CLAIM, line("ABCD-EFGH-JKLM")),
+        step(TELEMETRY, no(false)),
+    ];
+    let output = home.setup(&steps, &["--name", "Laptop"], &[], true, false, None);
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains(&format!("Koidrive could not reach {nowhere}.")),
+        "{text}"
+    );
+    assert_eq!(home.links().len(), 1);
+}
+
+#[test]
+fn a_server_with_an_owner_takes_a_pairing_code_without_its_host() {
+    let home = Home::new(&[]);
+    home.claimed.store(true, Ordering::Relaxed);
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&home.server)),
+        step(CODE, line("K7QM-2XPD")),
+        step(TELEMETRY, no(false)),
+    ];
+    let output = home.setup(&steps, &[], &[], true, false, None);
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("This server already has an owner."), "{text}");
+    let server = home.server.trim_end_matches('/');
+    assert_eq!(
+        server_requests(&home),
+        [
+            "GET /v1/server".to_owned(),
+            format!("pair with {server} K7QM-2XPD"),
+        ]
+    );
+    assert_eq!(home.links().len(), 1);
 }
 
 #[test]

@@ -131,6 +131,24 @@ impl Api {
         .await
     }
 
+    /// `GET /setup`: has a server without an owner write a one-time claim code to its log, unless a valid code is
+    /// already there.
+    pub async fn request_claim_code(&self) -> Result<(), ApiError> {
+        let response = self
+            .http
+            .get(self.url(&["setup"])?)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(ApiError::Transport)?;
+        match response.status() {
+            status if status.is_success() => Ok(()),
+            status => Err(ApiError::Status {
+                status: status.as_u16(),
+            }),
+        }
+    }
+
     /// `POST /v1/claim`: registers the first owner with the one-time claim code from the Worker log.
     pub async fn claim(&self, request: &ClaimRequest) -> Result<DeviceCredentials, ApiError> {
         self.send(
@@ -519,6 +537,51 @@ mod tests {
         }
         assert!(Api::new(url("https://files.example.com/fb")).is_ok());
         assert!(Api::local_development(url("https://files.example.com")).is_ok());
+    }
+
+    async fn answer_once(reply: &'static str) -> (Url, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base: Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let n = socket.read(&mut request).await.unwrap();
+            socket.write_all(reply.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request[..n]).into_owned()
+        });
+        (base, server)
+    }
+
+    #[tokio::test]
+    async fn a_claim_code_is_requested_from_the_setup_page() {
+        let (base, server) = answer_once(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 3\r\nconnection: close\r\n\r\nok\n",
+        )
+        .await;
+        Api::local_development(base)
+            .unwrap()
+            .request_claim_code()
+            .await
+            .unwrap();
+        assert!(server.await.unwrap().starts_with("GET /setup HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn a_setup_page_that_does_not_answer_ok_is_an_error() {
+        let (base, server) =
+            answer_once("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await;
+        let outcome = Api::local_development(base)
+            .unwrap()
+            .request_claim_code()
+            .await;
+        assert!(
+            matches!(outcome, Err(ApiError::Status { status: 404 })),
+            "{outcome:?}"
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]

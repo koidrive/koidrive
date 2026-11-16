@@ -10,7 +10,11 @@ use koidrive_proto::v1::{Error as ProtoError, error::Code as ServerCode};
 use crate::report::Done;
 
 const LEAVE_LAST_DEVICE: [&str; 4] = ["koi", "device", "leave", "--last-device"];
-const WRONG_CODE: [&str; 2] = ["wrong claim code", "invalid or expired pairing code"];
+const WRONG_CODE: [&str; 3] = [
+    "wrong claim code",
+    "no valid claim code; open /setup to issue one",
+    "invalid or expired pairing code",
+];
 
 #[derive(Debug)]
 pub struct CliError {

@@ -6,7 +6,7 @@ use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Next};
 
 use super::deploy::{create_bucket, free_name, keep_script_name, new_bucket_name};
-use super::onboarding::choices;
+use super::onboarding::{Route, choices};
 use super::servers::{Downgrade, downgrade};
 use super::session::{guarded, read_answer};
 use super::state::{SetupState, StateFile, Step};
@@ -79,20 +79,35 @@ fn interactive_asks_for_the_guide_and_fails_without_terminals() {
 }
 
 #[test]
-fn setup_lists_every_way_in_with_its_argv() {
-    let argv: Vec<String> = choices()
-        .iter()
-        .map(|choice| choice.argv.join(" "))
-        .collect();
+fn setup_lists_the_cloudflare_login_only_where_it_works() {
+    let argv = |cloudflare_login| -> Vec<String> {
+        choices(cloudflare_login)
+            .iter()
+            .map(|choice| choice.argv.join(" "))
+            .collect()
+    };
     assert_eq!(
-        argv,
+        argv(false),
         [
+            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
+            "koi join <CODE>",
+            "koi setup --interactive",
+        ]
+    );
+    assert_eq!(
+        argv(true),
+        [
+            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
             "koi join <CODE>",
             "koi server deploy --interactive",
             "koi server add-device --interactive",
-            "koi server claim <SERVER_URL> <CODE> --user <NAME>",
             "koi setup --interactive",
         ]
+    );
+    assert_eq!(Route::all(false), [Route::Deployed, Route::Pairing]);
+    assert_eq!(
+        Route::all(true),
+        [Route::Cloudflare, Route::Deployed, Route::Pairing]
     );
 }
 

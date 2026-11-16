@@ -2,8 +2,9 @@ Koidrive <VERSION>
 
 How do you want to connect?
   1. Log in with Cloudflare
-  2. Enter a pairing code
-Choose 1 to 2: 2
+  2. I deployed a server
+  3. Enter a pairing code
+Choose 1 to 3: 3
 
 On your other device, run koi device invite.
 Pairing code:

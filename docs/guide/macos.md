@@ -9,7 +9,7 @@ Koidrive for Mac is the full sync client for macOS 26 or later on Apple silicon.
 3. If you have no server, [deploy one](../deploy.md#deploy) in your Cloudflare account with R2 turned on.
 4. In **Set Up Koidrive**, enter your server's address and click **Connect**.
 5. Sign in:
-   - For a new server, open `<your server>/setup` in a browser. Find `Koidrive claim code` in the Worker's **Observability** logs in Cloudflare. Enter the code, your name and this Mac's name in the app. Click **Claim Server**.
+   - For a new server, the app asks it for a one-time claim code, which the server writes to the Worker's log. Find `Koidrive claim code` in the Worker's **Observability** logs in Cloudflare. Enter the code, your name and this Mac's name in the app. Click **Claim Server**.
    - For an existing account, get a pairing code from **Settings**, **Account**, **Add a Device…** on a signed-in Mac. On a signed-in Linux machine, run `koi device invite`. Enter the code and this Mac's name on the new Mac. Click **Sign In**.
 6. Choose an existing space or create one. Click **Choose…** to select a folder on this Mac, then click **Link Folder**. The folder syncs in the background.
 

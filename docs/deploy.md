@@ -1,6 +1,6 @@
 # Deploying and upgrading a Koidrive server
 
-This page deploys the server to your own Cloudflare account with the deploy button or Wrangler, claims it, and upgrades it by hand. `koi setup`, `koi server deploy` and `koi server upgrade` do the same steps through a Cloudflare login, which works only for members of the project's test account ([Set up with the Cloudflare login](guide/setup.md#set-up-with-the-cloudflare-login)). The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
+This page deploys the server to your own Cloudflare account with the deploy button or Wrangler, claims it, and upgrades it by hand. `koi server deploy` and `koi server upgrade` do the same steps through a Cloudflare login, which works only for members of the project's test account ([Set up with the Cloudflare login](guide/setup.md#set-up-with-the-cloudflare-login)). The design behind both routes is in [design/deploy-and-upgrade.md](design/deploy-and-upgrade.md).
 
 ## What you need
 
@@ -24,11 +24,11 @@ To deploy from the command line instead, clone the repository, then in `server/`
 
 A new server has no owner until someone claims it, and the first valid claim makes that person the owner for good. Claim it right after you deploy.
 
-1. Open `<your server>/setup` in a browser. It writes a one-time claim code, valid for one hour, to the Worker's log.
+1. Run `koi setup` and choose **I deployed a server**, or open the setup window of the macOS app. Enter your server's address. Setup asks the server for a one-time claim code, valid for one hour, which the server writes to the Worker's log. Without either, open `<your server>/setup` in a browser to get the code.
 2. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`.
-3. Claim the server with `koi server claim <your server> <code> --user "<your name>"`, or enter the address and the code in the setup window of the macOS app. That device becomes your first device ([Set up](guide/setup.md#deploy-a-server-and-claim-it)).
+3. Enter the code in setup. Or claim the server with `koi server claim <your server> <code> --user "<your name>"`. That device becomes your first device ([Set up](guide/setup.md#deploy-a-server-and-claim-it)).
 
-If the code expired, open `/setup` again for a new one. Someone who finds your address cannot see the code, and their wrong guesses do not affect yours.
+If the code expired, `koi setup` asks the server for a new one. Otherwise open `/setup` again. Someone who finds your address cannot see the code, and their wrong guesses do not affect yours.
 
 Anyone who can read your Worker's logs can read the code while it is valid, and could claim the server with it. That is anyone in your account, or any API token, with the Workers Metadata Read-Only role or higher ([Workers roles](https://developers.cloudflare.com/workers/authorization/workers/)). Workers Logs keeps logs for 3 days on Workers Free and 7 days on Workers Paid ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)), but a code is useless once the server has an owner or after an hour. The logs hide request query strings, so they never keep file download or upload links.
 

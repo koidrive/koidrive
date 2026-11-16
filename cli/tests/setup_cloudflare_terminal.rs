@@ -2323,7 +2323,7 @@ fn golden_pairing() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 (CONSENT, consent(rich)),
             ],
@@ -2384,7 +2384,7 @@ fn golden_existing_files_sync() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 (SPACES, pick(rich, 0)),
                 ("What should Koidrive do?", pick(rich, 1)),
@@ -2405,7 +2405,7 @@ fn golden_existing_files_another_folder() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 (SPACES, pick(rich, 0)),
                 ("What should Koidrive do?", pick(rich, 0)),
@@ -2427,7 +2427,7 @@ fn golden_existing_files_new_space() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 ("What should Koidrive do?", pick(rich, 1)),
                 (CONSENT, consent(rich)),
@@ -2448,7 +2448,7 @@ fn golden_default_collision() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 (SPACES, pick(rich, 0)),
                 ("What should Koidrive do?", pick(rich, 1)),
@@ -2501,7 +2501,7 @@ fn creating_a_shared_folder_reprompts_for_an_existing_name() {
                 rich,
                 Browser::Opens,
                 &[
-                    (ROUTE, pick(rich, 1)),
+                    (ROUTE, pick(rich, 2)),
                     ("Pairing code", typed(rich, "CODE@files.example.com")),
                     (SPACES, pick(rich, spaces.len())),
                     ("Shared folder name", typed(rich, "Work")),
@@ -2547,7 +2547,7 @@ fn a_concurrent_creation_collision_never_links_the_existing_shared_folder() {
             rich,
             Browser::Opens,
             &[
-                (ROUTE, pick(rich, 1)),
+                (ROUTE, pick(rich, 2)),
                 ("Pairing code", typed(rich, "CODE@files.example.com")),
                 (SPACES, pick(rich, 1)),
                 ("Shared folder name", typed(rich, "Photos")),

@@ -219,6 +219,14 @@ pub fn mode(
     }
 }
 
+fn cloudflare_login() -> bool {
+    #[cfg(feature = "test-setup")]
+    if matches!(testing::config(), Ok(Some(_))) {
+        return true;
+    }
+    koidrive_cloudflare::CLIENT_AUDIENCE == koidrive_cloudflare::Audience::Everyone
+}
+
 fn this_mode(json: bool, interactive: bool) -> Result<Mode, CliError> {
     mode(
         std::io::stdin().is_terminal(),
