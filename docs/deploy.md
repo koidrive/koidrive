@@ -4,14 +4,14 @@ This page deploys the server to your own Cloudflare account with the deploy butt
 
 ## What you need
 
-- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin)). Neither the deploy button nor Wrangler can activate R2, and without it the bucket cannot be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
+- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Neither the deploy button nor Wrangler can activate R2, and without it the bucket cannot be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
 - For the deploy button, a GitHub or GitLab account. The button copies the server into a new repository there.
 - For the command line, Node.js and pnpm.
 - The [Mac app](guide/macos.md) or the [`koi` command](guide/install.md), to claim the server.
 
 ## Deploy
 
-1. Open the deploy button link for the release you want: `https://deploy.workers.cloudflare.com/?url=https://github.com/koidrive/koidrive/tree/<release>/server`. Cloudflare's [deploy button docs](https://developers.cloudflare.com/workers/platform/deploy-buttons/) show a branch in that place.
+1. Click [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/koidrive/koidrive/tree/main/server). It deploys `server/` from the `main` branch ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)).
 2. Sign in, pick the Git account for the new repository, and keep or change the names of the Worker and the R2 bucket. Write the names down, because an upgrade must keep them.
 3. Deploy. Cloudflare creates the Worker, its two Durable Objects and the R2 bucket, builds the server and deploys it. You enter no secrets.
 4. Note the Worker's address, for example `https://koidrive.<your-subdomain>.workers.dev`.
@@ -25,7 +25,7 @@ To deploy from the command line instead, clone the repository, then in `server/`
 A new server has no owner until someone claims it, and the first valid claim makes that person the owner for good. Claim it right after you deploy.
 
 1. Run `koi setup` and choose **I deployed a server**, or open the setup window of the macOS app. Enter your server's address. Setup asks the server for a one-time claim code, valid for one hour, which the server writes to the Worker's log. Without either, open `<your server>/setup` in a browser to get the code.
-2. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`.
+2. Open [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages), select your Worker, select **Observability** and search for `Koidrive claim code` ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/#view-logs-from-the-dashboard)). Or, before step 1, run `pnpm exec wrangler tail <your Worker>` in `server/` and read the code there.
 3. Enter the code in setup. Or claim the server with `koi server claim <your server> <code> --user "<your name>"`. That device becomes your first device ([Set up](guide/setup.md#deploy-a-server-and-claim-it)).
 
 If the code expired, `koi setup` asks the server for a new one. Otherwise open `/setup` again. If a claim stops before it finishes, run the same claim again within the hour with the same code. Someone who finds your address cannot see the code, and their wrong guesses do not affect yours.

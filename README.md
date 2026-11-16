@@ -81,7 +81,7 @@ Files in the trash and old versions count as storage for the 30 days Koidrive ke
 
 ## Get started
 
-You need a Cloudflare account with R2 turned on, and a Mac with Apple silicon or a Linux machine.
+You need a Cloudflare account with R2 turned on, and a Mac with Apple silicon or a Linux machine. Turning on R2 asks for a payment method, even for its free monthly usage.
 
 ### The macOS app
 
@@ -114,7 +114,11 @@ The `koi` command works on Linux and Macs with Apple silicon. The Mac app includ
 
    Skip steps 2 and 3 if guided setup has connected this machine and linked a folder. Otherwise, complete the steps that remain.
 
-2. **Deploy your server and sign in this machine if you skipped guided setup.** Deploy the server with the deploy button, open `<your server>/setup` to get a claim code, and claim the server:
+2. **Deploy your server and sign in this machine if you skipped guided setup.**
+
+   [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/koidrive/koidrive/tree/main/server)
+
+   Turn on R2 in your Cloudflare account first. It asks for a payment method. After the deploy, open `<your server>/setup` to get a claim code, and claim the server:
 
    ```sh
    koi server claim koidrive.alice.workers.dev ABCD-EFGH-JKLM --user "Alice Park"
