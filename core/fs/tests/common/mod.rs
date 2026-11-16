@@ -583,6 +583,7 @@ pub fn decode(text: &str) -> Vec<Entry> {
                 mtime_ns: fields[4].parse().unwrap(),
                 executable: fields[5] == "true",
                 linked: false,
+                mount: None,
             }
         })
         .collect()

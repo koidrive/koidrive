@@ -28,7 +28,7 @@
 //! `fsync` alone may leave the data in the drive's cache. Process-kill tests
 //! cover the rollback, not power loss.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
-use koidrive_fs::{FileId, RootAt, VolumeId};
+use koidrive_fs::{FileId, Mount, RootAt, VolumeId};
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
@@ -775,6 +775,38 @@ impl Tx<'_> {
                 link.root_volume.as_ref().map(VolumeId::as_bytes),
             ],
         )?;
+        Ok(())
+    }
+
+    /// The mount points of other volumes inside the folder, relative to its root, as its scans last saw them.
+    pub fn volume_mounts(&self) -> Result<BTreeMap<PathBuf, Mount>> {
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT path, volume FROM volume_mounts")?;
+        let rows = stmt.query_map([], |row| {
+            let volume: Option<Vec<u8>> = row.get(1)?;
+            Ok((
+                PathBuf::from(OsStr::from_bytes(&row.get::<_, Vec<u8>>(0)?)),
+                (volume.as_deref())
+                    .and_then(VolumeId::from_bytes)
+                    .map_or(Mount::Unidentified, Mount::Volume),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_volume_mounts(&self, mounts: &BTreeMap<PathBuf, Mount>) -> Result<()> {
+        self.0.execute("DELETE FROM volume_mounts", [])?;
+        let mut stmt = self
+            .0
+            .prepare_cached("INSERT INTO volume_mounts (path, volume) VALUES (?1, ?2)")?;
+        for (path, mount) in mounts {
+            let volume = match mount {
+                Mount::Volume(volume) => Some(volume.as_bytes()),
+                Mount::Unidentified => None,
+            };
+            stmt.execute(params![path.as_os_str().as_bytes(), volume])?;
+        }
         Ok(())
     }
 

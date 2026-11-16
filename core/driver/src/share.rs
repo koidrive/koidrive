@@ -711,6 +711,7 @@ mod tests {
             wait: None,
             recovery: None,
             progress: None,
+            held_disks: Vec::new(),
         }
     }
 

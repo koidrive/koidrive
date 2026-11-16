@@ -1501,72 +1501,28 @@ fn a_folder_swapped_for_one_holding_its_entries_is_reidentified_by_a_rescan_of_i
 #[cfg(target_vendor = "apple")]
 #[test]
 fn a_folder_swapped_for_another_volume_while_it_opens_is_not_published() {
-    use std::process::Command;
-
-    struct Mounts(Vec<PathBuf>);
-    impl Drop for Mounts {
-        fn drop(&mut self) {
-            for at in &self.0 {
-                let _ = Command::new("hdiutil")
-                    .arg("detach")
-                    .arg(at)
-                    .arg("-force")
-                    .output();
-            }
-        }
-    }
-    let hdiutil = |args: &[&std::ffi::OsStr]| {
-        let output = Command::new("hdiutil").args(args).output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    let attach = |image: &Path, at: &Path| {
-        fs::create_dir_all(at).unwrap();
-        hdiutil(&[
-            "attach".as_ref(),
-            "-quiet".as_ref(),
-            "-nobrowse".as_ref(),
-            "-mountpoint".as_ref(),
-            at.as_ref(),
-            image.as_ref(),
-        ]);
-    };
-    let detach = |at: &Path| hdiutil(&["detach".as_ref(), "-quiet".as_ref(), at.as_ref()]);
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("root");
+    let mut disks = koidrive_test_support::Disks::new().unwrap();
+    let root = disks.base().join("root");
     let nested = root.join("nested");
-    let elsewhere = dir.path().join("elsewhere");
+    let elsewhere = disks.base().join("elsewhere");
     fs::create_dir(&root).unwrap();
-    let a = dir.path().join("a.dmg");
-    let b = dir.path().join("b.dmg");
-    for image in [&a, &b] {
-        hdiutil(&[
-            "create".as_ref(),
-            "-quiet".as_ref(),
-            "-size".as_ref(),
-            "20m".as_ref(),
-            "-fs".as_ref(),
-            "APFS".as_ref(),
-            image.as_ref(),
-        ]);
-    }
-    let _mounts = Mounts(vec![nested.clone(), elsewhere.clone()]);
-    attach(&b, &elsewhere);
+    fs::create_dir(&nested).unwrap();
+    fs::create_dir(&elsewhere).unwrap();
+    let a = disks.image("a");
+    let b = disks.image("b");
+    disks.attach(&b, &elsewhere);
     fs::write(elsewhere.join("impostor.txt"), b"other volume").unwrap();
-    detach(&elsewhere);
-    attach(&a, &nested);
+    disks.detach(&elsewhere);
+    disks.attach(&a, &nested);
     fs::write(nested.join("original.txt"), b"original volume").unwrap();
     let before = stat_path(&nested).unwrap();
     let mut snapshot = Snapshot::default();
     let mut swapped = false;
     let result = snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
         if matches!(cut, Cut::OpeningDir(path) if path == Path::new("nested")) && !swapped {
-            detach(&nested);
-            attach(&a, &elsewhere);
-            attach(&b, &nested);
+            disks.detach(&nested);
+            disks.attach(&a, &elsewhere);
+            disks.attach(&b, &nested);
             swapped = true;
         }
     });

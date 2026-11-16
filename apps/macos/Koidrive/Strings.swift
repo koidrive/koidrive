@@ -251,6 +251,8 @@ extension ProblemKind {
         case .signInRequired: String(localized: "This Mac was removed")
         case .stateNotWritable: String(localized: "Koidrive can't save its sync state")
         case .folderHalted: String(localized: "Sync for this folder stopped")
+        case .diskNotConnected: String(localized: "Disk not connected")
+        case .diskMountedOver: String(localized: "A disk is mounted over a synced folder")
         }
     }
 
@@ -283,6 +285,8 @@ extension ProblemKind {
             String(localized: "Another device removed this Mac, or its credential stopped working. Sign out in Account settings, then sign in with a pairing code from another device.")
         case .stateNotWritable(let reason): String(localized: "Free up disk space. \(reason)")
         case .folderHalted(let reason): reason
+        case .diskNotConnected: String(localized: "Sync resumes when it's back.")
+        case .diskMountedOver: String(localized: "Sync resumes when it's ejected.")
         }
     }
 }

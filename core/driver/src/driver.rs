@@ -2156,6 +2156,7 @@ fn folder_status(
         problem: None,
         wait: None,
         progress: None,
+        held_disks: Vec::new(),
     }
 }
 
@@ -3212,77 +3213,15 @@ mod tests {
     #[tokio::test]
     async fn an_ejected_disk_whose_mount_point_stays_resumes_under_its_old_or_a_new_device_number()
     {
-        use std::process::Command;
-
-        struct Mounted(Vec<PathBuf>);
-        impl Drop for Mounted {
-            fn drop(&mut self) {
-                for at in &self.0 {
-                    let _ = Command::new("hdiutil")
-                        .args(["detach", "-quiet", "-force"])
-                        .arg(at)
-                        .output();
-                }
-            }
-        }
-        let hdiutil = |args: &[&std::ffi::OsStr]| {
-            let out = Command::new("hdiutil").args(args).output().unwrap();
-            assert!(
-                out.status.success(),
-                "hdiutil {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let base = fs::canonicalize(dir.path()).unwrap();
+        let mut disks = koidrive_test_support::Disks::new().unwrap();
+        let base = disks.base();
         let root = base.join("Koidrive");
         let elsewhere = base.join("Elsewhere");
-        let _mounted = Mounted(vec![root.clone(), elsewhere.clone()]);
-        let image = |name: &str| {
-            let image = base.join(name);
-            hdiutil(&[
-                "create".as_ref(),
-                "-quiet".as_ref(),
-                "-size".as_ref(),
-                "20m".as_ref(),
-                "-fs".as_ref(),
-                "APFS".as_ref(),
-                "-volname".as_ref(),
-                name.as_ref(),
-                image.as_ref(),
-            ]);
-            image
-        };
-        let attach = |image: &Path, at: &Path| {
-            fs::create_dir_all(at).unwrap();
-            hdiutil(&[
-                "attach".as_ref(),
-                "-quiet".as_ref(),
-                "-nobrowse".as_ref(),
-                "-mountpoint".as_ref(),
-                at.as_ref(),
-                image.as_ref(),
-            ]);
-        };
-        let detach = |at: &Path| {
-            let mut failures = Vec::new();
-            while failures.len() < 10 {
-                let out = Command::new("hdiutil")
-                    .args(["detach", "-force"])
-                    .arg(at)
-                    .output()
-                    .unwrap();
-                if out.status.success() {
-                    return;
-                }
-                failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            panic!("hdiutil detach -force {}: {failures:?}", at.display());
-        };
-        let disk = image("disk.dmg");
-        let other = image("other.dmg");
-        attach(&disk, &root);
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&elsewhere).unwrap();
+        let disk = disks.image("disk");
+        let other = disks.image("other");
+        disks.attach(&disk, &root);
         let paths = Paths::under(&base.join("profile"));
         linked(&paths, &root, "d1");
         let store = paths.store(SPACE).unwrap();
@@ -3306,17 +3245,17 @@ mod tests {
         };
         let syncs = || driver.status().folders[0].state != FolderState::Halted;
 
-        detach(&root);
+        disks.detach(&root);
         eventually("the folder waits for its disk", waits_for_its_disk).await;
         assert!(!lifecycle.needs_restart());
-        attach(&disk, &root);
+        disks.attach(&disk, &root);
         eventually("the folder syncs again", syncs).await;
         assert!(!lifecycle.needs_restart());
 
-        detach(&root);
+        disks.detach(&root);
         eventually("the folder waits for its disk again", waits_for_its_disk).await;
-        attach(&other, &elsewhere);
-        attach(&disk, &root);
+        disks.attach(&other, &elsewhere);
+        disks.attach(&disk, &root);
         let dev = fs::metadata(&root).unwrap().dev();
         eventually("the folder syncs under the device number it has now", syncs).await;
         assert!(!lifecycle.needs_restart());

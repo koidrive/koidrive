@@ -29,7 +29,7 @@ use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same_content};
-use koidrive_fs::{Refusal, Snapshot, Unresolved};
+use koidrive_fs::{Detached, Refusal, Snapshot, Unresolved};
 use koidrive_net::{
     Auth, Backoff, CallError, Cause, ChunkError, DisconnectReason, Event, NotResent, ServerError,
     Session, SessionConfig, StopReason, Transfer, UploadGate,
@@ -57,7 +57,7 @@ use crate::ignore::Matcher;
 use crate::observe::{FsObserver, Observer};
 use crate::policy::{self, Disposition};
 use crate::progress::{Credit, Direction, Item, Tracker};
-use crate::status::{FolderState, Unreachable, Wait, WaitKind, describe};
+use crate::status::{FolderState, HeldDisk, HeldDiskKind, Unreachable, Wait, WaitKind, describe};
 use crate::timing::{Time, Timing};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
@@ -132,6 +132,7 @@ pub(crate) struct Folder {
     failures: u32,
     backoff: Backoff,
     unreadable: BTreeMap<String, Unreadable>,
+    detached: BTreeMap<PathBuf, Detached>,
     /// The calls that failed and are sent again, by kind, until one of the kind goes through. The status shows
     /// them once they have failed for [`RETRY_SHOWN`], or at once when the wait is that long.
     retrying: BTreeMap<Call, Retrying>,
@@ -307,6 +308,7 @@ pub(crate) struct View {
     pub wait: Option<Wait>,
     pub questions: u64,
     pub recovery: Option<RecoveryCause>,
+    pub held_disks: Vec<HeldDisk>,
 }
 
 impl Folder {
@@ -360,6 +362,7 @@ impl Folder {
             failures: 0,
             backoff: Backoff::default(),
             unreadable: BTreeMap::new(),
+            detached: BTreeMap::new(),
             retrying: BTreeMap::new(),
             effect_failures: BTreeMap::new(),
             denied: BTreeMap::new(),
@@ -551,8 +554,10 @@ impl Folder {
     /// One observation batch, with the number of entries the folder holds after it.
     pub fn observed(&mut self, batch: Batch, entries: u64) -> Result<Vec<Work>, Stop> {
         self.local_entries = Some(entries);
+        let detached = batch.observation.detached.clone();
         self.disk
             .observed(batch, &mut self.engine, &mut self.store)?;
+        self.detached = detached;
         let allowed: Vec<String> = (self.denied.iter())
             .filter(|(node, denied)| {
                 denied.foreseen
@@ -1314,6 +1319,15 @@ impl Folder {
             problem,
             wait,
             questions: self.questions,
+            held_disks: (self.detached.iter())
+                .map(|(path, why)| HeldDisk {
+                    path: path.to_string_lossy().into_owned(),
+                    kind: match why {
+                        Detached::Away => HeldDiskKind::NotConnected,
+                        Detached::Covered => HeldDiskKind::MountedOver,
+                    },
+                })
+                .collect(),
         }
     }
 
@@ -2654,6 +2668,7 @@ impl FolderTask {
             wait: status.wait.clone(),
             questions: status.questions,
             recovery: status.recovery,
+            held_disks: status.held_disks.clone(),
         };
         if shown == view && !asked && !began_or_ended {
             return;
@@ -2668,6 +2683,7 @@ impl FolderTask {
         status.wait = view.wait;
         status.questions = view.questions;
         status.recovery = view.recovery;
+        status.held_disks = view.held_disks;
         drop(status);
         self.changed.send_replace(());
     }

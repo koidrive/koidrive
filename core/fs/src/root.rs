@@ -119,7 +119,7 @@ pub fn root_at(dir: BorrowedFd<'_>) -> io::Result<RootAt> {
 }
 
 #[cfg(target_vendor = "apple")]
-fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     use std::os::fd::AsRawFd;
     #[repr(C, packed(4))]
     struct Reply {
@@ -154,7 +154,7 @@ fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
 }
 
 #[cfg(target_os = "linux")]
-fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     btrfs_subvolume_id(dir)
         .or_else(|| ext_file_system_id(dir))
         .or_else(|| file_system_id(dir))
@@ -213,7 +213,7 @@ fn file_system_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-fn volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
+pub(crate) fn volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
     None
 }
 

@@ -1466,6 +1466,7 @@ version = "0.0.0-dev"
 dependencies = [
  "koidrive-engine",
  "koidrive-ignore",
+ "koidrive-test-support",
  "libc",
  "notify",
  "rustix",

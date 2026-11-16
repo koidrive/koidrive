@@ -47,6 +47,8 @@ fn a_file_moved_into_an_ignored_folder_stays_on_the_server_when_its_folder_is_re
                 busy: Vec::new(),
                 rules: Vec::new(),
                 all_rules: false,
+                mounts: BTreeMap::new(),
+                detached: BTreeMap::new(),
             },
         };
         let step = a.folder.observed(batch, 1);

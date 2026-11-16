@@ -395,6 +395,7 @@ impl FolderData {
             problem: self.problem,
             wait: None,
             progress: None,
+            held_disks: Vec::new(),
         }
     }
 

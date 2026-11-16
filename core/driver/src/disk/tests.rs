@@ -1950,6 +1950,7 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
             mtime_ns: -1,
             executable: true,
             linked: false,
+            mount: None,
         }
     );
     assert_eq!(contents.displaced, Some(synced));

@@ -382,6 +382,16 @@ jobs:
           sudo chown "$USER" /mnt/koidrive-btrfs
           KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo test --locked -p koidrive-fs --test root a_btrfs_snapshot -- --show-output
           KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo test --locked -p koidrive-fs --test root an_ext4_disk -- --show-output
+      - name: Test volumes mounted inside a folder
+        if: runner.os == 'Linux'
+        env:
+          KOIDRIVE_TEST_MOUNTS: '1'
+        run: |
+          if ! command -v mkfs.vfat > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dosfstools
+          fi
+          cargo test --locked -p koidrive-fs --test volumes -- --show-output
       - name: Test the regression-case splitter
         run: |
           python3 scripts/test-split-proptest-regressions.py -v
@@ -471,6 +481,16 @@ jobs:
         env:
           PROPTEST_CASES: '0'
         run: cargo test --locked -p koidrive-driver --lib batches_leave_l_a_tree_that_holds_the_disk -- --show-output
+      - name: Test disks ejected from inside a folder
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.suite == 'driver' }}
+        env:
+          KOIDRIVE_TEST_MOUNTS: '1'
+        run: |
+          if ! command -v mkfs.vfat > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq dosfstools
+          fi
+          cargo test --locked -p koidrive-driver --lib -- disk_ejected another_disk_mounted two_copies_of_one_disk mounted_over_synced disk_without_a_uuid before_an_upgrade --show-output
       - name: Replay saved sim property regressions without random cases
         if: ${{ !cancelled() && matrix.suite == 'sim' }}
         env:

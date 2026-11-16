@@ -22,7 +22,7 @@ use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     same_content,
 };
-use koidrive_fs::{Entry, EntryKind, FileId, Known, Snapshot};
+use koidrive_fs::{Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
@@ -46,6 +46,7 @@ pub(crate) struct Engine {
     pub asked: bool,
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
+    pub mounts: BTreeMap<PathBuf, Mount>,
 }
 
 /// What applying a batch of the log did.
@@ -118,6 +119,7 @@ impl Engine {
             asked: false,
             recovery_cause: None,
             unscanned: None,
+            mounts: tx.volume_mounts()?,
         })
     }
 
@@ -611,6 +613,7 @@ impl Engine {
                         mtime_ns,
                         executable,
                         linked: kind == EntryKind::File,
+                        mount: self.mounts.get(&at).copied(),
                     },
                 );
                 pending.push((at, child.clone()));
@@ -721,7 +724,13 @@ impl Engine {
                 Observed::Removed { path, .. } => local_at(&self.trees, path),
                 Observed::Renamed {
                     from, id, linked, ..
-                } => resolve(&self.trees, from, &file_identity(*id), *linked),
+                } => resolve(
+                    &self.trees,
+                    &self.mounts,
+                    from,
+                    &file_identity(*id),
+                    *linked,
+                ),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. } => None,
@@ -742,8 +751,10 @@ impl Engine {
                 Observed::Created {
                     kind: EntryKind::Dir,
                     id,
+                    path,
                     ..
-                } => self.trees.local_with_identity(&file_identity(*id)),
+                } => (self.trees.locals_with_identity(&file_identity(*id)).rev())
+                    .find(|node| same_volume(&self.trees, &self.mounts, node, path)),
                 _ => None,
             })
             .filter(|node| {
@@ -933,6 +944,7 @@ impl Engine {
                     };
                     let node = (self.trees.locals_with_identity(&identity).rev())
                         .filter(|node| !staying.contains(*node))
+                        .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
                         .find(takes)
                         .or_else(|| self.trees.displaced_with_identity(&identity).filter(takes))
                         .cloned()
@@ -963,7 +975,7 @@ impl Engine {
                 } => {
                     let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let node = resolve(&self.trees, path, &identity, *linked);
+                    let node = resolve(&self.trees, &self.mounts, path, &identity, *linked);
                     self.place(
                         node,
                         path,
@@ -1258,18 +1270,41 @@ fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
 /// The node at `path` when it has `identity`, else the node with `identity`, else the node at `path`. The identity of
 /// a file with several links (`linked`) names no single path, so it never takes a node from another path, where the
 /// other link may still be.
-fn resolve(trees: &Trees, path: &Path, identity: &FileIdentity, linked: bool) -> Option<NodeId> {
+fn resolve(
+    trees: &Trees,
+    mounts: &BTreeMap<PathBuf, Mount>,
+    path: &Path,
+    identity: &FileIdentity,
+    linked: bool,
+) -> Option<NodeId> {
     let at = local_at(trees, path);
     at.clone()
         .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity == *identity))
         .or_else(|| {
-            trees
-                .local_with_identity(identity)
+            (trees.locals_with_identity(identity).rev())
+                .find(|node| same_volume(trees, mounts, node, path))
                 .or_else(|| trees.displaced_with_identity(identity))
                 .filter(|_| !linked)
                 .cloned()
         })
         .or(at)
+}
+
+fn same_volume(
+    trees: &Trees,
+    mounts: &BTreeMap<PathBuf, Mount>,
+    node: &NodeId,
+    path: &Path,
+) -> bool {
+    let volume = |path: &Path| {
+        path.ancestors()
+            .find(|above| mounts.contains_key(*above))
+            .map(Path::to_path_buf)
+    };
+    trees
+        .local()
+        .path(node)
+        .is_none_or(|at| volume(&at) == volume(path))
 }
 
 /// The names from the root to `path`, or `None` when one of them is not a name L can hold.
@@ -2027,6 +2062,7 @@ mod tests {
             asked: false,
             recovery_cause: None,
             unscanned: None,
+            mounts: BTreeMap::new(),
         };
         Case {
             name,
