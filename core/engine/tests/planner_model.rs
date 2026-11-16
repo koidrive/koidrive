@@ -925,12 +925,12 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
     trees
 }
 
-const HELD: &str = "revival held by a create";
+const HELD: &str = "revival held by a commit's target";
 
 fn main_baseline(class: &str) -> Option<&'static str> {
     class
         .contains(HELD)
-        .then_some("a create brings back a folder another device trashed")
+        .then_some("a commit brings back a trashed folder L does not hold")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
