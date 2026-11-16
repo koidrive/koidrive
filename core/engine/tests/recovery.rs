@@ -2376,6 +2376,32 @@ fn keeps_the_mark_invariants(
     let holder: BTreeMap<&str, usize> = (found.iter().enumerate())
         .filter_map(|(i, node)| Some((node.as_deref()?, i)))
         .collect();
+    let claimable = |shape: &Shape, node: &str| {
+        let live =
+            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
+        let content = (known.get(node).into_iter().flatten())
+            .any(|known| known.kind == shape.kind && known.content == shape.content);
+        claims[node] == 1 && live && logged.contains(node) && content
+    };
+    let mut given_up: BTreeSet<&str> = BTreeSet::new();
+    loop {
+        let more: Vec<&str> = (local.iter())
+            .filter(|(id, shape)| {
+                !given_up.contains(id)
+                    && before.synced().get(id).is_none()
+                    && mark_of.get(id).is_some_and(|node| {
+                        node != id
+                            && (!local_ids.contains(node) || given_up.contains(node))
+                            && claimable(shape, node)
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        given_up.extend(more);
+    }
     for (i, (id, shape)) in local.iter().enumerate() {
         if before.synced().get(id).is_some() {
             continue;
@@ -2383,13 +2409,8 @@ fn keeps_the_mark_invariants(
         let Some(node) = mark_of.get(id).copied() else {
             continue;
         };
-        let unique = claims[node] == 1;
-        let free = !local_ids.contains(node) || node == *id;
-        let live =
-            (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
-        let content = (known.get(node).into_iter().flatten())
-            .any(|known| known.kind == shape.kind && known.content == shape.content);
-        if !(unique && free && live && logged.contains(node) && content) {
+        let free = !local_ids.contains(node) || node == *id || given_up.contains(node);
+        if !(free && claimable(shape, node)) {
             continue;
         }
         assert!(
@@ -2402,6 +2423,19 @@ fn keeps_the_mark_invariants(
             holder.get(node).is_none_or(|j| *j == i),
             "entry {} took {node}, which the mark of {id} claims\n{}",
             local[holder[node]].0,
+            case()
+        );
+    }
+    for (i, (id, shape)) in local.iter().enumerate() {
+        let Some(node) = mark_of.get(id).copied().filter(|node| node != id) else {
+            continue;
+        };
+        if before.synced().get(id).is_some() || found[i].as_deref() != Some(*id) {
+            continue;
+        }
+        assert!(
+            !claimable(shape, node) || after.local().get(node).is_some(),
+            "entry {id} kept its ID while the mark of {node} claims\n{}",
             case()
         );
     }
@@ -3321,6 +3355,217 @@ fn a_marked_file_at_its_place_in_a_moved_folder_whose_mark_cannot_follow_is_sett
     );
     let settled = (trees.synced().live("n")).or_else(|| trees.waiting().get("n")?.shape.as_ref());
     assert_eq!(settled, Some(&file("p", "a", 1)));
+}
+
+#[test]
+fn a_file_whose_id_names_another_node_than_its_waiting_mark_is_asked_about_as_new() {
+    let (trees, commits, _) = followed(
+        &[("d0", dir(ROOT, "p")), ("n1", file("d0", "b", 2))],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "a", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2")],
+    );
+    assert_eq!(trees.synced().live("n1"), None);
+    let (entry, _) = (trees.local().iter())
+        .find(|(_, node)| node.shape == file("d0", "b", 2))
+        .expect("the entry stays on disk");
+    assert_ne!(entry, "n1");
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[entry]);
+}
+
+#[test]
+fn an_entry_marked_with_the_id_another_marked_entry_gives_up_is_adopted_as_that_node() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n1", file("d0", "b", 2)),
+            ("e0", file("d0", "c", 2)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "a", 2)),
+            ("n1", file("d0", "c", 2)),
+            ("n1", file("d0", "b", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2"), ("e0", "n1")],
+    );
+    assert_eq!(local_shape(&trees, "n1"), Some(&file("d0", "c", 2)));
+    assert_eq!(trees.local().get("e0"), None);
+}
+
+#[test]
+fn a_file_whose_mark_names_the_id_another_entry_gives_up_is_not_settled_as_its_own_id() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n1", file("d0", "b", 2)),
+            ("n2", file("d0", "z", 3)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+            live("n3", file(ROOT, "c", 3)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "a", 2)),
+            ("n3", file(ROOT, "c", 3)),
+        ],
+        &[("d0", "d0"), ("n1", "n2"), ("n2", "n3")],
+    );
+    assert_eq!(trees.synced().live("n1"), None);
+    assert_eq!(trees.local().get("n1"), None);
+}
+
+#[test]
+fn entries_whose_marks_name_the_ids_a_chain_of_entries_gives_up_are_not_settled_as_their_own_ids() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n0", file("d0", "c", 4)),
+            ("n1", file("d0", "b", 2)),
+            ("n2", file("d0", "z", 3)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n0", file("d0", "c", 4)),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+            live("n3", file(ROOT, "c", 3)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n1", file(ROOT, "y", 4)),
+            ("n2", file(ROOT, "a", 2)),
+            ("n3", file(ROOT, "c", 3)),
+        ],
+        &[("d0", "d0"), ("n0", "n1"), ("n1", "n2"), ("n2", "n3")],
+    );
+    assert_eq!(trees.synced().live("n0"), None);
+    assert_eq!(trees.synced().live("n1"), None);
+}
+
+#[test]
+fn a_file_whose_mark_claims_once_its_folder_is_adopted_gives_up_another_nodes_id() {
+    let (mut trees, mut commits, mut ids) = recovered_by_marks(
+        &[("e0", dir(ROOT, "p")), ("n0", file("e0", "c", 1))],
+        &[("d0", dir(ROOT, "p")), ("held", file("d0", "c", 9))],
+        &[
+            live("e0", dir(ROOT, "old")),
+            live("d0", dir(ROOT, "p")),
+            live("n0", file("d0", "b", 1)),
+            live("n1", file("d0", "c", 1)),
+            live("held", file("d0", "z", 9)),
+        ],
+        &[],
+        &[("e0", "d0"), ("n0", "n1")],
+    );
+    assert_eq!(trees.local().get("n0"), None);
+    let asked: Vec<String> = (commits.questions().iter())
+        .map(|question| question.id.clone())
+        .collect();
+    for id in asked {
+        commits.decide(&id, Answer::Publish);
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.contains(&("move", "n0".to_owned())), "{sent:?}");
+}
+
+#[test]
+fn a_file_whose_mark_names_an_id_a_place_match_frees_is_not_settled_as_its_own_id() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n2", file("d0", "a", 7)),
+            ("n1", file("d0", "b", 2)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n5", file("d0", "a", 7)),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "z", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "z", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2")],
+    );
+    assert_eq!(trees.synced().live("n1"), None);
+    assert_eq!(trees.local().get("n1"), None);
+}
+
+#[test]
+fn a_file_whose_mark_names_a_trashed_node_keeps_its_id_under_a_folder_renamed_here() {
+    let (trees, commits, _) = followed(
+        &[("f", dir(ROOT, "p")), ("n1", file("f", "b", 2))],
+        &[],
+        &[
+            live("f", dir(ROOT, "q")),
+            live("n1", file("f", "b", 2)),
+            Remote("n2", file(ROOT, "a", 2), true, 1),
+        ],
+        &[("n2", file(ROOT, "a", 2))],
+        &[("n1", "n2")],
+    );
+    assert!(trees.local().get("n1").is_some());
+    assert!(
+        commits
+            .questions()
+            .iter()
+            .all(|question| question.holds().all(|id| id != "n1"))
+    );
+}
+
+#[test]
+fn publish_moves_no_server_file_out_of_a_folder_whose_mark_names_a_trashed_node() {
+    let (mut trees, mut commits, mut ids) = followed(
+        &[
+            ("f", dir(ROOT, "p")),
+            ("d1", dir("f", "q")),
+            ("n1", file("d1", "b", 1)),
+        ],
+        &[],
+        &[
+            live("f", dir(ROOT, "q")),
+            live("d1", dir("f", "q")),
+            live("n1", file("d1", "b", 1)),
+            Remote("d9", dir(ROOT, "r"), true, 1),
+        ],
+        &[("d9", dir(ROOT, "r"))],
+        &[("d1", "d9")],
+    );
+    let asked: Vec<String> = (commits.questions().iter())
+        .map(|question| question.id.clone())
+        .collect();
+    for id in asked {
+        commits.decide(&id, Answer::Publish);
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.contains(&("move", "n1".to_owned())), "{sent:?}");
 }
 
 #[test]
