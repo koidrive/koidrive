@@ -1578,7 +1578,7 @@ fn displaced(displaced: &EngineDisplaced) -> Result<Displaced, String> {
             mtime_ns: i128::from(displaced.content.mtime_ns),
             executable: displaced.content.executable,
             linked: false,
-            mount_point: false,
+            mount: None,
         },
     })
 }

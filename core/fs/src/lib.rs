@@ -162,9 +162,47 @@ pub struct Entry {
     /// equal, since a link made or removed elsewhere changes nothing at this
     /// path.
     pub linked: bool,
-    /// Whether the folder is the root of a volume mounted inside the tree: on
-    /// another device than the folder that holds it when it was scanned.
-    pub mount_point: bool,
+    /// The volume mounted at the folder, when it is the root of a volume mounted inside the tree: on another device
+    /// than the folder that holds it when it was scanned.
+    pub mount: Option<Mount>,
+}
+
+/// The volume mounted at a folder inside the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mount {
+    /// A volume with this UUID.
+    Volume(VolumeId),
+    /// A volume that has no UUID the system reports, so no scan can tell it from another volume.
+    Unidentified,
+}
+
+/// Why the scans keep what a snapshot knew at and below a folder and do not read there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detached {
+    /// The volume the snapshot knew at the mount point is not mounted there: it was ejected, another volume took its
+    /// place, or the volume there has no ID that shows it is the same one.
+    Away,
+    /// A volume is mounted over a folder whose entries the snapshot knew, which it hides.
+    Covered,
+}
+
+impl Entry {
+    fn is_back(&self, now: &Entry) -> bool {
+        match self.mount {
+            Some(Mount::Volume(known)) => {
+                now.mount == Some(Mount::Volume(known)) && self.id == now.id
+            }
+            Some(Mount::Unidentified) => false,
+            None => now.mount.is_none(),
+        }
+    }
+
+    fn detached(&self) -> Detached {
+        match self.mount {
+            Some(_) => Detached::Away,
+            None => Detached::Covered,
+        }
+    }
 }
 
 impl PartialEq for Entry {
@@ -223,7 +261,7 @@ impl Stat {
                 mtime_ns: 0,
                 executable: false,
                 linked: false,
-                mount_point: false,
+                mount: None,
             },
             FileType::RegularFile => Entry {
                 kind: EntryKind::File,
@@ -232,7 +270,7 @@ impl Stat {
                 mtime_ns: self.mtime_ns,
                 executable: self.mode & 0o111 != 0,
                 linked: self.nlink > 1,
-                mount_point: false,
+                mount: None,
             },
             _ => return None,
         })
@@ -407,6 +445,7 @@ struct Scan<'c> {
     unreadable: Vec<PathBuf>,
     left_out: BTreeMap<PathBuf, Entry>,
     mounts: BTreeMap<PathBuf, Entry>,
+    detached: Vec<(PathBuf, Detached)>,
     /// The rules that leave entries out, for a scan that applies any.
     rules: Option<Pending<'c>>,
     cut: &'c mut dyn FnMut(Cut<'_>),
@@ -429,17 +468,23 @@ impl Scan<'_> {
         let Some(mut entry) = stat.entry() else {
             return Ok(());
         };
-        entry.mount_point = entry.kind == EntryKind::Dir && stat.dev != dev;
+        if entry.kind == EntryKind::Dir && stat.dev != dev {
+            let volume = (open_dir_at(dir, name).ok()).and_then(|sub| root::volume_id(sub.as_fd()));
+            entry.mount = Some(volume.map_or(Mount::Unidentified, Mount::Volume));
+        }
         if let Some(rules) = &mut self.rules
             && rules.leaves_out(&rel, entry.kind)
         {
             self.left_out.insert(rel, entry);
             return Ok(());
         }
-        if let Some(known) = self.mounts.get(&rel)
-            && !(entry.mount_point && entry.id == known.id)
-        {
-            self.new.insert(rel.clone(), *known);
+        let held = match self.mounts.get(&rel) {
+            Some(known) => (!known.is_back(&entry)).then_some(*known),
+            None => (entry.mount == Some(Mount::Unidentified)).then_some(entry),
+        };
+        if let Some(held) = held {
+            self.new.insert(rel.clone(), held);
+            self.detached.push((rel.clone(), held.detached()));
             self.unreadable.push(rel);
             return Ok(());
         }
@@ -553,6 +598,9 @@ pub struct Snapshot {
     /// The entries the snapshot knew that the rules now leave out, as each was
     /// last known. What is below them is not known.
     pub left_out: BTreeMap<PathBuf, Entry>,
+    /// Mount points whose volume the last scan of each did not find there: unmounted, another volume, or one without
+    /// a UUID. The entries keep what was known below each, and no scan reads there until the volume is back.
+    pub detached: BTreeMap<PathBuf, Detached>,
 }
 
 /// What one [`Snapshot::rescan`] found.
@@ -705,12 +753,13 @@ impl Snapshot {
         let mut mounts = BTreeMap::new();
         for path in held {
             if let Some(entry) = self.entries.remove(&path)
-                && entry.mount_point
+                && let Some(mount) = entry.mount
             {
-                mounts.insert(path, entry.id);
+                mounts.insert(path, (entry.id, mount));
             }
         }
         self.left_out.retain(|path, _| !path.starts_with(scope));
+        self.detached.retain(|path, _| !path.starts_with(scope));
         self.entries.extend(
             known
                 .into_iter()
@@ -727,7 +776,9 @@ impl Snapshot {
                         mtime_ns,
                         executable: false,
                         linked: kind == EntryKind::File,
-                        mount_point: mounts.get(&path) == Some(&id),
+                        mount: (mounts.get(&path))
+                            .filter(|(was, _)| *was == id)
+                            .map(|(_, mount)| *mount),
                     };
                     (path, entry)
                 }),
@@ -765,9 +816,12 @@ impl Snapshot {
             unreadable: Vec::new(),
             left_out: BTreeMap::new(),
             mounts: (self.entries.iter())
-                .filter(|(_, entry)| entry.mount_point)
+                .filter(|(path, entry)| {
+                    entry.mount.is_some() || self.detached.get(*path) == Some(&Detached::Covered)
+                })
                 .map(|(path, entry)| (path.clone(), *entry))
                 .collect(),
+            detached: Vec::new(),
             rules: rules.map(Pending::new),
             cut,
             stopped,
@@ -890,21 +944,38 @@ impl Snapshot {
         let (left_out, mut still_left_out) = take_left_out(&mut old, &scan.left_out);
         let mut held_from = BTreeMap::new();
         for (path, known) in &old {
-            if !known.mount_point
+            if known.mount.is_none()
                 || scan.new.contains_key(path)
                 || (scan.unreadable.iter()).any(|blocked| path.starts_with(blocked))
             {
                 continue;
             }
-            let Some(at) = moved_to(path, &old, &scan.new) else {
+            let Some(at) = moved_to(path, &old, &scan.new, &self.entries) else {
                 continue;
             };
-            if (scan.new.get(&at)).is_some_and(|now| now.mount_point && now.id == known.id) {
+            if (scan.new.get(&at)).is_some_and(|now| known.is_back(now)) {
                 continue;
             }
             scan.new.insert(at.clone(), *known);
+            scan.detached.push((at.clone(), Detached::Away));
             scan.unreadable.push(at.clone());
             held_from.insert(at, path.clone());
+        }
+        let covering: Vec<PathBuf> = (scan.new.iter())
+            .filter(|(path, now)| {
+                now.mount.is_some()
+                    && (old.get(*path)).is_some_and(|before| {
+                        before.kind == EntryKind::Dir && before.mount.is_none()
+                    })
+                    && (old.range((*path).clone()..).nth(1))
+                        .is_some_and(|(inside, _)| inside.starts_with(path))
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in covering {
+            scan.new.insert(path.clone(), old[&path]);
+            scan.detached.push((path.clone(), Detached::Covered));
+            scan.unreadable.push(path);
         }
         let unreadable = std::mem::take(&mut scan.unreadable);
         for blocked in &unreadable {
@@ -918,8 +989,11 @@ impl Snapshot {
                 }
                 None => now
                     .and_then(|now| {
-                        old.iter().find(|(_, before)| {
-                            before.kind == EntryKind::Dir && before.id == now.id
+                        let volume = volume_of(blocked, &scan.new, &self.entries);
+                        old.iter().find(|(path, before)| {
+                            before.kind == EntryKind::Dir
+                                && before.id == now.id
+                                && volume_of(path, &old, &self.entries) == volume
                         })
                     })
                     .map_or(blocked, |(path, _)| path)
@@ -1026,6 +1100,9 @@ impl Snapshot {
             self.entries.remove(path);
         }
         self.entries.append(&mut scan.new);
+        self.detached
+            .retain(|path, _| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
+        self.detached.extend(scan.detached.drain(..));
         for path in &was_left_out {
             self.left_out.remove(path);
         }
@@ -1162,6 +1239,7 @@ fn moved_to(
     path: &Path,
     old: &BTreeMap<PathBuf, Entry>,
     new: &BTreeMap<PathBuf, Entry>,
+    beyond: &BTreeMap<PathBuf, Entry>,
 ) -> Option<PathBuf> {
     let parent = path.parent()?;
     let Some(before) = old.get(parent) else {
@@ -1170,7 +1248,10 @@ fn moved_to(
     if new.get(parent).is_some_and(|now| now.id == before.id) {
         return Some(path.to_path_buf());
     }
-    match (new.iter()).find(|(_, now)| now.kind == EntryKind::Dir && now.id == before.id) {
+    let volume = volume_of(parent, old, beyond);
+    match (new.iter()).find(|(at, now)| {
+        now.kind == EntryKind::Dir && now.id == before.id && volume_of(at, new, beyond) == volume
+    }) {
         Some((at, _)) => Some(at.join(path.file_name()?)),
         None => (new.get(parent))
             .is_some_and(|now| now.kind == EntryKind::Dir)
@@ -1717,7 +1798,7 @@ fn volume_of<'p>(
     beyond: &BTreeMap<PathBuf, Entry>,
 ) -> Option<&'p Path> {
     path.ancestors().find(|above| {
-        (tree.get(*above).or_else(|| beyond.get(*above))).is_some_and(|entry| entry.mount_point)
+        (tree.get(*above).or_else(|| beyond.get(*above))).is_some_and(|entry| entry.mount.is_some())
     })
 }
 
@@ -1731,12 +1812,15 @@ fn carried(path: &Path, moved: &[(&Path, &Path)]) -> PathBuf {
         )
 }
 
-fn diff(
-    old: &BTreeMap<PathBuf, Entry>,
-    new: &BTreeMap<PathBuf, Entry>,
-    beyond: &BTreeMap<PathBuf, Entry>,
+fn diff<'t>(
+    old: &'t BTreeMap<PathBuf, Entry>,
+    new: &'t BTreeMap<PathBuf, Entry>,
+    beyond: &'t BTreeMap<PathBuf, Entry>,
 ) -> Vec<Change> {
-    let moved: HashSet<FileId> = old
+    let mounted = (old.values().chain(new.values()).chain(beyond.values()))
+        .any(|entry| entry.mount.is_some());
+    let volume = |path: &'t Path, tree| mounted.then(|| volume_of(path, tree, beyond)).flatten();
+    let moved: HashSet<(Option<&Path>, FileId)> = old
         .iter()
         .filter(|(path, before)| {
             before.kind == EntryKind::Dir
@@ -1744,24 +1828,28 @@ fn diff(
                     .get(*path)
                     .is_some_and(|after| after.kind == EntryKind::Dir)
         })
-        .map(|(_, before)| before.id)
+        .map(|(path, before)| (volume(path, old), before.id))
         .collect();
-    let dirs: HashSet<FileId> = (new.values())
-        .filter(|after| after.kind == EntryKind::Dir)
-        .map(|after| after.id)
+    let dirs: HashSet<(Option<&Path>, FileId)> = (new.iter())
+        .filter(|(_, after)| after.kind == EntryKind::Dir)
+        .map(|(path, after)| (volume(path, new), after.id))
         .collect();
-    let ids = |tree: &BTreeMap<PathBuf, Entry>| -> HashSet<(FileId, EntryKind)> {
-        tree.values().map(|entry| (entry.id, entry.kind)).collect()
-    };
+    let ids =
+        |tree: &'t BTreeMap<PathBuf, Entry>| -> HashSet<(Option<&'t Path>, FileId, EntryKind)> {
+            (tree.iter())
+                .map(|(path, entry)| (volume(path, tree), entry.id, entry.kind))
+                .collect()
+        };
     let (ids_before, ids_after) = (ids(old), ids(new));
-    let kept = |path: &Path, before: &Entry, after: &Entry| {
+    let kept = |path: &'t Path, before: &Entry, after: &Entry| {
+        let (was_on, is_on) = (volume(path, old), volume(path, new));
         after.kind == before.kind
             && !(after.id != before.id
-                && ids_before.contains(&(after.id, after.kind))
-                && ids_after.contains(&(before.id, before.kind)))
+                && ids_before.contains(&(is_on, after.id, after.kind))
+                && ids_after.contains(&(was_on, before.id, before.kind)))
             && !(after.kind == EntryKind::Dir
                 && after.id != before.id
-                && dirs.contains(&before.id)
+                && dirs.contains(&(was_on, before.id))
                 && !(old.range(path.to_path_buf()..).skip(1))
                     .take_while(|(inside, _)| inside.starts_with(path))
                     .any(|(inside, entry)| {
@@ -1770,8 +1858,8 @@ fn diff(
                     }))
             && !(after.kind == EntryKind::Dir
                 && after.id != before.id
-                && moved.contains(&after.id)
-                && (dirs.contains(&before.id)
+                && moved.contains(&(is_on, after.id))
+                && (dirs.contains(&(was_on, before.id))
                     || !old
                         .range(path.to_path_buf()..)
                         .nth(1)
@@ -1969,7 +2057,7 @@ pub struct NativeWatcher {
     blocked: BTreeSet<PathBuf>,
     uncovered: Option<(FileId, BTreeSet<PathBuf>)>,
     rewatch: bool,
-    detached: BTreeSet<PathBuf>,
+    remount_checked: Instant,
     failed: Option<Error>,
     stopped: Box<dyn Fn() -> bool + Send>,
     sender: mpsc::Sender<notify::Result<notify::Event>>,
@@ -2019,7 +2107,7 @@ impl NativeWatcher {
             changed_rules: Vec::new(),
             read: BTreeSet::new(),
             rewatch: false,
-            detached: BTreeSet::new(),
+            remount_checked: Instant::now(),
             failed: None,
             stopped: Box::new(|| false),
             sender,
@@ -2161,17 +2249,26 @@ impl NativeWatcher {
         }
     }
 
-    fn mounted_again(&self, path: &Path) -> bool {
+    fn came_back(&self, path: &Path) -> bool {
         let (Some(known), Some(parent)) = (self.snapshot.entries.get(path), path.parent()) else {
             return false;
         };
-        match (
-            stat_path(&self.root.join(path)),
+        let (Ok(dir), Ok(above)) = (
+            open_root(&self.root.join(path)),
             stat_path(&self.root.join(parent)),
-        ) {
-            (Ok(now), Ok(above)) => now.dev != above.dev && now.id == known.id,
-            _ => false,
-        }
+        ) else {
+            return false;
+        };
+        stat_fd(dir.as_fd()).is_ok_and(|now| {
+            let found = Entry {
+                id: now.id,
+                mount: (now.dev != above.dev).then(|| {
+                    root::volume_id(dir.as_fd()).map_or(Mount::Unidentified, Mount::Volume)
+                }),
+                ..*known
+            };
+            known.is_back(&found)
+        })
     }
 
     /// Takes in which folders a scan read and which it could not read. The
@@ -2295,36 +2392,30 @@ impl Watcher for NativeWatcher {
             }
             if self.dirty.is_empty() && self.uncovered.is_none() {
                 let left = deadline.saturating_duration_since(Instant::now());
-                let wait = if self.detached.is_empty() {
+                let wait = if self.snapshot.detached.is_empty() {
                     left
                 } else {
                     left.min(REMOUNT_CHECK)
                 };
-                if !self.receive(wait)? {
-                    let back: Vec<PathBuf> = (self.detached.iter())
-                        .filter(|path| self.mounted_again(path))
-                        .cloned()
-                        .collect();
-                    self.dirty.extend(back);
-                    if self.dirty.is_empty() {
-                        if Instant::now() >= deadline {
-                            return Ok(self.report(Vec::new(), root));
-                        }
-                        continue;
-                    }
-                }
+                self.receive(wait)?;
             }
-            let settle_until = Instant::now() + MAX_SETTLE;
-            while Instant::now() < settle_until && self.receive(SETTLE)? {}
-            if self.rules.is_some() && self.dirty.is_empty() && self.uncovered.is_none() {
-                // Every event of the batch lay below a left-out folder. Such
-                // events can keep coming, so they must not hold the poll
-                // past its deadline.
+            if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK
+            {
+                self.remount_checked = Instant::now();
+                let back: Vec<PathBuf> = (self.snapshot.detached.keys())
+                    .filter(|path| self.came_back(path))
+                    .cloned()
+                    .collect();
+                self.dirty.extend(back);
+            }
+            if self.dirty.is_empty() && self.uncovered.is_none() {
                 if Instant::now() >= deadline {
                     return Ok(self.report(Vec::new(), root));
                 }
                 continue;
             }
+            let settle_until = Instant::now() + MAX_SETTLE;
+            while Instant::now() < settle_until && self.receive(SETTLE)? {}
             if self.rewatch {
                 let deferred = cfg!(target_os = "linux") && self.rules.is_some();
                 self.watcher = watch_root(&self.root, &self.sender, deferred)?;
@@ -2356,19 +2447,6 @@ impl Watcher for NativeWatcher {
             };
             self.uncovered = None;
             root = Some(rescan.root);
-            self.detached
-                .retain(|path| !scopes.iter().any(|scope| path.starts_with(scope)));
-            let detached: Vec<PathBuf> = (rescan.unreadable.iter())
-                .filter(|path| {
-                    self.snapshot
-                        .entries
-                        .get(*path)
-                        .is_some_and(|entry| entry.mount_point)
-                })
-                .filter(|path| !self.mounted_again(path))
-                .cloned()
-                .collect();
-            self.detached.extend(detached);
             self.changed_rules.extend(rescan.rules);
             self.dirty = rescan.unsettled.into_iter().collect();
             #[cfg(target_os = "linux")]

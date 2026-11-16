@@ -707,6 +707,12 @@ pub enum ProblemKind {
     StateNotWritable { reason: String },
     /// The folder stopped syncing for the reason the driver gives, which only a person can fix.
     FolderHalted { reason: String },
+    /// The disk mounted at the problem's path is not connected, or another disk is in its place. Its files stay on
+    /// the server as they were and sync again once it is back.
+    DiskNotConnected,
+    /// A disk is mounted over the folder at the problem's path, and hides its files. They stay on the server as they
+    /// were and sync again once the disk is ejected.
+    DiskMountedOver,
 }
 
 /// What the app writes into a KSCrash report each time it reads the usage-report setting: whether reports are on for

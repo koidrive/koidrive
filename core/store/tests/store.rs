@@ -4537,14 +4537,24 @@ fn volume_mounts_keep_their_exact_names_and_start_empty_in_a_store_from_before_t
     assert_eq!(applied(&path), all_migrations());
     assert_eq!(
         store.transaction(|tx| tx.volume_mounts()).unwrap(),
-        BTreeSet::new()
+        BTreeMap::new()
     );
+    use koidrive_fs::{Mount, VolumeId};
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
-    let mounts = BTreeSet::from([
-        PathBuf::from("Disk"),
-        PathBuf::from("a/b/Deep"),
-        PathBuf::from(std::ffi::OsStr::from_bytes(b"caf\xe9")),
+    let mounts = BTreeMap::from([
+        (
+            PathBuf::from("Disk"),
+            Mount::Volume(VolumeId::Uuid([7; 16])),
+        ),
+        (
+            PathBuf::from("a/b/Deep"),
+            Mount::Volume(VolumeId::FileSystemId([9; 8])),
+        ),
+        (
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"caf\xe9")),
+            Mount::Unidentified,
+        ),
     ]);
     store
         .transaction(|tx| tx.set_volume_mounts(&mounts))
@@ -4552,7 +4562,7 @@ fn volume_mounts_keep_their_exact_names_and_start_empty_in_a_store_from_before_t
     drop(store);
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.transaction(|tx| tx.volume_mounts()).unwrap(), mounts);
-    let one = BTreeSet::from([PathBuf::from("Disk")]);
+    let one = BTreeMap::from([(PathBuf::from("Disk"), Mount::Unidentified)]);
     store.transaction(|tx| tx.set_volume_mounts(&one)).unwrap();
     assert_eq!(store.transaction(|tx| tx.volume_mounts()).unwrap(), one);
 }

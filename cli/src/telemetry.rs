@@ -832,6 +832,7 @@ mod tests {
             questions: 0,
             problem: None,
             progress: None,
+            held_disks: Vec::new(),
             wait: None,
         };
         let status = Status {

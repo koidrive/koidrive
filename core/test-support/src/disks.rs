@@ -8,6 +8,20 @@ use std::process::Command;
 
 const MOUNTS: &str = "KOIDRIVE_TEST_MOUNTS";
 
+const VOLUME_METADATA: [&str; 5] = [
+    ".fseventsd",
+    ".Spotlight-V100",
+    ".Trashes",
+    ".TemporaryItems",
+    ".DocumentRevisions-V100",
+];
+
+/// Whether `path` is in a folder the system writes on a volume it mounts whenever it likes, such as `.fseventsd`.
+pub fn is_volume_metadata(path: &Path) -> bool {
+    path.components()
+        .any(|part| VOLUME_METADATA.iter().any(|name| part.as_os_str() == *name))
+}
+
 fn run(program: &str, args: &[&OsStr]) -> String {
     let out = Command::new(program).args(args).output().unwrap();
     assert!(
@@ -49,14 +63,7 @@ impl Disks {
     /// Creates an empty image of 16 MB named `name`.
     pub fn image(&self, name: &str) -> PathBuf {
         if cfg!(target_os = "macos") {
-            let image = self.base().join(format!("{name}.dmg"));
-            let args = [
-                "create", "-quiet", "-size", "16m", "-fs", "APFS", "-volname", name,
-            ];
-            let mut args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-            args.push(image.as_os_str());
-            run("hdiutil", &args);
-            return image;
+            return self.formatted(name, "APFS");
         }
         let image = self.base().join(format!("{name}.img"));
         run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
@@ -76,6 +83,42 @@ impl Disks {
         image
     }
 
+    /// Creates an empty FAT image of 16 MB named `name`, the file system most USB sticks ship with. Linux reports no
+    /// UUID for it; macOS derives one from its serial number.
+    pub fn fat(&self, name: &str) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            return self.formatted(name, "MS-DOS");
+        }
+        let image = self.base().join(format!("{name}.fat"));
+        run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
+        run("mkfs.vfat", &[image.as_ref()]);
+        image
+    }
+
+    /// Creates an empty exFAT image of 16 MB named `name`.
+    #[cfg(target_os = "macos")]
+    pub fn exfat(&self, name: &str) -> PathBuf {
+        self.formatted(name, "ExFAT")
+    }
+
+    fn formatted(&self, name: &str, file_system: &str) -> PathBuf {
+        let image = self.base().join(format!("{name}.dmg"));
+        let args = [
+            "create",
+            "-quiet",
+            "-size",
+            "16m",
+            "-fs",
+            file_system,
+            "-volname",
+            name,
+        ];
+        let mut args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        args.push(image.as_os_str());
+        run("hdiutil", &args);
+        image
+    }
+
     /// A byte-identical copy of `image` named `name`, whose files have the same inode numbers and birth times.
     pub fn copy(&self, image: &Path, name: &str) -> PathBuf {
         let copy = image
@@ -92,6 +135,22 @@ impl Disks {
             let mut args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
             args.extend([at.as_os_str(), image.as_os_str()]);
             run("hdiutil", &args);
+        } else if image
+            .extension()
+            .is_some_and(|extension| extension == "fat")
+        {
+            let options = format!(
+                "loop,uid={},gid={}",
+                run("id", &["-u".as_ref()]),
+                run("id", &["-g".as_ref()])
+            );
+            sudo(&[
+                "mount".as_ref(),
+                "-o".as_ref(),
+                options.as_ref(),
+                image.as_ref(),
+                at.as_ref(),
+            ]);
         } else {
             sudo(&[
                 "mount".as_ref(),

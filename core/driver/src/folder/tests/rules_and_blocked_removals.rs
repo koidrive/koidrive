@@ -279,7 +279,8 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
             rules: Vec::new(),
             read: Vec::new(),
             all_rules: false,
-            mounts: BTreeSet::new(),
+            mounts: BTreeMap::new(),
+            detached: BTreeMap::new(),
         },
     };
     let step = b.folder.observed(stale, 1);
@@ -992,7 +993,8 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
             rules: Vec::new(),
             read: Vec::new(),
             all_rules: false,
-            mounts: BTreeSet::new(),
+            mounts: BTreeMap::new(),
+            detached: BTreeMap::new(),
         },
     };
     let step = b.folder.observed(unrelated, 1);

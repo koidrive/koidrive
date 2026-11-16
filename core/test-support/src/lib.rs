@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use proptest::test_runner::{Config, FailurePersistence, PersistedSeed, RngSeed};
 
 mod disks;
-pub use disks::Disks;
+pub use disks::{Disks, is_volume_metadata};
 
 const DETERMINISTIC: &str = "KOIDRIVE_PROPTEST_DETERMINISTIC";
 const FIXED_SEED: u64 = 0;

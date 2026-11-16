@@ -503,6 +503,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
         questions: 0,
         problem: None,
         progress: None,
+        held_disks: Vec::new(),
         wait: None,
         recovery: None,
     }

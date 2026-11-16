@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Entry, EntryKind, Error as FsError, FileId, Known, NativeWatcher, RescanWatcher,
-    RootAt, RootProblem, Snapshot, Watcher, check_root,
+    Change, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Mount, NativeWatcher,
+    RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -75,7 +75,8 @@ pub struct Observation {
     /// platform watcher failed and a rescanning one took over. Rules known from before are stale then, since the new
     /// scans compare with no earlier rules and report no rules file as gone.
     pub all_rules: bool,
-    pub mounts: BTreeSet<PathBuf>,
+    pub mounts: BTreeMap<PathBuf, Mount>,
+    pub detached: BTreeMap<PathBuf, Detached>,
 }
 
 /// The rules of the `.koiignore` file in `dir`, a folder relative to the root and empty for the root, or `None` when
@@ -655,9 +656,9 @@ impl Observer for FsObserver {
             rules,
             all_rules: first,
             mounts: (self.watcher.snapshot().entries.iter())
-                .filter(|(_, entry)| entry.mount_point)
-                .map(|(path, _)| path.clone())
+                .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
                 .collect(),
+            detached: self.watcher.snapshot().detached.clone(),
         }))
     }
 

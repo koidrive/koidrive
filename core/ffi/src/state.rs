@@ -153,6 +153,23 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 },
             ));
         }
+        for disk in &folder.held_disks {
+            let kind = match disk.kind {
+                driver::HeldDiskKind::NotConnected => ProblemKind::DiskNotConnected,
+                driver::HeldDiskKind::MountedOver => ProblemKind::DiskMountedOver,
+            };
+            found.push((
+                format!("disk-{space}-{}", disk.path),
+                format!("{kind:?}"),
+                Problem {
+                    id: String::new(),
+                    space_id: space_id.clone(),
+                    path: Some(disk.path.clone()),
+                    kind,
+                    since_ms: 0,
+                },
+            ));
+        }
         if status.running
             && let Some((unreachable, retry_at_ms)) = folder.unreachable()
         {
@@ -529,6 +546,7 @@ mod tests {
             questions: 0,
             problem: problem.map(str::to_owned),
             progress: None,
+            held_disks: Vec::new(),
         }
     }
 
@@ -662,6 +680,46 @@ mod tests {
         status.folders[0].wait = None;
         assert!(problems(&status, &mut seen).is_empty());
         assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn each_disk_a_folder_holds_is_a_problem_at_its_mount_point() {
+        let mut seen = Seen::new();
+        let mut status = status_of(&[]);
+        status.folders = vec![driver::FolderStatus {
+            held_disks: vec![
+                driver::HeldDisk {
+                    path: "Disk".into(),
+                    kind: driver::HeldDiskKind::NotConnected,
+                },
+                driver::HeldDisk {
+                    path: "Photos/Card".into(),
+                    kind: driver::HeldDiskKind::MountedOver,
+                },
+            ],
+            ..folder_in(DriverFolderState::UpToDate, None)
+        }];
+        let space = Some(status.folders[0].space_id.clone());
+        let found: Vec<_> = (problems(&status, &mut seen).into_iter())
+            .map(|problem| (problem.space_id, problem.path, problem.kind))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    space.clone(),
+                    Some("Disk".into()),
+                    ProblemKind::DiskNotConnected
+                ),
+                (
+                    space,
+                    Some("Photos/Card".into()),
+                    ProblemKind::DiskMountedOver
+                ),
+            ]
+        );
+        status.folders[0].held_disks.clear();
+        assert!(problems(&status, &mut seen).is_empty());
     }
 
     #[test]
@@ -843,6 +901,7 @@ mod unreachable_tests {
                     "no internet connection; trying again at 2026-11-14 12:00 UTC".into(),
                 ),
                 progress: None,
+                held_disks: Vec::new(),
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
                     until_ms: Some(7),
@@ -885,6 +944,7 @@ mod unreachable_tests {
                     questions: 0,
                     problem: Some("the folder is missing".into()),
                     progress: None,
+                    held_disks: Vec::new(),
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
                         until_ms: Some(1),

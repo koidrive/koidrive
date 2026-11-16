@@ -1130,7 +1130,7 @@ fn folder_entry(id: FileId) -> Entry {
         mtime_ns: 0,
         executable: false,
         linked: false,
-        mount_point: false,
+        mount: None,
     }
 }
 

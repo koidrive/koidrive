@@ -73,6 +73,43 @@ pub struct FolderStatus {
     /// How far the folder's transfers have got, while it has files to send or fetch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// The disks inside the folder whose files the folder keeps as they were, while it is running.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_disks: Vec<HeldDisk>,
+}
+
+/// A disk inside a folder whose files stay on the server as they were and do not sync until it is back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldDisk {
+    /// The mount point, relative to the folder.
+    pub path: String,
+    pub kind: HeldDiskKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldDiskKind {
+    /// The disk is ejected, or another disk is mounted in its place.
+    NotConnected,
+    /// A disk is mounted over a folder whose files sync, and hides them.
+    MountedOver,
+}
+
+impl HeldDisk {
+    /// What a person reads about the disk in the folder at `folder`.
+    pub fn describe(&self, folder: &str) -> String {
+        let at = std::path::Path::new(folder).join(&self.path);
+        match self.kind {
+            HeldDiskKind::NotConnected => format!(
+                "Disk not connected: {}. Sync resumes when it's back.",
+                koidrive_fs::quoted(&at)
+            ),
+            HeldDiskKind::MountedOver => format!(
+                "Disk mounted over a synced folder: {}. Sync resumes when it's ejected.",
+                koidrive_fs::quoted(&at)
+            ),
+        }
+    }
 }
 
 /// What a person reads about `cause`.

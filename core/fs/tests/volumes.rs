@@ -2,11 +2,12 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use koidrive_fs::{Change, EntryKind, NativeWatcher, Snapshot, Watcher};
-use koidrive_test_support::Disks;
+use koidrive_fs::{Change, Detached, EntryKind, Mount, NativeWatcher, Snapshot, Watcher};
+use koidrive_test_support::{Disks, is_volume_metadata};
 
 fn write(path: &Path, text: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -14,9 +15,39 @@ fn write(path: &Path, text: &str) {
 }
 
 fn rescan(snapshot: &mut Snapshot, root: &Path, paths: &[&str]) -> koidrive_fs::Rescan {
-    snapshot
+    let mut found = snapshot
         .rescan(root, paths.iter().map(PathBuf::from))
-        .unwrap()
+        .unwrap();
+    found
+        .changes
+        .retain(|change| !paths_of(change).any(is_volume_metadata));
+    found
+}
+
+fn paths_of(change: &Change) -> impl Iterator<Item = &Path> {
+    match change {
+        Change::Renamed { from, to, .. } => vec![from.as_path(), to.as_path()],
+        Change::Created { path, .. }
+        | Change::Removed { path, .. }
+        | Change::Modified { path }
+        | Change::Reidentified { path } => vec![path.as_path()],
+        other => panic!("unexpected change {other:?}"),
+    }
+    .into_iter()
+}
+
+fn mounted(snapshot: &Snapshot, path: &str) -> bool {
+    matches!(
+        snapshot.entries[Path::new(path)].mount,
+        Some(Mount::Volume(_))
+    )
+}
+
+fn away(snapshot: &Snapshot) -> Vec<&str> {
+    (snapshot.detached.iter())
+        .filter(|(_, why)| **why == Detached::Away)
+        .map(|(path, _)| path.to_str().unwrap())
+        .collect()
 }
 
 fn removals(changes: &[Change]) -> Vec<&Change> {
@@ -69,9 +100,9 @@ fn a_volume_ejected_from_inside_the_folder_keeps_everything_it_held() {
     let held: Vec<String> = mounts.iter().flat_map(|mount| below(mount)).collect();
     let held: Vec<&str> = held.iter().map(String::as_str).collect();
     for mount in &mounts {
-        assert!(snapshot.entries[Path::new(mount)].mount_point, "{mount}");
+        assert!(mounted(&snapshot, mount), "{mount}");
     }
-    assert!(!snapshot.entries[Path::new("a/b")].mount_point);
+    assert_eq!(snapshot.entries[Path::new("a/b")].mount, None);
     holds(&snapshot, &held);
 
     disks.detach(&root.join("Disk"));
@@ -96,6 +127,7 @@ fn a_volume_ejected_from_inside_the_folder_keeps_everything_it_held() {
             .iter()
             .collect()
     );
+    assert_eq!(away(&snapshot), mounts);
 
     fs::remove_dir(root.join("Disk")).unwrap();
     fs::remove_dir_all(root.join("a/b")).unwrap();
@@ -120,6 +152,7 @@ fn a_volume_ejected_from_inside_the_folder_keeps_everything_it_held() {
     let found = rescan(&mut snapshot, &root, &[""]);
     assert_eq!(found.changes, []);
     assert_eq!(found.unreadable, Vec::<PathBuf>::new());
+    assert_eq!(away(&snapshot), Vec::<&str>::new());
     write(&root.join("Disk/new.txt"), "new");
     fs::remove_file(root.join("a/b/Deep/report.docx")).unwrap();
     let found = rescan(&mut snapshot, &root, &[""]);
@@ -160,6 +193,71 @@ fn another_volume_at_a_mount_point_leaves_the_first_one_held() {
         &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
     );
     assert!(!snapshot.entries.contains_key(Path::new("Disk/other.txt")));
+    assert_eq!(away(&snapshot), ["Disk"]);
+}
+
+#[test]
+fn a_volume_mounted_over_a_folder_leaves_what_the_folder_held_until_it_is_ejected() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let disk = disks.image("Over");
+    write(&root.join("Data/keep.docx"), "keep");
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.attach(&disk, &root.join("Data"));
+    write(&root.join("Data/vol.txt"), "on the disk");
+    for _ in 0..2 {
+        let found = rescan(&mut snapshot, &root, &[""]);
+        assert_eq!(found.changes, []);
+        assert_eq!(found.unreadable, [PathBuf::from("Data")]);
+        holds(&snapshot, &["Data/keep.docx"]);
+        assert!(!snapshot.entries.contains_key(Path::new("Data/vol.txt")));
+        assert_eq!(
+            snapshot.detached.get(Path::new("Data")),
+            Some(&Detached::Covered)
+        );
+    }
+
+    disks.detach(&root.join("Data"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(found.changes, []);
+    assert!(snapshot.detached.is_empty());
+    write(&root.join("Data/keep.docx"), "edited after the eject");
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(
+        found.changes,
+        [Change::Modified {
+            path: "Data/keep.docx".into()
+        }]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_volume_without_a_uuid_is_never_read() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let fat = disks.fat("Fat");
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(&fat, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    assert_eq!(
+        snapshot.entries[Path::new("Disk")].mount,
+        Some(Mount::Unidentified)
+    );
+    assert_eq!(away(&snapshot), ["Disk"]);
+    for path in below("Disk") {
+        assert!(!snapshot.entries.contains_key(Path::new(&path)), "{path}");
+    }
+    write(&root.join("Disk/later.txt"), "later");
+    fs::remove_file(root.join("Disk/report.docx")).unwrap();
+    let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+    assert_eq!(found.changes, []);
+    assert_eq!(found.unreadable, [PathBuf::from("Disk")]);
 }
 
 fn clones(disks: &mut Disks) -> (PathBuf, PathBuf) {
@@ -206,7 +304,7 @@ fn renames_pair_entries_of_one_volume_only_also_on_byte_identical_copies() {
         "{:?}",
         found.changes
     );
-    assert!(snapshot.entries[Path::new("B")].mount_point);
+    assert!(mounted(&snapshot, "B"));
 
     fs::remove_file(root.join("A/S/g.txt")).unwrap();
     fs::rename(root.join("B/S/g.txt"), root.join("B/S/h.txt")).unwrap();
@@ -225,6 +323,74 @@ fn renames_pair_entries_of_one_volume_only_also_on_byte_identical_copies() {
             },
         ]
     );
+}
+
+#[test]
+fn an_unreadable_folder_moved_on_one_copy_of_a_disk_keeps_what_it_held_there() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let (one, two) = clones(&mut disks);
+    for (image, at) in [(&one, "A"), (&two, "B")] {
+        fs::create_dir_all(root.join(at)).unwrap();
+        disks.attach(image, &root.join(at));
+    }
+    write(&root.join("A/S/only-a"), "a");
+    write(&root.join("B/S/only-b"), "b");
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("B/S"), root.join("B/T")).unwrap();
+    fs::set_permissions(root.join("B/T"), fs::Permissions::from_mode(0o0)).unwrap();
+    let found = rescan(&mut snapshot, &root, &[""]);
+    fs::set_permissions(root.join("B/T"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(found.unreadable, [PathBuf::from("B/T")]);
+    assert_eq!(
+        found.changes,
+        [Change::Renamed {
+            from: "B/S".into(),
+            to: "B/T".into(),
+            kind: EntryKind::Dir
+        }]
+    );
+    holds(&snapshot, &["B/T/only-b", "B/T/f.txt", "A/S/f.txt"]);
+    assert!(!snapshot.entries.contains_key(Path::new("B/T/only-a")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_disk_ejected_from_a_folder_moved_on_one_copy_of_another_disk_stays_there() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let (one, two) = clones(&mut disks);
+    let inner = disks.image("Inner");
+    for (image, at) in [(&one, "A"), (&two, "B")] {
+        fs::create_dir_all(root.join(at)).unwrap();
+        disks.attach(image, &root.join(at));
+    }
+    fs::create_dir(root.join("B/S/Disk")).unwrap();
+    disks.attach(&inner, &root.join("B/S/Disk"));
+    fill(&root.join("B/S/Disk"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.detach(&root.join("B/S/Disk"));
+    fs::rename(root.join("B/S"), root.join("B/T")).unwrap();
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(
+        found.unreadable,
+        [PathBuf::from("B/T/Disk")],
+        "{:?}",
+        found.changes
+    );
+    holds(
+        &snapshot,
+        &below("B/T/Disk")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert!(!snapshot.entries.contains_key(Path::new("A/S/Disk")));
+    assert_eq!(away(&snapshot), ["B/T/Disk"]);
 }
 
 #[test]
@@ -250,7 +416,7 @@ fn a_folder_above_a_mounted_volume_moves_with_the_volume_in_it() {
                 kind: EntryKind::Dir
             }]
         );
-        assert!(snapshot.entries[&Path::new(to).join("q/m")].mount_point);
+        assert!(mounted(&snapshot, &format!("{to}/q/m")));
         holds(
             &snapshot,
             &below(&format!("{to}/q/m"))

@@ -2151,6 +2151,7 @@ fn folder_status(
         problem: None,
         wait: None,
         progress: None,
+        held_disks: Vec::new(),
     }
 }
 

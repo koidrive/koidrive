@@ -22,7 +22,7 @@ use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     same_content,
 };
-use koidrive_fs::{Entry, EntryKind, FileId, Known, Snapshot};
+use koidrive_fs::{Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
@@ -46,7 +46,7 @@ pub(crate) struct Engine {
     pub asked: bool,
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
-    pub mounts: BTreeSet<PathBuf>,
+    pub mounts: BTreeMap<PathBuf, Mount>,
 }
 
 /// What applying a batch of the log did.
@@ -613,7 +613,7 @@ impl Engine {
                         mtime_ns,
                         executable,
                         linked: kind == EntryKind::File,
-                        mount_point: self.mounts.contains(&at),
+                        mount: self.mounts.get(&at).copied(),
                     },
                 );
                 pending.push((at, child.clone()));
@@ -1272,7 +1272,7 @@ fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
 /// other link may still be.
 fn resolve(
     trees: &Trees,
-    mounts: &BTreeSet<PathBuf>,
+    mounts: &BTreeMap<PathBuf, Mount>,
     path: &Path,
     identity: &FileIdentity,
     linked: bool,
@@ -1290,10 +1290,15 @@ fn resolve(
         .or(at)
 }
 
-fn same_volume(trees: &Trees, mounts: &BTreeSet<PathBuf>, node: &NodeId, path: &Path) -> bool {
+fn same_volume(
+    trees: &Trees,
+    mounts: &BTreeMap<PathBuf, Mount>,
+    node: &NodeId,
+    path: &Path,
+) -> bool {
     let volume = |path: &Path| {
         path.ancestors()
-            .find(|above| mounts.contains(*above))
+            .find(|above| mounts.contains_key(*above))
             .map(Path::to_path_buf)
     };
     trees
@@ -2057,7 +2062,7 @@ mod tests {
             asked: false,
             recovery_cause: None,
             unscanned: None,
-            mounts: BTreeSet::new(),
+            mounts: BTreeMap::new(),
         };
         Case {
             name,
