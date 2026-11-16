@@ -172,7 +172,7 @@ func eventStreamFinishesWhenTheSessionIsReleased() async {
     """.write(to: koi, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: koi.path(percentEncoded: false))
     let server = try OneAnswerServer(
-        answer: Array("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".utf8) + [0x10, 0x01, 0x18, 0x01]
+        answer: Array("HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n".utf8) + [0x10, 0x01, 0x18, 0x01, 0x28, 0x01]
     )
 
     let session = try SyncSession.openWithEventStream(helper: koi).0

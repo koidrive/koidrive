@@ -10,7 +10,14 @@ use koidrive_proto::v1::{Error as ProtoError, error::Code as ServerCode};
 use crate::report::Done;
 
 const LEAVE_LAST_DEVICE: [&str; 4] = ["koi", "device", "leave", "--last-device"];
-const WRONG_CODE: [&str; 2] = ["wrong claim code", "invalid or expired pairing code"];
+const OWNED: &str = "this deployment already has an owner";
+pub(crate) const RECOVERY_STEPS: &str =
+    "https://github.com/koidrive/koidrive/blob/main/docs/deploy.md#if-you-lose-every-device";
+const WRONG_CODE: [&str; 3] = [
+    "wrong claim code",
+    "no valid claim code; open /setup to issue one",
+    "invalid or expired pairing code",
+];
 
 #[derive(Debug)]
 pub struct CliError {
@@ -107,13 +114,22 @@ impl CliError {
     }
 
     pub fn code_refused(error: DriverError) -> Self {
-        let refused = matches!(&error, DriverError::Api(api)
-            if api.server().is_some_and(|server| server.code() == ServerCode::Forbidden
-                && WRONG_CODE.contains(&server.message())));
-        match refused {
-            true => CliError::new(Code::WrongCode, "the code is wrong or has expired")
-                .human("The code is wrong or has expired. Get a new code from the device or server you are joining."),
-            false => CliError::retry_safe(error),
+        let refusal = match &error {
+            DriverError::Api(api) => api
+                .server()
+                .filter(|server| server.code() == ServerCode::Forbidden)
+                .map(|server| server.message()),
+            _ => None,
+        };
+        match refusal {
+            Some(message) if WRONG_CODE.contains(&message) => {
+                CliError::new(Code::WrongCode, "the code is wrong or has expired")
+                    .human("The code is wrong or has expired. Get a new code from the device or server you are joining.")
+            }
+            Some(OWNED) => CliError::retry_safe(error).because(Reason::Owned).human(format!(
+                "This server already has an owner. If it is yours and no signed-in device is left, add this device with a recovery key: {RECOVERY_STEPS}"
+            )),
+            _ => CliError::retry_safe(error),
         }
     }
 
@@ -234,6 +250,9 @@ impl CliError {
             }
             _ => "",
         };
+        if !guidance.is_empty() && !human.ends_with(['.', '!', '?']) {
+            human.push('.');
+        }
         human.push_str(guidance);
         let busy = match error
             .server()
@@ -1167,10 +1186,27 @@ mod tests {
             "this deployment already has an owner",
         )));
         assert_ne!(owned.code, Code::WrongCode);
+        assert_eq!(owned.reason, Some(Reason::Owned));
         assert!(
             owned.message.contains("already has an owner"),
             "{}",
             owned.message
+        );
+        assert!(
+            owned.human.as_deref().unwrap().contains(RECOVERY_STEPS),
+            "{:?}",
+            owned.human
+        );
+        let too_many = CliError::code_refused(DriverError::Api(refused_with(
+            429,
+            ServerCode::RetryLater,
+            "too many wrong codes from this address; try again in a few minutes",
+        )));
+        assert_eq!(
+            too_many.human.as_deref(),
+            Some(
+                "The server refused the request: too many wrong codes from this address; try again in a few minutes. Wait before trying this command again."
+            )
         );
         let throttled =
             CliError::code_refused(DriverError::Api(refused(400, ServerCode::RetryLater)));

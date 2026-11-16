@@ -2,8 +2,9 @@ Koidrive <VERSION>
 
 How do you want to connect?
   1. Log in with Cloudflare
-  2. Enter a pairing code
-Choose 1 to 2: 1
+  2. I deployed a server
+  3. Enter a pairing code
+Choose 1 to 3: 1
 Opening your browser...
 
 Couldn't open your browser. Open this page:
@@ -30,3 +31,4 @@ Send usage reports? [Y/n] y
 
 Setup complete. Add files to ~/Koidrive.
 Check sync: koi status
+Add another device: run koi device invite here, then run the command it prints on the other device.

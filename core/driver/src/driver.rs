@@ -14,7 +14,7 @@ use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_fs::{Marker, probe_no_replace, read_marker, write_marker};
 use koidrive_ignore::LocalRulesError;
-use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
+use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, Resend, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
 use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ use crate::folder::FolderTask;
 use crate::ignore::{Matcher, has_sync_entries, local_rules, matcher};
 use crate::leave::{Leaving, Phase};
 use crate::paths::{Paths, PathsError};
+use crate::pending_claim;
 use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
 use crate::status::{Account, FolderState, FolderStatus, Status};
@@ -680,7 +681,9 @@ impl Driver {
     }
 
     /// Claims a new server as its first device (`POST /v1/claim`), with the one-time code from the server's log,
-    /// creating the user `user_name`, and stores the credential. Like pairing, it happens once per profile.
+    /// creating the user `user_name`, and stores the credential. Like pairing, it happens once per profile. A claim
+    /// whose answer was lost is sent again with its first request ID when the same code is given, so the server answers
+    /// it for the device it already created.
     pub async fn claim(
         &self,
         server: &str,
@@ -699,23 +702,39 @@ impl Driver {
         let file = NewCredentialFile::create(&self.inner.paths.credential())?;
         self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
+        let pending = self.inner.paths.pending_claim();
         let request = ClaimRequest {
             code: code.to_owned(),
             user_name: user_name.to_owned(),
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
             setup_attempt: String::new(),
-            request_id: koidrive_net::request_id(),
+            request_id: pending_claim::request_id(&pending, api.base(), code)
+                .map_err(io_error(&pending))?,
         };
-        let issued = koidrive_net::resend_lost(|| api.claim(&request)).await?;
-        self.adopt(
+        let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
+            Ok(issued) => issued,
+            Err(error) => {
+                if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed)
+                {
+                    pending_claim::forget(&pending, api.base(), code)
+                        .map_err(io_error(&pending))?;
+                }
+                return Err(error.into());
+            }
+        };
+        let account = self.adopt(
             file,
             api.base().to_string(),
             issued,
             Some(user_name.to_owned()),
             device_name,
             "claimed the server",
-        )
+        )?;
+        if let Err(error) = pending_claim::clear(&pending) {
+            tracing::warn!(%error, "could not remove the finished claim's record");
+        }
+        Ok(account)
     }
 
     /// Signs this device out: stops syncing, revokes the device on the server so that a copy of the credential stops
@@ -3622,6 +3641,153 @@ mod tests {
         drop(driver);
         let reopened = Driver::open(paths).unwrap();
         assert_eq!(reopened.status().account, Some(account));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_claim_is_sent_again_with_its_request_id_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let url = url::Url::parse(&server).unwrap();
+        let (arrived, first) = tokio::sync::oneshot::channel();
+        let served = tokio::spawn(async move {
+            let (mut held, _) = listener.accept().await.unwrap();
+            let lost = read_request(&mut held).await.1;
+            arrived.send(()).unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let resent = read_request(&mut socket).await.1;
+            write_reply(&mut socket, &issued("d1")).await;
+            drop(held);
+            (lost, resent)
+        });
+
+        tokio::select! {
+            outcome = driver.claim(&server, "claim-code", "Ada", "laptop") => panic!("the claim ended: {outcome:?}"),
+            _ = first => {}
+        }
+        assert!(crate::claim_pending(&paths, &url));
+        let account = driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        assert_eq!(account.device_id, "d1");
+        let (lost, resent) = served.await.unwrap();
+        let lost: ClaimRequest = prost::Message::decode(lost.as_slice()).unwrap();
+        let resent: ClaimRequest = prost::Message::decode(resent.as_slice()).unwrap();
+        assert!(!lost.request_id.is_empty());
+        assert_eq!(resent.request_id, lost.request_id);
+        assert!(!crate::claim_pending(&paths, &url));
+        assert!(!paths.pending_claim().exists());
+    }
+
+    #[tokio::test]
+    async fn a_mistyped_code_keeps_the_claim_that_did_not_finish() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let url = url::Url::parse(&server).unwrap();
+        let (arrived, first) = tokio::sync::oneshot::channel();
+        let served = tokio::spawn(async move {
+            let (mut held, _) = listener.accept().await.unwrap();
+            let lost = read_request(&mut held).await.1;
+            arrived.send(()).unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            let refusal = prost::Message::encode_to_vec(&koidrive_proto::v1::Error {
+                code: koidrive_proto::v1::error::Code::Forbidden as i32,
+                message: "this deployment already has an owner".into(),
+                ..Default::default()
+            });
+            let head = format!(
+                "HTTP/1.1 403 Forbidden\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                refusal.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&refusal).await.unwrap();
+            drop(socket);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let resent = read_request(&mut socket).await.1;
+            write_reply(&mut socket, &issued("d1")).await;
+            drop(held);
+            (lost, resent)
+        });
+
+        tokio::select! {
+            outcome = driver.claim(&server, "claim-code", "Ada", "laptop") => panic!("the claim ended: {outcome:?}"),
+            _ = first => {}
+        }
+        let mistyped = driver.claim(&server, "claim-cod", "Ada", "laptop").await;
+        assert!(matches!(mistyped, Err(DriverError::Api(_))), "{mistyped:?}");
+        assert!(crate::claim_pending(&paths, &url));
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let (lost, resent) = served.await.unwrap();
+        let lost: ClaimRequest = prost::Message::decode(lost.as_slice()).unwrap();
+        let resent: ClaimRequest = prost::Message::decode(resent.as_slice()).unwrap();
+        assert_eq!(resent.request_id, lost.request_id);
+        assert!(!paths.pending_claim().exists());
+    }
+
+    #[tokio::test]
+    async fn a_refused_claim_is_not_resumed() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let served = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for reply in [None, Some(issued("d1"))] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                bodies.push(read_request(&mut socket).await.1);
+                match reply {
+                    Some(reply) => write_reply(&mut socket, &reply).await,
+                    None => {
+                        let refusal = prost::Message::encode_to_vec(&koidrive_proto::v1::Error {
+                            code: koidrive_proto::v1::error::Code::Forbidden as i32,
+                            message: "wrong claim code".into(),
+                            ..Default::default()
+                        });
+                        let head = format!(
+                            "HTTP/1.1 403 Forbidden\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                            refusal.len()
+                        );
+                        socket.write_all(head.as_bytes()).await.unwrap();
+                        socket.write_all(&refusal).await.unwrap();
+                    }
+                }
+            }
+            bodies
+        });
+
+        let refused = driver.claim(&server, "claim-code", "Ada", "laptop").await;
+        assert!(matches!(refused, Err(DriverError::Api(_))), "{refused:?}");
+        assert!(!paths.pending_claim().exists());
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = (served.await.unwrap().iter())
+            .map(|body| {
+                prost::Message::decode(body.as_slice())
+                    .map(|request: ClaimRequest| request.request_id)
+                    .unwrap()
+            })
+            .collect();
+        assert_ne!(ids[0], ids[1]);
     }
 
     #[tokio::test]

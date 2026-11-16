@@ -17,7 +17,7 @@ pub use bundle::{
     Storage, UploadPlan,
 };
 pub use oauth::{
-    AuthorizationCode, CLIENT_ID, Endpoints, Grant, Login, Loopback, OauthError, SCOPES,
-    http_client,
+    Audience, AuthorizationCode, CLIENT_AUDIENCE, CLIENT_ID, Endpoints, Grant, Login, Loopback,
+    OauthError, SCOPES, http_client,
 };
 pub use secret::Secret;

@@ -289,7 +289,7 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
 }
 
 /// The owner's name for a new server: the login name, which the apps show and the owner can change later.
-fn user_name() -> String {
+pub(super) fn user_name() -> String {
     std::env::var("USER")
         .ok()
         .filter(|name| !name.is_empty())

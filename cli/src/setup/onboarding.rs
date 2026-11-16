@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use koidrive_driver::{Credential, DirectoryIdentity, DriverError, LinkApproval, Paths};
-use koidrive_ipc::{Code, Next, Request, Response};
+use koidrive_driver::{Credential, DirectoryIdentity, DriverError, LinkApproval, Paths, api_for};
+use koidrive_ipc::{Code, Next, Reason, Request, Response};
+use koidrive_net::ApiError;
 use koidrive_proto::v1::SpaceInfo;
 use koidrive_telemetry::schema::{SetupFlow, SetupStep};
 use url::Url;
@@ -23,24 +24,12 @@ use crate::terminal::{Progress, Terminal, read_line};
 const DEFAULT_FOLDER: &str = "Koidrive";
 
 /// The ways to set up this machine, which `koi setup` lists when it does not guide.
-pub(super) fn choices() -> Vec<Choice> {
+pub(super) fn choices(cloudflare_login: bool) -> Vec<Choice> {
     let choice = |argv: &[&str], description| Choice {
         argv: Next::of(argv).argv,
         description,
     };
-    vec![
-        choice(
-            &["koi", "join", "<CODE>"],
-            "Join a server with a pairing code from a device that is already paired",
-        ),
-        choice(
-            &["koi", "server", "deploy", "--interactive"],
-            "Log in with Cloudflare and deploy a server to your account",
-        ),
-        choice(
-            &["koi", "server", "add-device", "--interactive"],
-            "Log in with Cloudflare and add this device to the server there, without a pairing code",
-        ),
+    let mut choices = vec![
         choice(
             &[
                 "koi",
@@ -51,17 +40,58 @@ pub(super) fn choices() -> Vec<Choice> {
                 "--user",
                 "<NAME>",
             ],
-            "Claim a server deployed without koi, with the code in its Worker's log",
+            "Claim the server you deployed, with the claim code its /setup page writes to the Worker's log",
         ),
         choice(
-            &["koi", "setup", "--interactive"],
-            "Choose in the guided setup, on a terminal",
+            &["koi", "join", "<CODE>"],
+            "Join a server with a pairing code from a device that is already signed in",
         ),
-    ]
+    ];
+    if cloudflare_login {
+        choices.extend([
+            choice(
+                &["koi", "server", "deploy", "--interactive"],
+                "Log in with Cloudflare and deploy a server to your account",
+            ),
+            choice(
+                &["koi", "server", "add-device", "--interactive"],
+                "Log in with Cloudflare and add this device to the server there, without a pairing code",
+            ),
+        ]);
+    }
+    choices.push(choice(
+        &["koi", "setup", "--interactive"],
+        "Choose in the guided setup, on a terminal",
+    ));
+    choices
 }
 
-/// `koi setup`: on a terminal, asks whether to join with a code or log in with Cloudflare. Otherwise it lists the
-/// commands that set up this machine, and changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Route {
+    Cloudflare,
+    Deployed,
+    Pairing,
+}
+
+impl Route {
+    pub(super) fn all(cloudflare_login: bool) -> Vec<Route> {
+        let mut routes = Vec::new();
+        if cloudflare_login {
+            routes.push(Route::Cloudflare);
+        }
+        routes.extend([Route::Deployed, Route::Pairing]);
+        routes
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Route::Cloudflare => "Log in with Cloudflare",
+            Route::Deployed => "I deployed a server",
+            Route::Pairing => "Enter a pairing code",
+        }
+    }
+}
+
 pub async fn setup(
     paths: &Paths,
     device_name: &str,
@@ -84,7 +114,7 @@ pub async fn setup(
     }
     if mode == Mode::Direct {
         not_set_up(paths)?;
-        let choices = choices();
+        let choices = choices(super::cloudflare_login());
         let mut text = "Set up Koidrive on this machine with one of these commands:\n".to_owned();
         for choice in &choices {
             text.push_str(&format!(
@@ -135,17 +165,16 @@ async fn connect(
     verbose: bool,
     terminal: Arc<Terminal>,
 ) -> Result<(), CliError> {
+    let routes = Route::all(super::cloudflare_login());
+    let labels = routes
+        .iter()
+        .map(|route| route.label().to_owned())
+        .collect();
     let route = terminal
-        .select(
-            "How do you want to connect?",
-            vec![
-                "Log in with Cloudflare".into(),
-                "Enter a pairing code".into(),
-            ],
-        )
+        .select("How do you want to connect?", labels)
         .await?;
-    match route {
-        0 => {
+    match routes.get(route) {
+        Some(Route::Cloudflare) => {
             crate::telemetry::set_flow(SetupFlow::Cloudflare);
             bundled()?;
             with_session(login, terminal.clone(), verbose, async |session| {
@@ -155,28 +184,135 @@ async fn connect(
             terminal.complete("This device is connected");
             Ok(())
         }
-        1 => {
+        Some(Route::Deployed) => deployed(paths, device_name, &terminal).await,
+        Some(Route::Pairing) => {
             crate::telemetry::set_flow(SetupFlow::Pairing);
             terminal.separator();
             terminal.message("On your other device, run koi device invite.");
             let code = terminal.input("Pairing code", true).await?;
-            let progress = terminal.progress("Connecting this device...");
-            let joining = async {
-                let invitation = invitation(&code)?;
-                let request = Request::Pair {
-                    server: invitation.server,
-                    code: invitation.code,
-                    name: device_name.to_owned(),
-                };
-                report_paired(paths, ipc::run(paths, request).await?, &terminal)
-            };
-            crate::telemetry::step(SetupStep::Pair, joining).await?;
-            progress.finish("This device is connected");
-            Ok(())
+            join(paths, &code, None, device_name, &terminal).await
         }
-        _ => Err(CliError::from(
+        None => Err(CliError::from(
             "the terminal returned an invalid setup choice",
         )),
+    }
+}
+
+async fn join(
+    paths: &Paths,
+    code: &str,
+    server: Option<&str>,
+    device_name: &str,
+    terminal: &Terminal,
+) -> Result<(), CliError> {
+    let progress = terminal.progress("Connecting this device...");
+    let joining = async {
+        let invitation = invitation(code, server)?;
+        let request = Request::Pair {
+            server: invitation.server,
+            code: invitation.code,
+            name: device_name.to_owned(),
+        };
+        report_paired(paths, ipc::run(paths, request).await?, terminal)
+    };
+    crate::telemetry::step(SetupStep::Pair, joining).await?;
+    progress.finish("This device is connected");
+    Ok(())
+}
+
+async fn deployed(paths: &Paths, device_name: &str, terminal: &Terminal) -> Result<(), CliError> {
+    crate::telemetry::set_flow(SetupFlow::Claim);
+    terminal.separator();
+    terminal.message(
+        "Enter the address of the server you deployed, such as https://koidrive.alice.workers.dev.",
+    );
+    terminal.message("To deploy a server or find its claim code, follow https://github.com/koidrive/koidrive/blob/main/docs/deploy.md");
+    let (api, claimed) = loop {
+        let answer = terminal.input("Server address", false).await?;
+        if answer.trim().is_empty() {
+            terminal.message("Enter the server's address.");
+            continue;
+        }
+        let address = crate::pairing::server_url(&answer);
+        let Ok(api) = api_for(&address) else {
+            terminal.message(&format!(
+                "{} is not a server address. Enter its https:// address.",
+                printable(&address)
+            ));
+            continue;
+        };
+        let progress = terminal.progress("Checking the server...");
+        let info = api.server_info().await;
+        drop(progress);
+        match info {
+            Ok(info) if !info.server_version.is_empty() => break (api, info.claimed),
+            Err(ApiError::Transport(_)) => terminal.message(&format!(
+                "Koidrive could not reach {}. Check the address and your connection.",
+                printable(&address)
+            )),
+            _ => terminal.message(&format!(
+                "{} does not answer as a Koidrive server. Check the address.",
+                printable(&address)
+            )),
+        }
+    };
+    let server = api.base().as_str().trim_end_matches('/').to_owned();
+    if claimed && koidrive_driver::claim_pending(paths, api.base()) {
+        terminal.message("This device started to claim this server, and the claim did not finish. Enter the same claim code to finish it.");
+    } else if claimed {
+        crate::telemetry::set_flow(SetupFlow::Pairing);
+        terminal.message("This server already has an owner. On a device that is signed in to it, run koi device invite.");
+        terminal.message(&format!(
+            "If it is yours and no signed-in device is left, add this device with a recovery key: {}",
+            crate::error::RECOVERY_STEPS
+        ));
+        let code = terminal.input("Pairing code", true).await?;
+        return join(paths, &code, Some(&server), device_name, terminal).await;
+    } else {
+        match api.request_claim_code().await {
+            Ok(()) => terminal.message("Your server wrote a one-time claim code to its log."),
+            Err(_) => terminal.message(&format!(
+                "Open {}/setup in a browser. Your server then writes a one-time claim code to its log.",
+                printable(&server)
+            )),
+        }
+        terminal.message("In the Cloudflare dashboard, open Workers & Pages, select your Worker, open Observability, and search for \"Koidrive claim code\".");
+    }
+    loop {
+        let answer = terminal.input("Claim code", true).await?;
+        let code = answer.trim();
+        if code.is_empty() {
+            terminal.message("Enter the claim code.");
+            continue;
+        }
+        let progress = terminal.progress("Claiming your server...");
+        let request = Request::Claim {
+            server: server.clone(),
+            code: code.to_owned(),
+            user_name: super::claim::user_name(),
+            name: device_name.to_owned(),
+        };
+        let claiming = async { report_paired(paths, ipc::run(paths, request).await?, terminal) };
+        match crate::telemetry::step(SetupStep::Claim, claiming).await {
+            Ok(()) => {
+                progress.finish("This device is connected as your server's owner");
+                return Ok(());
+            }
+            Err(error) if error.code == Code::WrongCode => {
+                drop(progress);
+                api.request_claim_code().await.ok();
+                terminal.message("The claim code is wrong or has expired. Enter the newest Koidrive claim code from the log.");
+            }
+            Err(error)
+                if claimed
+                    && error.reason == Some(Reason::Owned)
+                    && koidrive_driver::claim_pending(paths, api.base()) =>
+            {
+                drop(progress);
+                terminal.message("That is not the code this device used. Enter the same claim code to finish the claim.");
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -541,7 +677,7 @@ fn expanded(path: &Path) -> Result<PathBuf, CliError> {
 
 fn ending(folder: &Path) -> String {
     format!(
-        "Setup complete. Add files to {}.\nCheck sync: koi status\n",
+        "Setup complete. Add files to {}.\nCheck sync: koi status\nAdd another device: run koi device invite here, then run the command it prints on the other device.\n",
         printable(&shown_folder(folder))
     )
 }
@@ -671,11 +807,11 @@ async fn read_invitation() -> Result<Invitation, CliError> {
         .await
         .map_err(|error| error.to_string())?
         .map_err(|_| CliError::usage("--pairing-code-stdin found no pairing code on stdin"))?;
-    invitation(&line)
+    invitation(&line, None)
 }
 
-fn invitation(code: &str) -> Result<Invitation, CliError> {
-    crate::pairing::parse(code, None)
+fn invitation(code: &str, server: Option<&str>) -> Result<Invitation, CliError> {
+    crate::pairing::parse(code, server)
         .map_err(|_| CliError::usage("Copy the full pairing code, including its @server address"))
 }
 

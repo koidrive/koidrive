@@ -28,3 +28,4 @@
 │
 └  Setup complete. Add files to ~/Work.
    Check sync: koi status
+   Add another device: run koi device invite here, then run the command it prints on the other device.

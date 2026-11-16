@@ -150,7 +150,7 @@ impl From<Refusal> for SessionError {
             Some(Reason::ShareLinkLimit) => return SessionError::ShareLinkLimit,
             Some(Reason::ReleasesUnreachable) => return SessionError::ReleasesUnreachable,
             Some(Reason::ReleasesRefused) => return SessionError::ReleasesRefused,
-            Some(Reason::NotInLinkedFolder | Reason::SeveralDeletions) | None => {}
+            Some(Reason::NotInLinkedFolder | Reason::SeveralDeletions | Reason::Owned) | None => {}
         }
         match refusal.code {
             Code::AuthRequired => SessionError::NotSignedIn,

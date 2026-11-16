@@ -9,15 +9,20 @@ On a Mac, follow [Install and set up this Mac](macos.md#install-and-set-up-this-
 You need a Cloudflare account with R2 turned on ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)) and the [`koi` command](install.md).
 
 1. Deploy the server with the deploy button, or with `pnpm run deploy` in `server/`, as [Deploying and upgrading a Koidrive server](../deploy.md#deploy) describes.
-2. Open `<your server>/setup` in a browser. The server writes a one-time claim code, valid for one hour, to the Worker's log. In the Cloudflare dashboard, open your Worker, then **Observability**, and search for `Koidrive claim code`.
-3. Claim the server with this device. Give the server's address, the claim code and your name:
+2. Run `koi setup` and choose **I deployed a server**. Enter the server's address. Setup asks the server for a one-time claim code, which the server writes to the Worker's log.
+3. In the Cloudflare dashboard, open **Workers & Pages**, select your Worker, open **Observability** and search for `Koidrive claim code`. Enter the code. Setup claims the server with this device and links `~/Koidrive` ([koi setup](koi-setup.md)).
+
+To claim without questions, for example in a script:
+
+1. Open `<your server>/setup` in a browser. The server writes a one-time claim code, valid for one hour, to the Worker's log. Find it as in step 3 above.
+2. Claim the server with this device. Give the server's address, the claim code and your name:
 
    ```sh
    koi server claim koidrive.alice.workers.dev ABCD-EFGH-JKLM --user "Alice Park"
    ```
 
    It prints `Paired as laptop (019a...) with https://koidrive.alice.workers.dev.` The device takes this machine's host name. Give it another with `--name`. A server that already has an owner refuses the claim code.
-4. [Create a space](#create-a-space) and [link a folder](folders.md#link-a-folder) to it.
+3. [Create a space](#create-a-space) and [link a folder](folders.md#link-a-folder) to it.
 
 ## Add another device
 
@@ -50,7 +55,7 @@ This prints the new space's ID. `koi folder link --space` finds a space by its n
 
 ## Set up with the Cloudflare login
 
-`koi setup` can do all of this in one guided run on a terminal. It logs in with Cloudflare, deploys a server or finds yours, signs in this machine, and links a folder. The Cloudflare login is in early access for members of the project's test account. Everyone else deploys and claims the server as described above. The same login is behind `koi server deploy`, `add-device`, `upgrade` and `delete`. [koi setup](koi-setup.md) describes each question and option.
+`koi server deploy --interactive` logs in with Cloudflare, deploys a server to your account, and claims it with this device. The Cloudflare login is in early access for members of the project's test account, so `koi setup` doesn't offer it. Everyone else deploys and claims the server as described above. The same login is behind `koi server add-device`, `upgrade` and `delete`. [koi setup](koi-setup.md#the-cloudflare-login-and-what-it-may-do) describes what the login may do.
 
 ## Upgrade the server
 

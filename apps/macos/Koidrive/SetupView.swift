@@ -228,7 +228,7 @@ private struct SignInStep: View {
             if setup.claimsServer {
                 StepHeader(
                     title: "Claim this server",
-                    help: String(localized: "Find \"Koidrive claim code\" in the Worker's logs in Cloudflare.")
+                    help: String(localized: "Your server wrote a one-time claim code to its log. In Cloudflare, open your Worker's Observability tab and search for \"Koidrive claim code\".")
                 )
             } else {
                 StepHeader(

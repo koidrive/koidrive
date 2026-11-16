@@ -69,6 +69,10 @@ pub fn shell_word(text: &str) -> String {
 
 pub fn server_url(text: &str) -> String {
     let text = text.trim();
+    let text = text
+        .trim_end_matches('/')
+        .strip_suffix("/setup")
+        .unwrap_or(text);
     if text.contains("://") {
         text.to_owned()
     } else {
@@ -170,6 +174,21 @@ mod tests {
             "https://koidrive.alice.workers.dev"
         );
         assert_eq!(server_url("http://127.0.0.1:8787"), "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn a_pasted_setup_page_names_its_server() {
+        for pasted in [
+            "https://koidrive.alice.workers.dev/setup",
+            "https://koidrive.alice.workers.dev/setup/",
+            "koidrive.alice.workers.dev/setup",
+        ] {
+            assert_eq!(server_url(pasted), "https://koidrive.alice.workers.dev");
+        }
+        assert_eq!(
+            server_url("https://files.example.com/koidrive/setup"),
+            "https://files.example.com/koidrive"
+        );
     }
 
     #[test]

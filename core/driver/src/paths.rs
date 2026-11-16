@@ -30,8 +30,9 @@ pub enum PathsError {
 impl Paths {
     /// The names Koidrive writes directly in a profile's state directory. Atomic writes add a temporary
     /// `.<name>.<pid>.tmp` beside a file.
-    pub const STATE_ENTRIES: [&str; 16] = [
+    pub const STATE_ENTRIES: [&str; 17] = [
         "credential.json",
+        "pending-claim.json",
         "credential.next",
         "lock",
         "service.lock",
@@ -91,6 +92,10 @@ impl Paths {
 
     pub fn credential(&self) -> PathBuf {
         self.state_dir.join("credential.json")
+    }
+
+    pub fn pending_claim(&self) -> PathBuf {
+        self.state_dir.join("pending-claim.json")
     }
 
     pub fn lock(&self) -> PathBuf {

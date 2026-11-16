@@ -713,6 +713,11 @@
           "const": "releases_refused",
           "description": "GitHub did not send the list of releases, for example because it limits the rate.",
           "type": "string"
+        },
+        {
+          "const": "owned",
+          "description": "The server already has an owner, and the claim is not the one that made this device its owner.",
+          "type": "string"
         }
       ]
     },
