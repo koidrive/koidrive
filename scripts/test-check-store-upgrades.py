@@ -29,14 +29,17 @@ class GuardTests(unittest.TestCase):
 
     def test_harness_cannot_skip_the_fixture(self):
         harness = (ROOT / guard.HARNESS).read_text()
-        start = harness.index("            std::fs::copy(")
+        start = harness.index("            std::fs::copy(", harness.index("macro_rules! upgrade_case"))
         end = harness.index("            if std::path::Path::new", start)
         mutated = harness[:start] + "            let mut $store = Store::open(&path).unwrap();\n" + harness[end:]
         mutated = mutated.replace("            assert_eq!(preserved_rows(&rusqlite::Connection::open(&path).unwrap()), preserved);\n", "")
-        self.assertNotIn("std::fs::copy(", mutated)
+        self.assertNotIn("std::fs::copy(", mutated[mutated.index("macro_rules! upgrade_case"):])
         self.assertIn("let mut $store = Store::open(&path).unwrap();", mutated)
         with self.assertRaisesRegex(ValueError, "pinned release-state harness"):
             guard.validate_harness(mutated)
+
+    def test_guard_runs_the_additive_columns_regression(self):
+        self.assertIn("additive_columns_do_not_change_preserved_release_rows", guard.HARNESS_TESTS)
 
     def test_harness_only_accepts_new_top_level_includes(self):
         harness = (ROOT / guard.HARNESS).read_text()

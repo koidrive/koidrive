@@ -12,10 +12,11 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CASES = "core/store/tests/upgrade_cases/"
 HARNESS = "core/store/tests/upgrade.rs"
+HARNESS_TESTS = ["schema_alpha6_baseline", "additive_columns_do_not_change_preserved_release_rows"]
 SCHEMA = {"core/store/build.rs"}
 NAME = r"[a-z][a-z0-9_]*"
 FIXTURE_SHA256 = "13da6745f0976258e12b02d38b9687abe9995c824d3996e472670986c8af40c7"
-HARNESS_SHA256 = "33fea91acf74958a56f71508d61ac778b130e4aa894cc7a30d182581ec12a9a3"
+HARNESS_SHA256 = "e7251e7d4b58c5717bf5d8656d76da9fc798204a3b62907f508d7a30428c60c0"
 INCLUDE = re.compile(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);\n?', re.M)
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
@@ -121,7 +122,7 @@ def main():
     names = check(changes, (ROOT / HARNESS).read_text(), [path.stem for path in case_paths],
                   lambda name: (ROOT / CASES / f"{name}.rs").read_text(), previous_harness,
                   lambda name: (ROOT / "core/store/migrations" / f"{name}.sql").is_file())
-    for name in ["schema_alpha6_baseline", *names]:
+    for name in [*HARNESS_TESTS, *names]:
         result = subprocess.run(
             ["nice", "-n", "10", "cargo", "test", "--locked", "-p", "koidrive-store", "--test", "upgrade", "--", "--exact", name, "--nocapture"],
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900,

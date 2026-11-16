@@ -11,19 +11,19 @@ fn preserved_rows(
         ("synced_nodes", "node_id, parent_id, name, kind, content, pending_for"),
         ("remote_nodes", "node_id, parent_id, name, kind, status, content_rev, meta_rev, current, edit_rev, meta_edit_rev, trash_group, pending_for, pending_by"),
         ("engine_state", "id, id_generator"),
-        ("node_sets", "*"),
-        ("node_maps", "*"),
-        ("remote_cursor", "*"),
-        ("local_changes", "*"),
-        ("edited_here", "*"),
-        ("moved_here", "*"),
-        ("past_positions", "*"),
-        ("replaced_versions", "*"),
-        ("chunk_cache", "*"),
-        ("commit_state", "*"),
-        ("commit_in_flight", "*"),
-        ("commit_slots", "*"),
-        ("watched_contents", "*"),
+        ("node_sets", "node_set, node_id"),
+        ("node_maps", "node_map, node_id, target"),
+        ("remote_cursor", "id, history_id, last_seq, ahead_of_server, commit_id, committed_at_ms"),
+        ("local_changes", "node_id"),
+        ("edited_here", "node_id, seq"),
+        ("moved_here", "node_id, seq, upgraded"),
+        ("past_positions", "node_id, position, rev, parent_id, name"),
+        ("replaced_versions", "node_id, position, version_id"),
+        ("chunk_cache", "hash, size, last_used_ms"),
+        ("commit_state", "id, accepted, halt, policy_code, cap, recovery_trigger, restore_seq, restore_point_ms"),
+        ("commit_in_flight", "id, commit_message, result"),
+        ("commit_slots", "device_seq, seq"),
+        ("watched_contents", "node_id, changed"),
     ].into_iter().map(|(table, columns)| {
         let query = format!("SELECT {columns} FROM {table}");
         let count = conn.prepare(&query).unwrap().column_count();
@@ -33,6 +33,26 @@ fn preserved_rows(
             .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         (table.to_owned(), rows)
     }).collect()
+}
+
+#[test]
+fn additive_columns_do_not_change_preserved_release_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alpha6.db"),
+        &path,
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let before = preserved_rows(&conn);
+    for table in before.keys() {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN future_upgrade_value INTEGER NOT NULL DEFAULT 7"
+        ))
+        .unwrap();
+    }
+    assert_eq!(preserved_rows(&conn), before);
 }
 
 macro_rules! upgrade_case {
