@@ -1980,8 +1980,11 @@ impl Trees {
             let excluded = !self.parked(child)
                 && (state == Some(Discard::Kept) || self.ignored_in_place(child));
             holds_excluded |= excluded;
+            let follows = !self.discarded.contains_key(child)
+                && self.as_the_server_holds(child, &mut BTreeSet::new());
             changed = !excluded
                 && !self.held(child)
+                && !follows
                 && ((self.discarded.get(child)).is_none_or(|shape| shape.parent != id)
                     || !self.left_as_discarded(child)
                     || state == Some(Discard::Reclaimed));
