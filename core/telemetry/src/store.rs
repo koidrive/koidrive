@@ -539,6 +539,7 @@ impl Store {
 
     fn remove_held(&self, run: &str) -> io::Result<()> {
         remove(&self.held_path(run))?;
+        remove(&self.held_path(run).with_extension("json.tmp"))?;
         remove(&self.dir.join(HELD).join(format!("{run}.lock")))
     }
 
@@ -551,7 +552,7 @@ impl Store {
         for entry in entries {
             let name = entry?.file_name();
             let name = name.to_string_lossy();
-            for suffix in [".json", ".lock"] {
+            for suffix in [".json.tmp", ".json", ".lock"] {
                 if let Some(run) = name.strip_suffix(suffix)
                     && !runs.iter().any(|known| known == run)
                 {
@@ -1049,6 +1050,19 @@ mod tests {
         assert_eq!(held_files(dir.path()), 2);
         store.answer(next, true).unwrap();
         assert!(store.peek().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_staged_write_a_dead_run_left_is_deleted_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        let kept = store.held_path(&hold.run);
+        fs::rename(&kept, kept.with_extension("json.tmp")).unwrap();
+        drop(hold);
+        assert!(store.held().unwrap().is_empty());
+        assert_eq!(held_files(dir.path()), 0);
     }
 
     #[test]
