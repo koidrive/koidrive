@@ -204,23 +204,29 @@ pub(crate) fn adopt_by_marks_first(
     ids: &mut IdGen,
     now_ms: u64,
 ) {
-    let given_up: BTreeMap<NodeId, NodeId> = (claimed_once(trees, marks).into_iter())
-        .filter(|(local, node)| {
-            local != node
-                && trees.remote().get(local).is_some()
-                && !trees.excluded(local)
-                && (trees.local().get(local)).is_some_and(|entry| {
-                    !shapes_to_follow(trees, history, node, &entry.shape).is_empty()
-                })
-        })
-        .map(|(local, _)| (local.clone(), ids.uuid_v7(now_ms)))
-        .collect();
-    for (local, fresh) in &given_up {
-        rekey(trees, local, fresh);
+    let mut marks = marks.clone();
+    loop {
+        let given_up: BTreeMap<NodeId, NodeId> = (claimed_once(trees, &marks).into_iter())
+            .filter(|(local, node)| {
+                local != node
+                    && trees.remote().get(local).is_some()
+                    && !trees.excluded(local)
+                    && (trees.local().get(local)).is_some_and(|entry| {
+                        !shapes_to_follow(trees, history, node, &entry.shape).is_empty()
+                    })
+            })
+            .map(|(local, _)| (local.clone(), ids.uuid_v7(now_ms)))
+            .collect();
+        if given_up.is_empty() {
+            break;
+        }
+        for (local, fresh) in &given_up {
+            rekey(trees, local, fresh);
+        }
+        marks = (marks.into_iter())
+            .map(|(local, node)| (given_up.get(&local).cloned().unwrap_or(local), node))
+            .collect();
     }
-    let marks: Marks = (marks.iter())
-        .map(|(local, node)| (given_up.get(local).unwrap_or(local).clone(), node.clone()))
-        .collect();
     let marks = &marks;
     let folders = folder_places(trees, history);
     let (_, mut waiting) = follow_marks(trees, history, marks, &folders, Pass::Latest);
