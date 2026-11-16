@@ -371,6 +371,7 @@ fn commits_state() -> CommitsState {
         given_up: [(1, vec!["given-up".into()])].into(),
         questions: questions(),
         published: ["n".into()].into(),
+        given_up_nodes: ["u".into()].into(),
         guard: guard_state(),
     }
 }
