@@ -1020,6 +1020,35 @@ fn a_file_the_rules_stop_excluding_is_linked_to_an_equal_server_file_on_the_next
 }
 
 #[test]
+fn a_file_whose_folder_moves_out_of_the_rules_is_linked_to_an_equal_server_file_on_the_next_settle()
+{
+    let root: [&str; 0] = [];
+    let mut trees = trees(&[], &[]);
+    trees.rules_scanned();
+    trees.set_rules(&root, Some(RuleFile::parse(b"x/\n")));
+    trees.set_local("p".into(), local_node(dir(ROOT, "x"), 1));
+    trees.set_remote("p".into(), remote_node(dir(ROOT, "x")));
+    trees.set_synced("p".into(), Some(dir(ROOT, "x")));
+    let mut file = written("a.docx", WRITTEN_NS);
+    file.parent = "p".into();
+    trees.set_local("l-file".into(), local_node(file.clone(), 2));
+    trees.set_remote("r-file".into(), remote_node(file));
+    trees.settle();
+    assert!(trees.excluded("l-file"));
+
+    trees.set_local("p".into(), local_node(dir(ROOT, "y"), 1));
+    trees.settle();
+    assert!(!trees.excluded("l-file"));
+    assert_eq!(
+        local(&trees),
+        [
+            ("p".to_owned(), ROOT.to_owned(), "y".to_owned()),
+            ("r-file".to_owned(), "p".to_owned(), "a.docx".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn a_file_whose_create_ended_unanswered_is_linked_to_an_equal_server_file_instead_of_sent_again() {
     let (mut commits, mut trees, mut ids) = unlinked("a.docx", &[]);
     let created = [("create file", "l-file".to_owned())];

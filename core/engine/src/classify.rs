@@ -3706,7 +3706,19 @@ impl Trees {
             let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
                 true => self.dirty.iter().cloned().collect(),
-                false => self.unsettled.union(&unwatched).cloned().collect(),
+                false => {
+                    let mut changed: BTreeSet<NodeId> =
+                        self.unsettled.union(&unwatched).cloned().collect();
+                    let mut below: Vec<NodeId> = changed.iter().cloned().collect();
+                    while let Some(node) = below.pop() {
+                        for child in self.local_children(&node) {
+                            if changed.insert(child.clone()) {
+                                below.push(child.clone());
+                            }
+                        }
+                    }
+                    changed
+                }
             };
             let unfit = first_link::adopt_equal_files(self, &changed);
             self.wait_to_link(unfit);
