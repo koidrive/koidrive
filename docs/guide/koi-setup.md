@@ -2,6 +2,8 @@
 
 `koi setup` sets up this machine in one run: it connects to a server, signs this machine in as a device, and links a folder. With no server yet, it deploys one to your Cloudflare account.
 
+R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
+
 ## Connect this device and link a folder
 
 On a terminal, `koi setup` asks **How do you want to connect?** Use the arrow keys and Enter:
@@ -82,7 +84,7 @@ Without a terminal on stdin and stderr, with `--json`, or with the `CI` environm
 
 **Log in with Cloudflare** in `koi setup`, and `koi server deploy`, `add-device`, `upgrade` and `delete` with `--interactive`, work with any Cloudflare account. The consent page names Koidrive and shows that it verified ownership of koidrive.com.
 
-The login asks for four permissions: reading the account's settings, managing its Workers, writing to its R2 buckets, and keeping access while the command runs (`account-settings.read`, `workers-scripts.admin`, `workers-r2.write` and `offline_access`). Koidrive revokes the login when the command ends. If it can't, it says so, and you can revoke it under **Manage OAuth authorizations** in the Cloudflare dashboard.
+The login asks for four permissions: reading the account's settings, managing its Workers, writing to its R2 buckets, and keeping access while the command runs (`account-settings.read`, `workers-scripts.admin`, `workers-r2.write` and `offline_access`). Koidrive revokes the login when the command ends. If it can't, it says so, and you can revoke it in the Cloudflare dashboard under **My Profile**, **Access Management**, **Connected Applications**.
 
 `koi server deploy --interactive` deploys a new server and claims it, and stops if the account already has one. If R2 isn't turned on in the account, it opens the R2 page of the dashboard and waits up to 30 minutes while you complete its checkout. `koi server add-device --interactive` adds this device to the server in the account without a pairing code. `--worker <name>` names the Worker when there are several. Without `--interactive` and a terminal, these commands open no browser. They stop with `auth_required` (exit 4) and name the same command with `--interactive`.
 

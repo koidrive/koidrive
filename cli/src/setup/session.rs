@@ -367,7 +367,7 @@ impl Session {
                 Ok(()) => return,
                 Err(error) if attempt == 3 => {
                     eprintln!(
-                        "koi: could not revoke the Cloudflare login ({error}). It stays active; its access token expires within an hour. Revoke it now under Manage OAuth authorizations in the Cloudflare dashboard."
+                        "koi: could not revoke the Cloudflare login ({error}). It stays active; its access token expires within an hour. Revoke it now under My Profile, Access Management, Connected Applications in the Cloudflare dashboard."
                     );
                 }
                 Err(_) => tokio::time::sleep(Duration::from_secs(2)).await,

@@ -2254,6 +2254,10 @@ fn checkout_waits_for_r2_before_completing_the_same_setup() {
         text.contains("Complete the R2 checkout in your browser to continue."),
         "{text}"
     );
+    assert!(
+        text.contains("R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing."),
+        "{text}"
+    );
     assert!(text.contains("R2 is ready"), "{text}");
     let state = home.state.lock().unwrap();
     assert_eq!(

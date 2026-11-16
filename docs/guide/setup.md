@@ -6,7 +6,7 @@ On a Mac, follow [Install and set up this Mac](macos.md#install-and-set-up-this-
 
 ## Deploy a server and claim it
 
-You need a Cloudflare account with R2 turned on ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)) and the [`koi` command](install.md).
+You need a Cloudflare account and the [`koi` command](install.md). R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
 Run `koi setup` and choose **Log in with Cloudflare**. Setup logs in with your Cloudflare account, deploys a server to it and claims the server with this device, then links `~/Koidrive`. If the account already has a Koidrive server, setup adds this device to it. [koi setup](koi-setup.md#the-cloudflare-login-and-what-it-may-do) describes what the login may do. `koi server deploy --interactive` deploys and claims without linking a folder.
 

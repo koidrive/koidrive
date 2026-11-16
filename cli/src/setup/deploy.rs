@@ -98,6 +98,9 @@ impl Session {
                             terminal.separator();
                             self.terminal
                                 .message("Complete the R2 checkout in your browser to continue.");
+                            self.terminal.message(
+                                "R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.",
+                            );
                             let opening = terminal.progress("Opening your browser...");
                             let opened = open_browser(&page).await;
                             drop(opening);
@@ -112,7 +115,7 @@ impl Session {
                                 "R2 is not enabled on this account. Koidrive keeps your files in R2."
                             );
                             println!(
-                                "Enable it on this page. Its checkout includes free monthly usage and bills use beyond it:\n{page}"
+                                "R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.\nEnable it on this page:\n{page}"
                             );
                             open_browser(&page).await;
                             println!("Waiting for R2...");

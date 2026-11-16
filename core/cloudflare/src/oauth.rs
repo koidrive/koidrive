@@ -113,7 +113,7 @@ pub enum OauthError {
     #[error("the grant can no longer be refreshed after a failed refresh; log in again")]
     Spent,
     #[error(
-        "Cloudflare did not revoke the {token} (HTTP {status}); revoke Koidrive under Manage OAuth authorizations in the dashboard"
+        "Cloudflare did not revoke the {token} (HTTP {status}); revoke Koidrive under My Profile, Access Management, Connected Applications in the dashboard"
     )]
     RevokeRefused { token: &'static str, status: u16 },
 }

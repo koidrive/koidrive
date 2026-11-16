@@ -5,6 +5,7 @@
 ◇  Signed in to Personal
 │
 │  Complete the R2 checkout in your browser to continue.
+│  R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.
 ◇  R2 is ready
 ◇  Server created
 ◇  This device is connected
