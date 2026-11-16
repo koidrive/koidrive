@@ -2384,7 +2384,9 @@ fn keeps_the_mark_invariants(
             continue;
         };
         let unique = claims[node] == 1;
-        let free = !local_ids.contains(node) || node == *id;
+        let given_up = (mark_of.get(node)).is_some_and(|other| *other != node)
+            && before.synced().get(node).is_none();
+        let free = !local_ids.contains(node) || node == *id || given_up;
         let live =
             (in_r.get(node)).is_some_and(|(live, trashed)| !trashed && live.kind == shape.kind);
         let content = (known.get(node).into_iter().flatten())
@@ -3346,6 +3348,33 @@ fn a_file_whose_id_names_another_node_than_its_waiting_mark_is_asked_about_as_ne
         .expect("the entry stays on disk");
     assert_ne!(entry, "n1");
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[entry]);
+}
+
+#[test]
+fn an_entry_marked_with_the_id_another_marked_entry_gives_up_is_adopted_as_that_node() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n1", file("d0", "b", 2)),
+            ("e0", file("d0", "c", 2)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "a", 2)),
+            ("n1", file("d0", "c", 2)),
+            ("n1", file("d0", "b", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2"), ("e0", "n1")],
+    );
+    assert_eq!(local_shape(&trees, "n1"), Some(&file("d0", "c", 2)));
+    assert_eq!(trees.local().get("e0"), None);
 }
 
 #[test]

@@ -204,6 +204,21 @@ pub(crate) fn adopt_by_marks_first(
     ids: &mut IdGen,
     now_ms: u64,
 ) {
+    let marks: Marks = (marks.iter())
+        .map(|(local, node)| {
+            let elsewhere = local != node
+                && trees.synced().get(local).is_none()
+                && trees.remote().get(local).is_some()
+                && !trees.excluded(local);
+            if !elsewhere {
+                return (local.clone(), node.clone());
+            }
+            let fresh = ids.uuid_v7(now_ms);
+            rekey(trees, local, &fresh);
+            (fresh, node.clone())
+        })
+        .collect();
+    let marks = &marks;
     let folders = folder_places(trees, history);
     let (_, mut waiting) = follow_marks(trees, history, marks, &folders, Pass::Latest);
     'adopt: loop {
@@ -216,13 +231,6 @@ pub(crate) fn adopt_by_marks_first(
             }
         }
         break;
-    }
-    let elsewhere: Vec<NodeId> = (waiting.into_iter())
-        .filter(|(node, local)| node != local && trees.remote().get(local).is_some())
-        .map(|(_, local)| local)
-        .collect();
-    for local in elsewhere {
-        rekey(trees, &local, &ids.uuid_v7(now_ms));
     }
 }
 
