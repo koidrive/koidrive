@@ -64,7 +64,7 @@ Dropbox does much more, and charges per person for it. Koidrive does the core of
 | **Windows and iOS** | Coming | Yes |
 | **Web interface** | Coming | Yes |
 | **Admin tools** | Revoke a lost device with `koi device revoke` | Device approvals, remote wipe and account transfer |
-| **Support** | GitHub issues | Yes |
+| **Support** | GitHub Discussions and issues | Yes |
 
 ## What it costs
 
