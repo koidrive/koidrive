@@ -7,10 +7,12 @@ import re
 import sys
 
 
-def stamp(root: Path, tag: str) -> str:
+def stamp(root: Path, tag: str, commit: str = "") -> str:
     number = r"(?:0|[1-9][0-9]*)"
     if not re.fullmatch(rf"v{number}\.{number}\.{number}(?:-(?:alpha|rc)\.{number})?", tag):
         raise ValueError("expected vX.Y.Z, vX.Y.Z-alpha.N or vX.Y.Z-rc.N")
+    if commit and not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("expected a full lowercase commit id")
     version = tag[1:]
     manifest = root / "Cargo.toml"
     cargo = manifest.read_text()
@@ -44,14 +46,15 @@ def stamp(root: Path, tag: str) -> str:
     sections_cargo[1] = stamped + sections_cargo[1][len(package):]
     manifest.write_text("[workspace.package]".join(sections_cargo))
     lock.write_text("[[package]]".join(sections))
-    (root / "server" / "release.json").write_text(json.dumps({"version": version}, indent=2) + "\n")
+    release = {"version": version, "commit": commit} if commit else {"version": version}
+    (root / "server" / "release.json").write_text(json.dumps(release, indent=2) + "\n")
     return version
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: stamp-release-version.py <tag>")
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: stamp-release-version.py <tag> [<commit>]")
     try:
-        print(stamp(Path(__file__).resolve().parent.parent, sys.argv[1]))
+        print(stamp(Path(__file__).resolve().parent.parent, *sys.argv[1:]))
     except ValueError as error:
         sys.exit(str(error))

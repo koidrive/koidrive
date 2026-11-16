@@ -13,7 +13,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -60,6 +60,10 @@ const require = createRequire(join(server, "package.json"));
 const { unstable_readConfig } = await import(pathToFileURL(require.resolve("wrangler")).href);
 const config = unstable_readConfig({ config: join(server, "wrangler.jsonc") });
 const version = releaseVersion(server);
+registerHooks({
+  resolve: (specifier, context, next) => next(specifier.startsWith(".") && !extname(specifier) ? specifier + ".ts" : specifier, context),
+});
+const { STORAGE: storage } = await import(pathToFileURL(join(server, "src", "storage.ts")).href);
 if (config.r2_buckets.length !== 1) fail("wrangler.jsonc must bind exactly one R2 bucket, found " + config.r2_buckets.length);
 if (!config.assets?.directory || !config.assets.binding) fail("wrangler.jsonc must set assets.directory and assets.binding");
 const fromAssets = relative(realPath(resolve(server, config.assets.directory)), realPath(output));
@@ -85,6 +89,7 @@ try {
   const r2 = config.r2_buckets[0];
   const manifest = defined({
     version,
+    storage,
     main_module: mainModule,
     compatibility_date: config.compatibility_date,
     durable_objects: config.durable_objects.bindings.map(({ name, class_name }) => ({ name, class_name })),

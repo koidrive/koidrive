@@ -31,6 +31,24 @@ test("release version exports Cargo's workspace version and refreshes a stale st
   }
 });
 
+test("release version keeps the commit of a stamped export and drops it when the version changes", () => {
+  const root = mkdtempSync(join(tmpdir(), "release-version-"));
+  const server = join(root, "server");
+  mkdirSync(server);
+  try {
+    const stamped = { version: "0.2.0", commit: "0123456789abcdef0123456789abcdef01234567" };
+    writeFileSync(join(root, "Cargo.toml"), '[workspace.package]\nversion = "0.2.0"\n');
+    writeFileSync(join(server, "release.json"), JSON.stringify(stamped));
+    assert.equal(releaseVersion(server), "0.2.0");
+    assert.deepEqual(JSON.parse(readFileSync(join(server, "release.json"), "utf8")), stamped);
+    writeFileSync(join(root, "Cargo.toml"), '[workspace.package]\nversion = "0.3.0-rc.1"\n');
+    assert.equal(releaseVersion(server), "0.3.0-rc.1");
+    assert.deepEqual(JSON.parse(readFileSync(join(server, "release.json"), "utf8")), { version: "0.3.0-rc.1" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a missing or invalid workspace version cannot fall back to a stale export", () => {
   const root = mkdtempSync(join(tmpdir(), "release-version-"));
   const server = join(root, "server");

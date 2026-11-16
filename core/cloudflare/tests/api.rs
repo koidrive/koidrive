@@ -636,6 +636,7 @@ async fn script_settings_name_the_bound_bucket() {
 fn bundle() -> Bundle {
     let manifest: Manifest = serde_json::from_value(json!({
         "version": "0.3.0",
+        "storage": { "account": 10, "space": 10 },
         "main_module": "worker.js",
         "compatibility_date": "2026-11-01",
         "durable_objects": [{ "name": "ACCOUNT", "class_name": "AccountDO" }],

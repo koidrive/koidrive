@@ -57,6 +57,8 @@ A stored version above the step count throws "storage schema version N is newer 
 | Field | Source |
 |---|---|
 | `server_version` | `server/release.json`, written from `[workspace.package].version` in `Cargo.toml` by `server/scripts/release-version.mjs` |
+| `commit` | `commit` in `server/release.json`, which only a release commit sets |
+| `storage` | `STORAGE` in `server/src/storage.ts`: the length of each class's `MIGRATIONS`. `server/scripts/pack-bundle.mjs` writes the same numbers to the bundle manifest |
 | `proto_min`, `proto_max` | `PROTO_MIN` and `PROTO_MAX` in `server/src/version.ts` |
 
 `server/test/protocol.test.ts` keeps `PROTO_MIN <= max(1, PROTO_MAX - 1)`.

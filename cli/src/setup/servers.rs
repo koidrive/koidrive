@@ -3,9 +3,10 @@
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use koidrive_cloudflare::{Bundle, Secret, UploadPlan};
+use koidrive_cloudflare::{Bundle, Secret, Storage, UploadPlan};
 use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Next};
+use koidrive_proto::v1::ServerInfo;
 use koidrive_telemetry::schema::SetupStep;
 use url::Url;
 
@@ -79,6 +80,15 @@ impl ServerAction {
                 argv.extend([flag.to_owned(), value.to_owned()]);
             }
         }
+        if matches!(
+            self,
+            ServerAction::Upgrade {
+                allow_downgrade: true,
+                ..
+            }
+        ) {
+            argv.push("--allow-downgrade".to_owned());
+        }
         argv.push("--interactive".to_owned());
         if self.login().is_some_and(|login| login.no_browser) {
             argv.push("--no-browser".to_owned());
@@ -137,11 +147,18 @@ pub async fn server(
             .await?;
         }
         ServerAction::Claim { .. } => unreachable!("main sends a claim to the driver"),
-        ServerAction::Upgrade { worker, yes, login } => {
+        ServerAction::Upgrade {
+            worker,
+            yes,
+            allow_downgrade,
+            login,
+        } => {
             bundled()?;
             with_session(&login, terminal.clone(), verbose, async |session| {
                 let found = session.pick(worker.as_deref()).await?;
-                crate::telemetry::step(SetupStep::Upgrade, session.upgrade(&found, yes)).await
+                let bundle = embedded_bundle()?;
+                let upgrade = session.upgrade(&bundle, &found, yes, allow_downgrade);
+                crate::telemetry::step(SetupStep::Upgrade, upgrade).await
             })
             .await?;
         }
@@ -295,9 +312,13 @@ impl Session {
         }
     }
 
-    /// Uploads the embedded server over an existing one (section 5).
-    pub(super) async fn upgrade(&mut self, server: &Found, yes: bool) -> Result<(), CliError> {
-        let bundle = embedded_bundle()?;
+    pub(super) async fn upgrade(
+        &mut self,
+        bundle: &Bundle,
+        server: &Found,
+        yes: bool,
+        allow_downgrade: bool,
+    ) -> Result<(), CliError> {
         let Some(info) = &server.info else {
             return Err(format!(
                 "{} does not answer; run koi setup to finish its deploy",
@@ -305,10 +326,27 @@ impl Session {
             )
             .into());
         };
-        if newer(&info.server_version, &bundle.manifest.version) {
+        let manifest = &bundle.manifest;
+        if !allow_downgrade
+            && let Some(downgrade) = downgrade(info, &manifest.version, manifest.storage)
+        {
+            let (id, version) = (&server.script.id, &info.server_version);
+            let reason = match downgrade {
+                Downgrade::Storage { server, bundle } => format!(
+                    "{id} stores data in a newer format than the Koidrive {} in this koi reads (storage version {}.{}, against {}.{}), and that release would stop serving it; install a newer koi, or",
+                    manifest.version, server.account, server.space, bundle.account, bundle.space
+                ),
+                Downgrade::Release => format!(
+                    "{id} runs Koidrive {version}, newer than the {} in this koi; install a newer koi, or",
+                    manifest.version
+                ),
+                Downgrade::Unknown => format!(
+                    "{id} runs Koidrive {version}, a build that does not report its storage version, so this koi cannot tell whether its Koidrive {} is older;",
+                    manifest.version
+                ),
+            };
             return Err(format!(
-                "{} runs Koidrive {}, newer than this CLI's {}; install a newer koi",
-                server.script.id, info.server_version, bundle.manifest.version
+                "{reason} run koi server upgrade --allow-downgrade to upload it anyway"
             )
             .into());
         }
@@ -338,7 +376,7 @@ impl Session {
             None
         };
         self.upload(
-            &bundle,
+            bundle,
             &server.script.id,
             &bucket,
             server.script.migration_tag.as_deref(),
@@ -388,9 +426,37 @@ impl Session {
     }
 }
 
-pub(super) fn newer(a: &str, b: &str) -> bool {
-    match (semver::Version::parse(a), semver::Version::parse(b)) {
-        (Ok(a), Ok(b)) => a.cmp_precedence(&b).is_gt(),
-        _ => false,
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Downgrade {
+    Storage { server: Storage, bundle: Storage },
+    Release,
+    Unknown,
+}
+
+pub(super) fn downgrade(info: &ServerInfo, version: &str, storage: Storage) -> Option<Downgrade> {
+    if let Some(reported) = info.storage {
+        let server = Storage {
+            account: reported.account,
+            space: reported.space,
+        };
+        if server.account > storage.account || server.space > storage.space {
+            return Some(Downgrade::Storage {
+                server,
+                bundle: storage,
+            });
+        }
     }
+    match (release(&info.server_version), release(version)) {
+        (Some(server), Some(bundle)) if server.cmp_precedence(&bundle).is_gt() => {
+            Some(Downgrade::Release)
+        }
+        (None, _) if info.storage.is_none() => Some(Downgrade::Unknown),
+        _ => None,
+    }
+}
+
+fn release(version: &str) -> Option<semver::Version> {
+    semver::Version::parse(version)
+        .ok()
+        .filter(|version| (version.major, version.minor, version.patch) != (0, 0, 0))
 }

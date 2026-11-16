@@ -20,6 +20,8 @@ pub const RECOVERY_KEY_SECRET: &str = "KOIDRIVE_RECOVERY_KEY";
 pub struct Manifest {
     /// The server version, such as `0.3.0`.
     pub version: String,
+    /// The `schema_version` each Durable Object class reaches on this server's code (RFC 0025).
+    pub storage: Storage,
     /// The file name of the Worker module under `worker/`.
     pub main_module: String,
     pub compatibility_date: String,
@@ -32,6 +34,13 @@ pub struct Manifest {
     pub(crate) assets: Option<AssetsBinding>,
     pub(crate) observability: Option<Map<String, Value>>,
     pub(crate) code_update_strategy: Option<Map<String, Value>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    pub account: u32,
+    pub space: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -394,6 +403,7 @@ mod tests {
     fn manifest() -> Value {
         json!({
             "version": "0.3.0",
+            "storage": { "account": 10, "space": 10 },
             "main_module": "worker.js",
             "compatibility_date": "2026-11-01",
             "durable_objects": [

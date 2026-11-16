@@ -24,6 +24,18 @@ message ServerInfo {
   // True when the Account DO runs code that handles ClaimRequest.setup_attempt. The Account DO, not the Worker, reports
   // it, because after an upgrade the Durable Object can keep its old code for up to 300 seconds.
   bool setup_attempts = 6;
+  // The storage schema versions this server's code migrates its Durable Objects to (RFC 0025). Unset on a server that
+  // does not report them.
+  Storage storage = 8;
+  // The koidrive/koidrive commit this server was built from, or empty when its build did not record one (RFC 0025).
+  string commit = 9;
+
+  message Storage {
+    // The schema_version an Account DO reaches when it starts on this code.
+    uint32 account = 1;
+    // The schema_version a Space DO reaches when it starts on this code.
+    uint32 space = 2;
+  }
 }
 
 // POST /v1/claim. user_name, device_name and platform are at most 255 bytes of UTF-8 each (RFC 0007 section 1).

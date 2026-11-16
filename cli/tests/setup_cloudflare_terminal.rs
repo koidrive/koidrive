@@ -431,7 +431,7 @@ fn bundle(root: &Path) {
     fs::write(root.join("worker/worker.js"), "export default {};\n").unwrap();
     fs::write(root.join("assets/index.html"), "test bundle\n").unwrap();
     fs::write(root.join("manifest.json"), json!({
-        "version": env!("CARGO_PKG_VERSION"), "main_module": "worker.js",
+        "version": env!("CARGO_PKG_VERSION"), "storage": {"account": 10, "space": 10}, "main_module": "worker.js",
         "compatibility_date": "2026-11-01", "default_bucket": "koidrive", "r2_binding": "BUCKET",
         "durable_objects": [{"name":"ACCOUNT","class_name":"AccountDO"},{"name":"SPACE","class_name":"SpaceDO"}],
         "migrations": [{"tag":"v1","new_sqlite_classes":["AccountDO","SpaceDO"]}],
@@ -507,7 +507,7 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
         ("POST", "/oauth2/revoke" | "/telemetry", _) => ("application/json", b"{}".to_vec()),
         (_, _, Some("/v1/server")) => proto(ServerInfo {
             server_version: env!("CARGO_PKG_VERSION").into(), proto_min: 1, proto_max: 1,
-            data_path: 1, claimed: true, setup_attempts: true,
+            data_path: 1, claimed: true, setup_attempts: true, ..Default::default()
         }.encode_to_vec()),
         ("POST", _, Some("/v1/claim")) => proto(DeviceCredentials {
             user_id: "owner".into(), device_id: DEVICE.into(),

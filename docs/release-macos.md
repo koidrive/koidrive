@@ -1,22 +1,22 @@
 # Releasing the macOS app
 
-A version tag on `main` builds the app from `apps/macos`, signs and notarizes it, and publishes `Koidrive-<version>-arm64.dmg` on the tag's GitHub release, next to the CLI tarballs and in the same `SHA256SUMS`. The [CLI distribution](../.github/workflows/release-cli.yml) workflow does this for the tag and runs the [macOS release](../.github/workflows/release-macos.yml) workflow as one of its jobs. The DMG requires macOS 26 or later on Apple silicon.
+A version tag builds the app from `apps/macos`, signs and notarizes it, and publishes `Koidrive-<version>-arm64.dmg` on the tag's GitHub release, next to the CLI tarballs and in the same `SHA256SUMS`. The [CLI distribution](../.github/workflows/release-cli.yml) workflow does this for the tag and runs the [macOS release](../.github/workflows/release-macos.yml) workflow as one of its jobs. The DMG requires macOS 26 or later on Apple silicon.
 
 Signing needs a Developer ID certificate, an App Store Connect API key and a protected `macos-release` environment. The repository has all three. [Set up release signing](release-macos-signing.md) describes them and how to replace them.
 
 ## Release a version
 
-1. Tag the latest commit on `main` and push the tag:
+1. Make the release commit on the latest commit of `main`, tag it, and push the tag:
 
    ```sh
-   git fetch origin main && git tag v0.1.0-alpha.2 origin/main && git push origin v0.1.0-alpha.2
+   git fetch origin main && python3 scripts/release-commit.py make v0.1.0-alpha.2 && git push origin v0.1.0-alpha.2
    ```
 
-   A tag is `v` and three numbers, optionally followed by `-alpha.N` or `-rc.N`. Only repository admins can create `v*` tags. An `-alpha.N` or `-rc.N` tag publishes a normal release, not a prerelease, so unless a higher version is published it becomes Latest, which `install.sh` installs by default.
+   The script works in a temporary worktree and leaves your checkout as it is. The release commit stamps the version into `Cargo.toml`, `Cargo.lock` and `server/release.json`, and it stays off `main`. A tag is `v` and three numbers, optionally followed by `-alpha.N` or `-rc.N`. Only repository admins can create `v*` tags. An `-alpha.N` or `-rc.N` tag publishes a normal release, not a prerelease, so unless a higher version is published it becomes Latest, which `install.sh` installs by default.
 2. Open the CLI distribution run that the tag started. Once the CLI tarballs are built, the app and the CLI signing jobs both wait for the `macos-release` environment. Click **Review deployments**, select `macos-release` and **Approve and deploy**. One approval covers both jobs. Approve only a run for a commit and version you meant to release.
 3. The `sign-checksums` job signs `SHA256SUMS` with the release key. The `publish` job runs once `release-ref`, `checksums` and `sign-checksums` pass, and `scripts/publish-release.sh` attaches the CLI tarballs, the DMG, `SHA256SUMS` and `SHA256SUMS.sig` to the release in one step. Jobs that don't feed `checksums`, such as `homebrew-install`, can fail after the release is out, so when a run fails, check the `publish` job and the release page.
 
-If the app does not build, sign, notarize or verify, the run fails and publishes nothing, not even the CLI tarballs. `publish-release.sh` also refuses when the DMG is missing, when any other file is present (an unsigned DMG included), when `SHA256SUMS` does not list exactly those files with matching hashes, or when `SHA256SUMS.sig` is not a signature of it by the release key in `.github/release-allowed-signers`. A tag on a commit that is not on `main` fails in the "commit on main" jobs.
+If the app does not build, sign, notarize or verify, the run fails and publishes nothing, not even the CLI tarballs. `publish-release.sh` also refuses when the DMG is missing, when any other file is present (an unsigned DMG included), when `SHA256SUMS` does not list exactly those files with matching hashes, or when `SHA256SUMS.sig` is not a signature of it by the release key in `.github/release-allowed-signers`. A tag that does not point to such a release commit fails in the "commit on main" jobs: `scripts/release-commit.py check` stamps the commit's parent again and compares the trees.
 
 ## Build a DMG without releasing
 
@@ -75,11 +75,11 @@ The app carries its version in three `Info.plist` keys. For the tag `v0.1.0-alph
 | `CFBundleVersion` | The build number, for example `412` | The run number: of the CLI distribution run for a tag, or of the macOS release run (or the **build-number** input) for a manual run |
 | `KoidriveVersion` | `0.1.0-alpha.2` | The full version |
 
-The tag is the release version. Before packing the server bundle or building Rust, both release workflows run `python3 scripts/stamp-release-version.py "$TAG"`. The script stamps the workspace version, workspace packages in `Cargo.lock`, and `server/release.json` in the CI checkout. A manual app run with a version input uses the same script. The committed workspace version stays `0.0.0-dev`.
+The tag is the release version, and its release commit already carries it, so the release workflows build the tagged tree as it is. A manual app run with a version input runs `python3 scripts/stamp-release-version.py` in the CI checkout. The workspace version on `main` stays `0.0.0-dev`.
 
 `apps/macos/scripts/build-release.sh` takes the full version in `VERSION` and sets the first and third keys. `KoidriveVersion` comes from the `KOIDRIVE_VERSION` build setting in `apps/macos/project.yml`. The script rejects a `koi --version` that differs from `VERSION`. Without `VERSION`, it uses the version `koi` reports. Compare two builds by `KoidriveVersion`, which orders `0.1.0-alpha.2` before `0.1.0-rc.1` and `0.1.0`. Settings shows the full `KoidriveVersion`.
 
-Local builds report `0.0.0-dev`, including builds with `--release`. They do not offer release updates, and telemetry identifies them as development builds. The CLI, driver, app bindings, and server bundle all read the workspace version. The Homebrew formula uses the tag and hashes from the release's `SHA256SUMS`.
+Local builds from `main` report `0.0.0-dev`, including builds with `--release`. They do not offer release updates, and telemetry identifies them as development builds. The CLI, driver, app bindings, and server bundle all read the workspace version. The Homebrew formula uses the tag and hashes from the release's `SHA256SUMS`.
 
 Non-publishing CLI distribution checks use the fixture tag `v0.0.0-rc.0` to test the release-only Homebrew formula path. They do not create a tag or publish a release.
 

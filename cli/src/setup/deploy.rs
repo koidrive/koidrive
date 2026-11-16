@@ -426,7 +426,8 @@ impl Session {
                     format!("{reason} Run koi server upgrade, then koi setup again.").into(),
                 );
             }
-            self.upgrade(&server, false).await?;
+            self.upgrade(&embedded_bundle()?, &server, false, false)
+                .await?;
             let terminal = self.terminal.clone();
             let _progress = if terminal.setup_guided() {
                 Some(terminal.progress("Waiting for your server..."))

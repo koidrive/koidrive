@@ -7,13 +7,14 @@ use koidrive_ipc::{Code, Next};
 
 use super::deploy::{create_bucket, free_name, keep_script_name, new_bucket_name};
 use super::onboarding::choices;
-use super::servers::newer;
+use super::servers::{Downgrade, downgrade};
 use super::session::{guarded, read_answer};
 use super::state::{SetupState, StateFile, Step};
 use crate::terminal::read_line;
 
 use clap::Parser;
-use koidrive_proto::v1::DeviceCredentials;
+use koidrive_cloudflare::{Bundle, Storage};
+use koidrive_proto::v1::{DeviceCredentials, server_info};
 use serde_json::json;
 
 use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
@@ -161,6 +162,10 @@ async fn owner_commands_without_interactive_and_terminals_need_auth_and_name_the
             &["upgrade", "--worker", "fb", "--interactive"],
         ),
         (&["upgrade"], &["upgrade", "--interactive"]),
+        (
+            &["upgrade", "--allow-downgrade", "--yes"],
+            &["upgrade", "--allow-downgrade", "--interactive"],
+        ),
         (
             &["delete", "--bucket", "fb-1a2b", "--yes"],
             &["delete", "--bucket", "fb-1a2b", "--interactive"],
@@ -671,27 +676,199 @@ fn the_embedded_bundle_reads_back_when_the_build_has_one() {
     }
 }
 
-#[test]
-fn newer_compares_dotted_numbers_only() {
-    assert!(newer("0.10.0", "0.9.9"));
-    assert!(!newer("0.3.0", "0.3.0"));
-    assert!(!newer("0.2.9", "0.3.0"));
-    assert!(newer("0.4.0-rc1", "0.3.0"));
+const STORAGE: Storage = Storage {
+    account: 10,
+    space: 10,
+};
+
+fn reporting(version: &str, storage: Option<(u32, u32)>) -> ServerInfo {
+    ServerInfo {
+        server_version: version.into(),
+        storage: storage.map(|(account, space)| server_info::Storage { account, space }),
+        ..ServerInfo::default()
+    }
+}
+
+fn bundle(version: &str, storage: Storage) -> (tempfile::TempDir, Bundle) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("worker")).unwrap();
+    std::fs::write(dir.path().join("worker/worker.js"), "export default {};\n").unwrap();
+    let manifest = json!({
+        "version": version,
+        "storage": { "account": storage.account, "space": storage.space },
+        "main_module": "worker.js",
+        "compatibility_date": "2026-11-01",
+        "durable_objects": [
+            { "name": "ACCOUNT", "class_name": "AccountDO" },
+            { "name": "SPACE", "class_name": "SpaceDO" }
+        ],
+        "r2_binding": "BUCKET",
+        "default_bucket": "koidrive",
+        "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AccountDO", "SpaceDO"] }],
+        "assets": { "binding": "ASSETS" }
+    });
+    std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+    let bundle = Bundle::from_dir(dir.path()).unwrap();
+    (dir, bundle)
 }
 
 #[test]
-fn newer_obeys_semver_prerelease_precedence() {
+fn an_upgrade_over_a_development_server_follows_its_storage_version() {
+    for version in [
+        "0.0.0-dev",
+        "0.0.0-dev+abc123",
+        "0.0.0-rc.0",
+        "not-a-version",
+    ] {
+        for behind_or_equal in [(10, 10), (9, 10), (1, 1)] {
+            let info = reporting(version, Some(behind_or_equal));
+            assert_eq!(downgrade(&info, "0.1.0", STORAGE), None, "{version}");
+        }
+        assert_eq!(
+            downgrade(&reporting(version, Some((10, 11))), "0.1.0", STORAGE),
+            Some(Downgrade::Storage {
+                server: Storage {
+                    account: 10,
+                    space: 11
+                },
+                bundle: STORAGE
+            }),
+            "{version}"
+        );
+        assert_eq!(
+            downgrade(&reporting(version, None), "0.1.0", STORAGE),
+            Some(Downgrade::Unknown),
+            "{version} without a storage version is unknown, not older"
+        );
+    }
+}
+
+#[test]
+fn an_upgrade_over_an_older_release_goes_ahead() {
+    for server in ["0.1.0-alpha.6", "0.1.0-rc.1", "0.0.9"] {
+        for storage in [None, Some((9, 9)), Some((10, 10))] {
+            let info = reporting(server, storage);
+            assert_eq!(downgrade(&info, "0.1.0", STORAGE), None, "{server}");
+        }
+    }
+}
+
+#[test]
+fn an_upgrade_over_the_same_release_goes_ahead() {
+    for storage in [None, Some((10, 10))] {
+        assert_eq!(
+            downgrade(&reporting("0.1.0", storage), "0.1.0", STORAGE),
+            None
+        );
+    }
+    assert_eq!(
+        downgrade(&reporting("0.1.0+build.2", None), "0.1.0+build.1", STORAGE),
+        None
+    );
+}
+
+#[test]
+fn an_upgrade_over_a_newer_release_stops_by_semver_precedence() {
     for (server, cli) in [
+        ("0.10.0", "0.9.9"),
         ("0.1.0-alpha.2", "0.1.0-alpha.1"),
         ("0.2.0-alpha.1", "0.1.0-alpha.1"),
         ("0.1.0", "0.1.0-alpha.1"),
         ("0.1.0-alpha.10", "0.1.0-alpha.2"),
         ("0.1.0-rc.1", "0.1.0-alpha.10"),
     ] {
-        assert!(newer(server, cli), "{server} must be newer than {cli}");
-        assert!(!newer(cli, server), "{cli} must not be newer than {server}");
+        for storage in [None, Some((10, 10))] {
+            assert_eq!(
+                downgrade(&reporting(server, storage), cli, STORAGE),
+                Some(Downgrade::Release),
+                "{server} is newer than {cli}"
+            );
+            assert_eq!(
+                downgrade(&reporting(cli, storage), server, STORAGE),
+                None,
+                "{cli} is older than {server}"
+            );
+        }
     }
-    assert!(!newer("0.1.0+build.2", "0.1.0+build.1"));
-    assert!(!newer("not-a-version", "0.1.0"));
-    assert!(!newer("0.1.0", "not-a-version"));
+}
+
+#[test]
+fn storage_ahead_of_the_bundle_stops_an_upgrade_whatever_the_versions_say() {
+    for (server, cli) in [
+        ("0.1.0", "0.1.0"),
+        ("0.1.0-alpha.6", "0.1.0"),
+        ("0.0.0-dev", "0.0.0-dev"),
+        ("0.1.0", "0.0.0-dev"),
+    ] {
+        for (account, space) in [(11, 10), (10, 11), (11, 11)] {
+            assert_eq!(
+                downgrade(&reporting(server, Some((account, space))), cli, STORAGE),
+                Some(Downgrade::Storage {
+                    server: Storage { account, space },
+                    bundle: STORAGE
+                }),
+                "{server} at {account}.{space} over {cli}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_development_bundle_is_never_older_than_a_release_by_version_alone() {
+    for storage in [None, Some((10, 10))] {
+        assert_eq!(
+            downgrade(&reporting("0.1.0", storage), "0.0.0-dev", STORAGE),
+            None
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_upgrade_that_may_go_back_uploads_nothing_unless_allowed() {
+    let fake = Fake::start(vec![tokens()]).await;
+    let mut session = fake::session(&fake).await;
+    let (_dir, release) = bundle("0.1.0", STORAGE);
+    let over = |info: ServerInfo| Found {
+        info: Some(info),
+        ..deployed(&fake)
+    };
+    let before = fake.seen().len();
+    for (info, reason) in [
+        (
+            reporting("0.0.0-dev", None),
+            "koidrive runs Koidrive 0.0.0-dev, a build that does not report its storage version, so this koi cannot tell whether its Koidrive 0.1.0 is older;",
+        ),
+        (
+            reporting("0.0.0-dev", Some((11, 10))),
+            "koidrive stores data in a newer format than the Koidrive 0.1.0 in this koi reads (storage version 11.10, against 10.10)",
+        ),
+        (
+            reporting("0.2.0", Some((10, 10))),
+            "koidrive runs Koidrive 0.2.0, newer than the 0.1.0 in this koi; install a newer koi, or",
+        ),
+    ] {
+        let error = session
+            .upgrade(&release, &over(info), true, false)
+            .await
+            .unwrap_err();
+        assert!(error.message.starts_with(reason), "{}", error.message);
+        assert!(
+            error
+                .message
+                .ends_with("run koi server upgrade --allow-downgrade to upload it anyway"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(fake.seen().len(), before, "a refused upgrade calls nothing");
+
+    let error = session
+        .upgrade(&release, &over(reporting("0.0.0-dev", None)), true, true)
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("cannot upload the static assets"),
+        "--allow-downgrade goes on to the upload: {}",
+        error.message
+    );
 }

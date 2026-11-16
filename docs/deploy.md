@@ -45,7 +45,15 @@ Recovery does not sign out your other devices. A lost device keeps working until
 
 ## Upgrade
 
-Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. With the Cloudflare login, `koi server upgrade` does this for you ([Set up](guide/setup.md#upgrade-the-server)).
+Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. With the Cloudflare login, `koi server upgrade` does this for you ([Set up](guide/setup.md#upgrade-the-server)). It stops if the new release is older than your server's data.
+
+Upgrade only to a newer release. To see what your server runs, run this in a terminal:
+
+```sh
+curl -H 'Accept: application/json' https://<your server>/v1/server
+```
+
+`serverVersion` is the release your server runs, and `storage` is the version of its data format. A server deployed from `main` reports `0.0.0-dev`, and its data can be newer than the latest release. Upgrade it only to a release published after the day you deployed it.
 
 If you deployed with the button, your repository is a copy that does not update itself:
 

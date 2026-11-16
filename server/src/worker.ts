@@ -31,7 +31,8 @@ import { quotaRefusal } from "./quota";
 import { shareRoute } from "./share/routes";
 import { CONNECT_HEADER, type Connect, GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/space";
 import { chunkKey, INCARNATION } from "./space/store";
-import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "./version";
+import { STORAGE } from "./storage";
+import { PROTO_MAX, PROTO_MIN, SERVER_COMMIT, SERVER_VERSION } from "./version";
 
 export { AccountDO } from "./account-do";
 export { SpaceDO } from "./space-do";
@@ -203,6 +204,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       setupAttempts: await account(env)
         .handlesSetupAttempts()
         .catch(() => false),
+      storage: STORAGE,
+      commit: SERVER_COMMIT,
     });
     return reply(request, ServerInfoSchema, info);
   }
