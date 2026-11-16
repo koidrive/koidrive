@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,7 +55,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step,
+    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step, check_root_at,
+    open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -382,13 +383,9 @@ impl Disk {
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
         }
-        let found = disk.space.id().dev;
-        if found != link.root_dev {
-            return Err(Stop::Root(RootProblem::OtherDevice {
-                expected: link.root_dev,
-                found,
-            }));
-        }
+        link.root_at()
+            .admits(&disk.space.root_at()?)
+            .map_err(Stop::Root)?;
         let marker = disk.marker()?;
         let cleared = engine.effects.cleared();
         let upper = cleared + engine.effects.in_flight().len() as u64;
@@ -404,8 +401,7 @@ impl Disk {
                 let id = held.to_string_lossy();
                 let same = |node: &&LocalNode| {
                     let identity = &node.identity;
-                    (identity.dev, identity.ino, identity.birth_ns)
-                        == (found.dev, found.ino, found.birth_ns)
+                    (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
                 };
                 (trees.local().iter().map(|(_, node)| node))
                     .find(same)
@@ -873,8 +869,8 @@ impl Upload {
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
         let file = File::from(rustix::fs::openat(folder.fd(), name, flags, Mode::empty())?);
         let meta = file.metadata()?;
-        let same =
-            |id: FileId| meta.is_file() && meta.dev() == id.dev && u128::from(meta.ino()) == id.ino;
+        let live = koidrive_fs::id_of(file.as_fd())?;
+        let same = |id: FileId| meta.is_file() && id == live;
         if !source.identity.is_some_and(same) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1074,6 +1070,72 @@ impl Pending {
 
 /// A chunk by its hash and size.
 type ChunkKey = (Vec<u8>, u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Adopted {
+    Volume,
+    Children(usize),
+}
+
+pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Adopted>, Stop> {
+    if let Some(stored) = store.transaction(|tx| tx.link())? {
+        link.root_dev = stored.root_dev;
+        link.root_volume = stored.root_volume;
+    }
+    let unreadable = |error| Stop::Root(RootProblem::Unreadable(error));
+    let dir = open_root_folder(&link.root).map_err(Stop::Root)?;
+    let found = root_at(dir.as_fd()).map_err(unreadable)?;
+    let renumbered = match check_root_at(dir.as_fd(), &link.space_id, &link.root_at()) {
+        Ok(_) => false,
+        Err(RootProblem::Renumbered) if found.volume.is_some() => {
+            check_root_at(dir.as_fd(), &link.space_id, &found).map_err(Stop::Root)?;
+            true
+        }
+        Err(problem) => return Err(Stop::Root(problem)),
+    };
+    let space = Space::bind(dir, &link.root).map_err(unreadable)?;
+    let adopted = if renumbered {
+        let engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
+        match matching_children(&space, &engine.trees).map_err(unreadable)? {
+            0 => return Err(Stop::Root(RootProblem::Renumbered)),
+            matched => Some(Adopted::Children(matched)),
+        }
+    } else if found == link.root_at() {
+        return Ok(None);
+    } else {
+        (found.dev != link.root_dev).then_some(Adopted::Volume)
+    };
+    let old_dev = link.root_dev;
+    link.root_dev = found.dev;
+    link.root_volume = found.volume;
+    store.transaction(|tx| tx.set_link(link))?;
+    if let Some(adopted) = adopted {
+        tracing::warn!(
+            space_id = link.space_id,
+            old_dev,
+            new_dev = found.dev,
+            ?adopted,
+            "the folder's disk is mounted under another device number; syncing it again"
+        );
+    }
+    Ok(adopted)
+}
+
+fn matching_children(space: &Space, trees: &Trees) -> io::Result<usize> {
+    let local = trees.local();
+    let mut matched = 0;
+    for child in trees.local_children(&local.root) {
+        let Some(node) = local.get(child).filter(|node| !node.parked) else {
+            continue;
+        };
+        match space.child_id(OsStr::new(&node.shape.name))? {
+            None => {}
+            Some(found) if found == file_id(node.identity) => matched += 1,
+            Some(_) => return Ok(0),
+        }
+    }
+    Ok(matched)
+}
 
 fn key(chunk: &ChunkRef) -> ChunkKey {
     (chunk.hash.clone(), chunk.size)

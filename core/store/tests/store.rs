@@ -21,7 +21,7 @@ use koidrive_engine::state::{
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
 };
-use koidrive_fs::FileId;
+use koidrive_fs::{FileId, VolumeId};
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Content, CreateFile, Delete, NodeKind, NodeState, NodeStatus,
     Op, OpResult, VersionInfo, Welcome, op, op_result,
@@ -325,6 +325,7 @@ fn a_store_from_any_past_version_upgrades_and_keeps_every_row() {
         populate(&path);
         rewind(&path, version);
         let mut kept = every_row(&path);
+        without_device(&path, &mut kept);
         assert_eq!(kept.values().any(|(_, rows)| !rows.is_empty()), version > 0);
         let moved = moved_in_flight(&path, &mut kept);
         assert_eq!(moved.len(), usize::from(version >= 3));
@@ -360,6 +361,7 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     )
     .unwrap();
     let mut kept = every_row(&path);
+    without_device(&path, &mut kept);
     let (_, discarded) = kept.remove("discarded_nodes").unwrap();
     assert_eq!(discarded.len(), 1);
     let moved = moved_in_flight(&path, &mut kept);
@@ -672,6 +674,7 @@ fn populate(path: &Path) {
         space_name: "Projects".into(),
         root: std::path::PathBuf::from("/home/ada/Koidrive"),
         root_dev: 66306,
+        root_volume: None,
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
@@ -694,7 +697,6 @@ fn populate(path: &Path) {
                 node_id: "moved".into(),
                 shape: moved.clone(),
                 identity: FileId {
-                    dev: 1,
                     ino: 7,
                     birth_ns: Some(-1),
                 },
@@ -785,17 +787,29 @@ fn rebuild(path: &Path, migrate: impl FnOnce(&Connection)) {
         .unwrap();
     for table in tables(&conn) {
         let original = columns(&conn, "original", &table);
-        let shared: Vec<String> = columns(&conn, "main", &table)
-            .into_iter()
+        let main = columns(&conn, "main", &table);
+        let shared: Vec<String> = (main.iter())
             .filter(|column| original.contains(column))
             .map(|column| format!("\"{column}\""))
             .collect();
         if shared.is_empty() {
             continue;
         }
-        let shared = shared.join(", ");
+        let device = match table.as_str() {
+            "local_nodes" => "1",
+            "recorded_nodes" => "CASE WHEN displaced = 1 THEN 1 END",
+            _ => "",
+        };
+        let (into, from) =
+            match main.contains(&"dev".to_owned()) && !original.contains(&"dev".to_owned()) {
+                true => (
+                    format!("{}, dev", shared.join(", ")),
+                    format!("{}, {device}", shared.join(", ")),
+                ),
+                false => (shared.join(", "), shared.join(", ")),
+            };
         conn.execute_batch(&format!(
-            "INSERT INTO main.\"{table}\" ({shared}) SELECT {shared} FROM original.\"{table}\""
+            "INSERT INTO main.\"{table}\" ({into}) SELECT {from} FROM original.\"{table}\""
         ))
         .unwrap();
     }
@@ -879,6 +893,16 @@ fn moved_in_flight(
     )
     .unwrap();
     table_rows(&conn, "moved", &["position".into(), "record".into()])
+}
+
+fn without_device(path: &Path, kept: &mut BTreeMap<String, (Vec<String>, Vec<String>)>) {
+    let conn = Connection::open(path).unwrap();
+    for table in ["local_nodes", "recorded_nodes"] {
+        if let Some((columns, rows)) = kept.get_mut(table) {
+            columns.retain(|column| column != "dev");
+            *rows = table_rows(&conn, table, columns);
+        }
+    }
 }
 
 fn every_row(path: &Path) -> BTreeMap<String, (Vec<String>, Vec<String>)> {
@@ -1038,7 +1062,6 @@ fn three_trees_round_trip() {
             node_id: "f".into(),
             shape: file_shape("root", "b\u{301}.txt"),
             identity: FileId {
-                dev: u64::MAX,
                 ino: 1 << 63,
                 birth_ns: Some(1_700_000_000_123_456_789),
             },
@@ -1050,7 +1073,6 @@ fn three_trees_round_trip() {
             node_id: "p".into(),
             shape: dir_shape("root", "swap"),
             identity: FileId {
-                dev: 16_777_232,
                 ino: 42,
                 birth_ns: None,
             },
@@ -1097,7 +1119,6 @@ fn three_trees_round_trip() {
 
 fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
-        dev: u64::MAX,
         ino,
         birth_ns: ino.is_multiple_of(2).then_some(-1),
     }
@@ -1283,7 +1304,6 @@ fn engine_state() -> EngineState {
             displaced: BTreeMap::from([(
                 "displaced".into(),
                 FileIdentity {
-                    dev: u64::MAX,
                     ino: 9,
                     birth_ns: Some(-1),
                 },
@@ -2178,7 +2198,6 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
             content_from_server: false,
             shape: shape.clone(),
             identity: FileIdentity {
-                dev: 1,
                 ino: 1,
                 birth_ns: Some(0),
             },
@@ -2220,7 +2239,6 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
                     content: shape.content.clone(),
                 },
                 identity: FileId {
-                    dev: 1,
                     ino: 1,
                     birth_ns: Some(0),
                 },
@@ -2726,7 +2744,6 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         content_from_server: false,
         shape: engine_shape("root", name),
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: Some(0),
         },
@@ -2850,7 +2867,6 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         content_from_server: false,
         shape: engine_shape("root", name),
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: Some(0),
         },
@@ -2949,7 +2965,6 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
             node_id: node_id.into(),
             shape: file_shape("root", node_id),
             identity: FileId {
-                dev: u64::MAX,
                 ino: ino.into(),
                 birth_ns: Some(-1),
             },
@@ -3158,7 +3173,6 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                         content_from_server: false,
                         shape: at(name),
                         identity: FileIdentity {
-                            dev: 1,
                             ino,
                             birth_ns: Some(0),
                         },
@@ -3232,7 +3246,6 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
                 node_id: "d".into(),
                 shape: dir_shape("root", "A (pending)"),
                 identity: FileId {
-                    dev: 1,
                     ino: 7u64.into(),
                     birth_ns: None,
                 },
@@ -3267,7 +3280,6 @@ fn an_inode_wider_than_64_bits_survives_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let wide = |ino: u128| FileIdentity {
-        dev: 1,
         ino,
         birth_ns: None,
     };
@@ -3297,7 +3309,6 @@ fn an_inode_wider_than_64_bits_survives_a_reopen() {
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
         identity: FileId {
-            dev: 1,
             ino,
             birth_ns: None,
         },
@@ -3380,6 +3391,7 @@ fn a_store_from_before_found_markers_were_kept_reads_its_link_as_finding_none() 
         space_name: "Projects".into(),
         root: std::path::PathBuf::from("/home/ada/Koidrive"),
         root_dev: 66306,
+        root_volume: None,
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
@@ -3475,7 +3487,6 @@ fn a_store_from_before_discarded_shapes_were_recorded_takes_them_from_the_waitin
                     node_id: node_id.into(),
                     shape: file_shape("root", name),
                     identity: FileId {
-                        dev: 1,
                         ino: 1,
                         birth_ns: Some(0),
                     },
@@ -3537,7 +3548,6 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     let path = dir.path().join("state.db");
     let mut trees = Trees::new("root");
     let identity = FileIdentity {
-        dev: 1,
         ino: 1,
         birth_ns: Some(0),
     };
@@ -3611,7 +3621,6 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
                 node_id: "secret".into(),
                 shape: now,
                 identity: FileId {
-                    dev: 1,
                     ino: 1,
                     birth_ns: Some(0),
                 },
@@ -3868,6 +3877,7 @@ fn a_read_only_open_reads_the_link_and_writes_nothing() {
         space_name: "Projects".into(),
         root: std::path::PathBuf::from("/home/ada/Koidrive"),
         root_dev: 66306,
+        root_volume: None,
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
@@ -3919,6 +3929,32 @@ fn a_read_only_open_reads_the_link_and_writes_nothing() {
 }
 
 #[test]
+fn a_link_keeps_the_kind_of_its_volume_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    for volume in [VolumeId::Uuid([3; 16]), VolumeId::FileSystemId([3; 8])] {
+        let link = Link {
+            space_id: "0190f0a0-0000-7000-8000-000000000001".into(),
+            space_name: "Projects".into(),
+            root: std::path::PathBuf::from("/home/ada/Koidrive"),
+            root_dev: 66306,
+            root_volume: Some(volume),
+            server_url: "https://files.example.com/".into(),
+            device_id: "d1".into(),
+            linked_at_ms: 1_700_000_000_000,
+            found_marker: false,
+        };
+        store
+            .transaction(|tx| {
+                tx.set_link(&link)?;
+                assert_eq!(tx.link()?, Some(link.clone()));
+                Ok::<_, Error>(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
 fn link_and_questions_persist() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
@@ -3927,6 +3963,7 @@ fn link_and_questions_persist() {
         space_name: "Projects".into(),
         root: std::path::PathBuf::from("/home/ada/Koidrive"),
         root_dev: 66306,
+        root_volume: None,
         server_url: "https://files.example.com/".into(),
         device_id: "d1".into(),
         linked_at_ms: 1_700_000_000_000,
@@ -4054,7 +4091,6 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
             .enumerate()
         {
             let identity = FileIdentity {
-                dev: 1,
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
             };
@@ -4123,7 +4159,6 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                         node_id: id.into(),
                         shape,
                         identity: FileId {
-                            dev: 1,
                             ino: ino as u128 + 1,
                             birth_ns: Some(0),
                         },
@@ -4218,7 +4253,6 @@ fn a_store_from_before_local_changes_were_recorded_records_each_local_node_s_hol
         node_id: node_id.into(),
         shape,
         identity: FileId {
-            dev: 1,
             ino: ino.into(),
             birth_ns: None,
         },
@@ -4403,7 +4437,6 @@ fn a_store_from_before_local_changes_were_recorded_records_no_node_l_holds_as_s_
         node_id: node_id.into(),
         shape,
         identity: FileId {
-            dev: 1,
             ino: ino.into(),
             birth_ns: None,
         },
@@ -4541,7 +4574,6 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         content_from_server: false,
         shape,
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },
@@ -4671,7 +4703,6 @@ fn placed(
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
         identity: FileId {
-            dev: 1,
             ino: ino.into(),
             birth_ns: None,
         },

@@ -29,7 +29,7 @@ use koidrive_engine::effects::{self, Effect as EngineEffect, Stuck};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same_content};
-use koidrive_fs::{Refusal, Snapshot, Unresolved, check_root};
+use koidrive_fs::{Refusal, Snapshot, Unresolved};
 use koidrive_net::{
     Auth, Backoff, CallError, Cause, ChunkError, DisconnectReason, Event, NotResent, ServerError,
     Session, SessionConfig, StopReason, Transfer, UploadGate,
@@ -41,11 +41,15 @@ use koidrive_proto::v1::{
     UploadReceipt, Welcome, op, op_result,
 };
 use koidrive_store::{Cursor, Link, Store, Tx};
+use koidrive_telemetry::RootProof;
+use koidrive_telemetry::schema::magnitude;
 use tokio::sync::{Notify, mpsc, watch};
 
 use crate::claim::{self, Flock, Identity, Owner};
 use crate::credential::SET_UP_AGAIN;
-use crate::disk::{Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload};
+use crate::disk::{
+    self, Adopted, Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload,
+};
 use crate::driver::check_placement;
 use crate::engine::{Applied, Engine, Staging};
 use crate::failures::{self, Halted};
@@ -2302,7 +2306,10 @@ impl FolderTask {
     /// holds the effect and the commit in flight, so the next start goes on from them. `locked` is the folder an
     /// earlier sync of this task locked, which the claim requires and otherwise records.
     async fn sync(&self, locked: &mut Option<Identity>) -> Halt {
-        self.wait_for_root().await;
+        let (link, adopted) = match self.admit_root().await {
+            Ok(admitted) => admitted,
+            Err(halt) => return halt,
+        };
         if let Err(error) = check_placement(&self.link.root, &self.private_dirs, &self.linked) {
             return Halt::Person(Halted::Placement, error.to_string());
         }
@@ -2324,10 +2331,24 @@ impl FolderTask {
             before_open();
         }
         let local = self.local.clone();
-        let mut folder = match Folder::open(self.link.clone(), &lock, &self.store, local) {
+        let mut folder = match Folder::open(link, &lock, &self.store, local) {
             Ok(folder) => folder,
             Err(stop) => return stop.into(),
         };
+        if let Some(adopted) = adopted {
+            let (proof, children) = match adopted {
+                Adopted::Volume => (RootProof::Volume, None),
+                Adopted::Children(matched) => {
+                    (RootProof::Children, Some(magnitude(matched as u64)))
+                }
+            };
+            self.telemetry
+                .event(koidrive_telemetry::Event::RootAdopted {
+                    at: koidrive_telemetry::now(),
+                    proof,
+                    children_magnitude: children,
+                });
+        }
         folder.timing.linked(self.linked_started);
         folder.timing.enable(self.telemetry.clone());
         folder.progress = self.progress.clone();
@@ -2337,7 +2358,12 @@ impl FolderTask {
             self.totals.clone(),
             self.link.space_id.clone(),
         );
-        let mut from_disk = self.observe(lock.clone(), folder.sections(), folder.snapshot());
+        let mut from_disk = self.observe(
+            folder.link.clone(),
+            lock.clone(),
+            folder.sections(),
+            folder.snapshot(),
+        );
         let mut config = SessionConfig::new(
             &self.link.space_id,
             "koidrive",
@@ -2469,13 +2495,15 @@ impl FolderTask {
 
     /// Waits until the root passes the check of design §6.2: nothing is synced for a folder that is missing,
     /// unmounted or marked for another space.
-    async fn wait_for_root(&self) {
+    async fn admit_root(&self) -> Result<(Link, Option<Adopted>), Halt> {
         loop {
-            match check_root(&self.link.root, &self.link.space_id, self.link.root_dev) {
-                Ok(_) => {
-                    return;
-                }
-                Err(problem) => {
+            let mut link = self.link.clone();
+            let admitted = Store::open(&self.store)
+                .map_err(Stop::from)
+                .and_then(|mut store| disk::admit_root(&mut link, &mut store));
+            match admitted {
+                Ok(adopted) => return Ok((link, adopted)),
+                Err(Stop::Root(problem)) => {
                     tracing::warn!(space_id = self.link.space_id, %problem, "the folder fails its root check");
                     self.status.halt(
                         Halted::Root,
@@ -2485,6 +2513,7 @@ impl FolderTask {
                     self.changed.send_replace(());
                     tokio::time::sleep(ROOT_RECHECK).await;
                 }
+                Err(stop) => return Err(stop.into()),
             }
         }
     }
@@ -2525,12 +2554,12 @@ impl FolderTask {
     /// ends.
     fn observe(
         &self,
+        link: Link,
         lock: Arc<Flock>,
         sections: Arc<Sections>,
         previous: Snapshot,
     ) -> mpsc::UnboundedReceiver<FromDisk> {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let link = self.link.clone();
         let matcher = self.matcher.clone();
         #[cfg(test)]
         let fault = self.observe_fault.clone();
@@ -2540,7 +2569,7 @@ impl FolderTask {
             let started = FsObserver::start(
                 &link.root,
                 &link.space_id,
-                link.root_dev,
+                link.root_at(),
                 previous,
                 matcher,
                 move || closed.is_closed(),

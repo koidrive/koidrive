@@ -50,7 +50,6 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
-        dev: 1,
         ino,
         birth_ns: Some(0),
     }

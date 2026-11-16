@@ -138,11 +138,11 @@ pub enum EntryKind {
 }
 
 /// What survives a rename and changes when a path is deleted and created
-/// again. The birth time guards against inode numbers being reused, on file
-/// systems that report it. `ino` is 128 bits wide because ReFS file IDs are.
+/// again, within the volume the space's root check vouches for. The birth time
+/// guards against inode numbers being reused, on file systems that report it.
+/// `ino` is 128 bits wide because ReFS file IDs are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId {
-    pub dev: u64,
     pub ino: u128,
     pub birth_ns: Option<i64>,
 }
@@ -200,6 +200,7 @@ const UNVERIFIED: i128 = i128::MIN;
 struct Stat {
     file_type: FileType,
     id: FileId,
+    dev: u64,
     size: u64,
     mtime_ns: i128,
     /// When the entry's metadata last changed; no process can set it back.
@@ -231,8 +232,8 @@ impl Stat {
         })
     }
 
-    fn same_inode(&self, id: &FileId) -> bool {
-        self.id.dev == id.dev && self.id.ino == id.ino
+    fn is_at(&self, dev: u64, id: &FileId) -> bool {
+        self.dev == dev && self.id.ino == id.ino
     }
 }
 
@@ -252,10 +253,10 @@ fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::R
     Ok(Stat {
         file_type: FileType::from_raw_mode(RawMode::from(st.stx_mode)),
         id: FileId {
-            dev: rustix::fs::makedev(st.stx_dev_major, st.stx_dev_minor),
             ino: st.stx_ino.into(),
             birth_ns,
         },
+        dev: rustix::fs::makedev(st.stx_dev_major, st.stx_dev_minor),
         size: st.stx_size,
         mtime_ns: nanos(st.stx_mtime.tv_sec, st.stx_mtime.tv_nsec),
         ctime_ns: nanos(st.stx_ctime.tv_sec, st.stx_ctime.tv_nsec),
@@ -268,6 +269,11 @@ fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::R
 #[cfg(target_os = "linux")]
 fn stat_at(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<Stat> {
     statx(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+}
+
+/// The identity of the open file or folder `fd`, as a scan records it.
+pub fn id_of(fd: BorrowedFd<'_>) -> io::Result<FileId> {
+    Ok(stat_fd(fd)?.id)
 }
 
 #[cfg(target_os = "linux")]
@@ -291,10 +297,10 @@ fn from_stat(st: rustix::fs::Stat) -> Stat {
     Stat {
         file_type: FileType::from_raw_mode(RawMode::from(st.st_mode)),
         id: FileId {
-            dev: st.st_dev as u64,
             ino: st.st_ino.into(),
             birth_ns: i64::try_from(nanos(st.st_birthtime, st.st_birthtime_nsec)).ok(),
         },
+        dev: st.st_dev as u64,
         size: st.st_size as u64,
         mtime_ns: nanos(st.st_mtime, st.st_mtime_nsec),
         ctime_ns: nanos(st.st_ctime, st.st_ctime_nsec),
@@ -387,7 +393,7 @@ struct Scan<'c> {
     new: BTreeMap<PathBuf, Entry>,
     /// Every folder the scan opened, with the identity it had when opened.
     /// Each must still be at its path when the scan is published.
-    bindings: Vec<(PathBuf, FileId)>,
+    bindings: Vec<(PathBuf, u64, FileId)>,
     /// Paths whose old entry and everything below it give way to `new`.
     replaced: Vec<PathBuf>,
     /// Folders the scan may not open or list. What lies below them stays as
@@ -436,10 +442,11 @@ impl Scan<'_> {
             }
             Err(err) => return Err(err.into()),
         };
-        if !stat_fd(sub.as_fd())?.same_inode(&entry.id) {
+        let bound = stat_fd(sub.as_fd())?;
+        if !bound.is_at(stat.dev, &entry.id) {
             return Err(Error::Changed);
         }
-        self.bindings.push((rel.clone(), entry.id));
+        self.bindings.push((rel.clone(), bound.dev, bound.id));
         self.dir(sub.as_fd(), &rel)
     }
 
@@ -826,7 +833,7 @@ impl Snapshot {
         }
 
         let again = open_root(root)?;
-        if !stat_fd(again.as_fd())?.same_inode(&root_stat.id) {
+        if !stat_fd(again.as_fd())?.is_at(root_stat.dev, &root_stat.id) {
             return Err(Error::RootReplaced);
         }
         revalidate(again.as_fd(), std::mem::take(&mut scan.bindings))?;
@@ -884,6 +891,7 @@ impl Snapshot {
         }
         let mut unsettled = keep_unconfirmed(
             root,
+            root_stat.dev,
             &root_stat.id,
             again.as_fd(),
             &old,
@@ -921,6 +929,7 @@ impl Snapshot {
                     .collect();
                 let mut stays = keep_unconfirmed(
                     root,
+                    root_stat.dev,
                     &root_stat.id,
                     again.as_fd(),
                     &held,
@@ -1056,7 +1065,7 @@ impl Snapshot {
         &self,
         root: &OwnedFd,
         rel: &Path,
-    ) -> Result<Option<(OwnedFd, Vec<(PathBuf, FileId)>)>> {
+    ) -> Result<Option<(OwnedFd, Vec<(PathBuf, u64, FileId)>)>> {
         let Some(known) = self.entries.get(rel).filter(|e| e.kind == EntryKind::Dir) else {
             return Ok(None);
         };
@@ -1073,11 +1082,10 @@ impl Snapshot {
                 Err(err) => return Err(err.into()),
             };
             path.push(component);
-            chain.push((path.clone(), stat_fd(dir.as_fd())?.id));
+            let stat = stat_fd(dir.as_fd())?;
+            chain.push((path.clone(), stat.dev, stat.id));
         }
-        let same = chain
-            .last()
-            .is_some_and(|(_, id)| id.dev == known.id.dev && id.ino == known.id.ino);
+        let same = chain.last().is_some_and(|(_, _, id)| *id == known.id);
         Ok(same.then_some((dir, chain)))
     }
 
@@ -1100,11 +1108,11 @@ impl Snapshot {
 /// opening each again from the root without following links. A folder that
 /// was moved, replaced or made unreadable after the scan opened it means the
 /// scan may have read a detached copy, so nothing it saw is published.
-fn revalidate(root: BorrowedFd<'_>, mut bindings: Vec<(PathBuf, FileId)>) -> Result<()> {
+fn revalidate(root: BorrowedFd<'_>, mut bindings: Vec<(PathBuf, u64, FileId)>) -> Result<()> {
     bindings.sort_by(|a, b| a.0.cmp(&b.0));
     bindings.dedup_by(|a, b| a.0 == b.0);
     let mut open: Vec<(PathBuf, OwnedFd)> = Vec::new();
-    for (path, id) in bindings {
+    for (path, dev, id) in bindings {
         while open.last().is_some_and(|(dir, _)| !path.starts_with(dir)) {
             open.pop();
         }
@@ -1116,7 +1124,7 @@ fn revalidate(root: BorrowedFd<'_>, mut bindings: Vec<(PathBuf, FileId)>) -> Res
             return Err(Error::Changed);
         };
         let dir = open_dir_at(parent, name).map_err(|_| Error::Changed)?;
-        if !stat_fd(dir.as_fd()).is_ok_and(|stat| stat.same_inode(&id)) {
+        if !stat_fd(dir.as_fd()).is_ok_and(|stat| stat.is_at(dev, &id)) {
             return Err(Error::Changed);
         }
         open.push((path, dir));
@@ -1131,6 +1139,7 @@ fn revalidate(root: BorrowedFd<'_>, mut bindings: Vec<(PathBuf, FileId)>) -> Res
 /// final look from a freshly opened root sees that parent unchanged.
 fn keep_unconfirmed(
     root: &Path,
+    root_dev: u64,
     root_id: &FileId,
     attached: BorrowedFd<'_>,
     old: &BTreeMap<PathBuf, Entry>,
@@ -1175,7 +1184,7 @@ fn keep_unconfirmed(
     }
 
     let fresh = open_root(root)?;
-    if !stat_fd(fresh.as_fd())?.same_inode(root_id) {
+    if !stat_fd(fresh.as_fd())?.is_at(root_dev, root_id) {
         return Err(Error::RootReplaced);
     }
     let mut stable: HashMap<PathBuf, bool> = HashMap::new();
@@ -2392,7 +2401,7 @@ use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use recovered::{recovered_name, utc_date};
 pub use resolve::{Base, Dir, Folder, Location, PARKED_DIR, Space, Unresolved};
 pub use root::{
-    Marker, PRIVATE_DIR, RootProblem, check_root, probe_no_replace, read_marker, rename_no_replace,
-    write_marker,
+    Marker, PRIVATE_DIR, RootAt, RootProblem, VolumeId, check_root, check_root_at,
+    open_root_folder, probe_no_replace, read_marker, rename_no_replace, root_at, write_marker,
 };
 pub use trash::{Reclaimed, TRASH_DIR, TRASH_RETENTION};

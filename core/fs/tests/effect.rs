@@ -613,12 +613,7 @@ fn done_carries_the_identity_of_the_entry_the_effect_made() {
             else {
                 panic!("{}: {outcome:?}", scenario.name);
             };
-            assert_eq!(
-                (identity.dev, identity.ino),
-                (staged.dev(), u128::from(staged.ino())),
-                "{}",
-                scenario.name
-            );
+            assert_eq!(identity.ino, u128::from(staged.ino()), "{}", scenario.name);
         }
     }
 }

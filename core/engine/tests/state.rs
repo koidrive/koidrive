@@ -52,7 +52,6 @@ fn trees() -> Trees {
     for (ino, (id, parked)) in [("a", false), ("b", true)].into_iter().enumerate() {
         let shape = dir(ROOT, id);
         let identity = FileIdentity {
-            dev: 1,
             ino: ino as u128,
             birth_ns: Some(0),
         };
@@ -178,7 +177,6 @@ fn unsent() -> (Trees, TreesState) {
     };
     trees.set_remote("f".into(), remote(shape.clone()));
     let identity = FileIdentity {
-        dev: 1,
         ino: 1,
         birth_ns: Some(0),
     };
@@ -438,7 +436,6 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             content_from_server: false,
             shape: dir(ROOT, "n"),
             identity: FileIdentity {
-                dev: 1,
                 ino: 9,
                 birth_ns: Some(0),
             },
@@ -447,7 +444,6 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
         trees.set_local("n".into(), node);
     });
     let held = FileIdentity {
-        dev: 1,
         ino: 7,
         birth_ns: None,
     };
@@ -718,7 +714,6 @@ fn effects_restore_a_valid_state_and_refuse_each_broken_one() {
 #[test]
 fn an_identity_without_a_birth_time_round_trips() {
     let unknown = FileIdentity {
-        dev: 1,
         ino: 7,
         birth_ns: None,
     };

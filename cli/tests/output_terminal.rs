@@ -1272,6 +1272,7 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
                             space_name: folder.into(),
                             root: profile.0.path().join(folder),
                             root_dev: 1,
+                            root_volume: None,
                             server_url: "https://files.example.com/".into(),
                             device_id: "local".into(),
                             linked_at_ms: 1,

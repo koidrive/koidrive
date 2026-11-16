@@ -191,7 +191,6 @@ fn on_disk(root: &Path) -> Vec<FileId> {
                 i64::try_from(since.as_nanos()).unwrap()
             });
             FileId {
-                dev: meta.dev(),
                 ino: u128::from(meta.ino()),
                 birth_ns: born,
             }
@@ -204,8 +203,8 @@ struct Changer {
     random: Random,
     fresh: usize,
     vacated: Vec<PathBuf>,
-    out: BTreeSet<(u64, u128)>,
-    bounced: BTreeSet<(u64, u128)>,
+    out: BTreeSet<u128>,
+    bounced: BTreeSet<u128>,
 }
 
 impl Changer {
@@ -230,14 +229,14 @@ impl Changer {
                 fs::rename(root.join(from), root.join(to)).ok();
             }
         };
-        let ids = |path: &Path| -> Vec<(u64, u128)> {
+        let ids = |path: &Path| -> Vec<u128> {
             let mut all = vec![(path.to_path_buf(), root.join(path).is_dir())];
             if all[0].1 {
                 listed(root, path, &mut all);
             }
             (all.iter())
                 .filter_map(|(path, _)| fs::symlink_metadata(root.join(path)).ok())
-                .map(|meta| (meta.dev(), u128::from(meta.ino())))
+                .map(|meta| u128::from(meta.ino()))
                 .collect()
         };
         let free = (self.vacated.iter())
@@ -331,7 +330,7 @@ struct Synced {
     step: usize,
     nodes: BTreeMap<PathBuf, Node>,
     gone: Vec<Gone>,
-    racy: BTreeSet<(u64, u128)>,
+    racy: BTreeSet<u128>,
 }
 
 impl Synced {
@@ -357,8 +356,8 @@ impl Synced {
             if let Change::Ignored { to, id, .. } = change {
                 let meta = fs::symlink_metadata(root.join(to)).unwrap();
                 assert_eq!(
-                    (meta.dev(), u128::from(meta.ino())),
-                    (id.dev, id.ino),
+                    u128::from(meta.ino()),
+                    id.ino,
                     "{run}: {change:?}"
                 );
             }
@@ -379,7 +378,7 @@ impl Synced {
                 Some((_, None, ignored)) => {
                     if ignored.is_none()
                         && there(&node.id)
-                        && !self.racy.contains(&(node.id.dev, node.id.ino))
+                        && !self.racy.contains(&node.id.ino)
                     {
                         lost.push((path, node.id));
                     }
@@ -425,7 +424,7 @@ impl Synced {
             .collect();
         assert_eq!(synced, scanned, "{run}: {changes:?} held {held:?}");
         let ids: Vec<FileId> = snapshot.entries.values().map(|entry| entry.id).collect();
-        let unique: BTreeSet<(u64, u128)> = ids.iter().map(|id| (id.dev, id.ino)).collect();
+        let unique: BTreeSet<u128> = ids.iter().map(|id| id.ino).collect();
         assert_eq!(
             unique.len(),
             ids.len(),

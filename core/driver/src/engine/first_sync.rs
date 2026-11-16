@@ -86,7 +86,6 @@ fn first_sync(files: usize, per_dir: usize, size: u64, limit: BatchLimit) -> u64
                 for record in &batch {
                     planned += 1;
                     let identity = FileIdentity {
-                        dev: 1,
                         ino: planned as u128,
                         birth_ns: Some(0),
                     };

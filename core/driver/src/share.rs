@@ -2,12 +2,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
 use koidrive_engine::tree::{RemoteNode, same_content};
-use koidrive_fs::{EntryKind, Snapshot, check_root};
+use koidrive_fs::{EntryKind, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
     CreateShareLinkRequest, ListTree, NodeKind, NodeState, NodeStatus, ShareLink, SpaceInfo,
@@ -141,7 +142,7 @@ impl Driver {
             let unsynced = || DriverError::NotOnServer(requested.clone());
             let link = link.ok_or_else(unsynced)?;
             let tree = Tree::new(&space_id, &nodes);
-            if !verified(&root, link.root_dev, &names, &selected, &tree, &engine)
+            if !verified(&root, &link.root_at(), &names, &selected, &tree, &engine)
                 .map_err(|_| unsynced())?
             {
                 return Err(unsynced());
@@ -283,7 +284,7 @@ impl Driver {
 
 fn verified(
     root: &Path,
-    root_dev: u64,
+    linked: &RootAt,
     names: &[String],
     node_id: &str,
     tree: &Tree<'_>,
@@ -295,7 +296,7 @@ fn verified(
         | rustix::fs::OFlags::CLOEXEC;
     let held = std::fs::File::from(rustix::fs::open(root, flags, rustix::fs::Mode::empty())?);
     let identity = held.metadata()?;
-    if check_root(root, tree.root, root_dev).is_err() {
+    if check_root(root, tree.root, linked).is_err() {
         return Ok(false);
     }
     let Some(target) = tree.target(node_id) else {
@@ -314,7 +315,7 @@ fn verified(
     let scanned = disk
         .rescan(root, [PathBuf::new()])
         .map_err(std::io::Error::other)?;
-    if scanned.root.dev != identity.dev() || scanned.root.ino != u128::from(identity.ino()) {
+    if scanned.root != koidrive_fs::id_of(held.as_fd())? {
         return Ok(false);
     }
     if scanned
@@ -376,7 +377,7 @@ fn verified(
     if after.dev() != identity.dev()
         || after.ino() != identity.ino()
         || !after.is_dir()
-        || check_root(root, tree.root, root_dev).is_err()
+        || check_root(root, tree.root, linked).is_err()
     {
         return Ok(false);
     }
@@ -387,8 +388,7 @@ fn verified(
         return Ok(false);
     };
     let typed: PathBuf = names.iter().collect();
-    let actual = open_beneath(root, &typed)?.metadata()?;
-    Ok(actual.dev() == expected.dev && u128::from(actual.ino()) == expected.ino)
+    Ok(koidrive_fs::id_of(open_beneath(root, &typed)?.as_fd())? == expected)
 }
 
 enum LinkRef {
@@ -1031,20 +1031,23 @@ mod tests {
             })
             .unwrap();
         let tree = Tree::new(SPACE, &nodes);
-        let dev = std::fs::metadata(&root).unwrap().dev();
+        let dev = RootAt {
+            dev: std::fs::metadata(&root).unwrap().dev(),
+            volume: None,
+        };
         let valid = || {
             [
                 verified(
                     &root,
-                    dev,
+                    &dev,
                     &names("Docs/contract.txt"),
                     "file",
                     &tree,
                     &engine,
                 )
                 .unwrap(),
-                verified(&root, dev, &names("Docs"), "docs", &tree, &engine).unwrap(),
-                verified(&root, dev, &[], SPACE, &tree, &engine).unwrap(),
+                verified(&root, &dev, &names("Docs"), "docs", &tree, &engine).unwrap(),
+                verified(&root, &dev, &[], SPACE, &tree, &engine).unwrap(),
             ]
         };
         assert_eq!(valid(), [true; 3]);
@@ -1087,7 +1090,7 @@ mod tests {
             assert!(
                 !verified(
                     &root,
-                    dev,
+                    &dev,
                     &names("DOCS/contract.txt"),
                     "file",
                     &tree,

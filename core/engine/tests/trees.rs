@@ -63,7 +63,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         content_from_server: false,
         shape,
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },

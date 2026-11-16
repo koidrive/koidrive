@@ -95,6 +95,7 @@ impl From<Unresolved> for io::Error {
 pub struct Space {
     root: OwnedFd,
     id: FileId,
+    dev: u64,
     path: PathBuf,
 }
 
@@ -139,6 +140,7 @@ impl Space {
         Ok(Self {
             root,
             id: stat.id,
+            dev: stat.dev,
             path: path.to_path_buf(),
         })
     }
@@ -148,6 +150,10 @@ impl Space {
         self.id
     }
 
+    pub(crate) fn dev(&self) -> u64 {
+        self.dev
+    }
+
     /// Whether the path the root was linked at still names the root the
     /// space holds: the same device, inode and, where the file system reports
     /// it, birth time. The lookup follows symbolic links, as linking did. A
@@ -155,7 +161,7 @@ impl Space {
     /// that fails for another reason is an error.
     pub fn held(&self) -> io::Result<bool> {
         match stat_path(&self.path) {
-            Ok(stat) => Ok(stat.id == self.id),
+            Ok(stat) => Ok(stat.id == self.id && stat.dev == self.dev),
             Err(err) if is_gone(&err) => Ok(false),
             Err(err) => Err(err),
         }

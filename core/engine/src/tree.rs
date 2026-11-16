@@ -169,7 +169,6 @@ impl RemoteNode {
 /// The identity `core/fs` reports for an entry, which tells a rename from a delete and a create.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileIdentity {
-    pub dev: u64,
     pub ino: u128,
     /// `None` when the filesystem does not report a birth time, which never equals a known one.
     pub birth_ns: Option<i64>,

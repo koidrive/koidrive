@@ -367,6 +367,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: cargo test --workspace --exclude koidrive-driver --exclude koidrive-engine --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
+      - name: Test root identities on btrfs and ext4
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v mkfs.btrfs > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq btrfs-progs
+          fi
+          image="$RUNNER_TEMP/btrfs.img"
+          truncate -s 256M "$image"
+          mkfs.btrfs -q "$image"
+          sudo mkdir -p /mnt/koidrive-btrfs
+          sudo mount -o loop,user_subvol_rm_allowed "$image" /mnt/koidrive-btrfs
+          sudo chown "$USER" /mnt/koidrive-btrfs
+          KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo test --locked -p koidrive-fs --test root a_btrfs_snapshot -- --show-output
+          KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo test --locked -p koidrive-fs --test root an_ext4_disk -- --show-output
       - name: Test the regression-case splitter
         run: |
           python3 scripts/test-split-proptest-regressions.py -v
@@ -405,12 +420,12 @@ jobs:
         if: runner.environment != 'self-hosted'
         with:
           key: ${{ matrix.suite }}
-      - if: matrix.suite == 'engine'
+      - if: ${{ !cancelled() && matrix.suite == 'engine' }}
         run: cargo fmt --all --check
-      - if: matrix.suite == 'engine'
+      - if: ${{ !cancelled() && matrix.suite == 'engine' }}
         run: cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- -D warnings
       - name: Require per-seed persistence for every property test
-        if: matrix.suite == 'engine'
+        if: ${{ !cancelled() && matrix.suite == 'engine' }}
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/check-proptest-persistence-target
         run: |
@@ -420,7 +435,7 @@ jobs:
           nice -n 10 cargo run --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked --
           python3 scripts/test-property-battery.py -v
       - name: Test the scenario splitter
-        if: matrix.suite == 'engine'
+        if: ${{ !cancelled() && matrix.suite == 'engine' }}
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/test-split-target
         run: |
@@ -428,44 +443,47 @@ jobs:
           nice -n 10 cargo clippy --manifest-path scripts/test-split/Cargo.toml --all-targets --locked -- -D warnings
           python3 scripts/test-split/test_split.py -v
       - name: List the package test inventory
+        if: ${{ !cancelled() }}
         env:
           SUITE: ${{ matrix.suite }}
           FEATURES: ${{ matrix.suite == 'engine' && 'serde' || matrix.suite == 'sim' && 'koidrive-engine/serde' || '' }}
         run: cargo test --locked -p "koidrive-$SUITE" --features "$FEATURES" -- --list --format terse > "$RUNNER_TEMP/inventory.txt"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: rust-test-inventory-${{ matrix.os }}-${{ matrix.suite }}
           path: ${{ runner.temp }}/inventory.txt
           if-no-files-found: error
           retention-days: 7
       - name: Run the package tests and doctests
+        if: ${{ !cancelled() }}
         env:
           SUITE: ${{ matrix.suite }}
           FEATURES: ${{ matrix.suite == 'engine' && 'serde' || matrix.suite == 'sim' && 'koidrive-engine/serde' || '' }}
         run: cargo test --locked -p "koidrive-$SUITE" --features "$FEATURES"
       - name: Replay saved engine property regressions without random cases
-        if: matrix.suite == 'engine'
+        if: ${{ !cancelled() && matrix.suite == 'engine' }}
         env:
           PROPTEST_CASES: '0'
         run: cargo test --locked -p koidrive-engine --test names --test trees --test effects -- --show-output
       - name: Replay saved driver property regressions without random cases
-        if: matrix.suite == 'driver'
+        if: ${{ !cancelled() && matrix.suite == 'driver' }}
         env:
           PROPTEST_CASES: '0'
         run: cargo test --locked -p koidrive-driver --lib batches_leave_l_a_tree_that_holds_the_disk -- --show-output
       - name: Replay saved sim property regressions without random cases
-        if: matrix.suite == 'sim'
+        if: ${{ !cancelled() && matrix.suite == 'sim' }}
         env:
           PROPTEST_CASES: '0'
         run: cargo test --locked -p koidrive-sim --test devices --test engine_sync --test space_properties -- --show-output
       - name: Test that the app installer refuses an app signed by a forged Developer ID
-        if: matrix.os == 'macos' && matrix.suite == 'driver'
+        if: ${{ !cancelled() && matrix.os == 'macos' && matrix.suite == 'driver' }}
         run: |
           security list-keychains -d user
           cargo test --locked -p koidrive-cli --bin koi --features koidrive-cli/test-install-inventory -- --ignored --exact app_install::macos::tests::native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer_id
           security list-keychains -d user
       - name: Test release updates with a tag-derived version
-        if: matrix.suite == 'driver'
+        if: ${{ !cancelled() && matrix.suite == 'driver' }}
         run: |
           python3 scripts/stamp-release-version.py v0.1.0-alpha.1
           nice -n 10 cargo test --locked -p koidrive-cli --test update --features koidrive-cli/test-install-inventory

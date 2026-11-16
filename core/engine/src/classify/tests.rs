@@ -42,7 +42,6 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
     for (ino, (id, shape)) in synced.into_iter().enumerate() {
         trees.set_synced(id.into(), Some(shape.clone()));
         let identity = FileIdentity {
-            dev: 1,
             ino: ino as u128 + 1,
             birth_ns: Some(0),
         };
@@ -114,7 +113,6 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
     let mut add = |trees: &mut Trees, id: String, shape: Shape, server: bool| {
         ino += 1;
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -200,7 +198,6 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
             trees.set_remote(id.into(), remote(shape.clone()));
         }
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -241,7 +238,6 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
         content_from_server: false,
         shape: shape.clone(),
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: Some(0),
         },
@@ -272,7 +268,6 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
         content_from_server: false,
         shape: shape.clone(),
         identity: FileIdentity {
-            dev: 1,
             ino: 1,
             birth_ns: Some(0),
         },
@@ -302,7 +297,6 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
         content_from_server: false,
         shape,
         identity: FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         },
@@ -333,7 +327,6 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         trees.set_remote(x.clone(), remote(dir(&parent, &x)));
         trees.set_remote(c.clone(), remote(dir(&x, &c)));
         let identity = FileIdentity {
-            dev: 1,
             ino: k + 1,
             birth_ns: Some(0),
         };

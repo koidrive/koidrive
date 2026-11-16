@@ -58,7 +58,6 @@ fn space(loose: usize, inside: usize) -> Trees {
 
 fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
     let identity = FileIdentity {
-        dev: 1,
         ino,
         birth_ns: Some(0),
     };
@@ -1060,7 +1059,6 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
     {
         ino += 1;
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };
@@ -1287,7 +1285,6 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
     {
         ino += 1;
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };

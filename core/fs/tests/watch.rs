@@ -974,9 +974,6 @@ fn a_new_folder_below_a_folder_made_again_at_its_path_is_created() {
     assert_eq!(snapshot, Snapshot::scan(root).unwrap());
 }
 
-/// A folder whose device number changed, as after a remount, may report any
-/// inode number, so its identity cannot be compared and it is not reported as
-/// replaced.
 #[test]
 fn a_folder_on_another_device_number_is_not_replaced() {
     let dir = tempfile::tempdir().unwrap();
@@ -988,15 +985,14 @@ fn a_folder_on_another_device_number_is_not_replaced() {
     for ino in [0, 1000] {
         let mut snapshot = scanned.clone();
         for entry in snapshot.entries.values_mut() {
-            entry.id.dev += 1;
             entry.id.ino += ino;
         }
         let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
-        assert_eq!(
-            changes,
-            [modified("kept/a.txt"), reidentified("kept")],
-            "inode moved by {ino}"
-        );
+        let expected = match ino {
+            0 => vec![],
+            _ => vec![modified("kept/a.txt"), reidentified("kept")],
+        };
+        assert_eq!(changes, expected, "inode moved by {ino}");
         assert_eq!(snapshot, scanned, "inode moved by {ino}");
     }
 }

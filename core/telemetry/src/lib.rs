@@ -20,7 +20,7 @@ pub use consent::{Mode, Source, Status, VARIABLE, internal, resolve, should_ask}
 pub use cpu::Cpu;
 pub use panic::install_panic_hook;
 pub use recorder::{Pending, Recorder};
-pub use schema::{Event, EventUuid, HourlyReport, InstallId, Origin};
+pub use schema::{Event, EventUuid, HourlyReport, InstallId, Origin, RootProof};
 pub use send::{
     ENDPOINT, ENDPOINT_VARIABLE, PROJECT_TOKEN, Sent, TOKEN_VARIABLE, UploadError, Uploader, batch,
     old_batch, send,

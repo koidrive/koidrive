@@ -407,7 +407,6 @@ fn a_folder_deleted_around_a_parked_node_is_brought_back_for_it() {
                 break;
             };
             let identity = FileIdentity {
-                dev: 1,
                 ino,
                 birth_ns: Some(0),
             };
@@ -522,7 +521,6 @@ fn a_parked_file_rekeyed_for_its_edit_is_moved_out_from_where_it_was_parked() {
             unparked = true;
         }
         let identity = FileIdentity {
-            dev: 1,
             ino,
             birth_ns: Some(0),
         };

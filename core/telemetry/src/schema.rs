@@ -201,6 +201,14 @@ pub enum Event {
         problem: Failure,
         count: u64,
     },
+    /// A linked folder's disk was mounted under another device number, and the daemon showed it is the same folder.
+    RootAdopted {
+        at: u64,
+        proof: RootProof,
+        /// For [`RootProof::Children`], how many entries directly in the folder matched, as a [`magnitude`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        children_magnitude: Option<u8>,
+    },
     /// The Mac app crashed. KSCrash recorded it, and only these fields are kept from its report.
     AppCrash {
         at: u64,
@@ -217,6 +225,25 @@ pub enum Event {
     },
 }
 
+/// How the daemon showed that a folder found under another device number is the linked folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootProof {
+    /// The volume's UUID and the folder's own identity match.
+    Volume,
+    /// The link predates recording the volume's UUID, and the entries directly in the folder kept their identities.
+    Children,
+}
+
+impl RootProof {
+    pub fn name(self) -> &'static str {
+        match self {
+            RootProof::Volume => "volume",
+            RootProof::Children => "children",
+        }
+    }
+}
+
 impl Event {
     pub fn at(&self) -> u64 {
         match self {
@@ -224,6 +251,7 @@ impl Event {
             | Event::Panic { at, .. }
             | Event::CommandFailed { at, .. }
             | Event::Problem { at, .. }
+            | Event::RootAdopted { at, .. }
             | Event::AppCrash { at, .. } => *at,
         }
     }
@@ -245,6 +273,7 @@ impl Event {
             Event::SetupStep { .. } => ("setup_step", "", ""),
             Event::Panic { .. } => ("panic", "", ""),
             Event::AppCrash { .. } => ("app_crash", "", ""),
+            Event::RootAdopted { proof, .. } => ("root_adopted", proof.name(), ""),
             Event::CommandFailed { code, .. } => ("command_failed", code.name(), ""),
             Event::Problem { problem, .. } => {
                 let (group, name) = problem.key();
@@ -1578,6 +1607,36 @@ mod tests {
     fn every_command_is_listed_once() {
         let names: std::collections::BTreeSet<_> = Command::ALL.map(Command::name).into();
         assert_eq!(names.len(), Command::ALL.len());
+    }
+
+    #[test]
+    fn an_adopted_root_carries_only_its_proof_and_the_magnitude_of_its_matches() {
+        let event = Event::RootAdopted {
+            at: 1_700_000_000,
+            proof: RootProof::Children,
+            children_magnitude: Some(magnitude(3)),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "root_adopted",
+                "at": 1_700_000_000,
+                "proof": "children",
+                "children_magnitude": 2,
+            })
+        );
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+        assert_eq!(event.kind(), ("root_adopted", "children", ""));
+        let volume = Event::RootAdopted {
+            at: 1,
+            proof: RootProof::Volume,
+            children_magnitude: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&volume).unwrap(),
+            serde_json::json!({"type": "root_adopted", "at": 1, "proof": "volume"})
+        );
     }
 
     #[test]

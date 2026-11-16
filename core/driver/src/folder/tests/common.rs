@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use std::fs;
 
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 
 use koidrive_engine::commit::Lift;
@@ -13,7 +14,9 @@ use koidrive_engine::restore::{Outcome, RestoreIntent};
 
 use koidrive_engine::tree::{Kind, LocalNode, Tree};
 
-use koidrive_fs::{EntryKind, Marker, RootProblem, write_marker};
+use koidrive_fs::{
+    EntryKind, Marker, RootAt, RootProblem, VolumeId, root_at, write_marker,
+};
 
 use koidrive_net::Committed;
 
@@ -211,11 +214,13 @@ impl Site {
         };
         write_marker(&root, &marker).unwrap();
         let db = dir.path().join("store.sqlite");
+        let found = found_root(&root);
         let link = Link {
             space_id,
             space_name: "test".into(),
             root: root.clone(),
-            root_dev: fs::metadata(&root).unwrap().dev(),
+            root_dev: found.dev,
+            root_volume: found.volume,
             server_url: "https://files.example.com/".into(),
             device_id: name.into(),
             linked_at_ms: 0,
@@ -249,23 +254,23 @@ impl Site {
         engine
     }
 
-    /// Starts the folder as the task does once it holds the lock: the store, the engine, the disk, and the observer
-    /// from L's snapshot.
     fn start(&self) -> Device {
         self.start_with(&SyncRules::default())
     }
 
     /// [`Site::start`] on a device with a `[sync]` list.
     fn start_with(&self, sync: &SyncRules) -> Device {
+        let mut link = self.link.clone();
+        disk::admit_root(&mut link, &mut Store::open(&self.db).unwrap()).unwrap();
         let lock = claim::lock(&self.root)
             .unwrap()
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
-        let folder = Folder::open(self.link.clone(), &lock, &self.db, local).unwrap();
+        let folder = Folder::open(link, &lock, &self.db, local).unwrap();
         let observer = FsObserver::start(
             &self.root,
             &self.link.space_id,
-            self.link.root_dev,
+            folder.link.root_at(),
             folder.snapshot(),
             matcher(sync).unwrap(),
             || false,
@@ -856,6 +861,10 @@ fn refused_first_commit(remote: &mut Remote, code: Code) -> (Site, Commit, Strin
 }
 
 /// Starts the folder again and runs what follows its `Welcome` and its first scan.
+fn found_root(root: &Path) -> RootAt {
+    root_at(fs::File::open(root).unwrap().as_fd()).unwrap()
+}
+
 fn restarted(site: &Site, remote: &mut Remote) -> Device {
     let mut device = site.start();
     device.connect(remote);
