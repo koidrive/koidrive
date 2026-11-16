@@ -75,6 +75,7 @@ fn a_disk_ejected_while_the_folder_syncs_leaves_the_server_as_it_was() {
         observed(&mut a, &mut remote);
         assert_eq!(held(&a), []);
         assert_eq!(user_files(&remote), after, "{mount}");
+        disks.detach(&site.root.join(mount));
         remote = Remote::new();
     }
 }

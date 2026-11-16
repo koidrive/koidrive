@@ -24,14 +24,19 @@ pub fn is_volume_metadata(path: &Path) -> bool {
         .any(|part| VOLUME_METADATA.iter().any(|name| part.as_os_str() == *name))
 }
 
-fn run(program: &str, args: &[&OsStr]) -> String {
+fn output(program: &str, args: &[&OsStr]) -> Result<String, String> {
     let out = Command::new(program).args(args).output().unwrap();
-    assert!(
-        out.status.success(),
-        "{program} {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    if !out.status.success() {
+        return Err(format!(
+            "{program} {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn run(program: &str, args: &[&OsStr]) -> String {
+    output(program, args).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
 /// Disk images mounted into folders the way a person mounts a USB drive: APFS images through `hdiutil` on macOS,
@@ -125,7 +130,7 @@ impl Disks {
             args.push(format!("-I {:#x}", serial.finish() as u32).into());
         }
         args.push(image.clone().into());
-        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
+        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>()).unwrap();
         image
     }
 
@@ -147,7 +152,8 @@ impl Disks {
                 "-mountpoint".as_ref(),
                 at.as_os_str(),
                 image.as_os_str(),
-            ]);
+            ])
+            .unwrap();
         } else if image
             .extension()
             .is_some_and(|extension| extension == "fat")
@@ -184,8 +190,10 @@ impl Disks {
 
     /// Unmounts the image mounted at `at`, as ejecting the disk does.
     pub fn detach(&mut self, at: &Path) {
+        if let Err(failure) = unmount(at) {
+            panic!("{failure}");
+        }
         self.mounted.retain(|mounted| mounted != at);
-        unmount(at);
     }
 
     /// Records that the image mounted at `from` is at `to` now, after a folder above it moved.
@@ -198,17 +206,17 @@ impl Disks {
     }
 }
 
-fn hdiutil(args: &[&OsStr]) {
+fn hdiutil(args: &[&OsStr]) -> Result<(), String> {
     let mut failures = Vec::new();
     while failures.len() < 10 {
         let out = Command::new("hdiutil").args(args).output().unwrap();
         if out.status.success() {
-            return;
+            return Ok(());
         }
         failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    panic!("hdiutil {args:?}: {failures:?}");
+    Err(format!("hdiutil {args:?}: {failures:?}"))
 }
 
 fn sudo(args: &[&OsStr]) {
@@ -217,29 +225,38 @@ fn sudo(args: &[&OsStr]) {
     run("sudo", &all);
 }
 
-fn unmount(at: &Path) {
+fn unmount(at: &Path) -> Result<(), String> {
     if cfg!(target_os = "macos") {
-        let dev = |path: &Path| fs::metadata(path).unwrap().dev();
-        assert_ne!(
-            dev(at),
-            dev(at.parent().unwrap()),
-            "no disk mounted at {}",
-            at.display()
-        );
+        let dev = |path: &Path| {
+            fs::metadata(path)
+                .map(|meta| meta.dev())
+                .map_err(|err| format!("{}: {err}", path.display()))
+        };
+        if dev(at)? == dev(at.parent().unwrap())? {
+            return Err(format!("no disk mounted at {}", at.display()));
+        }
         let device = format!(
             "/dev/{}",
-            run("stat", &["-f".as_ref(), "%Sd".as_ref(), at.as_os_str()])
+            output("stat", &["-f".as_ref(), "%Sd".as_ref(), at.as_os_str()])?
         );
-        hdiutil(&["detach".as_ref(), "-force".as_ref(), device.as_ref()]);
+        hdiutil(&["detach".as_ref(), "-force".as_ref(), device.as_ref()])
     } else {
-        sudo(&["umount".as_ref(), at.as_ref()]);
+        output("sudo", &["-n".as_ref(), "umount".as_ref(), at.as_ref()]).map(drop)
     }
 }
 
 impl Drop for Disks {
     fn drop(&mut self) {
-        for at in self.mounted.drain(..).rev() {
-            unmount(&at);
+        let failures: Vec<String> = (self.mounted.drain(..).rev())
+            .filter_map(|at| unmount(&at).err())
+            .collect();
+        if failures.is_empty() {
+            return;
+        }
+        if std::thread::panicking() {
+            let _ = writeln!(std::io::stderr(), "{failures:?}");
+        } else {
+            panic!("{failures:?}");
         }
     }
 }
