@@ -110,6 +110,8 @@ fn rules(name: &str) -> Rules {
         "HeldDeleteResent" => Rules::HeldDeleteResent,
         "HeldFixes" => Rules::HeldFixes,
         "HeldPositionFixes" => Rules::HeldPositionFixes,
+        "Main" => Rules::Main,
+        "RefusedAsMain" => Rules::RefusedAsMain,
         other => panic!("no rules {other}"),
     }
 }
@@ -448,6 +450,18 @@ fn refute_held_position_fixes() {
     refute(Rules::HeldPositionFixes);
 }
 
+#[test]
+#[ignore]
+fn refute_refused_as_main() {
+    refute(Rules::RefusedAsMain);
+}
+
+#[test]
+#[ignore]
+fn refute_main() {
+    refute(Rules::Main);
+}
+
 fn exhaustive(n: [u8; 10], rules: Rules) {
     exhaustive_from(budget(n), rules);
 }
@@ -587,6 +601,42 @@ fn old_deleter_moves_and_deletes_two_restores() {
 }
 
 #[test]
+#[ignore]
+fn exhaustive_created_a_move_and_a_delete_one_restore() {
+    exhaustive_from(created(CREATED[0]), Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn exhaustive_created_a_move_and_deletes_one_restore() {
+    exhaustive_from(created(CREATED[1]), Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn exhaustive_created_writes_and_deletes_one_restore() {
+    exhaustive_from(created(CREATED[2]), Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn exhaustive_created_moves_and_deletes_one_restore() {
+    exhaustive_from(created(CREATED[3]), Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn exhaustive_created_a_peer_edit_one_restore() {
+    exhaustive_from(created(CREATED[4]), Rules::Spec);
+}
+
+#[test]
+#[ignore]
+fn exhaustive_created_writes_moves_and_a_delete_two_restores() {
+    exhaustive_from(created(CREATED[5]), Rules::Spec);
+}
+
+#[test]
 fn a_small_budget_breaks_no_rule() {
     exhaustive([0, 1, 0, 1, 1, 0, 0, 0, 0, 1], Rules::Spec);
 }
@@ -596,15 +646,24 @@ const MADE_BY_A: Budget = Budget {
     ..ANY
 };
 
-fn broken(rules: Rules, trace: &[Action], broken: &str) {
-    let found = settle(MADE_BY_A, rules, trace).unwrap_err();
-    assert!(found.contains(broken), "{found}");
+fn fixed(by: &[Rules], trace: &[Action], broken: &str) {
+    if let Err(broken) = settle(MADE_BY_A, Rules::Spec, trace) {
+        panic!("{broken}");
+    }
+    self::broken(by, trace, broken);
+}
+
+fn broken(by: &[Rules], trace: &[Action], broken: &str) {
+    for rules in by {
+        let found = settle(MADE_BY_A, *rules, trace).unwrap_err();
+        assert!(found.contains(broken), "{rules:?}: {found}");
+    }
 }
 
 #[test]
-fn a_delete_comes_undone_when_a_resent_create_claims_a_renamed_position() {
-    broken(
-        Rules::Spec,
+fn a_delete_stays_when_a_resent_create_claims_a_renamed_position() {
+    fixed(
+        &[Rules::Main],
         &[
             Move(A),
             Build(A, 1),
@@ -625,9 +684,9 @@ fn a_delete_comes_undone_when_a_resent_create_claims_a_renamed_position() {
 }
 
 #[test]
-fn a_refused_lost_position_create_moves_the_file_back() {
-    broken(
-        Rules::Spec,
+fn a_refused_lost_position_create_leaves_the_file_in_place() {
+    fixed(
+        &[Rules::Main, Rules::RefusedAsMain],
         &[
             Move(A),
             Build(A, 1),
@@ -660,9 +719,9 @@ fn a_refused_lost_position_create_moves_the_file_back() {
 }
 
 #[test]
-fn a_delete_of_a_lost_node_comes_undone_when_another_device_resends_its_create() {
-    broken(
-        Rules::Spec,
+fn a_delete_of_a_lost_node_stays_when_another_device_resends_its_create() {
+    fixed(
+        &[Rules::Main],
         &[
             Delete(A),
             Lose(1),
@@ -710,9 +769,9 @@ fn a_delete_while_a_lost_position_create_is_in_flight_survives_its_landing() {
 }
 
 #[test]
-fn a_delete_comes_undone_across_a_restore_and_back() {
-    broken(
-        Rules::Spec,
+fn a_delete_stays_across_a_restore_and_back() {
+    fixed(
+        &[Rules::Main],
         &[Delete(A), Lose(1), Bootstrap(A), Action::Unlose, Record(A)],
         "came undone",
     );
@@ -721,7 +780,7 @@ fn a_delete_comes_undone_across_a_restore_and_back() {
 #[test]
 fn a_delete_overrides_a_move_resent_after_its_create_was_refused() {
     broken(
-        Rules::AllFixes,
+        &[Rules::AllFixes],
         &[
             Move(A),
             Build(A, 1),
@@ -758,7 +817,7 @@ fn a_delete_overrides_a_move_resent_after_its_create_was_refused() {
 #[test]
 fn a_delete_built_before_a_resent_move_lands_overrides_it() {
     broken(
-        Rules::HeldFixes,
+        &[Rules::HeldFixes],
         &[
             Move(A),
             Build(A, 1),
@@ -795,7 +854,7 @@ fn a_delete_built_before_a_resent_move_lands_overrides_it() {
 #[test]
 fn a_delete_after_a_move_overrides_the_position_its_resent_create_carries() {
     broken(
-        Rules::HeldPositionFixes,
+        &[Rules::HeldPositionFixes],
         &[
             Move(A),
             Lose(1),

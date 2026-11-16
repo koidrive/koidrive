@@ -278,9 +278,8 @@ impl Device {
             return;
         };
         let takes = lost
-            && rules.refused_keeps_lost_position()
-            && (r.trashed.is_some()
-                || (rules.refused_live_takes_lost_position() && content == r.content));
+            && rules.has(Fix::RefusedKeeps)
+            && (r.trashed.is_some() || (rules.has(Fix::RefusedTakes) && content == r.content));
         if r.trashed.is_none() && !takes {
             return;
         }
@@ -347,8 +346,21 @@ pub enum Action {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fix {
+    CreateFrom,
+    RefusedKeeps,
+    RefusedTakes,
+    AbsentResent,
+    Held,
+    LostPosition,
+    Carried,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rules {
     Spec,
+    Main,
+    RefusedAsMain,
     MoveResultEndsContent,
     MoveResultMarksContentResent,
     LandedResendIsOwn,
@@ -398,60 +410,30 @@ impl Rules {
         matches!(self, Rules::OldServer | Rules::BoundOnlyResendsSeen)
     }
 
-    fn create_from(self) -> bool {
-        matches!(
-            self,
-            Rules::ResentCreateFrom
-                | Rules::CreateFixes
-                | Rules::AllFixes
-                | Rules::HeldFixes
-                | Rules::HeldPositionFixes
-        )
-    }
-
-    fn refused_keeps_lost_position(self) -> bool {
-        matches!(
-            self,
-            Rules::RefusedKeepsLostPosition
-                | Rules::RefusedTakesLostPosition
-                | Rules::CreateFixes
-                | Rules::AllFixes
-                | Rules::HeldFixes
-                | Rules::HeldPositionFixes
-        )
-    }
-
-    fn refused_live_takes_lost_position(self) -> bool {
-        matches!(
-            self,
-            Rules::RefusedTakesLostPosition
-                | Rules::CreateFixes
-                | Rules::AllFixes
-                | Rules::HeldFixes
-                | Rules::HeldPositionFixes
-        )
-    }
-
-    fn absent_delete_resent(self) -> bool {
-        matches!(
-            self,
-            Rules::AbsentDeleteResent
-                | Rules::AllFixes
-                | Rules::HeldDeleteResent
-                | Rules::HeldFixes
-                | Rules::HeldPositionFixes
-        )
-    }
-
-    fn delete_needs_held(self) -> bool {
-        matches!(
-            self,
-            Rules::HeldDeleteResent | Rules::HeldFixes | Rules::HeldPositionFixes
-        )
-    }
-
-    fn delete_gives_way_to_lost_position(self) -> bool {
-        self == Rules::HeldPositionFixes
+    fn has(self, fix: Fix) -> bool {
+        use Fix::*;
+        let fixes: &[Fix] = match self {
+            Rules::Main | Rules::OldServer | Rules::OldDeleter => &[],
+            Rules::ResentCreateFrom => &[CreateFrom],
+            Rules::RefusedKeepsLostPosition => &[RefusedKeeps],
+            Rules::RefusedTakesLostPosition => &[RefusedKeeps, RefusedTakes],
+            Rules::CreateFixes => &[CreateFrom, RefusedKeeps, RefusedTakes],
+            Rules::AbsentDeleteResent => &[AbsentResent],
+            Rules::AllFixes => &[CreateFrom, RefusedKeeps, RefusedTakes, AbsentResent],
+            Rules::HeldDeleteResent => &[AbsentResent, Held],
+            Rules::HeldFixes => &[CreateFrom, RefusedKeeps, RefusedTakes, AbsentResent, Held],
+            Rules::HeldPositionFixes => &[
+                CreateFrom,
+                RefusedKeeps,
+                RefusedTakes,
+                AbsentResent,
+                Held,
+                LostPosition,
+            ],
+            Rules::RefusedAsMain => &[CreateFrom, AbsentResent, Held, LostPosition, Carried],
+            _ => return true,
+        };
+        fixes.contains(&fix)
     }
 
     fn bound_only(self) -> bool {
@@ -824,9 +806,18 @@ impl World {
                     seen,
                     held,
                     renamed_from: None,
-                    lost_position: w.devices[d].lost_position.filter(|&lost| {
-                        rules.delete_gives_way_to_lost_position() && held[0] & (1 << lost.0) == 0
-                    }),
+                    lost_position: (w.devices[d].flight.as_ref())
+                        .filter(|_| rules.has(Fix::Carried))
+                        .and_then(|flight| {
+                            flight.ops.iter().find_map(|(op, _)| match op {
+                                Op::Create { pos, .. } => Some(*pos),
+                                _ => None,
+                            })
+                        })
+                        .or(w.devices[d].lost_position)
+                        .filter(|&lost| {
+                            rules.has(Fix::LostPosition) && held[0] & (1 << lost.0) == 0
+                        }),
                 });
                 let dev = &mut w.devices[d];
                 if rules != Rules::DeleteSeesSynced {
@@ -1016,7 +1007,8 @@ impl World {
             let code = match *op {
                 Op::Create { pos, content } if !node.created => {
                     let claims = |value: Tok| {
-                        !rules.create_from() || self.values[value.0 as usize].author == Some(d)
+                        !rules.has(Fix::CreateFrom)
+                            || self.values[value.0 as usize].author == Some(d)
                     };
                     node = Node {
                         created: true,
@@ -1525,8 +1517,8 @@ impl World {
                         && gone.held[slot(field)] & (1 << r.get(field).0) == 0
                 });
             if r.trashed.is_none()
-                && rules.absent_delete_resent()
-                && !(rules.delete_needs_held() && unheld)
+                && rules.has(Fix::AbsentResent)
+                && !(rules.has(Fix::Held) && unheld)
             {
                 dev.s.live = true;
                 dev.unsent.existence = Some(Author::Own);
@@ -1612,7 +1604,7 @@ impl World {
                 let old = rules == Rules::LossForgetsDeletedFields;
                 let unseen = FIELDS.iter().any(|&field| {
                     let synced = dev.s.get(field);
-                    if rules.delete_needs_held() {
+                    if rules.has(Fix::Held) {
                         let gone = self.values[gone.0 as usize];
                         let lost = field == Field::Position && gone.lost_position == Some(r.pos);
                         return lost
