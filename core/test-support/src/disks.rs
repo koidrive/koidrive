@@ -106,7 +106,7 @@ impl Disks {
         let image = self.base().join(format!("{name}.dmg"));
         let mut args: Vec<OsString> = [
             "create",
-            "-quiet",
+            "-ov",
             "-size",
             "16m",
             "-fs",
@@ -124,10 +124,7 @@ impl Disks {
             args.push(format!("-I {:#x}", serial.finish() as u32).into());
         }
         args.push(image.clone().into());
-        run(
-            "hdiutil",
-            &args.iter().map(OsString::as_os_str).collect::<Vec<_>>(),
-        );
+        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
         image
     }
 
@@ -143,10 +140,13 @@ impl Disks {
     /// Mounts `image` at the folder `at`, which must exist, and leaves its root writable by this user.
     pub fn attach(&mut self, image: &Path, at: &Path) {
         if cfg!(target_os = "macos") {
-            let args = ["attach", "-quiet", "-nobrowse", "-mountpoint"];
-            let mut args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-            args.extend([at.as_os_str(), image.as_os_str()]);
-            run("hdiutil", &args);
+            hdiutil(&[
+                "attach".as_ref(),
+                "-nobrowse".as_ref(),
+                "-mountpoint".as_ref(),
+                at.as_os_str(),
+                image.as_os_str(),
+            ]);
         } else if image
             .extension()
             .is_some_and(|extension| extension == "fat")
@@ -197,6 +197,19 @@ impl Disks {
     }
 }
 
+fn hdiutil(args: &[&OsStr]) {
+    let mut failures = Vec::new();
+    while failures.len() < 10 {
+        let out = Command::new("hdiutil").args(args).output().unwrap();
+        if out.status.success() {
+            return;
+        }
+        failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    panic!("hdiutil {args:?}: {failures:?}");
+}
+
 fn sudo(args: &[&OsStr]) {
     let mut all: Vec<&OsStr> = vec!["-n".as_ref()];
     all.extend_from_slice(args);
@@ -205,20 +218,7 @@ fn sudo(args: &[&OsStr]) {
 
 fn unmount(at: &Path) {
     if cfg!(target_os = "macos") {
-        let mut failures = Vec::new();
-        while failures.len() < 10 {
-            let out = Command::new("hdiutil")
-                .args(["detach", "-force"])
-                .arg(at)
-                .output()
-                .unwrap();
-            if out.status.success() {
-                return;
-            }
-            failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        panic!("hdiutil detach -force {}: {failures:?}", at.display());
+        hdiutil(&["detach".as_ref(), "-force".as_ref(), at.as_os_str()]);
     } else {
         sudo(&["umount".as_ref(), at.as_ref()]);
     }
