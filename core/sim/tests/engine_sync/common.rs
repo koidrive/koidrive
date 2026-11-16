@@ -1558,7 +1558,6 @@ fn run_ignoring_answering_after(
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
         let revived = revive(&device, &discarded, &kept_with);
-        release_taken_along(&mut kept_with, &revived);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
