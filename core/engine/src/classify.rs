@@ -368,6 +368,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
+    unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     resends: TrackedSet<NodeId>,
     local_changes: TrackedSet<NodeId>,
@@ -472,6 +473,7 @@ impl Trees {
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
+            unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             resends: TrackedSet::default(),
             local_changes: TrackedSet::default(),
@@ -867,11 +869,14 @@ impl Trees {
         let local = self.l.get(&id);
         let local_gone = !made_here && local.is_none();
         let old = (self.r.get(&id)).filter(|old| !old.trashed && !node.trashed);
-        let no_user_change = old.is_some_and(|old| {
-            old.edit_rev == node.edit_rev
-                && old.meta_edit_rev == node.meta_edit_rev
-                && synced.is_some_and(|synced| synced.same(&old.shape))
+        let user_change = (self.r.get(&id)).is_some_and(|old| {
+            old.edit_rev != node.edit_rev
+                || old.meta_edit_rev != node.meta_edit_rev
+                || old.trashed != node.trashed
         });
+        let no_user_change = !user_change
+            && !self.unseen_changes.contains(&id)
+            && old.is_some_and(|old| synced.is_some_and(|synced| synced.same(&old.shape)));
         let passed_over_delete = local_gone
             && no_user_change
             && old.is_some_and(|old| {
@@ -929,6 +934,9 @@ impl Trees {
         let shape = node.shape.clone();
         if edited_here {
             self.edited_here.insert(id.clone(), node.edit_rev);
+        }
+        if user_change && !made_here && self.s.get(&id).is_some() {
+            self.unseen_changes.insert(id.clone());
         }
         self.place_remote(id.clone(), node, made_here);
         if let Some(sent) = sent
@@ -4282,7 +4290,10 @@ impl Trees {
 
     fn set_synced_unmarked(&mut self, id: &str, shape: Option<Shape>) {
         self.forget_reclaims();
-        self.waiting.remove(id);
+        let waited = (self.waiting.remove(id)).is_some_and(|waiting| waiting.shape == shape);
+        if shape.is_none() || !waited {
+            self.unseen_changes.remove(id);
+        }
         if shape.is_some() {
             self.forgotten_shapes.remove(id);
         }
@@ -4424,6 +4435,7 @@ impl Trees {
             unsent_edits: (*self.unsent_edits).clone(),
             dropped_edits: (*self.dropped_edits).clone(),
             unsent_moves: (*self.unsent_moves).clone(),
+            unseen_changes: (*self.unseen_changes).clone(),
             replaced_versions: (*self.replaced_versions).clone(),
             resends: (*self.resends).clone(),
             local_changes: (*self.local_changes).clone(),
@@ -4465,6 +4477,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unseen_changes,
             replaced_versions,
             resends,
             local_changes,
@@ -4526,6 +4539,7 @@ impl Trees {
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
+            unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             resends: resends.take_changes(),
             local_changes: local_changes.take_changes(),
@@ -4612,6 +4626,9 @@ impl Trees {
         {
             return Err(StateError::NotUnsentEdit(id.clone()));
         }
+        if let Some(id) = (state.unseen_changes.iter()).find(|id| self.s.get(id).is_none()) {
+            return Err(StateError::NotUnseenChange(id.clone()));
+        }
         if let Some(id) = (state.replaced_versions.keys()).find(|id| self.r.get(id).is_none()) {
             return Err(StateError::NotRemote(id.clone()));
         }
@@ -4651,6 +4668,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unseen_changes,
             replaced_versions,
             resends,
             local_changes,
@@ -4687,6 +4705,7 @@ impl Trees {
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
+        self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
         self.resends = resends.into();
         self.local_changes = local_changes.into();

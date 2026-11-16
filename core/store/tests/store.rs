@@ -141,6 +141,7 @@ fn migrations_apply_from_empty() {
             "synced_nodes",
             "taken_answers",
             "trashed_here",
+            "unseen_changes",
             "unsent_edits",
             "unsent_marks",
             "unsent_moves",
@@ -1316,6 +1317,7 @@ fn engine_state() -> EngineState {
             unsent_edits: nodes(["u"]),
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
+            unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
             lost_creates: nodes(["c"]),
@@ -1532,7 +1534,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 42] = [
+const ENGINE_TABLES: [&str; 43] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1575,6 +1577,7 @@ const ENGINE_TABLES: [&str; 42] = [
     "pending_finishes",
     "lost_positions",
     "lost_creates",
+    "unseen_changes",
 ];
 
 /// Counts each row inserted, updated or deleted in the engine's tables from now on in the table
@@ -4262,6 +4265,31 @@ fn a_store_from_before_kept_originals_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.kept_originals.clear();
     assert!(!after.trees.kept_originals.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_unseen_changes_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "unseen_changes");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.unseen_changes.clear();
+    assert!(!after.trees.unseen_changes.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

@@ -110,6 +110,11 @@ pub struct TreesState {
     /// move into the folder would have. The server's ack of it ends the record, and so does R
     /// holding the node live or L dropping it.
     pub unsent_moves: BTreeSet<NodeId>,
+    /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
+    /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
+    /// node's shape past a record that carries no user's change, so a delete never passes over a change its user did not
+    /// see (RFC 0019 §4).
+    pub unseen_changes: BTreeSet<NodeId>,
     /// The nodes a delete of a conflict answer removes, each with the file the answer keeps, which the delete
     /// requires live (RFC 0015). Each is held while R holds the node trashed by that delete, or while its delete is
     /// sent again after the server lost it (section 4.4).
@@ -267,6 +272,7 @@ pub struct TreesChanges {
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
+    pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
@@ -302,6 +308,7 @@ impl TreesChanges {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unseen_changes,
             replaced_versions,
             resends,
             local_changes,
@@ -333,6 +340,7 @@ impl TreesChanges {
             unsent_edits: set_changes(&before.unsent_edits, unsent_edits),
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
+            unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
@@ -511,6 +519,8 @@ pub enum StateError {
     NotPastPosition(NodeId),
     /// A file is recorded with an edit the server does not hold, but L does not hold it.
     NotUnsentEdit(NodeId),
+    /// A node is recorded with a change R took since S took its shape, but S does not hold it.
+    NotUnseenChange(NodeId),
     NotRemote(NodeId),
     /// A node is recorded as sent again after a server loss, but L does not hold it.
     NotResend(NodeId),
