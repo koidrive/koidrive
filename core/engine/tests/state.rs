@@ -336,7 +336,14 @@ fn commits_state() -> CommitsState {
         slots: [(2, 5), (3, 8)].into(),
         questions: questions(),
         published: ["n".into()].into(),
-        given_up: ["u".into()].into(),
+        given_up: [(
+            "u".into(),
+            Revisions {
+                content_rev: 2,
+                meta_rev: 5,
+            },
+        )]
+        .into(),
         guard: guard_state(),
     }
 }

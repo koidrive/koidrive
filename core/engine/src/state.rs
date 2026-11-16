@@ -17,7 +17,7 @@ use crate::classify::Waiting;
 use crate::commit::{Halt, InFlight};
 use crate::effects::{Effect, EffectRecord};
 use crate::guard::{Counted, GuardState, RemoteDeletion};
-use crate::question::{Held, Limit, Question};
+use crate::question::{Held, Limit, Question, Revisions};
 use crate::restore::{Resolved, RestoreId, RestoreIntent};
 use crate::tree::{FileIdentity, NodeId, Shape, TreeError};
 
@@ -330,7 +330,7 @@ pub struct CommitsState {
     pub published: BTreeSet<NodeId>,
     /// The nodes of a trash group an answer gave up (section 6.4) that a commit brought back from
     /// the trash without trashing them again, until a later commit trashes them.
-    pub given_up: BTreeSet<NodeId>,
+    pub given_up: BTreeMap<NodeId, Revisions>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -483,7 +483,7 @@ pub struct CommitsChanges {
     pub slots: MapChanges<u64, u64>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
-    pub given_up: SetChanges<NodeId>,
+    pub given_up: MapChanges<NodeId, Revisions>,
     pub guard: GuardChanges,
 }
 
@@ -519,7 +519,7 @@ impl CommitsChanges {
             slots: map_changes(&before.slots, slots),
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
-            given_up: set_changes(&before.given_up, given_up),
+            given_up: map_changes(&before.given_up, given_up),
             guard: GuardChanges::between(&before.guard, guard),
         }
     }

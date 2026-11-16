@@ -4322,3 +4322,108 @@ fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a
     );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
+
+fn answered_with_a_given_up_folder_left_live(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(
+        local,
+        &[
+            ("d", dir(ROOT, "old")),
+            ("e", dir("d", "e")),
+            ("f", file("e", "child", 1)),
+        ],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("e", dir("d", "e"), true, 1),
+            Remote("f", file("e", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle();
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("e", dir("d", "e"), false),
+            ("f", file("e", "child", 1), false),
+        ],
+    );
+    (trees, commits, ids)
+}
+
+fn kept_here() -> Vec<(&'static str, Shape)> {
+    vec![
+        ("d", dir(ROOT, "new")),
+        ("e", dir("d", "e")),
+        ("f", file("e", "child", 1)),
+    ]
+}
+
+fn written_elsewhere(trees: &mut Trees, id: &str, shape: Shape, seq: u64) {
+    let node = RemoteNode {
+        made_over: Vec::new(),
+        shape,
+        trashed: false,
+        content_rev: seq,
+        edit_rev: seq,
+        meta_rev: seq,
+        meta_edit_rev: seq,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote(id.into(), node);
+    trees.settle();
+}
+
+#[test]
+fn a_given_up_file_another_device_edits_before_its_trash_again_is_kept() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new")), ("e", dir("d", "e"))]);
+    written_elsewhere(&mut trees, "f", file("e", "child", 2), 3);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_given_up_folder_another_device_puts_a_file_in_stays_and_its_other_given_up_nodes_are_trashed()
+{
+    let (mut trees, mut commits, mut ids) = answered_with_a_given_up_folder_left_live(&kept_here());
+    written_elsewhere(&mut trees, "x", file("e", "theirs", 7), 3);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "f".into())]
+    );
+}
+
+#[test]
+fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_nodes_are_trashed() {
+    let (mut trees, mut commits, mut ids) = answered_with_a_given_up_folder_left_live(&kept_here());
+    let node = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: file("e", "mine", 9),
+        identity: FileIdentity {
+            ino: 99,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("y".into(), node);
+    trees.settle();
+    let mut sent = ops(&mut commits, &mut trees, &mut ids);
+    sent.sort();
+    assert_eq!(sent, [("create file", "y".into()), ("delete", "f".into())]);
+}
