@@ -3917,7 +3917,7 @@ fn plan(
             else {
                 continue;
             };
-            let Some(bundle) = scratch.compensation(want, answers, trees) else {
+            let Some((carried, bundle)) = scratch.compensation(want, answers, trees, &wants) else {
                 continue;
             };
             let order = match want {
@@ -3948,8 +3948,12 @@ fn plan(
                 break;
             }
             let want = wants[at].as_ref().expect("checked");
-            let ops = want.ops() + bundle.iter().map(Want::ops).sum::<usize>();
+            let carry = || carried.iter().map(|&j| wants[j].as_ref().expect("carried"));
+            let ops = want.ops()
+                + carry().map(Want::ops).sum::<usize>()
+                + bundle.iter().map(Want::ops).sum::<usize>();
             let cost = priced(&scratch, want)
+                + carry().map(|other| priced(&scratch, other)).sum::<usize>()
                 + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
             let alone = emitted == 0 && !bundle.is_empty();
             if !alone && !fits(emitted, bytes, ops, cost) {
@@ -3964,6 +3968,9 @@ fn plan(
                 &mut scratch,
                 &mut moving,
             );
+            for j in carried {
+                emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
+            }
             for retrash in bundle {
                 emit(retrash, &mut scratch, &mut moving);
             }
@@ -4041,8 +4048,8 @@ fn plan(
                 priced(&scratch, want) + priced(&scratch, &aside),
             );
             let bundled = scratch
-                .compensation(&aside, answers, trees)
-                .is_none_or(|bundle| !bundle.is_empty());
+                .compensation(&aside, answers, trees, &wants)
+                .is_none_or(|(carried, bundle)| !carried.is_empty() || !bundle.is_empty());
             if bundled
                 || (finishes && emitted > 0 && !whole)
                 || !room(&mut emitted, &mut bytes, &scratch, &aside)
@@ -4086,8 +4093,8 @@ fn plan(
                 _ => None,
             })
             .collect();
-        let forced = wants.iter_mut().find_map(|slot| {
-            let want = slot.as_ref()?;
+        let forced = (0..wants.len()).find_map(|at| {
+            let want = wants[at].as_ref()?;
             if scratch.fit(want, &moving) != Fit::NameTaken
                 || matches!(want, Want::Move { id, .. } if asides.contains(id))
                 || (scratch.name_holders(want)).any(|holder| {
@@ -4098,20 +4105,24 @@ fn plan(
             {
                 return None;
             }
-            let bundle = scratch.compensation(want, answers, trees)?;
-            Some((slot, bundle))
+            let bundle = scratch.compensation(want, answers, trees, &wants)?;
+            Some((at, bundle))
         });
-        let Some((slot, bundle)) = forced else {
+        let Some((at, (carried, bundle))) = forced else {
             if !scratch.stalled {
                 scratch.stalled = true;
                 continue;
             }
             break false;
         };
-        let want = slot.as_ref().expect("checked");
-        let ops = want.ops() + bundle.iter().map(Want::ops).sum::<usize>();
-        let cost =
-            priced(&scratch, want) + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
+        let want = wants[at].as_ref().expect("checked");
+        let carry = || carried.iter().map(|&j| wants[j].as_ref().expect("carried"));
+        let ops = want.ops()
+            + carry().map(Want::ops).sum::<usize>()
+            + bundle.iter().map(Want::ops).sum::<usize>();
+        let cost = priced(&scratch, want)
+            + carry().map(|other| priced(&scratch, other)).sum::<usize>()
+            + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
         if !(emitted == 0 && !bundle.is_empty()) && !fits(emitted, bytes, ops, cost) {
             break true;
         }
@@ -4119,7 +4130,7 @@ fn plan(
         bytes += cost;
         if let Some(Want::Create {
             shape, pending_for, ..
-        }) = slot.as_mut()
+        }) = wants[at].as_mut()
             && shape.kind == Kind::Dir
             && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
                 leaves(other, &scratch, &moving)
@@ -4130,7 +4141,14 @@ fn plan(
             pending_for.get_or_insert_with(|| shape.name.clone());
             shape.name = name;
         }
-        emit(slot.take().expect("checked"), &mut scratch, &mut moving);
+        emit(
+            wants[at].take().expect("checked"),
+            &mut scratch,
+            &mut moving,
+        );
+        for j in carried {
+            emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
+        }
         for retrash in bundle {
             emit(retrash, &mut scratch, &mut moving);
         }
@@ -4924,22 +4942,24 @@ impl<'a> Scratch<'a> {
     }
 
     /// The wants that must go into the same commit right after `want`, so that what it brings
-    /// back from the trash with an answered node's trash group (R8) outside `answers` is trashed
-    /// again (section 6.4), or none when one of them would not apply after it.
+    /// back from the trash with an answered node's trash group (R8) and L does not keep is trashed
+    /// again (section 6.4), or none when one of them would not apply after it: the indices of the
+    /// planned moves that must leave a folder before it is trashed again, then the trashes.
     fn compensation(
         &self,
         want: &Want,
         answers: &BTreeSet<NodeId>,
         trees: &Trees,
-    ) -> Option<Vec<Want>> {
+        wants: &[Option<Want>],
+    ) -> Option<(Vec<usize>, Vec<Want>)> {
         let Want::Move {
             id, parent, name, ..
         } = want
         else {
-            return Some(Vec::new());
+            return Some(Default::default());
         };
         let Some(group) = self.group(id).filter(|_| answers.contains(id)) else {
-            return Some(Vec::new());
+            return Some(Default::default());
         };
         let mut scratch = self.clone();
         let kind = scratch.kind(id).expect("moved nodes are in R");
@@ -4950,12 +4970,12 @@ impl<'a> Scratch<'a> {
                 .local()
                 .get(node)
                 .map(|local| local.shape.parent.as_str()),
-            false => (self.moves.get(node).map(String::as_str)).or_else(|| scratch.parent(node)),
+            false => (self.moves.get(node).or_else(|| self.creating.get(node)))
+                .map(String::as_str)
+                .or_else(|| scratch.parent(node)),
         };
         let mut needed = BTreeSet::new();
-        for kept in
-            (revived.iter()).filter(|node| answers.contains(*node) || self.sending.contains(*node))
-        {
+        for kept in (revived.iter().filter(|node| answers.contains(*node))).chain(&self.sending) {
             let mut at = placed(kept);
             while let Some(parent) = at.filter(|parent| revived.contains(*parent))
                 && needed.insert(parent.to_owned())
@@ -4963,11 +4983,26 @@ impl<'a> Scratch<'a> {
                 at = placed(parent);
             }
         }
-        let outside: BTreeSet<NodeId> = (revived.into_iter())
+        let riding = |node: &str| {
+            let mut at = scratch.parent(node);
+            while let Some(up) = at.filter(|up| revived.contains(*up)) {
+                if self.moves.contains_key(up) && !answers.contains(up) {
+                    return true;
+                }
+                at = scratch.parent(up);
+            }
+            false
+        };
+        let outside: BTreeSet<NodeId> = (revived.iter())
             .filter(|node| {
-                !answers.contains(node) && !needed.contains(node) && !self.sending.contains(node)
+                !answers.contains(*node)
+                    && !needed.contains(*node)
+                    && !self.sending.contains(*node)
+                    && !riding(node)
             })
+            .cloned()
             .collect();
+        let mut carried = Vec::new();
         let mut bundle = Vec::new();
         for top in &outside {
             if scratch
@@ -4975,6 +5010,28 @@ impl<'a> Scratch<'a> {
                 .is_some_and(|parent| outside.contains(parent))
             {
                 continue;
+            }
+            let leaving: Vec<usize> = (wants.iter().enumerate())
+                .filter(|(at, slot)| {
+                    matches!(slot, Some(Want::Move { id: moved, .. })
+                        if !answers.contains(moved) && !carried.contains(at) && scratch.inside(moved, top))
+                })
+                .map(|(at, _)| at)
+                .collect();
+            for at in leaving {
+                let moved = wants[at].as_ref().expect("found");
+                if scratch.fit(moved, &BTreeSet::new()) != Fit::Valid {
+                    return None;
+                }
+                let Want::Move {
+                    id, parent, name, ..
+                } = moved
+                else {
+                    unreachable!("only moves leave");
+                };
+                let kind = scratch.kind(id).expect("moved nodes are in R");
+                scratch.place(id, parent, name, kind);
+                carried.push(at);
             }
             let members = (scratch.subtree(top).into_iter())
                 .filter(|node| outside.contains(node))
@@ -4990,7 +5047,7 @@ impl<'a> Scratch<'a> {
             scratch.trash(top);
             bundle.push(retrash);
         }
-        Some(bundle)
+        Some((carried, bundle))
     }
 }
 
