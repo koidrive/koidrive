@@ -2093,7 +2093,10 @@ fn restores(world: &World) -> Vec<(World, Story)> {
     let mut worlds = vec![world.clone()];
     for t in (0..k).filter(|&t| world.remote[t] == Remote::Trashed) {
         let moved_in = (0..k).filter(|&j| {
-            j != t && world.remote[j] == Remote::Kept && world.synced[j] != Spot::In(t)
+            j != t
+                && world.remote[j] == Remote::Kept
+                && world.synced[j] != Spot::In(t)
+                && (0..world.len()).all(|m| world.local_of(m) != Local::Onto(j))
         });
         worlds.extend(moved_in.map(|j| {
             let mut told = world.clone();
@@ -3345,4 +3348,21 @@ shards! {
     four_nodes_shard_13_keeps_trashed_folders_trashed_and_names_given = (FOUR_NODES, 13 of 16),
     four_nodes_shard_14_keeps_trashed_folders_trashed_and_names_given = (FOUR_NODES, 14 of 16),
     four_nodes_shard_15_keeps_trashed_folders_trashed_and_names_given = (FOUR_NODES, 15 of 16),
+}
+
+#[test]
+fn restore_stories_keep_l_placeable() {
+    use Spot::{In, Root};
+    let base = world(
+        &[Root, Root, In(0)],
+        &[Remote::Kept, Remote::Kept, Remote::Trashed],
+        &[Local::Onto(1), Local::Into(In(0)), Local::Kept],
+        &[],
+    );
+    assert!(base.placeable());
+    let invalid: Vec<String> = (restores(&base).into_iter())
+        .filter(|(world, _)| !world.placeable())
+        .map(|(world, story)| format!("{}{}", world.describe(), show_story(&world, story)))
+        .collect();
+    assert!(invalid.is_empty(), "{invalid:#?}");
 }
