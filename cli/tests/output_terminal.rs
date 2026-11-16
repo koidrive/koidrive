@@ -1799,6 +1799,45 @@ fn concise_resolve_uses_the_local_device_for_conflict_choices() {
 }
 
 #[test]
+fn concise_resolve_names_the_devices_that_wrote_a_conflict() {
+    let profile = Profile::new();
+    let server = profile.fixture(1, |request| {
+        assert_eq!(request["request"], "questions");
+        json!({"response":"questions", "questions":[{
+            "id":"q1", "space_id":"s1", "asked_at_ms":1000,
+            "kind":{"type":"conflict",
+                "original":{"node_id":"n1","revisions":{"content_rev":2,"meta_rev":1}},
+                "copy":{"node_id":"n2","revisions":{"content_rev":1,"meta_rev":1}}},
+            "items":[
+                {"node_id":"n1","path":"deck.key","files":1,"device_id":"other-device","device_name":"agent-box"},
+                {"node_id":"n2","path":"deck (conflict).key","files":1,"device_id":"local-device","device_name":"Ada's MacBook Air"}
+            ]
+        }]})
+    });
+    let credential = profile.0.path().join("state/koidrive/credential.json");
+    fs::write(
+        &credential,
+        serde_json::to_vec(&json!({
+            "server":"https://files.example.com/", "user_id":"owner", "device_id":"local-device",
+            "device_name":"Ada's MacBook Air", "refresh_credential":"fixture-only"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = profile.run(&["resolve"], true, false, &[("NO_COLOR", "1")]);
+    server.join().unwrap();
+    assert_eq!(output.exit, 0);
+    for expected in [
+        "Original: deck.key, written by agent-box\n",
+        "Conflict copy: 'deck (conflict).key', written by Ada's MacBook Air (this device)\n",
+    ] {
+        assert!(output.terminal.contains(expected), "{}", output.terminal);
+    }
+    assert!(!output.terminal.contains("other-device"));
+}
+
+#[test]
 fn concise_restore_notes_keep_attention_on_stopped_folders() {
     use sha2::{Digest, Sha256};
 

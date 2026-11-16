@@ -2,10 +2,11 @@
 
 use koidrive_proto::v1::{
     AccessToken, ClaimRequest, CreateShareLinkRequest, CreateSpaceRequest, DeviceCredentials,
-    DeviceList, PairCompleteRequest, PairStartResponse, RewindRequest, RewindResult, RpcRequest,
-    RpcResponse, ServerInfo, ShareLink, ShareLinkList, SpaceInfo, SpaceList, SpaceUsage,
-    TokenRequest, rpc_request,
+    DeviceInfo, DeviceList, PairCompleteRequest, PairStartResponse, RewindRequest, RewindResult,
+    RpcRequest, RpcResponse, ServerInfo, ShareLink, ShareLinkList, SpaceInfo, SpaceList,
+    SpaceUsage, TokenRequest, rpc_request,
 };
+use std::collections::HashSet;
 use std::time::Duration;
 
 use prost::Message;
@@ -304,6 +305,24 @@ impl Api {
         }
         self.authed(auth, Method::GET, url, None, "DeviceList", MAX_DEVICE_PAGE)
             .await
+    }
+
+    /// Every device of this device's user, revoked ones included: [`Api::list_devices`] page by page.
+    pub async fn all_devices(&self, auth: &Auth) -> Result<Vec<DeviceInfo>, ApiError> {
+        let mut devices = Vec::new();
+        let mut cursor = String::new();
+        let mut seen = HashSet::new();
+        loop {
+            let page = self.list_devices(auth, &cursor).await?;
+            devices.extend(page.devices);
+            if page.next_cursor.is_empty() {
+                return Ok(devices);
+            }
+            if !seen.insert(page.next_cursor.clone()) {
+                return Err(ApiError::Decode("DeviceList"));
+            }
+            cursor = page.next_cursor;
+        }
     }
 
     /// `DELETE /v1/devices/{device_id}`: revokes another device of this device's user (RFC 0009). `device_id` is an ID

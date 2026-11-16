@@ -538,6 +538,7 @@ impl DecisionData {
                     path: item.path.clone(),
                     files: item.files,
                     device_id: None,
+                    device_name: None,
                     size: item.size,
                     modified_at_ms: item.modified_at_ms,
                 })

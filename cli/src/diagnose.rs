@@ -847,6 +847,8 @@ thread 'tokio-runtime-worker' panicked at /Users/ada/Secret Plans/ledger.rs:1:1:
                     node_id: format!("n{index}"),
                     path: (*name).to_owned(),
                     files: 1,
+                    device_id: None,
+                    device_name: None,
                     size: None,
                     modified_at_ms: None,
                 })

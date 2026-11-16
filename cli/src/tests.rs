@@ -144,7 +144,7 @@ fn concise_status_explains_a_quota_wait_before_a_problem_is_recorded() {
 }
 
 #[test]
-fn concise_conflicts_identify_this_device_without_writer_ids() {
+fn concise_conflicts_name_their_writers_and_this_device_without_writer_ids() {
     let question = conflict("docs/notes (conflict).txt");
     let status: Status = serde_json::from_value(serde_json::json!({
         "account":{"server":"https://files.example.com/", "user_id":"owner", "device_id":DESK,"device_name":"Desktop"},
@@ -159,8 +159,14 @@ fn concise_conflicts_identify_this_device_without_writer_ids() {
     .unwrap();
     let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
     let summary = status_summary(&status, &[question], &service, &notice);
-    assert!(summary.contains("written by this device"), "{summary}");
-    assert!(summary.contains("written by another device"), "{summary}");
+    assert!(
+        summary.contains("Original: docs/notes.txt, written by Ada's Desktop (this device)\n"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("Conflict copy: 'docs/notes (conflict).txt', written by agent-box\n"),
+        "{summary}"
+    );
     assert!(!summary.contains(DESK), "{summary}");
     assert!(!summary.contains(LAPTOP), "{summary}");
     assert!(!summary.contains("space s1"), "{summary}");
@@ -1368,6 +1374,7 @@ fn held(
                 path: format!("old/{i:02}"),
                 files: 1,
                 device_id: None,
+                device_name: None,
                 size: None,
                 modified_at_ms: None,
             })
@@ -1380,8 +1387,6 @@ const COPY: &str = "0190a0b0-0000-7000-8000-00000000000b";
 const DESK: &str = "0190a0b0-0000-7000-8000-0000000000d1";
 const LAPTOP: &str = "0190a0b0-0000-7000-8000-0000000000d2";
 
-/// A conflict between docs/notes.txt, written by DESK, and its conflict copy written by LAPTOP, with the items in
-/// path order as the driver lists them.
 fn conflict(copy_path: &str) -> Question {
     use koidrive_engine::question::{ConflictFile, Revisions};
 
@@ -1392,11 +1397,12 @@ fn conflict(copy_path: &str) -> Question {
             meta_rev: 1,
         },
     };
-    let item = |node_id: &str, path: &str, device_id: &str| koidrive_driver::HeldItem {
+    let item = |node_id: &str, path: &str, device_id: &str, name: &str| koidrive_driver::HeldItem {
         node_id: node_id.into(),
         path: path.into(),
         files: 1,
         device_id: Some(device_id.into()),
+        device_name: Some(name.into()),
         size: None,
         modified_at_ms: None,
     };
@@ -1407,8 +1413,8 @@ fn conflict(copy_path: &str) -> Question {
             sent_in: None,
         },
         items: vec![
-            item(COPY, copy_path, LAPTOP),
-            item(ORIGINAL, "docs/notes.txt", DESK),
+            item(COPY, copy_path, LAPTOP, "agent-box"),
+            item(ORIGINAL, "docs/notes.txt", DESK, "Ada's Desktop"),
         ],
         ..held((0, 0, 0), &[], 0)
     }
@@ -1486,13 +1492,14 @@ fn resolve_answers_a_conflict_only_with_its_own_words_and_names_them_otherwise()
 }
 
 #[test]
-fn resolve_lists_both_files_of_a_conflict_with_their_writers_and_one_command_per_answer() {
+fn resolve_lists_both_files_of_a_conflict_with_the_names_of_their_writers_and_one_command_per_answer()
+ {
     assert_eq!(
         question_text(&conflict("docs/notes (conflict).txt")),
         format!(
             "q1  space s1  docs/notes.txt has a conflict copy\n\
-                 \x20   Original: docs/notes.txt, written by device {DESK}\n\
-                 \x20   Conflict copy: 'docs/notes (conflict).txt', written by device {LAPTOP}\n\
+                 \x20   Original: docs/notes.txt, written by Ada's Desktop\n\
+                 \x20   Conflict copy: 'docs/notes (conflict).txt', written by agent-box\n\
                  \x20 Keep docs/notes.txt and move 'docs/notes (conflict).txt' to the trash:\n\
                  \x20   koi resolve q1 keep-node:{ORIGINAL}\n\
                  \x20 Give docs/notes.txt the content of 'docs/notes (conflict).txt', keeping the old content in its \
@@ -1584,14 +1591,14 @@ fn status_names_a_newer_release_after_the_service_line_only_while_one_is_out() {
 #[test]
 fn status_shows_a_conflict_under_its_folder_and_a_notification_names_its_file() {
     let question = conflict("docs/notes (conflict).txt");
-    let brief = question_brief(&question);
+    let brief = question_brief(&question, Some(LAPTOP));
     let lines: Vec<&str> = brief.lines().collect();
     assert_eq!(
         lines[..3],
         [
             "  q1: docs/notes.txt has a conflict copy",
-            &format!("    Original: docs/notes.txt, written by device {DESK}"),
-            &format!("    Conflict copy: 'docs/notes (conflict).txt', written by device {LAPTOP}"),
+            "    Original: docs/notes.txt, written by Ada's Desktop",
+            "    Conflict copy: 'docs/notes (conflict).txt', written by agent-box (this device)",
         ]
     );
     assert_eq!(
@@ -1611,7 +1618,7 @@ fn status_shows_a_conflict_under_its_folder_and_a_notification_names_its_file() 
 #[test]
 fn a_conflict_path_is_quoted_with_its_control_characters_escaped() {
     let question = conflict("docs/it's\nforged\u{1b}[2J");
-    for text in [question_text(&question), question_brief(&question)] {
+    for text in [question_text(&question), question_brief(&question, None)] {
         assert_eq!(text.lines().count(), 9, "{text}");
         assert!(!text.contains('\u{1b}'), "{text}");
         assert!(
@@ -1621,6 +1628,7 @@ fn a_conflict_path_is_quoted_with_its_control_characters_escaped() {
     }
     let mut unwritten = conflict("docs/notes (conflict).txt");
     unwritten.items[0].device_id = None;
+    unwritten.items[0].device_name = None;
     assert!(
         question_text(&unwritten)
             .contains("Conflict copy: 'docs/notes (conflict).txt', written by an unknown device\n")
@@ -1628,10 +1636,79 @@ fn a_conflict_path_is_quoted_with_its_control_characters_escaped() {
 }
 
 #[test]
+fn a_conflict_writer_the_device_list_does_not_name_is_shown_without_its_id() {
+    let mut question = conflict("docs/notes (conflict).txt");
+    for item in &mut question.items {
+        item.device_name = None;
+    }
+    let lines = |text: String| -> Vec<String> {
+        (text.lines())
+            .filter(|line| line.contains("written by"))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        lines(question_brief(&question, Some(LAPTOP))),
+        [
+            "    Original: docs/notes.txt, written by another device",
+            "    Conflict copy: 'docs/notes (conflict).txt', written by this device",
+        ]
+    );
+    let detailed = question_text(&question);
+    assert_eq!(
+        lines(detailed.clone()),
+        [
+            "    Original: docs/notes.txt, written by a device",
+            "    Conflict copy: 'docs/notes (conflict).txt', written by a device",
+        ]
+    );
+    assert!(
+        !detailed.contains(DESK) && !detailed.contains(LAPTOP),
+        "{detailed}"
+    );
+}
+
+#[test]
+fn a_conflict_writer_name_is_shown_with_its_control_characters_escaped() {
+    let mut question = conflict("docs/notes (conflict).txt");
+    question.items[1].device_name = Some("Ada\u{1b}[2J\nforged".into());
+    let text = question_text(&question);
+    assert!(
+        text.contains(r"Original: docs/notes.txt, written by Ada\u{1b}[2J\u{a}forged"),
+        "{text}"
+    );
+    assert!(!text.contains('\u{1b}'), "{text}");
+}
+
+#[test]
+fn a_conflict_decision_in_json_carries_each_writer_id_and_name() {
+    let decision =
+        serde_json::to_value(report::Decision::of(&conflict("docs/notes (conflict).txt"))).unwrap();
+    let writers: Vec<(&Value, &Value, &Value)> = (decision["items"].as_array().unwrap().iter())
+        .map(|item| (&item["node_id"], &item["device_id"], &item["device_name"]))
+        .collect();
+    assert_eq!(
+        writers,
+        [
+            (
+                &Value::from(COPY),
+                &Value::from(LAPTOP),
+                &Value::from("agent-box")
+            ),
+            (
+                &Value::from(ORIGINAL),
+                &Value::from(DESK),
+                &Value::from("Ada's Desktop")
+            ),
+        ]
+    );
+}
+
+#[test]
 fn a_held_path_is_shown_with_its_control_characters_escaped() {
     let mut question = held((1, 15, 20), &[Limit::Share], 1);
     question.items[0].path = "old/a\nforged line\u{1b}[2J".into();
-    for text in [question_text(&question), question_brief(&question)] {
+    for text in [question_text(&question), question_brief(&question, None)] {
         assert_eq!(
             text.lines().count(),
             6 - text.starts_with(' ') as usize,
@@ -1673,7 +1750,7 @@ fn a_mass_delete_question_names_the_limit_it_crossed_and_lists_at_most_20_items(
 #[test]
 fn status_shows_a_decision_under_its_folder_with_its_first_path_and_one_full_command_per_answer() {
     assert_eq!(
-        question_brief(&held((30, 30, 40), &[Limit::Share], 3)),
+        question_brief(&held((30, 30, 40), &[Limit::Share], 3), None),
         [
             "  q1: held 30 deletions that would remove 30 of 40 files, more than half of the space in 10 minutes; first path: old/00",
             "  Delete these files on the server and other devices:",
@@ -1685,7 +1762,7 @@ fn status_shows_a_decision_under_its_folder_with_its_first_path_and_one_full_com
         .join("\n")
     );
     assert_eq!(
-        question_brief(&held((30, 30, 40), &[Limit::Share], 0))
+        question_brief(&held((30, 30, 40), &[Limit::Share], 0), None)
             .lines()
             .next(),
         Some(

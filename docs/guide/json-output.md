@@ -58,7 +58,7 @@ The entry also has `auth`, `output` and `schema`. `auth` is `none`, `device` whe
 }
 ```
 
-`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. A `conflict` decision's `items` are its two files, and its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It only takes `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
+`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. A `conflict` decision's `items` are its two files, each with the `device_id` of the device that wrote it and its `device_name` when the account's device list has it. Its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It only takes `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
 
 ## Retries never make a change twice
 

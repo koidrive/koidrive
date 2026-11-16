@@ -311,6 +311,7 @@ impl Engine {
                         path: path(self.trees.remote(), &file.node_id),
                         files: 1,
                         device_id: None,
+                        device_name: None,
                         size: None,
                         modified_at_ms: None,
                     };
@@ -324,6 +325,7 @@ impl Engine {
                     path: self.path(id),
                     files: held.files,
                     device_id: None,
+                    device_name: None,
                     size: None,
                     modified_at_ms: None,
                 })

@@ -75,6 +75,9 @@ pub struct HeldItem {
     /// For a file of a conflict, the device that wrote its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// That device's name, when the account's device list names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     /// For a file of a conflict, the size of its current version in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
@@ -127,6 +130,7 @@ mod tests {
                 path: "a/b".into(),
                 files: 1,
                 device_id: None,
+                device_name: None,
                 size: None,
                 modified_at_ms: None,
             }],

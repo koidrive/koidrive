@@ -4,7 +4,7 @@ use crate::error::CliError;
 use crate::formatting::{need_you, now_ms, printable, size};
 use crate::profile::unexpected;
 use crate::report::{AccountData, Decision, Done, FolderData, StatusData, UpdateNoticeData};
-use crate::resolve::{Writers, question_brief, question_brief_with_writers, questions};
+use crate::resolve::{question_brief, questions};
 use crate::{ipc, output, report, service, update};
 use koidrive_driver::{FolderState, FolderStatus, Paths, Progress, Question, Status};
 use koidrive_ipc::{Request, Response};
@@ -131,14 +131,9 @@ pub(crate) fn status_summary(
             .iter()
             .filter(|question| question.space_id == folder.space_id)
         {
-            text.push_str(&question_brief_with_writers(
+            text.push_str(&question_brief(
                 question,
-                Writers::RelativeTo(
-                    status
-                        .account
-                        .as_ref()
-                        .map(|account| account.device_id.as_str()),
-                ),
+                (status.account.as_ref()).map(|account| account.device_id.as_str()),
             ));
         }
     }
@@ -206,7 +201,10 @@ pub(crate) fn status_text(
     for folder in &status.folders {
         text.push_str(&folder_text(folder));
         for question in (questions.iter()).filter(|question| question.space_id == folder.space_id) {
-            text.push_str(&question_brief(question));
+            text.push_str(&question_brief(
+                question,
+                (status.account.as_ref()).map(|account| account.device_id.as_str()),
+            ));
         }
     }
     text

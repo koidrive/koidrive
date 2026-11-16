@@ -347,6 +347,12 @@ pub struct Item {
     pub node_id: String,
     pub path: String,
     pub files: u64,
+    /// For a file of a conflict, the device that wrote its current version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// That device's name, when the account's device list names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     /// For a file of a conflict, the size of its current version in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
@@ -468,6 +474,8 @@ impl Decision {
                     node_id: item.node_id.clone(),
                     path: item.path.clone(),
                     files: item.files,
+                    device_id: item.device_id.clone(),
+                    device_name: item.device_name.clone(),
                     size: item.size,
                     modified_at_ms: item.modified_at_ms,
                 })
@@ -1452,6 +1460,7 @@ mod tests {
                     path: "archive/a".into(),
                     files: 3,
                     device_id: None,
+                    device_name: None,
                     size: None,
                     modified_at_ms: None,
                 },
@@ -1460,6 +1469,7 @@ mod tests {
                     path: "archive/b".into(),
                     files: 1,
                     device_id: None,
+                    device_name: None,
                     size: None,
                     modified_at_ms: None,
                 },

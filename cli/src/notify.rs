@@ -128,6 +128,7 @@ mod tests {
                 path: "d".into(),
                 files: 11,
                 device_id: None,
+                device_name: None,
                 size: None,
                 modified_at_ms: None,
             }],

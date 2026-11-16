@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -39,6 +39,10 @@ use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
 const SERVER_WAIT: Duration = Duration::from_secs(10);
+
+const DEVICES_WAIT: Duration = Duration::from_secs(3);
+
+const DEVICES_RELIST: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinkApproval {
@@ -299,10 +303,18 @@ struct Inner {
     changed: Arc<watch::Sender<()>>,
     progressed: Arc<watch::Sender<()>>,
     totals: Arc<Mutex<crate::progress::Sum>>,
+    devices: Mutex<Devices>,
     #[cfg(test)]
     observe_fault: Option<Arc<crate::folder::ObserveFault>>,
     #[cfg(test)]
     restart_stopped: Mutex<Option<RestartStopped>>,
+}
+
+#[derive(Default)]
+struct Devices {
+    names: HashMap<String, String>,
+    listed_at: Option<Instant>,
+    listing: Option<tokio::task::AbortHandle>,
 }
 
 #[cfg(test)]
@@ -314,6 +326,9 @@ struct RestartStopped {
 impl Drop for Inner {
     fn drop(&mut self) {
         self.updates.stop();
+        if let Some(listing) = self.devices.get_mut().unwrap().listing.take() {
+            listing.abort();
+        }
     }
 }
 
@@ -570,6 +585,7 @@ impl Driver {
                 changed: Arc::new(watch::Sender::new(())),
                 progressed: Arc::new(watch::Sender::new(())),
                 totals: Arc::default(),
+                devices: Mutex::default(),
                 #[cfg(test)]
                 observe_fault: None,
                 #[cfg(test)]
@@ -1415,8 +1431,30 @@ impl Driver {
     }
 
     /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
-    /// current version in the folder's remote tree.
+    /// current version in the folder's remote tree and the name of the device that wrote it.
+    /// A writer the cached device list does not name is unnamed here, and a listing of the account's devices starts in
+    /// the background, at most once a minute, which marks [`Driver::watch`] changed when it names writers.
     pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let (questions, listing) = self.named_questions(runtime.is_some())?;
+        if let (Some(runtime), Some(listing)) = (runtime, listing) {
+            let listing = runtime.spawn(listing).abort_handle();
+            if let Some(earlier) = self.inner.devices.lock().unwrap().listing.replace(listing) {
+                earlier.abort();
+            }
+        }
+        Ok(questions)
+    }
+
+    /// Lists the account's devices, for at most three seconds, when an open conflict has a writer the cached device list
+    /// does not name, so that a process that reads [`Driver::questions`] once names the writers.
+    pub async fn list_writers(&self) {
+        if let Ok((_, Some(listing))) = self.named_questions(true) {
+            let _ = tokio::time::timeout(DEVICES_WAIT, listing).await;
+        }
+    }
+
+    fn open_questions(&self) -> Result<Vec<Question>, DriverError> {
         let mut questions = Vec::new();
         for space_id in self.space_ids() {
             let open = self.read_store(&space_id, |store| {
@@ -1442,6 +1480,61 @@ impl Driver {
             questions.extend(open.into_iter().flatten());
         }
         Ok(questions)
+    }
+
+    fn named_questions(
+        &self,
+        may_list: bool,
+    ) -> Result<
+        (
+            Vec<Question>,
+            Option<impl Future<Output = ()> + Send + 'static>,
+        ),
+        DriverError,
+    > {
+        let mut questions = self.open_questions()?;
+        let mut devices = self.inner.devices.lock().unwrap();
+        let mut unknown = false;
+        for item in questions
+            .iter_mut()
+            .flat_map(|question| question.items.iter_mut())
+        {
+            let Some(device_id) = &item.device_id else {
+                continue;
+            };
+            item.device_name = devices.names.get(device_id).cloned();
+            unknown |= item.device_name.is_none();
+        }
+        let due = devices
+            .listed_at
+            .is_none_or(|at| at.elapsed() >= DEVICES_RELIST);
+        if !(may_list && unknown && due) {
+            return Ok((questions, None));
+        }
+        let Ok(auth) = self.signed_in() else {
+            return Ok((questions, None));
+        };
+        devices.listed_at = Some(Instant::now());
+        let inner = Arc::downgrade(&self.inner);
+        let listing = async move {
+            let listed = auth.api().all_devices(&auth).await;
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            match listed {
+                Ok(listed) => {
+                    inner.devices.lock().unwrap().names = (listed.into_iter())
+                        .filter(|device| !device.name.trim().is_empty())
+                        .map(|device| (device.device_id, device.name))
+                        .collect();
+                    inner.changed.send_replace(());
+                }
+                Err(error) => {
+                    tracing::info!(%error, "listing the account's devices failed; conflicts name no writers")
+                }
+            }
+        };
+        Ok((questions, Some(listing)))
     }
 
     /// The question `question_id` once it has an answer, while the answer waits for the engine or after the engine took
@@ -2393,6 +2486,7 @@ mod tests {
                 path: "old".into(),
                 files: 1_001,
                 device_id: None,
+                device_name: None,
                 size: None,
                 modified_at_ms: None,
             }],
@@ -2626,6 +2720,7 @@ mod tests {
             path: path.into(),
             files: 1,
             device_id: Some(device_id.into()),
+            device_name: None,
             size: None,
             modified_at_ms: None,
         };
@@ -2676,6 +2771,196 @@ mod tests {
             ..item("n-original", "notes.txt", "d2")
         };
         assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
+    }
+
+    fn conflict_written_by_d1_and_d2(paths: &Paths) {
+        use koidrive_engine::question::{ConflictFile, Revisions};
+        use koidrive_proto::v1::{NodeState, VersionInfo};
+
+        let file = |node_id: &str| ConflictFile {
+            node_id: node_id.into(),
+            revisions: Revisions {
+                content_rev: 1,
+                meta_rev: 1,
+            },
+        };
+        let item = |node_id: &str, path: &str| HeldItem {
+            node_id: node_id.into(),
+            path: path.into(),
+            files: 1,
+            device_id: None,
+            device_name: None,
+            size: None,
+            modified_at_ms: None,
+        };
+        let conflict = Question {
+            recovery_cause: None,
+            id: "c1".into(),
+            lineage: "c1".into(),
+            space_id: SPACE.into(),
+            asked_at_ms: 10,
+            kind: QuestionKind::Conflict {
+                original: file("n-original"),
+                copy: file("n-copy"),
+                sent_in: None,
+            },
+            items: vec![
+                item("n-copy", "notes (conflict).txt"),
+                item("n-original", "notes.txt"),
+            ],
+        };
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                for (node_id, device_id) in [("n-copy", "d1"), ("n-original", "d2")] {
+                    tx.put_remote_node(&NodeState {
+                        node_id: node_id.into(),
+                        current: Some(VersionInfo {
+                            device_id: device_id.into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })?;
+                }
+                tx.put_question(&StoredQuestion {
+                    question_id: "c1".into(),
+                    asked_at_ms: 10,
+                    body: serde_json::to_vec(&conflict).unwrap(),
+                    answer: None,
+                })
+            })
+            .unwrap();
+    }
+
+    fn device_list() -> (u16, Vec<u8>) {
+        use koidrive_proto::v1::{DeviceInfo, DeviceList};
+
+        let devices = DeviceList {
+            devices: vec![
+                DeviceInfo {
+                    device_id: "d1".into(),
+                    name: "Ada's MacBook Air".into(),
+                    ..Default::default()
+                },
+                DeviceInfo {
+                    device_id: "d2".into(),
+                    name: "agent-box".into(),
+                    revoked_at_ms: 5,
+                    ..Default::default()
+                },
+            ],
+            next_cursor: String::new(),
+        };
+        (200, prost::Message::encode_to_vec(&devices))
+    }
+
+    fn writers(driver: &Driver) -> Vec<(String, Option<String>)> {
+        (driver.questions().unwrap().into_iter())
+            .flat_map(|question| question.items)
+            .map(|item| (item.device_id.unwrap(), item.device_name))
+            .collect()
+    }
+
+    fn named() -> [(String, Option<String>); 2] {
+        [
+            ("d1".to_owned(), Some("Ada's MacBook Air".to_owned())),
+            ("d2".to_owned(), Some("agent-box".to_owned())),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_conflict_names_the_devices_that_wrote_its_files_once_the_account_device_list_arrives()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let (server, served) = serve_each(
+            vec![access_token(), device_list()],
+            Paths::under(&base.join("profile")).credential(),
+        )
+        .await;
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths).unwrap();
+        let mut watch = driver.watch();
+        watch.borrow_and_update();
+        assert_eq!(
+            writers(&driver),
+            [("d1".to_owned(), None), ("d2".to_owned(), None)]
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while writers(&driver) != named() {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(writers(&driver), named());
+        let requested: Vec<String> = (served.await.unwrap().into_iter())
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(requested, ["/v1/token", "/v1/devices"]);
+    }
+
+    #[tokio::test]
+    async fn listing_the_writers_names_them_on_the_first_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let (server, served) = serve_each(
+            vec![access_token(), device_list()],
+            Paths::under(&base.join("profile")).credential(),
+        )
+        .await;
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths).unwrap();
+        driver.list_writers().await;
+        assert_eq!(writers(&driver), named());
+        assert_eq!(served.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_device_listing_that_hangs_leaves_the_profile_free_once_the_driver_is_dropped() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let (listed, mut listing) = tokio::sync::mpsc::unbounded_channel();
+        let served = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (path, _) = read_request(&mut socket).await;
+                if path == "/v1/devices" {
+                    held.push(socket);
+                    listed.send(()).unwrap();
+                    continue;
+                }
+                let (status, body) = access_token();
+                let head = format!(
+                    "HTTP/1.1 {status} Reply\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert_eq!(
+            writers(&driver),
+            [("d1".to_owned(), None), ("d2".to_owned(), None)]
+        );
+        listing.recv().await.unwrap();
+        drop(driver);
+        let reopened = Driver::open(paths).unwrap();
+        assert_eq!(writers(&reopened).len(), 2);
+        served.abort();
     }
 
     #[tokio::test]
@@ -4189,7 +4474,7 @@ mod tests {
                 let (driver, stop, reads) = (driver.clone(), stop.clone(), reads.clone());
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::SeqCst) {
-                        let _ = driver.questions();
+                        let _ = driver.open_questions();
                         let _ = driver.answered_question("q1");
                         let _ = driver.answer("q1", Answer::Delete);
                         let _ = driver.restores(SPACE);

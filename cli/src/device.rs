@@ -185,24 +185,10 @@ pub(crate) fn refused(error: &ApiError) -> bool {
 /// Every device of the account, page by page. A page that repeats an earlier cursor ends the listing as undecodable, as
 /// in `Api::list_spaces`.
 pub(crate) async fn devices(auth: &Auth) -> Result<Vec<DeviceInfo>, CliError> {
-    let mut devices = Vec::new();
-    let mut cursor = String::new();
-    let mut seen = std::collections::HashSet::new();
-    loop {
-        let page = auth
-            .api()
-            .list_devices(auth, &cursor)
-            .await
-            .map_err(CliError::api_retry_safe)?;
-        devices.extend(page.devices);
-        if page.next_cursor.is_empty() {
-            return Ok(devices);
-        }
-        if !seen.insert(page.next_cursor.clone()) {
-            return Err(ApiError::Decode("DeviceList").into());
-        }
-        cursor = page.next_cursor;
-    }
+    auth.api()
+        .all_devices(auth)
+        .await
+        .map_err(CliError::api_retry_safe)
 }
 
 /// A pairing code `koi device invite` showed, as its request record keeps it.
