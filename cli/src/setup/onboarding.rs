@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use koidrive_driver::{Credential, DirectoryIdentity, DriverError, LinkApproval, Paths, api_for};
-use koidrive_ipc::{Code, Next, Request, Response};
+use koidrive_ipc::{Code, Next, Reason, Request, Response};
 use koidrive_net::ApiError;
 use koidrive_proto::v1::SpaceInfo;
 use koidrive_telemetry::schema::{SetupFlow, SetupStep};
@@ -305,7 +305,7 @@ async fn deployed(paths: &Paths, device_name: &str, terminal: &Terminal) -> Resu
             }
             Err(error)
                 if claimed
-                    && error.code == Code::Failed
+                    && error.reason == Some(Reason::Owned)
                     && koidrive_driver::claim_pending(paths, api.base()) =>
             {
                 drop(progress);

@@ -126,7 +126,7 @@ impl CliError {
                 CliError::new(Code::WrongCode, "the code is wrong or has expired")
                     .human("The code is wrong or has expired. Get a new code from the device or server you are joining.")
             }
-            Some(OWNED) => CliError::retry_safe(error).human(format!(
+            Some(OWNED) => CliError::retry_safe(error).because(Reason::Owned).human(format!(
                 "This server already has an owner. If it is yours and no signed-in device is left, add this device with a recovery key: {RECOVERY_STEPS}"
             )),
             _ => CliError::retry_safe(error),
@@ -1186,6 +1186,7 @@ mod tests {
             "this deployment already has an owner",
         )));
         assert_ne!(owned.code, Code::WrongCode);
+        assert_eq!(owned.reason, Some(Reason::Owned));
         assert!(
             owned.message.contains("already has an owner"),
             "{}",

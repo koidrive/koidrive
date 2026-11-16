@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use koidrive_driver::{Credential, FolderState, FolderStatus, Paths};
-use koidrive_ipc::{Code, Response};
+use koidrive_ipc::{Code, Reason, Response};
 use koidrive_proto::v1::{
     AccessToken, CreateSpaceRequest, Error as ProtoError, ServerInfo, SpaceInfo, SpaceList, error,
 };
@@ -317,6 +317,14 @@ impl Home {
                             "OTHER-CODE" => serde_json::to_value(Response::Error {
                                 message: "the server answered HTTP 403: CODE_FORBIDDEN: this deployment already has an owner".into(),
                                 human: None,
+                                code: Code::Failed,
+                                reason: Some(Reason::Owned),
+                                next: Vec::new(),
+                            })
+                            .unwrap(),
+                            "FAILING-CODE" => serde_json::to_value(Response::Error {
+                                message: "the server answered HTTP 500".into(),
+                                human: Some("The server could not finish the claim.".into()),
                                 code: Code::Failed,
                                 reason: None,
                                 next: Vec::new(),
@@ -1664,6 +1672,43 @@ fn another_code_for_a_claim_that_did_not_finish_is_asked_again() {
     );
     assert!(!text.contains(CODE), "{text}");
     assert_eq!(home.links().len(), 1);
+}
+
+#[test]
+fn a_server_failure_during_a_claim_that_did_not_finish_shows_its_own_error() {
+    let home = Home::new(&[]);
+    home.claimed.store(true, Ordering::Relaxed);
+    fs::write(
+        home.paths().pending_claim(),
+        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
+            .to_string(),
+    )
+    .unwrap();
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&home.server)),
+        step(CLAIM, line("FAILING-CODE")),
+        step(TELEMETRY, no(false)),
+    ];
+    let output = home.setup(
+        &steps,
+        &["--name", "Laptop"],
+        &[("USER", "alice")],
+        true,
+        false,
+        None,
+    );
+    let text = shown(output.clone());
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("The server could not finish the claim."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("That is not the code this device used."),
+        "{text}"
+    );
+    assert!(home.links().is_empty());
 }
 
 #[test]

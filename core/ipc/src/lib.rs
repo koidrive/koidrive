@@ -324,6 +324,8 @@ pub enum Reason {
     ReleasesUnreachable,
     /// GitHub did not send the list of releases, for example because it limits the rate.
     ReleasesRefused,
+    /// The server already has an owner, and the claim is not the one that made this device its owner.
+    Owned,
 }
 
 impl Reason {
