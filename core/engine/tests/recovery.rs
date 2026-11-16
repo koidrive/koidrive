@@ -54,6 +54,8 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
     let mut trees = Trees::new(ROOT);
     for (ino, (id, shape)) in local.iter().enumerate() {
         let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
             shape: shape.clone(),
             identity: FileIdentity {
                 dev: 1,
@@ -711,12 +713,16 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
     );
     let identity = trees.local().get("moved").unwrap().identity;
     let moved = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
         shape: file(ROOT, "c.txt", 1),
         identity,
         parked: false,
     };
     trees.set_local("moved".into(), moved);
     let mine = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
         shape: dir(ROOT, "a"),
         identity: FileIdentity { ino: 9, ..identity },
         parked: false,
@@ -3583,4 +3589,126 @@ fn a_file_whose_mark_names_another_node_is_not_settled_to_its_own_id_while_the_m
     );
     assert_eq!(trees.synced().live("n0"), None);
     assert!(trees.waiting().get("n0").is_none());
+}
+
+#[test]
+fn a_recovery_discard_takes_along_a_server_file_the_rules_let_in_while_the_folder_was_asked_about()
+{
+    let mut trees = trees(
+        &[("f", dir(ROOT, "new")), ("x", file(ROOT, "server", 9))],
+        &[("x", file(ROOT, "server", 9))],
+        &[live("x", file(ROOT, "server", 9))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
+    assert!(commits.decide(&question.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(trees.local().get("f").is_none(), "{done:?}");
+    assert_eq!(local_shape(&trees, "x"), Some(&file(ROOT, "server", 9)));
+}
+
+#[test]
+fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_the_server_s_edit()
+{
+    let (mut trees, mut commits, mut ids) = recovered_by_marks(
+        &[
+            ("new", dir(ROOT, "new")),
+            ("e", file("new", "e", 4)),
+            ("entry", file(ROOT, "server", 9)),
+        ],
+        &[],
+        &[live("n", file(ROOT, "server", 9))],
+        &[("n", file(ROOT, "server", 9))],
+        &[("entry", "n")],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
+    let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    trees.settle();
+    let mut moved = trees.local().get("n").unwrap().clone();
+    moved.shape.parent = "new".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("n".into(), moved);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let mut edited = trees.remote().get("n").unwrap().clone();
+    edited.shape = file(ROOT, "server", 10);
+    edited.content_rev = 2;
+    edited.edit_rev = 2;
+    trees.set_remote("n".into(), edited);
+    trees.settle();
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = (commits.questions().iter())
+        .find(|asked| asked.holds().any(|id| id == "new"))
+        .unwrap_or_else(|| panic!("{question:?} {:?}", commits.questions()))
+        .clone();
+    assert!(commits.decide(&question.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.local().get("new").is_none());
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
+}
+
+#[test]
+fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_taken_along_with_the_server_s_edit()
+ {
+    let (mut trees, mut commits, mut ids) = recovered_by_marks(
+        &[
+            ("new", dir(ROOT, "new")),
+            ("e", file("new", "e", 4)),
+            ("n", file(ROOT, "server", 9)),
+        ],
+        &[("n", file(ROOT, "server", 8))],
+        &[live("n", file(ROOT, "server", 9))],
+        &[],
+        &[],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
+    let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    trees.settle();
+    let mut moved = trees.local().get("n").unwrap().clone();
+    moved.shape.parent = "new".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("n".into(), moved);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let mut edited = trees.remote().get("n").unwrap().clone();
+    edited.shape = file(ROOT, "server", 10);
+    edited.content_rev = 2;
+    edited.edit_rev = 2;
+    trees.set_remote("n".into(), edited);
+    trees.settle();
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = (commits.questions().iter())
+        .find(|asked| asked.holds().any(|id| id == "new"))
+        .unwrap_or_else(|| panic!("{question:?} {:?}", commits.questions()))
+        .clone();
+    assert!(commits.decide(&question.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.local().get("new").is_none());
+    assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
 }

@@ -333,6 +333,8 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         device.trees.set_local(
             id.into(),
             LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
                 shape: shape.clone(),
                 identity,
                 parked: false,
@@ -596,6 +598,8 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         device.trees.set_local(
             id.into(),
             LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
                 shape,
                 identity,
                 parked: false,

@@ -59,6 +59,8 @@ fn remote(shape: Shape) -> RemoteNode {
 
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
         shape,
         identity: FileIdentity {
             dev: 1,
@@ -606,6 +608,23 @@ fn a_group_larger_than_the_search_limit_stays_dirty_and_is_listed() {
     assert!(work.iter().all(|(_, class)| *class == Class::Same));
     assert_eq!(trees.unsearched(), trees.dirty());
     assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn content_both_sides_agree_on_counts_as_the_server_s_whatever_the_size_of_its_group() {
+    for n in [SETTLE_GROUP_LIMIT, SETTLE_GROUP_LIMIT + 1] {
+        let mut trees = Trees::new(ROOT);
+        for i in 0..n {
+            let from = file(ROOT, &format!("x{i}"), 1);
+            let to = file(ROOT, &format!("x{}", (i + 1) % n), 2);
+            same_change(&mut trees, &format!("f{i:02}"), from, to, i as u128);
+        }
+        trees.settle();
+        let from_server: Vec<bool> = (trees.local().iter())
+            .map(|(_, node)| node.content_from_server)
+            .collect();
+        assert_eq!(from_server, vec![true; n], "{n}");
+    }
 }
 
 #[test]

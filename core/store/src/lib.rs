@@ -187,6 +187,8 @@ pub struct LocalNode {
     pub shape: Shape,
     pub identity: FileId,
     pub parked: bool,
+    pub left_out_when_placed: bool,
+    pub content_from_server: bool,
 }
 
 /// The folder this store syncs and the credential that writes it. One device
@@ -570,7 +572,8 @@ impl Tx<'_> {
     /// Every node of the local tree, ordered by `node_id`.
     pub fn local_nodes(&self) -> Result<Vec<LocalNode>> {
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked
+            "SELECT node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked,
+                    left_out_when_placed, content_from_server
              FROM local_nodes ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -583,15 +586,20 @@ impl Tx<'_> {
                     birth_ns: row.get(8)?,
                 },
                 row.get::<_, bool>(9)?,
+                row.get::<_, bool>(10)?,
+                row.get::<_, bool>(11)?,
             ))
         })?;
         rows.map(|row| {
-            let (node_id, shape, identity, parked) = row?;
+            let (node_id, shape, identity, parked, left_out_when_placed, content_from_server) =
+                row?;
             Ok(LocalNode {
                 node_id,
                 shape: shape.into_shape()?,
                 identity,
                 parked,
+                left_out_when_placed,
+                content_from_server,
             })
         })
         .collect()
@@ -604,8 +612,9 @@ impl Tx<'_> {
         self.0
             .prepare_cached(
                 "INSERT OR REPLACE INTO local_nodes
-                 (node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 (node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked,
+                  left_out_when_placed, content_from_server)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?
             .execute(params![
                 node.node_id,
@@ -618,6 +627,8 @@ impl Tx<'_> {
                 ino_columns(node.identity.ino).1,
                 node.identity.birth_ns,
                 node.parked,
+                node.left_out_when_placed,
+                node.content_from_server,
             ])?;
         Ok(())
     }

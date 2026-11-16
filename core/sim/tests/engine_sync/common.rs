@@ -705,13 +705,15 @@ impl Device {
                     content,
                 };
                 let node = LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
                     shape,
                     identity: self.identity(),
                     parked: false,
                 };
                 let id = self.ids.uuid_v7(NOW as u64);
                 self.acted.insert(id.clone());
-                self.trees.set_local(id, node);
+                self.trees.set_local_changed(id, node);
             }
             (2, Some((id, mut node))) if node.shape.kind == Kind::File => {
                 if unseen(&id, Kind::File) {
@@ -723,7 +725,7 @@ impl Device {
                     self.acted.insert(id.clone());
                 }
                 node.shape.content = written;
-                self.trees.set_local(id, node);
+                self.trees.set_local_changed(id, node);
             }
             (3, Some((id, mut node))) if !taken(&id) && !self.holds(&id, &parent) => {
                 let kind = node.shape.kind;
@@ -743,7 +745,7 @@ impl Device {
                             self.acted.insert(id.clone());
                             self.relocate(&id, &before, &node.shape);
                         }
-                        self.trees.set_local(id, node);
+                        self.trees.set_local_changed(id, node);
                     }
                 }
             }
@@ -1135,17 +1137,38 @@ fn run_cut(
 }
 
 fn server_copy(
-    trees: &Trees,
+    device: &Device,
     id: &str,
+    shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    from_server: &BTreeSet<String>,
+    removed_left_out: &BTreeSet<String>,
     kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
 ) -> bool {
+    let trees = &device.trees;
     let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
         return false;
     };
     let mut below = BTreeMap::new();
     let copy = match (&local.shape.content, &remote.shape.content) {
-        (Some(local), Some(remote)) => koidrive_engine::tree::same_content(local, remote),
-        (None, None) => (trees.local_children(id)).all(|child| server_copy(trees, child, &mut below)),
+        (Some(local), Some(remote)) => {
+            koidrive_engine::tree::same_content(local, remote) || from_server.contains(id)
+        }
+        (None, None) => {
+            let removed = (trees.remote().iter()).any(|(child, node)| {
+                !node.trashed
+                    && node.shape.parent == id
+                    && trees.local().get(child).is_none()
+                    && device.removed_from.contains_key(child)
+                    && !removed_left_out.contains(child)
+                    && !(device.kept_back.contains(child) && acknowledged_shape(trees, child).is_none())
+                    && !kept_by_r7(device, child)
+            });
+            !removed
+                && (trees.local_children(id)).all(|child| {
+                    shown.contains_key(child)
+                        || server_copy(device, child, shown, from_server, removed_left_out, &mut below)
+                })
+        }
         _ => false,
     };
     if copy {
@@ -1362,11 +1385,54 @@ fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape)
         && !(trees.remote().live(id)).is_some_and(|remote| remote.same_position(to))
 }
 
+fn note_agreements(
+    device: &Device,
+    sent_since: &mut BTreeSet<String>,
+    agreed: &mut BTreeMap<String, Content>,
+    from_server: &mut BTreeSet<String>,
+) {
+    for (id, local) in device.trees.local().iter() {
+        let (Some(content), Some(remote)) = (
+            &local.shape.content,
+            (device.trees.remote().live(id)).and_then(|remote| remote.content.as_ref()),
+        ) else {
+            continue;
+        };
+        if !koidrive_engine::tree::same_content(content, remote) {
+            continue;
+        }
+        let agreed_now = (agreed.get(id)).is_none_or(|was| !koidrive_engine::tree::same_content(was, content));
+        if agreed_now && !sent_since.contains(id) {
+            from_server.insert(id.clone());
+        }
+        sent_since.remove(id);
+        agreed.insert(id.clone(), content.clone());
+    }
+}
+
 fn note_kept_back(device: &mut Device) {
     let trees = &device.trees;
     (device.relocated).retain(|id, moved| relocation_stands(trees, id, &moved.to));
     let kept: Vec<String> = (device.removed_from.keys())
         .filter(|entry| kept_by_r7(device, entry))
+        .cloned()
+        .collect();
+    device.kept_back.extend(kept);
+}
+
+fn note_unacknowledged_taken_along_kept_back(
+    device: &mut Device,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) {
+    let trees = &device.trees;
+    let kept: Vec<String> = (kept_with.keys())
+        .filter(|id| {
+            device.removed_from.contains_key(*id)
+                && trees.local().get(id).is_none()
+                && trees.remote().live(id).is_some()
+                && acknowledged_shape(trees, id).is_none()
+                && !trees.excluded(id)
+        })
         .cloned()
         .collect();
     device.kept_back.extend(kept);
@@ -1441,6 +1507,8 @@ fn run_ignoring_answering_after(
                 .trees
                 .set_synced(id.clone(), Some(node.shape.clone()));
             let local = LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
                 shape: node.shape.clone(),
                 identity: device.identity(),
                 parked: false,
@@ -1457,13 +1525,22 @@ fn run_ignoring_answering_after(
     if let Some(ruling) = rulings.next() {
         device.rule(ruling);
     }
+    let mut placed_left_out: BTreeSet<String> = BTreeSet::new();
+    let mut removed_left_out: BTreeSet<String> = BTreeSet::new();
+    let mut from_server: BTreeSet<String> = BTreeSet::new();
     for action in local {
         match action.kind {
             5 | 6 => {
                 let asked = request_restore(&space, &mut commits, &mut device.ids, action);
                 requested += usize::from(asked);
             }
-            _ => device.act(action),
+            _ => act_tracked(
+                &mut device,
+                action,
+                &mut placed_left_out,
+                &mut removed_left_out,
+                &mut from_server,
+            ),
         }
     }
     if let Some(prior) = first_link {
@@ -1510,6 +1587,9 @@ fn run_ignoring_answering_after(
     let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut placed: BTreeMap<String, Position> = BTreeMap::new();
+    let mut agreed: BTreeMap<String, Content> = BTreeMap::new();
+    let mut sent_since: BTreeSet<String> = BTreeSet::new();
+    note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<String, String> = BTreeMap::new();
     let mut revived_once: BTreeSet<String> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
@@ -1519,6 +1599,7 @@ fn run_ignoring_answering_after(
         steps += 1;
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle();
+        note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
         {
@@ -1536,7 +1617,15 @@ fn run_ignoring_answering_after(
                             let asked = request_restore(&space, &mut commits, ids, action);
                             requested += usize::from(asked);
                         }
-                        _ => device.act(action),
+                        _ => {
+                            act_tracked(
+                                &mut device,
+                                action,
+                                &mut placed_left_out,
+                                &mut removed_left_out,
+                                &mut from_server,
+                            );
+                        }
                     }
                 }
                 for (id, at) in positions(&device.trees) {
@@ -1575,6 +1664,7 @@ fn run_ignoring_answering_after(
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
+        note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
         let revived = revive(&device, &discarded, &kept_with);
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
@@ -1659,6 +1749,9 @@ fn run_ignoring_answering_after(
                     reload(&device.trees, &commits, &effects, &device.rules)?;
                 prop_assert_eq!(effects.in_flight().first(), Some(&record));
             }
+            if matches!(record.effect, Effect::WriteFile { .. }) {
+                from_server.insert(record.node.clone());
+            }
             let identity = device.identity();
             effects
                 .done(
@@ -1696,6 +1789,7 @@ fn run_ignoring_answering_after(
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
+                device.acted.remove(id);
                 placed.remove(id);
                 revived_once.remove(id);
                 sent_nodes.remove(id);
@@ -1703,8 +1797,10 @@ fn run_ignoring_answering_after(
             let mut taken = BTreeMap::new();
             for folder in shown.keys() {
                 for child in device.trees.local_children(folder) {
-                    if !shown.contains_key(child) && device.trees.excluded(child) {
-                        server_copy(&device.trees, child, &mut taken);
+                    if !shown.contains_key(child)
+                        && (device.trees.excluded(child) || placed_left_out.contains(child))
+                    {
+                        server_copy(&device, child, &shown, &from_server, &removed_left_out, &mut taken);
                     }
                 }
             }
@@ -1755,6 +1851,12 @@ fn run_ignoring_answering_after(
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
                 sent_move_check(moved, &local.shape, &merged_into)?;
+            }
+            if matches!(
+                op.op,
+                Some(op::Op::CreateFile(_) | op::Op::UpdateContent(_))
+            ) {
+                sent_since.insert(id.clone());
             }
             sending.push(id.clone());
             if !matches!(op.op, Some(op::Op::UpdateContent(_))) {
@@ -2029,6 +2131,55 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn act_tracked(
+    device: &mut Device,
+    action: &Action,
+    placed_left_out: &mut BTreeSet<String>,
+    removed_left_out: &mut BTreeSet<String>,
+    from_server: &mut BTreeSet<String>,
+) {
+    let before_action = positions(&device.trees);
+    let written_before: BTreeMap<String, koidrive_engine::tree::LocalNode> =
+        (device.trees.local().iter())
+            .map(|(id, node)| (id.clone(), node.clone()))
+            .collect();
+    let left_out_before: BTreeSet<String> = (written_before.keys())
+        .filter(|id| device.trees.excluded(id))
+        .cloned()
+        .collect();
+    device.act(action);
+    removed_left_out.extend(
+        (left_out_before.into_iter())
+            .filter(|id| device.trees.local().get(id).is_none()),
+    );
+    for (id, now) in device.trees.local().iter() {
+        let same = (written_before.get(id)).is_some_and(|was| {
+            was.identity == now.identity
+                && match (&was.shape.content, &now.shape.content) {
+                    (Some(was), Some(now)) => {
+                        koidrive_engine::tree::same_content(was, now)
+                    }
+                    (was, now) => was.is_none() && now.is_none(),
+                }
+        });
+        if !same {
+            from_server.remove(id);
+        }
+    }
+    for (id, at) in positions(&device.trees) {
+        let parked = (device.trees.local().get(&id))
+            .is_some_and(|node| node.parked);
+        if before_action.get(&id) == Some(&at) || parked {
+            continue;
+        }
+        if device.trees.excluded(&id) {
+            placed_left_out.insert(id);
+        } else {
+            placed_left_out.remove(&id);
+        }
+    }
+}
 
 fn act(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Action {
     Action {

@@ -648,3 +648,243 @@ fn a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is
     }
 }
 
+
+#[test]
+fn a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart()
+ {
+    for restart in [false, true] {
+        let mut remote = Remote::new();
+        let site = synced_before(&mut remote, "b");
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("server.txt"), b"written on a");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"left-out.txt\n");
+        fs::create_dir(site.root.join("new")).unwrap();
+        fs::write(site.root.join("new/mine.txt"), b"mine").unwrap();
+        let mut b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert_eq!(b.folder.view().questions, 1, "{restart}");
+        fs::rename(site.root.join("server.txt"), site.root.join("new/left-out.txt")).unwrap();
+        b.scan_until(|b| {
+            (b.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "left-out.txt")
+        });
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        let left_out = |b: &Device| -> Vec<String> {
+            (b.folder.engine.trees.local().iter())
+                .filter(|(_, node)| node.left_out_when_placed)
+                .map(|(_, node)| node.shape.name.clone())
+                .collect()
+        };
+        let before = left_out(&b);
+        assert_eq!(before, ["left-out.txt"], "{restart}");
+        if restart {
+            drop(b);
+            b = site.start();
+            assert_eq!(left_out(&b), before, "the flag survives the restart");
+            b.connect(&remote);
+            b.scan_until(|b| b.folder.scanned);
+            b.run(&mut remote);
+        }
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{restart}: nothing is sent before the answer");
+
+        answer(&site, Answer::Discard);
+        let step = b.folder.requested();
+        b.take(step).unwrap();
+        for _ in 0..3 {
+            b.run(&mut remote);
+            b.settle();
+        }
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{restart}: nothing is sent for the discarded folder");
+        assert_eq!(remote.names(), [".koiignore", "server.txt"], "{restart}");
+        assert_eq!(
+            fs::read(site.root.join("server.txt")).unwrap(),
+            b"written on a",
+            "{restart}"
+        );
+        assert!(!site.root.join("new").exists(), "{restart}");
+        assert_eq!(b.folder.view().questions, 0, "{restart}");
+    }
+}
+
+#[test]
+fn a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan()
+ {
+    for (adopted, restart) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut remote = Remote::new();
+        let site = synced_before(&mut remote, "b");
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("server.txt"), b"written on a");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"left-out.txt\n");
+        fs::create_dir(site.root.join("new")).unwrap();
+        fs::write(site.root.join("new/mine.txt"), b"mine").unwrap();
+        if adopted {
+            fs::write(site.root.join("server.txt"), b"written on a").unwrap();
+        }
+        let mut b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert_eq!(b.folder.view().questions, 1, "{adopted} {restart}");
+        let from_server = |b: &Device| {
+            (b.folder.engine.trees.local().iter())
+                .any(|(_, node)| node.shape.name == "server.txt" && node.content_from_server)
+        };
+        assert!(from_server(&b), "{adopted} {restart}: the link holds the server's bytes");
+        if restart {
+            drop(b);
+            b = site.start();
+            b.connect(&remote);
+        }
+        b.scan_until(|b| b.folder.scanned);
+        assert!(from_server(&b), "{adopted} {restart}: the next scan finds the server's bytes");
+        fs::rename(site.root.join("server.txt"), site.root.join("new/left-out.txt")).unwrap();
+        b.scan_until(|b| {
+            (b.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "left-out.txt")
+        });
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        a.create(&mut remote, &site_a.root.join("server.txt"), b"edited on a");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{adopted} {restart}: nothing is sent before the answer");
+
+        answer(&site, Answer::Discard);
+        let step = b.folder.requested();
+        b.take(step).unwrap();
+        for _ in 0..3 {
+            b.run(&mut remote);
+            b.settle();
+        }
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{adopted} {restart}: nothing is sent for the discarded folder");
+        assert_eq!(remote.names(), [".koiignore", "server.txt"], "{adopted} {restart}");
+        assert_eq!(
+            fs::read(site.root.join("server.txt")).unwrap(),
+            b"edited on a",
+            "{adopted} {restart}"
+        );
+        assert!(!site.root.join("new").exists(), "{adopted} {restart}");
+        assert_eq!(b.folder.view().questions, 0, "{adopted} {restart}");
+    }
+}
+
+#[test]
+fn a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folder_is_asked_about() {
+    let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("server.txt"), b"written on a");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"left-out.txt\n");
+    fs::write(site.root.join("server.txt"), b"written on a").unwrap();
+    fs::create_dir(site.root.join("new")).unwrap();
+    fs::write(site.root.join("new/mine.txt"), b"mine").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(b.folder.view().questions, 1);
+    fs::rename(site.root.join("server.txt"), site.root.join("new/left-out.txt")).unwrap();
+    b.scan_until(|b| {
+        (b.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "left-out.txt")
+    });
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    a.create(&mut remote, &site_a.root.join("server.txt"), b"edited on a");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent before the answer: {:?}", b.sent);
+
+    answer(&site, Answer::Discard);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    for _ in 0..3 {
+        b.run(&mut remote);
+        b.settle();
+    }
+    b.run(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent for the discarded folder: {:?}", b.sent);
+    assert_eq!(remote.names(), [".koiignore", "server.txt"]);
+    assert_eq!(fs::read(site.root.join("server.txt")).unwrap(), b"edited on a");
+    assert!(!site.root.join("new").exists());
+}
+#[test]
+fn a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_held_folder() {
+    for adopted in [false, true] {
+        let mut remote = Remote::new();
+        let site = synced_before(&mut remote, "b");
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("server.txt"), b"written on a");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"left-out/\n");
+        if adopted {
+            fs::write(site.root.join("server.txt"), b"written on a").unwrap();
+        }
+        fs::create_dir(site.root.join("new")).unwrap();
+        fs::write(site.root.join("new/mine.txt"), b"mine").unwrap();
+        fs::create_dir(site.root.join("new/left-out")).unwrap();
+        let mut b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert_eq!(b.folder.view().questions, 1, "{adopted}");
+        fs::rename(site.root.join("server.txt"), site.root.join("new/left-out/server.txt")).unwrap();
+        for _ in 0..3 {
+            b.scan_until(|b| b.folder.scanned);
+            b.run(&mut remote);
+            b.settle();
+        }
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{adopted}: nothing is sent before the rules change");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{adopted}: nothing is sent before the answer");
+
+        answer(&site, Answer::Discard);
+        let step = b.folder.requested();
+        b.take(step).unwrap();
+        for _ in 0..3 {
+            b.run(&mut remote);
+            b.settle();
+        }
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{adopted}: nothing is sent for the discarded folder: {:?}", b.sent);
+        assert_eq!(remote.names(), [".koiignore", "server.txt"], "{adopted}");
+        assert_eq!(fs::read(site.root.join("server.txt")).unwrap(), b"written on a", "{adopted}");
+        assert!(!site.root.join("new").exists(), "{adopted}");
+    }
+}

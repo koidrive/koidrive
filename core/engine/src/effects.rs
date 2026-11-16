@@ -590,6 +590,8 @@ impl Effects {
             Some(shape) => trees.set_local(
                 record.node.clone(),
                 LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
                     shape: match (&record.effect, content) {
                         (Effect::Move { .. }, Some(content)) => Shape { content, ..shape },
                         _ => shape,
@@ -598,6 +600,9 @@ impl Effects {
                     parked,
                 },
             ),
+        }
+        if matches!(record.effect, Effect::WriteFile { .. }) {
+            trees.set_content_from_server(&record.node, true);
         }
         if finished {
             trees.start_finish(&record.node);

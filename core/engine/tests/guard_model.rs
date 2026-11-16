@@ -710,6 +710,8 @@ fn remote(node: &ServerNode) -> RemoteNode {
 
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
         shape,
         identity: identity(ino),
         parked: false,

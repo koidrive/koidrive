@@ -182,6 +182,12 @@ pub struct LocalNode {
     pub shape: Shape,
     pub identity: FileIdentity,
     pub parked: bool,
+    /// Whether the rules left the node out when a scan last found it at a new parent or name.
+    pub left_out_when_placed: bool,
+    /// Whether the file holds the server's bytes as of the last write the device knows of, either
+    /// written by the effects or found equal to the server's when the device linked or adopted it,
+    /// with no write of the user found by a scan since.
+    pub content_from_server: bool,
 }
 
 impl Node for LocalNode {

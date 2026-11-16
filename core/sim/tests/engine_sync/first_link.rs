@@ -30,6 +30,8 @@ fn placement_check_after_a_move(
         trees.set_local(
             id.clone(),
             LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
                 shape: koidrive_engine::tree::Shape {
                     parent: local_parent.into(),
                     ..remote.shape.clone()
@@ -388,6 +390,302 @@ fn a_discarded_folder_stays_off_the_server_when_the_user_moves_out_what_arrived_
     .unwrap();
 }
 
+#[test]
+fn a_first_link_discard_takes_along_a_server_file_the_server_edited_and_trashed_after_it_was_written()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (
+                false,
+                vec![
+                    act(3, 6563456750138208221, 6653762091013073807, 0, 0),
+                    act(2, 76120783504708564, 0, 0, 0),
+                ],
+            ),
+            (
+                false,
+                vec![
+                    act(2, 279800153722622989, 0, 0, 0),
+                    act(4, 6316084977119993380, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(8, 14283514286341, 0, 0, 0),
+        vec![
+            (
+                false,
+                vec![act(4, 9102383114394317503, 0, 0, 0), act(2, 0, 0, 0, 0)],
+            ),
+            (
+                false,
+                vec![
+                    act(0, 0, 2741078651781309836, 0, 0),
+                    act(4, 11275118652569310417, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(7, 17382083876922469, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 5, 0),
+            act(0, 0, 0, 2, 0),
+            act(0, 0, 9266656165052801544, 5, 0),
+            act(0, 0, 0, 0, 0),
+            act(0, 0, 4558050171813961518, 0, 0),
+            act(1, 0, 2032494584937929559, 0, 0),
+            act(1, 0, 0, 0, 0),
+        ],
+        &[act(0, 0, 0, 5, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        9,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_leaves_a_server_folder_the_user_removed_an_entry_from_to_the_user() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (false, vec![act(2, 0, 0, 0, 0)]),
+            (
+                true,
+                vec![act(3, 2094582802364268140, 15272791550546786922, 2, 0)],
+            ),
+        ],
+        act(8, 10093011241592231414, 0, 0, 0),
+        vec![(true, vec![act(4, 16592146011263293529, 0, 0, 0)])],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["a"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 2, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 440234330134331381, 2, 0),
+        ],
+        &[act(0, 0, 0, 3, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        7,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_gives_back_the_folder_when_the_user_edits_inside_a_server_folder_it_took_along()
+ {
+    run_ignoring_answering_after(
+        &[act(0, 0, 0, 5, 0), act(0, 0, 0, 0, 0)],
+        &[
+            act(0, 0, 0, 1, 0),
+            act(0, 0, 3570165619780894286, 5, 0),
+            act(1, 0, 687474002968895165, 0, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &[
+            (true, vec![act(8, 0, 0, 0, 0)]),
+            (false, vec![act(0, 0, 0, 0, 0)]),
+            (true, vec![act(9, 0, 0, 0, 1)]),
+        ],
+        Cut::None,
+        &[
+            Ruling::File(vec![]),
+            Ruling::Include(vec!["a"]),
+            Ruling::Exclude(vec!["a"]),
+            Ruling::Exclude(vec![]),
+        ],
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        3,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_takes_along_a_server_folder_after_the_keep_rule_brings_back_a_file_deleted_in_it()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(true, vec![act(0, 0, 0, 3, 0)])],
+        act(8, 0, 0, 0, 0),
+        vec![
+            (false, vec![act(1, 0, 0, 0, 0)]),
+            (false, vec![act(4, 16998930721721672818, 0, 0, 0)]),
+        ],
+        act(7, 394369, 0, 0, 0),
+        act(9, 0, 0, 0, 2),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 0, 0),
+            act(1, 0, 7214111189693794999, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 0, 0),
+        ],
+        &[act(0, 0, 0, 0, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        9,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_leaves_a_server_folder_to_the_user_once_the_rules_stop_keeping_back_a_delete_in_it()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (false, vec![act(0, 0, 7102054750434410170, 2, 0)]),
+            (
+                true,
+                vec![
+                    act(3, 10671660887448527019, 10242677703864011517, 2, 0),
+                    act(4, 12125739356159939665, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(8, 0, 0, 0, 0),
+        vec![(false, vec![act(2, 3394935901777304464, 0, 0, 0)])],
+        act(7, 544876195332911984, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["a"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 5, 0),
+            act(1, 0, 12486383627201936880, 3, 0),
+            act(1, 0, 9437286109419346847, 2, 0),
+            act(0, 0, 2651891447982760259, 2, 0),
+        ],
+        &[
+            act(0, 0, 0, 3, 0),
+            act(1, 0, 1024634189188085383, 2, 0),
+            act(1, 0, 3876941951795470939, 0, 0),
+            act(1, 0, 9574629332979124862, 2, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_removes_a_discarded_file_the_user_put_in_a_server_folder_it_took_along() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(true, vec![act(3, 13192353822766416202, 9677610980065783011, 0, 0)])],
+        act(8, 1455760940810843340, 0, 0, 0),
+        vec![],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 1),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 0, 3, 0),
+            act(1, 0, 0, 3, 0),
+            act(0, 0, 1482717339917189330, 2, 0),
+        ],
+        &[
+            act(0, 0, 0, 3, 0),
+            act(0, 0, 7803206904060982520, 2, 0),
+            act(0, 0, 11594374937869911794, 0, 0),
+            act(0, 0, 1186265133151242328, 5, 0),
+            act(0, 0, 20907952538896, 5, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_takes_along_a_server_folder_the_server_moves_with_a_discarded_file_in_it() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(false, vec![act(1, 0, 0, 0, 0)])],
+        act(8, 1222051512298736028, 0, 0, 0),
+        vec![(
+            false,
+            vec![
+                act(0, 0, 6235880690034886446, 0, 0),
+                act(3, 2325266322636419526, 9515598847448697626, 0, 0),
+            ],
+        )],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["ss/"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 2, 0),
+            act(1, 0, 1125575177470894621, 0, 0),
+            act(0, 0, 2191591050819556085, 0, 0),
+            act(1, 0, 0, 5, 0),
+        ],
+        &[
+            act(0, 0, 0, 3, 0),
+            act(1, 0, 4589810021220436427, 0, 0),
+            act(1, 0, 7458629158884164442, 5, 0),
+            act(0, 0, 5946956894036349662, 2, 0),
+            act(1, 0, 7826072239891859908, 2, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),
@@ -416,6 +714,8 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     device.trees.set_local(
         "m".into(),
         LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
             shape: moved.clone(),
             identity: identity(1),
             parked: false,
@@ -471,6 +771,8 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
     device.trees.set_local(
         "k".into(),
         LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
             shape: held,
             identity: identity(1),
             parked: false,
@@ -521,6 +823,8 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
     for (id, ino) in [("k", 1), ("c", 2)] {
         let shape = device.trees.remote().live(id).unwrap().clone();
         let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity: identity(ino),
             parked: false,
