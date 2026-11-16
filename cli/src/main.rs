@@ -118,7 +118,7 @@ fn main() -> ExitCode {
     };
     let reports_pending = command_args.reports_pending();
     let interactive = match &command_args {
-        Command::Setup { login, .. } => login.interactive,
+        Command::Setup { login, .. } => login.login.interactive,
         Command::Server { action } => action.login().is_some_and(|login| login.interactive),
         _ => false,
     };

@@ -5,9 +5,7 @@ use std::time::Duration;
 use koidrive_driver::Paths;
 use koidrive_ipc::{Code, Next};
 
-use super::deploy::{
-    create_bucket, free_name, keep_script_name, new_bucket_name, workers_subdomain_name,
-};
+use super::deploy::{create_bucket, free_name, keep_script_name, new_bucket_name};
 use super::onboarding::{Route, choices};
 use super::servers::{Downgrade, downgrade};
 use super::session::{guarded, read_answer};
@@ -23,28 +21,20 @@ use super::fake::{self, ACCOUNT, Fake, Reply, cf, proto, revoked, tokens};
 use super::*;
 
 #[test]
-fn account_names_become_workers_dev_labels() {
-    for (account, expected) in [
-        (
-            "Hello@koidrive.com's Account",
-            "hello-koidrive-com-s-account",
-        ),
-        (" --Ada's Account-- ", "ada-s-account"),
-        ("서울", "koidrive"),
-        ("", "koidrive"),
+fn requested_subdomains_are_dns_labels_not_account_names() {
+    assert_eq!(subdomain_name("My-Server1").unwrap(), "my-server1");
+    for text in [
+        "alice@example.com's Account",
+        "",
+        "서울",
+        "-bad",
+        "bad-",
+        "two.words",
     ] {
-        assert_eq!(workers_subdomain_name(account), expected);
+        assert!(subdomain_name(text).is_err(), "{text}");
     }
-    for account in ["a".repeat(100), format!("{}-zz", "a".repeat(62))] {
-        let label = workers_subdomain_name(&account);
-        assert!(label.len() <= 63);
-        assert!(!label.starts_with('-') && !label.ends_with('-'));
-        assert!(
-            label
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-        );
-    }
+    assert!(subdomain_name(&"a".repeat(63)).is_ok());
+    assert!(subdomain_name(&"a".repeat(64)).is_err());
 }
 
 #[tokio::test]

@@ -146,6 +146,7 @@ pub(super) async fn login(oauth: &Fake, api: Url) -> Session {
             name: String::new(),
         },
         subdomain: None,
+        requested_subdomain: None,
     }
 }
 

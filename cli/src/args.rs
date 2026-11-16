@@ -64,7 +64,7 @@ pub(crate) enum Command {
         #[command(flatten)]
         device: DeviceArgs,
         #[command(flatten)]
-        login: setup::LoginArgs,
+        login: setup::DeployArgs,
         #[command(flatten)]
         script: setup::ScriptArgs,
         /// Skip installing and opening the macOS app.

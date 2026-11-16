@@ -315,6 +315,7 @@ impl Session {
                 name: String::new(),
             },
             subdomain: None,
+            requested_subdomain: None,
         })
     }
 

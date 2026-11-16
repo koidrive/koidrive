@@ -26,7 +26,7 @@ R2 cannot be enabled through the API. When listing buckets fails with error 1004
 
 ### 4.3 The upload goes through the Workers API
 
-Before creating a bucket or uploading, the CLI reads the account's workers.dev subdomain. If none exists (error 10007), it registers one from the account's name through `PUT /accounts/{account_id}/workers/subdomain`. A taken name (10031) gets a random suffix, with at most five attempts. Existing subdomains stay unchanged ([Workers subdomains API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)).
+Before creating a bucket or uploading, the CLI reads the account's workers.dev subdomain. If none exists (error 10007), it suggests `koidrive-` plus eight random hex digits and lets the user edit it. `--subdomain` supplies the name without that question. Registration uses `PUT /accounts/{account_id}/workers/subdomain`. A taken name (10031) gets a random suffix, with at most five attempts. Existing subdomains stay unchanged ([Workers subdomains API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)).
 
 The CLI creates a bucket named `koidrive-` plus 16 random hex digits, so it never adopts another application's bucket. It uploads the assets, then the Worker under `koidrive` or the next free name, tagged `koidrive-server`. Then it turns on the workers.dev route and waits for `GET /v1/server`.
 

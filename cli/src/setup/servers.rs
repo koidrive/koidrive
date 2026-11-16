@@ -30,8 +30,8 @@ const SERVER_CLASSES: [&str; 2] = ["AccountDO", "SpaceDO"];
 impl ServerAction {
     pub(crate) fn login(&self) -> Option<&LoginArgs> {
         match self {
-            ServerAction::Deploy { login, .. }
-            | ServerAction::AddDevice { login, .. }
+            ServerAction::Deploy { login, .. } => Some(&login.login),
+            ServerAction::AddDevice { login, .. }
             | ServerAction::Upgrade { login, .. }
             | ServerAction::Delete { login, .. } => Some(login),
             ServerAction::Claim { .. } => None,
@@ -96,6 +96,11 @@ impl ServerAction {
         if let Some(port) = port {
             argv.extend(["--port".to_owned(), port]);
         }
+        if let ServerAction::Deploy { login, .. } = self
+            && let Some(subdomain) = &login.subdomain
+        {
+            argv.extend(["--subdomain".to_owned(), subdomain.clone()]);
+        }
         argv
     }
 }
@@ -126,7 +131,8 @@ pub async fn server(
             not_set_up(paths)?;
             bundled()?;
             let name = device.name();
-            with_session(&login, terminal.clone(), verbose, async |session| {
+            with_session(&login.login, terminal.clone(), verbose, async |session| {
+                session.requested_subdomain = login.subdomain.clone();
                 session.server_deploy(paths, &name).await
             })
             .await?;

@@ -615,6 +615,58 @@ fn owner_login_commands_never_log_in_under_json_or_without_their_flags() {
 }
 
 #[test]
+fn subdomain_choices_survive_scripted_login_guidance_and_invalid_names_stop_early() {
+    let profile = Profile::new();
+    let (code, envelope) =
+        profile.json(&["server", "deploy", "--subdomain", "Private-Name", "--json"]);
+    assert_eq!(code, 4, "{envelope:#}");
+    assert_eq!(
+        argv(&envelope["next_commands"][0]),
+        [
+            "koi",
+            "server",
+            "deploy",
+            "--interactive",
+            "--subdomain",
+            "private-name"
+        ]
+    );
+    let (code, envelope) = profile.json(&["setup", "--subdomain", "private-name", "--json"]);
+    assert_eq!(code, 0, "{envelope:#}");
+    let command: Vec<_> = envelope["data"]["choices"][0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        command,
+        [
+            "koi",
+            "server",
+            "deploy",
+            "--interactive",
+            "--subdomain",
+            "private-name"
+        ]
+    );
+    for args in [
+        vec!["setup", "--subdomain=alice@example.com"],
+        vec!["server", "deploy", "--subdomain=-bad"],
+        vec![
+            "setup",
+            "--subdomain=name",
+            "--folder=/tmp/not-used",
+            "--space=Koidrive",
+            "--json",
+        ],
+        vec!["server", "upgrade", "--subdomain=name"],
+    ] {
+        assert_eq!(profile.output(&args).status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
 fn a_path_echoed_in_an_error_reaches_stderr_escaped() {
     let profile = Profile::new();
     let typed = profile.home.path().join("\u{1b}]0;owned\u{7}notes\n.txt");

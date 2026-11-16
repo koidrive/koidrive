@@ -11,7 +11,7 @@ use super::testing;
 use crate::error::CliError;
 
 /// How long a new or upgraded Worker may take to answer, and to report its new version.
-const SERVE_WAIT: Duration = Duration::from_secs(90);
+const SERVE_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// The Koidrive API of the server at `url`. Tests serve it over http on a loopback address.
 pub(super) fn server_api(url: &Url) -> Result<Api, ApiError> {

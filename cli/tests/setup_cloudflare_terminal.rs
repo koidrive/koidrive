@@ -67,6 +67,7 @@ impl ErrorMode {
 
 #[derive(Default)]
 struct State {
+    account_name: String,
     scripts: Vec<String>,
     spaces: Vec<SpaceInfo>,
     created: Vec<SpaceInfo>,
@@ -157,6 +158,7 @@ esac
             "[ \"$1\" = show-user ] || exit 88\nprintf 'yes\\n'\n",
         );
         let state = Arc::new(Mutex::new(State {
+            account_name: "Personal".into(),
             scripts: scripts.iter().map(|name| (*name).into()).collect(),
             subdomain: Some("synthetic".into()),
             spaces: spaces
@@ -309,6 +311,8 @@ esac
             .map(|(question, index)| {
                 let answer = if *question == CONSENT {
                     if rich { "n".into() } else { "n\n".into() }
+                } else if *question == "Your server address:" {
+                    typed(rich, "")
                 } else {
                     pick(rich, *index)
                 };
@@ -552,7 +556,7 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
                 "result":null, "debug":"synthetic-private-response"
             }).to_string().into_bytes())
         },
-        ("GET", "/client/v4/accounts", _) => cf(json!([{"id":ACCOUNT,"name":"Personal"}])),
+        ("GET", "/client/v4/accounts", _) => cf(json!([{"id":ACCOUNT,"name":state.account_name}])),
         _ => {
             let suffix = path.strip_prefix(&format!("/client/v4/accounts/{ACCOUNT}")).unwrap_or("");
             match (method, suffix) {
@@ -2303,15 +2307,28 @@ fn a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup() {
             let mut state = home.state.lock().unwrap();
             state.r2_disabled = 2;
             state.subdomain = None;
+            state.account_name = "alice@example.com's Account".into();
         }
-        let text = home.run(rich, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
-        assert!(text.contains("personal.workers.dev"), "{text}");
+        let text = home.run(
+            rich,
+            Browser::Opens,
+            &[(ROUTE, 0), ("Your server address:", 0), (CONSENT, 0)],
+        );
         assert!(
             text.contains("Setup complete. Add files to ~/Koidrive."),
             "{text}"
         );
         let state = home.state.lock().unwrap();
-        assert_eq!(state.subdomain_attempts, ["personal"]);
+        assert_eq!(state.subdomain_attempts.len(), 1);
+        let name = state.subdomain.as_ref().unwrap();
+        assert!(name.starts_with("koidrive-"));
+        assert_eq!(name.len(), 17);
+        assert!(name[9..].bytes().all(|c| c.is_ascii_hexdigit()));
+        assert!(!name.contains("alice") && !name.contains("example"));
+        assert!(
+            text.contains(&format!("https://koidrive.{name}.workers.dev")),
+            "{text}"
+        );
         let created_domain = state
             .requests
             .iter()
@@ -2337,6 +2354,53 @@ fn a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup() {
 }
 
 #[test]
+fn a_workers_dev_name_can_be_edited_or_given_to_server_deploy() {
+    for rich in [true, false] {
+        let home = Home::new(&[], &[]);
+        home.state.lock().unwrap().subdomain = None;
+        let command = home.setup_command(rich, Browser::Opens);
+        let text = home.finish_run(
+            rich,
+            command,
+            &[
+                (ROUTE, pick(rich, 0)),
+                ("Your server address:", typed(rich, "my-private-name")),
+                (CONSENT, if rich { "n".into() } else { "n\n".into() }),
+            ],
+        );
+        assert_eq!(
+            home.state.lock().unwrap().subdomain.as_deref(),
+            Some("my-private-name")
+        );
+        assert!(
+            text.contains("https://koidrive.my-private-name.workers.dev"),
+            "{text}"
+        );
+    }
+    let home = Home::new(&[], &[]);
+    home.state.lock().unwrap().subdomain = None;
+    home.setup_command(false, Browser::Opens);
+    let mut command = home.command();
+    command.args([
+        "server",
+        "deploy",
+        "--interactive",
+        "--subdomain",
+        "cli-name",
+    ]);
+    let output = terminal(command, &[], Some(home.path()));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        home.state.lock().unwrap().subdomain.as_deref(),
+        Some("cli-name")
+    );
+}
+
+#[test]
 fn a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept() {
     let home = Home::new(&[], &[]);
     {
@@ -2344,11 +2408,17 @@ fn a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept() {
         state.subdomain = None;
         state.subdomain_conflicts = 1;
     }
-    let text = home.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    let mut command = home.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "my-server"]);
+    let text = home.finish_run(
+        false,
+        command,
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".into())],
+    );
     let state = home.state.lock().unwrap();
     assert_eq!(state.subdomain_attempts.len(), 2);
-    assert_eq!(state.subdomain_attempts[0], "personal");
-    assert!(state.subdomain_attempts[1].starts_with("personal-"));
+    assert_eq!(state.subdomain_attempts[0], "my-server");
+    assert!(state.subdomain_attempts[1].starts_with("my-server-"));
     assert!(
         text.contains(&format!(
             "{}.workers.dev",
@@ -2359,7 +2429,13 @@ fn a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept() {
     drop(state);
 
     let existing = Home::new(&[], &[]);
-    existing.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    let mut command = existing.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "never-rename"]);
+    existing.finish_run(
+        false,
+        command,
+        &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".into())],
+    );
     let state = existing.state.lock().unwrap();
     assert!(state.subdomain_attempts.is_empty());
     assert_eq!(state.subdomain.as_deref(), Some("synthetic"));
@@ -2373,8 +2449,10 @@ fn a_refused_workers_dev_creation_stops_before_creating_storage_or_uploading() {
         state.subdomain = None;
         state.failure = Some(Failure::SubdomainRefused);
     }
+    let mut command = home.setup_command(false, Browser::Opens);
+    command.args(["--subdomain", "my-server"]);
     let output = terminal(
-        home.setup_command(false, Browser::Opens),
+        command,
         &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
         Some(home.path()),
     );
@@ -2382,7 +2460,7 @@ fn a_refused_workers_dev_creation_stops_before_creating_storage_or_uploading() {
     assert!(!output.status.success(), "{text}");
     assert!(text.contains("Workers Admin scope required"), "{text}");
     let state = home.state.lock().unwrap();
-    assert_eq!(state.subdomain_attempts, ["personal"]);
+    assert_eq!(state.subdomain_attempts, ["my-server"]);
     assert!(state.buckets.is_empty());
     assert!(
         !state
@@ -2401,7 +2479,11 @@ fn a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded() 
         state.subdomain_conflicts = 1;
         state.subdomain_race = true;
     }
-    home.run(false, Browser::Opens, &[(ROUTE, 0), (CONSENT, 0)]);
+    home.run(
+        false,
+        Browser::Opens,
+        &[(ROUTE, 0), ("Your server address:", 0), (CONSENT, 0)],
+    );
     let state = home.state.lock().unwrap();
     assert_eq!(state.subdomain.as_deref(), Some("other-process"));
     assert_eq!(state.subdomain_attempts.len(), 1);
@@ -2420,8 +2502,10 @@ fn a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded() 
             state.subdomain_conflicts = conflicts;
             state.failure = failure;
         }
+        let mut command = home.setup_command(false, Browser::Opens);
+        command.args(["--subdomain", "my-server"]);
         let output = terminal(
-            home.setup_command(false, Browser::Opens),
+            command,
             &[(ROUTE, pick(false, 0)), (CONSENT, "n\n".to_owned())],
             Some(home.path()),
         );

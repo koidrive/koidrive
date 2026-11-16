@@ -75,6 +75,31 @@ pub struct LoginArgs {
     port: Option<u16>,
 }
 
+#[derive(clap::Args)]
+pub struct DeployArgs {
+    #[command(flatten)]
+    pub(crate) login: LoginArgs,
+    /// The workers.dev subdomain to register if this account has none. Existing subdomains stay unchanged.
+    #[arg(long, value_name = "NAME", value_parser = subdomain_name)]
+    subdomain: Option<String>,
+}
+
+fn subdomain_name(text: &str) -> Result<String, String> {
+    let name = text.to_ascii_lowercase();
+    if name.is_empty()
+        || name.len() > 63
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
+        return Err(
+            "use 1 to 63 letters, digits or hyphens, starting and ending with a letter or digit"
+                .into(),
+        );
+    }
+    Ok(name)
+}
+
 #[derive(clap::Subcommand)]
 pub enum ServerAction {
     /// Log in with Cloudflare, deploy a new server and claim it with this device.
@@ -82,7 +107,7 @@ pub enum ServerAction {
         #[command(flatten)]
         device: DeviceArgs,
         #[command(flatten)]
-        login: LoginArgs,
+        login: DeployArgs,
     },
     /// Log in with Cloudflare and add this device to the server in the account, without a pairing code.
     AddDevice {
@@ -259,4 +284,5 @@ struct Session {
     api_base: Url,
     account: Account,
     subdomain: Option<String>,
+    requested_subdomain: Option<String>,
 }
