@@ -356,6 +356,7 @@ pub struct Trees {
     /// See [`TreesState::discarded`].
     discarded: ByParent<Shape>,
     forgotten_shapes: TrackedMap<NodeId, Shape>,
+    lost_shapes: TrackedMap<NodeId, Shape>,
     adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
@@ -465,6 +466,7 @@ impl Trees {
             removed_here: TrackedMap::default(),
             discarded: ByParent::default(),
             forgotten_shapes: TrackedMap::default(),
+            lost_shapes: TrackedMap::default(),
             adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
@@ -1009,6 +1011,7 @@ impl Trees {
         if !node.trashed {
             self.unsent_moves.remove(&id);
         }
+        self.lost_shapes.remove(&id);
         if !made_here && !node.trashed && self.lost_positions.contains_key(&id) {
             let at = LostPosition {
                 parent: node.shape.parent.clone(),
@@ -1563,6 +1566,7 @@ impl Trees {
                 (Some(old), Some(new)) if same_content(old, new)
             ) {
                 self.forgotten_shapes.remove(&id);
+                self.lost_shapes.remove(&id);
             }
             let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
             if moved {
@@ -1693,6 +1697,7 @@ impl Trees {
         self.end_local_claim(id);
         self.end_resend(id);
         self.forgotten_shapes.remove(id);
+        self.lost_shapes.remove(id);
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
@@ -3584,6 +3589,7 @@ impl Trees {
             if waits {
                 self.wait(id, None, Origin::Other);
             } else {
+                self.remember_lost_shape(&id);
                 self.set_synced(id, None);
             }
         }
@@ -3710,6 +3716,35 @@ impl Trees {
         let trashed = self.r.get(id).is_some_and(|remote| remote.trashed);
         if edited && trashed && !self.waiting.contains_key(id) {
             self.mark_unsent_edit(id.to_owned());
+        }
+    }
+
+    fn remember_lost_shape(&mut self, id: &NodeId) {
+        let Some(synced) = self.s.get(id).filter(|_| self.r.get(id).is_none()) else {
+            return;
+        };
+        let unchanged = matches!(
+            (self.l.live(id).and_then(|local| local.content.as_ref()), synced.content.as_ref()),
+            (Some(local), Some(synced)) if same_content(local, synced)
+        );
+        if unchanged && synced.kind == Kind::File && !self.unsent_edits.contains(id) {
+            self.lost_shapes.insert(id.clone(), synced.clone());
+        }
+    }
+
+    pub(crate) fn lost_shapes(&self) -> &BTreeMap<NodeId, Shape> {
+        &self.lost_shapes
+    }
+
+    pub(crate) fn rekey_lost_shapes(&mut self, from: &str, to: &str) {
+        let moved: Vec<NodeId> = (self.lost_shapes.iter())
+            .filter(|(_, shape)| shape.parent == from)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in moved {
+            let shape = self.lost_shapes.get(&id).cloned().expect("listed above");
+            let parent = to.to_owned();
+            (self.lost_shapes).insert(id, Shape { parent, ..shape });
         }
     }
 
@@ -4365,6 +4400,7 @@ impl Trees {
         }
         if shape.is_some() {
             self.forgotten_shapes.remove(id);
+            self.lost_shapes.remove(id);
         }
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
@@ -4475,6 +4511,13 @@ impl Trees {
             None,
             "an unsent move of a node L does not hold or that L, S and R all hold"
         );
+        debug_assert_eq!(
+            (self.lost_shapes.keys())
+                .find(|id| self.s.get(id).is_some() || self.r.get(id).is_some())
+                .cloned(),
+            None,
+            "a lost shape of a node that S holds or that R holds under its ID"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))
@@ -4495,6 +4538,7 @@ impl Trees {
             removed_here: (*self.removed_here).clone(),
             discarded: (*self.discarded).clone(),
             forgotten_shapes: (*self.forgotten_shapes).clone(),
+            lost_shapes: (*self.lost_shapes).clone(),
             outside: (*self.outside).clone(),
             lost: (*self.lost).clone(),
             displaced: (*self.displaced).clone(),
@@ -4538,6 +4582,7 @@ impl Trees {
             removed_here,
             discarded,
             forgotten_shapes,
+            lost_shapes,
             adopted: _,
             recoveries: _,
             edited_here,
@@ -4599,6 +4644,7 @@ impl Trees {
             removed_here: removed_here.take_changes(),
             discarded: discarded.take_changes(),
             forgotten_shapes: forgotten_shapes.take_changes(),
+            lost_shapes: lost_shapes.take_changes(),
             outside: outside.take_changes(),
             lost: lost.take_changes(),
             displaced: displaced.take_changes(),
@@ -4728,6 +4774,7 @@ impl Trees {
             removed_here,
             discarded,
             forgotten_shapes,
+            lost_shapes,
             outside,
             lost,
             displaced,
@@ -4765,6 +4812,7 @@ impl Trees {
         self.removed_here = removed_here.into();
         self.discarded = discarded.into();
         self.forgotten_shapes = forgotten_shapes.into();
+        self.lost_shapes = lost_shapes.into();
         self.outside = outside.into();
         self.lost = lost.into();
         self.displaced = displaced.into();

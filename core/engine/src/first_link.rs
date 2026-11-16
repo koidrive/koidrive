@@ -462,15 +462,20 @@ pub(crate) fn adopt_equal_files(
     let found: Vec<(NodeId, NodeId)> = (ids.iter())
         .filter_map(|id| match (trees.local().get(id), trees.remote().get(id)) {
             (Some(local), None) if local.shape.kind == Kind::File => {
-                let shape = &local.shape;
-                let remote_id = (trees
-                    .remote_holders_of_key(&shape.parent, &name_key(&shape.name)))
-                .find(|remote_id| equal(trees, id, remote_id))?;
+                let places = std::iter::once(&local.shape).chain(trees.lost_shapes().get(id));
+                let remote_id = places.into_iter().find_map(|shape| {
+                    (trees.remote_holders_of_key(&shape.parent, &name_key(&shape.name)))
+                        .find(|remote_id| equal(trees, id, remote_id))
+                })?;
                 Some((id.clone(), remote_id.clone()))
             }
             (None, Some(remote)) if remote.shape.kind == Kind::File => {
                 let shape = &remote.shape;
+                let lost = (trees.lost_shapes().iter())
+                    .filter(|(_, lost)| at_place(lost, shape))
+                    .map(|(local_id, _)| local_id);
                 let local_id = (trees.local_holders(&shape.parent, &shape.name))
+                    .chain(lost)
                     .find(|local_id| equal(trees, local_id, id))?;
                 Some((local_id.clone(), id.clone()))
             }
@@ -519,8 +524,10 @@ pub(crate) fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {
         && !remote.trashed
         && remote.shape.kind == Kind::File
         && local.shape.kind == Kind::File
-        && local.shape.parent == remote.shape.parent
-        && same_name(&local.shape.name, &remote.shape.name)
+        && (at_place(&local.shape, &remote.shape)
+            || (trees.lost_shapes().get(id)).is_some_and(|lost| {
+                at_place(lost, &remote.shape) && same_bytes(&lost.content, &remote.shape.content)
+            }))
         && same_bytes(&remote.shape.content, &local.shape.content)
         && same_write(&remote.shape.content, &local.shape.content)
         && trees.remote().get(id).is_none()
@@ -528,6 +535,10 @@ pub(crate) fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {
         && !trees.sending_content(id)
         && !trees.held(id)
         && !trees.excluded(id)
+}
+
+fn at_place(shape: &Shape, remote: &Shape) -> bool {
+    shape.parent == remote.parent && same_name(&shape.name, &remote.name)
 }
 
 fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {

@@ -10464,3 +10464,111 @@ fn a_file_a_rolled_back_store_knows_under_an_old_id_is_linked_to_the_servers_cop
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_rename_across_a_restore_earlier_and_another_device_s_rollback_keeps_the_write_in_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, Backup),
+            (0, Backup),
+            (0, CopyStore),
+            (0, u(1, 15026021988065725066, 5572411633730492742, 0, 1)),
+        ],
+        vec![
+            (0, RestoreEarlier),
+            (0, RollBack),
+            (1, u(3, 17998394052253060908, 1576892150661160132, 3, 1)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_rename_before_another_device_s_rollback_after_a_restore_keeps_the_write_in_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![(0, CopyStore), (0, Backup)],
+        vec![(0, u(1, 14017494369332816129, 3738270231071703406, 8, 3))],
+        vec![
+            (0, Restore),
+            (1, u(3, 8059697916812540275, 2572595864090953784, 3, 3)),
+            (0, RollBack),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_rename_across_a_restore_and_another_device_s_rollback_keeps_the_write_in_one_file() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, Backup),
+            (0, CopyStore),
+            (0, u(1, 13540326025640330820, 14297855172766152783, 7, 3)),
+        ],
+        vec![
+            (0, Restore),
+            (0, RollBack),
+            (1, u(3, 4828136694698450229, 4663365063624378111, 6, 0)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_rename_across_a_restore_earlier_and_a_rollback_keeps_the_write_in_one_file_on_a_third_device()
+{
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, Backup),
+            (0, CopyStore),
+            (0, u(1, 14313284782890323557, 7073577315692297601, 5, 3)),
+            (0, Backup),
+        ],
+        vec![
+            (0, RestoreEarlier),
+            (0, RollBack),
+            (1, u(3, 10420082639403961912, 17043950041190207318, 8, 1)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
