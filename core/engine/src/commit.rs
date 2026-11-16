@@ -5056,7 +5056,9 @@ impl<'a> Scratch<'a> {
         }
         let riding = |node: &str| {
             let mut at = placed(node);
-            while let Some(up) = at.filter(|up| revived.contains(*up)) {
+            while let Some(up) =
+                at.filter(|up| revived.contains(*up) || self.creating.contains_key(*up))
+            {
                 if self.moves.contains_key(up) && !answers.contains(up) {
                     return true;
                 }
