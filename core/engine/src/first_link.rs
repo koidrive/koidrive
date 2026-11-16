@@ -137,6 +137,11 @@ pub(crate) fn adopt_around(
                     && (trees.synced_holders(&parent, &shape.name)).all(|held| held == remote_id)
                     && shape.kind == local.kind
                     && same_bytes(&shape.content, &local.content)
+                    && !(trees.remote().get(remote_id)).is_some_and(|node| {
+                        node.trashed
+                            && (trees.is_removed_here(remote_id)
+                                || trees.synced().get(remote_id).is_some())
+                    })
             };
             let pending_match = match pending_dirs.get(&key).map(Vec::as_slice) {
                 Some([only]) if local.kind == Kind::Dir && holds_no_more(trees, only, &id) => {
@@ -151,9 +156,7 @@ pub(crate) fn adopt_around(
                 )
             };
             let in_trash = (trashed.get(&key)).filter(|_| !remote.contains_key(&key));
-            let in_trash = in_trash.and_then(|ids| {
-                only((ids.iter().filter(now)).filter(|remote_id| !trees.is_removed_here(remote_id)))
-            });
+            let in_trash = in_trash.and_then(|ids| only(ids.iter().filter(now)));
             let found = (remote.get(&key).filter(now))
                 .or_else(|| pending_match.filter(now))
                 .or(in_trash)
