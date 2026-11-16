@@ -1,0 +1,1 @@
+cc 82356b0b71d409017fbe8b885395af4939075c57c638d3101394874448437e26 # settling what changed after a rules change ends apart from settling everything (GUN-811)

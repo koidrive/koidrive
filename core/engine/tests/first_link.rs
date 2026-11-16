@@ -4,11 +4,12 @@
 //! section 6.4).
 
 use koidrive_engine::classify::{Origin, Trees, Waiting};
-use koidrive_engine::commit::{Commits, Failure, Reconnect};
+use koidrive_engine::commit::{Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
 use koidrive_engine::first_link::{History, PriorSync, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::names::conflict_name;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape};
@@ -758,6 +759,380 @@ fn a_held_entry_the_rules_leave_out_for_a_while_stays_held_until_the_person_answ
             ("create file", "l-inside".to_owned()),
             ("create file", "l-notes".to_owned()),
         ]
+    );
+}
+
+const WRITTEN_NS: i64 = 1_794_268_740_123_456_789;
+
+fn unlinked(local: &str, remote: &[(&str, Shape)]) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(&[("l-file", written(local, WRITTEN_NS))], remote);
+    trees.rules_scanned();
+    trees.settle();
+    (Commits::default(), trees, IdGen::new(7))
+}
+
+type Run = (
+    Vec<(&'static str, String)>,
+    Vec<(String, String, String)>,
+    Vec<Effect>,
+);
+
+fn run_beside(local_name: &str, remote: &[(&str, Shape)], read_only: bool) -> Run {
+    let (mut commits, mut trees, mut ids) = unlinked(local_name, remote);
+    let mut effects = Effects::default();
+    if read_only {
+        commits.connected(&Welcome {
+            history_id: HISTORY.into(),
+            read_only: true,
+            ..Default::default()
+        });
+    }
+    let (mut sent, mut done) = (Vec::new(), Vec::new());
+    for ino in 100..200u128 {
+        trees.settle();
+        if sent.is_empty() {
+            sent = ops(&mut commits, &mut trees, &mut ids);
+        }
+        let Some(record) =
+            (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+                .first()
+                .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        };
+        (effects.done(
+            &mut trees,
+            commits.in_flight(),
+            &record.effect_id,
+            Some(identity),
+        ))
+        .unwrap();
+        done.push(record.effect);
+    }
+    (sent, local(&trees), done)
+}
+
+#[test]
+fn an_equal_server_file_at_a_new_local_files_name_is_linked_before_any_effect_is_planned() {
+    let (_, mut trees, mut ids) = unlinked("a.docx", &[("r-file", written("a.docx", WRITTEN_NS))]);
+    trees.settle();
+    let mut effects = Effects::default();
+    assert_eq!(
+        effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE),
+        []
+    );
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+}
+
+#[test]
+fn a_local_file_and_an_equal_server_file_that_arrive_in_separate_settles_are_linked() {
+    let shape = written("a.docx", WRITTEN_NS);
+    let mut local_first = trees(&[("l-file", shape.clone())], &[]);
+    let remote = trees(&[], &[("r-file", shape.clone())])
+        .remote()
+        .get("r-file")
+        .cloned();
+    local_first.set_remote("r-file".into(), remote.unwrap());
+    let mut remote_first = trees(&[], &[("r-file", shape.clone())]);
+    remote_first.set_local("l-file".into(), local_node(shape, 1));
+    for mut trees in [local_first, remote_first] {
+        trees.settle();
+        assert_eq!(
+            local(&trees),
+            [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+        );
+    }
+}
+
+fn settled_below(folders: &[(&str, Shape)]) -> (Trees, IdGen) {
+    let mut child = written("notes", WRITTEN_NS);
+    child.parent = folders.last().expect("a folder").0.into();
+    let mut remote = folders.to_vec();
+    remote.push(("r-file", child.clone()));
+    let remote = trees(&[], &remote);
+    let mut settled = Trees::new(ROOT);
+    settled.rules_scanned();
+    let mut local = folders.to_vec();
+    local.push(("l-file", child));
+    for (ino, (id, shape)) in local.into_iter().enumerate() {
+        settled.set_local(id.into(), local_node(shape, ino as u128 + 1));
+    }
+    for (id, node) in remote.remote().iter() {
+        settled.set_remote(id.clone(), node.clone());
+    }
+    settled.settle();
+    (settled, IdGen::new(7))
+}
+
+fn linked_before_planning(folders: &[(&str, Shape)]) {
+    let (mut trees, mut ids) = settled_below(folders);
+    let limit = BatchLimit {
+        effects: 100,
+        bytes: u64::MAX,
+    };
+    let planned = Effects::default()
+        .plan(&trees, None, &mut ids, NOW, limit)
+        .to_vec();
+    assert!(
+        !(planned.iter()).any(|record| record.node == "l-file" || record.node == "r-file"),
+        "{planned:?}"
+    );
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+    assert_eq!(ops(&mut Commits::default(), &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_file_is_linked_before_planning_when_its_folder_enters_s_in_the_same_settle() {
+    linked_before_planning(&[("p", dir(ROOT, "folder"))]);
+}
+
+#[test]
+fn a_file_is_linked_before_planning_when_its_two_folders_enter_s_in_the_same_settle() {
+    linked_before_planning(&[("g", dir(ROOT, "outer")), ("p", dir("g", "inner"))]);
+}
+
+fn restarted(trees: &Trees) -> Trees {
+    let mut fresh = Trees::new(ROOT);
+    for (id, node) in trees.local().iter() {
+        fresh.set_local(id.clone(), node.clone());
+    }
+    for (id, node) in trees.remote().iter() {
+        fresh.set_remote(id.clone(), node.clone());
+    }
+    for (id, shape) in trees.synced().iter() {
+        fresh.set_synced(id.clone(), Some(shape.clone()));
+    }
+    fresh.restore(trees.state()).unwrap();
+    fresh.rules_scanned();
+    fresh
+}
+
+fn linked_once_the_folder_is_placed(place: impl FnOnce(&mut Trees)) {
+    let remote_parent = dir(ROOT, "remote-folder");
+    let mut child = written("notes", WRITTEN_NS);
+    child.parent = "p".into();
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    trees.set_local("p".into(), local_node(dir(ROOT, "local-folder"), 1));
+    trees.set_local("l-file".into(), local_node(child.clone(), 2));
+    trees.set_remote("p".into(), remote_node(remote_parent));
+    trees.set_remote("r-file".into(), remote_node(child));
+    trees.settle();
+    assert!(trees.synced().get("p").is_none());
+    assert!(trees.local().get("l-file").is_some());
+    place(&mut trees);
+    trees.settle();
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+    let sent = ops(&mut Commits::default(), &mut trees, &mut IdGen::new(7));
+    assert!(
+        !sent.contains(&("create file", "l-file".into())),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_file_is_linked_when_its_folder_enters_s_in_a_later_settle() {
+    linked_once_the_folder_is_placed(|trees| {
+        trees.set_synced("p".into(), Some(dir(ROOT, "remote-folder")));
+    });
+}
+
+#[test]
+fn a_file_is_linked_when_the_user_moves_its_folder_to_the_servers_place() {
+    linked_once_the_folder_is_placed(|trees| {
+        trees.set_local_changed("p".into(), local_node(dir(ROOT, "remote-folder"), 1));
+    });
+}
+
+#[test]
+fn a_file_is_linked_when_its_folder_enters_s_after_a_restart() {
+    linked_once_the_folder_is_placed(|trees| {
+        *trees = restarted(trees);
+        trees.settle();
+        assert!(trees.local().get("l-file").is_some());
+        trees.set_synced("p".into(), Some(dir(ROOT, "remote-folder")));
+    });
+}
+
+#[test]
+fn a_file_added_in_a_folder_whose_create_result_lands_later_is_linked_to_the_servers_copy() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "docs"))],
+        &[("r-docs", dir(ROOT, "docs"))],
+    );
+    trees.rules_scanned();
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "d".to_owned())]
+    );
+    let copy = String::from("docs (conflict from me 2026-11-09)");
+    let mut file = written("a.docx", WRITTEN_NS);
+    file.parent = "d".into();
+    trees.set_remote("d".into(), remote_node(dir(ROOT, &copy)));
+    trees.set_remote("r-file".into(), remote_node(file.clone()));
+    trees.set_local("l-file".into(), local_node(file, 50));
+    trees.settle();
+    renamed_create(&mut commits, &mut trees, "d", &copy, 2);
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.local().get("l-file").is_none());
+    assert!(trees.local().get("r-file").is_some());
+}
+
+#[test]
+fn a_file_the_rules_stop_excluding_is_linked_to_an_equal_server_file_on_the_next_settle() {
+    let root: [&str; 0] = [];
+    let mut trees = trees(&[], &[]);
+    trees.rules_scanned();
+    trees.set_rules(&root, Some(RuleFile::parse(b"a.docx\n")));
+    trees.set_local(
+        "l-file".into(),
+        local_node(written("a.docx", WRITTEN_NS), 1),
+    );
+    trees.set_remote("r-file".into(), remote_node(written("a.docx", WRITTEN_NS)));
+    trees.settle();
+    assert!(trees.excluded("l-file"));
+    assert!(trees.local().get("l-file").is_some());
+
+    trees.set_rules(&root, None);
+    trees.settle();
+    assert!(!trees.excluded("r-file"));
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+    assert_eq!(
+        ops(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
+        []
+    );
+}
+
+#[test]
+fn a_file_whose_folder_moves_out_of_the_rules_is_linked_to_an_equal_server_file_on_the_next_settle()
+{
+    let root: [&str; 0] = [];
+    let mut trees = trees(&[], &[]);
+    trees.rules_scanned();
+    trees.set_rules(&root, Some(RuleFile::parse(b"x/\n")));
+    trees.set_local("p".into(), local_node(dir(ROOT, "x"), 1));
+    trees.set_remote("p".into(), remote_node(dir(ROOT, "x")));
+    trees.set_synced("p".into(), Some(dir(ROOT, "x")));
+    let mut file = written("a.docx", WRITTEN_NS);
+    file.parent = "p".into();
+    trees.set_local("l-file".into(), local_node(file.clone(), 2));
+    trees.set_remote("r-file".into(), remote_node(file));
+    trees.settle();
+    assert!(trees.excluded("l-file"));
+
+    trees.set_local("p".into(), local_node(dir(ROOT, "y"), 1));
+    trees.settle();
+    assert!(!trees.excluded("l-file"));
+    assert_eq!(
+        local(&trees),
+        [
+            ("p".to_owned(), ROOT.to_owned(), "y".to_owned()),
+            ("r-file".to_owned(), "p".to_owned(), "a.docx".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn a_file_whose_create_ended_unanswered_is_linked_to_an_equal_server_file_instead_of_sent_again() {
+    let (mut commits, mut trees, mut ids) = unlinked("a.docx", &[]);
+    let created = [("create file", "l-file".to_owned())];
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), created);
+    let head_moved = Error {
+        code: error::Code::HeadMoved as i32,
+        ..Default::default()
+    };
+    assert_eq!(
+        commits.failed(&mut trees, &head_moved),
+        Ok(Failure::Abandoned)
+    );
+    trees.set_remote("r-file".into(), remote_node(written("a.docx", WRITTEN_NS)));
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(
+        local(&trees),
+        [("r-file".to_owned(), ROOT.to_owned(), "a.docx".to_owned())]
+    );
+}
+
+#[test]
+fn a_read_only_device_downloads_a_conflict_copy_beside_a_local_file_of_the_same_name() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let (_, held, _) = run_beside("a.docx", &[("r-file", written(&copy, WRITTEN_NS))], true);
+    assert!(held.iter().any(|(_, _, name)| *name == copy), "{held:?}");
+    assert!(held.iter().any(|(_, _, name)| name == "a.docx"), "{held:?}");
+}
+
+#[test]
+fn a_new_local_file_is_sent_beside_another_devices_equal_conflict_copy() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let (sent, held, _) = run_beside("a.docx", &[("r-file", written(&copy, WRITTEN_NS))], false);
+    assert_eq!(sent, [("create file", "l-file".to_owned())], "{held:?}");
+}
+
+#[test]
+fn a_local_file_beside_an_equal_server_file_and_its_conflict_copy_moves_neither() {
+    let copy = conflict_name("a.docx", "Other Mac", NOW as i64, 1);
+    let remote = [
+        ("r-a", written(&copy, WRITTEN_NS)),
+        ("r-b", written("a.docx", WRITTEN_NS)),
+    ];
+    let (_, _, done) = run_beside("a.docx", &remote, false);
+    assert!(
+        !done
+            .iter()
+            .any(|effect| matches!(effect, Effect::Move { .. })),
+        "{done:?}"
+    );
+}
+
+#[test]
+fn a_new_local_file_is_not_merged_into_a_server_file_named_as_its_conflict_copy() {
+    let literal = "notes (conflict from pc 2026-11-09)";
+    let (mut commits, mut trees, mut ids) =
+        unlinked("notes", &[("r-file", written(literal, WRITTEN_NS))]);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create file", "l-file".to_owned())]
+    );
+}
+
+#[test]
+fn a_device_that_cannot_build_still_downloads_a_conflict_copy_beside_its_file() {
+    let literal = "notes (conflict from pc 2026-11-09)";
+    let (commits, mut trees, mut ids) =
+        unlinked("notes", &[("r-file", written(literal, WRITTEN_NS))]);
+    let mut commits = Commits::from_state(CommitsState {
+        halted: Some(Halt::ReadOnly),
+        ..commits.state()
+    })
+    .unwrap();
+    for _ in 0..3 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        trees.settle();
+    }
+    let mut effects = Effects::default();
+    let planned = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE);
+    assert!(
+        (planned.iter())
+            .any(|record| record.node == "r-file"
+                && matches!(record.effect, Effect::WriteFile { .. })),
+        "{planned:?}"
     );
 }
 

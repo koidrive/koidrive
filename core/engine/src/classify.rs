@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_ignore::Status;
 
+use crate::first_link;
 use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc};
 use crate::state::{
@@ -18,6 +19,8 @@ use crate::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     TreeError, same, same_content,
 };
+
+type Pair = (NodeId, NodeId);
 
 /// The most mutually dependent [`Class::Same`] updates [`Trees::settle`] searches as one group.
 /// Every subset of a group is tried, so the search costs up to 2^n checks of n nodes.
@@ -390,6 +393,10 @@ pub struct Trees {
     asked: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
+    relink: bool,
+    unwatched: BTreeSet<NodeId>,
+    unlinked: BTreeMap<(NodeId, Option<String>), BTreeSet<Pair>>,
+    link_due: BTreeSet<Pair>,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
     /// Nodes whose entry in R, L or S changed since [`Trees::take_changed`].
@@ -481,6 +488,10 @@ impl Trees {
             unknown_rules: BTreeSet::new(),
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
+            relink: false,
+            unwatched: BTreeSet::new(),
+            unlinked: BTreeMap::new(),
+            link_due: BTreeSet::new(),
             same: BTreeSet::new(),
             changed: BTreeSet::new(),
             l_names: ByName::default(),
@@ -1676,6 +1687,7 @@ impl Trees {
     /// Replaces this device's include and exclude lists, which are never synced.
     pub fn set_local_rules(&mut self, local: LocalRules) {
         self.ignore.set_local(local, std::iter::empty());
+        self.relink = true;
     }
 
     /// Sets the rules of the `.koiignore` file in the folder at `dir`, the names from the root to
@@ -1683,11 +1695,13 @@ impl Trees {
     /// device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], rules: Option<RuleFile>) {
         self.ignore.set_rules(dir, rules, std::iter::empty());
+        self.relink = true;
     }
 
     /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
+        self.relink = true;
     }
 
     /// Records that a scan could not read the folder `id` of L, or the root, so the rules below it are unknown until
@@ -1707,13 +1721,14 @@ impl Trees {
 
     /// Records that a scan read the folder `id` and passed its rules, or found it has none.
     pub fn set_rules_known(&mut self, id: &str) {
-        self.unknown_rules.remove(id);
+        self.relink |= self.unknown_rules.remove(id);
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
     /// questions), which stay on disk as they are until the person answers.
     pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
         self.forget_reclaims();
+        self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
     }
 
@@ -1788,6 +1803,7 @@ impl Trees {
             finish.base = None;
         }
         self.adopted.clear();
+        self.unwatched.extend(self.watched.keys().cloned());
         self.watched.clear();
         self.watched_positions.clear();
         self.trashed_here.clear();
@@ -2279,6 +2295,7 @@ impl Trees {
     /// device-local list. Planning starts again.
     pub fn rules_scanned(&mut self) {
         self.rules_known = true;
+        self.relink = true;
     }
 
     /// False from [`Trees::restore`] until [`Trees::rules_scanned`]. The stored state does not hold
@@ -2645,6 +2662,7 @@ impl Trees {
     /// Watches S's content of `ids`, the nodes whose content the commit just built creates or updates, and
     /// stops watching any other node.
     pub fn watch_content(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        self.unwatched.extend(self.watched.keys().cloned());
         self.watched.clear();
         self.watched.extend(ids.into_iter().map(|id| (id, false)));
     }
@@ -2653,6 +2671,10 @@ impl Trees {
     /// even if it changed back.
     pub fn took_content(&self, id: &str) -> bool {
         self.watched.get(id) == Some(&true)
+    }
+
+    pub(crate) fn sending_content(&self, id: &str) -> bool {
+        self.watched.get(id).is_some()
     }
 
     /// Watches the position L and R agree on for `ids`, the nodes the commit just built creates or
@@ -3680,6 +3702,79 @@ impl Trees {
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts();
         }
+        if self.rules_known {
+            let unwatched = std::mem::take(&mut self.unwatched);
+            let changed = match std::mem::take(&mut self.relink) {
+                true => self.dirty.iter().cloned().collect(),
+                false => {
+                    let mut changed: BTreeSet<NodeId> =
+                        self.unsettled.union(&unwatched).cloned().collect();
+                    let mut below: Vec<NodeId> = changed.iter().cloned().collect();
+                    while let Some(node) = below.pop() {
+                        for child in self.local_children(&node) {
+                            if changed.insert(child.clone()) {
+                                below.push(child.clone());
+                            }
+                        }
+                    }
+                    changed
+                }
+            };
+            let unfit = first_link::adopt_equal_files(self, &changed);
+            self.wait_to_link(unfit);
+        }
+        self.settle_marked();
+        while self.link_due() {
+            self.settle_marked();
+        }
+    }
+
+    pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
+        for (id, remote_id) in pairs {
+            let Some(remote) = self.r.get(&remote_id) else {
+                continue;
+            };
+            let parent = remote.shape.parent.clone();
+            let placed = parent == self.s.root
+                || (self.s.live(&parent)).is_some_and(|shape| shape.kind == Kind::Dir);
+            let place = placed.then(|| name_key(&remote.shape.name));
+            (self.unlinked.entry((parent, place)).or_default()).insert((id, remote_id));
+        }
+    }
+
+    pub(crate) fn link_unwatched(&mut self) {
+        self.watch_content([]);
+        if !self.rules_known {
+            return;
+        }
+        let unwatched = std::mem::take(&mut self.unwatched);
+        let unfit = first_link::adopt_equal_files(self, &unwatched);
+        self.wait_to_link(unfit);
+    }
+
+    pub(crate) fn link_due(&mut self) -> bool {
+        if !self.rules_known || self.link_due.is_empty() {
+            return false;
+        }
+        let due = std::mem::take(&mut self.link_due).into_iter().collect();
+        let (linked, unfit) = first_link::link(self, due);
+        self.wait_to_link(unfit);
+        linked
+    }
+
+    fn release_links(&mut self, id: &str, old: Option<&Shape>) {
+        if self.unlinked.is_empty() {
+            return;
+        }
+        let place = old.map(|old| (old.parent.clone(), Some(name_key(&old.name))));
+        for key in std::iter::once((id.to_owned(), None)).chain(place) {
+            if let Some(pairs) = self.unlinked.remove(&key) {
+                self.link_due.extend(pairs);
+            }
+        }
+    }
+
+    fn settle_marked(&mut self) {
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {
@@ -4206,6 +4301,7 @@ impl Trees {
             }
             None => self.s.remove(id),
         };
+        self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
         if let Some(changed) = self.watched.get_mut(id) {
@@ -4385,6 +4481,10 @@ impl Trees {
             unknown_rules: _,
             asked: _,
             unsettled: _,
+            relink: _,
+            unwatched: _,
+            unlinked: _,
+            link_due: _,
             same: _,
             changed: _,
             l_names: _,

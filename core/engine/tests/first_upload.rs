@@ -5,6 +5,7 @@ use std::cell::Cell;
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
+use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
@@ -257,6 +258,198 @@ fn a_first_upload_takes_work_in_proportion_to_its_files() {
         assert!(
             bytes < 12.0,
             "{ids:?}, {per_dir} per folder, ignored folder {ignored}: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
+        );
+    }
+}
+
+fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
+    let content = (kind == Kind::File).then(|| Content {
+        size: 3,
+        manifest_digest: vec![7; 32],
+        ..Default::default()
+    });
+    RemoteNode {
+        shape: Shape {
+            parent,
+            name,
+            kind,
+            content,
+        },
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        edit_rev: 1,
+        meta_edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+    }
+}
+
+fn first_download(files: usize, per_dir: usize) -> u64 {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    let dirs = files.div_ceil(per_dir);
+    for d in 0..dirs {
+        let node = remote(ROOT.into(), format!("folder {d}"), Kind::Dir);
+        trees.set_remote(format!("d{d:06}"), node);
+    }
+    for f in 0..files {
+        let node = remote(
+            format!("d{:06}", f / per_dir),
+            format!("file {f}"),
+            Kind::File,
+        );
+        trees.set_remote(format!("f{f:06}"), node);
+    }
+    trees.settle();
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let limit = BatchLimit {
+        effects: 64,
+        bytes: u64::MAX,
+    };
+    let before = allocated();
+    let mut ino = 0;
+    loop {
+        let planned: Vec<String> = (effects.plan(&trees, None, &mut ids, NOW, limit).iter())
+            .map(|record| record.effect_id.clone())
+            .collect();
+        if planned.is_empty() {
+            break;
+        }
+        for effect_id in planned {
+            ino += 1;
+            let identity = FileIdentity {
+                dev: 1,
+                ino,
+                birth_ns: Some(0),
+            };
+            (effects.done(&mut trees, None, &effect_id, Some(identity))).unwrap();
+            trees.settle();
+        }
+    }
+    let work = allocated() - before;
+    assert!(trees.dirty().is_empty(), "{:?}", trees.work());
+    assert_eq!(trees.synced().len(), files + dirs);
+    work
+}
+
+fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    let mut parent = ROOT.to_owned();
+    for level in 0..levels {
+        if level % depth == 0 {
+            parent = ROOT.to_owned();
+        }
+        let folder = format!("d{level:06}");
+        let name = format!("folder {level}");
+        let ino = 2 * level as u128 + 1;
+        trees.set_local(
+            folder.clone(),
+            local(parent.clone(), name.clone(), Kind::Dir, ino),
+        );
+        trees.set_remote(folder.clone(), remote(parent, name, Kind::Dir));
+        let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
+        (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+        let shape = file.shape.clone();
+        trees.set_local(format!("l{level:06}"), file);
+        let mut node = remote(folder.clone(), "notes".into(), Kind::File);
+        node.shape = shape;
+        trees.set_remote(format!("r{level:06}"), node);
+        parent = folder;
+    }
+    let before = allocated();
+    trees.settle();
+    let work = allocated() - before;
+    assert!(trees.dirty().is_empty(), "{:?}", trees.work());
+    assert_eq!(trees.synced().len(), 2 * levels);
+    work
+}
+
+fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) {
+    let mut trees = Trees::new(ROOT);
+    trees.rules_scanned();
+    for f in 0..folders {
+        let folder = format!("d{f:06}");
+        let ino = 2 * f as u128 + 1;
+        let local_folder = local(ROOT.into(), format!("mine {f}"), Kind::Dir, ino);
+        trees.set_local(folder.clone(), local_folder);
+        trees.set_remote(
+            folder.clone(),
+            remote(ROOT.into(), format!("theirs {f}"), Kind::Dir),
+        );
+        let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
+        (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+        let mut node = remote(folder.clone(), "notes".into(), Kind::File);
+        node.shape = file.shape.clone();
+        trees.set_local(format!("l{f:06}"), file);
+        trees.set_remote(format!("r{f:06}"), node);
+    }
+    trees.settle();
+    let before = allocated();
+    for s in 0..settles {
+        let ino = (2 * folders + s) as u128 + 1;
+        let other = local(ROOT.into(), format!("other {s}"), Kind::File, ino);
+        trees.set_local(format!("o{s:06}"), other);
+        trees.settle();
+    }
+    let waiting = allocated() - before;
+    let before = allocated();
+    for f in 0..folders {
+        let placed = local(
+            ROOT.into(),
+            format!("theirs {f}"),
+            Kind::Dir,
+            2 * f as u128 + 1,
+        );
+        trees.set_local_changed(format!("d{f:06}"), placed);
+    }
+    trees.settle();
+    let placing = allocated() - before;
+    assert_eq!(trees.synced().len(), 2 * folders);
+    (waiting, placing)
+}
+
+#[test]
+fn links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s() {
+    let (small_waiting, small_placing) = links_waiting_on_their_folders(2000, 500);
+    let (large_waiting, large_placing) = links_waiting_on_their_folders(20_000, 500);
+    let waiting = large_waiting as f64 / small_waiting as f64;
+    assert!(
+        waiting < 2.0,
+        "500 settles beside 2000 waiting links allocated {small_waiting} bytes and beside 20000 {large_waiting}, {waiting:.1} times as many"
+    );
+    let placing = large_placing as f64 / small_placing as f64;
+    assert!(
+        placing < 12.0,
+        "placing 2000 folders allocated {small_placing} bytes and 20000 {large_placing}, {placing:.1} times as many"
+    );
+}
+
+#[test]
+fn a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files() {
+    for depth in [1, 10] {
+        let small = first_link_of_nested_folders(2000, depth);
+        let large = first_link_of_nested_folders(20_000, depth);
+        let bytes = large as f64 / small as f64;
+        assert!(
+            bytes < 12.0,
+            "{depth} deep: 2000 folders allocated {small} bytes and 20000 folders {large}, {bytes:.1} times as many"
+        );
+    }
+}
+
+#[test]
+fn a_first_download_takes_work_in_proportion_to_its_files() {
+    for per_dir in [1, 100, 5000] {
+        let small = first_download(2000, per_dir);
+        let large = first_download(20_000, per_dir);
+        let bytes = large as f64 / small as f64;
+        assert!(
+            bytes < 12.0,
+            "{per_dir} per folder: 2000 files allocated {small} bytes and 20000 files {large}, {bytes:.1} times as many"
         );
     }
 }
