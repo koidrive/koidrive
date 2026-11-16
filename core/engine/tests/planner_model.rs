@@ -2475,6 +2475,15 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         {
             Some("Discard brings back a folder it gave up")
         }
+        Story::Answer(_, Answer::Publish, _)
+            if fault.contains("a folder the answer gives up is live")
+                || fault.contains("ends while a node is not where L holds it") =>
+        {
+            Some("Publish keeps a folder it gave up or a node away from L")
+        }
+        Story::Restore(..) if fault.contains("ends while a node is not where L holds it") => {
+            Some("a restore ends with a node away from L")
+        }
         _ => None,
     };
     let (known, hard): (Vec<String>, Vec<String>) = hard
@@ -3237,6 +3246,7 @@ fn a_revival_a_later_commit_hides_is_found_over_the_run() {
 fn every_world_of_the_slice_keeps_trashed_folders_trashed_and_names_given() {
     let tally = sweep(&SLICE, threads(), (0, 1));
     println!("{}", tally.summary());
+    assert_eq!(tally.worlds, 5712, "{}", tally.summary());
     assert_eq!(tally.hard, 0, "{}", tally.summary());
 }
 
