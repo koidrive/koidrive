@@ -900,11 +900,6 @@ fn a_file_is_linked_before_planning_when_its_two_folders_enter_s_in_the_same_set
     linked_before_planning(&[("g", dir(ROOT, "outer")), ("p", dir("g", "inner"))]);
 }
 
-fn remote_node(id: &str, shape: Shape) -> RemoteNode {
-    let remote = trees(&[], &[(id, shape)]);
-    remote.remote().get(id).cloned().expect("a node of R")
-}
-
 fn restarted(trees: &Trees) -> Trees {
     let mut fresh = Trees::new(ROOT);
     for (id, node) in trees.local().iter() {
@@ -929,8 +924,8 @@ fn linked_once_the_folder_is_placed(place: impl FnOnce(&mut Trees)) {
     trees.rules_scanned();
     trees.set_local("p".into(), local_node(dir(ROOT, "local-folder"), 1));
     trees.set_local("l-file".into(), local_node(child.clone(), 2));
-    trees.set_remote("p".into(), remote_node("p", remote_parent));
-    trees.set_remote("r-file".into(), remote_node("r-file", child));
+    trees.set_remote("p".into(), remote_node(remote_parent));
+    trees.set_remote("r-file".into(), remote_node(child));
     trees.settle();
     assert!(trees.synced().get("p").is_none());
     assert!(trees.local().get("l-file").is_some());
@@ -985,8 +980,8 @@ fn a_file_added_in_a_folder_whose_create_result_lands_later_is_linked_to_the_ser
     let copy = String::from("docs (conflict from me 2026-11-09)");
     let mut file = written("a.docx", WRITTEN_NS);
     file.parent = "d".into();
-    trees.set_remote("d".into(), remote_node("d", dir(ROOT, &copy)));
-    trees.set_remote("r-file".into(), remote_node("r-file", file.clone()));
+    trees.set_remote("d".into(), remote_node(dir(ROOT, &copy)));
+    trees.set_remote("r-file".into(), remote_node(file.clone()));
     trees.set_local("l-file".into(), local_node(file, 50));
     trees.settle();
     renamed_create(&mut commits, &mut trees, "d", &copy, 2);
@@ -1006,10 +1001,7 @@ fn a_file_the_rules_stop_excluding_is_linked_to_an_equal_server_file_on_the_next
         "l-file".into(),
         local_node(written("a.docx", WRITTEN_NS), 1),
     );
-    trees.set_remote(
-        "r-file".into(),
-        remote_node("r-file", written("a.docx", WRITTEN_NS)),
-    );
+    trees.set_remote("r-file".into(), remote_node(written("a.docx", WRITTEN_NS)));
     trees.settle();
     assert!(trees.excluded("l-file"));
     assert!(trees.local().get("l-file").is_some());
@@ -1040,10 +1032,7 @@ fn a_file_whose_create_ended_unanswered_is_linked_to_an_equal_server_file_instea
         commits.failed(&mut trees, &head_moved),
         Ok(Failure::Abandoned)
     );
-    trees.set_remote(
-        "r-file".into(),
-        remote_node("r-file", written("a.docx", WRITTEN_NS)),
-    );
+    trees.set_remote("r-file".into(), remote_node(written("a.docx", WRITTEN_NS)));
     trees.settle();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert_eq!(
