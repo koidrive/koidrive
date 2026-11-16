@@ -2206,3 +2206,33 @@ fn a_restore_into_a_folder_of_its_own_trash_group_is_sent_before_the_group_comes
         ]
     );
 }
+
+#[test]
+fn a_restore_does_not_wait_for_a_trashed_folder_that_moves_into_the_restored_folder() {
+    let (a, b, c) = (id(1), id(2), id(3));
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            None,
+            Some(dir(&root(), "a")),
+            Some(remote(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&root(), "b")),
+            Some(dir(&root(), "b")),
+            Some(trashed(dir(&c, "b"))),
+        ),
+        (
+            c.clone(),
+            Some(dir(&b, "c")),
+            Some(dir(&a, "c")),
+            Some(trashed(dir(&a, "c"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = from_trash(&b);
+    assert!(commits.restore(id(100), intent.clone()));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [restore_op(&intent)]);
+}
