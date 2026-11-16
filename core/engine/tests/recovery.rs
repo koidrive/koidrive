@@ -3454,6 +3454,32 @@ fn entries_whose_marks_name_the_ids_a_chain_of_entries_gives_up_are_not_settled_
 }
 
 #[test]
+fn a_file_whose_mark_claims_once_its_folder_is_adopted_gives_up_another_nodes_id() {
+    let (mut trees, mut commits, mut ids) = recovered_by_marks(
+        &[("e0", dir(ROOT, "p")), ("n0", file("e0", "c", 1))],
+        &[("d0", dir(ROOT, "p")), ("held", file("d0", "c", 9))],
+        &[
+            live("e0", dir(ROOT, "old")),
+            live("d0", dir(ROOT, "p")),
+            live("n0", file("d0", "b", 1)),
+            live("n1", file("d0", "c", 1)),
+            live("held", file("d0", "z", 9)),
+        ],
+        &[],
+        &[("e0", "d0"), ("n0", "n1")],
+    );
+    assert_eq!(trees.local().get("n0"), None);
+    let asked: Vec<String> = (commits.questions().iter())
+        .map(|question| question.id.clone())
+        .collect();
+    for id in asked {
+        commits.decide(&id, Answer::Publish);
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(!sent.contains(&("move", "n0".to_owned())), "{sent:?}");
+}
+
+#[test]
 fn a_file_whose_mark_names_a_trashed_node_keeps_its_id_under_a_folder_renamed_here() {
     let (trees, commits, _) = followed(
         &[("f", dir(ROOT, "p")), ("n1", file("f", "b", 2))],

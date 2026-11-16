@@ -205,8 +205,40 @@ pub(crate) fn adopt_by_marks_first(
     now_ms: u64,
 ) {
     let mut marks = marks.clone();
+    give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
+    let folders = folder_places(trees, history);
+    let (_, mut waiting) = follow_marks(trees, history, &marks, &folders, Pass::Latest);
+    'adopt: loop {
+        adopt_around(trees, Some(history), &waiting);
+        for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
+            let (followed, left) = follow_marks(trees, history, &marks, &folders, pass);
+            waiting = left;
+            if followed {
+                continue 'adopt;
+            }
+        }
+        let given_up = give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
+        if given_up.is_empty() {
+            break;
+        }
+        for local in waiting.values_mut() {
+            if let Some(fresh) = given_up.get(local) {
+                *local = fresh.clone();
+            }
+        }
+    }
+}
+
+fn give_up_claimed_ids(
+    trees: &mut Trees,
+    history: &History,
+    marks: &mut Marks,
+    ids: &mut IdGen,
+    now_ms: u64,
+) -> BTreeMap<NodeId, NodeId> {
+    let mut given_up = BTreeMap::new();
     loop {
-        let given_up: BTreeMap<NodeId, NodeId> = (claimed_once(trees, &marks).into_iter())
+        let more: BTreeMap<NodeId, NodeId> = (claimed_once(trees, marks).into_iter())
             .filter(|(local, node)| {
                 local != node
                     && trees.remote().get(local).is_some()
@@ -217,29 +249,16 @@ pub(crate) fn adopt_by_marks_first(
             })
             .map(|(local, _)| (local.clone(), ids.uuid_v7(now_ms)))
             .collect();
-        if given_up.is_empty() {
-            break;
+        if more.is_empty() {
+            return given_up;
         }
-        for (local, fresh) in &given_up {
+        for (local, fresh) in &more {
             rekey(trees, local, fresh);
         }
-        marks = (marks.into_iter())
-            .map(|(local, node)| (given_up.get(&local).cloned().unwrap_or(local), node))
+        *marks = (std::mem::take(marks).into_iter())
+            .map(|(local, node)| (more.get(&local).cloned().unwrap_or(local), node))
             .collect();
-    }
-    let marks = &marks;
-    let folders = folder_places(trees, history);
-    let (_, mut waiting) = follow_marks(trees, history, marks, &folders, Pass::Latest);
-    'adopt: loop {
-        adopt_around(trees, Some(history), &waiting);
-        for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
-            let (followed, left) = follow_marks(trees, history, marks, &folders, pass);
-            waiting = left;
-            if followed {
-                continue 'adopt;
-            }
-        }
-        break;
+        given_up.extend(more);
     }
 }
 
