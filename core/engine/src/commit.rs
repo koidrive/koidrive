@@ -5054,22 +5054,9 @@ impl<'a> Scratch<'a> {
                 at = placed(parent);
             }
         }
-        let riding = |node: &str| {
-            let mut at = scratch.parent(node);
-            while let Some(up) = at.filter(|up| revived.contains(*up)) {
-                if self.moves.contains_key(up) && !answers.contains(up) {
-                    return true;
-                }
-                at = scratch.parent(up);
-            }
-            false
-        };
         let outside: BTreeSet<NodeId> = (revived.iter())
             .filter(|node| {
-                !answers.contains(*node)
-                    && !needed.contains(*node)
-                    && !self.sending.contains(*node)
-                    && !riding(node)
+                !answers.contains(*node) && !needed.contains(*node) && !self.sending.contains(*node)
             })
             .cloned()
             .collect();

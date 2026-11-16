@@ -3368,3 +3368,24 @@ fn restore_stories_keep_l_placeable() {
         .collect();
     assert!(invalid.is_empty(), "{invalid:#?}");
 }
+
+#[test]
+fn a_publish_answer_trashes_again_a_folder_it_gives_up_below_a_moved_folder() {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(1), In(2)],
+        &[Remote::Kept; 4],
+        &[To(Root), Kept, To(In(0)), Kept],
+        &[],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Move(1, In(2)));
+    assert!(answers(&world).contains(&story));
+    let report = tell(&world, &server(&world), story).expect("no question holds the moved folder");
+    let live: Vec<&String> = (report.classes.iter())
+        .filter(|class| class.contains("gives up is live"))
+        .collect();
+    assert!(live.is_empty(), "{live:?}\n{}", report.text);
+    let sent = report.text.lines().nth(1).unwrap_or_default();
+    assert!(sent.contains("Delete d"), "{}", report.text);
+}
