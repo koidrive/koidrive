@@ -2198,9 +2198,13 @@ impl Commits {
             if !given.held_here
                 && trees.local().get(id).is_none()
                 && synced.get(trees, id).is_none()
-                && let Some(remote) = trees.remote().live(id)
+                && let Some(remote) = trees.remote().get(id).filter(|node| {
+                    !node.trashed
+                        && node.content_rev == given.revisions.content_rev
+                        && [given.revisions.meta_rev, result.seq].contains(&node.meta_rev)
+                })
             {
-                synced.set(id, Some(remote.clone()));
+                synced.set(id, Some(remote.shape.clone()));
             }
         }
         let mut rest = synced.apply(trees);

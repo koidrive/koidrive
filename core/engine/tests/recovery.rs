@@ -4324,6 +4324,21 @@ fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a
 }
 
 fn answered_with_a_given_up_folder_left_live(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
+    let (mut trees, mut commits, ids) = answer_sent_alone(local);
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("e", dir("d", "e"), false),
+            ("f", file("e", "child", 1), false),
+        ],
+    );
+    (trees, commits, ids)
+}
+
+fn answer_sent_alone(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
     let mut trees = trees(
         local,
         &[
@@ -4349,16 +4364,6 @@ fn answered_with_a_given_up_folder_left_live(local: &[(&str, Shape)]) -> (Trees,
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
-    );
-    applied(
-        &mut commits,
-        &mut trees,
-        2,
-        &[
-            ("d", dir(ROOT, "new"), false),
-            ("e", dir("d", "e"), false),
-            ("f", file("e", "child", 1), false),
-        ],
     );
     (trees, commits, ids)
 }
@@ -4461,4 +4466,38 @@ fn a_given_up_folder_this_device_deleted_is_not_downloaded_before_its_trash_agai
         ops(&mut commits, &mut trees, &mut ids),
         [("delete", "e".into())]
     );
+}
+
+#[test]
+fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kept() {
+    let (mut trees, mut commits, mut ids) = answer_sent_alone(&[("d", dir(ROOT, "new"))]);
+    let revived = |shape: Shape, content_rev: u64| RemoteNode {
+        made_over: Vec::new(),
+        shape,
+        trashed: false,
+        content_rev,
+        edit_rev: content_rev,
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("d".into(), revived(dir(ROOT, "new"), 1));
+    trees.set_remote("e".into(), revived(dir("d", "e"), 1));
+    trees.set_remote("f".into(), revived(file("e", "child", 2), 3));
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 2,
+        results: vec![applied],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 3));
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
