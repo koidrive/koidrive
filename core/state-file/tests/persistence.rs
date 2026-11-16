@@ -14,6 +14,46 @@ use koidrive_state_file::{
     AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
 };
 
+#[cfg(target_os = "macos")]
+#[test]
+fn an_immutable_abandoned_stage_does_not_block_other_writes_or_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let stage = dir
+        .path()
+        .join(".koi-state-0123456789abcdef0123456789abcdef.tmp");
+    fs::write(&stage, b"abandoned").unwrap();
+    let path = dir.path().join("state.json");
+    fs::write(&path, b"old").unwrap();
+    assert!(
+        Command::new("chflags")
+            .arg("uchg")
+            .arg(&stage)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let written = write(&path, b"new");
+    let published = fs::read(&path);
+    let removed = remove_with_legacy_matching(&path, |_| false);
+    let remaining = fs::read(&stage);
+
+    assert!(
+        Command::new("chflags")
+            .arg("nouchg")
+            .arg(&stage)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(published.unwrap(), b"new");
+    assert!(removed.is_ok(), "{removed:?}");
+    assert!(!path.exists());
+    assert_eq!(remaining.unwrap(), b"abandoned");
+    assert_eq!(recover(dir.path()).unwrap(), 1);
+}
+
 #[test]
 fn matching_legacy_cleanup_stays_in_the_prepared_directory_after_an_ancestor_moves() {
     let root = tempfile::tempdir().unwrap();

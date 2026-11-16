@@ -429,8 +429,11 @@ fn recover_locked(directory: &File) -> io::Result<usize> {
                     std::ffi::OsStr::from_bytes(name.to_bytes()),
                     &file,
                 )? {
-                    fs::unlinkat(directory, name, AtFlags::empty())?;
-                    recovered += 1;
+                    match fs::unlinkat(directory, name, AtFlags::empty()) {
+                        Ok(()) => recovered += 1,
+                        Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {}
+                        Err(error) => return Err(error.into()),
+                    }
                 }
             }
             Err(rustix::io::Errno::WOULDBLOCK) => {}
