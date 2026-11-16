@@ -1020,6 +1020,7 @@ mod tests {
                     })?;
                     tx.put_local_node(&koidrive_store::LocalNode {
                         left_out_when_placed: false,
+                        content_from_server: false,
                         node_id: node.node_id.clone(),
                         shape,
                         identity: snapshot.entries[Path::new(path)].id,

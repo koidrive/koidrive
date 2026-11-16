@@ -184,6 +184,9 @@ pub struct LocalNode {
     pub parked: bool,
     /// Whether the rules left the node out when a scan last found it at a new parent or name.
     pub left_out_when_placed: bool,
+    /// Whether the file holds the bytes the effects last wrote from the server, with no write of
+    /// the user found by a scan since.
+    pub content_from_server: bool,
 }
 
 impl Node for LocalNode {

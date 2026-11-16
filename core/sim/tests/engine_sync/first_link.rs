@@ -31,6 +31,7 @@ fn placement_check_after_a_move(
             id.clone(),
             LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape: koidrive_engine::tree::Shape {
                     parent: local_parent.into(),
                     ..remote.shape.clone()
@@ -389,6 +390,136 @@ fn a_discarded_folder_stays_off_the_server_when_the_user_moves_out_what_arrived_
     .unwrap();
 }
 
+#[test]
+fn a_first_link_discard_takes_along_a_server_file_the_server_edited_and_trashed_after_it_was_written()
+ {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (
+                false,
+                vec![
+                    act(3, 6563456750138208221, 6653762091013073807, 0, 0),
+                    act(2, 76120783504708564, 0, 0, 0),
+                ],
+            ),
+            (
+                false,
+                vec![
+                    act(2, 279800153722622989, 0, 0, 0),
+                    act(4, 6316084977119993380, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(8, 14283514286341, 0, 0, 0),
+        vec![
+            (
+                false,
+                vec![act(4, 9102383114394317503, 0, 0, 0), act(2, 0, 0, 0, 0)],
+            ),
+            (
+                false,
+                vec![
+                    act(0, 0, 2741078651781309836, 0, 0),
+                    act(4, 11275118652569310417, 0, 0, 0),
+                ],
+            ),
+        ],
+        act(7, 17382083876922469, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(1, 0, 0, 5, 0),
+            act(0, 0, 0, 2, 0),
+            act(0, 0, 9266656165052801544, 5, 0),
+            act(0, 0, 0, 0, 0),
+            act(0, 0, 4558050171813961518, 0, 0),
+            act(1, 0, 2032494584937929559, 0, 0),
+            act(1, 0, 0, 0, 0),
+        ],
+        &[act(0, 0, 0, 5, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        9,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_leaves_a_server_folder_the_user_removed_an_entry_from_to_the_user() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (false, vec![act(2, 0, 0, 0, 0)]),
+            (
+                true,
+                vec![act(3, 2094582802364268140, 15272791550546786922, 2, 0)],
+            ),
+        ],
+        act(8, 10093011241592231414, 0, 0, 0),
+        vec![(true, vec![act(4, 16592146011263293529, 0, 0, 0)])],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["a"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 2, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 440234330134331381, 2, 0),
+        ],
+        &[act(0, 0, 0, 3, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        7,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_gives_back_the_folder_when_the_user_edits_inside_a_server_folder_it_took_along()
+ {
+    run_ignoring_answering_after(
+        &[act(0, 0, 0, 5, 0), act(0, 0, 0, 0, 0)],
+        &[
+            act(0, 0, 0, 1, 0),
+            act(0, 0, 3570165619780894286, 5, 0),
+            act(1, 0, 687474002968895165, 0, 0),
+        ],
+        &[],
+        MAX_OPS,
+        false,
+        &[
+            (true, vec![act(8, 0, 0, 0, 0)]),
+            (false, vec![act(0, 0, 0, 0, 0)]),
+            (true, vec![act(9, 0, 0, 0, 1)]),
+        ],
+        Cut::None,
+        &[
+            Ruling::File(vec![]),
+            Ruling::Include(vec!["a"]),
+            Ruling::Exclude(vec!["a"]),
+            Ruling::Exclude(vec![]),
+        ],
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        3,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),
@@ -418,6 +549,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         "m".into(),
         LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: moved.clone(),
             identity: identity(1),
             parked: false,
@@ -474,6 +606,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
         "k".into(),
         LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: held,
             identity: identity(1),
             parked: false,
@@ -525,6 +658,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
         let shape = device.trees.remote().live(id).unwrap().clone();
         let node = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity: identity(ino),
             parked: false,

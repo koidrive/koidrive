@@ -1542,6 +1542,7 @@ impl Trees {
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
+            node.content_from_server = old.content_from_server;
             if !old.shape.same(&node.shape) {
                 self.resends.remove(&id);
                 self.lost_creates.remove(&id);
@@ -1621,6 +1622,13 @@ impl Trees {
     pub fn set_local_changed(&mut self, id: NodeId, node: LocalNode) {
         let placed = !node.parked
             && (self.l.get(&id)).is_none_or(|old| !old.shape.same_position(&node.shape));
+        let rewritten = (self.l.get(&id)).is_some_and(|old| {
+            old.identity != node.identity
+                || !matches!(
+                    (&old.shape.content, &node.shape.content),
+                    (Some(old), Some(new)) if same_content(old, new)
+                )
+        });
         if placed && self.l.get(&id).is_some() {
             self.unsent_marks.remove(&id);
         }
@@ -1644,6 +1652,15 @@ impl Trees {
         if placed {
             let left_out = self.excluded(&id);
             self.set_left_out_when_placed(&id, left_out);
+        }
+        if rewritten {
+            self.set_content_from_server(&id, false);
+        }
+    }
+
+    pub(crate) fn set_content_from_server(&mut self, id: &str, from_server: bool) {
+        if let Some(node) = self.l.get_mut(id) {
+            node.content_from_server = from_server;
         }
     }
 
@@ -1922,10 +1939,24 @@ impl Trees {
                     || self.as_the_server_holds(child, &mut seen)
             })
             && (self.local_children_placed_or_parked(id)).all(|child| {
-                (self.discarded.get(child)).is_some_and(|shape| shape.parent == id)
-                    || self.as_the_server_holds(child, &mut seen)
+                self.kept_as_discarded_in(child, id) || self.as_the_server_holds(child, &mut seen)
             })
             && self.keeps_the_synced_children(id, &mut seen)
+    }
+
+    fn kept_as_discarded_in(&self, id: &str, folder: &str) -> bool {
+        if !(self.discarded.get(id)).is_some_and(|shape| shape.parent == folder) {
+            return false;
+        }
+        if self.r.get(id).is_some() {
+            return self.left_as_discarded(id);
+        }
+        let unchanged = (self.l.get(id)).is_some_and(|local| {
+            (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
+        });
+        unchanged
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.kept_as_discarded_in(child, id))
     }
 
     fn as_the_server_holds<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
@@ -2130,7 +2161,9 @@ impl Trees {
         let start = kept.len();
         let copy = match local.shape.kind {
             Kind::File => match (&local.shape.content, &remote.shape.content) {
-                (Some(local), Some(remote)) => same_content(local, remote) || !self.edited(id),
+                (Some(content), Some(remote)) => {
+                    same_content(content, remote) || local.content_from_server
+                }
                 _ => false,
             },
             Kind::Dir => {

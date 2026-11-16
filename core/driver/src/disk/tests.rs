@@ -266,6 +266,7 @@ impl Folder {
                     })?;
                     tx.put_local_node(&koidrive_store::LocalNode {
                         left_out_when_placed: false,
+                        content_from_server: false,
                         node_id: (*id).into(),
                         shape,
                         identity: Snapshot::scan(&self.root).unwrap().entries[Path::new(path)].id,
@@ -637,6 +638,7 @@ fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
     });
     LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: Shape {
             parent: parent.into(),
             name: name.into(),
@@ -2584,6 +2586,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
             fork.into(),
             LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape: Shape {
                     parent: SPACE.into(),
                     name: "c.txt".into(),

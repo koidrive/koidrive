@@ -48,6 +48,7 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
         };
         let local = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity,
             parked: false,
@@ -126,6 +127,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         }
         let local = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity,
             parked: false,
@@ -204,6 +206,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
         };
         let local = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity,
             parked: false,
@@ -235,6 +238,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
     let shape = dir("root", "c");
     let local = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: shape.clone(),
         identity: FileIdentity {
             dev: 1,
@@ -265,6 +269,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
     let shape = dir("root", "c");
     let local = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: shape.clone(),
         identity: FileIdentity {
             dev: 1,
@@ -304,6 +309,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         };
         let local = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: dir("root", &x),
             identity,
             parked: false,

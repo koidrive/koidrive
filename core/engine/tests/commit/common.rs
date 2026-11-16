@@ -93,6 +93,7 @@ fn trashed(shape: Shape) -> RemoteNode {
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape,
         identity: FileIdentity {
             dev: 1,

@@ -56,6 +56,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
         };
         let node = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: shape.clone(),
             identity,
             parked: false,
@@ -1143,6 +1144,7 @@ fn an_entry_created_after_the_first_link_is_sent_at_once() {
     let (mut commits, mut trees, mut ids) = linked();
     let node = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file("r-docs", "later", 6),
         identity: FileIdentity {
             dev: 1,
@@ -1250,6 +1252,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
 
     let later = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file(ROOT, "later", 6),
         identity: FileIdentity {
             dev: 1,
@@ -1395,6 +1398,7 @@ fn a_discarded_folder_the_user_puts_an_entry_in_is_asked_about_again() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let node = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file("l-new", "later", 6),
         identity: FileIdentity {
             dev: 1,
@@ -1499,6 +1503,7 @@ fn a_discarded_folder_the_user_moves_a_synced_entry_into_through_a_new_folder_is
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let sub = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: dir("l-new", "sub"),
         identity: FileIdentity {
             dev: 1,
@@ -1610,6 +1615,7 @@ fn a_discarded_folder_whose_subfolder_the_user_puts_an_entry_in_is_asked_about_a
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let node = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file("l-sub", "later", 6),
         identity: FileIdentity {
             dev: 1,
@@ -1680,6 +1686,7 @@ fn a_discarded_file_the_user_edits_is_asked_about_again_with_its_folder() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let node = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file("l-new", "inside", 5),
         identity: FileIdentity {
             dev: 1,
@@ -1777,6 +1784,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
     assert_eq!(asked.shown.keys().collect::<Vec<_>>(), ["l-A"]);
     let pad = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file(ROOT, "pad", 3),
         identity: FileIdentity {
             dev: 1,
@@ -1851,6 +1859,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
             id.into(),
             LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape,
                 identity: FileIdentity {
                     dev: 1,
@@ -1999,6 +2008,7 @@ fn reclaim_with_waiting(
         };
         let local = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: shape.clone(),
             identity,
             parked: false,
@@ -2270,6 +2280,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
     };
     let later = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: file("l-new", "later", 6),
         identity,
         parked: false,
@@ -2437,6 +2448,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
 fn local_node(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape,
         identity: FileIdentity {
             dev: 1,
@@ -3341,6 +3353,7 @@ fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_p
         "later".into(),
         LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: file("x", "later", 8),
             identity: FileIdentity {
                 dev: 1,
@@ -4226,13 +4239,17 @@ mod a_server_file_moved_into_an_asked_folder {
                 ("f", dir(ROOT, "new")),
                 ("g", dir("f", "sub")),
                 ("e", file("g", "e", 4)),
-                ("x", file(ROOT, "server", 9)),
             ],
             &[("x", file(ROOT, "server", 9))],
         );
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
         commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
         question(&commits);
+        assert_eq!(settle(&mut commits, &mut trees, &mut ids), []);
+        assert_eq!(
+            trees.local().get("x").map(|node| &node.shape),
+            Some(&file(ROOT, "server", 9))
+        );
         set_rules(&mut trees, rules);
         (commits, trees, ids)
     }
@@ -4500,6 +4517,25 @@ mod a_server_file_moved_into_an_asked_folder {
         let (more, _) = discard(c, t, i);
         sent.extend(more);
         assert!(sent.is_empty(), "{sent:?}");
+    }
+
+    #[test]
+    fn while_left_out_and_rewritten_with_the_same_bytes_is_not_taken_along_with_the_server_s_edit()
+    {
+        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
+        scan(&mut t, "x", file("f", "ignored", 9));
+        let mut node = t.local().get("x").unwrap().clone();
+        node.identity.ino += 1000;
+        t.set_local_changed("x".into(), node);
+        t.settle();
+        quiet(&mut c, &mut t, &mut i);
+        edited_on_the_server(&mut t);
+        let mut sent = ops(&mut c, &mut t, &mut i);
+        set_rules(&mut t, None);
+        sent.extend(ops(&mut c, &mut t, &mut i));
+        let (more, t) = discard(c, t, i);
+        sent.extend(more);
+        kept_and_sent(&sent, &t);
     }
 
     #[test]

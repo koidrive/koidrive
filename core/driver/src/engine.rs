@@ -81,6 +81,7 @@ impl Engine {
                 identity: file_identity(node.identity),
                 parked: node.parked,
                 left_out_when_placed: node.left_out_when_placed,
+                content_from_server: node.content_from_server,
             };
             trees.set_local(node.node_id, local);
         }
@@ -1144,6 +1145,7 @@ impl Engine {
             id.clone(),
             LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape,
                 identity,
                 parked: false,
@@ -1303,6 +1305,7 @@ fn stored(id: &NodeId, node: &LocalNode) -> koidrive_store::LocalNode {
         identity: file_id(node.identity),
         parked: node.parked,
         left_out_when_placed: node.left_out_when_placed,
+        content_from_server: node.content_from_server,
     }
 }
 
@@ -1945,6 +1948,7 @@ mod tests {
     fn held(shape: Shape, ino: u128) -> LocalNode {
         LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape,
             identity: FileIdentity {
                 dev: 1,
@@ -3599,6 +3603,7 @@ mod tests {
                 })?;
                 tx.put_local_node(&koidrive_store::LocalNode {
                     left_out_when_placed: false,
+                    content_from_server: false,
                     node_id: "e".into(),
                     shape,
                     identity: ino(1),

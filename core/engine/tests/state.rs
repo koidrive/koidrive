@@ -61,6 +61,7 @@ fn trees() -> Trees {
             id.into(),
             LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape: shape.clone(),
                 identity,
                 parked,
@@ -182,6 +183,7 @@ fn unsent() -> (Trees, TreesState) {
     };
     let local = LocalNode {
         left_out_when_placed: false,
+        content_from_server: false,
         shape: shape.clone(),
         identity,
         parked: false,
@@ -432,6 +434,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
     let uploaded = broken(trees(), |trees| {
         let node = LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: dir(ROOT, "n"),
             identity: FileIdentity {
                 dev: 1,
@@ -732,6 +735,7 @@ fn an_identity_without_a_birth_time_round_trips() {
         "u".into(),
         LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             shape: shape.clone(),
             identity: unknown,
             parked: false,

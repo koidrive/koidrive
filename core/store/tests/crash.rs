@@ -105,6 +105,7 @@ fn write_input(tx: &Tx<'_>, seq: u64) -> Result<(), Error> {
         })?;
         tx.put_local_node(&LocalNode {
             left_out_when_placed: false,
+            content_from_server: false,
             node_id: remote(n).node_id,
             shape: shape(n),
             identity: FileId {

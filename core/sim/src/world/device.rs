@@ -165,6 +165,7 @@ impl Engine {
             };
             let node = LocalNode {
                 left_out_when_placed: false,
+                content_from_server: false,
                 shape: Shape {
                     parent,
                     name: entry.name.clone(),
