@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
+use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koidrive_engine::commit::{Commits, Lift, LiftError};
 use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
-use koidrive_fs::{Marker, probe_no_replace, read_marker, write_marker};
+use koidrive_fs::{Marker, probe_no_replace, read_marker, root_at, write_marker};
 use koidrive_ignore::LocalRulesError;
 use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, Resend, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
@@ -1292,10 +1293,14 @@ impl Driver {
         }
         claim::set_owner(&root, &owner).map_err(io_error(&root))?;
         let linked_started = crate::timing::Time::now();
+        let found = fs::File::open(&root)
+            .and_then(|dir| root_at(dir.as_fd()))
+            .map_err(io_error(&root))?;
         let link = Link {
             space_id: space.space_id.clone(),
             space_name: space.name.clone(),
-            root_dev: fs::metadata(&root).map_err(io_error(&root))?.dev(),
+            root_dev: found.dev,
+            root_volume: found.volume,
             root,
             server_url: credential.server.clone(),
             device_id: credential.device_id.clone(),
@@ -2449,6 +2454,7 @@ mod tests {
                     space_name: "Projects".into(),
                     root: root.clone(),
                     root_dev: 1,
+                    root_identity: None,
                     server_url: "https://files.example.com/".into(),
                     device_id: "d1".into(),
                     linked_at_ms: 1,
@@ -3380,6 +3386,7 @@ mod tests {
             space_name: "Projects".into(),
             root: root.to_path_buf(),
             root_dev: fs::metadata(root).unwrap().dev(),
+            root_identity: None,
             server_url: NOWHERE.into(),
             device_id: device_id.into(),
             linked_at_ms: 1,

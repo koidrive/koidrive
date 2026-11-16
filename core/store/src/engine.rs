@@ -193,26 +193,22 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.published.insert(row.get(0)?);
         }
-        let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, dev, ino, ino_high, birth_ns, lost FROM recorded_nodes",
-        )?;
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, ino, ino_high, birth_ns, lost FROM recorded_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let node: NodeId = row.get(0)?;
-            match row
-                .get::<_, Option<i64>>(1)?
-                .zip(row.get::<_, Option<i64>>(2)?)
-            {
-                Some((dev, ino)) => {
+            match row.get::<_, Option<i64>>(1)? {
+                Some(ino) => {
                     let identity = FileIdentity {
-                        dev: dev as u64,
-                        ino: ino_from_columns(ino, row.get(3)?),
-                        birth_ns: row.get(4)?,
+                        ino: ino_from_columns(ino, row.get(2)?),
+                        birth_ns: row.get(3)?,
                     };
                     state.trees.displaced.insert(node, identity);
                 }
                 None => {
-                    if row.get(5)? {
+                    if row.get(4)? {
                         state.trees.lost.insert(node.clone());
                     }
                     state.trees.outside.insert(node);
@@ -948,13 +944,13 @@ impl Tx<'_> {
             remove.execute(params![node, displaced])?;
         }
         let mut put = self.0.prepare_cached(
-            "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, dev, ino, ino_high, birth_ns, lost)
-             VALUES (?1, 1, ?2, ?3, ?4, ?5, 0)",
+            "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost)
+             VALUES (?1, 1, ?2, ?3, ?4, 0)",
         )?;
         for (node, held) in displaced {
             if let Some(held) = held {
                 let (ino, ino_high) = ino_columns(held.ino);
-                put.execute(params![node, held.dev as i64, ino, ino_high, held.birth_ns])?;
+                put.execute(params![node, ino, ino_high, held.birth_ns])?;
             }
         }
         let mut put = self.0.prepare_cached(
@@ -1255,8 +1251,6 @@ struct StoredDir {
 
 #[derive(Clone, PartialEq, Message)]
 struct StoredIdentity {
-    #[prost(uint64, tag = "1")]
-    dev: u64,
     #[prost(uint64, tag = "2")]
     ino: u64,
     #[prost(int64, optional, tag = "3")]
@@ -1456,7 +1450,6 @@ impl TryFrom<StoredLocation> for Location {
 impl From<&FileIdentity> for StoredIdentity {
     fn from(identity: &FileIdentity) -> Self {
         Self {
-            dev: identity.dev,
             ino: identity.ino as u64,
             birth_ns: identity.birth_ns,
             ino_high: (identity.ino >> 64) as u64,
@@ -1467,7 +1460,6 @@ impl From<&FileIdentity> for StoredIdentity {
 impl From<StoredIdentity> for FileIdentity {
     fn from(identity: StoredIdentity) -> Self {
         Self {
-            dev: identity.dev,
             ino: (u128::from(identity.ino_high) << 64) | u128::from(identity.ino),
             birth_ns: identity.birth_ns,
         }

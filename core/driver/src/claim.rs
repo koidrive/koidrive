@@ -80,11 +80,10 @@ pub(crate) fn lock(root: &Path) -> io::Result<Option<Flock>> {
     Flock::take(File::from(rustix::fs::open(root, flags, Mode::empty())?))
 }
 
-/// What tells one folder from another whatever path reaches it: its device, its inode and, where the file system
-/// reports it, its birth time, which tells a reused inode number apart.
+/// What tells one folder from another on the volume the root check vouches for, whatever path reaches it: its inode
+/// and, where the file system reports it, its birth time, which tells a reused inode number apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
-    dev: u64,
     ino: u64,
     born: Option<SystemTime>,
 }
@@ -92,7 +91,6 @@ pub struct Identity {
 impl Identity {
     pub fn of(meta: &fs::Metadata) -> Self {
         Identity {
-            dev: meta.dev(),
             ino: meta.ino(),
             born: meta.created().ok(),
         }

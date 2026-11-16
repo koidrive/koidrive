@@ -1510,7 +1510,6 @@ impl Staging {
 /// The engine's name for a `core/fs` identity, birth time included when the file system reports one.
 pub(crate) fn file_identity(id: FileId) -> FileIdentity {
     FileIdentity {
-        dev: id.dev,
         ino: id.ino,
         birth_ns: id.birth_ns,
     }
@@ -1519,7 +1518,6 @@ pub(crate) fn file_identity(id: FileId) -> FileIdentity {
 /// The `core/fs` name for an engine identity.
 pub(crate) fn file_id(identity: FileIdentity) -> FileId {
     FileId {
-        dev: identity.dev,
         ino: identity.ino,
         birth_ns: identity.birth_ns,
     }
@@ -1953,7 +1951,6 @@ mod tests {
             content_from_server: false,
             shape,
             identity: FileIdentity {
-                dev: 1,
                 ino,
                 birth_ns: Some(0),
             },
@@ -2511,7 +2508,6 @@ mod tests {
 
     fn ino(ino: u64) -> FileId {
         FileId {
-            dev: 1,
             ino: ino.into(),
             birth_ns: None,
         }

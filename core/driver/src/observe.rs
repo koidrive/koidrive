@@ -27,7 +27,7 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
     Change, Entry, EntryKind, Error as FsError, FileId, Known, NativeWatcher, RescanWatcher,
-    RootProblem, Snapshot, Watcher, check_root,
+    RootAt, RootProblem, Snapshot, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -143,7 +143,7 @@ pub trait Observer: Send {
 pub struct FsObserver {
     root: PathBuf,
     space_id: String,
-    dev: u64,
+    linked: RootAt,
     watcher: Box<dyn Watcher + Send>,
     native: bool,
     matcher: Arc<dyn Matcher>,
@@ -291,7 +291,7 @@ impl Retry {
 }
 
 impl FsObserver {
-    /// Starts watching the folder of space `space_id` on device `dev`. The first observation compares the whole tree
+    /// Starts watching the folder of space `space_id` that `linked` records. The first observation compares the whole tree
     /// with `previous`. The scans leave out what `matcher`, the built-in exclusions and the `.koiignore` files of the
     /// folder exclude. Once `stopped` holds, the scan walking the tree is left at its next entry and the file being
     /// read at its next chunk, and `observe` returns `None` without the rest, so a caller that stops waits neither
@@ -300,7 +300,7 @@ impl FsObserver {
     pub fn start(
         root: &Path,
         space_id: &str,
-        dev: u64,
+        linked: RootAt,
         previous: Snapshot,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
@@ -321,7 +321,7 @@ impl FsObserver {
         Ok(FsObserver {
             root: std::fs::canonicalize(root)?,
             space_id: space_id.to_owned(),
-            dev,
+            linked,
             watcher,
             native,
             matcher,
@@ -643,7 +643,7 @@ impl Observer for FsObserver {
         }
         self.first &= !first;
         self.reset &= !answers;
-        let root = check_root(&self.root, &self.space_id, self.dev).map(|_| ());
+        let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
         Ok(Some(Observation {
             changes,
             root,
@@ -677,9 +677,7 @@ pub(crate) fn read_content(
 ) -> io::Result<Option<Content>> {
     let file = open_beneath(root, path)?;
     let before = file.metadata()?;
-    let same_file = before.is_file()
-        && before.dev() == entry.id.dev
-        && u128::from(before.ino()) == entry.id.ino;
+    let same_file = before.is_file() && koidrive_fs::id_of(file.as_fd())? == entry.id;
     if !same_file || !same_version(&before, entry) {
         return Ok(None);
     }
@@ -772,7 +770,10 @@ mod tests {
     }
 
     fn observer(root: &Path) -> FsObserver {
-        let dev = fs::metadata(root).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            identity: None,
+        };
         FsObserver::start(
             root,
             SPACE,
@@ -798,7 +799,10 @@ mod tests {
             }))
             .is_err()
         };
-        let dev = fs::metadata(dir.path()).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(dir.path()).unwrap().dev(),
+            identity: None,
+        };
         let started = FsObserver::start(
             dir.path(),
             SPACE,
@@ -1115,7 +1119,10 @@ mod tests {
             let stop = stop.clone();
             move || stop.load(Ordering::SeqCst)
         };
-        let dev = fs::metadata(dir.path()).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(dir.path()).unwrap().dev(),
+            identity: None,
+        };
         let started = FsObserver::start(
             dir.path(),
             SPACE,
@@ -1507,7 +1514,10 @@ mod tests {
         fs::write(root.join("ignored/folder/inner"), b"inner").unwrap();
         fs::write(root.join("tracked"), b"one").unwrap();
         let tracked = u128::from(fs::metadata(root.join("tracked")).unwrap().ino());
-        let dev = fs::metadata(root).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            identity: None,
+        };
         let mut observer = FsObserver::start(
             root,
             SPACE,
@@ -1610,7 +1620,10 @@ mod tests {
         known.observe(Duration::from_secs(10)).unwrap();
         let snapshot = known.snapshot().clone();
         let scanned = known.scanned();
-        let dev = fs::metadata(root).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            identity: None,
+        };
         let mut observer = FsObserver::start(
             root,
             SPACE,
@@ -1798,7 +1811,10 @@ mod tests {
         drop(stopped);
         fs::rename(root.join("notes.txt"), root.join("build/notes.txt")).unwrap();
 
-        let dev = fs::metadata(root).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            identity: None,
+        };
         let mut observer =
             FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap();
         let observation = observer.observe(Duration::from_secs(10)).unwrap().unwrap();
@@ -1829,7 +1845,10 @@ mod tests {
             include: vec!["Work/".into()],
             exclude: vec![],
         };
-        let dev = fs::metadata(root).unwrap().dev();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            identity: None,
+        };
         let matcher = crate::ignore::matcher(&sync).unwrap();
         let mut observer =
             FsObserver::start(root, SPACE, dev, Snapshot::default(), matcher, || false).unwrap();

@@ -36,7 +36,7 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
-use koidrive_fs::FileId;
+use koidrive_fs::{FileId, RootAt, VolumeId};
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
@@ -200,14 +200,26 @@ pub struct Link {
     pub space_name: String,
     /// The linked folder's absolute path.
     pub root: PathBuf,
-    /// The device (`st_dev`) the folder was on when it was linked, for the
+    /// The device number (`st_dev`) the folder was last found under, for the
     /// root check of design §6.2.
     pub root_dev: u64,
+    /// What names the folder's volume under any device number, where it has such a name.
+    pub root_volume: Option<VolumeId>,
     pub server_url: String,
     pub device_id: String,
     pub linked_at_ms: i64,
     /// The folder held this space's root marker before the link wrote one, so a device may have synced it before.
     pub found_marker: bool,
+}
+
+impl Link {
+    /// The root as the link records it, for [`koidrive_fs::check_root`].
+    pub fn root_at(&self) -> RootAt {
+        RootAt {
+            dev: self.root_dev,
+            volume: self.root_volume,
+        }
+    }
 }
 
 /// A question the engine asked the person (`AskUser`, design §1), with its
@@ -572,7 +584,7 @@ impl Tx<'_> {
     /// Every node of the local tree, ordered by `node_id`.
     pub fn local_nodes(&self) -> Result<Vec<LocalNode>> {
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked,
+            "SELECT node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
                     left_out_when_placed, content_from_server
              FROM local_nodes ORDER BY node_id",
         )?;
@@ -581,13 +593,12 @@ impl Tx<'_> {
                 row.get::<_, String>(0)?,
                 ShapeRow::read(row, 1)?,
                 FileId {
-                    dev: row.get::<_, i64>(5)? as u64,
-                    ino: ino_from_columns(row.get(6)?, row.get(7)?),
-                    birth_ns: row.get(8)?,
+                    ino: ino_from_columns(row.get(5)?, row.get(6)?),
+                    birth_ns: row.get(7)?,
                 },
+                row.get::<_, bool>(8)?,
                 row.get::<_, bool>(9)?,
                 row.get::<_, bool>(10)?,
-                row.get::<_, bool>(11)?,
             ))
         })?;
         rows.map(|row| {
@@ -605,16 +616,16 @@ impl Tx<'_> {
         .collect()
     }
 
-    /// Inserts or replaces the local node. `dev` is stored as its two's-complement `i64` bit
-    /// pattern and `ino` as the bit patterns of its low and high 64 bits, so every value round-trips.
+    /// Inserts or replaces the local node. `ino` is stored as the bit patterns of its low and high 64
+    /// bits, so every value round-trips.
     pub fn put_local_node(&self, node: &LocalNode) -> Result<()> {
         let shape = &node.shape;
         self.0
             .prepare_cached(
                 "INSERT OR REPLACE INTO local_nodes
-                 (node_id, parent_id, name, kind, content, dev, ino, ino_high, birth_ns, parked,
+                 (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
                   left_out_when_placed, content_from_server)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?
             .execute(params![
                 node.node_id,
@@ -622,7 +633,6 @@ impl Tx<'_> {
                 shape.name,
                 shape.kind,
                 shape.content.as_ref().map(Content::encode_to_vec),
-                node.identity.dev as i64,
                 ino_columns(node.identity.ino).0,
                 ino_columns(node.identity.ino).1,
                 node.identity.birth_ns,
@@ -716,7 +726,7 @@ impl Tx<'_> {
             .0
             .query_row(
                 "SELECT space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms,
-                        found_marker
+                        found_marker, root_volume
                  FROM link WHERE id = 1",
                 [],
                 |row| {
@@ -725,6 +735,18 @@ impl Tx<'_> {
                         space_name: row.get(1)?,
                         root: PathBuf::from(OsStr::from_bytes(&row.get::<_, Vec<u8>>(2)?)),
                         root_dev: row.get(3)?,
+                        root_volume: row
+                            .get::<_, Option<Vec<u8>>>(8)?
+                            .map(|bytes| {
+                                VolumeId::from_bytes(&bytes).ok_or_else(|| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        8,
+                                        rusqlite::types::Type::Blob,
+                                        format!("a volume id of {} bytes", bytes.len()).into(),
+                                    )
+                                })
+                            })
+                            .transpose()?,
                         server_url: row.get(4)?,
                         device_id: row.get(5)?,
                         linked_at_ms: row.get(6)?,
@@ -739,8 +761,8 @@ impl Tx<'_> {
         self.0.execute(
             "INSERT OR REPLACE INTO link
              (id, space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms,
-              found_marker)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+              found_marker, root_volume)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 link.space_id,
                 link.space_name,
@@ -750,6 +772,7 @@ impl Tx<'_> {
                 link.device_id,
                 link.linked_at_ms,
                 link.found_marker,
+                link.root_volume.as_ref().map(VolumeId::as_bytes),
             ],
         )?;
         Ok(())

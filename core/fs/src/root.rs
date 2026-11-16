@@ -44,8 +44,12 @@ pub enum RootProblem {
     NotAFolder,
     #[error("the root folder cannot be read: {0}")]
     Unreadable(io::Error),
-    #[error("the root folder is on device {found}, not on device {expected}")]
-    OtherDevice { expected: u64, found: u64 },
+    #[error(
+        "the disk that holds the folder was mounted again under another number, and Koidrive can't confirm it is the same disk"
+    )]
+    Renumbered,
+    #[error("the folder is on another disk than the one it was linked on")]
+    OtherDisk,
     #[error("the root folder has no marker")]
     NoMarker,
     #[error("the root marker cannot be read: {0}")]
@@ -54,28 +58,195 @@ pub enum RootProblem {
     OtherSpace(String),
 }
 
+/// What names a volume under any device number, such as after an OS update:
+/// its UUID, on btrfs the UUID of the subvolume, or on ext2, ext3 and ext4 the
+/// file system ID that Linux derives from the UUID. The kinds have different
+/// lengths, so [`as_bytes`](Self::as_bytes) names its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VolumeId {
+    Uuid([u8; 16]),
+    FileSystemId([u8; 8]),
+}
+
+impl VolumeId {
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Uuid(uuid) => uuid,
+            Self::FileSystemId(id) => id,
+        }
+    }
+
+    /// The id that [`as_bytes`](Self::as_bytes) gave, or `None` for any other
+    /// length.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes.len() {
+            16 => bytes.try_into().ok().map(Self::Uuid),
+            8 => bytes.try_into().ok().map(Self::FileSystemId),
+            _ => None,
+        }
+    }
+}
+
+/// A root as a link records it or as it is found: the device number it is
+/// mounted under, and the UUID of its volume where the volume has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootAt {
+    pub dev: u64,
+    pub volume: Option<VolumeId>,
+}
+
+impl RootAt {
+    /// Whether `found` is on the volume this link recorded. A volume with a
+    /// UUID is the same volume under any device number. Without one, only the
+    /// device number tells volumes apart.
+    pub fn admits(&self, found: &RootAt) -> Result<(), RootProblem> {
+        match (self.volume, found.volume) {
+            (Some(linked), Some(found)) if linked == found => Ok(()),
+            (Some(_), _) => Err(RootProblem::OtherDisk),
+            (None, _) if found.dev == self.dev => Ok(()),
+            (None, _) => Err(RootProblem::Renumbered),
+        }
+    }
+}
+
+/// The root folder `dir` as it is found now.
+pub fn root_at(dir: BorrowedFd<'_>) -> io::Result<RootAt> {
+    let stat = stat_fd(dir)?;
+    Ok(RootAt {
+        dev: stat.dev,
+        volume: volume_id(dir),
+    })
+}
+
+#[cfg(target_vendor = "apple")]
+fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::fd::AsRawFd;
+    #[repr(C, packed(4))]
+    struct Reply {
+        length: u32,
+        uuid: [u8; 16],
+    }
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: 0,
+        volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_UUID,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut reply = Reply {
+        length: 0,
+        uuid: [0; 16],
+    };
+    let size = std::mem::size_of::<Reply>();
+    let done = unsafe {
+        libc::fgetattrlist(
+            dir.as_raw_fd(),
+            (&raw mut request).cast(),
+            (&raw mut reply).cast(),
+            size,
+            0,
+        )
+    };
+    let uuid = reply.uuid;
+    (done == 0 && reply.length as usize == size && uuid != [0; 16]).then_some(VolumeId::Uuid(uuid))
+}
+
+#[cfg(target_os = "linux")]
+fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    btrfs_subvolume_id(dir)
+        .or_else(|| ext_file_system_id(dir))
+        .or_else(|| file_system_id(dir))
+}
+
+#[cfg(target_os = "linux")]
+fn ext_file_system_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    const EXT_SUPER_MAGIC: u64 = 0xEF53;
+    let stat = rustix::fs::fstatfs(dir).ok()?;
+    let id: [u8; 8] = unsafe { std::mem::transmute(stat.f_fsid) };
+    (stat.f_type as u64 == EXT_SUPER_MAGIC && id != [0; 8]).then_some(VolumeId::FileSystemId(id))
+}
+
+#[cfg(target_os = "linux")]
+fn btrfs_subvolume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::fd::AsRawFd;
+    #[repr(C)]
+    struct SubvolInfo {
+        before: [u64; 37],
+        uuid: [u8; 16],
+        after: [u8; 192],
+    }
+    const BTRFS_IOC_GET_SUBVOL_INFO: libc::c_ulong =
+        0x8000_943c | (std::mem::size_of::<SubvolInfo>() as libc::c_ulong) << 16;
+    let mut reply = SubvolInfo {
+        before: [0; 37],
+        uuid: [0; 16],
+        after: [0; 192],
+    };
+    let done = unsafe {
+        libc::ioctl(
+            dir.as_raw_fd(),
+            BTRFS_IOC_GET_SUBVOL_INFO as _,
+            &raw mut reply,
+        )
+    };
+    (done >= 0 && reply.uuid != [0; 16]).then_some(VolumeId::Uuid(reply.uuid))
+}
+
+#[cfg(target_os = "linux")]
+fn file_system_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::fd::AsRawFd;
+    #[repr(C)]
+    struct FsUuid2 {
+        len: u8,
+        uuid: [u8; 16],
+    }
+    const FS_IOC_GETFSUUID: libc::c_ulong =
+        0x8000_1500 | (std::mem::size_of::<FsUuid2>() as libc::c_ulong) << 16;
+    let mut reply = FsUuid2 {
+        len: 0,
+        uuid: [0; 16],
+    };
+    let done = unsafe { libc::ioctl(dir.as_raw_fd(), FS_IOC_GETFSUUID as _, &raw mut reply) };
+    (done == 0 && reply.len == 16 && reply.uuid != [0; 16]).then_some(VolumeId::Uuid(reply.uuid))
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+fn volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
+    None
+}
+
 /// Checks the root of space `space_id` before a scan that can report removals:
-/// it exists, is a folder that can be listed, is on device `dev`, and its marker
-/// names the space. Returns the marker.
+/// it exists, is a folder that can be listed, is the root `linked` admits, and
+/// its marker names the space. Returns the marker.
 ///
 /// The scan itself must also come back without unreadable folders
 /// ([`Rescan::unreadable`](crate::Rescan::unreadable)) before its removals are
 /// acted on.
-pub fn check_root(root: &Path, space_id: &str, dev: u64) -> Result<Marker, RootProblem> {
-    let dir = open_root(root).map_err(|err| match err.kind() {
+pub fn check_root(root: &Path, space_id: &str, linked: &RootAt) -> Result<Marker, RootProblem> {
+    check_root_at(open_root_folder(root)?.as_fd(), space_id, linked)
+}
+
+/// Opens the root folder at `root` for [`check_root_at`].
+pub fn open_root_folder(root: &Path) -> Result<OwnedFd, RootProblem> {
+    open_root(root).map_err(|err| match err.kind() {
         io::ErrorKind::NotFound => RootProblem::Missing,
         io::ErrorKind::NotADirectory => RootProblem::NotAFolder,
         _ => RootProblem::Unreadable(err),
-    })?;
-    let stat = stat_fd(dir.as_fd()).map_err(RootProblem::Unreadable)?;
-    list(dir.as_fd()).map_err(RootProblem::Unreadable)?;
-    if stat.id.dev != dev {
-        return Err(RootProblem::OtherDevice {
-            expected: dev,
-            found: stat.id.dev,
-        });
-    }
-    let marker = read_marker_at(dir.as_fd())
+    })
+}
+
+/// [`check_root`] of the root folder `dir` holds, whatever its path names now.
+pub fn check_root_at(
+    dir: BorrowedFd<'_>,
+    space_id: &str,
+    linked: &RootAt,
+) -> Result<Marker, RootProblem> {
+    let found = root_at(dir).map_err(RootProblem::Unreadable)?;
+    list(dir).map_err(RootProblem::Unreadable)?;
+    linked.admits(&found)?;
+    let marker = read_marker_at(dir)
         .map_err(RootProblem::BadMarker)?
         .ok_or(RootProblem::NoMarker)?;
     if marker.space_id != space_id {
@@ -170,6 +341,21 @@ impl Space {
     /// the space holds whether or not that root is still held.
     pub fn marker(&self) -> io::Result<Option<Marker>> {
         read_marker_at(self.root())
+    }
+
+    /// The root the space holds, as it is found now.
+    pub fn root_at(&self) -> io::Result<RootAt> {
+        root_at(self.root())
+    }
+
+    /// The identity of the entry `name` directly in the root the space holds,
+    /// or `None` when there is none.
+    pub fn child_id(&self, name: &OsStr) -> io::Result<Option<FileId>> {
+        match stat_at(self.root(), name) {
+            Ok(stat) => Ok(Some(stat.id)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     /// [`probe_no_replace`] in the private folder of the root the space

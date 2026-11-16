@@ -98,13 +98,17 @@ fn encode(node: &str, id: FileId) -> String {
     let birth = id
         .birth_ns
         .map_or_else(|| "-".to_owned(), |birth| birth.to_string());
-    format!("1 {node} {} {} {birth}", id.dev, id.ino)
+    format!("2 {node} {} {birth}", id.ino)
 }
 
 fn decode(value: &[u8]) -> Option<(String, FileId)> {
     let value = std::str::from_utf8(value).ok()?;
-    let [version, node, dev, ino, birth] = value.split(' ').collect::<Vec<_>>().try_into().ok()?;
-    if version != "1" || node.is_empty() {
+    let fields: Vec<&str> = value.split(' ').collect();
+    let (node, ino, birth) = match fields[..] {
+        ["2", node, ino, birth] | ["1", node, _, ino, birth] => (node, ino, birth),
+        _ => return None,
+    };
+    if node.is_empty() {
         return None;
     }
     let birth_ns = match birth {
@@ -112,7 +116,6 @@ fn decode(value: &[u8]) -> Option<(String, FileId)> {
         birth => Some(birth.parse().ok()?),
     };
     let id = FileId {
-        dev: dev.parse().ok()?,
         ino: ino.parse().ok()?,
         birth_ns,
     };

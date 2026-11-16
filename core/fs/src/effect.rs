@@ -11,6 +11,7 @@ use std::time::SystemTime;
 use koidrive_ignore::PLATFORM_FILES;
 use rustix::fs::{Access, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
+use serde::de::IgnoredAny;
 
 use crate::mark;
 use crate::resolve::{Base, Folder, Location, PARKED_DIR, Space, Unresolved, check_name};
@@ -443,7 +444,7 @@ impl Space {
     /// Flushes `folder` after a change in it. A folder on another device than the root, such as a volume mounted
     /// below it, is flushed in full, since the full flush that ends a section reaches only the root's device.
     pub(crate) fn flush_folder(&self, folder: &Folder, how: Flush) -> io::Result<()> {
-        match folder.id().dev == self.id().dev {
+        match stat_fd(folder.fd())?.dev == self.dev() {
             true => flush(folder.fd(), how),
             false => flush(folder.fd(), Flush::Full),
         }
@@ -521,7 +522,7 @@ impl Space {
                 }
             }
             let ids: Vec<_> = (brought_back.iter())
-                .map(|id| (id.dev, id.ino, id.birth_ns))
+                .map(|id| (0, id.ino, id.birth_ns))
                 .collect();
             replace_file(
                 self.private(&[])?.fd(),
@@ -558,13 +559,14 @@ impl Space {
                 Err(Errno::NOENT) => return Ok(BroughtBack::Entries(HashSet::new())),
                 Err(_) => return Ok(BroughtBack::Unreadable),
             };
-        let Ok(ids) = serde_json::from_reader::<_, Vec<(u64, u128, Option<i64>)>>(File::from(file))
+        let Ok(ids) =
+            serde_json::from_reader::<_, Vec<(IgnoredAny, u128, Option<i64>)>>(File::from(file))
         else {
             return Ok(BroughtBack::Unreadable);
         };
         Ok(BroughtBack::Entries(
             (ids.into_iter())
-                .map(|(dev, ino, birth_ns)| FileId { dev, ino, birth_ns })
+                .map(|(_, ino, birth_ns)| FileId { ino, birth_ns })
                 .collect(),
         ))
     }
@@ -580,7 +582,7 @@ impl Space {
         for entry in list(root.fd())? {
             if entry != PRIVATE_DIR {
                 let id = stat_at(root.fd(), &entry)?.id;
-                ids.push((id.dev, id.ino, id.birth_ns));
+                ids.push((0, id.ino, id.birth_ns));
             }
         }
         replace_file(
