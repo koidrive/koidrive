@@ -2093,10 +2093,7 @@ fn restores(world: &World) -> Vec<(World, Story)> {
     let mut worlds = vec![world.clone()];
     for t in (0..k).filter(|&t| world.remote[t] == Remote::Trashed) {
         let moved_in = (0..k).filter(|&j| {
-            j != t
-                && world.remote[j] == Remote::Kept
-                && world.synced[j] != Spot::In(t)
-                && (0..world.len()).all(|m| world.local_of(m) != Local::Onto(j))
+            j != t && world.remote[j] == Remote::Kept && world.synced[j] != Spot::In(t)
         });
         worlds.extend(moved_in.map(|j| {
             let mut told = world.clone();
@@ -2105,7 +2102,7 @@ fn restores(world: &World) -> Vec<(World, Story)> {
         }));
     }
     let mut stories = Vec::new();
-    for told in worlds.into_iter().filter(World::remote_acyclic) {
+    for told in (worlds.into_iter()).filter(|told| told.remote_acyclic() && told.placeable()) {
         let dirs = || (0..k).filter(|&j| told.kind(j) == Kind::Dir);
         let trashed = |i: usize| told.recorded(i) && !told.remote_live(i);
         for i in (0..k).filter(|&i| trashed(i) && told.local[i] != Local::Removed) {
