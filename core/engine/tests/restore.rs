@@ -2067,3 +2067,23 @@ fn a_move_into_a_folder_restored_inside_the_moving_folder_is_a_cycle() {
     assert_eq!(ops(&commit), [restore_op(&intent)]);
     assert!(trees.reverted().contains(&a));
 }
+
+#[test]
+fn a_restore_into_the_node_it_restores_leaves_the_rename_of_that_node_to_go() {
+    let a = id(1);
+    let mut trees = trees(&[(
+        a.clone(),
+        Some(dir(&root(), "a2")),
+        Some(dir(&root(), "a")),
+        Some(trashed(dir(&root(), "a"))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(a.clone(), Some(a.clone()), None).unwrap();
+    commits.restore(id(100), intent.clone());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [moved(&a, &root(), "a2"), restore_op(&intent)]
+    );
+    assert!(!trees.reverted().contains(&a));
+}
