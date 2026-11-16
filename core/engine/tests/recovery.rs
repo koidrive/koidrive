@@ -3946,3 +3946,33 @@ fn an_edit_below_an_unchanged_folder_of_a_published_trash_group_keeps_the_folder
         [("move", "a".into()), ("update", "b".into())]
     );
 }
+
+#[test]
+fn a_move_out_of_a_published_trash_group_trashes_its_old_folder_again() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = file(ROOT, "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle();
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
+}

@@ -2276,6 +2276,70 @@ fn the_known_repros_keep_trashed_folders_trashed_and_names_given() {
 }
 
 #[test]
+fn a_move_out_after_a_publish_answer_does_not_keep_the_old_folder_live_on_the_server() {
+    use Spot::{In, Root};
+    use koidrive_engine::first_link::{History, Marks};
+    use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryGroup};
+
+    let mut world = world(
+        &[Root, In(0), In(1)],
+        &[Remote::Kept, Remote::Kept, Remote::Kept],
+        &[Local::Into(Root), Local::Kept, Local::Kept],
+        &[],
+    );
+    let mut space = server(&world);
+    unsee(&world, &mut space, Unseen::Trash(0));
+    let mut planner = Planner::new(&world, &space);
+    let cause = RecoveryCause::rewind(4, NOW as i64);
+    planner.commits.enter_recovery(cause);
+    assert!(planner.build().is_none());
+    planner.commits.recover(
+        &mut planner.trees,
+        0,
+        &cause,
+        &History::new(),
+        &Marks::new(),
+        &mut planner.ids,
+        NOW,
+    );
+    planner.trees.settle();
+    let question = planner
+        .commits
+        .questions()
+        .iter()
+        .find(|question| {
+            matches!(
+                question.kind,
+                QuestionKind::Recovery {
+                    group: RecoveryGroup::ChangedOnThisDevice,
+                    ..
+                }
+            )
+        })
+        .unwrap()
+        .clone();
+    assert_eq!(question.holds().cloned().collect::<Vec<_>>(), [world.id(0)]);
+    assert!(planner.commits.decide(&question.id, Answer::Publish));
+    let mut moved = planner.trees.local().get(&world.id(2)).unwrap().clone();
+    moved.shape.parent = space.space_id().into();
+    planner.trees.set_local(world.id(2), moved);
+    planner.trees.settle();
+    world.local[2] = Local::Into(Root);
+    let first = planner.build().unwrap();
+    let finished = run(
+        &world,
+        &space,
+        &planner,
+        Some(&first),
+        Unseen::Nothing,
+        usize::MAX,
+    );
+    assert!(matches!(finished.stop, Stop::Quiet));
+    let old_parent = finished.end.node(&world.id(1)).unwrap();
+    assert_eq!(old_parent.status(), NodeStatus::Trashed);
+}
+
+#[test]
 fn a_revival_a_later_commit_hides_is_found_over_the_run() {
     use Spot::{In, Root};
     let world = world(
