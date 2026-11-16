@@ -1,32 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_store::{Cursor, Link, Store};
-
 #[test]
-fn create_fixture() {
-    let path = std::env::var("KOIDRIVE_FIXTURE_PATH").unwrap();
-    let mut store = Store::open(path).unwrap();
-    store
-        .transaction(|tx| {
-            tx.set_link(&Link {
-                space_id: "space-alpha6".into(),
-                space_name: "Projects".into(),
-                root: "/fixture/Projects".into(),
-                root_dev: 17,
-                server_url: "https://example.invalid".into(),
-                device_id: "device-alpha6".into(),
-                linked_at_ms: 1234,
-                found_marker: false,
-            })?;
-            tx.set_cursor(&Cursor {
-                history_id: "history-alpha6".into(),
-                last_seq: 42,
-                commit_id: "commit-alpha6".into(),
-                committed_at_ms: 5678,
-                ahead_of_server: false,
-            })?;
-            tx.put_chunk(&[7; 32], 99, 3456)?;
-            Ok::<_, koidrive_store::Error>(())
-        })
+fn create_alpha6_upgrade_fixture() {
+    let output = std::env::var("KOIDRIVE_FIXTURE_PATH").unwrap();
+    assert!(!Path::new(&output).exists());
+    let mut remote = Remote::new();
+    let (site, mut device) = linked(&mut remote, "fixture-device");
+    fs::create_dir_all(site.root.join("Disk/Slides")).unwrap();
+    fs::write(site.root.join("Disk/Slides/deck.txt"), b"presentation").unwrap();
+    fs::write(site.root.join("Disk/original.txt"), b"first revision").unwrap();
+    fs::write(site.root.join("pending.txt"), b"synced contents").unwrap();
+    device.rescan();
+    device.rest(&mut remote);
+    device.create(
+        &mut remote,
+        &site.root.join("Disk/original.txt"),
+        b"second revision",
+    );
+    fs::rename(
+        site.root.join("Disk/original.txt"),
+        site.root.join("Disk/report.txt"),
+    )
+    .unwrap();
+    device.rescan();
+    device.rest(&mut remote);
+    assert!(remote.tree().contains_key("Disk/report.txt"));
+    assert!(!remote.tree().contains_key("Disk/original.txt"));
+    fs::write(site.root.join("pending.txt"), b"unsent local edit").unwrap();
+    device.rescan();
+    device.scan_until(|device| !device.work.is_empty());
+    assert!(!device.folder.engine.trees.state().local_changes.is_empty());
+    drop(device);
+    let conn = rusqlite::Connection::open(&site.db).unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .unwrap();
+    conn.execute("VACUUM INTO ?1", [&output]).unwrap();
 }

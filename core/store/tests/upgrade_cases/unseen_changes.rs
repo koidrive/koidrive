@@ -4,7 +4,7 @@ upgrade_case!(unseen_changes, |store| {
     store
         .transaction(|tx| {
             assert!(tx.engine_state()?.trees.unseen_changes.is_empty());
-            assert_eq!(tx.cursor()?.unwrap().last_seq, 42);
+            assert!(tx.cursor()?.unwrap().last_seq > 0);
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();

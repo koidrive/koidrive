@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -13,9 +14,39 @@ spec.loader.exec_module(guard)
 
 
 class GuardTests(unittest.TestCase):
+    def test_upgrade_job_gates_the_existing_required_ci_report(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("\n  store-upgrade:\n", workflow)
+        report = workflow.split("\n  ci-report:\n", 1)[1]
+        needs = re.search(r"^    needs: \[([^]]+)\]$", report, re.M)
+        self.assertIsNotNone(needs, "ci-report must declare its required jobs")
+        self.assertIn("store-upgrade", {name.strip() for name in needs.group(1).split(",")})
+
     def check(self, changes, harness="", cases=None, previous="", migrations=()):
         cases = cases or {}
+        harness = guard.canonical_harness((ROOT / guard.HARNESS).read_text()) + harness
         return guard.check(changes, harness, list(cases), lambda name: cases[name], previous, lambda name: name in migrations)
+
+    def test_harness_cannot_skip_the_fixture(self):
+        harness = (ROOT / guard.HARNESS).read_text()
+        start = harness.index("            std::fs::copy(")
+        end = harness.index("            if std::path::Path::new", start)
+        mutated = harness[:start] + "            let mut $store = Store::open(&path).unwrap();\n" + harness[end:]
+        mutated = mutated.replace("            assert_eq!(preserved_rows(&rusqlite::Connection::open(&path).unwrap()), preserved);\n", "")
+        self.assertNotIn("std::fs::copy(", mutated)
+        self.assertIn("let mut $store = Store::open(&path).unwrap();", mutated)
+        with self.assertRaisesRegex(ValueError, "pinned release-state harness"):
+            guard.validate_harness(mutated)
+
+    def test_harness_only_accepts_new_top_level_includes(self):
+        harness = (ROOT / guard.HARNESS).read_text()
+        added = 'include!("upgrade_cases/new_migration.rs");\n'
+        self.assertIn("new_migration", guard.validate_harness(harness + added))
+        for mutation in ["/*\n" + harness + "*/\n", harness + "fn extra() {}\n",
+                         harness + "/*\n" + added + "*/\n", harness.replace("#[test]", "#[ignore]\n        #[test]"),
+                         harness + 'include!("other.rs");\n']:
+            with self.subTest(mutation=mutation[-80:]), self.assertRaisesRegex(ValueError, "pinned release-state harness"):
+                guard.validate_harness(mutation)
 
     def test_unrelated_test_edit_does_not_cover_a_migration(self):
         changes = [("A", "core/store/migrations/volume_mounts.sql"), ("M", "core/store/tests/store.rs")]
@@ -33,8 +64,26 @@ class GuardTests(unittest.TestCase):
             self.check(changes, harness, {"volume_mounts": "#[ignore] " + cases["volume_mounts"]})
         with self.assertRaisesRegex(ValueError, "duplicate"):
             self.check(changes, harness * 2, cases)
-        with self.assertRaisesRegex(ValueError, "upgraded store"):
-            self.check(changes, harness, {"volume_mounts": "upgrade_case!(volume_mounts, |store| { assert!(true); });"})
+
+    def test_case_rejects_top_level_macro_calls_and_redefinitions(self):
+        valid = "upgrade_case!(volume_mounts, |store| { assert!(store.is_ok()); });"
+        for extra in [valid, "macro_rules! upgrade_case { ($($t:tt)*) => {}; }" + valid, "fn extra() {}"]:
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "exactly"):
+                guard.validate_case("volume_mounts", valid + extra)
+        for invalid in ["#[ignore] " + valid, valid.replace("|store|", "|other|"),
+                        valid.replace("is_ok()", "is_ok(]"), valid[:-3]]:
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "exactly"):
+                guard.validate_case("volume_mounts", invalid)
+
+    def test_case_balancing_skips_comments_and_string_delimiters(self):
+        guard.validate_case("example", '''
+            // SPDX-License-Identifier: Apache-2.0
+            upgrade_case!(example, |store| {
+                /* } ); macro_rules! upgrade_case { /* nested */ } */
+                let braces = ["}", r#"}); upgrade_case!(fake, |store| {"#, '}'];
+                assert_eq!(store.value(), (braces, { 1 }));
+            });
+        ''')
 
     def test_schema_source_requires_new_case(self):
         for path in ["core/store/src/lib.rs", "core/store/src/migrations.rs", "core/store/src/new_schema.rs", "core/store/build/plan.rs", "core/store/build/nested/helpers.rs"]:

@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -13,7 +14,48 @@ CASES = "core/store/tests/upgrade_cases/"
 HARNESS = "core/store/tests/upgrade.rs"
 SCHEMA = {"core/store/build.rs"}
 NAME = r"[a-z][a-z0-9_]*"
-FIXTURE_SHA256 = "37482c95055651b30460f9a6e56fb85ed2453aa6b717d9f0a60445a821a17b66"
+FIXTURE_SHA256 = "13da6745f0976258e12b02d38b9687abe9995c824d3996e472670986c8af40c7"
+HARNESS_SHA256 = "33fea91acf74958a56f71508d61ac778b130e4aa894cc7a30d182581ec12a9a3"
+INCLUDE = re.compile(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);\n?', re.M)
+LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
+LEXER = importlib.util.module_from_spec(LEXER_SPEC)
+LEXER_SPEC.loader.exec_module(LEXER)
+
+
+def canonical_harness(harness):
+    return INCLUDE.sub("", harness)
+
+
+def validate_harness(harness):
+    included = INCLUDE.findall(harness)
+    if len(included) != len(set(included)):
+        raise ValueError("duplicate upgrade case includes")
+    if hashlib.sha256(canonical_harness(harness).encode()).hexdigest() != HARNESS_SHA256:
+        raise ValueError("upgrade harness differs from the pinned release-state harness; only case include lines may change")
+    return included
+
+
+def validate_case(name, text):
+    tokens = []
+    LEXER.comment_spans(text, "rust", tokens)
+    words = [token[0] for token in tokens]
+    prefix = ["upgrade_case", "!", "(", name, ",", "|", "store", "|", "{"]
+    message = f"{CASES}{name}.rs must contain exactly upgrade_case!({name}, |store| {{ ... }});"
+    if words[:len(prefix)] != prefix:
+        raise ValueError(message)
+    stack = ["}"]
+    closers = {"(": ")", "[": "]", "{": "}"}
+    for index, word in enumerate(words[len(prefix):], start=len(prefix)):
+        if word in closers:
+            stack.append(closers[word])
+        elif word in closers.values():
+            if not stack or word != stack.pop():
+                raise ValueError(message)
+            if not stack:
+                if words[index + 1:] != [")", ";"]:
+                    raise ValueError(message)
+                return
+    raise ValueError(message)
 
 
 def check(changes, harness, case_files, read_case, previous_harness="", migration_exists=lambda name: False):
@@ -45,9 +87,7 @@ def check(changes, harness, case_files, read_case, previous_harness="", migratio
         case.startswith("schema_") for case in cases
     ):
         raise ValueError("add a new schema_ upgrade case for the changed store schema code")
-    included = re.findall(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);$', harness, re.M)
-    if len(included) != len(set(included)):
-        raise ValueError("duplicate upgrade case includes")
+    included = validate_harness(harness)
     previous = re.findall(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);$', previous_harness, re.M)
     removed = sorted(name for name in previous if name not in included and migration_exists(name))
     if removed:
@@ -55,14 +95,7 @@ def check(changes, harness, case_files, read_case, previous_harness="", migratio
     if set(case_files) != set(included):
         raise ValueError(f"include each case file from {HARNESS}; files={sorted(case_files)}, includes={sorted(included)}")
     for name in included:
-        text = read_case(name)
-        pattern = r'\s*(?://[^\n]*\n\s*)*upgrade_case!\(\s*' + re.escape(name) + r'\s*,\s*\|(' + NAME + r')\|\s*\{(.+)\}\s*\);\s*'
-        match = re.fullmatch(pattern, text, re.S)
-        if not match:
-            raise ValueError(f"{CASES}{name}.rs must contain exactly upgrade_case!({name}, |store| {{ ... }});")
-        body = re.sub(r'//[^\n]*|/\*.*?\*/', '', match.group(2), flags=re.S)
-        if not re.search(r'\b' + re.escape(match.group(1)) + r'\b', body) or not re.search(r'\bassert(?:_eq|_ne)?!', body):
-            raise ValueError(f"{CASES}{name}.rs must use the upgraded store and assert its behavior")
+        validate_case(name, read_case(name))
     return sorted(case_files)
 
 
