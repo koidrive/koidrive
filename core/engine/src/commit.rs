@@ -4953,8 +4953,10 @@ impl<'a> Scratch<'a> {
             false => scratch.parent(node),
         };
         let mut needed = BTreeSet::new();
-        for answered in revived.iter().filter(|node| answers.contains(*node)) {
-            let mut at = placed(answered);
+        for kept in
+            (revived.iter()).filter(|node| answers.contains(*node) || self.sending.contains(*node))
+        {
+            let mut at = placed(kept);
             while let Some(parent) = at.filter(|parent| revived.contains(*parent))
                 && needed.insert(parent.to_owned())
             {
