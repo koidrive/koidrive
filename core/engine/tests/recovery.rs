@@ -4042,3 +4042,38 @@ fn publishing_a_renamed_folder_and_a_folder_moved_into_it_out_of_its_subfolder_s
         ]
     );
 }
+
+#[test]
+fn publishing_a_folder_that_takes_the_name_of_the_folder_moving_into_it_sends_the_swap() {
+    let mut trees = trees(
+        &[
+            ("a", dir("b", "a")),
+            ("b", dir(ROOT, "a")),
+            ("c", dir("b", "c")),
+            ("f", file("a", "f", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            live("a", dir(ROOT, "a")),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "b".into()),
+            ("move", "c".into()),
+            ("delete", "c".into()),
+            ("move", "a".into()),
+            ("move", "b".into())
+        ]
+    );
+}

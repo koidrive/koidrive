@@ -3948,23 +3948,38 @@ fn plan(
                 Want::Move { id, .. } | Want::Create { id, .. } => id.clone(),
                 _ => unreachable!("an aside is a move or a create"),
             };
+            let Some((carried, bundle)) =
+                scratch.compensation(&aside, answers, trees, &wants, &moving)
+            else {
+                break true;
+            };
+            let carry = || carried.iter().map(|&j| wants[j].as_ref().expect("carried"));
+            let ops = aside.ops()
+                + carry().map(Want::ops).sum::<usize>()
+                + bundle.iter().map(Want::ops).sum::<usize>();
+            let cost = priced(&scratch, &aside)
+                + carry().map(|other| priced(&scratch, other)).sum::<usize>()
+                + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
             let whole = fits(
                 emitted,
                 bytes,
-                2,
-                priced(&scratch, want) + priced(&scratch, &aside),
+                ops + want.ops(),
+                cost + priced(&scratch, want),
             );
-            let bundled = scratch
-                .compensation(&aside, answers, trees, &wants, &moving)
-                .is_none_or(|(carried, bundle)| !carried.is_empty() || !bundle.is_empty());
-            if bundled
-                || (finishes && emitted > 0 && !whole)
-                || !room(&mut emitted, &mut bytes, &scratch, &aside)
-            {
+            let alone = emitted == 0 && !bundle.is_empty();
+            if (finishes && emitted > 0 && !whole) || !alone && !fits(emitted, bytes, ops, cost) {
                 break true;
             }
+            emitted += ops;
+            bytes += cost;
             let unsent = scratch.unsent.get(&id).copied();
             emit(aside, &mut scratch, &mut moving);
+            for j in carried {
+                emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
+            }
+            for retrash in bundle {
+                emit(retrash, &mut scratch, &mut moving);
+            }
             if !finishes {
                 wants[at] = None;
                 continue;
