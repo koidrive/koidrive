@@ -226,6 +226,7 @@ async fn deployed(paths: &Paths, device_name: &str, terminal: &Terminal) -> Resu
     terminal.message(
         "Enter the address of the server you deployed, such as https://koidrive.alice.workers.dev.",
     );
+    terminal.message("To deploy a server or find its claim code, follow https://github.com/koidrive/koidrive/blob/main/docs/deploy.md");
     let (api, claimed) = loop {
         let answer = terminal.input("Server address", false).await?;
         if answer.trim().is_empty() {
@@ -301,6 +302,14 @@ async fn deployed(paths: &Paths, device_name: &str, terminal: &Terminal) -> Resu
                 drop(progress);
                 api.request_claim_code().await.ok();
                 terminal.message("The claim code is wrong or has expired. Enter the newest Koidrive claim code from the log.");
+            }
+            Err(error)
+                if claimed
+                    && error.code == Code::Failed
+                    && koidrive_driver::claim_pending(paths, api.base()) =>
+            {
+                drop(progress);
+                terminal.message("That is not the code this device used. Enter the same claim code to finish the claim.");
             }
             Err(error) => return Err(error),
         }
@@ -668,7 +677,7 @@ fn expanded(path: &Path) -> Result<PathBuf, CliError> {
 
 fn ending(folder: &Path) -> String {
     format!(
-        "Setup complete. Add files to {}.\nCheck sync: koi status\n",
+        "Setup complete. Add files to {}.\nCheck sync: koi status\nAdd another device: run koi device invite here, then run the command it prints on the other device.\n",
         printable(&shown_folder(folder))
     )
 }

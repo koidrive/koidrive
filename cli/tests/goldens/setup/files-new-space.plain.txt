@@ -29,3 +29,4 @@ Send usage reports? [Y/n] y
 
 Setup complete. Add files to ~/Koidrive.
 Check sync: koi status
+Add another device: run koi device invite here, then run the command it prints on the other device.

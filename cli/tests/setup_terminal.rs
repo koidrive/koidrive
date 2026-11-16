@@ -314,6 +314,14 @@ impl Home {
                                 next: Vec::new(),
                             })
                             .unwrap(),
+                            "OTHER-CODE" => serde_json::to_value(Response::Error {
+                                message: "the server answered HTTP 403: CODE_FORBIDDEN: this deployment already has an owner".into(),
+                                human: None,
+                                code: Code::Failed,
+                                reason: None,
+                                next: Vec::new(),
+                            })
+                            .unwrap(),
                             _ => {
                                 let _ = credential(&server).save_new(&paths.credential());
                                 serde_json::json!({"response":"paired", "account":{
@@ -1518,6 +1526,12 @@ fn a_deployed_server_is_claimed_with_its_address_and_claim_code() {
             text.contains("search for \"Koidrive claim code\""),
             "{text}"
         );
+        assert_eq!(
+            text.matches("https://github.com/koidrive/koidrive/blob/main/docs/deploy.md")
+                .count(),
+            1,
+            "{text}"
+        );
         assert!(!text.contains("ABCD-EFGH-JKLM"), "{text}");
         let server = home.server.trim_end_matches('/');
         assert_eq!(
@@ -1596,7 +1610,7 @@ fn a_claim_that_did_not_finish_is_finished_with_its_code() {
     home.claimed.store(true, Ordering::Relaxed);
     fs::write(
         home.paths().pending_claim(),
-        serde_json::json!({"server": home.server, "code_sha256": "", "request_id": "r"})
+        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
             .to_string(),
     )
     .unwrap();
@@ -1620,6 +1634,35 @@ fn a_claim_that_did_not_finish_is_finished_with_its_code() {
             format!("claim {server} ABCD-EFGH-JKLM alice Laptop"),
         ]
     );
+    assert_eq!(home.links().len(), 1);
+}
+
+#[test]
+fn another_code_for_a_claim_that_did_not_finish_is_asked_again() {
+    let home = Home::new(&[]);
+    home.claimed.store(true, Ordering::Relaxed);
+    fs::write(
+        home.paths().pending_claim(),
+        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
+            .to_string(),
+    )
+    .unwrap();
+    let steps = [
+        step(ROUTE, choose(false, 0)),
+        step(ADDRESS, line(&home.server)),
+        step(CLAIM, line("OTHER-CODE")),
+        step(CLAIM, line("ABCD-EFGH-JKLM")),
+        step(TELEMETRY, no(false)),
+    ];
+    let args = ["--name", "Laptop"];
+    let output = home.setup(&steps, &args, &[("USER", "alice")], true, false, None);
+    let text = shown(output.clone());
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("That is not the code this device used."),
+        "{text}"
+    );
+    assert!(!text.contains(CODE), "{text}");
     assert_eq!(home.links().len(), 1);
 }
 
