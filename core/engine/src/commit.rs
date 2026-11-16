@@ -4547,10 +4547,7 @@ impl<'a> Scratch<'a> {
                     held |= moving.contains(folder);
                     up = self.parent(folder);
                 }
-                let lands_in_restored =
-                    (self.moves.get(*node)).is_some_and(|parent| self.inside(parent, &op.node_id));
-                !(elsewhere && (together && held || self.inside(&op.node_id, node))
-                    || lands_in_restored)
+                !(elsewhere && (together && held || self.inside(&op.node_id, node)))
             }),
             _ => awaited,
         }
