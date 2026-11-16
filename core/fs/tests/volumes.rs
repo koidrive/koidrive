@@ -626,12 +626,13 @@ fn a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there() 
     let Some(disks) = Disks::new() else {
         return;
     };
-    let mut pairs = vec![(disks.image("First"), disks.image("Second"))];
-    #[cfg(target_os = "macos")]
-    pairs.extend([
+    let pairs = vec![
+        (disks.image("First"), disks.image("Second")),
+        #[cfg(target_os = "macos")]
         (disks.fat("FATONE"), disks.fat("FATTWO")),
+        #[cfg(target_os = "macos")]
         (disks.exfat("EXONE"), disks.exfat("EXTWO")),
-    ]);
+    ];
     for (first, second) in &pairs {
         for scanned_while_away in [true, false] {
             scans_of_paths_inside(first, second, scanned_while_away);
