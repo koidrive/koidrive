@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::{Origin, Waiting};
 use koidrive_engine::commit::{Halt, InFlight, Slot};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
+use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
     FinishOrigin, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges, TreesChanges,
@@ -207,10 +207,15 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.published.insert(row.get(0)?);
         }
-        let mut stmt = self.0.prepare_cached("SELECT node_id FROM given_up")?;
+        let mut stmt =
+            (self.0).prepare_cached("SELECT node_id, content_rev, meta_rev FROM given_up")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.commits.given_up_nodes.insert(row.get(0)?);
+            let revisions = Revisions {
+                content_rev: row.get(1)?,
+                meta_rev: row.get(2)?,
+            };
+            state.commits.given_up_nodes.insert(row.get(0)?, revisions);
         }
         let mut stmt = self
             .0
@@ -1064,10 +1069,13 @@ impl Tx<'_> {
             "DELETE FROM published_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO published_nodes (node_id) VALUES (?1)",
         )?;
-        self.write_set(
+        self.write_map(
             given_up_nodes,
             "DELETE FROM given_up WHERE node_id = ?1",
-            "INSERT OR IGNORE INTO given_up (node_id) VALUES (?1)",
+            "INSERT OR REPLACE INTO given_up (node_id, content_rev, meta_rev) VALUES (?1, ?2, ?3)",
+            |insert, node, revisions| {
+                insert.execute(params![node, revisions.content_rev, revisions.meta_rev])
+            },
         )?;
         self.write_guard(guard)?;
 

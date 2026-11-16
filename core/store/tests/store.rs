@@ -1541,7 +1541,13 @@ fn engine_state() -> EngineState {
                 },
             ],
             published: nodes(["published"]),
-            given_up_nodes: nodes(["given up"]),
+            given_up_nodes: BTreeMap::from([(
+                "given up".into(),
+                Revisions {
+                    content_rev: 3,
+                    meta_rev: 7,
+                },
+            )]),
             guard: GuardState {
                 ledger: BTreeMap::from([
                     ("held".into(), Counted { at_ms: 5, files: 2 }),

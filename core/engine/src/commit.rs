@@ -207,7 +207,7 @@ pub struct Commits {
     /// until the server applies their create. The person chose to keep them beside what R holds,
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
-    given_up_nodes: TrackedSet<NodeId>,
+    given_up_nodes: TrackedMap<NodeId, Revisions>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
@@ -1299,14 +1299,34 @@ impl Commits {
         }
         self.hold(trees);
         self.split.retain(|id| trees.synced().live(id).is_some());
-        self.given_up_nodes.retain(|id| {
-            let remote = trees.remote().live(id);
-            remote.is_some()
-                && trees
-                    .local()
-                    .get(id)
-                    .is_none_or(|local| same(Some(&local.shape), remote))
+        self.given_up_nodes.retain(|id, given| {
+            let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
+                return false;
+            };
+            remote.content_rev == given.content_rev
+                && remote.meta_rev == given.meta_rev
+                && (trees.local().get(id))
+                    .is_none_or(|local| same(Some(&local.shape), Some(&remote.shape)))
         });
+        loop {
+            let holding: Vec<NodeId> = (self.given_up_nodes.keys())
+                .filter(|id| {
+                    (trees.remote_children(id).chain(trees.local_children(id)))
+                        .filter(|child| !self.given_up_nodes.contains_key(*child))
+                        .any(|child| match trees.local().get(child) {
+                            Some(local) => local.shape.parent == **id,
+                            None => trees.class(child) != Class::Local,
+                        })
+                })
+                .cloned()
+                .collect();
+            if holding.is_empty() {
+                break;
+            }
+            for id in holding {
+                self.given_up_nodes.remove(&id);
+            }
+        }
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();
@@ -1394,7 +1414,15 @@ impl Commits {
             }
             window *= 4;
         };
-        self.given_up_nodes.extend(given_up);
+        for id in given_up {
+            if let Some(node) = trees.remote().get(&id) {
+                let revisions = Revisions {
+                    content_rev: node.content_rev,
+                    meta_rev: node.meta_rev,
+                };
+                self.given_up_nodes.insert(id, revisions);
+            }
+        }
         for id in reverts {
             trees.revert(id);
         }
@@ -2203,7 +2231,7 @@ impl Commits {
                                 synced.set(id, Some(revived.shape.clone()));
                                 continue;
                             }
-                            let retrashed = (placed.contains(id) || given_up.contains(id))
+                            let retrashed = (placed.contains(id) || given_up.contains_key(id))
                                 && trees.local().get(id).is_some();
                             if !retrashed {
                                 synced.set(id, None);
@@ -2431,6 +2459,23 @@ impl Commits {
                 revisions.content_rev = node.content_rev;
             }
         }
+        let bumped: Vec<(NodeId, Revisions)> = (self.given_up_nodes.iter())
+            .filter_map(|(id, given)| {
+                let node = trees.remote().get(id)?;
+                let bumped = Revisions {
+                    content_rev: match node.content_rev == result.seq {
+                        true => node.content_rev,
+                        false => given.content_rev,
+                    },
+                    meta_rev: match node.meta_rev == result.seq {
+                        true => node.meta_rev,
+                        false => given.meta_rev,
+                    },
+                };
+                (bumped != *given).then(|| (id.clone(), bumped))
+            })
+            .collect();
+        self.given_up_nodes.extend(bumped);
         self.keep_unsent(trees, sent);
         self.accepted.set(flight.commit.device_seq);
         let made = Slot {
@@ -3680,7 +3725,7 @@ fn plan(
     cap: usize,
     answered: &[proto::Op],
     split: &BTreeSet<NodeId>,
-    given_up: &BTreeSet<NodeId>,
+    given_up: &BTreeMap<NodeId, Revisions>,
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
@@ -3820,7 +3865,7 @@ fn plan(
             });
         }
     }
-    deleted.extend(given_up.iter().filter(|id| !skip.contains(*id)).cloned());
+    deleted.extend(given_up.keys().filter(|id| !skip.contains(*id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
     scratch.finishing = finishing;
