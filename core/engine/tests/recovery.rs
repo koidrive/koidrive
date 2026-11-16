@@ -3324,6 +3324,31 @@ fn a_marked_file_at_its_place_in_a_moved_folder_whose_mark_cannot_follow_is_sett
 }
 
 #[test]
+fn a_file_whose_id_names_another_node_than_its_waiting_mark_is_asked_about_as_new() {
+    let (trees, commits, _) = followed(
+        &[("d0", dir(ROOT, "p")), ("n1", file("d0", "b", 2))],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "a", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "a", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2")],
+    );
+    assert_eq!(trees.synced().live("n1"), None);
+    let (entry, _) = (trees.local().iter())
+        .find(|(_, node)| node.shape == file("d0", "b", 2))
+        .expect("the entry stays on disk");
+    assert_ne!(entry, "n1");
+    asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[entry]);
+}
+
+#[test]
 fn a_file_whose_mark_names_another_node_is_not_settled_to_its_own_id_while_the_mark_waits() {
     let (trees, _, _) = followed(
         &[("d0", dir(ROOT, "q")), ("n0", file("d0", "a", 1))],

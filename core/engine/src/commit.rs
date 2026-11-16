@@ -550,7 +550,7 @@ impl Commits {
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
     /// scan of the disk (section 6.4). `device_seq` is the server's count of this device's commits
     /// there, which the next commit continues, and `history` the shapes the log gave nodes since
-    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. The commit in flight is dropped: the tree changes it
+    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark names another node than its ID, and that the mark cannot place yet, takes a new ID, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
     /// device changed it since S. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
@@ -580,12 +580,11 @@ impl Commits {
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         self.hold(trees);
-        let waiting = first_link::adopt_by_marks_first(trees, history, marks);
+        first_link::adopt_by_marks_first(trees, history, marks, ids, now_ms);
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .filter(|id| !waiting.contains(*id))
             .filter_map(|id| {
                 let local = trees.local().get(id).map(|node| &node.shape);
                 let live = trees.remote().live(id);

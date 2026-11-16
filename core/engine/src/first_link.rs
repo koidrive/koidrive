@@ -201,7 +201,9 @@ pub(crate) fn adopt_by_marks_first(
     trees: &mut Trees,
     history: &History,
     marks: &Marks,
-) -> BTreeSet<NodeId> {
+    ids: &mut IdGen,
+    now_ms: u64,
+) {
     let folders = folder_places(trees, history);
     let (_, mut waiting) = follow_marks(trees, history, marks, &folders, Pass::Latest);
     'adopt: loop {
@@ -213,10 +215,14 @@ pub(crate) fn adopt_by_marks_first(
                 continue 'adopt;
             }
         }
-        return (waiting.into_iter())
-            .filter(|(node, local)| node != local)
-            .map(|(_, local)| local)
-            .collect();
+        break;
+    }
+    let elsewhere: Vec<NodeId> = (waiting.into_iter())
+        .filter(|(node, local)| node != local && trees.remote().get(local).is_some())
+        .map(|(_, local)| local)
+        .collect();
+    for local in elsewhere {
+        rekey(trees, &local, &ids.uuid_v7(now_ms));
     }
 }
 
