@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, KeptEntries, LostPosition, MovedHere,
-    PendingFinish, TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
+    MovedHere, PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1543,9 +1543,12 @@ fn engine_state() -> EngineState {
             published: nodes(["published"]),
             given_up_nodes: BTreeMap::from([(
                 "given up".into(),
-                Revisions {
-                    content_rev: 3,
-                    meta_rev: 7,
+                GivenUp {
+                    revisions: Revisions {
+                        content_rev: 3,
+                        meta_rev: 7,
+                    },
+                    held_here: false,
                 },
             )]),
             guard: GuardState {

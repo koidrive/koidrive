@@ -14,8 +14,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, KeptEntries, LostPosition, MovedHere,
-    PendingFinish, StateError, TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
+    MovedHere, PendingFinish, StateError, TreesState,
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
 use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
@@ -373,9 +373,12 @@ fn commits_state() -> CommitsState {
         published: ["n".into()].into(),
         given_up_nodes: [(
             "u".into(),
-            Revisions {
-                content_rev: 2,
-                meta_rev: 5,
+            GivenUp {
+                revisions: Revisions {
+                    content_rev: 2,
+                    meta_rev: 5,
+                },
+                held_here: true,
             },
         )]
         .into(),

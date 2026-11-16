@@ -329,6 +329,14 @@ pub enum FinishOrigin {
     Legacy,
 }
 
+/// A node an answer gave up: the revisions R holds for it after the answer's commit, and whether L
+/// held it when the answer was planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GivenUp {
+    pub revisions: Revisions,
+    pub held_here: bool,
+}
+
 /// What [`Commits`](crate::commit::Commits) holds.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CommitsState {
@@ -368,7 +376,7 @@ pub struct CommitsState {
     pub published: BTreeSet<NodeId>,
     /// The nodes of a trash group an answer gave up (section 6.4) that a commit brought back from
     /// the trash without trashing them again, until a later commit trashes them.
-    pub given_up_nodes: BTreeMap<NodeId, Revisions>,
+    pub given_up_nodes: BTreeMap<NodeId, GivenUp>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -537,7 +545,7 @@ pub struct CommitsChanges {
     pub given_up: MapChanges<u64, Vec<String>>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
-    pub given_up_nodes: MapChanges<NodeId, Revisions>,
+    pub given_up_nodes: MapChanges<NodeId, GivenUp>,
     pub guard: GuardChanges,
 }
 
