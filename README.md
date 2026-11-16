@@ -5,8 +5,7 @@
 <h1 align="center">Koidrive</h1>
 
 <p align="center">
-  <strong>File sync you deploy to your own Cloudflare account.</strong><br>
-  Koidrive keeps folders in sync between your Macs and Linux machines and stores the files in your own R2 bucket.
+  Koidrive is an open-source Dropbox alternative for your Macs, Linux machines, and AI agents. You self-host its server in your own Cloudflare account. It keeps your folders in sync. R2 stores file chunks, and Durable Objects keep the file tree and history. Use the Mac app or the koi CLI, which supports JSON output for scripts and agents.
 </p>
 
 <p align="center">
