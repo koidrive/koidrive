@@ -590,6 +590,7 @@ impl Effects {
             Some(shape) => trees.set_local(
                 record.node.clone(),
                 LocalNode {
+                    left_out_when_placed: false,
                     shape: match (&record.effect, content) {
                         (Effect::Move { .. }, Some(content)) => Shape { content, ..shape },
                         _ => shape,

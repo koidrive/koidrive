@@ -1019,6 +1019,7 @@ mod tests {
                         pending_for: String::new(),
                     })?;
                     tx.put_local_node(&koidrive_store::LocalNode {
+                        left_out_when_placed: false,
                         node_id: node.node_id.clone(),
                         shape,
                         identity: snapshot.entries[Path::new(path)].id,

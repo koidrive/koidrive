@@ -284,6 +284,7 @@ fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
             trees.set_local(
                 (*id).into(),
                 LocalNode {
+                    left_out_when_placed: false,
                     shape: shape.clone(),
                     identity: identity(i as u128 + 1),
                     parked: false,
@@ -1054,6 +1055,7 @@ fn done_refuses_an_outcome_whose_name_another_node_took() {
     trees.set_local(
         "u".into(),
         LocalNode {
+            left_out_when_placed: false,
             shape: file(ROOT, "a", 2),
             identity: identity(7),
             parked: false,

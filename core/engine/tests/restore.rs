@@ -82,6 +82,7 @@ fn trees(nodes: &[Row]) -> Trees {
                 birth_ns: Some(0),
             };
             let node = LocalNode {
+                left_out_when_placed: false,
                 shape: shape.clone(),
                 identity,
                 parked: false,
@@ -485,6 +486,7 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
     ];
     let mut trees = trees(&rows);
     let folder = |name: &str, parked: bool| LocalNode {
+        left_out_when_placed: false,
         shape: dir(&root(), name),
         identity: FileIdentity {
             dev: 1,
@@ -1279,6 +1281,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
     acknowledge(&mut commits, &mut trees, vec![rejected("NOT_FOUND")]);
 
     let renamed = LocalNode {
+        left_out_when_placed: false,
         shape: dir(&root(), "A"),
         identity: FileIdentity {
             dev: 1,

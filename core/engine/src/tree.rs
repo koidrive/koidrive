@@ -182,6 +182,8 @@ pub struct LocalNode {
     pub shape: Shape,
     pub identity: FileIdentity,
     pub parked: bool,
+    /// Whether the rules left the node out when a scan last found it at a new parent or name.
+    pub left_out_when_placed: bool,
 }
 
 impl Node for LocalNode {

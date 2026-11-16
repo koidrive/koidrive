@@ -65,6 +65,7 @@ fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
     trees.set_local(
         id.into(),
         LocalNode {
+            left_out_when_placed: false,
             shape,
             identity,
             parked: false,

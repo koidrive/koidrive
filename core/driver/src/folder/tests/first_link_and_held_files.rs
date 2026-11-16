@@ -648,3 +648,73 @@ fn a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is
     }
 }
 
+
+#[test]
+fn a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart()
+ {
+    for restart in [false, true] {
+        let mut remote = Remote::new();
+        let site = synced_before(&mut remote, "b");
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("server.txt"), b"written on a");
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"left-out.txt\n");
+        fs::create_dir(site.root.join("new")).unwrap();
+        fs::write(site.root.join("new/mine.txt"), b"mine").unwrap();
+        let mut b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert_eq!(b.folder.view().questions, 1, "{restart}");
+        fs::rename(site.root.join("server.txt"), site.root.join("new/left-out.txt")).unwrap();
+        b.scan_until(|b| {
+            (b.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "left-out.txt")
+        });
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        let left_out = |b: &Device| -> Vec<String> {
+            (b.folder.engine.trees.local().iter())
+                .filter(|(_, node)| node.left_out_when_placed)
+                .map(|(_, node)| node.shape.name.clone())
+                .collect()
+        };
+        let before = left_out(&b);
+        assert_eq!(before, ["left-out.txt"], "{restart}");
+        if restart {
+            drop(b);
+            b = site.start();
+            assert_eq!(left_out(&b), before, "the flag survives the restart");
+            b.connect(&remote);
+            b.scan_until(|b| b.folder.scanned);
+            b.run(&mut remote);
+        }
+        a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{restart}: nothing is sent before the answer");
+
+        answer(&site, Answer::Discard);
+        let step = b.folder.requested();
+        b.take(step).unwrap();
+        for _ in 0..3 {
+            b.run(&mut remote);
+            b.settle();
+        }
+        b.run(&mut remote);
+        assert!(b.sent.is_empty(), "{restart}: nothing is sent for the discarded folder");
+        assert_eq!(remote.names(), [".koiignore", "server.txt"], "{restart}");
+        assert_eq!(
+            fs::read(site.root.join("server.txt")).unwrap(),
+            b"written on a",
+            "{restart}"
+        );
+        assert!(!site.root.join("new").exists(), "{restart}");
+        assert_eq!(b.folder.view().questions, 0, "{restart}");
+    }
+}

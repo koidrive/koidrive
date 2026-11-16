@@ -1539,8 +1539,9 @@ impl Trees {
 
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
-    pub fn set_local(&mut self, id: NodeId, node: LocalNode) {
+    pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
         if let Some(old) = self.l.get(&id) {
+            node.left_out_when_placed = old.left_out_when_placed;
             if !old.shape.same(&node.shape) {
                 self.resends.remove(&id);
                 self.lost_creates.remove(&id);
@@ -1618,9 +1619,9 @@ impl Trees {
     /// when it ends at the bytes S holds, unless it keeps the content of the shape S forgot for it
     /// ([`TreesState::forgotten_shapes`]).
     pub fn set_local_changed(&mut self, id: NodeId, node: LocalNode) {
-        if !node.parked
-            && (self.l.get(&id)).is_some_and(|old| !old.shape.same_position(&node.shape))
-        {
+        let placed = !node.parked
+            && (self.l.get(&id)).is_none_or(|old| !old.shape.same_position(&node.shape));
+        if placed && self.l.get(&id).is_some() {
             self.unsent_marks.remove(&id);
         }
         if !(self.l.get(&id)).is_some_and(|old| old.shape.same(&node.shape)) {
@@ -1639,7 +1640,17 @@ impl Trees {
                 self.local_changes.insert(id.clone());
             }
         }
-        self.set_local(id, node);
+        self.set_local(id.clone(), node);
+        if placed {
+            let left_out = self.excluded(&id);
+            self.set_left_out_when_placed(&id, left_out);
+        }
+    }
+
+    pub(crate) fn set_left_out_when_placed(&mut self, id: &str, left_out: bool) {
+        if let Some(node) = self.l.get_mut(id) {
+            node.left_out_when_placed = left_out;
+        }
     }
 
     pub(crate) fn sent_shape(&mut self, id: &str, shape: &Shape) {
@@ -2095,8 +2106,10 @@ impl Trees {
         let mut kept = Vec::new();
         for folder in shown.keys() {
             for child in self.local_children(folder) {
-                if !shown.contains_key(child) && self.excluded(child) {
-                    self.server_copy(child, &mut kept);
+                let left_out = self.excluded(child)
+                    || (self.l.get(child)).is_some_and(|node| node.left_out_when_placed);
+                if !shown.contains_key(child) && left_out {
+                    self.server_copy(child, shown, &mut kept);
                 }
             }
         }
@@ -2105,21 +2118,26 @@ impl Trees {
         }
     }
 
-    fn server_copy(&self, id: &NodeId, kept: &mut Vec<(NodeId, Shape)>) -> bool {
+    fn server_copy(
+        &self,
+        id: &NodeId,
+        shown: &BTreeMap<NodeId, Shape>,
+        kept: &mut Vec<(NodeId, Shape)>,
+    ) -> bool {
         let (Some(local), Some(remote)) = (self.l.get(id), self.r.get(id)) else {
             return false;
         };
         let start = kept.len();
         let copy = match local.shape.kind {
             Kind::File => match (&local.shape.content, &remote.shape.content) {
-                (Some(local), Some(remote)) => same_content(local, remote),
+                (Some(local), Some(remote)) => same_content(local, remote) || !self.edited(id),
                 _ => false,
             },
             Kind::Dir => {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
                 children
                     .into_iter()
-                    .all(|child| self.server_copy(child, kept))
+                    .all(|child| shown.contains_key(child) || self.server_copy(child, shown, kept))
             }
         };
         if copy {

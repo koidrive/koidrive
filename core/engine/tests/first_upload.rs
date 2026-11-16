@@ -59,6 +59,7 @@ fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
         ..Default::default()
     });
     LocalNode {
+        left_out_when_placed: false,
         shape: Shape {
             parent,
             name,

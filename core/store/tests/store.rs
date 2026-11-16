@@ -688,6 +688,7 @@ fn populate(path: &Path) {
                 pending_for: String::new(),
             })?;
             tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
                 node_id: "moved".into(),
                 shape: moved.clone(),
                 identity: FileId {
@@ -1030,6 +1031,7 @@ fn three_trees_round_trip() {
     ];
     let local = [
         LocalNode {
+            left_out_when_placed: false,
             node_id: "f".into(),
             shape: file_shape("root", "b\u{301}.txt"),
             identity: FileId {
@@ -1040,6 +1042,7 @@ fn three_trees_round_trip() {
             parked: false,
         },
         LocalNode {
+            left_out_when_placed: false,
             node_id: "p".into(),
             shape: dir_shape("root", "swap"),
             identity: FileId {
@@ -2165,6 +2168,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     trees.set_local(
         "f".into(),
         EngineLocalNode {
+            left_out_when_placed: false,
             shape: shape.clone(),
             identity: FileIdentity {
                 dev: 1,
@@ -2199,6 +2203,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
                 ..Default::default()
             })?;
             tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
                 node_id: "f".into(),
                 shape: Shape {
                     parent_id: "root".into(),
@@ -2709,6 +2714,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         pending_by: None,
     };
     let local = |name: &str| EngineLocalNode {
+        left_out_when_placed: false,
         shape: engine_shape("root", name),
         identity: FileIdentity {
             dev: 1,
@@ -2831,6 +2837,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         pending_by: None,
     };
     let local = |name: &str| EngineLocalNode {
+        left_out_when_placed: false,
         shape: engine_shape("root", name),
         identity: FileIdentity {
             dev: 1,
@@ -2927,6 +2934,7 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
     state.trees.lost_creates.clear();
     let local =
         [("a", u64::MAX), ("b", 1 << 63), ("c", 42), ("d", 0)].map(|(node_id, ino)| LocalNode {
+            left_out_when_placed: false,
             node_id: node_id.into(),
             shape: file_shape("root", node_id),
             identity: FileId {
@@ -3135,6 +3143,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                 trees.set_local(
                     node_id.into(),
                     koidrive_engine::tree::LocalNode {
+                        left_out_when_placed: false,
                         shape: at(name),
                         identity: FileIdentity {
                             dev: 1,
@@ -3206,6 +3215,7 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
         .transaction(|tx| {
             tx.set_engine_state(&state)?;
             tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
                 node_id: "d".into(),
                 shape: dir_shape("root", "A (pending)"),
                 identity: FileId {
@@ -3269,6 +3279,7 @@ fn an_inode_wider_than_64_bits_survives_a_reopen() {
         },
     );
     let local = [("a", u128::MAX), ("b", 1 << 64)].map(|(node_id, ino)| LocalNode {
+        left_out_when_placed: false,
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
         identity: FileId {
@@ -3445,6 +3456,7 @@ fn a_store_from_before_discarded_shapes_were_recorded_takes_them_from_the_waitin
             })?;
             for (node_id, name) in [("d", "d-edited.txt"), ("l", "l.txt")] {
                 tx.put_local_node(&LocalNode {
+                    left_out_when_placed: false,
                     node_id: node_id.into(),
                     shape: file_shape("root", name),
                     identity: FileId {
@@ -3517,6 +3529,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     trees.set_local(
         "secret".into(),
         Entry {
+            left_out_when_placed: false,
             shape: engine_shape("root", "secret.txt"),
             identity,
             parked: false,
@@ -3577,6 +3590,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
         .unwrap()
         .transaction(|tx| {
             tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
                 node_id: "secret".into(),
                 shape: now,
                 identity: FileId {
@@ -4028,6 +4042,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 birth_ns: Some(0),
             };
             let entry = Entry {
+                left_out_when_placed: false,
                 shape,
                 identity,
                 parked: false,
@@ -4085,6 +4100,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 .enumerate()
                 {
                     tx.put_local_node(&LocalNode {
+                        left_out_when_placed: false,
                         node_id: id.into(),
                         shape,
                         identity: FileId {
@@ -4178,6 +4194,7 @@ fn a_store_from_before_local_changes_were_recorded_records_each_local_node_s_hol
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let local = |node_id: &str, shape: Shape, ino: u64| LocalNode {
+        left_out_when_placed: false,
         node_id: node_id.into(),
         shape,
         identity: FileId {
@@ -4336,6 +4353,7 @@ fn a_store_from_before_local_changes_were_recorded_records_no_node_l_holds_as_s_
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let local = |node_id: &str, shape: Shape, ino: u64| LocalNode {
+        left_out_when_placed: false,
         node_id: node_id.into(),
         shape,
         identity: FileId {
@@ -4473,6 +4491,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         version_id: version_id.into(),
     };
     let local = |shape, ino| EngineLocalNode {
+        left_out_when_placed: false,
         shape,
         identity: FileIdentity {
             dev: 1,
@@ -4592,5 +4611,56 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     let resent = commits.build(&mut trees, &mut ids, 1_794_268_740_002, "history", "me", 1);
     assert!(
         resent.is_some_and(|commit| commit.ops.iter().any(edit) && !commit.ops.iter().any(copy))
+    );
+}
+
+fn placed(node_id: &str, ino: u64, left_out_when_placed: bool) -> LocalNode {
+    LocalNode {
+        node_id: node_id.into(),
+        shape: file_shape("root", node_id),
+        identity: FileId {
+            dev: 1,
+            ino: ino.into(),
+            birth_ns: None,
+        },
+        parked: false,
+        left_out_when_placed,
+    }
+}
+
+#[test]
+fn a_local_node_keeps_whether_the_rules_left_it_out_when_it_was_placed_across_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let local = [placed("a.txt", 1, true), placed("b.txt", 2, false)];
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| {
+            for node in &local {
+                tx.put_local_node(node)?;
+            }
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.local_nodes()).unwrap(), local);
+}
+
+#[test]
+fn a_store_from_before_placements_were_recorded_reads_every_local_node_as_placed_while_included() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.put_local_node(&placed("a.txt", 1, true)))
+        .unwrap();
+    store_before(&path, "local_nodes_left_out_when_placed");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    assert_eq!(
+        store.transaction(|tx| tx.local_nodes()).unwrap(),
+        [placed("a.txt", 1, false)]
     );
 }
