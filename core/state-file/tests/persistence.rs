@@ -10,7 +10,125 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use koidrive_state_file::{AtomicFile, Publish, recover, write, write_with_legacy};
+use koidrive_state_file::{
+    AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
+};
+
+#[test]
+fn matching_legacy_cleanup_stays_in_the_prepared_directory_after_an_ancestor_moves() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("parent");
+    let moved = root.path().join("moved");
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("state.json");
+    let name = "state.json.tmp";
+    fs::write(dir.join(name), b"abandoned").unwrap();
+    let stage = AtomicFile::prepare(&path).unwrap();
+    stage.as_file().write_all(b"new state").unwrap();
+    stage
+        .finish_with_legacy_matching(Publish::Replace, |entry| {
+            if entry != name {
+                return false;
+            }
+            fs::rename(&dir, &moved).unwrap();
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join(name), b"replacement directory's data").unwrap();
+            true
+        })
+        .unwrap();
+    assert_eq!(fs::read(moved.join("state.json")).unwrap(), b"new state");
+    assert!(!moved.join(name).exists());
+    assert_eq!(
+        fs::read(dir.join(name)).unwrap(),
+        b"replacement directory's data"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn removal_and_legacy_selection_share_the_same_directory_after_an_ancestor_moves() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("parent");
+    let moved = root.path().join("moved");
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("state.json");
+    let name = "state.json.tmp";
+    fs::write(&path, b"saved").unwrap();
+    fs::write(dir.join(name), b"abandoned").unwrap();
+    remove_with_legacy_matching(&path, |entry| {
+        if entry != name {
+            return false;
+        }
+        fs::rename(&dir, &moved).unwrap();
+        fs::create_dir(&dir).unwrap();
+        fs::write(&path, b"another saved state").unwrap();
+        fs::write(dir.join(name), b"another legacy-looking file").unwrap();
+        true
+    })
+    .unwrap();
+    assert!(!moved.join("state.json").exists());
+    assert!(!moved.join(name).exists());
+    assert_eq!(fs::read(&path).unwrap(), b"another saved state");
+    assert_eq!(
+        fs::read(dir.join(name)).unwrap(),
+        b"another legacy-looking file"
+    );
+    remove_with_legacy_matching(&root.path().join("absent/state.json"), |_| true).unwrap();
+    assert!(!root.path().join("absent").exists());
+}
+
+#[test]
+fn removal_validates_all_legacy_names_before_removing_the_saved_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    fs::write(&path, b"saved").unwrap();
+    let legacy = dir.path().join("state.json.tmp");
+    fs::write(&legacy, b"abandoned").unwrap();
+    assert_eq!(
+        remove_with_legacy_matching(&path, |_| true)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"saved");
+    assert_eq!(fs::read(&legacy).unwrap(), b"abandoned");
+}
+
+#[test]
+fn removal_cannot_unlink_a_live_stage_through_a_filesystem_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = AtomicFile::prepare(&dir.path().join("live.json")).unwrap();
+    live.as_file().write_all(b"live").unwrap();
+    let stage = fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let path = dir.path().join("state.json");
+    fs::hard_link(&stage, &path).unwrap();
+    assert_eq!(
+        remove_with_legacy_matching(&path, |_| false)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"live");
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, b"saved").unwrap();
+    let legacy = dir.path().join("state.json.tmp");
+    fs::hard_link(&stage, &legacy).unwrap();
+    assert_eq!(
+        remove_with_legacy_matching(&path, |name| name == "state.json.tmp")
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"saved");
+    assert_eq!(fs::read(&legacy).unwrap(), b"live");
+    assert_eq!(fs::read(&stage).unwrap(), b"live");
+    drop(live);
+}
 
 #[test]
 fn legacy_cleanup_follows_successful_publication() {

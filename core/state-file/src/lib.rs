@@ -97,24 +97,25 @@ impl AtomicFile {
         self.finish_with_legacy(publish, &[])
     }
 
+    /// Selects obsolete regular files and symlinks from the anchored directory, then publishes and removes them.
+    /// Callers must own the selected names and exclude concurrent writers of those legacy stages.
+    pub fn finish_with_legacy_matching(
+        self,
+        publish: Publish,
+        legacy: impl FnMut(&OsStr) -> bool,
+    ) -> io::Result<File> {
+        let names = matching_legacy(&self.directory, legacy)?;
+        self.finish_with_legacy(
+            publish,
+            &names.iter().map(OsString::as_os_str).collect::<Vec<_>>(),
+        )
+    }
+
     /// Publishes the file, then removes obsolete sibling stages while the directory is locked.
     /// Callers must own the legacy names. Names cannot escape the directory, name the destination,
     /// or overlap the helper's staging namespace. A cleanup failure can follow complete publication.
     pub fn finish_with_legacy(mut self, publish: Publish, legacy: &[&OsStr]) -> io::Result<File> {
-        for name in legacy {
-            if Path::new(name).file_name() != Some(*name)
-                || name.as_bytes().contains(&0)
-                || name
-                    .as_bytes()
-                    .eq_ignore_ascii_case(self.destination.as_bytes())
-                || is_reserved_stage(name.as_bytes())
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid legacy stage name",
-                ));
-            }
-        }
+        validate_legacy(&self.destination, legacy)?;
         self.file.sync_all()?;
         let _lock = DirectoryLock::new(&self.directory)?;
         if aliases_stage(&self.directory, &self.destination)? {
@@ -195,6 +196,50 @@ pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Re
     stage.finish_with_legacy(Publish::Replace, legacy).map(drop)
 }
 
+/// Removes a state file and obsolete sibling stages, then syncs the directory without allocating a stage.
+/// Selects obsolete regular files and symlinks from the anchored directory. Callers must own the selected
+/// names and exclude concurrent writers of the destination and legacy stages.
+/// Missing files or directories are already removed. A cleanup failure can follow removal of the destination.
+pub fn remove_with_legacy_matching(
+    path: &Path,
+    legacy: impl FnMut(&OsStr) -> bool,
+) -> io::Result<()> {
+    let destination = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a state file needs a name"))?;
+    if is_reserved_stage(destination.as_bytes()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a state-file destination cannot use the staging namespace",
+        ));
+    }
+    let directory = match open_directory(parent(path)) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let _lock = DirectoryLock::new(&directory)?;
+    recover_locked(&directory)?;
+    let names = matching_legacy(&directory, legacy)?;
+    let legacy: Vec<_> = names.iter().map(OsString::as_os_str).collect();
+    validate_legacy(destination, &legacy)?;
+    for name in std::iter::once(&destination).chain(&legacy) {
+        if aliases_stage(&directory, name)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a removed name cannot alias a helper stage",
+            ));
+        }
+    }
+    for name in std::iter::once(&destination).chain(&legacy) {
+        match fs::unlinkat(&directory, *name, AtFlags::empty()) {
+            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    directory.sync_all()
+}
+
 /// Removes this helper's abandoned stages, but never a stage locked by a live writer.
 /// Inaccessible stages are left untouched so they cannot block other publications.
 /// Call before disclosing a directory's contents. A missing directory needs no recovery.
@@ -215,6 +260,48 @@ fn parent(path: &Path) -> &Path {
     path.parent()
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
+}
+
+fn validate_legacy(destination: &OsStr, legacy: &[&OsStr]) -> io::Result<()> {
+    for name in legacy {
+        if Path::new(name).file_name() != Some(*name)
+            || name.as_bytes().contains(&0)
+            || name.as_bytes().eq_ignore_ascii_case(destination.as_bytes())
+            || is_reserved_stage(name.as_bytes())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid legacy stage name",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn matching_legacy(
+    directory: &File,
+    mut legacy: impl FnMut(&OsStr) -> bool,
+) -> io::Result<Vec<OsString>> {
+    let mut names = Vec::new();
+    for entry in Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = OsStr::from_bytes(entry.file_name().to_bytes());
+        if !legacy(name) {
+            continue;
+        }
+        let metadata = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) => metadata,
+            Err(rustix::io::Errno::NOENT) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if matches!(
+            FileType::from_raw_mode(metadata.st_mode),
+            FileType::RegularFile | FileType::Symlink
+        ) {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 fn open_directory(dir: &Path) -> io::Result<File> {

@@ -10,6 +10,8 @@ Dropping a stage removes it. A killed process cannot run cleanup, so the next `p
 
 Recovery opens read-only or write-only stages and leaves inaccessible stages untouched. A destination cannot use the helper's reserved staging namespace. `finish_with_legacy` and `write_with_legacy` remove explicitly named obsolete siblings after publication, under the directory lock. They reject names that escape the directory, name the destination, or overlap the helper's stages. The caller must hold the ownership lock shared with historical writers.
 
+Pending-claim mutations borrow the Driver's profile lease. Their legacy selector recognizes only canonical positive PID names in `.pending-claim.json.<pid>.tmp`. `finish_with_legacy_matching` selects siblings through the prepared directory descriptor, so an ancestor move cannot redirect cleanup. `remove_with_legacy_matching` selects and removes state through one directory descriptor, then syncs it without creating a stage. Claim status reads do not recover or rewrite files.
+
 ## Checks
 
 | Rule | Enforcement |
