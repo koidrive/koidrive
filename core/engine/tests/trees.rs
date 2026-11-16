@@ -611,6 +611,23 @@ fn a_group_larger_than_the_search_limit_stays_dirty_and_is_listed() {
 }
 
 #[test]
+fn content_both_sides_agree_on_counts_as_the_server_s_whatever_the_size_of_its_group() {
+    for n in [SETTLE_GROUP_LIMIT, SETTLE_GROUP_LIMIT + 1] {
+        let mut trees = Trees::new(ROOT);
+        for i in 0..n {
+            let from = file(ROOT, &format!("x{i}"), 1);
+            let to = file(ROOT, &format!("x{}", (i + 1) % n), 2);
+            same_change(&mut trees, &format!("f{i:02}"), from, to, i as u128);
+        }
+        trees.settle();
+        let from_server: Vec<bool> = (trees.local().iter())
+            .map(|(_, node)| node.content_from_server)
+            .collect();
+        assert_eq!(from_server, vec![true; n], "{n}");
+    }
+}
+
+#[test]
 fn a_swap_that_would_clash_with_an_unsettled_sibling_waits() {
     let mut trees = Trees::new(ROOT);
     same_change(&mut trees, "a", file(ROOT, "x", 1), file(ROOT, "y", 1), 1);

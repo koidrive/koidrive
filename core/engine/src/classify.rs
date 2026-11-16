@@ -3932,11 +3932,20 @@ impl Trees {
                 continue;
             }
             if synced.content != remote.content {
+                let agreed = (self.l.get(id)).is_some_and(|local| {
+                    matches!(
+                        (&local.shape.content, &remote.content),
+                        (Some(local), Some(remote)) if same_content(local, remote)
+                    )
+                });
                 let next = Shape {
                     content: remote.content.clone(),
                     ..synced.clone()
                 };
                 self.set_synced_unmarked(id, Some(next));
+                if agreed {
+                    self.set_content_from_server(id, true);
+                }
             }
         }
         self.same = pending;
