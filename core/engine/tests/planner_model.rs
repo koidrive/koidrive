@@ -2315,7 +2315,18 @@ fn faults(
     let mut hard = Vec::new();
     let mut soft = Vec::new();
     let verdicts: Vec<&Verdict> = run.sent.iter().map(|sent| &sent.verdict).collect();
+    let trashed_before: BTreeSet<String> = (0..told.len())
+        .map(|i| told.id(i))
+        .filter(|id| (run.before.node(id)).is_some_and(|node| node.status() != NodeStatus::Live))
+        .map(|id| told.label_of(root, &id))
+        .collect();
+    let lost_kept = (verdicts.iter())
+        .flat_map(|verdict| &verdict.lost)
+        .any(|label| !trashed_before.contains(label));
     for kind in kinds(&verdicts) {
+        if kind == "lost" && !lost_kept {
+            continue;
+        }
         if kind == "made-up name" {
             soft.push(kind.to_string());
         } else {
@@ -2539,13 +2550,6 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     }
     let baseline = |fault: &str| match story {
         _ if main_baseline(fault).is_some() => main_baseline(fault),
-        Story::Answer(..)
-            if fault.starts_with("under a cap of")
-                && (fault.ends_with(": ends while a node is not where L holds it")
-                    || fault.ends_with(": ends while an edit is not kept in place")) =>
-        {
-            Some("a split bundle never finishes")
-        }
         Story::Answer(_, Answer::Publish, _)
             if fault.contains("a folder the answer gives up is live")
                 || fault.contains("ends while a node is not where L holds it") =>

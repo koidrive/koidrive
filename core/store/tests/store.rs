@@ -106,6 +106,7 @@ fn migrations_apply_from_empty() {
             "engine_state",
             "failed_effects",
             "forgotten_shapes",
+            "given_up",
             "guard_confirmed",
             "guard_confirmed_limits",
             "guard_confirmed_members",
@@ -1469,6 +1470,7 @@ fn engine_state() -> EngineState {
                 },
             ],
             published: nodes(["published"]),
+            given_up: nodes(["given up"]),
             guard: GuardState {
                 ledger: BTreeMap::from([
                     ("held".into(), Counted { at_ms: 5, files: 2 }),
@@ -1568,7 +1570,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 44] = [
+const ENGINE_TABLES: [&str; 45] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1606,6 +1608,7 @@ const ENGINE_TABLES: [&str; 44] = [
     "past_positions",
     "dropped_edits",
     "cycle_reverted",
+    "given_up",
     "unsent_moves",
     "removed_here",
     "unsent_marks",
@@ -4641,6 +4644,31 @@ fn a_store_from_before_dropped_edits_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.dropped_edits.clear();
     assert!(!after.trees.dropped_edits.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_given_up_nodes_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "given_up");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.commits.given_up.clear();
+    assert!(!after.commits.given_up.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

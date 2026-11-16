@@ -1467,10 +1467,49 @@ fn publishing_a_folder_keeps_the_child_the_rewind_trashed_with_it_trashed() {
     assert!(commits.in_flight().unwrap().commit.require_head);
 }
 
+fn limit_exceeded() -> Error {
+    Error {
+        code: error::Code::LimitExceeded as i32,
+        ..Default::default()
+    }
+}
+
+fn applied(commits: &mut Commits, trees: &mut Trees, seq: u64, nodes: &[(&str, Shape, bool)]) {
+    for (id, shape, trashed) in nodes {
+        let node = RemoteNode {
+            made_over: Vec::new(),
+            shape: shape.clone(),
+            trashed: *trashed,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: seq,
+            meta_edit_rev: seq,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        };
+        trees.set_remote((*id).into(), node);
+    }
+    let sent = commits.in_flight().unwrap().commit.ops.len();
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq,
+        results: vec![applied; sent],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle();
+}
+
 #[test]
-fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
+fn an_answer_whose_trash_again_does_not_fit_goes_first_and_the_trash_again_follows() {
     let mut trees = trees(
-        &[("d", dir(ROOT, "new"))],
+        &[("d", dir(ROOT, "new")), ("f", file("d", "child", 1))],
         &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
         &[
             Remote("d", dir(ROOT, "old"), true, 1),
@@ -1480,15 +1519,6 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
     assert!(commits.decide(&question.id, Answer::Publish));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 3);
-    let limit = Error {
-        code: error::Code::LimitExceeded as i32,
-        ..Default::default()
-    };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -1496,6 +1526,83 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
             ("move", "f".into()),
             ("delete", "f".into())
         ]
+    );
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle();
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("f", file("d", "child", 1), false),
+        ],
+    );
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "f".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        3,
+        &[("f", file("d", "child", 1), true)],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "f"),
+        "{done:?}"
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn an_answer_split_by_the_op_limit_sends_the_rest_after_its_own_revival_without_asking_again() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "new")), ("f", file("d", "renamed", 1))],
+        &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("f", file("d", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d", "f"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into()), ("move", "f".into())]
+    );
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle();
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("f", file("d", "child", 1), false),
+        ],
+    );
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "f".into())]
     );
 }
 
@@ -1873,14 +1980,10 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
     assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 2);
-    let limit = Error {
-        code: error::Code::LimitExceeded as i32,
-        ..Default::default()
-    };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let [(_, first)] = &sent[..] else {
         panic!("{sent:?}");

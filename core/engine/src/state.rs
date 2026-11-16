@@ -328,6 +328,9 @@ pub struct CommitsState {
     /// The local entries a Publish answer to a first link's question released, until the server
     /// applies their create.
     pub published: BTreeSet<NodeId>,
+    /// The nodes of a trash group an answer gave up (section 6.4) that a commit brought back from
+    /// the trash without trashing them again, until a later commit trashes them.
+    pub given_up: BTreeSet<NodeId>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -480,6 +483,7 @@ pub struct CommitsChanges {
     pub slots: MapChanges<u64, u64>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
+    pub given_up: SetChanges<NodeId>,
     pub guard: GuardChanges,
 }
 
@@ -499,6 +503,7 @@ impl CommitsChanges {
             slots,
             questions,
             published,
+            given_up,
             guard,
         } = after;
         Self {
@@ -514,6 +519,7 @@ impl CommitsChanges {
             slots: map_changes(&before.slots, slots),
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
+            given_up: set_changes(&before.given_up, given_up),
             guard: GuardChanges::between(&before.guard, guard),
         }
     }

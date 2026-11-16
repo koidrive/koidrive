@@ -194,6 +194,7 @@ pub struct Commits {
     /// until the server applies their create. The person chose to keep them beside what R holds,
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
+    given_up: TrackedSet<NodeId>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
 }
@@ -223,6 +224,7 @@ impl Commits {
             slots: (*self.slots).clone(),
             questions: (*self.questions).clone(),
             published: (*self.published).clone(),
+            given_up: (*self.given_up).clone(),
             guard: self.guard.state(),
         }
     }
@@ -242,6 +244,7 @@ impl Commits {
             slots,
             questions,
             published,
+            given_up,
             guard,
             granted: _,
         } = self;
@@ -258,6 +261,7 @@ impl Commits {
             slots: slots.take_changes(),
             questions: questions.take_changed().cloned(),
             published: published.take_changes(),
+            given_up: given_up.take_changes(),
             guard: guard.take_changes(),
         }
     }
@@ -323,6 +327,7 @@ impl Commits {
             slots,
             questions,
             published,
+            given_up,
             guard,
         } = state;
         Ok(Self {
@@ -338,6 +343,7 @@ impl Commits {
             slots: slots.into(),
             questions: questions.into(),
             published: published.into(),
+            given_up: given_up.into(),
             guard: guard.into(),
             granted: Unstored::default(),
         })
@@ -585,6 +591,7 @@ impl Commits {
         self.split.clear();
         self.aliases.clear();
         self.published.clear();
+        self.given_up.clear();
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
@@ -1165,6 +1172,14 @@ impl Commits {
         }
         self.hold(trees);
         self.split.retain(|id| trees.synced().live(id).is_some());
+        self.given_up.retain(|id| {
+            let remote = trees.remote().live(id);
+            remote.is_some()
+                && trees
+                    .local()
+                    .get(id)
+                    .is_none_or(|local| same(Some(&local.shape), remote))
+        });
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases
             .retain(|id, _| trees.local().get(id).is_some() && trees.reverted().contains(id));
@@ -1188,7 +1203,7 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, reverts, cycle_reverts) = loop {
+        let (planned, deletes, reverts, cycle_reverts, given_up) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1238,6 +1253,7 @@ impl Commits {
                     cap,
                     &answered,
                     &self.split,
+                    &self.given_up,
                     &self.aliases,
                     &restores,
                     &answers,
@@ -1256,6 +1272,7 @@ impl Commits {
             }
             window *= 4;
         };
+        self.given_up.extend(given_up);
         for id in reverts {
             trees.revert(id);
         }
@@ -1716,6 +1733,7 @@ impl Commits {
         let mut agreed: BTreeMap<NodeId, Agreed> = BTreeMap::new();
         let mut unreverted: BTreeSet<NodeId> = BTreeSet::new();
         let aliases = self.aliases.clone();
+        let given_up = (*self.given_up).clone();
         let lost: Vec<NodeId> = (flight.commit.ops.iter())
             .filter_map(|op| match &op.op {
                 Some(op::Op::CreateDir(create)) => Some(&create.node_id),
@@ -2020,7 +2038,8 @@ impl Commits {
                                 synced.set(id, Some(revived.shape.clone()));
                                 continue;
                             }
-                            let retrashed = placed.contains(id) && trees.local().get(id).is_some();
+                            let retrashed = (placed.contains(id) || given_up.contains(id))
+                                && trees.local().get(id).is_some();
                             if !retrashed {
                                 synced.set(id, None);
                             }
@@ -2230,6 +2249,20 @@ impl Commits {
         trees.watch_content([]);
         trees.watch_positions([]);
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
+        let mut sent = sent;
+        for revisions in (sent.iter_mut())
+            .flat_map(|question| question.held.iter_mut())
+            .flat_map(|(_, item)| item.members.iter_mut())
+            .filter_map(|(id, revisions)| Some((trees.remote().get(id)?, revisions.as_mut()?)))
+        {
+            let (node, revisions) = revisions;
+            if node.meta_rev == result.seq {
+                revisions.meta_rev = node.meta_rev;
+            }
+            if node.content_rev == result.seq {
+                revisions.content_rev = node.content_rev;
+            }
+        }
         self.keep_unsent(trees, sent);
         self.accepted.set(flight.commit.device_seq);
         self.slots.insert(flight.commit.device_seq, result.seq);
@@ -2352,6 +2385,13 @@ impl Commits {
             Failure::Abandoned | Failure::Resync => self.in_flight.set(None),
             Failure::Split => {
                 let flight = self.in_flight.get_mut().take().expect("checked");
+                for question in self.questions.get_mut() {
+                    if let QuestionKind::Recovery { sent_in, .. } = &mut question.kind
+                        && sent_in.as_deref() == Some(flight.commit.commit_id.as_str())
+                    {
+                        *sent_in = None;
+                    }
+                }
                 let ops = flight.commit.ops;
                 let restored = carried(&self.restores, &ops);
                 let restore = restored
@@ -3315,6 +3355,7 @@ type Planned = (
     BTreeMap<NodeId, Vec<NodeId>>,
     Vec<NodeId>,
     Vec<NodeId>,
+    BTreeSet<NodeId>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -3328,6 +3369,7 @@ fn plan(
     cap: usize,
     answered: &[proto::Op],
     split: &BTreeSet<NodeId>,
+    given_up: &BTreeSet<NodeId>,
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
@@ -3467,6 +3509,7 @@ fn plan(
             });
         }
     }
+    deleted.extend(given_up.iter().filter(|id| !skip.contains(*id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
     scratch.finishing = finishing;
@@ -3788,6 +3831,7 @@ fn plan(
         };
         ops.push(proto::Op { op: Some(op) });
     };
+    let mut deferred_retrash = BTreeSet::new();
     let mut emitted = answered.len();
     let mut bytes = (answered.iter().filter_map(|op| op.op.as_ref()))
         .map(|op| match op {
@@ -3872,24 +3916,31 @@ fn plan(
             let cost = priced(&scratch, want)
                 + carry().map(|other| priced(&scratch, other)).sum::<usize>()
                 + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
-            let alone = emitted == 0 && !bundle.is_empty();
-            if !alone && !fits(emitted, bytes, ops, cost) {
+            let whole = fits(emitted, bytes, ops, cost);
+            if !whole && emitted > 0 {
                 full = true;
                 filled_at = (!stalled).then_some((pass, at));
                 break;
             }
-            emitted += ops;
-            bytes += cost;
+            match whole {
+                true => (emitted, bytes) = (emitted + ops, bytes + cost),
+                false => {
+                    (emitted, bytes) = (want.ops(), priced(&scratch, want));
+                    deferred_retrash.extend(bundle.iter().flat_map(Want::nodes).cloned());
+                }
+            }
             emit(
                 wants[at].take().expect("checked"),
                 &mut scratch,
                 &mut moving,
             );
-            for j in carried {
-                emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
-            }
-            for retrash in bundle {
-                emit(retrash, &mut scratch, &mut moving);
+            if whole {
+                for j in carried {
+                    emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
+                }
+                for retrash in bundle {
+                    emit(retrash, &mut scratch, &mut moving);
+                }
             }
             progress = true;
         }
@@ -4029,11 +4080,17 @@ fn plan(
         let cost = priced(&scratch, want)
             + carry().map(|other| priced(&scratch, other)).sum::<usize>()
             + bundle.iter().map(|other| cost(trees, other)).sum::<usize>();
-        if !(emitted == 0 && !bundle.is_empty()) && !fits(emitted, bytes, ops, cost) {
+        let whole = fits(emitted, bytes, ops, cost);
+        if !whole && emitted > 0 {
             break true;
         }
-        emitted += ops;
-        bytes += cost;
+        match whole {
+            true => (emitted, bytes) = (emitted + ops, bytes + cost),
+            false => {
+                (emitted, bytes) = (want.ops(), priced(&scratch, want));
+                deferred_retrash.extend(bundle.iter().flat_map(Want::nodes).cloned());
+            }
+        }
         if let Some(Want::Create {
             id,
             shape,
@@ -4055,11 +4112,13 @@ fn plan(
             &mut scratch,
             &mut moving,
         );
-        for j in carried {
-            emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
-        }
-        for retrash in bundle {
-            emit(retrash, &mut scratch, &mut moving);
+        if whole {
+            for j in carried {
+                emit(wants[j].take().expect("carried"), &mut scratch, &mut moving);
+            }
+            for retrash in bundle {
+                emit(retrash, &mut scratch, &mut moving);
+            }
         }
     };
     if !capped {
@@ -4085,7 +4144,10 @@ fn plan(
                 && scratch.ends.cycles.is_empty()
                 && filled_at.is_some_and(|filled| filled < (last, within))
         });
-    ((ops, deletes, reverts, cycle_reverts), exact)
+    (
+        (ops, deletes, reverts, cycle_reverts, deferred_retrash),
+        exact,
+    )
 }
 
 fn restored_at<'t>(

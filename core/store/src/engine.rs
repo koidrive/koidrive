@@ -207,6 +207,11 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.published.insert(row.get(0)?);
         }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM given_up")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.commits.given_up.insert(row.get(0)?);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, ino, ino_high, birth_ns, lost FROM recorded_nodes")?;
@@ -469,6 +474,7 @@ impl Tx<'_> {
             "forgotten_shapes",
             "lost_shapes",
             "published_nodes",
+            "given_up",
             "recorded_nodes",
             "edited_here",
             "moved_here",
@@ -570,6 +576,7 @@ impl Tx<'_> {
             slots,
             questions,
             published,
+            given_up,
             guard,
         } = commits;
         let EffectsChanges {
@@ -952,6 +959,11 @@ impl Tx<'_> {
             published,
             "DELETE FROM published_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO published_nodes (node_id) VALUES (?1)",
+        )?;
+        self.write_set(
+            given_up,
+            "DELETE FROM given_up WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO given_up (node_id) VALUES (?1)",
         )?;
         self.write_guard(guard)?;
 
