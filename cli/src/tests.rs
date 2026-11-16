@@ -1387,8 +1387,6 @@ const COPY: &str = "0190a0b0-0000-7000-8000-00000000000b";
 const DESK: &str = "0190a0b0-0000-7000-8000-0000000000d1";
 const LAPTOP: &str = "0190a0b0-0000-7000-8000-0000000000d2";
 
-/// A conflict between docs/notes.txt, written by DESK ("Ada's Desktop"), and its conflict copy written by LAPTOP
-/// ("agent-box"), with the items in path order as the driver lists them.
 fn conflict(copy_path: &str) -> Question {
     use koidrive_engine::question::{ConflictFile, Revisions};
 
