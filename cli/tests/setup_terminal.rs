@@ -1033,7 +1033,7 @@ fn raw_ctrl_c_cancels_rich_selection() {
         String::from_utf8_lossy(&output.stdout)
     );
     let state = home.path().join("state/koidrive/telemetry");
-    assert!(!state.join("held.json").exists());
+    assert!(nothing_held(&state));
     assert!(!state.join("queue-v2.json").exists());
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
@@ -1070,7 +1070,7 @@ fn eof_closes_each_plain_and_rich_prompt_without_granting_consent() {
             );
             let state = home.path().join("state/koidrive/telemetry");
             assert!(!state.join("settings.json").exists());
-            assert!(!state.join("held.json").exists());
+            assert!(nothing_held(&state));
             assert!(state.join("prompt.json").exists());
         }
     }
@@ -1115,7 +1115,7 @@ fn raw_ctrl_c_cancels_rich_pairing_and_telemetry() {
             serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["enabled"].clone()
         });
         assert!(settings.is_err() || settings.unwrap() == false);
-        assert!(!state.join("held.json").exists());
+        assert!(nothing_held(&state));
         let text = String::from_utf8(output.stdout).unwrap();
         assert_eq!(text.matches("Operation cancelled.").count(), 1, "{text}");
         assert!(!text.contains("cancelled on the terminal"), "{text}");
@@ -1346,6 +1346,10 @@ fn posthog() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
     (url, bodies)
 }
 
+fn nothing_held(state: &Path) -> bool {
+    fs::read_dir(state.join("held")).map_or(true, |mut entries| entries.next().is_none())
+}
+
 fn sent_events(bodies: &Mutex<Vec<serde_json::Value>>) -> Vec<serde_json::Value> {
     (bodies.lock().unwrap().iter())
         .flat_map(|body| body["batch"].as_array().unwrap().clone())
@@ -1447,7 +1451,29 @@ fn a_yes_after_a_successful_setup_sends_its_steps_and_nothing_left_before_the_an
     for event in sent.iter().chain(&previewed) {
         assert_eq!(event["properties"]["distinct_id"], id);
     }
-    assert!(!run.state().join("held.json").exists());
+    assert!(nothing_held(&run.state()));
+}
+
+#[test]
+fn a_setup_asking_while_another_run_waits_keeps_and_sends_its_own_steps() {
+    let home = Home::new(&[]);
+    let other = koidrive_telemetry::Store::new(&home.path().join("state/koidrive"))
+        .hold()
+        .unwrap()
+        .unwrap();
+    let (url, bodies) = posthog();
+    let vars = [
+        ("KOIDRIVE_TELEMETRY_URL", url.as_str()),
+        ("KOIDRIVE_TELEMETRY_TOKEN", "phc_test"),
+    ];
+    let output = home.setup(&full(false, "y\n"), &[], &vars, true, false, None);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert_eq!(setup_steps(&sent_events(&bodies)), pair_step("ok"));
+    let store = koidrive_telemetry::Store::new(&home.path().join("state/koidrive"));
+    assert_eq!(store.held().unwrap().len(), 1);
+    store.forget(other).unwrap();
+    assert!(nothing_held(&home.path().join("state/koidrive/telemetry")));
 }
 
 #[test]
@@ -1466,7 +1492,7 @@ fn a_yes_after_a_failed_setup_sends_the_failed_step() {
     );
     assert_eq!(setup_steps(&sent_events(&run.bodies)), pair_step("failed"));
     assert_eq!(run.settings()["enabled"], true);
-    assert!(!run.state().join("held.json").exists());
+    assert!(nothing_held(&run.state()));
 }
 
 #[test]
@@ -1490,7 +1516,8 @@ fn a_no_after_an_aborted_setup_deletes_what_it_kept_and_sends_nothing() {
     assert!(sent_events(&run.bodies).is_empty());
     assert_eq!(run.settings()["enabled"], false);
     assert!(run.settings()["install_id"].is_null());
-    for file in ["held.json", "queue-v2.json", "prompt.json"] {
+    assert!(nothing_held(&run.state()));
+    for file in ["queue-v2.json", "prompt.json"] {
         assert!(!run.state().join(file).exists(), "{file}");
     }
 }
@@ -1508,7 +1535,7 @@ fn an_unanswered_question_deletes_what_the_setup_kept_and_asks_again_later() {
     );
     assert!(sent_events(&run.bodies).is_empty());
     assert!(!run.state().join("settings.json").exists());
-    assert!(!run.state().join("held.json").exists());
+    assert!(nothing_held(&run.state()));
     assert!(!run.state().join("queue-v2.json").exists());
     assert!(run.state().join("prompt.json").exists());
     let preview = koi(run.home.path())
@@ -1579,12 +1606,7 @@ fn explicit_choice_and_environment_do_not_prompt_after_setup() {
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(output.status.success(), "{text}");
         assert!(!text.contains(TELEMETRY), "{text}");
-        assert!(
-            !home
-                .path()
-                .join("state/koidrive/telemetry/held.json")
-                .exists()
-        );
+        assert!(nothing_held(&home.path().join("state/koidrive/telemetry")));
     }
 }
 

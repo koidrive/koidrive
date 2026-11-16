@@ -706,7 +706,7 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
                     &[],
                 ));
             }
-            if let Some((id, held)) = &held {
+            for (id, held) in &held {
                 bodies.push(koidrive_telemetry::batch(
                     &token,
                     id,
