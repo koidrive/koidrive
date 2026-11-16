@@ -1949,7 +1949,7 @@ impl Trees {
             return false;
         }
         if self.r.get(id).is_some() {
-            return self.left_as_discarded(id);
+            return true;
         }
         let unchanged = (self.l.get(id)).is_some_and(|local| {
             (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
@@ -3905,6 +3905,9 @@ impl Trees {
             taken.extend(together.into_iter().filter(|id| list.contains(id)));
         }
         for id in taken {
+            if (self.l.get(&id)).is_some_and(|local| local.shape.kind == Kind::File) {
+                self.set_content_from_server(&id, true);
+            }
             if self.l.get(&id).is_none()
                 && let Some(remote) = self.r.get(&id).filter(|remote| remote.trashed)
                 && seen

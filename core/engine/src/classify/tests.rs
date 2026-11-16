@@ -295,6 +295,36 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
 }
 
 #[test]
+fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
+    let mut trees = Trees::new("root");
+    let local = |shape: Shape, ino: u128, left_out_when_placed: bool| LocalNode {
+        left_out_when_placed,
+        content_from_server: false,
+        shape,
+        identity: FileIdentity {
+            dev: 1,
+            ino,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("f".into(), local(dir("root", "new"), 100, false));
+    let mut parent = "root".to_string();
+    for k in 0..40 {
+        let id = format!("x{k}");
+        let shape = dir(&parent, &id);
+        trees.set_remote(id.clone(), remote(shape.clone()));
+        let placed = if k == 0 { dir("f", &id) } else { shape };
+        trees.set_local(id.clone(), local(placed, k + 1, k == 0));
+        parent = id;
+    }
+    let shown = BTreeMap::from([("f".into(), dir("root", "new"))]);
+    trees.discard(["f".into()], &shown);
+    trees.discard_server_entries_below(&shown);
+    assert!(trees.in_one_pass(|| trees.is_discarded("x0")));
+}
+
+#[test]
 fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
     let mut trees = Trees::new("root");
     let mut parent = "root".to_string();

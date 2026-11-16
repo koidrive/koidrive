@@ -1385,6 +1385,31 @@ fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape)
         && !(trees.remote().live(id)).is_some_and(|remote| remote.same_position(to))
 }
 
+fn note_agreements(
+    device: &Device,
+    sent_since: &mut BTreeSet<String>,
+    agreed: &mut BTreeMap<String, Content>,
+    from_server: &mut BTreeSet<String>,
+) {
+    for (id, local) in device.trees.local().iter() {
+        let (Some(content), Some(remote)) = (
+            &local.shape.content,
+            (device.trees.remote().live(id)).and_then(|remote| remote.content.as_ref()),
+        ) else {
+            continue;
+        };
+        if !koidrive_engine::tree::same_content(content, remote) {
+            continue;
+        }
+        let agreed_now = (agreed.get(id)).is_none_or(|was| !koidrive_engine::tree::same_content(was, content));
+        if agreed_now && !sent_since.contains(id) {
+            from_server.insert(id.clone());
+        }
+        sent_since.remove(id);
+        agreed.insert(id.clone(), content.clone());
+    }
+}
+
 fn note_kept_back(device: &mut Device) {
     let trees = &device.trees;
     (device.relocated).retain(|id, moved| relocation_stands(trees, id, &moved.to));
@@ -1537,6 +1562,9 @@ fn run_ignoring_answering_after(
     let mut placed: BTreeMap<String, Position> = BTreeMap::new();
     let mut placed_left_out: BTreeSet<String> = BTreeSet::new();
     let mut from_server: BTreeSet<String> = BTreeSet::new();
+    let mut agreed: BTreeMap<String, Content> = BTreeMap::new();
+    let mut sent_since: BTreeSet<String> = BTreeSet::new();
+    note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut removed_left_out: BTreeSet<String> = BTreeSet::new();
     let mut merged_into: BTreeMap<String, String> = BTreeMap::new();
     let mut revived_once: BTreeSet<String> = BTreeSet::new();
@@ -1547,6 +1575,7 @@ fn run_ignoring_answering_after(
         steps += 1;
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle();
+        note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
         {
@@ -1829,6 +1858,12 @@ fn run_ignoring_answering_after(
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
                 sent_move_check(moved, &local.shape, &merged_into)?;
+            }
+            if matches!(
+                op.op,
+                Some(op::Op::CreateFile(_) | op::Op::UpdateContent(_))
+            ) {
+                sent_since.insert(id.clone());
             }
             sending.push(id.clone());
             if !matches!(op.op, Some(op::Op::UpdateContent(_))) {

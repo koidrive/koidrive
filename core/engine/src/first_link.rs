@@ -182,6 +182,7 @@ pub(crate) fn adopt_around(
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
             }
+            trees.set_content_from_server(&remote_id, local.kind == Kind::File);
             if local.kind == Kind::Dir {
                 pending.push(remote_id);
             }
@@ -308,6 +309,7 @@ fn follow_marks(
                     && remote.shape.parent == entry.parent
                     && remote.pending_for.as_deref() == Some(entry.name.as_str())
             });
+            let same_bytes = entry.kind == Kind::File && same_bytes(&entry.content, &shape.content);
             if pending {
                 trees.adopt_pending(node.clone());
             }
@@ -315,6 +317,7 @@ fn follow_marks(
             if local != node {
                 rekey(trees, &local, &node);
             }
+            trees.set_content_from_server(&node, same_bytes);
         }
         followed = true;
     }
@@ -450,6 +453,7 @@ pub(crate) fn link(
         match set_synced_together(trees, &updates) {
             true => {
                 rekey(trees, &id, &remote_id);
+                trees.set_content_from_server(&remote_id, true);
                 linked = true;
             }
             false => unfit.push((id, remote_id)),

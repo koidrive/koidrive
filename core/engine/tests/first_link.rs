@@ -4233,19 +4233,36 @@ fn a_discard_sends_a_folder_with_a_server_file_moved_in_while_the_rules_let_it_i
 mod a_server_file_moved_into_an_asked_folder {
     use super::*;
 
-    fn asked(rules: Option<&[u8]>) -> (Commits, Trees, IdGen) {
-        let mut trees = trees(
-            &[
-                ("f", dir(ROOT, "new")),
-                ("g", dir("f", "sub")),
-                ("e", file("g", "e", 4)),
-            ],
-            &[("x", file(ROOT, "server", 9))],
-        );
+    #[derive(Clone, Copy)]
+    enum Origin {
+        Downloaded,
+        AdoptedFromANewEntry,
+        AdoptedInPlace,
+    }
+
+    const ORIGINS: [Origin; 3] = [
+        Origin::Downloaded,
+        Origin::AdoptedFromANewEntry,
+        Origin::AdoptedInPlace,
+    ];
+
+    fn asked(rules: Option<&[u8]>, origin: Origin) -> (Commits, Trees, IdGen) {
+        let mut local = vec![
+            ("f", dir(ROOT, "new")),
+            ("g", dir("f", "sub")),
+            ("e", file("g", "e", 4)),
+        ];
+        match origin {
+            Origin::Downloaded => {}
+            Origin::AdoptedFromANewEntry => local.push(("mine", file(ROOT, "server", 9))),
+            Origin::AdoptedInPlace => local.push(("x", file(ROOT, "server", 9))),
+        }
+        let mut trees = trees(&local, &[("x", file(ROOT, "server", 9))]);
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
         commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
         question(&commits);
         assert_eq!(settle(&mut commits, &mut trees, &mut ids), []);
+        assert!(trees.local().get("mine").is_none());
         assert_eq!(
             trees.local().get("x").map(|node| &node.shape),
             Some(&file(ROOT, "server", 9))
@@ -4331,157 +4348,177 @@ mod a_server_file_moved_into_an_asked_folder {
 
     #[test]
     fn while_included_is_sent_with_it() {
-        let (mut c, mut t, mut i) = asked(None);
-        scan(&mut t, "x", file("f", "kept", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        kept_and_sent(&sent, &t);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(None, origin);
+            scan(&mut t, "x", file("f", "kept", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            kept_and_sent(&sent, &t);
+        }
     }
 
     #[test]
     fn while_included_is_sent_with_it_after_the_rules_leave_it_out_and_let_it_in_again() {
-        let (mut c, mut t, mut i) = asked(None);
-        scan(&mut t, "x", file("f", "kept", 9));
-        quiet(&mut c, &mut t, &mut i);
-        set_rules(&mut t, Some(b"kept\n"));
-        quiet(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        kept_and_sent(&sent, &t);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(None, origin);
+            scan(&mut t, "x", file("f", "kept", 9));
+            quiet(&mut c, &mut t, &mut i);
+            set_rules(&mut t, Some(b"kept\n"));
+            quiet(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            kept_and_sent(&sent, &t);
+        }
     }
 
     #[test]
     fn while_left_out_and_renamed_there_to_an_included_name_is_sent_with_it() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        scan(&mut t, "x", file("f", "visible", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        kept_and_sent(&sent, &t);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            scan(&mut t, "x", file("f", "visible", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            kept_and_sent(&sent, &t);
+        }
     }
 
     #[test]
     fn while_left_out_then_moved_out_and_back_in_after_the_rules_let_it_in_is_sent_with_it() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        scan(&mut t, "x", file(ROOT, "server", 9));
-        let _ = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        kept_and_sent(&sent, &t);
-    }
-
-    #[test]
-    fn while_left_out_again_after_moving_in_and_out_is_taken_along_once_the_rules_let_it_in() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        for _ in 0..3 {
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
             scan(&mut t, "x", file("f", "ignored", 9));
             quiet(&mut c, &mut t, &mut i);
             scan(&mut t, "x", file(ROOT, "server", 9));
             let _ = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            kept_and_sent(&sent, &t);
         }
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        taken_along(&sent, &t, 9);
+    }
+
+    #[test]
+    fn while_left_out_again_after_moving_in_and_out_is_taken_along_once_the_rules_let_it_in() {
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            for _ in 0..3 {
+                scan(&mut t, "x", file("f", "ignored", 9));
+                quiet(&mut c, &mut t, &mut i);
+                scan(&mut t, "x", file(ROOT, "server", 9));
+                let _ = ops(&mut c, &mut t, &mut i);
+            }
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            taken_along(&sent, &t, 9);
+        }
     }
 
     #[test]
     fn a_nested_folder_while_left_out_is_taken_along_once_the_rules_let_it_in() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("g", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        taken_along(&sent, &t, 9);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("g", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            taken_along(&sent, &t, 9);
+        }
     }
 
     #[test]
     fn while_left_out_is_taken_along_after_the_folder_is_renamed() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        let first = question(&c).id;
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        scan(&mut t, "f", dir(ROOT, "renamed"));
-        quiet(&mut c, &mut t, &mut i);
-        assert_ne!(question(&c).id, first);
-        set_rules(&mut t, None);
-        quiet(&mut c, &mut t, &mut i);
-        let (sent, t) = discard(c, t, i);
-        taken_along(&sent, &t, 9);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            let first = question(&c).id;
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            scan(&mut t, "f", dir(ROOT, "renamed"));
+            quiet(&mut c, &mut t, &mut i);
+            assert_ne!(question(&c).id, first);
+            set_rules(&mut t, None);
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            taken_along(&sent, &t, 9);
+        }
     }
 
     #[test]
     fn while_left_out_goes_with_the_discarded_folder_the_user_adds_to_after_the_rules_let_it_in() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let first = question(&c);
-        assert!(c.decide(&first.id, Answer::Discard));
-        quiet(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        t.set_local("n".into(), local_node(file("f", "n", 6), 99));
-        t.settle();
-        let sent = settle(&mut c, &mut t, &mut i);
-        assert!(c.questions().is_empty());
-        kept_and_sent(&sent, &t);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let first = question(&c);
+            assert!(c.decide(&first.id, Answer::Discard));
+            quiet(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            t.set_local("n".into(), local_node(file("f", "n", 6), 99));
+            t.settle();
+            let sent = settle(&mut c, &mut t, &mut i);
+            assert!(c.questions().is_empty());
+            kept_and_sent(&sent, &t);
+        }
     }
 
     #[test]
     fn while_left_out_is_taken_along_after_the_server_trashes_it() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let mut node = t.remote().get("x").unwrap().clone();
-        node.trashed = true;
-        node.meta_rev = 2;
-        node.meta_edit_rev = 2;
-        t.set_remote("x".into(), node);
-        t.settle();
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        sent.extend(ops(&mut c, &mut t, &mut i));
-        let (more, t) = discard(c, t, i);
-        sent.extend(more);
-        assert!(
-            !sent.iter().any(|(_, id)| id == "x" || id == "f"),
-            "{sent:?}"
-        );
-        assert!(t.local().get("f").is_none(), "{sent:?}");
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let mut node = t.remote().get("x").unwrap().clone();
+            node.trashed = true;
+            node.meta_rev = 2;
+            node.meta_edit_rev = 2;
+            t.set_remote("x".into(), node);
+            t.settle();
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            assert!(
+                !sent.iter().any(|(_, id)| id == "x" || id == "f"),
+                "{sent:?}"
+            );
+            assert!(t.local().get("f").is_none(), "{sent:?}");
+        }
     }
 
     #[test]
     fn while_left_out_is_taken_along_after_the_server_moves_it() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        let mut node = t.remote().get("x").unwrap().clone();
-        node.shape = file(ROOT, "elsewhere", 9);
-        node.meta_rev = 2;
-        node.meta_edit_rev = 2;
-        t.set_remote("x".into(), node);
-        t.settle();
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        sent.extend(ops(&mut c, &mut t, &mut i));
-        let (more, t) = discard(c, t, i);
-        sent.extend(more);
-        assert!(
-            !sent.iter().any(|(_, id)| id == "x" || id == "f"),
-            "{sent:?}"
-        );
-        assert_eq!(
-            t.local().get("x").unwrap().shape,
-            file(ROOT, "elsewhere", 9)
-        );
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            let mut node = t.remote().get("x").unwrap().clone();
+            node.shape = file(ROOT, "elsewhere", 9);
+            node.meta_rev = 2;
+            node.meta_edit_rev = 2;
+            t.set_remote("x".into(), node);
+            t.settle();
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            assert!(
+                !sent.iter().any(|(_, id)| id == "x" || id == "f"),
+                "{sent:?}"
+            );
+            assert_eq!(
+                t.local().get("x").unwrap().shape,
+                file(ROOT, "elsewhere", 9)
+            );
+        }
     }
 
     fn edited_on_the_server(t: &mut Trees) {
@@ -4495,89 +4532,224 @@ mod a_server_file_moved_into_an_asked_folder {
 
     #[test]
     fn while_left_out_is_taken_along_with_the_server_s_edit() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        edited_on_the_server(&mut t);
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        sent.extend(ops(&mut c, &mut t, &mut i));
-        let (more, t) = discard(c, t, i);
-        sent.extend(more);
-        taken_along(&sent, &t, 10);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            edited_on_the_server(&mut t);
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            taken_along(&sent, &t, 10);
+        }
+    }
+
+    #[test]
+    fn an_adopted_file_moved_in_while_left_out_is_not_sent_after_the_server_edits_it() {
+        for origin in [Origin::AdoptedFromANewEntry, Origin::AdoptedInPlace] {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            edited_on_the_server(&mut t);
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, _) = discard(c, t, i);
+            sent.extend(more);
+            assert!(
+                !sent.iter().any(|(_, id)| id == "x" || id == "f"),
+                "{sent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_adopted_file_moved_in_while_left_out_comes_back_with_the_server_s_edit() {
+        for origin in [Origin::AdoptedFromANewEntry, Origin::AdoptedInPlace] {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            edited_on_the_server(&mut t);
+            set_rules(&mut t, None);
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            assert!(sent.is_empty(), "{sent:?}");
+            assert!(t.local().get("f").is_none());
+            assert_eq!(t.local().get("x").unwrap().shape, file(ROOT, "server", 10));
+            assert_eq!(t.synced().live("x"), Some(&file(ROOT, "server", 10)));
+        }
     }
 
     #[test]
     fn while_left_out_is_not_sent_after_the_server_edits_it_while_the_rules_still_leave_it_out() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        edited_on_the_server(&mut t);
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        let (more, _) = discard(c, t, i);
-        sent.extend(more);
-        assert!(sent.is_empty(), "{sent:?}");
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            edited_on_the_server(&mut t);
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            let (more, _) = discard(c, t, i);
+            sent.extend(more);
+            assert!(sent.is_empty(), "{sent:?}");
+        }
     }
 
     #[test]
     fn while_left_out_and_rewritten_with_the_same_bytes_is_not_taken_along_with_the_server_s_edit()
     {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        let mut node = t.local().get("x").unwrap().clone();
-        node.identity.ino += 1000;
-        t.set_local_changed("x".into(), node);
-        t.settle();
-        quiet(&mut c, &mut t, &mut i);
-        edited_on_the_server(&mut t);
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        sent.extend(ops(&mut c, &mut t, &mut i));
-        let (more, t) = discard(c, t, i);
-        sent.extend(more);
-        kept_and_sent(&sent, &t);
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            let mut node = t.local().get("x").unwrap().clone();
+            node.identity.ino += 1000;
+            t.set_local_changed("x".into(), node);
+            t.settle();
+            quiet(&mut c, &mut t, &mut i);
+            edited_on_the_server(&mut t);
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            kept_and_sent(&sent, &t);
+        }
+    }
+
+    #[test]
+    fn while_left_out_keeps_the_user_s_edit_when_the_server_moves_it() {
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 11));
+            quiet(&mut c, &mut t, &mut i);
+            let mut node = t.remote().get("x").unwrap().clone();
+            node.shape = file(ROOT, "renamed", 9);
+            node.meta_rev = 2;
+            node.meta_edit_rev = 2;
+            t.set_remote("x".into(), node);
+            t.settle();
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            assert!(t.local().get("f").is_some(), "{sent:?}");
+            assert_eq!(
+                t.local().get("x").map(|node| node.shape.content.clone()),
+                Some(file(ROOT, "x", 11).content),
+                "{sent:?}"
+            );
+        }
     }
 
     #[test]
     fn while_left_out_keeps_the_user_s_edit_when_the_server_edits_it_too() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        quiet(&mut c, &mut t, &mut i);
-        scan(&mut t, "x", file("f", "ignored", 11));
-        edited_on_the_server(&mut t);
-        let mut sent = ops(&mut c, &mut t, &mut i);
-        set_rules(&mut t, None);
-        sent.extend(ops(&mut c, &mut t, &mut i));
-        let (more, t) = discard(c, t, i);
-        sent.extend(more);
-        assert!(
-            (t.local().iter()).any(|(_, node)| node.shape.content == Some(content(11))),
-            "{sent:?} {:?}",
-            t.local().iter().collect::<Vec<_>>()
-        );
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            scan(&mut t, "x", file("f", "ignored", 9));
+            quiet(&mut c, &mut t, &mut i);
+            scan(&mut t, "x", file("f", "ignored", 11));
+            edited_on_the_server(&mut t);
+            let mut sent = ops(&mut c, &mut t, &mut i);
+            set_rules(&mut t, None);
+            sent.extend(ops(&mut c, &mut t, &mut i));
+            let (more, t) = discard(c, t, i);
+            sent.extend(more);
+            assert!(
+                (t.local().iter()).any(|(_, node)| node.shape.content == Some(content(11))),
+                "{sent:?} {:?}",
+                t.local().iter().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
     fn a_scan_judges_a_new_entry_and_a_move_but_not_a_rule_change_or_an_effects_move() {
-        let (mut c, mut t, mut i) = asked(Some(b"ignored\n"));
-        let left_out = |t: &Trees, id: &str| t.local().get(id).unwrap().left_out_when_placed;
-        t.set_local_changed("y".into(), local_node(file("f", "ignored", 5), 98));
-        t.set_local_changed("z".into(), local_node(file("f", "visible", 5), 97));
-        assert!(left_out(&t, "y") && !left_out(&t, "z"));
-        scan(&mut t, "x", file("f", "ignored", 9));
-        assert!(left_out(&t, "x"));
+        for origin in ORIGINS {
+            let (mut c, mut t, mut i) = asked(Some(b"ignored\n"), origin);
+            let left_out = |t: &Trees, id: &str| t.local().get(id).unwrap().left_out_when_placed;
+            t.set_local_changed("y".into(), local_node(file("f", "ignored", 5), 98));
+            t.set_local_changed("z".into(), local_node(file("f", "visible", 5), 97));
+            assert!(left_out(&t, "y") && !left_out(&t, "z"));
+            scan(&mut t, "x", file("f", "ignored", 9));
+            assert!(left_out(&t, "x"));
+            set_rules(&mut t, None);
+            assert!(left_out(&t, "x") && left_out(&t, "y"));
+            quiet(&mut c, &mut t, &mut i);
+            let (sent, t) = discard(c, t, i);
+            assert_eq!(
+                t.local().get("x").unwrap().shape,
+                file(ROOT, "server", 9),
+                "{sent:?}"
+            );
+            assert!(
+                left_out(&t, "x"),
+                "the effects move back leaves the flag alone"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_linked_to_the_same_write_on_the_server_moved_in_while_left_out_is_taken_along_with_the_server_s_edit()
+     {
+        let mut t = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("g", dir("f", "sub")),
+                ("e", file("g", "e", 4)),
+            ],
+            &[],
+        );
+        let (mut c, mut i) = (Commits::default(), IdGen::new(7));
+        c.first_link(&mut t, &mut i, NOW, PriorSync::Shown);
+        question(&c);
+        let mut copied = file(ROOT, "server", 9);
+        copied.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+        let identity = FileIdentity {
+            dev: 1,
+            ino: 50,
+            birth_ns: Some(0),
+        };
+        t.set_local(
+            "copy".into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: copied.clone(),
+                identity,
+                parked: false,
+            },
+        );
+        t.set_remote(
+            "x".into(),
+            RemoteNode {
+                shape: copied,
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+            },
+        );
+        t.settle();
+        assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        assert!(t.local().get("copy").is_none());
+        set_rules(&mut t, Some(b"ignored\n"));
+        let mut moved = t.local().get("x").unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        t.set_local_changed("x".into(), moved);
+        t.settle();
+        quiet(&mut c, &mut t, &mut i);
+        edited_on_the_server(&mut t);
         set_rules(&mut t, None);
-        assert!(left_out(&t, "x") && left_out(&t, "y"));
         quiet(&mut c, &mut t, &mut i);
         let (sent, t) = discard(c, t, i);
-        assert_eq!(
-            t.local().get("x").unwrap().shape,
-            file(ROOT, "server", 9),
-            "{sent:?}"
-        );
-        assert!(
-            left_out(&t, "x"),
-            "the effects move back leaves the flag alone"
-        );
+        taken_along(&sent, &t, 10);
     }
 }
