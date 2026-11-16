@@ -48,7 +48,7 @@ jobs:
             changed="$(tr '\0' '\n' < "$RUNNER_TEMP/changed")"
             echo "Files this pull request changes against $BASE:"
             printf '%s\n' "$changed"
-            pattern='^(cli/|core/|server/|\.cargo/|install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/(test-)?publish-release\.sh$|scripts/sign-checksums\.sh$|\.github/release-allowed-signers$|scripts/(test-)?homebrew-[a-z-]+\.sh$|\.github/requirements-musl\.txt$|\.github/workflows/release-cli\.yml$|Cargo\.[^/]*$|rust-toolchain\.toml$)'
+            pattern='^(cli/|core/|server/|\.cargo/|install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/release-commit\.py$|scripts/(test-)?publish-release\.sh$|scripts/sign-checksums\.sh$|\.github/release-allowed-signers$|scripts/(test-)?homebrew-[a-z-]+\.sh$|\.github/requirements-musl\.txt$|\.github/workflows/release-cli\.yml$|Cargo\.[^/]*$|rust-toolchain\.toml$)'
             if grep -Eq "$pattern" <<<"$changed"; then
               echo "Linux targets: build, because a changed file matches $pattern"
             else
@@ -60,7 +60,7 @@ jobs:
               echo "::error::Listing the macOS-specific files between $BASE and HEAD failed (see the error above)."
               exit 1
             fi
-            pattern='^(install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/(test-)?publish-release\.sh$|scripts/(test-)?homebrew-[a-z-]+\.sh$|scripts/(test-)?macos-changes\.sh$|\.github/workflows/release-cli\.yml$)'
+            pattern='^(install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/release-commit\.py$|scripts/(test-)?publish-release\.sh$|scripts/(test-)?homebrew-[a-z-]+\.sh$|scripts/(test-)?macos-changes\.sh$|\.github/workflows/release-cli\.yml$)'
             reasons="$(cut -f1 <<<"$platform" | grep -Ev '^(apps/macos|core/ffi)/' || true)"$'\n'"$(grep -E "$pattern" <<<"$changed" || true)"
             if [ -n "$(tr -d '[:space:]' <<<"$reasons")" ]; then
               echo "macOS targets: build, because of $(tr '\n' ' ' <<<"$reasons")"
@@ -104,7 +104,11 @@ jobs:
             echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           fi
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor HEAD origin/main || { echo '::error::Release tags must point to a commit on main'; exit 1; }
+          if [ "$EVENT" = push ]; then
+            python3 scripts/release-commit.py check "$TAG" || { echo "::error::$TAG must point to the release commit that scripts/release-commit.py make creates on a commit of main (see the error above)"; exit 1; }
+          else
+            git merge-base --is-ancestor HEAD origin/main || { echo '::error::A manual release run must start from a commit on main'; exit 1; }
+          fi
 
   build:
     name: CLI (${{ matrix.target }})
@@ -128,13 +132,9 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: server/pnpm-lock.yaml
-      - name: Set the release or validation version
-        env:
-          EVENT: ${{ github.event_name }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if [ "$EVENT" != push ]; then TAG=v0.0.0-rc.0; fi
-          python3 scripts/stamp-release-version.py "$TAG"
+      - name: Set the validation version
+        if: github.event_name != 'push'
+        run: python3 scripts/stamp-release-version.py v0.0.0-rc.0
       - name: Test release version stamping
         run: python3 scripts/test-release-version.py
       - name: Pack the server bundle

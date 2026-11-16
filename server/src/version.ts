@@ -2,6 +2,9 @@
 
 import release from "../release.json";
 
-export const SERVER_VERSION = release.version;
+const build: { version: string; commit?: string } = release;
+
+export const SERVER_VERSION = build.version;
+export const SERVER_COMMIT = build.commit ?? "";
 export const PROTO_MIN = 1;
 export const PROTO_MAX = 1;

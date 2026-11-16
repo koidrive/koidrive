@@ -120,6 +120,10 @@ pub enum ServerAction {
         /// Go on without asking, for example past the Workers Builds warning.
         #[arg(long)]
         yes: bool,
+        /// Upload even when the server is newer than this CLI's server, or cannot say. A server older than the data
+        /// it stores stops answering until a newer one replaces it.
+        #[arg(long)]
+        allow_downgrade: bool,
         #[command(flatten)]
         login: LoginArgs,
     },

@@ -76,6 +76,10 @@ jobs:
             exit 1
           fi
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [ "$EVENT" = push ]; then
+            python3 scripts/release-commit.py check "${REF#refs/tags/}" || { echo "::error::$REF must point to the release commit that scripts/release-commit.py make creates on a commit of main (see the error above)."; exit 1; }
+            exit 0
+          fi
           commit="$(git rev-parse HEAD)"
           if ! git merge-base --is-ancestor "$commit" origin/main; then
             echo "::error::$REF points to $commit, which is not on main. Release builds sign only commits that were merged to main."
@@ -117,7 +121,7 @@ jobs:
           else
             version=0.0.0-dev
           fi
-          if [ "$EVENT" = push ] || [ -n "$INPUT_VERSION" ]; then
+          if [ "$EVENT" != push ] && [ -n "$INPUT_VERSION" ]; then
             python3 ../../scripts/stamp-release-version.py "v$version"
           fi
           build="${INPUT_BUILD_NUMBER:-$GITHUB_RUN_NUMBER}"

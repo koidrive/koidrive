@@ -14,7 +14,7 @@ pub use api::{
 };
 pub use bundle::{
     Asset, Bundle, BundleError, Manifest, NewerDeployment, RECOVERY_KEY_SECRET, SERVER_TAG,
-    UploadPlan,
+    Storage, UploadPlan,
 };
 pub use oauth::{
     AuthorizationCode, CLIENT_ID, Endpoints, Grant, Login, Loopback, OauthError, SCOPES,

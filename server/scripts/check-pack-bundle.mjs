@@ -23,6 +23,7 @@ test("the packed Worker and manifest use the CLI release version", () => {
     assert.equal(run.status, 0, run.stderr);
     const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
     assert.equal(manifest.version, version);
+    for (const kind of ["account", "space"]) assert.ok(Number.isInteger(manifest.storage[kind]) && manifest.storage[kind] > 0, kind);
     const worker = readFileSync(join(output, "worker", manifest.main_module), "utf8");
     assert.ok(worker.includes(JSON.stringify(version)), "the Worker does not contain the release version");
   } finally {

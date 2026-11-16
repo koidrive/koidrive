@@ -20,9 +20,25 @@ pub struct ServerInfo {
     /// it, because after an upgrade the Durable Object can keep its old code for up to 300 seconds.
     #[prost(bool, tag="6")]
     pub setup_attempts: bool,
+    /// The storage schema versions this server's code migrates its Durable Objects to (RFC 0025). Unset on a server that
+    /// does not report them.
+    #[prost(message, optional, tag="8")]
+    pub storage: ::core::option::Option<server_info::Storage>,
+    /// The koidrive/koidrive commit this server was built from, or empty when its build did not record one (RFC 0025).
+    #[prost(string, tag="9")]
+    pub commit: ::prost::alloc::string::String,
 }
 /// Nested message and enum types in `ServerInfo`.
 pub mod server_info {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Storage {
+        /// The schema_version an Account DO reaches when it starts on this code.
+        #[prost(uint32, tag="1")]
+        pub account: u32,
+        /// The schema_version a Space DO reaches when it starts on this code.
+        #[prost(uint32, tag="2")]
+        pub space: u32,
+    }
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
     pub enum DataPath {
