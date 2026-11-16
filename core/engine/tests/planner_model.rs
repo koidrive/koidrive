@@ -2578,11 +2578,6 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         {
             Some("a split bundle never finishes")
         }
-        Story::Answer(_, Answer::Discard, _)
-            if fault.contains("a folder the answer gives up is live") =>
-        {
-            Some("Discard brings back a folder it gave up")
-        }
         Story::Answer(_, Answer::Publish, _)
             if fault.contains("a folder the answer gives up is live")
                 || fault.contains("ends while a node is not where L holds it") =>

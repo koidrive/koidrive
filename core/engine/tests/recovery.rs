@@ -1837,6 +1837,30 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
 }
 
 #[test]
+fn discarding_a_folder_moved_into_a_new_folder_at_its_old_name_does_not_create_the_new_folder() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("n", "b")),
+            ("n", dir("a", "b")),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["b"]);
+    assert!(commits.decide(&created.id, Answer::Discard));
+    assert!(commits.decide(&changed.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
 fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
     let mut trees = trees(
         &[("d", dir(ROOT, "new")), ("f", file("d", "child", 1))],
