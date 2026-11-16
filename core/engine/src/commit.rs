@@ -4990,21 +4990,27 @@ impl<'a> Scratch<'a> {
                 })
                 .map(|(at, _)| at)
                 .collect();
-            for at in leaving {
+            let mut after = scratch.clone();
+            let all_leave = leaving.iter().all(|&at| {
                 let moved = wants[at].as_ref().expect("found");
-                if scratch.fit(moved, &BTreeSet::new()) != Fit::Valid {
-                    return None;
-                }
                 let Want::Move {
                     id, parent, name, ..
                 } = moved
                 else {
                     unreachable!("only moves leave");
                 };
-                let kind = scratch.kind(id).expect("moved nodes are in R");
-                scratch.place(id, parent, name, kind);
-                carried.push(at);
+                let fits = after.fit(moved, &BTreeSet::new()) == Fit::Valid;
+                if fits {
+                    let kind = after.kind(id).expect("moved nodes are in R");
+                    after.place(id, parent, name, kind);
+                }
+                fits
+            });
+            if !all_leave {
+                continue;
             }
+            scratch = after;
+            carried.extend(leaving);
             let members = (scratch.subtree(top).into_iter())
                 .filter(|node| outside.contains(node))
                 .chain([top.clone()])
