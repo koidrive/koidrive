@@ -42,7 +42,7 @@ Before each step that creates or deletes something, the CLI writes `setup-state.
 
 ## 5. Upgrade replaces the code, and delete empties the bucket first
 
-`koi server upgrade` uploads the embedded bundle under the same names, keeping bindings, secrets and data. It refuses when the server reports a storage version above the bundle's, when the server runs a newer release, and when a server that is not a release reports no storage version ([RFC 0025](../../spec/rfc/0025-server-build-and-storage.md)). `--allow-downgrade` uploads anyway. Each Durable Object moves to the new code within 300 seconds and migrates its storage then. A button deploy gets a warning first, because its repository's next push replaces the upgrade. `koi server delete` deletes the Worker, then empties and deletes the bucket. It keeps a bucket that another Worker binds or that holds keys outside `spaces/`.
+`koi server upgrade` uploads the embedded bundle under the same names, keeping bindings, secrets and data. It refuses when the server reports a storage version above the bundle's, and when the server runs a newer release ([RFC 0025](../../spec/rfc/0025-server-build-and-storage.md)). `--allow-downgrade` uploads anyway. Each Durable Object moves to the new code within 300 seconds and migrates its storage then. A button deploy gets a warning first, because its repository's next push replaces the upgrade. `koi server delete` deletes the Worker, then empties and deletes the bucket. It keeps a bucket that another Worker binds or that holds keys outside `spaces/`.
 
 ## 6. A server is found by its tag, then by its classes
 

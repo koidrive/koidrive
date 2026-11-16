@@ -735,11 +735,22 @@ fn an_upgrade_over_a_development_server_follows_its_storage_version() {
             }),
             "{version}"
         );
-        assert_eq!(
-            downgrade(&reporting(version, None), "0.1.0", STORAGE),
-            Some(Downgrade::Unknown),
-            "{version} without a storage version is unknown, not older"
-        );
+    }
+}
+
+#[test]
+fn an_upgrade_over_a_server_built_before_storage_versions_goes_ahead() {
+    for (version, deployed_by) in [
+        ("0.1.0-alpha.6", "koi server deploy"),
+        ("0.0.0-dev", "the deploy button"),
+    ] {
+        for cli in ["0.1.0", "0.0.0-dev"] {
+            assert_eq!(
+                downgrade(&reporting(version, None), cli, STORAGE),
+                None,
+                "an alpha.6 server from {deployed_by} upgrades to {cli}"
+            );
+        }
     }
 }
 
@@ -835,10 +846,6 @@ async fn an_upgrade_that_may_go_back_uploads_nothing_unless_allowed() {
     let before = fake.seen().len();
     for (info, reason) in [
         (
-            reporting("0.0.0-dev", None),
-            "koidrive runs Koidrive 0.0.0-dev, a build that does not report its storage version, so this koi cannot tell whether its Koidrive 0.1.0 is older;",
-        ),
-        (
             reporting("0.0.0-dev", Some((11, 10))),
             "koidrive stores data in a newer format than the Koidrive 0.1.0 in this koi reads (storage version 11.10, against 10.10)",
         ),
@@ -862,13 +869,19 @@ async fn an_upgrade_that_may_go_back_uploads_nothing_unless_allowed() {
     }
     assert_eq!(fake.seen().len(), before, "a refused upgrade calls nothing");
 
-    let error = session
-        .upgrade(&release, &over(reporting("0.0.0-dev", None)), true, true)
-        .await
-        .unwrap_err();
-    assert!(
-        error.message.contains("cannot upload the static assets"),
-        "--allow-downgrade goes on to the upload: {}",
-        error.message
-    );
+    for (info, allow_downgrade) in [
+        (reporting("0.0.0-dev", Some((11, 10))), true),
+        (reporting("0.0.0-dev", None), false),
+        (reporting("0.1.0-alpha.6", None), false),
+    ] {
+        let error = session
+            .upgrade(&release, &over(info.clone()), true, allow_downgrade)
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("cannot upload the static assets"),
+            "an upgrade over {info:?} goes on to the upload: {}",
+            error.message
+        );
+    }
 }

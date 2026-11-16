@@ -340,10 +340,6 @@ impl Session {
                     "{id} runs Koidrive {version}, newer than the {} in this koi; install a newer koi, or",
                     manifest.version
                 ),
-                Downgrade::Unknown => format!(
-                    "{id} runs Koidrive {version}, a build that does not report its storage version, so this koi cannot tell whether its Koidrive {} is older;",
-                    manifest.version
-                ),
             };
             return Err(format!(
                 "{reason} run koi server upgrade --allow-downgrade to upload it anyway"
@@ -430,7 +426,6 @@ impl Session {
 pub(super) enum Downgrade {
     Storage { server: Storage, bundle: Storage },
     Release,
-    Unknown,
 }
 
 pub(super) fn downgrade(info: &ServerInfo, version: &str, storage: Storage) -> Option<Downgrade> {
@@ -450,7 +445,6 @@ pub(super) fn downgrade(info: &ServerInfo, version: &str, storage: Storage) -> O
         (Some(server), Some(bundle)) if server.cmp_precedence(&bundle).is_gt() => {
             Some(Downgrade::Release)
         }
-        (None, _) if info.storage.is_none() => Some(Downgrade::Unknown),
         _ => None,
     }
 }

@@ -20,4 +20,4 @@ Field 7 belongs to RFC 0022. No field is removed or renumbered.
 
 1. A client that installs a server over an existing one compares the existing server's `storage` with the step counts of the server it installs. It refuses when either existing count is higher, unless the person overrides the refusal.
 2. A `server_version` of `0.0.0` with any pre-release or build suffix, or one that is not a semantic version, says nothing about age. A client never treats it as older than a release.
-3. A server without this RFC sends no `storage`. If its `server_version` is a release, the client compares versions. Otherwise it refuses unless the person overrides the refusal.
+3. A server without this RFC sends no `storage`. It was built before this RFC, and migration steps are only ever appended, so its storage is not ahead of a server that reports `storage`. The client compares versions only, and only when both are releases.

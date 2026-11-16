@@ -60,7 +60,7 @@ With the Cloudflare login, run this on a terminal:
 koi server upgrade --interactive
 ```
 
-It uploads the server version built into your `koi`. Without the login, upgrade as [Deploying and upgrading a Koidrive server](../deploy.md#upgrade) describes. Your files, devices and settings stay. Open sync sessions move to the new version within 5 minutes. The command stops if the server runs a newer release than your `koi`, or stores its data in a newer format. It also stops if the server was deployed from a branch and does not report its data format. `--allow-downgrade` uploads anyway, but a server older than its data stops answering until a newer one replaces it.
+It uploads the server version built into your `koi`. Without the login, upgrade as [Deploying and upgrading a Koidrive server](../deploy.md#upgrade) describes. Your files, devices and settings stay. Open sync sessions move to the new version within 5 minutes. The command stops if the server runs a newer release than your `koi`, or stores its data in a newer format. `--allow-downgrade` uploads anyway, but a server older than its data stops answering until a newer one replaces it.
 
 A server deployed with the deploy button deploys again whenever its repository changes, and that would replace the upgrade. The command warns you and asks first. Update that repository too, or answer no. `--yes` goes on without asking.
 
