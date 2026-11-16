@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+from collections import Counter
 import difflib
 import hashlib
 import importlib.util
@@ -162,19 +163,24 @@ def lifecycle_exception(span, diagnostic, text):
     return hashlib.sha256(function.encode()).hexdigest() == policy["function_sha256"]
 
 
+def span_chains(diagnostic):
+    for span in diagnostic["spans"]:
+        if not span["is_primary"]:
+            continue
+        chain = []
+        while span is not None:
+            chain.append(span)
+            span = (span.get("expansion") or {}).get("span")
+        yield chain
+
+
 def introduced(diagnostic, files, build_script=False):
     code = (diagnostic.get("code") or {}).get("code")
     if code in LOCK_LINTS:
         return True
     if code != IO_LINT:
         return False
-    spans = []
-    for span in diagnostic["spans"]:
-        if not span["is_primary"]:
-            continue
-        while span is not None:
-            spans.append(span)
-            span = (span.get("expansion") or {}).get("span")
+    spans = [span for chain in span_chains(diagnostic) for span in chain]
     if not spans:
         raise ValueError("A state-I/O diagnostic has no source span")
     for span in spans:
@@ -202,8 +208,90 @@ def introduced(diagnostic, files, build_script=False):
     return False
 
 
+def relative_path(path, root):
+    path = Path(path)
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix()
+    return path.as_posix()
+
+
+def diagnostic_key(message, files=None, root=ROOT):
+    diagnostic, target = message["message"], message["target"]
+    chains = []
+    for chain in span_chains(diagnostic):
+        locations = []
+        for span in chain:
+            path = relative_path(span["file_name"], root)
+            start, end = span["line_start"], span["line_end"]
+            if files is not None and path in files:
+                unchanged = unchanged_lines(*files[path])
+                mapped = [unchanged.get(line) for line in range(start, end + 1)]
+                if not mapped or None in mapped or mapped != list(range(mapped[0], mapped[0] + len(mapped))):
+                    return None
+                start, end = mapped[0], mapped[-1]
+            locations.append((path, start, end, span.get("column_start", 1), span.get("column_end", 1),
+                              (span.get("expansion") or {}).get("macro_decl_name", "")))
+        chains.append(tuple(locations))
+    if not chains:
+        raise ValueError("A state-I/O diagnostic has no source span")
+    return (diagnostic["code"]["code"], diagnostic["message"], target["name"], tuple(target["kind"]),
+            relative_path(target["src_path"], root), tuple(sorted(chains)))
+
+
+def compiler_introduced(message, files, baseline):
+    diagnostic = message["message"]
+    build_script = "custom-build" in message["target"]["kind"]
+    if introduced(diagnostic, files, build_script):
+        return True
+    if (diagnostic.get("code") or {}).get("code") != IO_LINT or build_script:
+        return False
+    if all(span["file_name"] in {HELPER, LIFECYCLE_EXCEPTION["file"]}
+           for chain in span_chains(diagnostic) for span in chain):
+        return False
+    key = diagnostic_key(message, files)
+    if key is None or not baseline[key]:
+        return True
+    baseline[key] -= 1
+    return False
+
+
+def compile_inventory(root, env, label):
+    command = [
+        "nice", "-n", "10", "cargo", "clippy", "--workspace", "--lib", "--bins", "--locked",
+        "--features", "koidrive-cli/test-install-inventory,koidrive-cli/test-setup",
+        "--message-format=json", "--",
+    ]
+    for lint in FORCED_LINTS:
+        command.extend(["--force-warn", lint])
+    process = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE, text=True, timeout=1800)
+    finished = False
+    messages, errors = [], []
+    for line in process.stdout.splitlines():
+        message = json.loads(line)
+        if message.get("reason") == "build-finished":
+            finished = message["success"]
+        if message.get("reason") != "compiler-message":
+            continue
+        diagnostic = message["message"]
+        if diagnostic["level"] == "error":
+            errors.append(diagnostic.get("rendered") or diagnostic["message"])
+        if (diagnostic.get("code") or {}).get("code") not in FORCED_LINTS:
+            continue
+        for chain in span_chains(diagnostic):
+            for span in chain:
+                span["file_name"] = relative_path(span["file_name"], root)
+        message["target"]["src_path"] = relative_path(message["target"]["src_path"], root)
+        messages.append(message)
+    if process.returncode or not finished or errors:
+        raise ValueError(f"Clippy failed for the {label} production build.\n" + "\n".join(errors))
+    return messages
+
+
 def check(base, inventory=None):
-    git("rev-parse", "--verify", f"{base}^{{commit}}")
+    base = git("rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
     paths = git("diff", "--name-only", "--no-renames", "-z", base, "HEAD").decode().split("\0")
     files = {
         path: (source(base, path), source("HEAD", path))
@@ -216,25 +304,26 @@ def check(base, inventory=None):
             for line in new_suppressions(before, after)
         )
     env = dict(os.environ, CLIPPY_CONF_DIR=str(CONFIG))
-    command = [
-        "nice", "-n", "10", "cargo", "clippy", "--workspace", "--lib", "--bins", "--locked",
-        "--features", "koidrive-cli/test-install-inventory,koidrive-cli/test-setup",
-        "--message-format=json", "--",
-    ]
-    for lint in FORCED_LINTS:
-        command.extend(["--force-warn", lint])
-    process = subprocess.run(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True, timeout=1800)
+    env["RUSTUP_TOOLCHAIN"] = subprocess.check_output(
+        ["rustup", "show", "active-toolchain"], cwd=ROOT, env=env, text=True,
+    ).split()[0]
+    target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target"))
+    if not target.is_absolute():
+        target = ROOT / target
+    baseline_dir = target / "state-io-baseline" / base
+    baseline_root = baseline_dir / "source"
+    baseline_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-xm", "-C", str(baseline_root)], input=git("archive", base), check=True)
+    baseline_env = dict(env, CARGO_TARGET_DIR=str(baseline_dir / "target"))
+    baseline = Counter(
+        diagnostic_key(message)
+        for message in compile_inventory(baseline_root, baseline_env, "baseline")
+    )
     diagnostics = legacy = 0
-    finished = False
     recorded = []
-    for line in process.stdout.splitlines():
-        message = json.loads(line)
-        if message.get("reason") == "build-finished":
-            finished = message["success"]
-        if message.get("reason") != "compiler-message":
-            continue
+    for message in compile_inventory(ROOT, env, "head"):
         diagnostic = message["message"]
-        is_new = introduced(diagnostic, files, "custom-build" in message["target"]["kind"])
+        is_new = compiler_introduced(message, files, baseline)
         if (diagnostic.get("code") or {}).get("code") == IO_LINT:
             recorded.append({
                 "message": diagnostic["message"],
@@ -249,10 +338,6 @@ def check(base, inventory=None):
             failures.append(diagnostic.get("rendered") or diagnostic["message"])
         elif (diagnostic.get("code") or {}).get("code") == IO_LINT:
             legacy += 1
-        elif diagnostic["level"] == "error":
-            failures.append(diagnostic.get("rendered") or diagnostic["message"])
-    if process.returncode or not finished:
-        failures.append("Clippy failed. Release MutexGuard and RefCell borrows before awaiting network I/O, then rerun this command.")
     for failure in failures:
         print(failure, file=sys.stderr)
     if inventory is not None:

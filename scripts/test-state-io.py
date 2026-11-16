@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+from collections import Counter
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).with_name("check-state-io.py")
@@ -236,6 +239,222 @@ class CompilerProof(unittest.TestCase):
             self.assertEqual(item["level"], "warning")
             path = item["spans"][0]["file_name"]
             self.assertTrue(guard.introduced(item, {path: ("", source)}))
+
+
+class CompilerInventory(unittest.TestCase):
+    def message(self, path="core/telemetry/src/store.rs", start=1, code=guard.IO_LINT):
+        item = diagnostic(path=path, start=start, code=code)
+        item["message"] = "use of a disallowed method `std::fs::write`"
+        item["spans"][0].update(column_start=1, column_end=10)
+        return {"message": item, "target": {"name": "telemetry", "kind": ["lib"], "src_path": "core/telemetry/src/lib.rs"}}
+
+    def baseline(self, *messages):
+        return Counter(guard.diagnostic_key(message) for message in messages)
+
+    def test_unchanged_diagnostics_require_compiler_baseline_evidence(self):
+        message = self.message()
+        self.assertTrue(guard.compiler_introduced(message, {}, self.baseline()))
+        self.assertFalse(guard.compiler_introduced(message, {}, self.baseline(message)))
+
+    def test_another_call_in_the_same_file_is_not_evidence(self):
+        self.assertTrue(guard.compiler_introduced(self.message(start=2), {}, self.baseline(self.message())))
+
+    def test_a_changed_child_with_an_unrelated_edit_still_requires_evidence(self):
+        message = self.message()
+        files = {message["message"]["spans"][0]["file_name"]: ("fs::write(path, bytes);\nfn other() {}", "fs::write(path, bytes);\nfn other() { return; }")}
+        self.assertTrue(guard.compiler_introduced(message, files, self.baseline()))
+        self.assertFalse(guard.compiler_introduced(message, files, self.baseline(message)))
+
+    def test_shifted_spans_match_their_original_compiler_locations(self):
+        before = self.message()
+        after = self.message(start=2)
+        files = {before["message"]["spans"][0]["file_name"]: ("fs::write(path, bytes);", "fn other() {}\nfs::write(path, bytes);")}
+        self.assertFalse(guard.compiler_introduced(after, files, self.baseline(before)))
+
+    def test_source_changes_still_fail_even_with_a_matching_inventory_entry(self):
+        message = self.message()
+        for before, after in [
+            ("fs::write(log, bytes);", "fs::write(state, bytes);"),
+            ("use safe as fs;\nfs::write(path, bytes);", "use std::fs;\nfs::write(path, bytes);"),
+            ("#[cfg(test)]\nfs::write(path, bytes);", "\nfs::write(path, bytes);"),
+        ]:
+            with self.subTest(before=before):
+                files = {message["message"]["spans"][0]["file_name"]: (before, after)}
+                self.assertTrue(guard.compiler_introduced(message, files, self.baseline(message)))
+
+    def test_identity_includes_the_resolved_method_lint_target_and_columns(self):
+        for change in ["method", "lint", "target", "column", "end"]:
+            before, after = self.message(), self.message()
+            if change == "method":
+                after["message"]["message"] = "use of a disallowed method `std::fs::rename`"
+            elif change == "lint":
+                after["message"]["code"]["code"] = "clippy::await_holding_lock"
+            elif change == "target":
+                after["target"]["name"] = "other"
+            else:
+                after["message"]["spans"][0]["column_start" if change == "column" else "column_end"] += 1
+            with self.subTest(change=change):
+                self.assertNotEqual(guard.diagnostic_key(before), guard.diagnostic_key(after))
+
+    def test_absolute_archive_paths_normalize_to_the_same_identity(self):
+        message = self.message()
+        absolute = self.message(path="/private/archive/core/telemetry/src/store.rs")
+        absolute["target"]["src_path"] = "/private/archive/core/telemetry/src/lib.rs"
+        self.assertEqual(guard.diagnostic_key(message), guard.diagnostic_key(absolute, root=Path("/private/archive")))
+
+    def test_macro_identity_includes_every_invocation_in_the_chain(self):
+        before = self.message(path="macros.rs")
+        inner = diagnostic(path="wrapper.rs")["spans"][0]
+        outer = diagnostic(path="caller.rs")["spans"][0]
+        inner["expansion"] = {"span": outer, "macro_decl_name": "wrapper!"}
+        before["message"]["spans"][0]["expansion"] = {"span": inner, "macro_decl_name": "write!"}
+        after = json.loads(json.dumps(before))
+        after["message"]["spans"][0]["expansion"]["span"]["expansion"]["span"].update(line_start=2, line_end=2)
+        self.assertTrue(guard.compiler_introduced(after, {}, self.baseline(before)))
+        self.assertFalse(guard.compiler_introduced(before, {}, self.baseline(before)))
+
+    def test_shifted_macro_invocations_match_but_new_invocations_do_not(self):
+        before = self.message(path="macros.rs")
+        before["message"]["spans"][0]["expansion"] = {"span": diagnostic(path="caller.rs")["spans"][0]}
+        after = json.loads(json.dumps(before))
+        after["message"]["spans"][0]["expansion"]["span"].update(line_start=2, line_end=2)
+        files = {"caller.rs": ("save!(path);", "fn other() {}\nsave!(path);")}
+        self.assertFalse(guard.compiler_introduced(after, files, self.baseline(before)))
+        files["caller.rs"] = ("save!(path);", "save!(path);\nsave!(path);")
+        self.assertTrue(guard.compiler_introduced(after, files, self.baseline(before)))
+
+    def test_inventory_entries_cannot_be_reused_for_duplicate_diagnostics(self):
+        message = self.message()
+        baseline = self.baseline(message)
+        self.assertFalse(guard.compiler_introduced(message, {}, baseline))
+        self.assertTrue(guard.compiler_introduced(message, {}, baseline))
+
+    def test_helper_and_cargo_build_outputs_do_not_need_baseline_evidence(self):
+        self.assertFalse(guard.compiler_introduced(self.message(path=guard.HELPER), {}, self.baseline()))
+        build = self.message(path="cli/build.rs")
+        build["target"]["kind"] = ["custom-build"]
+        self.assertFalse(guard.compiler_introduced(build, {}, self.baseline()))
+        build["target"]["kind"] = ["lib"]
+        self.assertTrue(guard.compiler_introduced(build, {}, self.baseline()))
+
+    def test_both_lock_lints_remain_errors_even_if_the_baseline_has_them(self):
+        for code in guard.LOCK_LINTS:
+            message = self.message(code=code)
+            self.assertTrue(guard.compiler_introduced(message, {}, self.baseline(message)))
+            message["target"]["kind"] = ["custom-build"]
+            self.assertTrue(guard.compiler_introduced(message, {}, self.baseline(message)))
+
+    def test_failed_or_incomplete_compilation_cannot_supply_a_baseline(self):
+        for returncode, output in [
+            (1, '{"reason":"build-finished","success":false}'),
+            (1, '{"reason":"build-finished","success":true}'),
+            (0, '{"reason":"build-finished","success":false}'),
+            (0, ""),
+        ]:
+            with self.subTest(returncode=returncode, output=output):
+                result = SimpleNamespace(returncode=returncode, stdout=output)
+                with patch.object(guard.subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(ValueError, "baseline"):
+                        guard.compile_inventory(guard.ROOT, {}, "baseline")
+
+    def test_compiler_inventory_normalizes_archive_paths_before_source_checks(self):
+        message = self.message(path="/private/archive/core/telemetry/src/store.rs")
+        message["reason"] = "compiler-message"
+        message["message"]["level"] = "warning"
+        message["target"]["src_path"] = "/private/archive/core/telemetry/src/lib.rs"
+        output = json.dumps(message) + '\n{"reason":"build-finished","success":true}'
+        with patch.object(guard.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=output)):
+            inventory = guard.compile_inventory(Path("/private/archive"), {}, "baseline")
+        self.assertEqual(guard.diagnostic_key(inventory[0]), guard.diagnostic_key(self.message()))
+
+    def test_baseline_failure_stops_before_the_head_build(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "target"
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                    patch.object(guard, "git", side_effect=[b"commit", b"", b"archive"]), \
+                    patch.object(guard.subprocess, "check_output", return_value="current-toolchain"), \
+                    patch.object(guard.subprocess, "run"), \
+                    patch.object(guard, "compile_inventory", side_effect=ValueError("baseline failed")) as compile:
+                with self.assertRaisesRegex(ValueError, "baseline failed"):
+                    guard.check("HEAD")
+                compile.assert_called_once()
+                root, env, label = compile.call_args.args
+                self.assertEqual(label, "baseline")
+                self.assertNotEqual(root, guard.ROOT)
+                self.assertEqual(Path(env["CARGO_TARGET_DIR"]), root.parent / "target")
+                self.assertNotEqual(Path(env["CARGO_TARGET_DIR"]), target)
+                self.assertEqual(env["CLIPPY_CONF_DIR"], str(guard.CONFIG))
+                self.assertEqual(env["RUSTUP_TOOLCHAIN"], "current-toolchain")
+
+
+class CompilationBoundary(unittest.TestCase):
+    def compile(self, root):
+        output = root / "target"
+        output.mkdir()
+        flags = [flag for lint in guard.FORCED_LINTS for flag in ("--force-warn", lint)]
+        result = subprocess.run([
+            "nice", "-n", "10", "clippy-driver", "--edition=2024", "--crate-type=lib",
+            "--emit=metadata", "--error-format=json", "--out-dir", str(output), str(root / "lib.rs"), *flags,
+        ], env=dict(os.environ, CLIPPY_CONF_DIR=str(guard.CONFIG)), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        messages = []
+        for line in result.stderr.splitlines():
+            item = json.loads(line)
+            if (item.get("code") or {}).get("code") not in guard.FORCED_LINTS:
+                continue
+            for chain in guard.span_chains(item):
+                for span in chain:
+                    span["file_name"] = guard.relative_path(span["file_name"], root)
+            messages.append({"message": item, "target": {"name": "activation", "kind": ["lib"], "src_path": "lib.rs"}})
+        return messages
+
+    def test_parent_activation_requires_baseline_diagnostics_from_the_unchanged_child(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            base, head = Path(scratch) / "base", Path(scratch) / "head"
+            parent = (guard.CONFIG / "activation.rs").read_text()
+            child = (guard.CONFIG / "activation-child.rs").read_text()
+            for root, text in [(base, parent), (head, parent.replace("#[cfg(test)]\n", ""))]:
+                root.mkdir()
+                (root / "lib.rs").write_text(text)
+                (root / "activation-child.rs").write_text(child)
+            baseline = self.compile(base)
+            current = self.compile(head)
+            self.assertEqual(baseline, [])
+            self.assertEqual({item["message"]["code"]["code"] for item in current}, set(guard.FORCED_LINTS))
+            files = {"lib.rs": (parent, (head / "lib.rs").read_text())}
+            for item in current:
+                with self.subTest(code=item["message"]["code"]["code"]):
+                    self.assertTrue(guard.compiler_introduced(item, files, Counter()))
+            edited = Path(scratch) / "edited"
+            edited.mkdir()
+            (edited / "lib.rs").write_text((head / "lib.rs").read_text())
+            edited_child = child + "\npub fn unrelated() {}\n"
+            (edited / "activation-child.rs").write_text(edited_child)
+            files["activation-child.rs"] = (child, edited_child)
+            current = self.compile(edited)
+            self.assertEqual(len(current), 4)
+            for item in current:
+                with self.subTest(edited_child=True, code=item["message"]["code"]["code"]):
+                    self.assertTrue(guard.compiler_introduced(item, files, Counter()))
+
+    def test_compiler_locations_survive_unrelated_child_edits_and_macro_expansion(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            base, head = Path(scratch) / "base", Path(scratch) / "head"
+            parent = (guard.CONFIG / "activation.rs").read_text().replace("#[cfg(test)]\n", "")
+            child = (guard.CONFIG / "activation-child.rs").read_text()
+            edited = "\n\n" + child + "\npub fn unrelated() {}\n"
+            for root, text in [(base, child), (head, edited)]:
+                root.mkdir()
+                (root / "lib.rs").write_text(parent)
+                (root / "activation-child.rs").write_text(text)
+            baseline = Counter(guard.diagnostic_key(message) for message in self.compile(base))
+            current = self.compile(head)
+            files = {"activation-child.rs": (child, edited)}
+            io = [item for item in current if item["message"]["code"]["code"] == guard.IO_LINT]
+            self.assertEqual(len(io), 2)
+            self.assertTrue(any(len(chain) >= 3 for item in io for chain in guard.span_chains(item["message"])))
+            for item in io:
+                self.assertFalse(guard.compiler_introduced(item, files, baseline))
 
 
 if __name__ == "__main__":
