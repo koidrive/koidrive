@@ -4493,7 +4493,15 @@ impl<'a> Scratch<'a> {
             }
             Want::Delete { .. } | Want::Retrash { .. } => None,
         };
-        revived.and_then(|id| self.returning_from_trash(id, moving))
+        let awaited = revived.and_then(|id| self.returning_from_trash(id, moving));
+        match want {
+            Want::Restore { op, .. } => awaited.filter(|node| {
+                let elsewhere = !op.target_parent_id.is_empty()
+                    && self.parent(&op.node_id) != Some(op.target_parent_id.as_str());
+                !(elsewhere && self.inside(&op.node_id, node))
+            }),
+            _ => awaited,
+        }
     }
 
     fn returning_from_trash<'s>(

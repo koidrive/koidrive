@@ -2087,3 +2087,35 @@ fn a_restore_into_the_node_it_restores_leaves_the_rename_of_that_node_to_go() {
     );
     assert!(!trees.reverted().contains(&a));
 }
+
+#[test]
+fn a_restore_out_of_the_folder_holding_it_in_the_trash_is_sent_before_that_folders_own_move() {
+    let (a, b, c, f) = (id(1), id(2), id(3), id(4));
+    let kept = |id: &String, shape: Shape| {
+        (
+            id.clone(),
+            Some(shape.clone()),
+            Some(shape.clone()),
+            Some(trashed(shape)),
+        )
+    };
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            Some(dir(&root(), "a1")),
+            Some(dir(&root(), "a")),
+            Some(trashed(dir(&root(), "a"))),
+        ),
+        kept(&b, dir(&a, "b")),
+        kept(&c, dir(&b, "c")),
+        (f.clone(), Some(file(&c, "f", 9)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(c.clone(), Some(a.clone()), None).unwrap();
+    assert!(commits.restore(id(100), intent.clone()));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit)[..2],
+        [restore_op(&intent), moved(&a, &root(), "a1")]
+    );
+}
