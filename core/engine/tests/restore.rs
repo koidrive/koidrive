@@ -2112,3 +2112,53 @@ fn a_restore_out_of_the_folder_holding_it_in_the_trash_is_sent_before_that_folde
         [restore_op(&intent), moved(&a, &root(), "a1")]
     );
 }
+
+#[test]
+fn a_restore_held_by_a_problem_does_not_hold_back_a_move_into_its_folder() {
+    let (a, b) = (id(1), id(2));
+    let renamed = (
+        b.clone(),
+        Some(dir(&root(), "b2")),
+        Some(dir(&root(), "b")),
+        Some(trashed(dir(&root(), "b"))),
+    );
+    let mut trees = trees(&[synced(a.clone(), dir(&root(), "a")), renamed]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    acknowledge(&mut commits, &mut trees, vec![rejected("LATER_REASON")]);
+    assert!(commits.problems().contains(&b));
+    let mut node = trees.local().get(&a).unwrap().clone();
+    node.shape.parent = b.clone();
+    trees.set_local(a.clone(), node);
+    trees.settle();
+    let intent = RestoreIntent::from_trash(b.clone(), Some(a.clone()), None).unwrap();
+    assert!(commits.restore(id(100), intent));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(commits.held_restores().collect::<Vec<_>>(), [&id(100)]);
+    assert_eq!(ops(&commit), [moved(&a, &b, "a")]);
+}
+
+#[test]
+fn a_restore_into_a_file_does_not_hold_back_a_move_into_the_restored_folder() {
+    let (a, b, f) = (id(1), id(2), id(3));
+    let mut trees = trees(&[
+        (
+            a.clone(),
+            Some(dir(&b, "a")),
+            Some(dir(&root(), "a")),
+            Some(remote(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&root(), "b")),
+            Some(dir(&root(), "b")),
+            Some(trashed(dir(&root(), "b"))),
+        ),
+        synced(f.clone(), file(&a, "f", 1)),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = RestoreIntent::from_trash(b.clone(), Some(f.clone()), None).unwrap();
+    assert!(commits.restore(id(100), intent.clone()));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [restore_op(&intent), moved(&a, &b, "a")]);
+}

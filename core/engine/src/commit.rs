@@ -4489,7 +4489,10 @@ impl<'a> Scratch<'a> {
                     shape.name.as_str(),
                     Lands::Create(shape.kind),
                 )),
-                Want::Restore { op, .. } if !positioned.contains(op.node_id.as_str()) => {
+                Want::Restore { op, .. }
+                    if !positioned.contains(op.node_id.as_str())
+                        && self.restoring.contains(&op.node_id) =>
+                {
                     (restored_at(self.trees, op)).map(|(parent, name, _)| {
                         (op.node_id.as_str(), parent, name, Lands::Restore)
                     })
@@ -4547,7 +4550,8 @@ impl<'a> Scratch<'a> {
                     Lands::Create(Kind::File) => {
                         parents.insert(id, to);
                     }
-                    Lands::Restore if inside(self, &parents, to, id) => {}
+                    Lands::Restore
+                        if inside(self, &parents, to, id) || self.kind(to) == Some(Kind::File) => {}
                     Lands::Restore => {
                         parents.insert(id, to);
                     }
