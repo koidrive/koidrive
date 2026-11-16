@@ -2362,6 +2362,15 @@ impl Commits {
         for id in revived {
             trees.restart_finish(&id, result.seq);
         }
+        for (id, given) in &given_up {
+            if !given.held_here
+                && trees.local().get(id).is_none()
+                && synced.get(trees, id).is_none()
+                && let Some(remote) = trees.remote().live(id)
+            {
+                synced.set(id, Some(remote.clone()));
+            }
+        }
         let mut rest = synced.apply(trees);
         let mut positions = Synced::default();
         for (id, at) in &agreed {
