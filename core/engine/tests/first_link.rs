@@ -4752,4 +4752,64 @@ mod a_server_file_moved_into_an_asked_folder {
         let (sent, t) = discard(c, t, i);
         taken_along(&sent, &t, 10);
     }
+
+    fn server_folder_moved_in_while_left_out() -> (Commits, Trees, IdGen) {
+        let mut t = trees(
+            &[("f", dir(ROOT, "new")), ("e", file("f", "e", 4))],
+            &[("sf", dir(ROOT, "server")), ("sc", file("sf", "c", 9))],
+        );
+        let (mut c, mut i) = (Commits::default(), IdGen::new(7));
+        c.first_link(&mut t, &mut i, NOW, PriorSync::Shown);
+        question(&c);
+        assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        set_rules(
+            &mut t,
+            Some(
+                b"ignored
+",
+            ),
+        );
+        scan(&mut t, "sf", dir("f", "ignored"));
+        quiet(&mut c, &mut t, &mut i);
+        set_rules(&mut t, None);
+        quiet(&mut c, &mut t, &mut i);
+        (c, t, i)
+    }
+
+    #[test]
+    fn a_server_folder_the_user_deletes_from_before_the_discard_applies_stays_where_the_user_put_it()
+     {
+        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+        assert!(c.decide(&question(&c).id, Answer::Discard));
+        t.remove_local("sc");
+        t.settle();
+        let mut sent = settle(&mut c, &mut t, &mut i);
+        assert_eq!(sent, [("delete", "sc".to_owned())]);
+        let mut trashed = t.remote().get("sc").unwrap().clone();
+        trashed.trashed = true;
+        trashed.meta_rev = 2;
+        trashed.meta_edit_rev = 2;
+        t.set_remote("sc".into(), trashed);
+        let applied = OpResult {
+            code: op_result::Code::Applied as i32,
+            ..Default::default()
+        };
+        let result = CommitResult {
+            seq: 2,
+            results: vec![applied],
+            changes: vec![],
+            ..Default::default()
+        };
+        c.received(result).unwrap();
+        assert!(c.acknowledge(&mut t, 2));
+        t.settle();
+        sent.extend(settle(&mut c, &mut t, &mut i));
+        assert_eq!(
+            t.local().get("sf").map(|node| &node.shape),
+            Some(&dir("f", "ignored")),
+            "{sent:?}"
+        );
+        assert!(sent.contains(&("create dir", "f".to_owned())), "{sent:?}");
+        assert!(sent.contains(&("move", "sf".to_owned())), "{sent:?}");
+    }
 }

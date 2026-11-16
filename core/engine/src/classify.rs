@@ -2168,9 +2168,10 @@ impl Trees {
             },
             Kind::Dir => {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
-                children
-                    .into_iter()
-                    .all(|child| shown.contains_key(child) || self.server_copy(child, shown, kept))
+                self.keeps_the_synced_children(id, &mut BTreeSet::new())
+                    && children.into_iter().all(|child| {
+                        shown.contains_key(child) || self.server_copy(child, shown, kept)
+                    })
             }
         };
         if copy {
