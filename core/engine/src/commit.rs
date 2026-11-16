@@ -3902,16 +3902,12 @@ fn plan(
         stalled = true;
         let aside = (wants.iter().enumerate()).find_map(|(at, slot)| {
             let want = slot.as_ref()?;
-            let id = match want {
-                Want::Move { id, .. }
-                    if !asides.contains(id) && !scratch.finishing.contains(id) =>
-                {
-                    id
-                }
-                Want::Create { id, shape, .. } if shape.kind == Kind::Dir => id,
-                _ => return None,
+            let Want::Move { id, .. } = want else {
+                return None;
             };
-            (scratch.fit(want, &moving) == Fit::NameTaken
+            (!asides.contains(id)
+                && !scratch.finishing.contains(id)
+                && scratch.fit(want, &moving) == Fit::NameTaken
                 && (scratch.name_holders(want))
                     .filter(|holder| *holder != id)
                     .all(|holder| leaves(holder, &scratch, &moving)))
@@ -3919,43 +3915,23 @@ fn plan(
         });
         if let Some(at) = aside {
             let want = wants[at].as_ref().expect("found");
-            let (aside, finishes) = match want {
-                Want::Move {
-                    id,
-                    parent,
-                    name,
-                    guarded,
-                    ..
-                } => {
-                    let aside = Want::Move {
-                        id: id.clone(),
-                        parent: parent.clone(),
-                        name: scratch.free_name(parent, name),
-                        pending_for: Some(name.clone()),
-                        guarded: *guarded,
-                    };
-                    (aside, true)
-                }
-                Want::Create {
-                    id,
-                    shape,
-                    pending_for,
-                } => {
-                    let aside = Want::Create {
-                        id: id.clone(),
-                        shape: Shape {
-                            name: scratch.free_name(&shape.parent, &shape.name),
-                            ..shape.clone()
-                        },
-                        pending_for: Some(pending_for.clone().unwrap_or(shape.name.clone())),
-                    };
-                    (aside, false)
-                }
-                _ => unreachable!("only moves and folder creates are set aside"),
+            let Want::Move {
+                id,
+                parent,
+                name,
+                guarded,
+                ..
+            } = want
+            else {
+                unreachable!("only moves are set aside");
             };
-            let id = match &aside {
-                Want::Move { id, .. } | Want::Create { id, .. } => id.clone(),
-                _ => unreachable!("an aside is a move or a create"),
+            let id = id.clone();
+            let aside = Want::Move {
+                id: id.clone(),
+                parent: parent.clone(),
+                name: scratch.free_name(parent, name),
+                pending_for: Some(name.clone()),
+                guarded: *guarded,
             };
             let Some((carried, bundle)) =
                 scratch.compensation(&aside, answers, trees, &wants, &moving)
@@ -3976,7 +3952,7 @@ fn plan(
                 cost + priced(&scratch, want),
             );
             let alone = emitted == 0 && !bundle.is_empty();
-            if (finishes && emitted > 0 && !whole) || !alone && !fits(emitted, bytes, ops, cost) {
+            if (emitted > 0 && !whole) || !alone && !fits(emitted, bytes, ops, cost) {
                 break true;
             }
             emitted += ops;
@@ -3988,10 +3964,6 @@ fn plan(
             }
             for retrash in bundle {
                 emit(retrash, &mut scratch, &mut moving);
-            }
-            if !finishes {
-                wants[at] = None;
-                continue;
             }
             asides.insert(id.clone());
             moving.insert(id.clone());

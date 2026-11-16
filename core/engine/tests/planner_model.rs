@@ -3428,3 +3428,21 @@ fn a_publish_answer_keeps_a_folder_below_a_new_folder_in_a_folder_renamed_after_
     let sent = report.text.lines().nth(1).unwrap_or_default();
     assert!(!sent.contains("Delete d"), "{}", report.text);
 }
+
+#[test]
+fn a_folder_create_onto_a_name_its_holder_leaves_waits_for_the_holder_instead_of_a_pending_name() {
+    use Local::{Into as To, Kept, Onto};
+    use Spot::{In, Root};
+    let mut world = world(
+        &[Root, Root, In(0)],
+        &[Remote::Kept, Remote::Forgotten, Remote::Kept],
+        &[To(In(1)), Kept, Onto(0)],
+        &[(Kind::Dir, Onto(2))],
+    );
+    world.ranks = vec![0, 1, 2, 3];
+    let report = check(&world, &server(&world));
+    assert!(!report.text.is_empty(), "{:?}", report.classes);
+    let sent = report.text.lines().nth(1).unwrap_or_default();
+    assert!(sent.contains("CreateDir n→a/c"), "{}", report.text);
+    assert!(!sent.contains("(pending)"), "{}", report.text);
+}
