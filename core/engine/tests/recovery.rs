@@ -2426,6 +2426,19 @@ fn keeps_the_mark_invariants(
             case()
         );
     }
+    for (i, (id, shape)) in local.iter().enumerate() {
+        let Some(node) = mark_of.get(id).copied().filter(|node| node != id) else {
+            continue;
+        };
+        if before.synced().get(id).is_some() || found[i].as_deref() != Some(*id) {
+            continue;
+        }
+        assert!(
+            !claimable(shape, node) || after.local().get(node).is_some(),
+            "entry {id} kept its ID while the mark of {node} claims\n{}",
+            case()
+        );
+    }
     for (i, node) in found.iter().enumerate() {
         let Some(node) = node else {
             continue;
@@ -3477,6 +3490,32 @@ fn a_file_whose_mark_claims_once_its_folder_is_adopted_gives_up_another_nodes_id
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(!sent.contains(&("move", "n0".to_owned())), "{sent:?}");
+}
+
+#[test]
+fn a_file_whose_mark_names_an_id_a_place_match_frees_is_not_settled_as_its_own_id() {
+    let (trees, _, _) = followed(
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("n2", file("d0", "a", 7)),
+            ("n1", file("d0", "b", 2)),
+        ],
+        &[],
+        &[
+            live("d0", dir(ROOT, "q")),
+            live("n5", file("d0", "a", 7)),
+            live("n1", file("d0", "b", 2)),
+            live("n2", file(ROOT, "z", 1)),
+        ],
+        &[
+            ("d0", dir(ROOT, "p")),
+            ("d0", dir(ROOT, "q")),
+            ("n2", file(ROOT, "z", 2)),
+        ],
+        &[("d0", "d0"), ("n1", "n2")],
+    );
+    assert_eq!(trees.synced().live("n1"), None);
+    assert_eq!(trees.local().get("n1"), None);
 }
 
 #[test]

@@ -66,14 +66,15 @@ pub enum PriorSync {
 /// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
-    adopt_around(trees, history, &BTreeMap::new())
+    adopt_around(trees, history, &BTreeMap::new(), &BTreeSet::new()).0
 }
 
 pub(crate) fn adopt_around(
     trees: &mut Trees,
     history: Option<&History>,
     claimed: &BTreeMap<NodeId, NodeId>,
-) -> Vec<NodeId> {
+    named: &BTreeSet<NodeId>,
+) -> (Vec<NodeId>, bool) {
     let claimants: BTreeSet<&NodeId> = claimed.values().collect();
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
@@ -181,13 +182,16 @@ pub(crate) fn adopt_around(
             }
             if id != remote_id {
                 rekey(trees, &id, &remote_id);
+                if named.contains(&id) {
+                    return (held, true);
+                }
             }
             if local.kind == Kind::Dir {
                 pending.push(remote_id);
             }
         }
     }
-    held
+    (held, false)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -205,26 +209,26 @@ pub(crate) fn adopt_by_marks_first(
     now_ms: u64,
 ) {
     let mut marks = marks.clone();
-    give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
+    let named: BTreeSet<NodeId> = marks.values().cloned().collect();
     let folders = folder_places(trees, history);
-    let (_, mut waiting) = follow_marks(trees, history, &marks, &folders, Pass::Latest);
-    'adopt: loop {
-        adopt_around(trees, Some(history), &waiting);
-        for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
-            let (followed, left) = follow_marks(trees, history, &marks, &folders, pass);
-            waiting = left;
-            if followed {
-                continue 'adopt;
+    give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
+    loop {
+        let (_, mut waiting) = follow_marks(trees, history, &marks, &folders, Pass::Latest);
+        'adopt: loop {
+            let (_, stopped) = adopt_around(trees, Some(history), &waiting, &named);
+            for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
+                let (followed, left) = follow_marks(trees, history, &marks, &folders, pass);
+                waiting = left;
+                if followed {
+                    continue 'adopt;
+                }
+            }
+            if !stopped {
+                break;
             }
         }
-        let given_up = give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
-        if given_up.is_empty() {
-            break;
-        }
-        for local in waiting.values_mut() {
-            if let Some(fresh) = given_up.get(local) {
-                *local = fresh.clone();
-            }
+        if !give_up_claimed_ids(trees, history, &mut marks, ids, now_ms) {
+            return;
         }
     }
 }
@@ -235,8 +239,8 @@ fn give_up_claimed_ids(
     marks: &mut Marks,
     ids: &mut IdGen,
     now_ms: u64,
-) -> BTreeMap<NodeId, NodeId> {
-    let mut given_up = BTreeMap::new();
+) -> bool {
+    let mut given_up = false;
     loop {
         let more: BTreeMap<NodeId, NodeId> = (claimed_once(trees, marks).into_iter())
             .filter(|(local, node)| {
@@ -258,7 +262,7 @@ fn give_up_claimed_ids(
         *marks = (std::mem::take(marks).into_iter())
             .map(|(local, node)| (more.get(&local).cloned().unwrap_or(local), node))
             .collect();
-        given_up.extend(more);
+        given_up = true;
     }
 }
 
