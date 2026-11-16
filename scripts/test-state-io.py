@@ -69,6 +69,22 @@ class ChangedIo(unittest.TestCase):
         self.assertTrue(self.introduced("", "fs::write(a, b);", path="core/driver/src/build.rs"))
         self.assertTrue(self.introduced("", "fs::write(a, b);", path="cli/build.rs"))
 
+    def test_new_macro_invocations_cannot_grandfather_an_unchanged_definition(self):
+        item = diagnostic(path="core/driver/src/macros.rs")
+        call = diagnostic(path="cli/src/service/command.rs")["spans"][0]
+        call["is_primary"] = False
+        item["spans"][0]["expansion"] = {"span": call}
+        self.assertTrue(guard.introduced(item, {call["file_name"]: ("", "save!(path);")}))
+
+    def test_nested_macro_expansions_check_the_outer_invocation(self):
+        item = diagnostic(path="core/driver/src/macros.rs")
+        inner = diagnostic(path="core/driver/src/wrapper.rs")["spans"][0]
+        outer = diagnostic(path="cli/src/service/command.rs")["spans"][0]
+        inner["is_primary"] = outer["is_primary"] = False
+        inner["expansion"] = {"span": outer}
+        item["spans"][0]["expansion"] = {"span": inner}
+        self.assertTrue(guard.introduced(item, {outer["file_name"]: ("", "save!(path);")}))
+
     def test_a_new_suppression_fails(self):
         self.assertEqual(list(guard.new_suppressions("", "#[allow(clippy::disallowed_methods)]")), [1])
         self.assertEqual(list(guard.new_suppressions("", "#[expect(\nclippy::await_holding_lock)]")), [1])
@@ -123,7 +139,7 @@ class ChangedIo(unittest.TestCase):
         self.assertIn('nice -n 10 python3 scripts/check-state-io.py "$BASE"', job)
         self.assertIn("BASE=$(git rev-parse HEAD^1)", job)
         self.assertIn("merge_group", job)
-        self.assertIn("-D", SCRIPT.read_text())
+        self.assertIn("--force-warn", SCRIPT.read_text())
         self.assertIn("koidrive-cli/test-install-inventory,koidrive-cli/test-setup", SCRIPT.read_text())
 
 
@@ -179,6 +195,28 @@ class CompilerProof(unittest.TestCase):
             self.assertIn(method, result.stderr)
         self.assertIn("koidrive_state_file::AtomicFile", result.stderr)
         self.assertNotIn("error[E", result.stderr)
+
+    def test_macro_supplied_lint_levels_cannot_hide_compiler_diagnostics(self):
+        ordinary_flags = ["--error-format=json", "-W", guard.IO_LINT]
+        for lint in sorted(guard.LOCK_LINTS):
+            ordinary_flags.extend(["-D", lint])
+        ordinary = self.compile("macro-levels.rs", ordinary_flags)
+        self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
+        hidden = [json.loads(line) for line in ordinary.stderr.splitlines()]
+        self.assertFalse([item for item in hidden if (item.get("code") or {}).get("code") in guard.FORCED_LINTS])
+        flags = ["--error-format=json"]
+        for lint in guard.FORCED_LINTS:
+            flags.extend(["--force-warn", lint])
+        result = self.compile("macro-levels.rs", flags)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        diagnostics = [json.loads(line) for line in result.stderr.splitlines()]
+        violations = [item for item in diagnostics if (item.get("code") or {}).get("code") in guard.FORCED_LINTS]
+        self.assertEqual({item["code"]["code"] for item in violations}, set(guard.FORCED_LINTS))
+        source = (guard.CONFIG / "macro-levels.rs").read_text()
+        for item in violations:
+            self.assertEqual(item["level"], "warning")
+            path = item["spans"][0]["file_name"]
+            self.assertTrue(guard.introduced(item, {path: ("", source)}))
 
 
 if __name__ == "__main__":

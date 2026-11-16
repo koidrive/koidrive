@@ -16,8 +16,10 @@ Recovery opens read-only or write-only stages and leaves inaccessible stages unt
 | --- | --- |
 | State-file publication has one owner. | `AtomicFile` owns its stage, inode lock, destination, and directory descriptor. |
 | New direct writes, renames, copies, hard links and tempfile publications are rejected outside that owner. | `scripts/check-state-io.py` uses Clippy's resolved `disallowed_methods` diagnostics and rejects new calls. Its error names the helper to use. |
-| A synchronous mutex guard or a `RefCell` borrow cannot span an await. | Clippy's `await_holding_lock` and `await_holding_refcell_ref` run with errors enabled. |
+| A synchronous mutex guard or a `RefCell` borrow cannot span an await. | Forced Clippy diagnostics for `await_holding_lock` and `await_holding_refcell_ref` fail the guard at any level. |
 
 Run `python3 scripts/test-state-io.py -v` to check the lint regressions, and `python3 scripts/check-state-io.py <base>` to check a committed change. `--inventory <file>` records every compiler-resolved direct-I/O diagnostic and the named lifecycle and historical setup exceptions. The check compiles production libraries and binaries on Linux and macOS with the CI features. Test fixture writes are not product persistence. Its jobs are dependencies of the required `ci-report` job.
 
 The direct-I/O check allows unchanged calls. Changing a call, its local imports, or its compilation conditions triggers a recheck. Build-script outputs are identified by Cargo's target kind, not by the source filename. The lifecycle checkpoint exception pins its function and method. Historical setup stages remain because setup has no cross-process lease that distinguishes an old process's stage from an orphan. The check does not identify arbitrary writes through `File`, external processes, or direct syscalls, and it does not prove that a synchronous function avoids network I/O. Those boundaries need an API that withholds the corresponding capability.
+
+The compiler forces all three guard lints to warning level, including through macro-generated allow and expect attributes. The checker treats those diagnostics as failures and checks the macro expansion chain for changed invocation sites. Source-attribute checks provide early diagnostics but do not determine whether the compiler reports a violation.

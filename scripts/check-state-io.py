@@ -18,6 +18,7 @@ CONFIG = ROOT / "scripts/state-io"
 HELPER = "core/state-file/src/lib.rs"
 LOCK_LINTS = {"clippy::await_holding_lock", "clippy::await_holding_refcell_ref"}
 IO_LINT = "clippy::disallowed_methods"
+FORCED_LINTS = [IO_LINT, *sorted(LOCK_LINTS)]
 IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
 CONDITIONAL = re.compile(r"#\s*!?\s*\[\s*cfg(?:_attr)?\s*\([^]]*\)\s*\]", re.S)
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
@@ -163,7 +164,13 @@ def introduced(diagnostic, files, build_script=False):
         return True
     if code != IO_LINT:
         return False
-    spans = [span for span in diagnostic["spans"] if span["is_primary"]]
+    spans = []
+    for span in diagnostic["spans"]:
+        if not span["is_primary"]:
+            continue
+        while span is not None:
+            spans.append(span)
+            span = (span.get("expansion") or {}).get("span")
     if not spans:
         raise ValueError("A state-I/O diagnostic has no source span")
     for span in spans:
@@ -208,9 +215,10 @@ def check(base, inventory=None):
     command = [
         "nice", "-n", "10", "cargo", "clippy", "--workspace", "--lib", "--bins", "--locked",
         "--features", "koidrive-cli/test-install-inventory,koidrive-cli/test-setup",
-        "--message-format=json", "--", "-W", IO_LINT,
-        "-D", "clippy::await_holding_lock", "-D", "clippy::await_holding_refcell_ref",
+        "--message-format=json", "--",
     ]
+    for lint in FORCED_LINTS:
+        command.extend(["--force-warn", lint])
     process = subprocess.run(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True, timeout=1800)
     diagnostics = legacy = 0
     finished = False
