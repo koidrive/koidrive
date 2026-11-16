@@ -4392,3 +4392,39 @@ fn publishing_a_folder_that_takes_the_name_of_the_folder_moving_into_it_sends_th
         ]
     );
 }
+
+#[test]
+fn publishing_a_folder_whose_subfolder_a_move_leaves_for_a_new_folder_sends_the_folder_and_keeps_the_subfolder()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("b", dir("a", "b")),
+            ("c", dir("n", "c")),
+            ("n", dir("a", "n")),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
+    assert!(commits.decide(&created.id, Answer::Publish));
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
+    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("create dir", "n".into()),
+            ("move", "c".into())
+        ]
+    );
+}
