@@ -393,6 +393,96 @@ fn a_disk_ejected_from_a_folder_moved_on_one_copy_of_another_disk_stays_there() 
     assert_eq!(away(&snapshot), ["B/T/Disk"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_disk_ejected_from_another_disk_stays_there_when_a_folder_above_both_moves() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let outer = disks.image("Outer");
+    let inner = disks.image("Inner");
+    fs::create_dir_all(root.join("P/A")).unwrap();
+    disks.attach(&outer, &root.join("P/A"));
+    fs::create_dir(root.join("P/A/B")).unwrap();
+    disks.attach(&inner, &root.join("P/A/B"));
+    fill(&root.join("P/A/B"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.detach(&root.join("P/A/B"));
+    fs::rename(root.join("P"), root.join("Q")).unwrap();
+    disks.moved(&root.join("P"), &root.join("Q"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(
+        found.changes,
+        [Change::Renamed {
+            from: "P".into(),
+            to: "Q".into(),
+            kind: EntryKind::Dir
+        }]
+    );
+    holds(
+        &snapshot,
+        &below("Q/A/B")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(away(&snapshot), ["Q/A/B"]);
+}
+
+#[test]
+fn an_unreadable_folder_on_a_disk_in_a_moved_folder_keeps_what_it_held() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let disk = disks.image("Outer");
+    fs::create_dir_all(root.join("P/A")).unwrap();
+    disks.attach(&disk, &root.join("P/A"));
+    write(&root.join("P/A/S/f.txt"), "f");
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("P"), root.join("Q")).unwrap();
+    disks.moved(&root.join("P"), &root.join("Q"));
+    fs::set_permissions(root.join("Q/A/S"), fs::Permissions::from_mode(0o0)).unwrap();
+    let found = rescan(&mut snapshot, &root, &[""]);
+    fs::set_permissions(root.join("Q/A/S"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(root.join("Q"), root.join("P")).unwrap();
+    disks.moved(&root.join("Q"), &root.join("P"));
+    assert_eq!(found.unreadable, [PathBuf::from("Q/A/S")]);
+    assert_eq!(
+        found.changes,
+        [Change::Renamed {
+            from: "P".into(),
+            to: "Q".into(),
+            kind: EntryKind::Dir
+        }]
+    );
+    holds(&snapshot, &["Q/A/S/f.txt"]);
+}
+
+#[test]
+fn a_disk_whose_root_cannot_be_opened_is_read_once_it_can_be() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let disk = disks.image("Locked");
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(&disk, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o0)).unwrap();
+    let scanned = Snapshot::scan(&root);
+    fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o755)).unwrap();
+    let mut snapshot = scanned.unwrap();
+    rescan(&mut snapshot, &root, &[""]);
+    assert!(mounted(&snapshot, "Disk"));
+    holds(
+        &snapshot,
+        &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(away(&snapshot), Vec::<&str>::new());
+}
+
 #[test]
 fn a_folder_above_a_mounted_volume_moves_with_the_volume_in_it() {
     let Some(mut disks) = Disks::new() else {

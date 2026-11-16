@@ -469,7 +469,15 @@ impl Scan<'_> {
             return Ok(());
         };
         if entry.kind == EntryKind::Dir && stat.dev != dev {
-            let volume = (open_dir_at(dir, name).ok()).and_then(|sub| root::volume_id(sub.as_fd()));
+            let volume = match open_dir_at(dir, name) {
+                Ok(sub) => root::volume_id(sub.as_fd()),
+                Err(err) if is_gone(&err) => return Err(Error::Changed),
+                Err(err) if denied(&err) => {
+                    self.unreadable.push(rel);
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+            };
             entry.mount = Some(volume.map_or(Mount::Unidentified, Mount::Volume));
         }
         if let Some(rules) = &mut self.rules
@@ -1000,7 +1008,8 @@ impl Snapshot {
                         old.iter().find(|(path, before)| {
                             before.kind == EntryKind::Dir
                                 && before.id == now.id
-                                && volume_of(path, &old, &self.entries) == volume
+                                && volume_now(path, &old, &scan.new, &self.entries).as_deref()
+                                    == volume
                         })
                     })
                     .map_or(blocked, |(path, _)| path)
@@ -1273,9 +1282,11 @@ fn moved_to(
     if new.get(parent).is_some_and(|now| now.id == before.id) {
         return Some(path.to_path_buf());
     }
-    let volume = volume_of(parent, old, beyond);
+    let volume = volume_now(parent, old, new, beyond);
     match (new.iter()).find(|(at, now)| {
-        now.kind == EntryKind::Dir && now.id == before.id && volume_of(at, new, beyond) == volume
+        now.kind == EntryKind::Dir
+            && now.id == before.id
+            && volume_of(at, new, beyond) == volume.as_deref()
     }) {
         Some((at, _)) => Some(at.join(path.file_name()?)),
         None => (new.get(parent))
@@ -1825,6 +1836,16 @@ fn volume_of<'p>(
     path.ancestors().find(|above| {
         (tree.get(*above).or_else(|| beyond.get(*above))).is_some_and(|entry| entry.mount.is_some())
     })
+}
+
+fn volume_now(
+    path: &Path,
+    old: &BTreeMap<PathBuf, Entry>,
+    new: &BTreeMap<PathBuf, Entry>,
+    beyond: &BTreeMap<PathBuf, Entry>,
+) -> Option<PathBuf> {
+    let volume = volume_of(path, old, beyond)?;
+    Some(moved_to(volume, old, new, beyond).unwrap_or_else(|| volume.to_path_buf()))
 }
 
 fn carried(path: &Path, moved: &[(&Path, &Path)]) -> PathBuf {
