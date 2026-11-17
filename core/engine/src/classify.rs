@@ -2183,6 +2183,17 @@ impl Trees {
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
             }
+            let moved_out = (self.discarded.get(id))
+                .filter(|shape| !old.parked && shape.parent != old.shape.parent)
+                .filter(|_| self.r.get(id).is_some())
+                .map(|shape| Shape {
+                    parent: old.shape.parent.clone(),
+                    ..shape.clone()
+                });
+            if let Some(shape) = moved_out {
+                self.forget_reclaims();
+                self.discarded.insert(id.to_owned(), shape);
+            }
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
                 true => self.l_parked.remove(id, &old.shape),
@@ -2493,6 +2504,7 @@ impl Trees {
         }
         let Some(local) = self.l.get(id) else {
             return self.r.live(id).is_none()
+                || self.ignored_in_remote(id)
                 || (self.kept_back(id) && self.keeps_the_synced_children(id, seen));
         };
         let holds = |shape: Option<&Shape>| shape.is_some_and(|shape| local.shape.same(shape));
@@ -2576,8 +2588,11 @@ impl Trees {
     }
 
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
-        (self.synced_children(id).chain(self.waiting.children(id)))
-            .all(|child| self.l.get(child).is_some() || self.as_the_server_holds(child, seen))
+        (self.synced_children(id).chain(self.waiting.children(id))).all(|child| {
+            self.l.get(child).is_some()
+                || (self.discarded.get(child)).is_some_and(|shape| shape.parent != id)
+                || self.as_the_server_holds(child, seen)
+        })
     }
 
     fn drop_discarded_copy(&mut self, id: &str) {
