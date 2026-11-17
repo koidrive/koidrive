@@ -402,9 +402,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         rotated ? proposal : device.refresh_hash,
         device.device_id,
       );
-      if (args.telemetry === TokenRequest_Telemetry.ON || args.telemetry === TokenRequest_Telemetry.OFF) {
-        this.sql.exec("UPDATE devices SET telemetry = ? WHERE device_id = ?", args.telemetry, device.device_id);
-      }
+      this.sql.exec("UPDATE devices SET telemetry = ? WHERE device_id = ?", args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED, device.device_id);
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);

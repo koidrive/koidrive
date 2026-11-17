@@ -18,7 +18,7 @@ No field is removed or renumbered.
 
 ## 3. Server rules
 
-1. The server stores `TELEMETRY_ON` and `TELEMETRY_OFF` on the device that sent them, and ignores `TELEMETRY_UNSPECIFIED`.
+1. The server stores the value on the device that sent it, so each token refresh replaces that device's previous value.
 2. The server reports while at least one active device last sent `TELEMETRY_ON` and no active device last sent `TELEMETRY_OFF`. A device that is revoked or whose credential expired doesn't count.
 3. While the server doesn't report, it keeps no counts and sends nothing. When reporting stops, the server deletes the counts it hasn't sent.
 4. While it reports, the server counts each request by route and outcome, and each Space DO RPC by kind and outcome. The route and the kind are fixed names, such as `put_chunk` or `rpc_commit`. The outcome is the HTTP status, followed by the refusal code and the RFC 0027 cause when there is one. Each route or kind also gets 16 power-of-two latency buckets in milliseconds. Each process adds its counts to the Account DO at most once a minute, so up to a minute of one process's counts can be lost when the process ends.

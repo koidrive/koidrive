@@ -124,7 +124,10 @@ describe("hourly server report", () => {
     await refresh(second, TokenRequest_Telemetry.OFF);
     expect(await reporting()).toBe(false);
     await refresh(second, TokenRequest_Telemetry.UNSPECIFIED);
+    expect(await reporting()).toBe(true);
+    await refresh(owner, TokenRequest_Telemetry.UNSPECIFIED);
     expect(await reporting()).toBe(false);
+    await refresh(owner, TokenRequest_Telemetry.ON);
     await refresh(second, TokenRequest_Telemetry.ON);
     expect(await reporting()).toBe(true);
 
