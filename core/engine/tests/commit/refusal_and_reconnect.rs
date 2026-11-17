@@ -636,6 +636,25 @@ fn a_slot_kept_without_a_token_keeps_the_bound_of_the_newest_kept_slot() {
 }
 
 #[test]
+fn a_result_applied_after_a_welcome_with_another_token_bounds_by_its_own_slot() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (kept_slots(), IdGen::new(1));
+    let another = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 7,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&another), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 3);
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    commits
+        .received(result(9, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!((commits.accepted(), commits.held_through()), (3, 9));
+}
+
+#[test]
 fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
