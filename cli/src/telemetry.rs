@@ -376,6 +376,7 @@ pub async fn run_daemon(stop: tokio::sync::oneshot::Receiver<()>, driver: Driver
             &driver.status(),
         );
         record_failures(&run.recorder, &mut failed, koidrive_driver::failures());
+        driver.record_health();
         flush();
     };
     every(TICK, stop, tick, || send(&run.store, Client::CliDaemon)).await;

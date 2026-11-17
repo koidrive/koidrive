@@ -364,9 +364,9 @@ mod tests {
     use super::*;
     use crate::recorder::Recorder;
     use crate::schema::{
-        Arch, BinaryId, Build, Client, Command, Counter, CrashKind, CrashSignal, Distro, ErrorCode,
-        Event, Failure, Halted, Level, MachException, Measure, Origin, Os, OsVersion, Outcome,
-        Refusal, SetupFlow, SetupStep, SourceFile, Symbol, Synced, Version,
+        Age, Arch, BinaryId, Build, Client, Command, Counter, CrashKind, CrashSignal, Distro,
+        ErrorCode, Event, Failure, Halted, Level, MachException, Measure, Origin, Os, OsVersion,
+        Outcome, Refusal, SetupFlow, SetupStep, SourceFile, Symbol, Synced, Version,
     };
 
     #[test]
@@ -411,6 +411,13 @@ mod tests {
                 at: 3_727,
                 problem,
                 count: 2,
+            });
+        }
+        for lasted in Age::ALL.iter().copied() {
+            recorder.event(Event::ProblemCleared {
+                at: 3_727,
+                problem: Failure::Halted(Halted::Root),
+                lasted,
             });
         }
         recorder.event(Event::AppCrash {
@@ -471,7 +478,7 @@ mod tests {
             ),
         });
         let fixture = match SCHEMA {
-            3 => include_str!("../tests/fixtures/report-schema-v3.json"),
+            4 => include_str!("../tests/fixtures/report-schema-v4.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
         let expected: Value = serde_json::from_str(fixture).unwrap();
