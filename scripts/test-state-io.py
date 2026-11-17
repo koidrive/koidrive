@@ -67,6 +67,13 @@ class ChangedIo(unittest.TestCase):
         self.assertTrue(self.introduced(call, "use crate::scratch as tempfile;\n" + call, start=2))
         self.assertTrue(self.introduced("fs::write(path, bytes);", "use crate::io::*;\nfs::write(path, bytes);", start=2))
 
+    def test_an_import_that_rebinds_a_name_in_the_call_still_fails(self):
+        call = "io::write(path, bytes);"
+        self.assertTrue(self.introduced("use crate::safe as io;\n" + call, "use crate::other as io;\n" + call, start=2))
+        call = "std::fs::write(TARGET, bytes);"
+        before = "use crate::paths::LOG as TARGET;\n" + call
+        self.assertTrue(self.introduced(before, "use crate::paths::STATE as TARGET;\n" + call, start=2))
+
     def test_a_test_writer_cannot_become_production_code_unchecked(self):
         self.assertTrue(self.introduced("#[cfg(test)]\nfn save() {\nfs::write(path, bytes);\n}", "\nfn save() {\nfs::write(path, bytes);\n}", start=3))
 

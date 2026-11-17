@@ -99,9 +99,7 @@ def imports(text):
 
 
 def shadowing_imports(text, call):
-    names = set(SHADOWABLE)
-    if len(call) > 1 and call[1] == ":" and call[0] not in ROOTS:
-        names.add(call[0])
+    names = SHADOWABLE | {token for token in call if IDENTIFIER.fullmatch(token)} - ROOTS
     return [item for item in imports(text) if "*" in item or names & set(IDENTIFIER.findall(item))]
 
 
