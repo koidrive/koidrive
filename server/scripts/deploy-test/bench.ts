@@ -33,6 +33,7 @@ function inputs(kind: Kind): Inputs {
       env: {
         KOIDRIVE_BENCH_SMALL_FILES: bounded("KOIDRIVE_BENCH_SMALL_FILES", process.env.KOIDRIVE_BENCH_SMALL_FILES ?? "20000", 32, 50_000),
         KOIDRIVE_BENCH_SMALL_KIB: bounded("KOIDRIVE_BENCH_SMALL_KIB", process.env.KOIDRIVE_BENCH_SMALL_KIB ?? "16", 1, 255),
+        KOIDRIVE_BENCH_SMALL_RUNS: bounded("KOIDRIVE_BENCH_SMALL_RUNS", process.env.KOIDRIVE_BENCH_SMALL_RUNS ?? "3", 1, 5),
       },
     };
   }
@@ -129,6 +130,7 @@ async function workerCpu(script: string, path: string): Promise<void> {
     return;
   }
   const rows: string[] = [];
+  let unavailable: string | undefined;
   for (const window of windows) {
     const deadline = Date.now() + ANALYTICS_MS;
     let seen: Invocations | undefined;
@@ -139,17 +141,16 @@ async function workerCpu(script: string, path: string): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, ANALYTICS_EVERY_MS));
       }
     } catch (error) {
-      if (missingScope(error)) {
-        emit("Worker CPU unavailable: the deploy-test token lacks Account Analytics Read. The sync times and request counts above are complete.");
-      } else {
-        emit("Worker CPU unavailable: " + (error instanceof Error ? error.message : String(error)).slice(0, 200) + ". The sync times and request counts above are complete.");
-      }
-      return;
+      const why = missingScope(error) ? "the deploy-test token lacks Account Analytics Read" : (error instanceof Error ? error.message : String(error)).slice(0, 200);
+      unavailable = "Worker CPU unavailable" + (rows.length > 0 ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
+      break;
     }
     const n = seen?.sum.requests ?? 0;
     const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
     rows.push("| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial after " + ANALYTICS_MS / 60_000 + " min)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |");
   }
+  if (unavailable) emit(unavailable);
+  if (rows.length === 0) return;
   emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | Errors |\n|---|---|---|---|---|---|\n" + rows.join("\n"));
   emit("\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle.");
 }

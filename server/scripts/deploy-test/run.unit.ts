@@ -569,13 +569,13 @@ describe("claim", () => {
     expect(mock.logQueries).toBe(5);
   });
 
-  it("re-sends the probe while its request has not reached the logs, then claims", async () => {
-    mock.probeLagQueries = 6;
+  it("re-sends the probe when Workers Logs never shows its first request, then claims", async () => {
+    mock.droppedProbes = 2;
+    mock.probeLagQueries = 2;
     claimState();
     const { status, output } = await runTs("claim");
     expect(output).toContain("Claimed " + mock.url);
     expect(status).toBe(0);
-    expect(mock.probeRequests).toBeGreaterThan(1);
     expect(mock.setupRequests).toBe(1);
   });
 

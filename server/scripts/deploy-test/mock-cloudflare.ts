@@ -33,6 +33,7 @@ export class MockCloudflare {
   rejectedKeys: string[] = [];
   codeLagQueries = 0;
   probeLagQueries = 0;
+  droppedProbes = 0;
   probeRequests = 0;
   observabilityStatus = 200;
   logQueries = 0;
@@ -106,7 +107,7 @@ export class MockCloudflare {
         return send(200, worker);
       }
       if (path.startsWith("/deploy-test-probe-")) {
-        this.probeRequests++;
+        if (this.probeRequests++ < this.droppedProbes) return send(404, { code: "NOT_FOUND", message: "not found" });
         this.logs.push({ script: this.workerName, path, timestamp: Date.now(), visibleFrom: this.logQueries + this.probeLagQueries });
         return send(404, { code: "NOT_FOUND", message: "not found" });
       }

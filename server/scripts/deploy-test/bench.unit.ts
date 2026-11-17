@@ -176,6 +176,8 @@ describe("small-file benchmark", () => {
     ["KOIDRIVE_BENCH_SMALL_KIB", "0"],
     ["KOIDRIVE_BENCH_SMALL_KIB", "256"],
     ["KOIDRIVE_BENCH_SMALL_KIB", "16;echo injected"],
+    ["KOIDRIVE_BENCH_SMALL_RUNS", "0"],
+    ["KOIDRIVE_BENCH_SMALL_RUNS", "6"],
   ])("rejects %s=%s before cargo", async (key, value) => {
     fakeCargo();
     const result = await run({ command: ["small", "validate"], env: { [key]: value } });
@@ -191,7 +193,7 @@ describe("small-file benchmark", () => {
     expect(result.status).toBe(0);
     const child = JSON.parse(readFileSync(join(work, "cargo.json"), "utf8"));
     expect(child.args).toEqual(["test", "-p", "koidrive-net", "--release", "--locked", "--test", "upload_bench", "small_file_benchmark", "--", "--ignored", "--exact", "--nocapture"]);
-    expect(child.env).toMatchObject({ KOIDRIVE_BENCH_SMALL_FILES: "20000", KOIDRIVE_BENCH_SMALL_KIB: "16" });
+    expect(child.env).toMatchObject({ KOIDRIVE_BENCH_SMALL_FILES: "20000", KOIDRIVE_BENCH_SMALL_KIB: "16", KOIDRIVE_BENCH_SMALL_RUNS: "3" });
     expect(child.env).not.toHaveProperty("CLOUDFLARE_API_TOKEN");
     expect(child.env).not.toHaveProperty("KOIDRIVE_BENCH_NS");
     expect(cloudflare.graphqlVariables[0]).toMatchObject({ accountTag: "private-cloudflare-account", scriptName: "koidrive-test-1-1", start: "2023-11-14T22:13:20.000Z", end: "2023-11-14T22:14:20.000Z" });
@@ -210,6 +212,16 @@ describe("small-file benchmark", () => {
     expect(result.status).toBe(0);
     expect(result.output).toContain("Worker CPU unavailable: the deploy-test token lacks Account Analytics Read");
     expect(result.output).not.toContain("private-cloudflare-token");
+  });
+
+  it("keeps the first side's Worker CPU when the query for the second side fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(627), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
+    expect(result.output).not.toContain("| puts |");
   });
 
   it("still passes when no Cloudflare credentials are set", async () => {

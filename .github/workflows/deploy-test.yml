@@ -36,6 +36,10 @@ on:
         description: "bench-small only: size of each file in KiB, integer 1 through 255."
         type: string
         default: '16'
+      bench_small_runs:
+        description: "bench-small only: runs, integer 1 through 5. Runs alternate which side goes first."
+        type: string
+        default: '3'
 
 permissions:
   contents: read
@@ -109,6 +113,7 @@ jobs:
         env:
           KOIDRIVE_BENCH_SMALL_FILES: ${{ inputs.bench_small_files }}
           KOIDRIVE_BENCH_SMALL_KIB: ${{ inputs.bench_small_kib }}
+          KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
         run: node server/scripts/deploy-test/bench.ts small validate
 
   deploy-test:
@@ -116,7 +121,7 @@ jobs:
     needs: trusted
     runs-on: ubuntu-latest
     environment: deploy-test
-    timeout-minutes: ${{ inputs.mode == 'bench-small' && 120 || (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
+    timeout-minutes: ${{ inputs.mode == 'bench-small' && 180 || (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
     permissions:
       contents: read
       actions: read
@@ -212,12 +217,13 @@ jobs:
         run: node scripts/deploy-test/bench.ts
       - name: Benchmark small-file uploads with and without bundles
         if: inputs.mode == 'bench-small'
-        timeout-minutes: 75
+        timeout-minutes: 120
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           KOIDRIVE_BENCH_SMALL_FILES: ${{ inputs.bench_small_files }}
           KOIDRIVE_BENCH_SMALL_KIB: ${{ inputs.bench_small_kib }}
+          KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
         run: node scripts/deploy-test/bench.ts small
 
       - name: Write data on the earlier release

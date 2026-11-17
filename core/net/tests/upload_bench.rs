@@ -265,13 +265,16 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
+fn client() -> Api {
+    match std::env::var("KOIDRIVE_BENCH_URL") {
+        Ok(url) => Api::new(url.parse().expect("benchmark URL")).expect("HTTPS benchmark origin"),
+        Err(_) => crate::support::api(),
+    }
+}
+
 async fn deployment() -> (Api, Arc<Auth>) {
     let deployed = std::env::var("KOIDRIVE_BENCH_URL").ok();
-    let api = if let Some(url) = &deployed {
-        Api::new(url.parse().expect("benchmark URL")).expect("HTTPS benchmark origin")
-    } else {
-        crate::support::api()
-    };
+    let api = client();
     let credentials = if deployed.is_some() {
         let raw = std::env::var("KOIDRIVE_BENCH_OWNER").expect("claimed owner is missing");
         let owner: Owner = serde_json::from_str(&raw)
@@ -506,10 +509,11 @@ async fn upload_benchmark() {
 struct SmallConfig {
     files: usize,
     kib: usize,
+    runs: usize,
 }
 
 impl SmallConfig {
-    fn parse(files: &str, kib: &str) -> Result<Self, &'static str> {
+    fn parse(files: &str, kib: &str, runs: &str) -> Result<Self, &'static str> {
         let files = files
             .parse()
             .map_err(|_| "files must be an integer from 32 to 50000")?;
@@ -522,7 +526,13 @@ impl SmallConfig {
         if !(1..=255).contains(&kib) {
             return Err("KiB must be an integer from 1 to 255");
         }
-        Ok(Self { files, kib })
+        let runs = runs
+            .parse()
+            .map_err(|_| "runs must be an integer from 1 to 5")?;
+        if !(1..=5).contains(&runs) {
+            return Err("runs must be an integer from 1 to 5");
+        }
+        Ok(Self { files, kib, runs })
     }
 }
 
@@ -558,6 +568,7 @@ async fn small_file_benchmark() {
     let config = SmallConfig::parse(
         &setting("KOIDRIVE_BENCH_SMALL_FILES", "20000"),
         &setting("KOIDRIVE_BENCH_SMALL_KIB", "16"),
+        &setting("KOIDRIVE_BENCH_SMALL_RUNS", "3"),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     let (api, auth) = deployment().await;
@@ -571,13 +582,24 @@ async fn small_file_benchmark() {
     })
     .expect("install request counter");
     emit(&format!(
-        "### Small-file upload benchmark\n\nCommit `{}`. {} fresh files of {} KiB per side, one chunk each, default upload concurrency.\n\n| Side | upload() seconds | Files/s | Upload requests | Chunks per request | Receipts | Observed retries |\n|---|---|---|---|---|---|---|",
+        "### Small-file upload benchmark\n\nCommit `{}`. {} fresh files of {} KiB per side, one chunk each, default upload concurrency, {} runs. Odd runs upload with bundles first and even runs with puts first. Each side has its own HTTP connection pool.\n\n| Run | Side | upload() seconds | Files/s | Upload requests | Chunks per request | Receipts | Observed retries |\n|---|---|---|---|---|---|---|---|",
         commit_sha(),
         config.files,
-        config.kib
+        config.kib,
+        config.runs
     ));
     let mut windows = Vec::new();
-    for (side, bundles) in [("bundles", true), ("puts", false)] {
+    let mut samples: HashMap<&str, (Vec<f64>, Vec<f64>)> = HashMap::new();
+    let sides = (1..=config.runs).flat_map(|run| {
+        let order = [("bundles", true), ("puts", false)];
+        let order = if run % 2 == 1 {
+            order
+        } else {
+            [order[1], order[0]]
+        };
+        order.map(|(side, bundles)| (run, side, bundles))
+    });
+    for (run, side, bundles) in sides {
         let (chunks, source) = small_files(&config);
         let space = api
             .create_space(
@@ -608,7 +630,8 @@ async fn small_file_benchmark() {
                     .any(|f| f == koidrive_net::CHUNK_BUNDLES),
             "the deployed Worker does not offer chunk bundles"
         );
-        let mut transfer = Transfer::new(&api);
+        let pool = client();
+        let mut transfer = Transfer::new(&pool);
         transfer.bundles = bundles;
         *retries.lock().unwrap() = Retries::default();
         *requests.lock().unwrap() = Requests::default();
@@ -633,7 +656,7 @@ async fn small_file_benchmark() {
             Ok(receipts) => receipts,
             Err(error) => {
                 emit(&format!(
-                    "| {side} | {seconds:.3} | FAILED | {} | | 0 | {} |\n\nUpload failed: {error}",
+                    "| {run} | {side} | {seconds:.3} | FAILED | {} | | 0 | {} |\n\nUpload failed: {error}",
                     sent.sent,
                     observed.text()
                 ));
@@ -646,21 +669,38 @@ async fn small_file_benchmark() {
             "every fresh chunk needs a receipt"
         );
         emit(&format!(
-            "| {side} | {seconds:.3} | {:.0} | {} | {:.1} | {} | {} |",
+            "| {run} | {side} | {seconds:.3} | {:.0} | {} | {:.1} | {} | {} |",
             config.files as f64 / seconds,
             sent.sent,
             sent.chunks as f64 / sent.sent.max(1) as f64,
             receipts.len(),
             observed.text()
         ));
+        let (times, sent_counts) = samples.entry(side).or_default();
+        times.push(seconds);
+        sent_counts.push(sent.sent as f64);
         windows.push(serde_json::json!({
-            "side": side,
+            "side": format!("{side} (run {run})"),
             "startMs": start_ms as u64,
             "endMs": end_ms as u64,
             "requests": sent.sent,
             "chunks": sent.chunks,
         }));
     }
+    let mut summary = String::from(
+        "\n| Side | Median seconds | Seconds range | Median upload requests |\n|---|---|---|---|",
+    );
+    for side in ["bundles", "puts"] {
+        let (times, sent_counts) = samples.get_mut(side).expect("every side ran");
+        let seconds = median(times);
+        summary += &format!(
+            "\n| {side} | {seconds:.3} | {:.3} to {:.3} | {:.0} |",
+            times[0],
+            times[times.len() - 1],
+            median(sent_counts)
+        );
+    }
+    emit(&summary);
     if let Ok(path) = std::env::var("KOIDRIVE_BENCH_WINDOWS") {
         std::fs::write(path, serde_json::to_string(&windows).unwrap())
             .expect("write benchmark windows");
@@ -672,24 +712,28 @@ async fn small_file_benchmark() {
 
 #[test]
 fn small_benchmark_accepts_only_bounded_sizes_before_network() {
-    for (files, kib) in [
-        ("31", "16"),
-        ("50001", "16"),
-        ("x", "16"),
-        ("320", "0"),
-        ("320", "256"),
-        ("320", "x"),
+    for (files, kib, runs) in [
+        ("31", "16", "3"),
+        ("50001", "16", "3"),
+        ("x", "16", "3"),
+        ("320", "0", "3"),
+        ("320", "256", "3"),
+        ("320", "x", "3"),
+        ("320", "16", "0"),
+        ("320", "16", "6"),
+        ("320", "16", "x"),
     ] {
         assert!(
-            SmallConfig::parse(files, kib).is_err(),
-            "{files} files of {kib} KiB"
+            SmallConfig::parse(files, kib, runs).is_err(),
+            "{files} files of {kib} KiB, {runs} runs"
         );
     }
     assert_eq!(
-        SmallConfig::parse("20000", "16"),
+        SmallConfig::parse("20000", "16", "3"),
         Ok(SmallConfig {
             files: 20000,
-            kib: 16
+            kib: 16,
+            runs: 3
         })
     );
 }
