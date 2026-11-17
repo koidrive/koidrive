@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 SECTION = re.compile(r"^---- (\S+) stdout ----$", re.M)
@@ -18,6 +19,11 @@ LOCATION = re.compile(r"\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
 RUNTIME_CHECKS = Path(__file__).resolve().parent / "require-runtime-checks.sh"
 PROBE_SOURCE = Path(__file__).resolve().parent.parent / "core/test-support/src/lib.rs"
+KNOWN_FAILURES = Path(__file__).resolve().parent.parent / ".github/battery-known-failures.toml"
+ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+POSITION = re.compile(r"\.rs:\d+(?::\d+)?")
+NUMBER = re.compile(r"\d+")
+UNCLASSIFIED = "unclassified"
 PROBE_TEST = "the_build_keeps_debug_assertions_and_overflow_checks"
 TRIAGE_PROBE = f"triage_runtime_probe::{PROBE_TEST}"
 DISPLAY_LIMIT = 300
@@ -55,6 +61,37 @@ def failure_message(output):
 
 def comparable(message):
     return LOCATION.sub(".rs:N", message or "")
+
+
+def normalized(message):
+    message = POSITION.sub(".rs:<line>", ID.sub("<id>", message))
+    return " ".join(NUMBER.sub("<n>", message).split())
+
+
+def known_failures(text):
+    entries = tomllib.loads(text)["failure"]
+    for entry in entries:
+        entry["pattern"] = re.compile(entry["message"])
+    return entries
+
+
+def matches(entries, test, message):
+    text = normalized(message)
+    return [entry for entry in entries if test in entry["tests"] and entry["pattern"].match(text)]
+
+
+def classify(rows, entries):
+    ambiguous = []
+    for row in rows:
+        row["class"] = row["issue"] = None
+        if row["verdict"] != SAME:
+            continue
+        found = matches(entries, row["test"], settle(row["head"])["message"])
+        if len(found) > 1:
+            ambiguous.append(row)
+        row["class"] = ", ".join(entry["class"] for entry in found) or UNCLASSIFIED
+        row["issue"] = ", ".join(entry["issue"] for entry in found) or None
+    return ambiguous
 
 
 def shard_number(directory):
@@ -377,6 +414,8 @@ def messages_cell(runs):
 
 def markdown(spec, rows, others, run_url):
     counts = ", ".join(f"{sum(row['verdict'] == name for row in rows)} {name}" for name in VERDICTS)
+    same = [row for row in rows if row["verdict"] == SAME]
+    unclassified = sum(row["class"] == UNCLASSIFIED for row in same)
     lines = [
         "## Battery triage",
         "",
@@ -400,13 +439,17 @@ anything of its own, so the two failures can't be compared. "
         "same binary, unless that case passes it on every head run. "
         f"This table cuts messages at {DISPLAY_LIMIT} characters; triage.json holds them in full.",
         "",
-        "| Case | Binary and test | Head | Base | Head message | Base message | Verdict |",
-        "|---|---|---|---|---|---|---|",
+        f"Class and issue name the known failure on main, from `.github/battery-known-failures.toml`, \
+that a row which {SAME} matches by its test name and its message with ids, numbers and `file.rs:line` positions \
+masked. {len(same) - unclassified} of the {len(same)} such rows match one; {unclassified} {UNCLASSIFIED} match none.",
+        "",
+        "| Case | Binary and test | Head | Base | Head message | Base message | Verdict | Class | Issue |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     lines += [f"| `{row['case'][:12]}`{' (saved by another test)' if row['shared'] else ''} | "
               f"{cell(row['target'])} `{row['test'] or '?'}` | {results_cell(row['head'])} | "
               f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
-              f"{row['verdict']} |"
+              f"{row['verdict']} | {row['class'] or ''} | {row['issue'] or ''} |"
               for row in rows]
     if others:
         lines += ["", "These tests failed without saving a new case, and every case their shards saved in the same "
@@ -437,6 +480,7 @@ def main():
     report_parser.add_argument("--cases", type=Path, required=True)
     report_parser.add_argument("--replays", type=Path, nargs="*", default=[])
     report_parser.add_argument("--run-url", required=True)
+    report_parser.add_argument("--known-failures", type=Path, default=KNOWN_FAILURES)
     report_parser.add_argument("--out", type=Path, required=True)
     arguments = parser.parse_args()
 
@@ -459,11 +503,15 @@ def main():
         replays = {replayed["side"]: replayed for replayed in (json.loads(path.read_text()) for path in arguments.replays)}
         rows = combine(spec, replays)
         others = caseless(spec, rows)
+        ambiguous = classify(rows, known_failures(arguments.known_failures.read_text()))
         arguments.out.mkdir(parents=True, exist_ok=True)
         (arguments.out / "triage.json").write_text(json.dumps(
             {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others},
             indent=2) + "\n")
         (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url))
+        if ambiguous:
+            sys.exit(f"{arguments.known_failures} is wrong: " + "; ".join(
+                f"{row['case'][:12]} {row['test']} matches {row['class']}" for row in ambiguous))
 
 
 if __name__ == "__main__":

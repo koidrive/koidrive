@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -351,6 +352,114 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
 """.replace("§", chr(96))
 
 
+KNOWN = """[[failure]]
+class = "A"
+issue = "GUN-1"
+tests = ["devices_converge", "devices_lose_no_write"]
+message = '''write <n> is lost'''
+examples = ["write 1 is lost at core/sim/tests/devices/common.rs:120."]
+
+[[failure]]
+class = "B"
+issue = "GUN-2"
+tests = ["devices_converge"]
+message = '''no convergence within <n> steps'''
+examples = ["no convergence within 400 steps"]
+
+[[failure]]
+class = "C"
+issue = "GUN-3"
+tests = ["devices_lose_no_write"]
+message = '''no convergence within <n> steps'''
+examples = ["no convergence within 400 steps"]
+"""
+
+
+class KnownFailures(unittest.TestCase):
+    def report(self, known, rows):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "checked_profile": "", "others": [],
+                    "cases": [{"case": f"{index:064}", "path": f"t.cases/cc-{index:064}.txt", "binary": "devices",
+                               "test": test, "shards": [1], "shared": False}
+                              for index, (test, _, _) in enumerate(rows)]}
+            (root / "cases.json").write_text(json.dumps(spec))
+            for side, position in (("head", 1), ("base", 2)):
+                results = [{"runs": [{"result": row[position][0], "message": row[position][1]}] * 2,
+                            "target": "sim --test devices"} for row in rows]
+                (root / f"replay-{side}.json").write_text(json.dumps({"side": side, "results": results}))
+            (root / "known.toml").write_text(known)
+            run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
+                                  "--cases", str(root / "cases.json"), "--replays", str(root / "replay-head.json"),
+                                  str(root / "replay-base.json"), "--run-url", "https://example.com/runs/7",
+                                  "--known-failures", str(root / "known.toml"), "--out", str(root / "out")],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            return (run, json.loads((root / "out/triage.json").read_text())["cases"],
+                    (root / "out/triage.md").read_text())
+
+    def test_normalized_masks_ids_numbers_and_positions(self):
+        self.assertEqual(
+            triage.normalized("assertion failed: §(left == right)§ \n  left: §(\"01a1c2c0-39a0-7d6b-8097-314d939736f8\", "
+                              "\"ß (pending)\")§,\n right: §[]§: write 12 of device-0 2026-11-09 is lost at "
+                              "core/sim/tests/engine_sync/common.rs:1599:13 and core/x.rs:7.".replace("§", chr(96))),
+            "assertion failed: §(left == right)§ left: §(\"<id>\", \"ß (pending)\")§, right: §[]§: write <n> of "
+            "device-<n> <n>-<n>-<n> is lost at core/sim/tests/engine_sync/common.rs:<line> and core/x.rs:<line>."
+            .replace("§", chr(96)))
+
+    def test_a_message_matches_from_its_start_and_only_for_the_entry_tests(self):
+        entries = triage.known_failures(KNOWN)
+        def classes(test, message):
+            return [entry["class"] for entry in triage.matches(entries, test, message)]
+        self.assertEqual(classes("devices_converge", "write 3 is lost: [Op { id: 9 }]"), ["A"])
+        self.assertEqual(classes("devices_converge", "after phase 1: write 3 is lost"), [])
+        self.assertEqual(classes("devices_plain", "write 3 is lost"), [])
+        self.assertEqual(classes("devices_converge", "no convergence within 400 steps at a.rs:1"), ["B"])
+        self.assertEqual(classes("devices_lose_no_write", "no convergence within 400 steps at a.rs:1"), ["C"])
+
+    def test_the_report_labels_only_rows_that_fail_on_base_with_the_same_message(self):
+        run, rows, text = self.report(KNOWN, [
+            ("devices_converge", ("fail", "write 1 is lost"), ("fail", "write 1 is lost")),
+            ("devices_converge", ("fail", "write 2 is lost"), ("pass", None)),
+            ("devices_converge", ("fail", "a name no user gave"), ("fail", "a name no user gave")),
+            ("devices_lose_no_write", ("fail", "no convergence within 9 steps"),
+             ("fail", "no convergence within 9 steps")),
+        ])
+        self.assertEqual(run.returncode, 0, run.stdout)
+        self.assertEqual([(row["verdict"], row["class"], row["issue"]) for row in rows],
+                         [("PR-caused", None, None), (triage.SAME, "A", "GUN-1"),
+                          (triage.SAME, triage.UNCLASSIFIED, None), (triage.SAME, "C", "GUN-3")])
+        self.assertIn("| PR-caused |  |  |", text)
+        self.assertIn(f"| {triage.SAME} | A | GUN-1 |", text)
+        self.assertIn(f"| {triage.SAME} | {triage.UNCLASSIFIED} |  |", text)
+        self.assertIn(f"2 of the 3 such rows match one; 1 {triage.UNCLASSIFIED} match none.", text)
+
+    def test_a_row_that_matches_two_entries_fails_the_report(self):
+        overlapping = KNOWN.replace('tests = ["devices_lose_no_write"]', 'tests = ["devices_converge"]')
+        run, rows, text = self.report(overlapping, [
+            ("devices_converge", ("fail", "no convergence within 9 steps"), ("fail", "no convergence within 9 steps")),
+        ])
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("devices_converge matches B, C", run.stdout)
+        self.assertEqual(rows[0]["class"], "B, C")
+        self.assertIn(f"| {triage.SAME} | B, C | GUN-2, GUN-3 |", text)
+
+    def test_every_registry_example_matches_its_own_entry_and_no_other(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        self.assertTrue(entries)
+        for index, entry in enumerate(entries):
+            with self.subTest(entry=index, failure=entry["class"]):
+                self.assertEqual(set(entry), {"class", "issue", "tests", "message", "examples", "pattern"})
+                self.assertRegex(entry["class"], r"^[A-Z]$")
+                self.assertRegex(entry["issue"], r"^GUN-[1-9][0-9]*$")
+                self.assertTrue(entry["tests"])
+                self.assertEqual(len(entry["tests"]), len(set(entry["tests"])))
+                self.assertTrue(entry["examples"])
+                for example in entry["examples"]:
+                    for test in entry["tests"]:
+                        found = triage.matches(entries, test, example)
+                        self.assertEqual([entries.index(other) for other in found], [index], (test, example))
+
+
 class Triage(unittest.TestCase):
     def shard(self, root, number, cases, extra=()):
         shard = root / f"failure-shard-{number}"
@@ -406,6 +515,7 @@ class Triage(unittest.TestCase):
                 if head is flaky:
                     self.assertEqual(next(row["verdict"] for row in rows if row["shared"]), "unstable")
                 self.assertEqual([other["test"] for other in others], listed)
+                triage.classify(rows, [])
                 text = triage.markdown(spec, rows, others, "https://example.com/runs/7")
                 self.assertEqual("(saved by another test)" in text, bool(listed) is False)
                 self.assertEqual("- devices §lose_no_write§ on shards 2".replace("§", chr(96)) in text, bool(listed))
@@ -522,6 +632,7 @@ class Triage(unittest.TestCase):
         rows = triage.combine(spec, replays)
         self.assertEqual([(row["case"][0], row["verdict"]) for row in rows],
                          [("b", "PR-caused"), ("c", "unstable"), ("a", triage.SAME)])
+        triage.classify(rows, [])
         text = triage.markdown(spec, rows, [], "https://example.com/runs/7")
         self.assertIn(f"1 PR-caused, 1 unstable, 0 unknown, 0 {triage.SILENT}, 0 {triage.MOVED}, 0 flaky or fixed, "
                       f"1 {triage.SAME}", text)
