@@ -1363,7 +1363,7 @@ impl Driver {
             progress: Arc::default(),
         };
         drop(lock);
-        if self.syncs() {
+        if self.syncs() && !folder.status.needs_restart() {
             self.spawn(&mut folder, &credential, linked);
         }
         folders.insert(space.space_id, folder);
@@ -3568,10 +3568,19 @@ mod tests {
 
     #[tokio::test]
     async fn an_unlink_whose_record_became_unreadable_waits_to_be_finished_not_restarted() {
+        for lost in [false, true] {
+            an_unlink_whose_record_is_damaged_waits(lost).await;
+        }
+    }
+
+    async fn an_unlink_whose_record_is_damaged_waits(lost: bool) {
         let (_dir, paths, root) = profile(&[]);
         let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
         fs::write(record.with_file_name("unlinking"), b"").unwrap();
-        fs::write(&record, b"not json").unwrap();
+        match lost {
+            true => drop(fs::remove_file(&record)),
+            false => fs::write(&record, b"not json").unwrap(),
+        }
         let driver = Driver::open(paths.clone()).unwrap();
         driver.start();
         let status = driver.status().folders[0].clone();

@@ -107,7 +107,12 @@ impl Lifecycle {
         let path = store.with_file_name("lifecycle.json");
         let read = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Checkpoint::default()),
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && !path.with_file_name(UNLINKING).exists() =>
+            {
+                Ok(Checkpoint::default())
+            }
             Err(error) => Err(error),
         };
         let unreadable_record = read.is_err();
