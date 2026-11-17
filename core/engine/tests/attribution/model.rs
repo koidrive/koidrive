@@ -411,8 +411,12 @@ impl Rules {
     }
 
     fn has(self, fix: Fix) -> bool {
+        self.fixes().is_none_or(|fixes| fixes.contains(&fix))
+    }
+
+    fn fixes(self) -> Option<&'static [Fix]> {
         use Fix::*;
-        let fixes: &[Fix] = match self {
+        Some(match self {
             Rules::Main | Rules::OldServer | Rules::OldDeleter => &[],
             Rules::ResentCreateFrom => &[CreateFrom],
             Rules::RefusedKeepsLostPosition => &[RefusedKeeps],
@@ -431,13 +435,16 @@ impl Rules {
                 LostPosition,
             ],
             Rules::RefusedAsMain => &[CreateFrom, AbsentResent, Held, LostPosition, Carried],
-            _ => return true,
-        };
-        fixes.contains(&fix)
+            _ => return None,
+        })
+    }
+
+    fn checks_copies(self) -> bool {
+        self.fixes().is_none() && !self.old_server()
     }
 
     fn edits_see(self) -> bool {
-        !self.main_rules() && !self.old_server() && self != Rules::EditSeesOnlyBase
+        self.checks_copies() && self != Rules::EditSeesOnlyBase
     }
 
     fn bound_only(self) -> bool {
@@ -592,19 +599,35 @@ impl World {
         })
     }
 
-    fn ancestors(&self, edit: Tok, known: impl Fn(Tok) -> bool) -> u32 {
-        let mut ancestors = 0;
+    fn carried(&self, edit: Tok) -> u32 {
+        let author = self.values[edit.0 as usize].author;
+        let mut carried = 0;
         let mut at = edit;
         for _ in 0..self.values.len() {
             let value = self.values[at.0 as usize];
             if value.author.is_none() || value.field != Field::Content || value.content == at {
                 break;
             }
-            ancestors |= 1 << value.content.0;
-            if !known(value.content) {
+            carried |= 1 << value.content.0;
+            if self.values[value.content.0 as usize].author != author {
                 break;
             }
             at = value.content;
+        }
+        carried
+    }
+
+    fn ancestors(&self, edit: Tok, known: impl Fn(Tok) -> bool) -> u32 {
+        let mut ancestors = 0u32;
+        let mut pending = vec![edit];
+        while let Some(at) = pending.pop() {
+            let carried = self.carried(at) & !ancestors;
+            ancestors |= carried;
+            pending.extend(
+                (0..self.values.len() as u8)
+                    .map(Tok)
+                    .filter(|&tok| carried & (1 << tok.0) != 0 && known(tok)),
+            );
         }
         ancestors
     }
@@ -1793,7 +1816,13 @@ impl World {
                             dev.s.set(field, agreed);
                             dev.unsent.set(field, None);
                         }
-                        Some(Author::Own) if field == Field::Content && saw(local, remote) => {
+                        Some(Author::Own)
+                            if field == Field::Content
+                                && (saw(local, remote)
+                                    || (rules.edits_see()
+                                        && authors[remote.0 as usize] == Some(d)
+                                        && dev.held[slot(field)] & (1 << remote.0) != 0)) =>
+                        {
                             dev.s.set(field, agreed)
                         }
                         Some(Author::Own) if field == Field::Content => {
@@ -2186,15 +2215,19 @@ impl World {
                     Tok(index as u8)
                 )
             });
-        let copies = !rules.main_rules() && !rules.old_server();
-        lost.or_else(|| copies.then(|| self.spurious_copy()).flatten())
-            .or_else(|| {
-                if rules.old_server() {
-                    None
-                } else {
-                    self.undone_delete(rules)
-                }
-            })
+        lost.or_else(|| {
+            rules
+                .checks_copies()
+                .then(|| self.spurious_copy())
+                .flatten()
+        })
+        .or_else(|| {
+            if rules.old_server() {
+                None
+            } else {
+                self.undone_delete(rules)
+            }
+        })
     }
 
     fn spurious_copy(&self) -> Option<Broken> {
@@ -2885,8 +2918,9 @@ pub fn show(budget: Budget, rules: Rules, actions: &[Action]) {
             }
         }
         println!(
-            "{action:?}\n  server {:?}\n  d0 l={:?} s={:?} unsent={:?}\n  d1 l={:?} s={:?} unsent={:?}",
+            "{action:?}\n  server {:?} copies {:?}\n  d0 l={:?} s={:?} unsent={:?}\n  d1 l={:?} s={:?} unsent={:?}",
             world.server.node(),
+            world.server.copies,
             world.devices[0].l,
             world.devices[0].s,
             world.devices[0].unsent,

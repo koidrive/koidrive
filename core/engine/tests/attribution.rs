@@ -388,6 +388,12 @@ fn refute_trash_covers_view() {
 
 #[test]
 #[ignore]
+fn refute_edit_sees_only_base() {
+    refute(Rules::EditSeesOnlyBase);
+}
+
+#[test]
+#[ignore]
 fn refute_no_lost_position() {
     refute(Rules::NoLostPosition);
 }
