@@ -1614,7 +1614,10 @@ fn version_of(
 /// them.
 fn scopes(action: &Action, outcome: &Outcome) -> Vec<PathBuf> {
     let locations = match action {
-        Action::CreateDir { at } | Action::RemoveDir { at, .. } => vec![at],
+        Action::CreateDir { at } => vec![at],
+        Action::RemoveDir { at, along, .. } => std::iter::once(at)
+            .chain(along.iter().map(|file| &file.at))
+            .collect(),
         Action::WriteFile { at, replaces } => std::iter::once(at)
             .chain(replaces.iter().map(|d| &d.at))
             .collect(),

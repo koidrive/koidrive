@@ -700,7 +700,7 @@ impl Effects {
         let record = self.take(effect_id)?;
         self.cleared.set(*self.cleared + 1);
         trees.keep_folder(&record.node);
-        trees.keep_deleted_folders();
+        trees.keep_folders_of_kept_folders();
         self.failed.remove(&record.node);
         Ok(())
     }
@@ -1262,7 +1262,7 @@ impl<'a> View<'a> {
     }
 
     fn remove(&self, id: &str, local: &LocalNode) -> Step {
-        if self.trees.carried(id) {
+        if self.trees.carried(id) || self.trees.kept_folders().contains(id) {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();

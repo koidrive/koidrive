@@ -2887,6 +2887,18 @@ impl Trees {
             && (self.l.get(parent)).is_some_and(|folder| folder.shape.kind == Kind::Dir)
     }
 
+    fn keep_rules_file(&mut self, id: &str) {
+        if self.kept_folders.insert(id.to_owned()) {
+            self.mark(id);
+        }
+    }
+
+    pub(crate) fn kept_rules_file(&self, id: &str) -> bool {
+        self.kept_folders.contains(id)
+            && self.left_rules_file(id)
+            && (self.l.get(id)).is_some_and(|node| self.r.live(&node.shape.parent).is_none())
+    }
+
     pub(crate) fn give_up(&mut self, id: &str) {
         let origin = (self.waiting.get(id)).map_or(Origin::Other, |waiting| waiting.origin);
         if !self.set_synced_if_valid(id.to_owned(), None) {
@@ -2898,7 +2910,7 @@ impl Trees {
         if !self.kept_folders.contains(id) || self.r.live(id).is_some() {
             return false;
         }
-        let Some(local) = self.l.get(id) else {
+        let Some(local) = self.l.get(id).filter(|node| node.shape.kind == Kind::Dir) else {
             return false;
         };
         let key = name_key(&local.shape.name);
@@ -2919,6 +2931,7 @@ impl Trees {
             .collect();
         for child in carried {
             self.give_up(&child);
+            self.kept_folders.insert(child.clone());
             self.mark(&child);
         }
         self.give_up(id);
@@ -2926,13 +2939,12 @@ impl Trees {
         self.mark(id);
     }
 
-    pub(crate) fn keep_deleted_folders(&mut self) {
+    pub(crate) fn keep_folders_of_kept_folders(&mut self) {
         loop {
             let folders: BTreeSet<NodeId> = (self.kept_folders.iter())
                 .filter(|id| self.kept_folder(id))
                 .filter_map(|id| self.l.get(id).map(|node| node.shape.parent.clone()))
-                .chain(self.dirty.iter().cloned())
-                .filter(|id| self.left_with_excluded_entries(id))
+                .filter(|id| self.left_with_kept_folders(id))
                 .collect();
             if folders.is_empty() {
                 return;
@@ -2943,26 +2955,14 @@ impl Trees {
         }
     }
 
-    fn left_with_excluded_entries(&self, id: &str) -> bool {
-        if id == self.l.root
-            || self.kept_folders.contains(id)
-            || !self.r.get(id).is_some_and(|node| node.trashed)
-            || !(self.l.get(id)).is_some_and(|node| !node.parked && node.shape.kind == Kind::Dir)
-            || self.held(id)
-        {
-            return false;
-        }
-        let mut kept = false;
-        for child in self.local_children_placed_or_parked(id) {
-            if self.carried(child) {
-                continue;
-            }
-            if !(self.kept_folder(child) || self.excluded(child)) {
-                return false;
-            }
-            kept = true;
-        }
-        kept
+    fn left_with_kept_folders(&self, id: &str) -> bool {
+        id != self.l.root
+            && !self.kept_folders.contains(id)
+            && self.r.get(id).is_some_and(|node| node.trashed)
+            && self.l.get(id).is_some_and(|node| !node.parked)
+            && !self.held(id)
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.kept_folder(child) || self.carried(child))
     }
 
     pub(crate) fn kept_folders(&self) -> &BTreeSet<NodeId> {
@@ -4260,6 +4260,13 @@ impl Trees {
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+        let carried: Vec<NodeId> = (self.unsettled.iter())
+            .filter(|id| self.carried(id))
+            .cloned()
+            .collect();
+        for id in carried {
+            self.keep_rules_file(&id);
+        }
         self.check_finishes();
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts(merged);
