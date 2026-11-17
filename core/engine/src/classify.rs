@@ -3161,6 +3161,11 @@ impl Trees {
         }
     }
 
+    pub(crate) fn resend_copy(&mut self, id: &str) {
+        self.local_changes.remove(id);
+        self.resends.insert(id.to_owned());
+    }
+
     /// Forgets the earlier records of R below `rev`, the seq of the oldest commit of this device
     /// that [`Commits::held_through`] can still name, except the newest of them, which a commit at
     /// `rev` or later may have replaced, and the record a move of [`Trees::moved_here`] replaced.

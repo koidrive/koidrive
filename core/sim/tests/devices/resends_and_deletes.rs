@@ -133,3 +133,96 @@ fn a_bystander_with_no_record_of_the_version_it_holds_keeps_another_devices_lost
     assert_eq!(paths.len(), 2);
     assert!(world.devices[1].disk.holds(3));
 }
+
+#[test]
+fn a_copy_a_bystander_keeps_of_another_devices_lost_write_yields_to_a_delete_of_its_folder() {
+    use Step::*;
+    let phases: Vec<Vec<(usize, Step)>> = vec![
+        vec![
+            (
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (
+                0,
+                User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 1,
+                    text: 0,
+                }),
+            ),
+        ],
+        vec![
+            (
+                0,
+                User(Action {
+                    kind: 2,
+                    target: 4331116183656926,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Backup),
+            (
+                0,
+                User(Action {
+                    kind: 3,
+                    target: 2975849262981074948,
+                    parent: 6544567074253531843,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+        ],
+        vec![
+            (
+                0,
+                User(Action {
+                    kind: 2,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Restore),
+            (
+                2,
+                User(Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 4941178086974508048,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (2, Connect),
+            (2, Work(2743188700098888673)),
+            (
+                0,
+                User(Action {
+                    kind: 4,
+                    target: 753389883202084897,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (2, Work(0)),
+            (2, Work(3317640963076976485)),
+        ],
+    ];
+    let world = converge(3, &phases).unwrap();
+    for device in 0..3 {
+        assert_eq!(paths_on(&world, device), ["a"], "device {device}");
+    }
+}
