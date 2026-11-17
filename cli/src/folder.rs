@@ -22,12 +22,12 @@ pub(crate) enum FolderAction {
         space: String,
     },
     /// Stop syncing a folder. Its files stay where they are.
+    #[command(group = clap::ArgGroup::new("which").required(true).args(["folder", "space"]))]
     Unlink {
         /// The linked folder.
-        #[arg(required_unless_present = "space")]
         folder: Option<PathBuf>,
-        /// The space whose folder to unlink, for a folder whose path is unknown.
-        #[arg(long, hide = true, conflicts_with = "folder")]
+        /// The space whose folder to unlink, for a folder that koi status shows with an unknown path.
+        #[arg(long)]
         space: Option<String>,
     },
     /// Sync a linked folder again from the start, after fixing the problem that halted it.

@@ -388,8 +388,6 @@ fn a_folder_whose_sync_database_and_link_copy_cannot_be_read_unlinks_by_its_spac
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("store.sqlite"), b"these bytes are no database").unwrap();
 
-    let help = profile.output(&["folder", "unlink", "--help"]);
-    assert!(!String::from_utf8(help.stdout).unwrap().contains("--space"));
     let status = String::from_utf8(profile.output(&["status"]).stdout).unwrap();
     assert!(
         status.contains(&format!("(path unknown)  space  ({SPACE})  Halted")),
