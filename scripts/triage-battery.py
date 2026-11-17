@@ -24,7 +24,10 @@ DISPLAY_LIMIT = 300
 REPLAYS = 2
 SAME = "fails on base with the same message"
 MOVED = "same message, different location (unconfirmed)"
-VERDICTS = ("PR-caused", "unstable", "unknown", MOVED, "flaky or fixed", SAME)
+SILENT = "a side crashed without a message (unconfirmed)"
+VERDICTS = ("PR-caused", "unstable", "unknown", SILENT, MOVED, "flaky or fixed", SAME)
+HARNESS_LINE = re.compile(r"^(running \d+ tests?|test \S+ \.\.\..*)$")
+SILENT_CRASH = re.compile(r"^killed by signal \d+$")
 
 
 def sections(log):
@@ -181,7 +184,8 @@ def outcome(returncode, output):
     if returncode == 0 and re.search(r"^test result: ok\. 0 passed; 0 failed; 1 ignored;", output, re.M):
         return {"result": "ignored", "message": None}
     if returncode < 0:
-        last = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), None)
+        last = next((line.strip() for line in reversed(output.splitlines())
+                     if line.strip() and not HARNESS_LINE.match(line.strip())), None)
         return {"result": "fail", "message": failure_message(output)
                 or f"killed by signal {-returncode}" + (f" after: {last}" if last else "")}
     if returncode != 0 and re.search(r"^test result: FAILED\.", output, re.M):
@@ -312,6 +316,8 @@ def verdict(head_runs, base_runs):
         return "PR-caused"
     if base["result"] != "fail":
         return "unknown"
+    if any(SILENT_CRASH.match(side["message"] or "") for side in (head, base)):
+        return SILENT
     if head["message"] == base["message"]:
         return SAME
     if comparable(head["message"]) == comparable(base["message"]):
@@ -385,6 +391,8 @@ def markdown(spec, rows, others, run_url):
         f"{SAME[0].upper() + SAME[1:]} means both sides fail with exactly the same message. "
         f"{MOVED[0].upper() + MOVED[1:]} means the messages match only once their `file.rs:line:column` positions "
         "are ignored, so they may come from different assertions. "
+        f"{SILENT[0].upper() + SILENT[1:]} means both sides fail but one was killed by a signal before it printed \
+anything of its own, so the two failures can't be compared. "
         "Unstable means the runs on one side disagree on the result or the message, and the table shows each run. "
         "Messages are compared as they are, with nothing normalised. "
         "Proptest saves a seed once, so when two tests of one binary fail on the same seed in a shard, only the first "

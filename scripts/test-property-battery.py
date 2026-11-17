@@ -343,11 +343,17 @@ class Triage(unittest.TestCase):
         overflow = triage.outcome(-6, running + "\nthread 'devices_converge' (2963) has overflowed its stack\n"
                                        "fatal runtime error: stack overflow, aborting\n")
         abort = triage.outcome(-6, running)
+        null_write = triage.outcome(-11, running)
+        panic = {"result": "fail", "message": "lost"}
         self.assertEqual(overflow, {"result": "fail",
                                     "message": "killed by signal 6 after: fatal runtime error: stack overflow, aborting"})
-        self.assertEqual(abort, {"result": "fail", "message": "killed by signal 6 after: test devices_converge ..."})
-        self.assertEqual(triage.verdict([abort] * 2, [overflow] * 2), "PR-caused")
+        self.assertEqual(abort, {"result": "fail", "message": "killed by signal 6"})
         self.assertEqual(triage.verdict([overflow] * 2, [overflow] * 2), triage.SAME)
+        for head, base in ((abort, abort), (null_write, null_write), (abort, null_write), (abort, overflow),
+                           (overflow, abort), (panic, abort), (abort, panic)):
+            with self.subTest(head=head["message"], base=base["message"]):
+                self.assertEqual(triage.verdict([head] * 2, [base] * 2), triage.SILENT)
+        self.assertEqual(triage.verdict([abort] * 2, [{"result": "pass", "message": None}] * 2), "PR-caused")
 
     def test_an_outcome_without_a_harness_result_is_an_error(self):
         for returncode, output in ((101, "error: no such test"), (127, ""), (0, ""), (0, "running 0 tests\n"),
@@ -431,7 +437,8 @@ class Triage(unittest.TestCase):
         self.assertEqual([(row["case"][0], row["verdict"]) for row in rows],
                          [("b", "PR-caused"), ("c", "unstable"), ("a", triage.SAME)])
         text = triage.markdown(spec, rows, [], "https://example.com/runs/7")
-        self.assertIn(f"1 PR-caused, 1 unstable, 0 unknown, 0 {triage.MOVED}, 0 flaky or fixed, 1 {triage.SAME}", text)
+        self.assertIn(f"1 PR-caused, 1 unstable, 0 unknown, 0 {triage.SILENT}, 0 {triage.MOVED}, 0 flaky or fixed, "
+                      f"1 {triage.SAME}", text)
         self.assertIn("with nothing normalised", text)
         self.assertIn("| fail / pass | w | run 1: w / run 2: (none) | unstable |", text)
         self.assertIn("y \\| z", text)
