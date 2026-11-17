@@ -39,6 +39,7 @@ export class MockCloudflare {
   logQueries = 0;
   setupRequests = 0;
   graphqlAnswers: { status: number; body: unknown }[] = [];
+  graphqlAnswer?: (variables: Record<string, unknown>) => { status: number; body: unknown };
   readonly graphqlVariables: Record<string, unknown>[] = [];
   url = "";
   private server: Server | undefined;
@@ -119,7 +120,9 @@ export class MockCloudflare {
 
       this.requests.push(method + " " + path);
       if (path === "/client/v4/graphql" && method === "POST") {
-        this.graphqlVariables.push((JSON.parse(body) as { variables: Record<string, unknown> }).variables);
+        const variables = (JSON.parse(body) as { variables: Record<string, unknown> }).variables;
+        this.graphqlVariables.push(variables);
+        if (this.graphqlAnswer) return (({ status, body }) => send(status, body))(this.graphqlAnswer(variables));
         const answer = this.graphqlAnswers.length > 1 ? this.graphqlAnswers.shift()! : this.graphqlAnswers[0];
         return answer ? send(answer.status, answer.body) : missing();
       }

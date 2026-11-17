@@ -13,6 +13,7 @@ class Failed extends Error {}
 const SUPPORTED_NS = ["1", "2", "4", "8"];
 const ANALYTICS_MS = 10 * 60_000;
 const ANALYTICS_EVERY_MS = 30_000;
+const LAST_QUERY_MS = 60_000;
 
 type Kind = "chunks" | "small";
 
@@ -136,7 +137,10 @@ async function workerCpu(script: string, path: string): Promise<void> {
   }
   const rows: string[] = [];
   let unavailable: string | undefined;
-  const deadline: Deadline = { atMs: Date.now() + ANALYTICS_MS, what: "the Analytics API budget of " + ANALYTICS_MS / 60_000 + " min ran out" };
+  const timing = (key: string, fallback: number) => (process.env.GITHUB_ACTIONS || process.env[key] === undefined ? fallback : Number(bounded(key, process.env[key], 1, fallback)));
+  const budget = timing("KOIDRIVE_BENCH_ANALYTICS_MS", ANALYTICS_MS);
+  const every = timing("KOIDRIVE_BENCH_ANALYTICS_EVERY_MS", ANALYTICS_EVERY_MS);
+  const deadline: Deadline = { atMs: Date.now() + budget, what: "the Analytics API budget ran out" };
   const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
   const row = (window: Window, seen: Invocations | undefined) => {
     const n = seen?.sum.requests ?? 0;
@@ -147,18 +151,18 @@ async function workerCpu(script: string, path: string): Promise<void> {
     let seen: Invocations | undefined;
     let failed: string | undefined;
     try {
-      while (Date.now() < deadline.atMs) {
-        seen = (await invocations(account, script, window, deadline)) ?? seen;
-        if ((seen?.sum.requests ?? 0) >= window.requests) break;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(ANALYTICS_EVERY_MS, Math.max(0, deadline.atMs - Date.now()))));
+      for (;;) {
+        seen = (await invocations(account, script, window, { atMs: Math.max(deadline.atMs, Date.now() + LAST_QUERY_MS), what: deadline.what })) ?? seen;
+        if ((seen?.sum.requests ?? 0) >= window.requests || Date.now() >= deadline.atMs) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(every, Math.max(0, deadline.atMs - Date.now()))));
       }
     } catch (error) {
       if (!(error instanceof DeadlineError)) failed = missingScope(error) ? "the deploy-test token lacks Account Analytics Read" : (error instanceof Error ? error.message : String(error)).slice(0, 200);
     }
-    if (seen) rows.push(row(window, seen));
-    if (seen && failed === undefined) continue;
+    if (failed === undefined || seen) rows.push(row(window, seen));
+    if (failed === undefined) continue;
     const missing = seen ? windows[i + 1] : window;
-    unavailable = missing ? stop(missing, failed ?? deadline.what) : "Worker CPU for the " + window.side + " side is partial: " + failed + ". The sync times and request counts above are complete.";
+    unavailable = missing ? stop(missing, failed) : "Worker CPU for the " + window.side + " side is partial: " + failed + ". The sync times and request counts above are complete.";
     break;
   }
   if (unavailable) emit(unavailable);

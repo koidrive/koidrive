@@ -243,6 +243,16 @@ describe("small-file benchmark", () => {
     expect(result.output).toContain("Worker CPU for the puts side is partial:");
   });
 
+  it("still queries every side after a short side uses up the Analytics budget", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswer = (variables) => (variables.start === "2023-11-14T22:13:20.000Z" ? invocations(625, 1111, 2000) : invocations(20000, 2222, 3000));
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api, KOIDRIVE_BENCH_ANALYTICS_MS: "2000", KOIDRIVE_BENCH_ANALYTICS_EVERY_MS: "200" } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 625 (partial) | 1.11 | 2.00 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 20000 | 2.22 | 3.00 | 0 |");
+    expect(result.output).not.toContain("Worker CPU unavailable");
+  });
+
   it("still passes when no Cloudflare credentials are set", async () => {
     fakeCargo();
     const result = await run({ command: "small", env: { CLOUDFLARE_API_TOKEN: "", CLOUDFLARE_ACCOUNT_ID: "" } });
