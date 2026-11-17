@@ -4,6 +4,7 @@ import { create, fromBinary } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import { OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { ChunkRefSchema, CommitRecordSchema, ContentSchema } from "../src/gen/koidrive/v1/model_pb";
 import { sha256 } from "../src/crypto";
 import { uuidv7, uuidv7Ms } from "../src/ids";
@@ -180,6 +181,79 @@ describe("R2 metadata export (spec v0 section 11, RFC 0004)", () => {
     expect(restored.manifest!.start_seq).toBe(5);
     expect(restored.nodes.get(f1)!.previous.size).toBe(2);
     expect(restored.nodes.get(f2)!.trashedAtMs).toBe(BigInt(now + 5 * MINUTE));
+  });
+
+  it.each([1, 64])("restores newest-first alias chains across fuzzy snapshot pages with %i initial bases", async (baseCount) => {
+    const space = await newSpace();
+    const a = await client(space, "Laptop");
+    const b = await client(space, "Phone");
+    const prefix = await historyPrefix(space, a);
+    const now = Date.now();
+    await setClock(space, a, now);
+    const files = [uuidv7(), uuidv7()].sort();
+    const early = files[0]!;
+    const pageOrder = [space.spaceId, ...files].sort();
+    const earlyPage = pageOrder.indexOf(early);
+    const latePage = pageOrder.indexOf(files[1]!);
+    const initial = Array.from({ length: baseCount }, () => uuidv7());
+    const payload = await content("fuzzy aliases " + uuidv7());
+    await a.commit(files.map((nodeId, index) => create(OpSchema, {
+      op: { case: "createFile", value: { nodeId, parentId: space.spaceId, name: `file-${index}.txt`, content: payload.content, madeOver: initial } },
+    })), { receipts: await a.uploadParts(payload) });
+    const before = await a.tree();
+    const aliases = [uuidv7(), uuidv7()];
+    const pause = { reached: false, released: false };
+    const events: string[] = [];
+    const until = async (flag: () => boolean) => {
+      while (!flag()) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const running = runSpaceAlarm(space.stub, now + DAY + 5 * MINUTE, {
+      pageNodes: 1,
+      intercept: async (key, put) => {
+        if (key.endsWith(`/pages/${earlyPage}.fbsnap`)) {
+          events.push("early page put");
+          pause.reached = true;
+          await until(() => pause.released);
+        }
+        if (key.endsWith(`/pages/${latePage}.fbsnap`)) events.push("late page put");
+        return put();
+      },
+    });
+    await until(() => pause.reached);
+    try {
+      for (const [index, sourceVersionId] of aliases.entries()) {
+        const result = await b.commit(files.map((nodeId) => create(OpSchema, {
+          op: { case: "updateContent", value: { nodeId, content: payload.content, resend: true, sourceVersionId } },
+        })), { baseSeq: 0n });
+        expect(result.seq).toBe(BigInt(index + 2));
+        expect(result.changes).toHaveLength(2);
+        events.push(`alias commit ${result.seq}`);
+      }
+    } finally {
+      pause.released = true;
+    }
+    await running;
+    expect(events).toEqual(["early page put", "alias commit 2", "alias commit 3", "late page put"]);
+    const [manifest] = await manifests(prefix);
+    expect(manifest).toMatchObject({ start_seq: 1, end_seq: 3 });
+    const expected = [...aliases].reverse().concat(initial).slice(0, 64);
+    const server = await a.tree();
+    for (const file of files) {
+      expect(server.get(file)!.current!.versionId).toBe(before.get(file)!.current!.versionId);
+      expect(server.get(file)!.contentRev).toBe(1n);
+      expect(server.get(file)!.editRev).toBe(1n);
+      expect(server.get(file)!.current!.madeOver).toEqual(expected);
+    }
+    const restored = await restoreFromR2(space.spaceId);
+    for (const file of files) {
+      expect(restored.nodes.get(file)!.state.current!.versionId).toBe(before.get(file)!.current!.versionId);
+      expect(restored.nodes.get(file)!.state.current!.madeOver).toEqual(expected);
+      if (baseCount === 64) {
+        expect(restored.nodes.get(file)!.state.current!.madeOver).not.toContain(initial[62]);
+        expect(restored.nodes.get(file)!.state.current!.madeOver).not.toContain(initial[63]);
+      }
+    }
+    await expectRestorable(space);
   });
 
   it("snapshots a version of more than 16,384 chunks at once and keeps its complete chunk list through later records", async () => {

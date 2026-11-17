@@ -32,7 +32,7 @@ When a resend with a nonempty source ID meets unseen equal content under RFC 001
 
 ## 4. Export replay
 
-An alias-only record can update a version's chain without advancing the node's content, edit, or metadata revisions. Before RFC 0004 §5's node-revision comparison, a reader MUST apply the record's bounded chain to a matching current or retained version ID. With no snapshot, or for a record after the snapshot manifest's `end_seq`, the incoming chain replaces the known chain. For a record within a fuzzy snapshot's `start_seq` to `end_seq` interval, the reader MUST keep the known chain first, append incoming IDs, deduplicate, and truncate to 64. This retains valid inclusion evidence without replacing a newer snapshot chain with an older record's chain.
+An alias-only record carries the version's complete bounded chain without advancing the node's content, edit, or metadata revisions. Before RFC 0004 §5's node-revision comparison, a reader MUST replace the chain of a matching current or retained version ID with the record's bounded chain. It MUST replay records in sequence order after the snapshot's `start_seq` through at least its `end_seq`. A snapshot page can be newer than an individual record in that interval, but `end_seq` is captured after all pages. The last record naming a version is therefore at least as new as the page that holds it, so the latest record's list wins without merging or retaining evicted IDs. A version named by no replayed record MUST keep its snapshot list.
 
 ## 5. Digest compatibility
 
