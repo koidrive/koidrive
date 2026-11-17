@@ -379,3 +379,10 @@ tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leav
 message = '''a parked node is neither on its way out nor reported at \S+\.rs:<line>\.'''
 examples = ["a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2074."]
 cases = ["73cfd110a184"]
+
+[[failure]]
+class = "I"
+issue = "GUN-1012"
+tests = ["a_server_that_gave_every_kept_slot_out_again_holds_none_of_them"]
+message = '''assertion `left == right` failed: held_through counts slot <n>, which the server gave out again too left: <n> right: <n>'''
+examples = ["assertion `left == right` failed: held_through counts slot 1, which the server gave out again too\n  left: 4\n right: 0"]

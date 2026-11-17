@@ -548,19 +548,19 @@ fn kept_slots() -> Commits {
 }
 
 #[test]
-fn only_the_kept_token_of_the_servers_slot_bounds_what_the_server_holds() {
+fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds() {
     let mut commits = kept_slots();
     assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 7);
     assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
-    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.held_through(), 7);
     let reissued = Welcome {
         device_commit_id: "commit-at-7".into(),
         device_committed_at_ms: 8,
         ..welcome(2)
     };
     assert_eq!(commits.connected(&reissued), Reconnect::Idle);
-    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.held_through(), 3);
     assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 7);
 
@@ -581,7 +581,7 @@ fn only_the_kept_token_of_the_servers_slot_bounds_what_the_server_holds() {
 }
 
 #[test]
-fn a_store_copied_before_the_listing_bounds_nothing_by_a_slot_the_server_gave_out_again() {
+fn a_store_copied_before_the_listing_bounds_by_the_kept_slot_below_one_the_server_gave_out_again() {
     let mut copy = kept_slots();
     assert_eq!(copy.connected(&welcome_holding(&copy, 1)), Reconnect::AheadOfServer);
     assert_eq!((copy.accepted(), copy.held_through()), (1, 3));
@@ -591,13 +591,13 @@ fn a_store_copied_before_the_listing_bounds_nothing_by_a_slot_the_server_gave_ou
         ..welcome(2)
     };
     assert_eq!(copy.connected(&given_again), Reconnect::AheadOfServer);
-    assert_eq!((copy.accepted(), copy.held_through()), (2, 0));
-    assert!(copy.lost_here(7) && copy.lost_here(3));
+    assert_eq!((copy.accepted(), copy.held_through()), (2, 3));
+    assert!(copy.lost_here(7) && !copy.lost_here(3));
     assert_eq!(copy.halted(), None);
 }
 
 #[test]
-fn a_slot_kept_without_a_token_bounds_nothing_until_a_result_is_applied() {
+fn a_slot_kept_without_a_token_keeps_the_bound_of_the_newest_kept_slot() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 1,
@@ -612,7 +612,7 @@ fn a_slot_kept_without_a_token_bounds_nothing_until_a_result_is_applied() {
         ..welcome(1)
     };
     assert_eq!(commits.connected(&empty), Reconnect::Idle);
-    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.held_through(), 3);
     build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
         .received(CommitResult {
@@ -623,7 +623,51 @@ fn a_slot_kept_without_a_token_bounds_nothing_until_a_result_is_applied() {
     assert!(commits.acknowledge(&mut trees, 5));
     assert_eq!((commits.accepted(), commits.held_through()), (2, 5));
     assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
-    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.held_through(), 5);
+    let another = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 50,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&another), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 3);
     assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 5);
+}
+
+#[test]
+fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(commits.own_record(9, &commit.commit_id, 90));
+    let holding = Welcome {
+        device_commit_id: commit.commit_id.clone(),
+        device_committed_at_ms: 90,
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&holding), Reconnect::Resend);
+    assert_eq!((commits.accepted(), commits.held_through()), (0, 9));
+}
+
+#[test]
+#[ignore = "GUN-1012: a Welcome names only the slot at its count, so a token that differs there cannot tell a shared slot below it from one the server gave out again (RFC 0028)"]
+fn a_server_that_gave_every_kept_slot_out_again_holds_none_of_them() {
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, slot(4)), (2, slot(5))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let reissued = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 2,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&reissued), Reconnect::Idle);
+    assert_eq!(
+        commits.held_through(),
+        0,
+        "held_through counts slot 1, which the server gave out again too"
+    );
 }

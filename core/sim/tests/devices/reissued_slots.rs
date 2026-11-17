@@ -35,7 +35,8 @@ fn another_devices_edit_is_sent_again_when_a_second_restore_brings_back_another_
 }
 
 #[test]
-fn a_store_copied_before_the_listing_takes_nothing_as_held_at_a_slot_the_server_gave_out_again() {
+fn a_store_copied_before_the_listing_takes_the_kept_slot_below_one_the_server_gave_out_again_as_held()
+ {
     let mut world = converge(
         2,
         &[vec![(0, file("a"))], vec![(0, BACKUP), (0, file("b"))]],
@@ -47,6 +48,7 @@ fn a_store_copied_before_the_listing_takes_nothing_as_held_at_a_slot_the_server_
     let copy = &world.devices[0].store_copy.as_ref().unwrap().commits;
     assert_eq!(copy.accepted(), 1);
     assert!(copy.made_here(2));
+    let shared = copy.state().slots[&1].seq;
     let live = &world.devices[0].engine.commits;
     assert_eq!(live.accepted(), 2);
     world
@@ -57,7 +59,7 @@ fn a_store_copied_before_the_listing_takes_nothing_as_held_at_a_slot_the_server_
         .unwrap();
     let commits = &world.devices[0].engine.commits;
     assert_eq!(commits.accepted(), 2);
-    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.held_through(), shared);
     world.phase(4, &[]).unwrap();
 }
 

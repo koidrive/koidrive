@@ -17,7 +17,7 @@ upgrade_case!(commit_slot_tokens, |store| {
                 ..Default::default()
             };
             commits.connected(&welcome);
-            assert_eq!(commits.held_through(), 0);
+            assert_eq!(commits.held_through(), 3);
             let token = koidrive_engine::commit::Base {
                 seq: 3,
                 commit_id: "commit-3".into(),
