@@ -233,12 +233,20 @@ impl Transfer {
                 }
                 let units = units(uploads, session.bundles_offered());
                 let mut started = 0;
+                let mut probing = false;
                 let mut running = FuturesUnordered::new();
                 loop {
+                    let waits_for_probe = probing
+                        && units.get(started).is_some_and(|unit| unit.url.is_some())
+                        && session.bundles_offered()
+                        && !session.bundles_confirmed();
                     tokio::select! {
                         biased;
-                        Some(sent) = running.next() => {
-                            for (index, sent) in sent? {
+                        Some((probe, sent, result)) = running.next() => {
+                            if probe {
+                                probing = false;
+                            }
+                            for (index, sent) in sent {
                                 match sent {
                                     Some(receipt) => {
                                         stored(&todo[index]);
@@ -247,8 +255,9 @@ impl Transfer {
                                     None => deferred.push(index),
                                 }
                             }
+                            result?;
                         }
-                        permit = self.gate.enter(units.get(started).map_or(0, |unit| unit.size)), if started < units.len() => {
+                        permit = self.gate.enter(units.get(started).map_or(0, |unit| unit.size)), if started < units.len() && !waits_for_probe => {
                             let unit = &units[started];
                             started += 1;
                             let mut members = Vec::new();
@@ -262,26 +271,34 @@ impl Transfer {
                             if members.is_empty() {
                                 continue;
                             }
-                            let url = unit.url.as_deref();
+                            let url = unit.url.as_deref().filter(|_| members.len() > 1 && session.bundles_offered());
+                            let probe = url.is_some() && !session.bundles_confirmed();
+                            probing |= probe;
                             running.push(async move {
                                 let _permit = permit;
-                                let mut loaded = Vec::with_capacity(members.len());
-                                for (index, chunk, target, bytes) in members {
-                                    let bytes = bytes.await.map_err(|source| ChunkError::Io {
-                                        hash: chunk.hash.clone(),
-                                        source,
-                                    })?;
-                                    if !matches(chunk, &bytes) {
-                                        return Err(ChunkError::SourceChanged {
+                                let mut sent = Vec::new();
+                                let out = &mut sent;
+                                let result = async move {
+                                    let mut loaded = Vec::with_capacity(members.len());
+                                    for (index, chunk, target, bytes) in members {
+                                        let bytes = bytes.await.map_err(|source| ChunkError::Io {
                                             hash: chunk.hash.clone(),
-                                        });
+                                            source,
+                                        })?;
+                                        if !matches(chunk, &bytes) {
+                                            return Err(ChunkError::SourceChanged {
+                                                hash: chunk.hash.clone(),
+                                            });
+                                        }
+                                        loaded.push(Member { index, chunk, target, bytes, tries: 0 });
                                     }
-                                    loaded.push(Member { index, chunk, target, bytes, tries: 0 });
+                                    match url {
+                                        Some(url) => self.send_bundle(session, url, loaded, out).await,
+                                        None => self.put_each(loaded, out).await,
+                                    }
                                 }
-                                match url {
-                                    Some(url) if loaded.len() > 1 => self.send_bundle(session, url, loaded).await,
-                                    _ => self.put_each(loaded).await,
-                                }
+                                .await;
+                                (probe, sent, result)
                             });
                         }
                         else => break,
@@ -464,15 +481,14 @@ impl Transfer {
         }
     }
 
-    async fn put_each(&self, members: Vec<Member<'_>>) -> Result<Sent, ChunkError> {
-        let mut sent = Vec::with_capacity(members.len());
+    async fn put_each(&self, members: Vec<Member<'_>>, sent: &mut Sent) -> Result<(), ChunkError> {
         for member in members {
             let receipt = self
                 .retrying(|| self.put(member.target, member.chunk, member.bytes.clone()))
                 .await?;
             sent.push((member.index, receipt));
         }
-        Ok(sent)
+        Ok(())
     }
 
     async fn send_bundle(
@@ -480,20 +496,19 @@ impl Transfer {
         session: &Session,
         url: &str,
         mut members: Vec<Member<'_>>,
-    ) -> Result<Sent, ChunkError> {
-        let mut sent = Vec::with_capacity(members.len());
+        sent: &mut Sent,
+    ) -> Result<(), ChunkError> {
         while !members.is_empty() {
             let mut again = Vec::new();
             let mut wait = None;
             match self.post_bundle(url, &members).await {
                 Bundled::Unsupported => {
                     session.refuse_bundles();
-                    sent.extend(self.put_each(members).await?);
-                    return Ok(sent);
+                    return self.put_each(members, sent).await;
                 }
                 Bundled::Refused => {
-                    sent.extend(self.put_each(members).await?);
-                    return Ok(sent);
+                    session.confirm_bundles();
+                    return self.put_each(members, sent).await;
                 }
                 Bundled::Retry(error) => {
                     wait = retry_after(&error);
@@ -506,20 +521,28 @@ impl Transfer {
                     }
                 }
                 Bundled::Answered(outcomes) => {
+                    session.confirm_bundles();
+                    let mut failed = None;
                     for (mut member, outcome) in members.into_iter().zip(outcomes) {
                         match outcome {
                             Attempt::Done(receipt) => sent.push((member.index, Some(receipt))),
                             Attempt::Expired => sent.push((member.index, None)),
-                            Attempt::Fail(error) => return Err(error),
+                            Attempt::Fail(error) => {
+                                failed.get_or_insert(error);
+                            }
                             Attempt::Retry(error) => {
                                 member.tries += 1;
                                 if member.tries >= self.attempts {
-                                    return Err(error);
+                                    failed.get_or_insert(error);
+                                    continue;
                                 }
                                 wait = wait.max(retry_after(&error));
                                 again.push(member);
                             }
                         }
+                    }
+                    if let Some(error) = failed {
+                        return Err(error);
                     }
                 }
             }
@@ -533,7 +556,7 @@ impl Transfer {
             }
             members = again;
         }
-        Ok(sent)
+        Ok(())
     }
 
     async fn post_bundle(&self, url: &str, members: &[Member<'_>]) -> Bundled {
@@ -561,6 +584,7 @@ impl Transfer {
         let body = answer.body.unwrap_or_default();
         match answer.status {
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => return Bundled::Unsupported,
+            status if !status.is_success() && !retryable(status) => return Bundled::Refused,
             status if !status.is_success() => {
                 return match put_outcome(first, status, None, ServerError::decode(&body)) {
                     Attempt::Retry(error) => Bundled::Retry(error),

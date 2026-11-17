@@ -2439,6 +2439,27 @@ describe("chunk bundles", () => {
     expect((await guarded(new Request(bundlePath(spaceId)))).status).toBe(405);
   });
 
+  it("counts the chunks of a bundle before decoding it, so a body of millions of empty entries is refused cheaply", async () => {
+    const { spaceId } = await planned("hostile");
+    const BUCKET = new Proxy({}, { get: () => { throw new Error("R2 was used for a refused bundle"); } });
+    const guarded = (request: Request) => worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET } as unknown as Env, {} as ExecutionContext);
+    const post = async (bytes: Uint8Array) => {
+      const response = await guarded(new Request(bundlePath(spaceId), { method: "POST", body: bytes, headers: { "Content-Length": String(bytes.length) } }));
+      return [response.status, fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer())).code];
+    };
+    for (const n of [33, 1000, 100000, 2000000]) {
+      const bytes = new Uint8Array(n * 2);
+      for (let i = 0; i < n; i++) bytes[2 * i] = 0x0a;
+      expect([n, ...(await post(bytes))]).toEqual([n, 413, Error_Code.LIMIT_EXCEEDED]);
+    }
+    const undecodable = new Uint8Array(33 * 3 + 3);
+    for (let i = 0; i < 33; i++) undecodable.set([0x0a, 0x01, 0xff], 3 * i);
+    undecodable.set([0xff, 0xff, 0xff], 99);
+    expect(await post(undecodable)).toEqual([413, Error_Code.LIMIT_EXCEEDED]);
+    expect(await post(new Uint8Array([0x0a, 0x05, 0x00]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
+    expect(await post(new Uint8Array([0x0b]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
+  });
+
   it("exports from the Worker module only entrypoints the runtime accepts", async () => {
     const exported = Object.entries(await import("../src/worker"));
     const entrypoint = (value: unknown) => typeof value === "function" || (typeof value === "object" && value !== null && "fetch" in value);

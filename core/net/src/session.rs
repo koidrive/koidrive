@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
@@ -55,6 +55,10 @@ pub const MAX_SERVER_MESSAGE: usize = 1 << 20;
 pub const MAX_CLIENT_MESSAGE: usize = 8 << 20;
 /// The `Welcome.features` name of chunk bundles (RFC 0027).
 pub const CHUNK_BUNDLES: &str = "chunk_bundles";
+
+const BUNDLES_OFF: u8 = 0;
+const BUNDLES_OFFERED: u8 = 1;
+const BUNDLES_CONFIRMED: u8 = 2;
 
 const CLOSE_TOKEN_EXPIRED: u16 = 4001;
 const CLOSE_UNSUPPORTED_VERSION: u16 = 4002;
@@ -130,7 +134,7 @@ pub struct Session {
     commit_lock: Mutex<()>,
     backoff: Backoff,
     retry_later_attempts: u32,
-    bundles: Arc<AtomicBool>,
+    bundles: Arc<AtomicU8>,
     task: JoinHandle<()>,
 }
 
@@ -142,7 +146,7 @@ impl Session {
         let (events, event_rx) = mpsc::unbounded_channel();
         let stopped = Arc::new(OnceLock::new());
         let (closing, closing_rx) = watch::channel(false);
-        let bundles = Arc::new(AtomicBool::new(false));
+        let bundles = Arc::new(AtomicU8::new(BUNDLES_OFF));
         let session = Session {
             commands,
             closing,
@@ -182,11 +186,24 @@ impl Session {
     /// True when the current connection's `Welcome` offers chunk bundles (RFC 0027) and no bundle has been refused
     /// since.
     pub fn bundles_offered(&self) -> bool {
-        self.bundles.load(Ordering::Relaxed)
+        self.bundles.load(Ordering::Relaxed) != BUNDLES_OFF
+    }
+
+    pub(crate) fn bundles_confirmed(&self) -> bool {
+        self.bundles.load(Ordering::Relaxed) == BUNDLES_CONFIRMED
+    }
+
+    pub(crate) fn confirm_bundles(&self) {
+        let _ = self.bundles.compare_exchange(
+            BUNDLES_OFFERED,
+            BUNDLES_CONFIRMED,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
     }
 
     pub(crate) fn refuse_bundles(&self) {
-        self.bundles.store(false, Ordering::Relaxed);
+        self.bundles.store(BUNDLES_OFF, Ordering::Relaxed);
     }
 
     /// Streams the log after `since.since_seq` of `since.history_id`: the last seq the driver applied completely, or
@@ -470,7 +487,7 @@ struct Task {
     expired: Option<String>,
     asked_wait: Option<Duration>,
     unreadable_refusals: u32,
-    bundles: Arc<AtomicBool>,
+    bundles: Arc<AtomicU8>,
 }
 
 impl Task {
@@ -539,11 +556,16 @@ impl Task {
         };
         self.attempt = 0;
         self.unreadable_refusals = 0;
+        let offered = welcome
+            .features
+            .iter()
+            .any(|feature| feature == CHUNK_BUNDLES);
         self.bundles.store(
-            welcome
-                .features
-                .iter()
-                .any(|feature| feature == CHUNK_BUNDLES),
+            if offered {
+                BUNDLES_OFFERED
+            } else {
+                BUNDLES_OFF
+            },
             Ordering::Relaxed,
         );
         self.emit(Event::Connected(welcome.clone()));

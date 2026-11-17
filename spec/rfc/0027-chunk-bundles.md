@@ -23,8 +23,8 @@ The server refuses the whole request, and stores nothing, when:
 |---|---|
 | `Content-Length` is missing | 411, `INVALID_ARGUMENT` |
 | `Content-Length` or the body read is over 4 MiB | 413, `LIMIT_EXCEEDED` |
+| It holds 0 chunks or more than 32, counted as top-level field-1 entries before the body is decoded | 413, `LIMIT_EXCEEDED` |
 | The body is not a `ChunkBundle` | 400, `INVALID_ARGUMENT` |
-| It holds 0 chunks or more than 32 | 413, `LIMIT_EXCEEDED` |
 | A `target` is not a URL whose path is `/v1/spaces/{space_id}/chunks/{hash}` for the route's `space_id`, with a valid `inc` | 400, `INVALID_ARGUMENT` |
 | Two chunks name the same hash | 400, `INVALID_ARGUMENT` |
 | A chunk's `data` is empty or over 1 MiB | 413, `LIMIT_EXCEEDED` |
@@ -42,8 +42,10 @@ A Space DO whose code implements this RFC lists `chunk_bundles` in `Welcome.feat
 1. A client sends bundles on a connection only while its `Welcome` lists `chunk_bundles`.
 2. A client bundles only chunks whose `Target` has method `PUT` or none, no headers, and a URL path that ends in `/v1/spaces/{space_id}/chunks/{hash}` with the chunk's own hash. It sends the bundle to that URL with the last path segment, the query and the fragment removed. A presigned storage target is never bundled.
 3. A client handles each `BundledChunkResult` as it handles the answer to a `PUT` of that chunk with the same status and body: a receipt is used at commit time, 401 and 403 ask `PrepareUpload` again, and a status that a `PUT` retries is retried for that chunk alone, with the same per-chunk attempt limit. A chunk that a `PUT` would fail for good ends the upload.
-4. A transport failure, a timeout, or a whole-request status that a `PUT` would retry resends the bundle. Resending is safe: the server writes the same key and does not overwrite an object that exists.
-5. A 404 or 405 for the route means the Worker does not have it, for example during the 300 seconds after a deploy (RFC 0022 §3 rule 2). The client sends that bundle's chunks as `PUT`s and sends no more bundles until its next `Welcome`. Any other whole-request refusal sends the bundle's chunks as `PUT`s.
+4. A transport failure, a timeout, or a whole-request 408, 429 or 5xx that a `PUT` would retry resends the bundle, with the per-chunk attempt limit. Resending is safe: the server writes the same key and does not overwrite an object that exists.
+5. A 404 or 405 for the route means the Worker does not have it, for example during the 300 seconds after a deploy (RFC 0022 §3 rule 2). The client sends that bundle's chunks as `PUT`s and sends no more bundles until its next `Welcome`; the bundles it planned but has not started go as `PUT`s too. Any other whole-request refusal, a 400 among them, and an answer whose result count or hashes do not match the bundle, sends that bundle's chunks as `PUT`s and is not resent.
+6. Until the route has answered once on a connection, a client has one bundle in flight: the others it planned wait for that answer, so a Worker without the route sees one bundle. A chunk the answer receipted counts as stored even when another chunk of the same bundle ends the upload.
+7. A bundle takes upload permits for the sum of its chunks' sizes, as that many `PUT`s would.
 
 ## 5. Compatibility
 
@@ -53,7 +55,8 @@ A Space DO whose code implements this RFC lists `chunk_bundles` in `Welcome.feat
 ## 6. Tests
 
 - Server: a bundle stores each chunk and its receipts are accepted by a commit; each chunk of a bundle with a bad ticket, wrong bytes or a size its ticket does not cover gets the same status as a `PUT` of it alone, and only the valid chunks are stored; a storage failure fails only its chunk with the `PUT` status; each refusal in §2 stores nothing; a bundle of 32 makes 32 writes with at most 6 at once.
-- Client: bundles of at most 32 when offered; `PUT`s when not offered; `PUT`s and no more bundles after a 404; each per-chunk status gives the same outcome as a `PUT` with that answer; only refused chunks are sent again.
+- Server: a body of more than 32 entries is refused with 413 before it is decoded, even when the entries are not valid chunks.
+- Client: bundles of at most 32 chunks and 1 MiB when offered; `PUT`s when not offered; after a 404 one bundle in all and the rest as `PUT`s; a 400, a 413 and an answer with the wrong count or hashes send the bundle as `PUT`s once; a bundle cut off in transit is sent again; each per-chunk status gives the same outcome as a `PUT` with that answer; only refused chunks are sent again, within the `PUT` attempt limit; receipted chunks count as stored when another fails for good; a 1 MiB bundle takes 4 of the 16 permits of one full chunk.
 
 ## 7. Alternatives considered
 

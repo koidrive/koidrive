@@ -1940,3 +1940,321 @@ fn only_relay_targets_of_the_chunk_itself_have_a_bundle_route() {
         None
     );
 }
+
+type Post = fn(&ChunkBundle, usize) -> (u16, Vec<u8>);
+
+struct Posted {
+    sent: Vec<Wire>,
+    most_at_once: usize,
+}
+
+async fn posting_relay(post: Post, hold: Duration) -> (SocketAddr, Arc<Mutex<Posted>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let log = Arc::new(Mutex::new(Posted {
+        sent: Vec::new(),
+        most_at_once: 0,
+    }));
+    let seen = log.clone();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let at_once = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (seen, posts, at_once) = (seen.clone(), posts.clone(), at_once.clone());
+            tokio::spawn(async move {
+                let (head, body) = read_request(&mut socket).await;
+                let (status, answer) = if head.starts_with("PUT ") {
+                    let ticket = ticket_of(&head);
+                    seen.lock().unwrap().sent.push(Wire::Put(ticket.clone()));
+                    let receipt = UploadReceipt {
+                        hash: Sha256::digest(&body).to_vec(),
+                        size: body.len() as u32,
+                        token: ticket,
+                    };
+                    (200, receipt.encode_to_vec())
+                } else {
+                    let bundle = ChunkBundle::decode(body.as_slice()).unwrap();
+                    let now = at_once.fetch_add(1, Ordering::SeqCst) + 1;
+                    {
+                        let mut seen = seen.lock().unwrap();
+                        seen.most_at_once = seen.most_at_once.max(now);
+                        seen.sent.push(Wire::Bundle(
+                            bundle.chunks.iter().map(|c| ticket_of(&c.target)).collect(),
+                        ));
+                    }
+                    tokio::time::sleep(hold).await;
+                    at_once.fetch_sub(1, Ordering::SeqCst);
+                    post(&bundle, posts.fetch_add(1, Ordering::SeqCst))
+                };
+                if status == 0 {
+                    return;
+                }
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    answer.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&answer).await;
+            });
+        }
+    });
+    (address, log)
+}
+
+fn answered(bundle: &ChunkBundle, status: impl Fn(&str) -> (u16, Code)) -> Vec<u8> {
+    let results = bundle
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let ticket = ticket_of(&chunk.target);
+            let (status, code) = status(&ticket);
+            let hash = Sha256::digest(&chunk.data).to_vec();
+            BundledChunkResult {
+                receipt: (status == 200).then(|| UploadReceipt {
+                    hash: hash.clone(),
+                    size: chunk.data.len() as u32,
+                    token: ticket.clone(),
+                }),
+                error: (status != 200).then(|| ProtoError {
+                    code: code as i32,
+                    ..Default::default()
+                }),
+                hash,
+                status: status.into(),
+            }
+        })
+        .collect();
+    ChunkBundleResult { results }.encode_to_vec()
+}
+
+fn all_stored(bundle: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+    (200, answered(bundle, |_| (200, Code::Unspecified)))
+}
+
+fn sized(count: usize, size: impl Fn(usize) -> usize) -> Vec<(String, ChunkRef, Bytes)> {
+    (0..count)
+        .map(|i| {
+            let mut bytes = format!("chunk {i}").into_bytes();
+            bytes.resize(size(i), i as u8);
+            let bytes = Bytes::from(bytes);
+            (format!("c{i}"), chunk(&bytes), bytes)
+        })
+        .collect()
+}
+
+struct Posting {
+    result: Result<Vec<UploadReceipt>, ChunkError>,
+    sent: Vec<Wire>,
+    most_at_once: usize,
+    stored: usize,
+    session: Session,
+}
+
+impl Posting {
+    fn posts(&self) -> Vec<usize> {
+        (self.sent.iter())
+            .filter_map(|sent| match sent {
+                Wire::Bundle(tickets) => Some(tickets.len()),
+                Wire::Put(_) => None,
+            })
+            .collect()
+    }
+
+    fn puts(&self) -> usize {
+        self.sent.len() - self.posts().len()
+    }
+}
+
+async fn posting(
+    post: Post,
+    parts: &[(String, ChunkRef, Bytes)],
+    transfer: Transfer,
+    hold: Duration,
+) -> Posting {
+    let (relay, log) = posting_relay(post, hold).await;
+    let plans: Vec<_> = parts
+        .iter()
+        .map(|(name, chunk, _)| bundle_plan(relay, chunk, name))
+        .collect();
+    let (session, _events, _asked) =
+        scripted_session_with(offering(), move |_| plans.clone()).await;
+    let stored = Arc::new(AtomicUsize::new(0));
+    let counted = stored.clone();
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        transfer.upload_observed(
+            &session,
+            &refs(parts),
+            source(parts),
+            move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        ),
+    )
+    .await
+    .expect("the upload hung");
+    let log = log.lock().unwrap();
+    Posting {
+        result,
+        sent: log.sent.clone(),
+        most_at_once: log.most_at_once,
+        stored: stored.load(Ordering::SeqCst),
+        session,
+    }
+}
+
+#[tokio::test]
+async fn after_a_404_from_the_bundle_route_the_rest_of_the_round_goes_as_puts_at_once() {
+    fn missing(_: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        (404, Vec::new())
+    }
+    let parts = named(100);
+    let run = posting(missing, &parts, transfer(), Duration::from_millis(50)).await;
+    assert_eq!(run.result.as_ref().unwrap().clone().len(), 100);
+    assert_eq!(run.posts(), [32]);
+    assert_eq!(run.puts(), 100);
+    assert!(!run.session.bundles_offered());
+
+    let parts = sized(40, |_| 250 << 10);
+    let narrow = Transfer {
+        gate: UploadGate::new(1),
+        ..transfer()
+    };
+    let run = posting(missing, &parts, narrow, Duration::from_millis(50)).await;
+    assert_eq!(run.result.as_ref().unwrap().clone().len(), 40);
+    assert_eq!(run.posts().len(), 1);
+    assert_eq!(run.puts(), 40);
+}
+
+#[tokio::test]
+async fn a_whole_request_refusal_other_than_404_or_405_sends_the_bundle_as_puts() {
+    fn invalid(_: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        let error = ProtoError {
+            code: Code::InvalidArgument as i32,
+            message: "a bundle lists one chunk twice".into(),
+            ..Default::default()
+        };
+        (400, error.encode_to_vec())
+    }
+    fn too_large(_: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        let error = ProtoError {
+            code: Code::LimitExceeded as i32,
+            ..Default::default()
+        };
+        (413, error.encode_to_vec())
+    }
+    for post in [invalid as Post, too_large] {
+        let parts = named(5);
+        let run = posting(post, &parts, transfer(), Duration::ZERO).await;
+        assert_eq!(
+            sorted(tokens(run.result.as_ref().unwrap().clone())),
+            sorted(names(&parts))
+        );
+        assert_eq!(run.posts(), [5]);
+        assert_eq!(run.puts(), 5);
+        assert_eq!(run.stored, 5);
+        assert!(run.session.bundles_offered());
+    }
+}
+
+#[tokio::test]
+async fn a_bundle_cut_off_in_transit_is_sent_again_whole() {
+    fn cut_once(bundle: &ChunkBundle, n: usize) -> (u16, Vec<u8>) {
+        if n == 0 {
+            (0, Vec::new())
+        } else {
+            all_stored(bundle, n)
+        }
+    }
+    let parts = named(4);
+    let run = posting(cut_once, &parts, transfer(), Duration::ZERO).await;
+    assert_eq!(run.result.as_ref().unwrap().clone().len(), 4);
+    assert_eq!(run.posts(), [4, 4]);
+    assert_eq!(run.puts(), 0);
+    assert_eq!(run.stored, 4);
+}
+
+#[tokio::test]
+async fn a_chunk_a_bundle_never_stores_ends_the_upload_after_the_attempts_a_put_gets() {
+    fn never_c1(bundle: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        (
+            200,
+            answered(bundle, |ticket| match ticket {
+                "c1" => (503, Code::RetryLater),
+                _ => (200, Code::Unspecified),
+            }),
+        )
+    }
+    let parts = named(2);
+    let run = posting(never_c1, &parts, transfer(), Duration::ZERO).await;
+    assert!(run.result.is_err());
+    assert_eq!(run.posts(), [2, 1, 1, 1, 1]);
+    assert_eq!(run.posts().len(), transfer().attempts as usize);
+    assert_eq!(run.stored, 1);
+}
+
+#[tokio::test]
+async fn chunks_an_answer_receipted_count_as_stored_even_when_another_fails_for_good() {
+    fn c0_too_large(bundle: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        (
+            200,
+            answered(bundle, |ticket| match ticket {
+                "c0" => (413, Code::LimitExceeded),
+                _ => (200, Code::Unspecified),
+            }),
+        )
+    }
+    let parts = named(4);
+    let run = posting(c0_too_large, &parts, transfer(), Duration::ZERO).await;
+    assert!(run.result.is_err());
+    assert_eq!(run.posts(), [4]);
+    assert_eq!(run.stored, 3);
+}
+
+#[tokio::test]
+async fn an_answer_with_the_wrong_count_or_hashes_sends_the_bundle_as_puts() {
+    fn one_short(bundle: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        let mut answer =
+            ChunkBundleResult::decode(answered(bundle, |_| (200, Code::Unspecified)).as_slice())
+                .unwrap();
+        answer.results.pop();
+        (200, answer.encode_to_vec())
+    }
+    fn wrong_hash(bundle: &ChunkBundle, _: usize) -> (u16, Vec<u8>) {
+        let mut answer =
+            ChunkBundleResult::decode(answered(bundle, |_| (200, Code::Unspecified)).as_slice())
+                .unwrap();
+        answer.results[1].hash = vec![0; 32];
+        (200, answer.encode_to_vec())
+    }
+    for post in [one_short as Post, wrong_hash] {
+        let parts = named(4);
+        let run = posting(post, &parts, transfer(), Duration::ZERO).await;
+        assert_eq!(
+            sorted(tokens(run.result.as_ref().unwrap().clone())),
+            sorted(names(&parts))
+        );
+        assert_eq!(run.posts(), [4]);
+        assert_eq!(run.puts(), 4);
+        assert_eq!(run.stored, 4);
+    }
+}
+
+#[tokio::test]
+async fn a_bundle_holds_at_most_1_mib_and_takes_gate_permits_for_all_its_bytes() {
+    let parts = sized(35, |i| if i % 5 == 0 { 4 << 10 } else { 255 << 10 });
+    let narrow = Transfer {
+        gate: UploadGate::new(1),
+        ..transfer()
+    };
+    let run = posting(all_stored, &parts, narrow, Duration::from_millis(150)).await;
+    assert_eq!(run.result.as_ref().unwrap().clone().len(), 35);
+    assert_eq!(run.posts(), [5; 7]);
+    assert_eq!(run.puts(), 0);
+    assert_eq!(
+        run.most_at_once, 4,
+        "a 1 MiB bundle takes 4 of the 16 permits"
+    );
+}
