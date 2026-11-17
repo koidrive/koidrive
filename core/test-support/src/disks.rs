@@ -43,6 +43,46 @@ fn run(program: &str, args: &[&OsStr]) -> String {
     output(program, args).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
+fn hdiutil(args: &[&OsStr]) -> String {
+    until_ready(std::time::Duration::from_secs(30), || {
+        output("hdiutil", args)
+    })
+    .unwrap_or_else(|failure| panic!("{failure}"))
+}
+
+fn until_ready(
+    deadline: std::time::Duration,
+    mut command: impl FnMut() -> Result<String, String>,
+) -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let mut refusals = Vec::new();
+    loop {
+        match command() {
+            Ok(out) => {
+                if let Some(last) = refusals.last() {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "succeeded after {} refusals in {:?}, the last: {last}",
+                        refusals.len(),
+                        started.elapsed()
+                    );
+                }
+                return Ok(out);
+            }
+            Err(failure)
+                if started.elapsed() < deadline
+                    && ["Resource busy", "Permission denied"]
+                        .iter()
+                        .any(|transient| failure.contains(transient)) =>
+            {
+                refusals.push(failure);
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
+}
+
 /// Disk images mounted into folders the way a person mounts a USB drive: APFS images through `hdiutil` on macOS,
 /// and ext4 images through `sudo -n mount -o loop` on Linux. Drop attempts to detach every image and
 /// retains the directory without panicking if the OS cannot release one.
@@ -142,10 +182,7 @@ impl Disks {
             args.push(format!("-I {:#x}", serial.finish() as u32).into());
         }
         args.push(image.clone().into());
-        run(
-            "hdiutil",
-            &args.iter().map(OsString::as_os_str).collect::<Vec<_>>(),
-        );
+        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
         image
     }
 
@@ -168,17 +205,14 @@ impl Disks {
             image: fs::canonicalize(image).unwrap(),
         });
         if cfg!(target_os = "macos") {
-            run(
-                "hdiutil",
-                &[
-                    "attach".as_ref(),
-                    "-nobrowse".as_ref(),
-                    "-noautoopen".as_ref(),
-                    "-mountpoint".as_ref(),
-                    at.as_os_str(),
-                    image.as_os_str(),
-                ],
-            );
+            hdiutil(&[
+                "attach".as_ref(),
+                "-nobrowse".as_ref(),
+                "-noautoopen".as_ref(),
+                "-mountpoint".as_ref(),
+                at.as_os_str(),
+                image.as_os_str(),
+            ]);
         } else if image
             .extension()
             .is_some_and(|extension| extension == "fat")
@@ -407,6 +441,31 @@ mod tests {
         assert_eq!(tried, ["inner", "outer"]);
         assert_eq!(fs::read(base.join("image.dmg")).unwrap(), b"keep");
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_refused_disk_command_is_tried_again_until_it_succeeds_or_fails_otherwise() {
+        let mut answers = vec![
+            Err("hdiutil: create failed - Resource busy".to_owned()),
+            Err("hdiutil: attach failed - Permission denied".to_owned()),
+            Ok("done".to_owned()),
+        ]
+        .into_iter();
+        let ready = until_ready(std::time::Duration::from_secs(5), || {
+            answers.next().unwrap()
+        });
+        assert_eq!(ready.as_deref(), Ok("done"));
+        let mut tries = 0;
+        let broken = until_ready(std::time::Duration::from_secs(5), || {
+            tries += 1;
+            Err("hdiutil: create failed - No space left on device".to_owned())
+        });
+        assert_eq!(tries, 1);
+        assert!(broken.unwrap_err().contains("No space left"));
+        let busy = until_ready(std::time::Duration::from_millis(600), || {
+            Err("hdiutil: create failed - Resource busy".to_owned())
+        });
+        assert!(busy.unwrap_err().contains("Resource busy"));
     }
 
     #[test]
