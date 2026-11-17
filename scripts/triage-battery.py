@@ -26,7 +26,7 @@ SAME = "fails on base with the same message"
 MOVED = "same message, different location (unconfirmed)"
 SILENT = "a side crashed without a message (unconfirmed)"
 VERDICTS = ("PR-caused", "unstable", "unknown", SILENT, MOVED, "flaky or fixed", SAME)
-HARNESS_LINE = re.compile(r"^(running \d+ tests?|test \S+ \.\.\..*)$")
+HARNESS_OUTPUT = re.compile(r"^(running \d+ tests?$|test \S+ \.\.\.)")
 SILENT_CRASH = re.compile(r"^killed by signal \d+$")
 
 
@@ -184,8 +184,8 @@ def outcome(returncode, output):
     if returncode == 0 and re.search(r"^test result: ok\. 0 passed; 0 failed; 1 ignored;", output, re.M):
         return {"result": "ignored", "message": None}
     if returncode < 0:
-        last = next((line.strip() for line in reversed(output.splitlines())
-                     if line.strip() and not HARNESS_LINE.match(line.strip())), None)
+        last = next(filter(None, (HARNESS_OUTPUT.sub("", line.strip()).strip()
+                                  for line in reversed(output.splitlines()))), None)
         return {"result": "fail", "message": failure_message(output)
                 or f"killed by signal {-returncode}" + (f" after: {last}" if last else "")}
     if returncode != 0 and re.search(r"^test result: FAILED\.", output, re.M):

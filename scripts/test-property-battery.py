@@ -348,6 +348,8 @@ class Triage(unittest.TestCase):
         self.assertEqual(overflow, {"result": "fail",
                                     "message": "killed by signal 6 after: fatal runtime error: stack overflow, aborting"})
         self.assertEqual(abort, {"result": "fail", "message": "killed by signal 6"})
+        self.assertEqual(triage.outcome(-6, running + "free(): invalid pointer\n"),
+                         {"result": "fail", "message": "killed by signal 6 after: free(): invalid pointer"})
         self.assertEqual(triage.verdict([overflow] * 2, [overflow] * 2), triage.SAME)
         for head, base in ((abort, abort), (null_write, null_write), (abort, null_write), (abort, overflow),
                            (overflow, abort), (panic, abort), (abort, panic)):
