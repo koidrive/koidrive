@@ -1386,7 +1386,10 @@ impl World {
         }
         for write in self.writers.keys() {
             let taken = (held_before.difference(&held_after)).any(|(_, held)| held == write);
-            if !taken && !lost_history.contains(write) {
+            let brought_back = (self.exposed.get(write)).is_some_and(|exposure| {
+                (exposure.nodes.keys()).any(|id| after.contains_key(id) && !before.contains_key(id))
+            });
+            if !taken && !lost_history.contains(write) && !brought_back {
                 continue;
             }
             if self.devices.iter().any(|device| device.disk.holds(*write)) {

@@ -23,6 +23,8 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{RngSeed, TestRunner};
 
+#[path = "devices/restore_back_to_back.rs"]
+mod restore_back_to_back;
 #[path = "devices/restore_deleted_folder.rs"]
 mod restore_deleted_folder;
 #[path = "devices/restore_write_history.rs"]
