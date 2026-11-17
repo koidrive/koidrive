@@ -86,7 +86,7 @@ fn a_download_the_server_lost_is_not_sent_again_over_a_later_edit() {
     };
     let commits = Commits::default();
     list_after_a_loss(&mut trees, &commits, later);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class("a"), Class::Concurrent);
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn a_download_the_server_lost_is_not_sent_again_over_a_restored_version() {
         ..version(remote(file(ROOT, "a", 1)), "v1-restored")
     };
     list_after_a_loss(&mut trees, &commits, restored);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class("a"), Class::Concurrent);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn a_version_a_listing_took_r_back_from_is_not_sent_over() {
     );
     assert_eq!(trees.class("a"), Class::InSync);
     list_after_a_loss(&mut trees, &commits, lost);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class("a"), Class::Concurrent);
     assert!(!trees.state().replaced_versions.contains_key("a"));
 }
 
@@ -357,9 +357,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
 #[test]
 fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken() {
     for name in ["a", "b"] {
-        let mut trees = trees(&[synced("a", file(ROOT, "a", 1))]);
-        trees.set_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
-        trees.settle();
+        let mut trees = held_since_its_create("a", file(ROOT, "a", 1), "v1");
         let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         let edited = RemoteNode {
@@ -386,9 +384,18 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
 }
 
 
+fn held_since_its_create(id: &str, shape: Shape, version_id: &str) -> Trees {
+    let mut trees = trees(&[]);
+    trees.set_remote(id.into(), version(remote(shape.clone()), version_id));
+    trees.set_local(id.into(), local(shape.clone(), 1));
+    trees.set_synced(id.into(), Some(shape));
+    trees.settle();
+    assert_eq!(trees.class(id), Class::InSync);
+    trees
+}
+
 fn resent_after_losing_v1() -> Trees {
-    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
-    trees.set_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    let mut trees = held_since_its_create("f", file(ROOT, "a", 1), "v1");
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
@@ -418,8 +425,7 @@ fn a_resend_gives_way_to_content_another_device_wrote_after_the_loss() {
 
 #[test]
 fn a_resend_gives_way_to_a_listed_version_this_device_never_held() {
-    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
-    trees.set_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    let mut trees = held_since_its_create("f", file(ROOT, "a", 1), "v1");
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.set_listed_remote("f".into(), written_after_the_loss(2, "v2"));
@@ -446,4 +452,43 @@ fn a_resend_goes_out_over_a_version_this_device_held_before_the_server_lost_the_
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [resend("f", 2)]);
+}
+
+#[test]
+fn a_resend_keeps_its_content_over_a_version_from_before_the_listing_this_device_linked_by() {
+    let mut trees = trees(&[]);
+    trees.set_listed_remote("f".into(), written_after_the_loss(2, "v2"));
+    trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
+    trees.set_synced("f".into(), Some(file(ROOT, "a", 2)));
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::InSync);
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.set_listed_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::Concurrent);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(uploads(&ops(&commit), 2), "{:?}", ops(&commit));
+}
+
+#[test]
+fn a_resend_keeps_its_content_over_an_older_version_a_record_brings_back_after_a_listing_link() {
+    let mut trees = trees(&[]);
+    trees.set_listed_remote("f".into(), written_after_the_loss(2, "v2"));
+    trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
+    trees.set_synced("f".into(), Some(file(ROOT, "a", 2)));
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    trees.set_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    trees.settle();
+    assert_ne!(trees.class("f"), Class::Remote);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(uploads(&ops(&commit), 2), "{:?}", ops(&commit));
 }

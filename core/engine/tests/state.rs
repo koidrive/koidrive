@@ -141,6 +141,7 @@ fn trees_state() -> TreesState {
         lost_positions: Default::default(),
         lost_creates: Default::default(),
         replaced_versions: [("a".into(), vec!["v1".into()])].into(),
+        full_history: ["a".into()].into(),
         kept_originals: [("t".into(), "a".into())].into(),
         unsent_marks: [("a".into(), "A".into())].into(),
         pending_finishes: [(

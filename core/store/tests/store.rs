@@ -105,6 +105,7 @@ fn migrations_apply_from_empty() {
             "engine_state",
             "failed_effects",
             "forgotten_shapes",
+            "full_history",
             "guard_confirmed",
             "guard_confirmed_limits",
             "guard_confirmed_members",
@@ -1362,6 +1363,7 @@ fn engine_state() -> EngineState {
                     "0190a6b2-0000-7000-8000-000000000002".into(),
                 ],
             )]),
+            full_history: nodes(["e"]),
             kept_originals: BTreeMap::from([("t".into(), "kept".into())]),
             unsent_marks: BTreeMap::from([("m".into(), "M".into())]),
             pending_finishes: BTreeMap::new(),
@@ -1561,7 +1563,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 43] = [
+const ENGINE_TABLES: [&str; 44] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1605,6 +1607,7 @@ const ENGINE_TABLES: [&str; 43] = [
     "lost_positions",
     "lost_creates",
     "unseen_changes",
+    "full_history",
 ];
 
 /// Counts each row inserted, updated or deleted in the engine's tables from now on in the table
@@ -2226,7 +2229,10 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         .unwrap()
         .transaction(|tx| {
             tx.set_engine_state(&EngineState {
-                trees: trees.state(),
+                trees: TreesState {
+                    full_history: BTreeSet::new(),
+                    ..trees.state()
+                },
                 ..Default::default()
             })?;
             tx.put_local_node(&LocalNode {
@@ -4583,6 +4589,31 @@ fn a_store_from_before_unsent_moves_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.unsent_moves.clear();
     assert!(!after.trees.unsent_moves.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_full_histories_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "full_history");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.full_history.clear();
+    assert!(!after.trees.full_history.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

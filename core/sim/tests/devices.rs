@@ -10527,3 +10527,33 @@ fn a_bystander_sends_a_later_write_again_over_the_older_version_a_second_restore
     ];
     keep(2, &phases).unwrap();
 }
+#[test]
+fn a_device_that_linked_by_listing_sends_its_write_again_over_an_older_version_a_restore_from_before_its_link_brings_back()
+ {
+    let user = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let sent = [
+        (0, Step::Scan),
+        (0, Step::Commit(Reply::Served)),
+        (0, Step::Commit(Reply::Served)),
+        (0, Step::Deliver(0)),
+    ];
+    let mut world = world(2);
+    let mut author = vec![(0, Step::Connect), (0, user(1))];
+    author.extend(sent);
+    author.extend([(0, Step::Backup), (0, user(2))]);
+    author.extend(sent);
+    author.push((0, Step::Leave));
+    world.run(0, &author).unwrap();
+    world.truncate_log();
+    world.phase(0, &[(1, Step::Connect)]).unwrap();
+    assert!(world.seen.contains_key("resume finds the log truncated"));
+    world.phase(1, &[(1, Step::Restore)]).unwrap();
+}

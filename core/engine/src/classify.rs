@@ -308,6 +308,8 @@ pub struct RemoteRecord {
     pub node: RemoteNode,
     /// Whether a commit of this device that the server lost set the position the record holds.
     pub moved_in_lost_commit: bool,
+    /// Whether this device held every version of the node ([`TreesState::full_history`]).
+    pub full_history: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -370,6 +372,7 @@ pub struct Trees {
     unsent_moves: TrackedSet<NodeId>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
+    full_history: TrackedSet<NodeId>,
     resends: TrackedSet<NodeId>,
     local_changes: TrackedSet<NodeId>,
     lost_positions: TrackedMap<NodeId, LostPosition>,
@@ -475,6 +478,7 @@ impl Trees {
             unsent_moves: TrackedSet::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
+            full_history: TrackedSet::default(),
             resends: TrackedSet::default(),
             local_changes: TrackedSet::default(),
             lost_positions: TrackedMap::default(),
@@ -849,6 +853,12 @@ impl Trees {
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
+        let created = self.r.get(&id).is_none()
+            && node.content_rev == node.meta_rev
+            && match made_here {
+                true => !self.resends.contains(&id) && !self.lost_creates.contains(&id),
+                false => self.l.get(&id).is_none() && self.s.get(&id).is_none(),
+            };
         let hidden = (self.acknowledged(&id))
             .filter(|synced| {
                 (self.r.get(&id)).is_some_and(|old| old.content_rev != node.content_rev)
@@ -932,6 +942,9 @@ impl Trees {
         if user_change && !made_here && self.s.get(&id).is_some() {
             self.unseen_changes.insert(id.clone());
         }
+        if created {
+            self.full_history.insert(id.clone());
+        }
         self.place_remote(id.clone(), node, made_here);
         if let Some(sent) = sent
             && !self.set_synced_if_valid(id.clone(), Some(sent.clone()))
@@ -971,10 +984,16 @@ impl Trees {
     /// up to the version it lists.
     pub fn set_listed_remote(&mut self, id: NodeId, node: RemoteNode) {
         let moved = (self.r.get(&id)).is_some_and(|old| old.version_id != node.version_id);
+        if self.r.get(&id).is_none() {
+            self.full_history.remove(&id);
+        }
         if moved && let Some(versions) = self.replaced_versions.get_mut(&id) {
             let kept = (versions.iter())
                 .position(|version| *version == node.version_id)
                 .map_or(0, |at| at + 1);
+            if kept < versions.len() {
+                self.full_history.remove(&id);
+            }
             versions.truncate(kept);
             if versions.is_empty() {
                 self.replaced_versions.remove(&id);
@@ -987,6 +1006,7 @@ impl Trees {
         let last = self.r.get(&id).map(|old| old.version_id.as_str());
         let changed_after_loss = !made_here
             && self.resends.contains(&id)
+            && self.full_history.contains(&id)
             && self.never_held(&id, &node.version_id, last);
         let sent_by_another = !(made_here && self.lost_positions.contains_key(&id))
             && !node.trashed
@@ -1115,6 +1135,7 @@ impl Trees {
         }
         if versions.len() > REPLACED_VERSIONS_KEPT {
             versions.remove(0);
+            self.full_history.remove(id);
         }
     }
 
@@ -1291,6 +1312,7 @@ impl Trees {
         match (self.l.get(id), self.r.get(id)) {
             (None, _) => {
                 self.replaced_versions.remove(id);
+                self.full_history.remove(id);
             }
             (Some(_), Some(old)) => self.hold_replaced(id, old.version_id.clone()),
             (Some(_), None) => {}
@@ -1720,6 +1742,7 @@ impl Trees {
         self.forgotten_shapes.remove(id);
         if self.r.get(id).is_none() {
             self.replaced_versions.remove(id);
+            self.full_history.remove(id);
         }
         self.local_changes.remove(id);
         self.reverted.remove(id);
@@ -3073,6 +3096,7 @@ impl Trees {
                 let record = RemoteRecord {
                     node: remote.clone(),
                     moved_in_lost_commit: lost_here(remote.meta_rev),
+                    full_history: self.full_history.contains(id),
                 };
                 (id.clone(), record)
             })
@@ -3190,8 +3214,9 @@ impl Trees {
     /// content, ends its resend too: another device sent it first, and its position is a remote
     /// move. The device that made the change sends it again itself, as above. So does R taking
     /// the node live at a content version this device never held, from a record or from the
-    /// listing itself: that version was made after the loss, so S keeps L's shape and L takes
-    /// R's content. A version this device held before is older than the resend, which goes out
+    /// listing itself, where this device held every version of the node before
+    /// ([`TreesState::full_history`]): that version was made after the loss, so S keeps L's shape
+    /// and L takes R's content. A version this device held before is older than the resend, which goes out
     /// over it. A record's version tells whether R still holds what S held; its seq does not,
     /// since a restored server gives lost seqs again.
     /// A node R lacks whose position R held elsewhere before the loss, a move L had not taken, is
@@ -3512,8 +3537,10 @@ impl Trees {
                         true => old.content_rev <= held_through,
                         false => old.version_id == remote.version_id,
                     });
-                let last = records.get(*id).map(|old| old.node.version_id.as_str());
+                let record = records.get(*id);
+                let last = record.map(|old| old.node.version_id.as_str());
                 let changed_after_loss = resendable.contains(*id)
+                    && record.is_some_and(|old| old.full_history)
                     && !lost_edits.contains(*id)
                     && (self.l.get(id)).is_some_and(|local| local.shape.same(synced))
                     && (self.r.get(id)).is_some_and(|remote| {
@@ -4548,6 +4575,7 @@ impl Trees {
             unsent_moves: (*self.unsent_moves).clone(),
             unseen_changes: (*self.unseen_changes).clone(),
             replaced_versions: (*self.replaced_versions).clone(),
+            full_history: (*self.full_history).clone(),
             resends: (*self.resends).clone(),
             local_changes: (*self.local_changes).clone(),
             lost_positions: (*self.lost_positions).clone(),
@@ -4590,6 +4618,7 @@ impl Trees {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            full_history,
             resends,
             local_changes,
             lost_positions,
@@ -4652,6 +4681,7 @@ impl Trees {
             unsent_moves: unsent_moves.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
+            full_history: full_history.take_changes(),
             resends: resends.take_changes(),
             local_changes: local_changes.take_changes(),
             lost_positions: lost_positions.take_changes(),
@@ -4741,6 +4771,7 @@ impl Trees {
             return Err(StateError::NotUnseenChange(id.clone()));
         }
         if let Some(id) = (state.replaced_versions.keys())
+            .chain(&state.full_history)
             .find(|id| self.r.get(id).is_none() && self.l.get(id).is_none())
         {
             return Err(StateError::NotRemote(id.clone()));
@@ -4783,6 +4814,7 @@ impl Trees {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            full_history,
             resends,
             local_changes,
             lost_positions,
@@ -4820,6 +4852,7 @@ impl Trees {
         self.unsent_moves = unsent_moves.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
+        self.full_history = full_history.into();
         self.resends = resends.into();
         self.local_changes = local_changes.into();
         self.lost_positions = lost_positions.into();
