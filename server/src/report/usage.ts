@@ -75,7 +75,7 @@ export class UsageTally {
   }
 
   count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
-    if (this.reporting === false) return;
+    if (this.reporting !== true) return;
     this.batch ??= { openedMs: nowMs, hours: {} };
     const usage = (this.batch.hours[Math.floor(nowMs / HOUR_MS)] ??= emptyUsage());
     const key = route + "." + outcome;

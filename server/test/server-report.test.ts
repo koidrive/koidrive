@@ -177,6 +177,7 @@ describe("usage tally", () => {
 
   it("hands the counts over whole, once, and counts nothing once the server said it does not report", async () => {
     const tally = new UsageTally();
+    tally.reporting = true;
     const handed: UsageHours[] = [];
     const record = async (hours: UsageHours) => {
       handed.push(hours);
@@ -244,19 +245,21 @@ describe("usage tally", () => {
     expect(handed.map((one) => one.counts)).toEqual([10, 10, 10, 10, 10]);
   });
 
-  it("keeps its counts without waiting or calling while it doesn't know whether the server reports, and keeps none once it knows it doesn't", async () => {
+  it("counts nothing until it knows the server reports, and nothing once it knows it doesn't", async () => {
     const tally = new UsageTally();
     const record = vi.fn(async () => true);
     const wait = vi.fn(async () => {});
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     await tally.settle(record, () => 11 * HOUR_MS, wait);
-    expect(record).not.toHaveBeenCalled();
     expect(wait).not.toHaveBeenCalled();
     tally.reporting = true;
     await tally.settle(record, () => 11 * HOUR_MS, wait);
-    expect(record.mock.calls).toEqual([[{ 10: { counts: { "get_server.200": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]]);
+    expect(record).not.toHaveBeenCalled();
+    tally.count("get_server", "503", 3, 11 * HOUR_MS);
+    await tally.settle(record, () => 12 * HOUR_MS, wait);
+    expect(record.mock.calls).toEqual([[{ 11: { counts: { "get_server.503": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]]);
     tally.reporting = false;
-    tally.count("get_server", "200", 3, 11 * HOUR_MS);
+    tally.count("get_server", "200", 3, 12 * HOUR_MS);
     tally.reporting = true;
     await tally.settle(record, () => 13 * HOUR_MS, wait);
     expect(record).toHaveBeenCalledTimes(1);
@@ -264,6 +267,7 @@ describe("usage tally", () => {
 
   it("drops the counts it holds once the server says it stopped reporting", async () => {
     const tally = new UsageTally();
+    tally.reporting = true;
     const handed: UsageHours[] = [];
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     tally.reporting = false;
@@ -278,6 +282,7 @@ describe("usage tally", () => {
   it("carries the counts of a failed hand-over, and those made while it ran, in the next hand-over", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const tally = new UsageTally();
+    tally.reporting = true;
     const handed: UsageHours[] = [];
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     await tally.handOver(async () => {
