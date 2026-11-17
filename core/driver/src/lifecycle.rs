@@ -204,9 +204,13 @@ impl Lifecycle {
             }),
             synced: checkpoint.synced,
         };
-        koidrive_state_file::write(&self.path.with_file_name(UNLINKING), b"")?;
+        let marker = self.path.with_file_name(UNLINKING);
+        let unfinished = marker.exists();
+        koidrive_state_file::write(&marker, b"")?;
         if let Err(error) = self.save(&next) {
-            let _ = self.forget_unlink();
+            if !unfinished {
+                let _ = self.forget_unlink();
+            }
             return Err(error);
         }
         *checkpoint = next;

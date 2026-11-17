@@ -3631,6 +3631,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_retry_of_an_unfinished_unlink_keeps_it_unfinished() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        drop(Driver::open(paths.clone()).unwrap());
+        fs::write(record.with_file_name("unlinking"), b"").unwrap();
+        fs::write(&record, br#"{"halt":"#).unwrap();
+        let blocked = record.with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let problem = |driver: &Driver| driver.status().folders[0].problem.clone();
+        assert_eq!(
+            problem(&driver).as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        assert!(driver.unlink(&root).await.is_err());
+        assert!(record.with_file_name("unlinking").exists());
+        drop(driver);
+
+        fs::remove_dir(&blocked).unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_eq!(
+            problem(&driver).as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await;
+        assert!(
+            restarted.is_err() || restarted.unwrap().state == FolderState::Halted,
+            "a restart lifted an unfinished unlink"
+        );
+        driver.unlink(&root).await.unwrap();
+        assert!(!record.parent().unwrap().exists());
+        driver.stop().await;
+    }
+
+    #[tokio::test]
     async fn an_unreadable_lifecycle_record_halts_only_its_folder_until_a_restart() {
         use crate::health::tests::{named, posthog, with_prefix};
 
