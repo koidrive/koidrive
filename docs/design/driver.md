@@ -56,13 +56,16 @@ Until then, `bytes_done` never decreases, and `bytes_total` grows only when new 
 
 A folder that bootstraps or catches up reports an `activity` beside its transfer progress, so every syncing folder has something to show. The activity is the first that applies:
 
-- `scanning { files }`: the first scan since the folder started walks the disk. `files` counts the files that scan has found so far. `status()` reads the count live, and the scan marks `changes()` at most once every `PROGRESS_INTERVAL` while it walks.
+- `scanning { files }`: the first scan since the folder started walks the disk. `files` counts the files that scan has found so far.
 - `listing`: the folder reads the space's tree from the server.
-- `checking { files }`: files the scans found whose content is still to be read.
-- `applying { changes }`: changes left to sync that move no content, such as new folders, renames, moves and removals. Reported only while the folder has no transfers.
-- `catching_up`: none of the above and no transfers, while the folder waits for the rest of the server's log or for the server to take its own commit.
+- `checking { files, bytes }`: the walk is done, and `files` files of `bytes` bytes are still to be read to learn what changed. Both fall chunk by chunk while a file is read, so a large video moves the numbers too.
+- `applying { changes }`: changes left to sync that move no content, such as new folders, renames, moves and removals. Changes an unanswered question holds don't count. Reported only while the folder has no transfers.
+- `awaiting_answers { questions }`: nothing is left to sync but what `questions` unanswered questions hold, such as removals behind a mass-delete question.
+- `catching_up`: none of the above and no transfers, while the folder waits for the rest of the server's log or for the server to take its own commit. A sync that ends with transfers left, such as one that reconnects, reports it until the next sync publishes.
 
-A folder whose only work is its transfers reports no activity. A folder that does not sync reports none.
+`status()` reads the numbers of the observation in progress live. The observer marks `changes()` at once when its walk ends and otherwise at most once every `PROGRESS_INTERVAL`. Once the first scan is done, the walks of later rescans mark nothing, so an up-to-date folder stays quiet.
+
+A folder whose only work is its transfers reports no activity. A folder that does not sync reports none. A reader that meets a kind it does not know reads it as `unknown`.
 
 ## A rewound space halts its folders
 

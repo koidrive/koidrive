@@ -7,6 +7,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use serde::{Deserialize, Serialize};
 
+use crate::observe::Observing;
 use crate::update::Update;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,12 +181,36 @@ pub enum Activity {
     Scanning { files: u64 },
     /// The folder reads the space's tree from the server.
     Listing,
-    /// Files the scans found whose content is still to be read, to learn what changed.
-    Checking { files: u64 },
+    /// The walk is done, and `files` files of `bytes` bytes found on the disk are still to be read, to learn what
+    /// changed. Both fall as the folder reads, chunk by chunk.
+    Checking { files: u64, bytes: u64 },
     /// Changes that move no file content, such as new folders, renames, moves and removals.
     Applying { changes: u64 },
+    /// Nothing is left to sync but what `questions` unanswered questions hold until the person answers.
+    AwaitingAnswers { questions: u64 },
     /// The folder waits for the rest of the server's changes or for the server to take its own.
     CatchingUp,
+    /// A kind a newer Koidrive reports.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Activity {
+    pub(crate) fn live(
+        activity: Option<Activity>,
+        observing: Option<Observing>,
+    ) -> Option<Activity> {
+        match (activity, observing) {
+            (Some(Activity::Scanning { .. }), Some(Observing::Walking { files })) => {
+                Some(Activity::Scanning { files })
+            }
+            (
+                Some(Activity::Scanning { .. } | Activity::Checking { .. }),
+                Some(Observing::Reading { files, bytes }),
+            ) => Some(Activity::Checking { files, bytes }),
+            (activity, _) => activity,
+        }
+    }
 }
 
 /// The files every folder still sends or fetches and the bytes they moved, summed while any folder has a file left
@@ -201,6 +226,19 @@ pub struct Totals {
 }
 
 impl FolderStatus {
+    pub(crate) fn end_transfers(&mut self) -> bool {
+        let ended = self.progress.take().is_some();
+        if ended
+            && matches!(
+                self.state,
+                FolderState::Bootstrapping | FolderState::CatchingUp
+            )
+        {
+            self.activity = Some(Activity::CatchingUp);
+        }
+        ended
+    }
+
     /// Why the folder cannot reach the server, and when it tries again in Unix milliseconds, while it is offline. No
     /// time means it is trying now.
     pub fn unreachable(&self) -> Option<(&Unreachable, Option<i64>)> {

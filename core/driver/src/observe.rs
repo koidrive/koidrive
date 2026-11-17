@@ -164,7 +164,16 @@ pub struct FsObserver {
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
     stopped: Arc<dyn Fn() -> bool + Send + Sync>,
-    found: Arc<dyn Fn(u64) + Send + Sync>,
+    progress: Arc<dyn Fn(Observing) + Send + Sync>,
+}
+
+/// What an observation is doing before it returns its batch, as [`FsObserver::start`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Observing {
+    /// A scan walks the folder and has found `files` files so far.
+    Walking { files: u64 },
+    /// The walk is done, and `files` files of `bytes` bytes are left to read for this observation and later ones.
+    Reading { files: u64, bytes: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -266,6 +275,8 @@ struct Reads {
     /// that the batch takes out of L with the folder, which the engine keeps only for a created file with content, so
     /// such a file is read whatever the budget left.
     replaced: Vec<PathBuf>,
+    left_files: u64,
+    left_bytes: u64,
 }
 
 impl Reads {
@@ -301,8 +312,8 @@ impl FsObserver {
     /// folder exclude. Once `stopped` holds, the scan walking the tree is left at its next entry and the file being
     /// read at its next chunk, and `observe` returns `None` without the rest, so a caller that stops waits neither
     /// for a walk of the whole tree nor for every file of a scan to be read. The observer's snapshot then counts
-    /// changes it never returned, so drop the observer. Each scan calls `found` with the number of files it has found
-    /// so far, at each file it finds.
+    /// changes it never returned, so drop the observer. Each observation calls `progress` as it walks the folder and
+    /// as it reads file content, at each file found and each chunk read.
     pub fn start(
         root: &Path,
         space_id: &str,
@@ -310,15 +321,15 @@ impl FsObserver {
         previous: Snapshot,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
-        found: impl Fn(u64) + Send + Sync + 'static,
+        progress: impl Fn(Observing) + Send + Sync + 'static,
     ) -> Result<Self, FsError> {
         let stopped: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(stopped);
-        let found: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(found);
+        let progress: Arc<dyn Fn(Observing) + Send + Sync> = Arc::new(progress);
         let (watcher, native): (Box<dyn Watcher + Send>, bool) =
             match NativeWatcher::start_with_rules(root, previous.clone(), scan_rules(&matcher)) {
                 Ok(watcher) => {
                     let watcher = watcher.stopping_when(watching(&stopped));
-                    (Box::new(watcher.counting(counting(&found))), true)
+                    (Box::new(watcher.counting(walking(&progress))), true)
                 }
                 Err(FsError::Watch(error)) => {
                     tracing::warn!(%error, "the platform watcher is unavailable; rescanning periodically");
@@ -326,7 +337,7 @@ impl FsObserver {
                     let watcher =
                         RescanWatcher::with_rules(root, previous, RESCAN_INTERVAL, rules)?;
                     let watcher = watcher.stopping_when(watching(&stopped));
-                    (Box::new(watcher.counting(counting(&found))), false)
+                    (Box::new(watcher.counting(walking(&progress))), false)
                 }
                 Err(error) => return Err(error),
             };
@@ -343,13 +354,19 @@ impl FsObserver {
             reset: false,
             unread: Unread::default(),
             stopped,
-            found,
+            progress,
         })
     }
 
-    /// The files whose content is still to be read: left to a later observation, or busy and read again later.
-    pub fn unread(&self) -> u64 {
-        self.unread.files.len() as u64
+    /// The files whose content is still to be read, left to a later observation or busy and read again later, and
+    /// their bytes.
+    pub fn unread(&self) -> (u64, u64) {
+        let entries = &self.watcher.snapshot().entries;
+        let bytes = (self.unread.files.keys())
+            .filter_map(|path| entries.get(path))
+            .map(|entry| entry.size)
+            .sum();
+        (self.unread.files.len() as u64, bytes)
     }
 
     /// The root folder the latest scan opened, `None` until a scan has opened it. A folder with nothing to report
@@ -513,7 +530,7 @@ impl FsObserver {
             if !reads.take(entry.size, false) {
                 continue;
             }
-            match read_content(&self.root, &path, &entry, &*self.stopped) {
+            match self.read(&path, &entry, reads) {
                 Ok(Some(content)) => {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
@@ -539,6 +556,23 @@ impl FsObserver {
             && std::fs::symlink_metadata(self.root.join(path)).is_ok_and(|meta| meta.nlink() > 1)
     }
 
+    fn read(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> io::Result<Option<Content>> {
+        let (files, bytes) = (reads.left_files, reads.left_bytes);
+        let mut read = 0;
+        let content = read_content(&self.root, path, entry, &*self.stopped, &mut |chunk| {
+            read += chunk;
+            let bytes = bytes.saturating_sub(read);
+            (self.progress)(Observing::Reading { files, bytes });
+        });
+        reads.left_files = files.saturating_sub(1);
+        reads.left_bytes = bytes.saturating_sub(entry.size);
+        (self.progress)(Observing::Reading {
+            files: reads.left_files,
+            bytes: reads.left_bytes,
+        });
+        content
+    }
+
     /// Chunks the file at `path` if `reads` has room for it or it `must` be read, it is still the entry the scan saw and
     /// it does not change while it is read.
     fn content(
@@ -552,7 +586,7 @@ impl FsObserver {
             reads.deferred.push(path.to_path_buf());
             return None;
         }
-        match read_content(&self.root, path, entry, &*self.stopped) {
+        match self.read(path, entry, reads) {
             Ok(Some(content)) => Some(content),
             Ok(None) => {
                 reads.busy.push(path.to_path_buf());
@@ -595,7 +629,7 @@ impl Observer for FsObserver {
                 let watcher =
                     RescanWatcher::with_rules(&self.root, snapshot, RESCAN_INTERVAL, rules)?;
                 let watcher = watcher.stopping_when(watching(&self.stopped));
-                self.watcher = Box::new(watcher.counting(counting(&self.found)));
+                self.watcher = Box::new(watcher.counting(walking(&self.progress)));
                 self.native = false;
                 self.first = true;
                 self.settling = true;
@@ -628,6 +662,29 @@ impl Observer for FsObserver {
         };
         let observed = !poll.changes.is_empty();
         self.supersede(&poll.changes);
+        let entries = &self.watcher.snapshot().entries;
+        let to_read = (poll.changes.iter())
+            .filter_map(|change| match change {
+                Change::Created { path, .. } | Change::Modified { path } => Some(path),
+                _ => None,
+            })
+            .filter(|path| !self.unread.files.contains_key(*path))
+            .chain(self.unread.files.keys())
+            .filter_map(|path| {
+                entries
+                    .get(path)
+                    .filter(|entry| entry.kind == EntryKind::File)
+            });
+        for entry in to_read {
+            reads.left_files += 1;
+            reads.left_bytes += entry.size;
+        }
+        if reads.left_files > 0 {
+            (self.progress)(Observing::Reading {
+                files: reads.left_files,
+                bytes: reads.left_bytes,
+            });
+        }
         let mut retried = Vec::new();
         self.retry(now, &mut retried, &mut reads);
         for change in poll.changes {
@@ -714,18 +771,20 @@ fn watching(stopped: &Arc<dyn Fn() -> bool + Send + Sync>) -> impl Fn() -> bool 
     move || stopped()
 }
 
-fn counting(found: &Arc<dyn Fn(u64) + Send + Sync>) -> impl Fn(u64) + Send + 'static {
-    let found = found.clone();
-    move |files| found(files)
+fn walking(progress: &Arc<dyn Fn(Observing) + Send + Sync>) -> impl Fn(u64) + Send + 'static {
+    let progress = progress.clone();
+    move |files| progress(Observing::Walking { files })
 }
 
 /// The content of the file at `path` under `root`, or `None` when it is not the file the scan saw or changed while
-/// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds.
+/// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds. Passes the size of
+/// each chunk to `chunked` once it is read.
 pub(crate) fn read_content(
     root: &Path,
     path: &Path,
     entry: &Entry,
     stopped: &dyn Fn() -> bool,
+    chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
     let file = open_beneath(root, path)?;
     let before = file.metadata()?;
@@ -737,7 +796,10 @@ pub(crate) fn read_content(
     let chunks = koidrive_chunk::chunks(io::Read::take(&file, entry.size), config)
         .map(|chunk| match stopped() {
             true => Err(io::ErrorKind::Interrupted.into()),
-            false => chunk.map(|chunk| chunk.chunk_ref()),
+            false => chunk.map(|chunk| {
+                chunked(chunk.data.len() as u64);
+                chunk.chunk_ref()
+            }),
         })
         .collect::<io::Result<Vec<ChunkRef>>>()?;
     let after = file.metadata()?;
@@ -1093,15 +1155,28 @@ mod tests {
         snapshot.rescan(dir.path(), [PathBuf::new()]).unwrap();
         let entry = snapshot.entries[Path::new("a.txt")];
         assert!(
-            read_content(dir.path(), Path::new("a.txt"), &entry, &|| false)
-                .unwrap()
-                .is_some()
+            read_content(
+                dir.path(),
+                Path::new("a.txt"),
+                &entry,
+                &|| false,
+                &mut |_| {}
+            )
+            .unwrap()
+            .is_some()
         );
 
         fs::remove_file(dir.path().join("a.txt")).unwrap();
         fs::write(dir.path().join("a.txt"), b"other bytes").unwrap();
         assert_eq!(
-            read_content(dir.path(), Path::new("a.txt"), &entry, &|| false).unwrap(),
+            read_content(
+                dir.path(),
+                Path::new("a.txt"),
+                &entry,
+                &|| false,
+                &mut |_| {}
+            )
+            .unwrap(),
             None
         );
     }

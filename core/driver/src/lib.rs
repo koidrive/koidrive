@@ -58,7 +58,7 @@ pub use failures::{Failure, failures};
 pub use folder::MAX_FORMAT;
 pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use koidrive_state_file::Flock;
-pub use observe::{FsObserver, Observation, Observed, Observer, RulesChange};
+pub use observe::{FsObserver, Observation, Observed, Observer, Observing, RulesChange};
 pub use paths::{Paths, PathsError};
 pub use pending_claim::claim_pending;
 pub use question::{

@@ -360,7 +360,8 @@ fn verified(
         match (entry.kind, remote_shape.shape.content.as_ref()) {
             (EntryKind::Dir, None) => {}
             (EntryKind::File, Some(expected)) => {
-                let Some(content) = read_content(root, &path, entry, &|| false)? else {
+                let Some(content) = read_content(root, &path, entry, &|| false, &mut |_| {})?
+                else {
                     return Ok(false);
                 };
                 if !same_content(&content, expected) {
@@ -977,6 +978,7 @@ mod tests {
             Path::new("Docs/contract.txt"),
             &snapshot.entries[Path::new("Docs/contract.txt")],
             &|| false,
+            &mut |_| {},
         )
         .unwrap()
         .unwrap();

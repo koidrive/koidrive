@@ -336,8 +336,8 @@ fn a_recount_right_after_another_waits_for_a_wake_and_an_end_of_sync_clears_at_o
 }
 
 fn activity(device: &Device) -> Option<Activity> {
-    let found = device.found.load(Ordering::Relaxed);
-    device.folder.activity(device.state(), found)
+    let observing = device.reports.lock().unwrap().last().copied();
+    Activity::live(device.folder.activity(device.state()), observing)
 }
 
 #[test]
@@ -355,7 +355,14 @@ fn a_new_folder_says_it_scans_and_counts_the_files_its_first_scan_finds() {
 
     let sections = a.folder.sections();
     let batch = sections.observe(&mut a.observer, WAIT).unwrap().unwrap();
-    assert_eq!(activity(&a), Some(Activity::Scanning { files: 3 }));
+    let walked = (a.reports.lock().unwrap().iter())
+        .filter_map(|report| match report {
+            Observing::Walking { files } => Some(*files),
+            Observing::Reading { .. } => None,
+        })
+        .max();
+    assert_eq!(walked, Some(3));
+    assert_eq!(activity(&a), Some(Activity::Checking { files: 0, bytes: 0 }));
     let step = a.folder.observed(batch, 4);
     a.take(step).unwrap();
     let step = a.folder.scanned();
@@ -375,15 +382,16 @@ fn files_left_to_read_show_as_checking_beside_the_uploads() {
     for file in 0..many {
         fs::write(site.root.join(format!("{file}.txt")), file.to_string()).unwrap();
     }
-    a.scan_until(|a| a.folder.unread > 0);
+    a.scan_until(|a| a.folder.unread.0 > 0);
     assert_eq!(a.state(), FolderState::CatchingUp);
-    let Some(Activity::Checking { files }) = activity(&a) else {
+    let Some(Activity::Checking { files, bytes }) = activity(&a) else {
         panic!("{:?}", activity(&a));
     };
     assert!(files > 0 && files < many as u64, "{files}");
+    assert!(bytes >= files, "{files} {bytes}");
     assert!(counts(&a).is_some_and(|(up, ..)| up > 0));
 
-    a.scan_until(|a| a.folder.unread == 0);
+    a.scan_until(|a| a.folder.unread.0 == 0);
     assert_eq!(counts(&a).map(|(up, ..)| up), Some(many as u64));
     assert_eq!(activity(&a), None);
 }
@@ -410,7 +418,7 @@ fn a_folder_that_does_not_sync_reports_no_activity() {
     assert_eq!(a.state(), FolderState::Connecting);
     assert_eq!(activity(&a), None);
     for state in [FolderState::Offline, FolderState::UpToDate, FolderState::Halted, FolderState::Stopped] {
-        assert_eq!(a.folder.activity(state, 5), None, "{state:?}");
+        assert_eq!(a.folder.activity(state), None, "{state:?}");
     }
 }
 
@@ -480,4 +488,101 @@ fn downloads_move_their_bytes_and_the_count_only_grows() {
         seen = now;
     }
     assert_eq!(moved(&a), 0, "the test server stores uploads without the network");
+}
+
+#[test]
+fn a_large_first_file_shows_its_bytes_fall_once_the_walk_is_done() {
+    let remote = Remote::new();
+    let site = Site::new(&remote, "a");
+    let size = 48 * MIB;
+    fs::write(site.root.join("a-video.mov"), noise(7, size)).unwrap();
+    for i in 0..20 {
+        fs::write(site.root.join(format!("note{i}.txt")), i.to_string()).unwrap();
+    }
+    let mut a = site.start();
+    a.connect(&remote);
+    let sections = a.folder.sections();
+    let Device {
+        folder,
+        observer,
+        reports,
+        ..
+    } = &mut a;
+    let mut shown = Vec::new();
+    let batch = std::thread::scope(|s| {
+        let observe = s.spawn(|| sections.observe(observer, WAIT));
+        while !observe.is_finished() {
+            let observing = reports.lock().unwrap().last().copied();
+            let now = Activity::live(folder.activity(FolderState::Bootstrapping), observing);
+            if shown.last() != Some(&now) {
+                shown.push(now);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        observe.join().unwrap().unwrap().unwrap()
+    });
+    let reading: Vec<u64> = (shown.iter())
+        .filter_map(|shown| match shown {
+            Some(Activity::Checking { bytes, .. }) => Some(*bytes),
+            _ => None,
+        })
+        .collect();
+    assert!(reading.len() > 2, "{shown:?}");
+    assert!(reading.windows(2).all(|pair| pair[1] < pair[0]), "{shown:?}");
+    assert!(reading[0] > size as u64 / 2, "{shown:?}");
+    let first_read = shown.iter().position(|shown| matches!(shown, Some(Activity::Checking { .. })));
+    assert!(
+        shown[first_read.unwrap()..]
+            .iter()
+            .all(|shown| !matches!(shown, Some(Activity::Scanning { .. }))),
+        "{shown:?}"
+    );
+    assert_eq!(
+        reports.lock().unwrap().last(),
+        Some(&Observing::Reading { files: 0, bytes: 0 })
+    );
+    let step = a.folder.observed(batch, 22);
+    a.take(step).unwrap();
+}
+
+#[test]
+fn a_folder_whose_removals_wait_for_the_person_says_so() {
+    let mut remote = Remote::new();
+    let (_site, mut a) = with_a_held_folder(&mut remote);
+    a.folder.track_progress(a.state());
+    assert_eq!(a.state(), FolderState::CatchingUp);
+    assert_eq!(counts(&a), None);
+    assert_eq!(activity(&a), Some(Activity::AwaitingAnswers { questions: 1 }));
+}
+
+#[test]
+fn the_shown_numbers_change_at_most_four_times_a_second_except_when_the_walk_ends() {
+    let observing = Arc::default();
+    let (progressed, mut marks) = watch::channel(());
+    let walked = Arc::new(AtomicBool::new(false));
+    let report = crate::folder::reporter(Arc::clone(&observing), Arc::new(progressed), walked.clone());
+    let mut marked = || marks.has_changed().unwrap() && { marks.mark_unchanged(); true };
+    report(Observing::Walking { files: 1 });
+    assert!(marked(), "the first count shows at once");
+    for files in 2..1_000 {
+        report(Observing::Walking { files });
+    }
+    assert!(!marked());
+    assert_eq!(*observing.lock().unwrap(), Some(Observing::Walking { files: 999 }));
+    report(Observing::Walking { files: 10 });
+    assert_eq!(*observing.lock().unwrap(), Some(Observing::Walking { files: 999 }), "a walk's count never falls");
+    report(Observing::Reading { files: 3, bytes: 300 });
+    assert!(marked(), "the end of the walk shows at once");
+    report(Observing::Reading { files: 2, bytes: 200 });
+    assert!(!marked());
+    std::thread::sleep(crate::driver::PROGRESS_INTERVAL);
+    report(Observing::Reading { files: 1, bytes: 100 });
+    assert!(marked(), "a later number shows once the interval has passed");
+
+    walked.store(true, Ordering::Relaxed);
+    std::thread::sleep(crate::driver::PROGRESS_INTERVAL);
+    for files in 1..100 {
+        report(Observing::Walking { files });
+    }
+    assert!(!marked(), "the rescans of a scanned folder stay quiet");
 }

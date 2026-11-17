@@ -369,8 +369,9 @@ pub struct LinkedFolder {
     pub path: String,
     pub state: FolderState,
     /// What the folder does while it syncs besides the transfers [`SyncProgress`] counts. A
-    /// [`FolderState::Syncing`] folder has an activity, transfers in the session's progress, or both;
-    /// any other folder has none.
+    /// [`FolderState::Syncing`] folder has an activity, transfers in the session's progress, or both,
+    /// unless an older daemon reports no activity or a newer one reports a kind this build does not
+    /// know. Any other folder has none.
     pub activity: Option<FolderActivity>,
     /// Bytes the folder's transfers moved over the network since the daemon started: each chunk
     /// uploaded or downloaded, once. Chunks the server already held and content found locally add
@@ -388,10 +389,14 @@ pub enum FolderActivity {
     Scanning { files: u64 },
     /// The folder reads the space's file list from the server.
     Listing,
-    /// Files the scans found whose content is still to be read, to learn what changed.
-    Checking { files: u64 },
+    /// The walk is done, and `files` files of `bytes` bytes it found are still to be read, to
+    /// learn what changed. Both fall as the folder reads, chunk by chunk.
+    Checking { files: u64, bytes: u64 },
     /// Changes that move no file content, such as new folders, renames, moves and removals.
     Applying { changes: u64 },
+    /// Nothing is left to sync but what `questions` unanswered questions hold until the person
+    /// answers them.
+    AwaitingAnswers { questions: u64 },
     /// The folder waits for the rest of the server's changes or for the server to take its own.
     CatchingUp,
 }

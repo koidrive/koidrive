@@ -6,7 +6,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -347,7 +347,7 @@ struct Folder {
     unlink: Option<Unlink>,
     store: Arc<RwLock<()>>,
     progress: Arc<Mutex<crate::progress::Tracker>>,
-    found: Arc<AtomicU64>,
+    observing: Arc<Mutex<Option<crate::observe::Observing>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -634,9 +634,8 @@ impl Driver {
                     status.progress = None;
                     status.activity = None;
                 }
-                if let Some(Activity::Scanning { files }) = &mut status.activity {
-                    *files = folder.found.load(Ordering::Relaxed);
-                }
+                status.activity =
+                    Activity::live(status.activity, *folder.observing.lock().unwrap());
                 status.bytes_moved = folder.progress.lock().unwrap().moved();
                 status
             })
@@ -1373,7 +1372,7 @@ impl Driver {
             unlink: None,
             store: Arc::default(),
             progress: Arc::default(),
-            found: Arc::default(),
+            observing: Arc::default(),
         };
         drop(lock);
         if self.syncs() {
@@ -2008,7 +2007,7 @@ impl Driver {
             auth,
             status: folder.status.clone(),
             progress: folder.progress.clone(),
-            found: folder.found.clone(),
+            observing: folder.observing.clone(),
             matcher: self.inner.matcher.clone(),
             local: self.inner.local.clone(),
             trash_cap: self.inner.trash_cap,
@@ -2249,7 +2248,7 @@ fn load_folders(
                     unlink: None,
                     store: Arc::default(),
                     progress: Arc::default(),
-                    found: Arc::default(),
+                    observing: Arc::default(),
                 },
             )
         })
@@ -6793,17 +6792,40 @@ mod tests {
         let (status, found) = {
             let folders = driver.inner.folders.lock().unwrap();
             let folder = folders.values().next().unwrap();
-            (folder.status.clone(), folder.found.clone())
+            (folder.status.clone(), folder.observing.clone())
         };
         {
             let mut shown = status.lock().unwrap();
             shown.state = FolderState::CatchingUp;
             shown.activity = Some(Activity::Scanning { files: 0 });
         }
-        found.store(12_345, Ordering::Relaxed);
+        *found.lock().unwrap() = Some(crate::observe::Observing::Walking { files: 12_345 });
         assert_eq!(
             driver.status().folders[0].activity,
             Some(Activity::Scanning { files: 12_345 })
+        );
+        *found.lock().unwrap() = Some(crate::observe::Observing::Reading {
+            files: 7,
+            bytes: 9_000,
+        });
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::Checking {
+                files: 7,
+                bytes: 9_000
+            })
+        );
+        {
+            let mut shown = status.lock().unwrap();
+            shown.progress = Some(crate::status::Progress::default());
+            shown.activity = None;
+            assert!(shown.end_transfers());
+            assert!(!shown.end_transfers());
+        }
+        *found.lock().unwrap() = None;
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::CatchingUp)
         );
         status.lock().unwrap().state = FolderState::Offline;
         assert_eq!(driver.status().folders[0].activity, None);

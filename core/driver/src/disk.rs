@@ -230,7 +230,7 @@ pub(crate) struct Batch {
     /// which scopes they read.
     pub answered: Option<Requests>,
     pub observation: Observation,
-    pub unread: u64,
+    pub unread: (u64, u64),
 }
 
 /// The places a crash test stops an effect at, besides the steps of `core/fs`.

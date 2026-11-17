@@ -123,12 +123,18 @@ pub(crate) fn folder(folder: &driver::FolderStatus) -> LinkedFolder {
             DriverFolderState::UpToDate => FolderState::UpToDate,
             DriverFolderState::Halted => FolderState::Halted,
         },
-        activity: folder.activity.map(|activity| match activity {
-            driver::Activity::Scanning { files } => FolderActivity::Scanning { files },
-            driver::Activity::Listing => FolderActivity::Listing,
-            driver::Activity::Checking { files } => FolderActivity::Checking { files },
-            driver::Activity::Applying { changes } => FolderActivity::Applying { changes },
-            driver::Activity::CatchingUp => FolderActivity::CatchingUp,
+        activity: folder.activity.and_then(|activity| match activity {
+            driver::Activity::Scanning { files } => Some(FolderActivity::Scanning { files }),
+            driver::Activity::Listing => Some(FolderActivity::Listing),
+            driver::Activity::Checking { files, bytes } => {
+                Some(FolderActivity::Checking { files, bytes })
+            }
+            driver::Activity::Applying { changes } => Some(FolderActivity::Applying { changes }),
+            driver::Activity::AwaitingAnswers { questions } => {
+                Some(FolderActivity::AwaitingAnswers { questions })
+            }
+            driver::Activity::CatchingUp => Some(FolderActivity::CatchingUp),
+            driver::Activity::Unknown => None,
         }),
         bytes_moved: folder.bytes_moved,
     }
@@ -701,12 +707,22 @@ mod tests {
             ),
             (driver::Activity::Listing, FolderActivity::Listing),
             (
-                driver::Activity::Checking { files: 7 },
-                FolderActivity::Checking { files: 7 },
+                driver::Activity::Checking {
+                    files: 7,
+                    bytes: 9_000,
+                },
+                FolderActivity::Checking {
+                    files: 7,
+                    bytes: 9_000,
+                },
             ),
             (
                 driver::Activity::Applying { changes: 2 },
                 FolderActivity::Applying { changes: 2 },
+            ),
+            (
+                driver::Activity::AwaitingAnswers { questions: 1 },
+                FolderActivity::AwaitingAnswers { questions: 1 },
             ),
             (driver::Activity::CatchingUp, FolderActivity::CatchingUp),
         ] {
@@ -722,6 +738,17 @@ mod tests {
             folder(&folder_in(DriverFolderState::UpToDate, None)).activity,
             None
         );
+    }
+
+    #[test]
+    fn an_activity_a_newer_daemon_reports_leaves_the_rest_of_the_status_readable() {
+        let syncing = folder_in(DriverFolderState::CatchingUp, None);
+        let mut json = serde_json::to_value(&syncing).unwrap();
+        json["activity"] = serde_json::json!({ "kind": "indexing", "files": 3 });
+        let received: driver::FolderStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(received.activity, Some(driver::Activity::Unknown));
+        let shown = folder(&received);
+        assert_eq!((shown.state, shown.activity), (FolderState::Syncing, None));
     }
 
     #[test]

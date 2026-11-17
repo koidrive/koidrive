@@ -1616,7 +1616,7 @@ fn observe_until(
             if done(&seen) {
                 return Batch {
                     stamp,
-                    unread: 0,
+                    unread: (0, 0),
                     answered: None,
                     observation: Observation {
                         changes: seen,
