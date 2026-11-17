@@ -35,3 +35,4 @@ Spec v0 was drafted outside this repository, and the schema here is its current 
 | [0023](rfc/0023-trash-deletion-time.md) | When and from which device each node in the trash was deleted | Spec v0 §4.1, R8 and R9; RFC 0012 |
 | [0024](rfc/0024-create-retries.md) | A resent create returns what the first request made | Spec v0 §15; RFC 0005 §2 and RFC 0008 (not folded into them) |
 | [0025](rfc/0025-server-build-and-storage.md) | The server reports its storage versions and the commit it was built from | Spec v0 §15 (`GET /v1/server`); RFC 0022 |
+| [0027](rfc/0027-chunk-bundles.md) | Several chunk uploads in one request | Spec v0 §15 chunk relay; RFC 0022 |

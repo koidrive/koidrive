@@ -4,6 +4,7 @@ syntax = "proto3";
 
 package koidrive.v1;
 
+import "koidrive/v1/commit.proto";
 import "koidrive/v1/model.proto";
 
 // A call-level failure. Op-level outcomes are in OpResult instead.
@@ -152,4 +153,28 @@ message Trashed {
   int64 trashed_at_ms = 2;
   // The device that sent that commit.
   string device_id = 3;
+}
+
+// Several chunk uploads in one request to POST /v1/spaces/{space_id}/chunks (RFC 0027).
+message ChunkBundle {
+  repeated BundledChunk chunks = 1;
+}
+
+message BundledChunk {
+  // The upload Target.url from ChunkPlan, unchanged.
+  string target = 1;
+  bytes data = 2;
+}
+
+// One result per BundledChunk, in request order.
+message ChunkBundleResult {
+  repeated BundledChunkResult results = 1;
+}
+
+message BundledChunkResult {
+  bytes hash = 1;
+  // The HTTP status a PUT of this chunk alone would have answered.
+  uint32 status = 2;
+  UploadReceipt receipt = 3;
+  Error error = 4;
 }

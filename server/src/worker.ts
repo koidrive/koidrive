@@ -20,7 +20,14 @@ import {
   TokenRequestSchema,
 } from "./gen/koidrive/v1/auth_pb";
 import { UploadReceiptSchema } from "./gen/koidrive/v1/commit_pb";
-import { Error_Code, ErrorSchema } from "./gen/koidrive/v1/rpc_pb";
+import {
+  type BundledChunkResult,
+  BundledChunkResultSchema,
+  ChunkBundleResultSchema,
+  Error_Code,
+  ErrorSchema,
+} from "./gen/koidrive/v1/rpc_pb";
+import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chunk-bundle";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply } from "./http";
@@ -144,13 +151,12 @@ async function chunk(request: Request, env: Env, objects: ObjectStore, spaceId: 
   if (!INCARNATION.test(incarnation)) return errorReply(request, Error_Code.FORBIDDEN, "invalid or expired ticket");
   const object: ChunkObject = { spaceId, hashHex: hex, incarnation };
   const nowMs = Date.now();
-  const key = chunkKey(spaceId, hex, incarnation);
 
   if (request.method === "GET") {
     if (!(await verifyChunkGrant(await spaceKey(env, spaceId), "get", object, 0, ticket, nowMs))) {
       return errorReply(request, Error_Code.FORBIDDEN, "invalid or expired download ticket");
     }
-    const stored = await objects.get(key);
+    const stored = await objects.get(chunkKey(spaceId, hex, incarnation));
     if (!stored) return errorReply(request, Error_Code.INVALID_ARGUMENT, "chunk not found", 404);
     return new Response(stored.body, {
       headers: { "Content-Type": "application/octet-stream", "Content-Length": String(stored.size), "Cache-Control": "private, max-age=3600" },
@@ -162,22 +168,87 @@ async function chunk(request: Request, env: Env, objects: ObjectStore, spaceId: 
   if (length === null || !/^\d+$/.test(length)) return errorReply(request, Error_Code.INVALID_ARGUMENT, "Content-Length is required", 411);
   const size = Number(length);
   if (size < 1 || size > MAX_CHUNK_BYTES) return errorReply(request, Error_Code.LIMIT_EXCEEDED, "chunk size out of range");
-  const secret = await spaceKey(env, spaceId);
+  const stored = await storeChunk(objects, await spaceKey(env, spaceId), object, size, ticket, request.body, nowMs);
+  if (stored.receipt) return reply(request, UploadReceiptSchema, stored.receipt);
+  return reply(request, ErrorSchema, stored.error!, stored.status);
+}
+
+async function storeChunk(
+  objects: ObjectStore,
+  secret: Uint8Array,
+  object: ChunkObject,
+  size: number,
+  ticket: string,
+  body: ReadableStream | Uint8Array | null,
+  nowMs: number,
+): Promise<BundledChunkResult> {
+  const hash = fromHex(object.hashHex);
+  const refuse = (status: number, code: Error_Code, message: string) => create(BundledChunkResultSchema, { hash, status, error: create(ErrorSchema, { code, message }) });
   if (!(await verifyChunkGrant(secret, "put", object, size, ticket, nowMs))) {
-    return errorReply(request, Error_Code.FORBIDDEN, "invalid or expired upload ticket, or a size the ticket does not cover");
+    return refuse(403, Error_Code.FORBIDDEN, "invalid or expired upload ticket, or a size the ticket does not cover");
   }
   try {
-    await objects.put(key, request.body, { sha256: hex, onlyIf: { etagDoesNotMatch: "*" } });
+    await objects.put(chunkKey(object.spaceId, object.hashHex, object.incarnation), body, { sha256: object.hashHex, onlyIf: { etagDoesNotMatch: "*" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("chunk upload failed", spaceId, hex, errorText(error));
-    if (/checksum/i.test(message)) return errorReply(request, Error_Code.INVALID_ARGUMENT, "the body does not match the chunk hash");
+    console.error("chunk upload failed", object.spaceId, object.hashHex, errorText(error));
+    if (/checksum/i.test(message)) return refuse(400, Error_Code.INVALID_ARGUMENT, "the body does not match the chunk hash");
     const throttled = /\b429\b|10058|too many|rate/i.test(message);
-    return errorReply(request, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload", throttled ? 429 : 503);
+    return refuse(throttled ? 429 : 503, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload");
   }
   const token = await signChunkGrant(secret, "receipt", object, size, nowMs + GRANT_MS);
-  return reply(request, UploadReceiptSchema, create(UploadReceiptSchema, { hash: fromHex(hex), size, token }));
+  return create(BundledChunkResultSchema, { hash, status: 200, receipt: create(UploadReceiptSchema, { hash, size, token }) });
 }
+
+const MAX_BUNDLED_CHUNK_BYTES = 1 << 20;
+const MAX_BUNDLE_BYTES = 4 << 20;
+const BUNDLE_WRITES_AT_ONCE = 6;
+const CHUNK_PATH = /^\/v1\/spaces\/([0-9a-f-]{36})\/chunks\/([0-9a-f]{64})$/;
+
+async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId: string): Promise<Response> {
+  if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
+  const length = request.headers.get("Content-Length");
+  if (length === null || !/^\d+$/.test(length)) return errorReply(request, Error_Code.INVALID_ARGUMENT, "Content-Length is required", 411);
+  const tooLarge = () => errorReply(request, Error_Code.LIMIT_EXCEEDED, `a bundle is at most ${MAX_BUNDLE_BYTES} bytes`);
+  if (Number(length) > MAX_BUNDLE_BYTES) return tooLarge();
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > MAX_BUNDLE_BYTES) return tooLarge();
+  const entries = countBundledChunks(bytes);
+  if (entries < 1 || entries > MAX_BUNDLE_CHUNKS) return errorReply(request, Error_Code.LIMIT_EXCEEDED, `a bundle holds 1 to ${MAX_BUNDLE_CHUNKS} chunks`);
+  const { chunks } = decodeChunkBundle(bytes);
+  const seen = new Set<string>();
+  const uploads = chunks.map((chunk) => {
+    let target: URL;
+    try {
+      target = new URL(chunk.target);
+    } catch {
+      throw new BadRequest("a bundled chunk's target is not a URL");
+    }
+    const path = CHUNK_PATH.exec(target.pathname);
+    const incarnation = target.searchParams.get("inc") ?? "";
+    if (!path || path[1] !== spaceId || !INCARNATION.test(incarnation)) throw new BadRequest("a bundled chunk's target is not an upload target of this space");
+    if (seen.has(path[2]!)) throw new BadRequest("a bundle lists one chunk twice");
+    seen.add(path[2]!);
+    if (chunk.data.length < 1 || chunk.data.length > MAX_BUNDLED_CHUNK_BYTES) {
+      throw new LimitExceeded(`a bundled chunk is 1 to ${MAX_BUNDLED_CHUNK_BYTES} bytes`);
+    }
+    return { object: { spaceId, hashHex: path[2]!, incarnation }, ticket: target.searchParams.get("ticket") ?? "", data: chunk.data };
+  });
+  const secret = await spaceKey(env, spaceId);
+  const nowMs = Date.now();
+  const results: BundledChunkResult[] = new Array(uploads.length);
+  let next = 0;
+  const writer = async () => {
+    for (let i = next++; i < uploads.length; i = next++) {
+      const { object, ticket, data } = uploads[i]!;
+      results[i] = await storeChunk(objects, secret, object, data.length, ticket, data, nowMs);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BUNDLE_WRITES_AT_ONCE, uploads.length) }, writer));
+  return reply(request, ChunkBundleResultSchema, create(ChunkBundleResultSchema, { results }));
+}
+
+class LimitExceeded extends Error {}
 
 function space(env: Env, spaceId: string) {
   return env.SPACE.get(env.SPACE.idFromName(spaceId));
@@ -242,6 +313,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!outcome.ok) return errorReply(request, outcome.code, outcome.message);
     return reply(request, AccessTokenSchema, create(AccessTokenSchema, outcome.value));
   }
+
+  const bundleRoute = /^\/v1\/spaces\/([0-9a-f-]{36})\/chunks$/.exec(path);
+  if (bundleRoute && isUuidV7(bundleRoute[1]!)) return bundle(request, env, env.BUCKET, bundleRoute[1]!);
 
   const chunkRoute = /^\/v1\/spaces\/([0-9a-f-]{36})\/chunks\/([0-9a-f]{64})$/.exec(path);
   if (chunkRoute && isUuidV7(chunkRoute[1]!)) return chunk(request, env, env.BUCKET, chunkRoute[1]!, chunkRoute[2]!);
@@ -310,6 +384,7 @@ export default {
       return await route(request, env);
     } catch (error) {
       if (error instanceof BadRequest) return errorReply(request, Error_Code.INVALID_ARGUMENT, error.message);
+      if (error instanceof LimitExceeded) return errorReply(request, Error_Code.LIMIT_EXCEEDED, error.message);
       const quota = quotaRefusal(error, Date.now());
       if (!quota) throw error;
       console.error("request stopped at a platform limit", errorText(error));

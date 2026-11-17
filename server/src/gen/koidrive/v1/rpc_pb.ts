@@ -6,6 +6,8 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { UploadReceipt } from "./commit_pb";
+import { file_koidrive_v1_commit } from "./commit_pb";
 import type { ChunkRef, NodeState, VersionInfo } from "./model_pb";
 import { file_koidrive_v1_model } from "./model_pb";
 import type { Message } from "@bufbuild/protobuf";
@@ -14,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file koidrive/v1/rpc.proto.
  */
 export const file_koidrive_v1_rpc: GenFile = /*@__PURE__*/
-  fileDesc("ChVrb2lkcml2ZS92MS9ycGMucHJvdG8SC2tvaWRyaXZlLnYxIpgECgVFcnJvchIlCgRjb2RlGAEgASgOMhcua29pZHJpdmUudjEuRXJyb3IuQ29kZRIPCgdtZXNzYWdlGAIgASgJEhYKDm1pc3NpbmdfY2h1bmtzGAMgAygMEhYKDnJldHJ5X2FmdGVyX21zGAQgASgEIqYDCgRDb2RlEhQKEENPREVfVU5TUEVDSUZJRUQQABIYChRDT0RFX1VOQVVUSEVOVElDQVRFRBABEhIKDkNPREVfRk9SQklEREVOEAISGQoVQ09ERV9JTlZBTElEX0FSR1VNRU5UEAMSFwoTQ09ERV9NSVNTSU5HX0NIVU5LUxAEEhcKE0NPREVfTElNSVRfRVhDRUVERUQQBRIXChNDT0RFX1FVT1RBX0VYQ0VFREVEEAYSEgoOQ09ERV9SRUFEX09OTFkQBxIUChBDT0RFX1JFVFJZX0xBVEVSEAgSHAoYQ09ERV9VTlNVUFBPUlRFRF9WRVJTSU9OEAkSEQoNQ09ERV9JTlRFUk5BTBAKEhkKFUNPREVfSElTVE9SWV9NSVNNQVRDSBALEhsKF0NPREVfU1RBTEVfREVWSUNFX1NUQVRFEAwSEwoPQ09ERV9IRUFEX01PVkVEEA0SGAoUQ09ERV9BSEVBRF9PRl9TRVJWRVIQDhISCg5DT0RFX05PVF9GT1VORBAPEh4KGkNPREVfQ09ORklSTUFUSU9OX1JFUVVJUkVEEBAinwEKBlRhcmdldBILCgN1cmwYASABKAkSDgoGbWV0aG9kGAIgASgJEjEKB2hlYWRlcnMYAyADKAsyIC5rb2lkcml2ZS52MS5UYXJnZXQuSGVhZGVyc0VudHJ5EhUKDWV4cGlyZXNfYXRfbXMYBCABKAMaLgoMSGVhZGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiNgoNUHJlcGFyZVVwbG9hZBIlCgZjaHVua3MYASADKAsyFS5rb2lkcml2ZS52MS5DaHVua1JlZiLmAQoJQ2h1bmtQbGFuEgwKBGhhc2gYASABKAwSLQoGYWN0aW9uGAIgASgOMh0ua29pZHJpdmUudjEuQ2h1bmtQbGFuLkFjdGlvbhIjCgZ0YXJnZXQYAyABKAsyEy5rb2lkcml2ZS52MS5UYXJnZXQSFgoOcmV0cnlfYWZ0ZXJfbXMYBCABKAQiXwoGQWN0aW9uEhYKEkFDVElPTl9VTlNQRUNJRklFRBAAEhIKDkFDVElPTl9QUkVTRU5UEAESEQoNQUNUSU9OX1VQTE9BRBACEhYKEkFDVElPTl9SRVRSWV9MQVRFUhADIj0KE1ByZXBhcmVVcGxvYWRSZXN1bHQSJgoGY2h1bmtzGAEgAygLMhYua29pZHJpdmUudjEuQ2h1bmtQbGFuIiQKEkdldERvd25sb2FkVGFyZ2V0cxIOCgZoYXNoZXMYASADKAwiQAoLQ2h1bmtUYXJnZXQSDAoEaGFzaBgBIAEoDBIjCgZ0YXJnZXQYAiABKAsyEy5rb2lkcml2ZS52MS5UYXJnZXQiPAoPRG93bmxvYWRUYXJnZXRzEikKB3RhcmdldHMYASADKAsyGC5rb2lkcml2ZS52MS5DaHVua1RhcmdldCI0ChBHZXRWZXJzaW9uQ2h1bmtzEhIKCnZlcnNpb25faWQYASABKAkSDAoEcGFnZRgCIAEoDSJYCg1WZXJzaW9uQ2h1bmtzEiUKBmNodW5rcxgBIAMoCzIVLmtvaWRyaXZlLnYxLkNodW5rUmVmEgwKBHBhZ2UYAiABKA0SEgoKcGFnZV9jb3VudBgDIAEoDSI+CgxMaXN0VmVyc2lvbnMSDwoHbm9kZV9pZBgBIAEoCRIOCgZjdXJzb3IYAiABKAkSDQoFbGltaXQYAyABKA0iTgoLVmVyc2lvbkxpc3QSKgoIdmVyc2lvbnMYASADKAsyGC5rb2lkcml2ZS52MS5WZXJzaW9uSW5mbxITCgtuZXh0X2N1cnNvchgCIAEoCSIpCghMaXN0VHJlZRIOCgZjdXJzb3IYASABKAkSDQoFbGltaXQYAiABKA0ijgEKCFRyZWVQYWdlEiUKBW5vZGVzGAEgAygLMhYua29pZHJpdmUudjEuTm9kZVN0YXRlEhMKC25leHRfY3Vyc29yGAIgASgJEhAKCGhlYWRfc2VxGAMgASgEEhYKDmhlYWRfY29tbWl0X2lkGAQgASgJEhwKFGhlYWRfY29tbWl0dGVkX2F0X21zGAUgASgDIioKCUxpc3RUcmFzaBIOCgZjdXJzb3IYASABKAkSDQoFbGltaXQYAiABKA0ibgoJVHJhc2hQYWdlEiUKBW5vZGVzGAEgAygLMhYua29pZHJpdmUudjEuTm9kZVN0YXRlEhMKC25leHRfY3Vyc29yGAIgASgJEiUKB3RyYXNoZWQYAyADKAsyFC5rb2lkcml2ZS52MS5UcmFzaGVkIkQKB1RyYXNoZWQSDwoHbm9kZV9pZBgBIAEoCRIVCg10cmFzaGVkX2F0X21zGAIgASgDEhEKCWRldmljZV9pZBgDIAEoCWIGcHJvdG8z", [file_koidrive_v1_model]);
+  fileDesc("ChVrb2lkcml2ZS92MS9ycGMucHJvdG8SC2tvaWRyaXZlLnYxIpgECgVFcnJvchIlCgRjb2RlGAEgASgOMhcua29pZHJpdmUudjEuRXJyb3IuQ29kZRIPCgdtZXNzYWdlGAIgASgJEhYKDm1pc3NpbmdfY2h1bmtzGAMgAygMEhYKDnJldHJ5X2FmdGVyX21zGAQgASgEIqYDCgRDb2RlEhQKEENPREVfVU5TUEVDSUZJRUQQABIYChRDT0RFX1VOQVVUSEVOVElDQVRFRBABEhIKDkNPREVfRk9SQklEREVOEAISGQoVQ09ERV9JTlZBTElEX0FSR1VNRU5UEAMSFwoTQ09ERV9NSVNTSU5HX0NIVU5LUxAEEhcKE0NPREVfTElNSVRfRVhDRUVERUQQBRIXChNDT0RFX1FVT1RBX0VYQ0VFREVEEAYSEgoOQ09ERV9SRUFEX09OTFkQBxIUChBDT0RFX1JFVFJZX0xBVEVSEAgSHAoYQ09ERV9VTlNVUFBPUlRFRF9WRVJTSU9OEAkSEQoNQ09ERV9JTlRFUk5BTBAKEhkKFUNPREVfSElTVE9SWV9NSVNNQVRDSBALEhsKF0NPREVfU1RBTEVfREVWSUNFX1NUQVRFEAwSEwoPQ09ERV9IRUFEX01PVkVEEA0SGAoUQ09ERV9BSEVBRF9PRl9TRVJWRVIQDhISCg5DT0RFX05PVF9GT1VORBAPEh4KGkNPREVfQ09ORklSTUFUSU9OX1JFUVVJUkVEEBAinwEKBlRhcmdldBILCgN1cmwYASABKAkSDgoGbWV0aG9kGAIgASgJEjEKB2hlYWRlcnMYAyADKAsyIC5rb2lkcml2ZS52MS5UYXJnZXQuSGVhZGVyc0VudHJ5EhUKDWV4cGlyZXNfYXRfbXMYBCABKAMaLgoMSGVhZGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiNgoNUHJlcGFyZVVwbG9hZBIlCgZjaHVua3MYASADKAsyFS5rb2lkcml2ZS52MS5DaHVua1JlZiLmAQoJQ2h1bmtQbGFuEgwKBGhhc2gYASABKAwSLQoGYWN0aW9uGAIgASgOMh0ua29pZHJpdmUudjEuQ2h1bmtQbGFuLkFjdGlvbhIjCgZ0YXJnZXQYAyABKAsyEy5rb2lkcml2ZS52MS5UYXJnZXQSFgoOcmV0cnlfYWZ0ZXJfbXMYBCABKAQiXwoGQWN0aW9uEhYKEkFDVElPTl9VTlNQRUNJRklFRBAAEhIKDkFDVElPTl9QUkVTRU5UEAESEQoNQUNUSU9OX1VQTE9BRBACEhYKEkFDVElPTl9SRVRSWV9MQVRFUhADIj0KE1ByZXBhcmVVcGxvYWRSZXN1bHQSJgoGY2h1bmtzGAEgAygLMhYua29pZHJpdmUudjEuQ2h1bmtQbGFuIiQKEkdldERvd25sb2FkVGFyZ2V0cxIOCgZoYXNoZXMYASADKAwiQAoLQ2h1bmtUYXJnZXQSDAoEaGFzaBgBIAEoDBIjCgZ0YXJnZXQYAiABKAsyEy5rb2lkcml2ZS52MS5UYXJnZXQiPAoPRG93bmxvYWRUYXJnZXRzEikKB3RhcmdldHMYASADKAsyGC5rb2lkcml2ZS52MS5DaHVua1RhcmdldCI0ChBHZXRWZXJzaW9uQ2h1bmtzEhIKCnZlcnNpb25faWQYASABKAkSDAoEcGFnZRgCIAEoDSJYCg1WZXJzaW9uQ2h1bmtzEiUKBmNodW5rcxgBIAMoCzIVLmtvaWRyaXZlLnYxLkNodW5rUmVmEgwKBHBhZ2UYAiABKA0SEgoKcGFnZV9jb3VudBgDIAEoDSI+CgxMaXN0VmVyc2lvbnMSDwoHbm9kZV9pZBgBIAEoCRIOCgZjdXJzb3IYAiABKAkSDQoFbGltaXQYAyABKA0iTgoLVmVyc2lvbkxpc3QSKgoIdmVyc2lvbnMYASADKAsyGC5rb2lkcml2ZS52MS5WZXJzaW9uSW5mbxITCgtuZXh0X2N1cnNvchgCIAEoCSIpCghMaXN0VHJlZRIOCgZjdXJzb3IYASABKAkSDQoFbGltaXQYAiABKA0ijgEKCFRyZWVQYWdlEiUKBW5vZGVzGAEgAygLMhYua29pZHJpdmUudjEuTm9kZVN0YXRlEhMKC25leHRfY3Vyc29yGAIgASgJEhAKCGhlYWRfc2VxGAMgASgEEhYKDmhlYWRfY29tbWl0X2lkGAQgASgJEhwKFGhlYWRfY29tbWl0dGVkX2F0X21zGAUgASgDIioKCUxpc3RUcmFzaBIOCgZjdXJzb3IYASABKAkSDQoFbGltaXQYAiABKA0ibgoJVHJhc2hQYWdlEiUKBW5vZGVzGAEgAygLMhYua29pZHJpdmUudjEuTm9kZVN0YXRlEhMKC25leHRfY3Vyc29yGAIgASgJEiUKB3RyYXNoZWQYAyADKAsyFC5rb2lkcml2ZS52MS5UcmFzaGVkIkQKB1RyYXNoZWQSDwoHbm9kZV9pZBgBIAEoCRIVCg10cmFzaGVkX2F0X21zGAIgASgDEhEKCWRldmljZV9pZBgDIAEoCSI4CgtDaHVua0J1bmRsZRIpCgZjaHVua3MYASADKAsyGS5rb2lkcml2ZS52MS5CdW5kbGVkQ2h1bmsiLAoMQnVuZGxlZENodW5rEg4KBnRhcmdldBgBIAEoCRIMCgRkYXRhGAIgASgMIkUKEUNodW5rQnVuZGxlUmVzdWx0EjAKB3Jlc3VsdHMYASADKAsyHy5rb2lkcml2ZS52MS5CdW5kbGVkQ2h1bmtSZXN1bHQiggEKEkJ1bmRsZWRDaHVua1Jlc3VsdBIMCgRoYXNoGAEgASgMEg4KBnN0YXR1cxgCIAEoDRIrCgdyZWNlaXB0GAMgASgLMhoua29pZHJpdmUudjEuVXBsb2FkUmVjZWlwdBIhCgVlcnJvchgEIAEoCzISLmtvaWRyaXZlLnYxLkVycm9yYgZwcm90bzM", [file_koidrive_v1_commit, file_koidrive_v1_model]);
 
 /**
  * A call-level failure. Op-level outcomes are in OpResult instead.
@@ -615,4 +617,100 @@ export type Trashed = Message<"koidrive.v1.Trashed"> & {
  */
 export const TrashedSchema: GenMessage<Trashed> = /*@__PURE__*/
   messageDesc(file_koidrive_v1_rpc, 16);
+
+/**
+ * Several chunk uploads in one request to POST /v1/spaces/{space_id}/chunks (RFC 0027).
+ *
+ * @generated from message koidrive.v1.ChunkBundle
+ */
+export type ChunkBundle = Message<"koidrive.v1.ChunkBundle"> & {
+  /**
+   * @generated from field: repeated koidrive.v1.BundledChunk chunks = 1;
+   */
+  chunks: BundledChunk[];
+};
+
+/**
+ * Describes the message koidrive.v1.ChunkBundle.
+ * Use `create(ChunkBundleSchema)` to create a new message.
+ */
+export const ChunkBundleSchema: GenMessage<ChunkBundle> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_rpc, 17);
+
+/**
+ * @generated from message koidrive.v1.BundledChunk
+ */
+export type BundledChunk = Message<"koidrive.v1.BundledChunk"> & {
+  /**
+   * The upload Target.url from ChunkPlan, unchanged.
+   *
+   * @generated from field: string target = 1;
+   */
+  target: string;
+
+  /**
+   * @generated from field: bytes data = 2;
+   */
+  data: Uint8Array;
+};
+
+/**
+ * Describes the message koidrive.v1.BundledChunk.
+ * Use `create(BundledChunkSchema)` to create a new message.
+ */
+export const BundledChunkSchema: GenMessage<BundledChunk> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_rpc, 18);
+
+/**
+ * One result per BundledChunk, in request order.
+ *
+ * @generated from message koidrive.v1.ChunkBundleResult
+ */
+export type ChunkBundleResult = Message<"koidrive.v1.ChunkBundleResult"> & {
+  /**
+   * @generated from field: repeated koidrive.v1.BundledChunkResult results = 1;
+   */
+  results: BundledChunkResult[];
+};
+
+/**
+ * Describes the message koidrive.v1.ChunkBundleResult.
+ * Use `create(ChunkBundleResultSchema)` to create a new message.
+ */
+export const ChunkBundleResultSchema: GenMessage<ChunkBundleResult> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_rpc, 19);
+
+/**
+ * @generated from message koidrive.v1.BundledChunkResult
+ */
+export type BundledChunkResult = Message<"koidrive.v1.BundledChunkResult"> & {
+  /**
+   * @generated from field: bytes hash = 1;
+   */
+  hash: Uint8Array;
+
+  /**
+   * The HTTP status a PUT of this chunk alone would have answered.
+   *
+   * @generated from field: uint32 status = 2;
+   */
+  status: number;
+
+  /**
+   * @generated from field: koidrive.v1.UploadReceipt receipt = 3;
+   */
+  receipt?: UploadReceipt | undefined;
+
+  /**
+   * @generated from field: koidrive.v1.Error error = 4;
+   */
+  error?: Error | undefined;
+};
+
+/**
+ * Describes the message koidrive.v1.BundledChunkResult.
+ * Use `create(BundledChunkResultSchema)` to create a new message.
+ */
+export const BundledChunkResultSchema: GenMessage<BundledChunkResult> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_rpc, 20);
 

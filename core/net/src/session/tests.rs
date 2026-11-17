@@ -1825,3 +1825,25 @@ async fn the_first_retry_after_a_working_connection_is_quick_and_the_next_backs_
     assert!(retry_in >= Duration::from_millis(400), "{retry_in:?}");
     session.close().await;
 }
+
+#[test]
+fn a_refusal_or_confirmation_from_an_earlier_connection_leaves_the_current_one_alone() {
+    let bundles = Bundles::default();
+    bundles.welcome(true);
+    let first = bundles.connection();
+    bundles.welcome(true);
+    let second = bundles.connection();
+    assert_ne!(first, second);
+    bundles.refuse(first);
+    bundles.confirm(first);
+    assert!(bundles.offered());
+    assert!(!bundles.confirmed());
+    bundles.confirm(second);
+    assert!(bundles.confirmed());
+    bundles.refuse(second);
+    assert!(!bundles.offered());
+    bundles.welcome(true);
+    assert!(bundles.offered() && !bundles.confirmed());
+    bundles.welcome(false);
+    assert!(!bundles.offered());
+}
