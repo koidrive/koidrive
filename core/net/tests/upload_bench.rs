@@ -284,16 +284,19 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
-fn counter() -> RetryCounter {
+async fn counter() -> (tokio::sync::MutexGuard<'static, ()>, RetryCounter) {
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static COUNTER: std::sync::OnceLock<RetryCounter> = std::sync::OnceLock::new();
-    COUNTER
+    let serial = SERIAL.lock().await;
+    let counter = COUNTER
         .get_or_init(|| {
             let counter = RetryCounter::default();
             tracing::subscriber::set_global_default(counter.clone())
                 .expect("install retry counter");
             counter
         })
-        .clone()
+        .clone();
+    (serial, counter)
 }
 
 fn client() -> Api {
@@ -340,12 +343,15 @@ async fn upload_benchmark() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     let (api, auth) = deployment().await;
-    let RetryCounter {
-        retries,
-        protocols,
-        uploading,
-        ..
-    } = counter();
+    let (
+        _serial,
+        RetryCounter {
+            retries,
+            protocols,
+            uploading,
+            ..
+        },
+    ) = counter().await;
 
     let probe = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -599,9 +605,12 @@ async fn small_file_benchmark() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     let (api, auth) = deployment().await;
-    let RetryCounter {
-        retries, requests, ..
-    } = counter();
+    let (
+        _serial,
+        RetryCounter {
+            retries, requests, ..
+        },
+    ) = counter().await;
     emit(&format!(
         "### Small-file upload benchmark\n\nCommit `{}`. {} fresh files of {} KiB per side, one chunk each, default upload concurrency, {} runs. Odd runs upload with bundles first and even runs with puts first. Each side has its own HTTP connection pool.\n\n| Run | Side | upload() seconds | Files/s | Upload requests | Chunks per request | Receipts | Observed retries |\n|---|---|---|---|---|---|---|---|",
         commit_sha(),

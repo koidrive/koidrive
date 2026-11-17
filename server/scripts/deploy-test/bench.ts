@@ -5,7 +5,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Account, accountFromEnv, ApiError, graphql } from "./cloudflare.ts";
+import { type Account, accountFromEnv, ApiError, type Deadline, DeadlineError, graphql } from "./cloudflare.ts";
 import { readState } from "./state.ts";
 
 class Failed extends Error {}
@@ -107,13 +107,18 @@ const INVOCATIONS = `query($accountTag: string!, $scriptName: string!, $start: T
   } }
 }`;
 
-async function invocations(account: Account, script: string, window: Window): Promise<Invocations | undefined> {
-  const data = await graphql<{ viewer: { accounts: { workersInvocationsAdaptive: Invocations[] }[] } }>(account, INVOCATIONS, {
-    accountTag: account.id,
-    scriptName: script,
-    start: new Date(window.startMs).toISOString(),
-    end: new Date(window.endMs).toISOString(),
-  });
+async function invocations(account: Account, script: string, window: Window, deadline: Deadline): Promise<Invocations | undefined> {
+  const data = await graphql<{ viewer: { accounts: { workersInvocationsAdaptive: Invocations[] }[] } }>(
+    account,
+    INVOCATIONS,
+    {
+      accountTag: account.id,
+      scriptName: script,
+      start: new Date(window.startMs).toISOString(),
+      end: new Date(window.endMs).toISOString(),
+    },
+    deadline,
+  );
   return data.viewer.accounts[0]?.workersInvocationsAdaptive[0];
 }
 
@@ -131,27 +136,30 @@ async function workerCpu(script: string, path: string): Promise<void> {
   }
   const rows: string[] = [];
   let unavailable: string | undefined;
-  const deadline = Date.now() + ANALYTICS_MS;
+  const deadline: Deadline = { atMs: Date.now() + ANALYTICS_MS, what: "the Analytics API budget of " + ANALYTICS_MS / 60_000 + " min ran out" };
   const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
   const row = (window: Window, seen: Invocations | undefined) => {
     const n = seen?.sum.requests ?? 0;
     return "| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |";
   };
-  for (const window of windows) {
+  const stop = (window: Window, why: string) => "Worker CPU unavailable" + (rows.length > 0 ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
+  for (const [i, window] of windows.entries()) {
     let seen: Invocations | undefined;
+    let failed: string | undefined;
     try {
-      for (;;) {
-        seen = await invocations(account, script, window);
-        if ((seen?.sum.requests ?? 0) >= window.requests || Date.now() >= deadline) break;
-        await new Promise((resolve) => setTimeout(resolve, ANALYTICS_EVERY_MS));
+      while (Date.now() < deadline.atMs) {
+        seen = (await invocations(account, script, window, deadline)) ?? seen;
+        if ((seen?.sum.requests ?? 0) >= window.requests) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(ANALYTICS_EVERY_MS, Math.max(0, deadline.atMs - Date.now()))));
       }
     } catch (error) {
-      const why = missingScope(error) ? "the deploy-test token lacks Account Analytics Read" : (error instanceof Error ? error.message : String(error)).slice(0, 200);
-      unavailable = "Worker CPU unavailable" + (rows.length > 0 || seen ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
-      if (seen) rows.push(row(window, seen));
-      break;
+      if (!(error instanceof DeadlineError)) failed = missingScope(error) ? "the deploy-test token lacks Account Analytics Read" : (error instanceof Error ? error.message : String(error)).slice(0, 200);
     }
-    rows.push(row(window, seen));
+    if (seen) rows.push(row(window, seen));
+    if (seen && failed === undefined) continue;
+    const missing = seen ? windows[i + 1] : window;
+    if (missing) unavailable = stop(missing, failed ?? deadline.what);
+    break;
   }
   if (unavailable) emit(unavailable);
   if (rows.length === 0) return;

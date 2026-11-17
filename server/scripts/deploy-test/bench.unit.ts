@@ -230,7 +230,7 @@ describe("small-file benchmark", () => {
     const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
     expect(result.status).toBe(0);
     expect(result.output).toContain("| bundles | 626 | 300 (partial) | 1.23 | 5.68 | 0 |");
-    expect(result.output).toContain("Worker CPU unavailable from the bundles side on:");
+    expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
   });
 
   it("still passes when no Cloudflare credentials are set", async () => {
