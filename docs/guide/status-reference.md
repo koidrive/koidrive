@@ -87,13 +87,13 @@ When the space is rewound on the server, the folder reads the server's tree agai
 
 | `koi status` shows | Answers |
 |---|---|
-| files created after the restore point, which the restore removed from the server | `keep` puts them back on the server. `discard` moves this device's copies to the local trash and follows the server. |
-| files changed on this device since it last synced | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and downloads the server's version. |
-| files on this device that the space does not hold | `publish` or `discard`, as above |
-| files deleted on this device that the server still holds | `delete` deletes them on the server and other devices. `restore` downloads them to this device again. |
-| restores asked for before recovery began, which the server does not show | `repeat` sends the request again. `cancel` drops it. |
+| files created after the restore point, which the restore removed from the server | `keep` puts these files back on the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files changed on this device since it last synced | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files on this device that the space does not hold | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files deleted on this device that the server still holds | `delete` deletes these files on the server and other devices. `restore` downloads these files to this device again. |
+| restores asked for before recovery began, which the server does not show | `repeat` sends the request again. `cancel` drops the request. |
 
-Files outside these groups follow the server without a question.
+Following the server downloads the server's version of a file when the server holds one. When it holds none, the file is only in the local trash.
 
 ### A conflict opens a decision
 

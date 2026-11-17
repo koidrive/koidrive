@@ -37,7 +37,7 @@ The first command lists every pending decision with the answers it accepts. The 
 
 ## After a rewind
 
-When the space is rewound on the server, each folder follows the rewound space on its own. Files created after the restore point, and files this device changed or deleted since it last synced, wait in decisions until you answer. Other files follow the server. `koi resolve` lists them, and on a Mac they appear in **Needs You**. [A rewind opens decisions](status-reference.md#a-rewind-opens-decisions) lists each decision and its answers.
+When the space is rewound on the server, each folder follows the rewound space on its own. Files whose state on this device the rewind would override wait for a decision. `koi resolve` lists them, and on a Mac they appear in **Needs You**. [A rewind opens decisions](status-reference.md#a-rewind-opens-decisions) lists each decision and its answers.
 
 ## Restart a halted folder
 
