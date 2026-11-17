@@ -159,7 +159,47 @@ fn sent_move_check_of(parent: &str, name: &str, pending_for: &str) -> Result<(),
         pending_for: pending_for.into(),
         ..Default::default()
     };
-    sent_move_check(&moved, &held.shape, &BTreeMap::new())
+    sent_move_check(&moved, &held.shape, None, &BTreeMap::new())
+}
+
+fn finish_check_of(from: &str, name: &str, mark: &str) -> Result<(), TestCaseError> {
+    let (_, held) = RemoteNode::from_state(&NodeState {
+        node_id: "x".into(),
+        parent_id: "home".into(),
+        name: "a (pending)".into(),
+        kind: 1,
+        status: 1,
+        pending_for: mark.into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let moved = Move {
+        node_id: "x".into(),
+        new_parent_id: "home".into(),
+        new_name: name.into(),
+        from: Some(koidrive_proto::v1::Place {
+            parent_id: "home".into(),
+            name: from.into(),
+        }),
+        ..Default::default()
+    };
+    sent_move_check(&moved, &held.shape, Some(&held), &BTreeMap::new())
+}
+
+#[test]
+fn a_finish_of_the_mark_from_the_place_the_disk_holds_passes_the_sent_move_check() {
+    assert!(finish_check_of("a (pending)", "a", "a").is_ok());
+}
+
+#[test]
+fn a_finish_to_a_name_the_mark_does_not_hold_fails_the_sent_move_check() {
+    assert!(finish_check_of("a (pending)", "a x", "a").is_err());
+    assert!(finish_check_of("a (pending)", "a", "").is_err());
+}
+
+#[test]
+fn a_finish_from_a_place_the_disk_does_not_hold_fails_the_sent_move_check() {
+    assert!(finish_check_of("b (pending)", "a", "a").is_err());
 }
 
 #[test]
