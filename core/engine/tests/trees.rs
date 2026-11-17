@@ -881,6 +881,10 @@ fn a_folder_resent_after_a_loss_with_a_file_marked_as_nothing() -> Trees {
 }
 
 fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees {
+    a_folder_resent_after_a_loss_with_a_file(digests, false)
+}
+
+fn a_folder_resent_after_a_loss_with_a_file(digests: &[u8], created_here: bool) -> Trees {
     let mut trees = Trees::new(ROOT);
     for (id, shape, ino) in [
         ("p", dir(ROOT, "p"), 1),
@@ -895,6 +899,9 @@ fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees 
         trees.set_local_changed("g".into(), local(file("f", "g", digest), 3));
     }
     trees.settle();
+    let records = (trees.remote_records(|_| created_here).into_iter())
+        .filter(|(id, _)| id == "g")
+        .collect();
     trees.remove_remote("g");
     trees.remove_remote("f");
     trees.forget_lost(
@@ -903,7 +910,7 @@ fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees 
         vec![("f".into(), Some(dir("p", "f")))],
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        records,
         &Default::default(),
         0,
         0,
@@ -935,6 +942,14 @@ fn a_file_whose_edit_the_user_undid_does_not_keep_its_resent_folder_from_a_delet
     trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
     assert_eq!(trees.check(), Ok(()));
     assert_eq!(trees.class("f"), Class::Remote);
+}
+
+#[test]
+fn a_file_a_lost_commit_of_this_device_created_keeps_its_resent_folder_from_a_delete() {
+    let mut trees = a_folder_resent_after_a_loss_with_a_file(&[], true);
+    trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
+    assert_eq!(trees.check(), Ok(()));
+    assert_eq!(trees.class("f"), Class::Local);
 }
 
 #[test]
