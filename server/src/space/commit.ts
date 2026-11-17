@@ -848,8 +848,8 @@ export class CommitApplier {
         this.copyOf(node, this.nearestLive(node.parent_id), content);
         continue;
       }
-      if (node.node_id === target.node_id) continue;
-      const parent = this.nearestLive(target.parent_id);
+      if (node.node_id === target.node_id || getNode(this.sql, node.parent_id!)?.status === NodeStatusValue.LIVE) continue;
+      const parent = this.nearestLive(node.parent_id);
       const picked = this.pickName(parent.node_id, node.name, node.node_id);
       this.sql.exec(
         "UPDATE nodes SET parent_id = ?, parent_rev = ?, parent_dev = '', name = ?, name_key = ?, meta_rev = ?, meta_dev = ? WHERE node_id = ?",

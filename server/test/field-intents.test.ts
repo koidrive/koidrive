@@ -380,6 +380,24 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     expect((await stateOf(space, dir))!.status).toBe(NodeStatus.TRASHED);
   });
 
+  it("leaves a node with a carried place in a folder that R7 keeps, and moves it out of a trashed one into the nearest live folder", async () => {
+    const { space, a, b, c, values, root } = await setup();
+    const [top, kept, gone] = [uuidv7(), uuidv7(), uuidv7()];
+    await a.commit([op.mkdir(top, root, "Top"), op.mkdir(kept, top, "Kept"), op.mkdir(gone, top, "Gone")]);
+    const edited = await file(a, kept, "edited.txt", values[0]!);
+    sync(a, b, c);
+    const [besideEdit, inGone] = [uuidv7(), uuidv7()];
+    await c.commit([sent(op.create(besideEdit, kept, "carried.txt", values[1]!), intent(a.session.deviceId, { replay: true, appliedAtMs: 1n }))]);
+    await c.commit([sent(op.create(inGone, gone, "carried.txt", values[1]!), intent(a.session.deviceId, { replay: true, appliedAtMs: 1n }))]);
+    await a.commit([sent(update(edited, values[2]!), intent(a.session.deviceId))]);
+    const deleted = await b.commit([sent(del(top), intent(b.session.deviceId))]);
+    expect(deleted.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect((await stateOf(space, kept))!.status).toBe(NodeStatus.LIVE);
+    expect((await stateOf(space, gone))!.status).toBe(NodeStatus.TRASHED);
+    expect((await stateOf(space, besideEdit))!).toMatchObject({ parentId: kept, status: NodeStatus.LIVE });
+    expect((await stateOf(space, inGone))!).toMatchObject({ parentId: top, status: NodeStatus.LIVE });
+  });
+
   it("keeps everything inside a folder another device moved into the deleted folder", async () => {
     const { space, a, b, values, root } = await setup();
     const [target, moved] = [uuidv7(), uuidv7()];
