@@ -55,6 +55,18 @@ class ChangedIo(unittest.TestCase):
     def test_changed_aliases_cannot_grandfather_a_call(self):
         self.assertTrue(self.introduced("use safe as io;\nio::write(path, bytes);", "use std::fs as io;\nio::write(path, bytes);", start=2))
 
+    def test_an_unrelated_import_does_not_make_an_existing_call_new(self):
+        before = "use tokio::sync::Mutex;\nfs::write(path, b\"paused\\n\");"
+        after = "use tokio::sync::Mutex;\nuse tokio::io::AsyncWriteExt;\nfs::write(path, b\"paused\\n\");"
+        self.assertFalse(self.introduced(before, after, start=3))
+
+    def test_an_import_that_shadows_fs_or_tempfile_still_fails(self):
+        call = "fs::write(path, bytes);"
+        self.assertTrue(self.introduced("use std::fs;\n" + call, "use crate::io as fs;\n" + call, start=2))
+        call = "tempfile::NamedTempFile::new_in(dir);"
+        self.assertTrue(self.introduced(call, "use crate::scratch as tempfile;\n" + call, start=2))
+        self.assertTrue(self.introduced("fs::write(path, bytes);", "use crate::io::*;\nfs::write(path, bytes);", start=2))
+
     def test_a_test_writer_cannot_become_production_code_unchecked(self):
         self.assertTrue(self.introduced("#[cfg(test)]\nfn save() {\nfs::write(path, bytes);\n}", "\nfn save() {\nfs::write(path, bytes);\n}", start=3))
 
