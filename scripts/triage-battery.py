@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SECTION = re.compile(r"^---- (\S+) stdout ----$", re.M)
@@ -15,6 +16,7 @@ SAVED = re.compile(r"^proptest regression saved in (\S+): cc ([0-9a-f]+)$", re.M
 CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
 LOCATION = re.compile(r"\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
+RUNTIME_CHECKS = Path(__file__).resolve().parent / "require-runtime-checks.sh"
 DISPLAY_LIMIT = 300
 REPLAYS = 2
 SAME = "fails on base with the same message"
@@ -185,13 +187,21 @@ def build(checkout, package, selector):
     print("::group::" + " ".join(command), flush=True)
     run = subprocess.run(command, cwd=checkout, stdout=subprocess.PIPE, text=True)
     print("::endgroup::", flush=True)
+    target = " ".join([package, *selector])
     if run.returncode != 0:
-        return None
-    for line in run.stdout.splitlines():
-        message = json.loads(line)
-        if message.get("reason") == "compiler-artifact" and message.get("executable"):
-            return message["executable"]
-    return None
+        return None, f"cargo test --no-run for {target} failed"
+    with tempfile.NamedTemporaryFile("w", suffix=".json") as build_json:
+        build_json.write(run.stdout)
+        build_json.flush()
+        checks = subprocess.run(["bash", str(RUNTIME_CHECKS), build_json.name],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(checks.stdout, end="", flush=True)
+    if checks.returncode != 0:
+        return None, f"the build of {target} fails require-runtime-checks.sh: " + " ".join(
+            line.removeprefix("::error::") for line in checks.stdout.splitlines())
+    executable = next((message["executable"] for message in map(json.loads, run.stdout.splitlines())
+                       if message.get("reason") == "compiler-artifact" and message.get("executable")), None)
+    return (executable, None) if executable else (None, f"cargo test --no-run for {target} built no test binary")
 
 
 def replay(spec, side, checkout, timeout):
@@ -218,9 +228,9 @@ def replay(spec, side, checkout, timeout):
         entry["target"] = " ".join([package, *selector])
         if entry["target"] not in executables:
             executables[entry["target"]] = build(checkout, package, selector)
-        executable = executables[entry["target"]]
-        if executable is None:
-            entry["runs"] = [{"result": "error", "message": f"cargo test --no-run for {entry['target']} failed"}]
+        executable, problem = executables[entry["target"]]
+        if problem:
+            entry["runs"] = [{"result": "error", "message": problem}]
             continue
         entry["runs"] = []
         for attempt in range(1, REPLAYS + 1):

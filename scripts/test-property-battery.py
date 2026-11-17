@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -444,6 +446,35 @@ class Triage(unittest.TestCase):
         self.assertEqual({name: environment.get(name) for name in names},
                          {"PROPTEST_CASES": "0", "PROPTEST_RNG_SEED": None, "KOIDRIVE_BATTERY_CASES": None,
                           "KOIDRIVE_PROPTEST_DETERMINISTIC": None})
+
+    def test_a_build_with_weakened_runtime_checks_is_an_error(self):
+        def unit(name, kind, overflow_checks=True):
+            return {"reason": "compiler-artifact", "package_id": name, "target": {"name": name, "kind": [kind]},
+                    "profile": {"debug_assertions": True, "overflow_checks": overflow_checks},
+                    "executable": "/bin/devices" if kind == "test" else None}
+        for units, expected in (([unit("koidrive_engine", "lib"), unit("devices", "test")], ("/bin/devices", None)),
+                                ([unit("koidrive_engine", "lib", False), unit("devices", "test")], None)):
+            with self.subTest(units=units), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cargo = root / "cargo"
+                cargo.write_text("#!/bin/sh\ncat " + str(root / "build.json") + "\n")
+                cargo.chmod(0o755)
+                (root / "build.json").write_text("".join(json.dumps(item) + "\n" for item in units))
+                saved = os.environ["PATH"]
+                os.environ["PATH"] = str(root) + os.pathsep + saved
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        executable, problem = triage.build(root, "koidrive-sim", ["--test", "devices"])
+                finally:
+                    os.environ["PATH"] = saved
+                if expected:
+                    self.assertEqual((executable, problem), expected)
+                else:
+                    self.assertIsNone(executable)
+                    self.assertIn("require-runtime-checks.sh", problem)
+                    self.assertIn("koidrive_engine", problem)
+                    self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2,
+                                                    [{"result": "error", "message": problem}]), "unknown")
 
     def test_checked_profile_is_copied_whole(self):
         manifest = (ROOT / "Cargo.toml").read_text()
