@@ -3,7 +3,7 @@
 #[cfg(not(test))]
 pub(crate) use real_time::{instant, system};
 #[cfg(test)]
-pub(crate) use virtual_time::{advance, instant, system};
+pub(crate) use virtual_time::{advance_to, instant, system};
 
 #[cfg(not(test))]
 mod real_time {
@@ -35,7 +35,11 @@ mod virtual_time {
         SystemTime::now() + AHEAD.get()
     }
 
-    pub(crate) fn advance(by: Duration) {
-        AHEAD.set(AHEAD.get() + by);
+    pub(crate) fn advance_to(at: Instant) {
+        AHEAD.set(
+            AHEAD
+                .get()
+                .max(at.saturating_duration_since(Instant::now())),
+        );
     }
 }
