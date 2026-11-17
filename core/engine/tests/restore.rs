@@ -2236,3 +2236,46 @@ fn a_restore_does_not_wait_for_the_move_of_a_trashed_folder_that_can_only_land_a
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [restore_op(&intent)]);
 }
+
+#[test]
+fn a_second_restore_of_a_folder_the_commit_already_restores_moves_nothing() {
+    let (a, b) = (id(1), id(2));
+    let rows = [
+        (
+            a.clone(),
+            Some(dir(&b, "a")),
+            Some(dir(&root(), "a")),
+            Some(remote(dir(&root(), "a"))),
+        ),
+        (
+            b.clone(),
+            Some(dir(&root(), "b")),
+            Some(dir(&root(), "b")),
+            Some(trashed(dir(&root(), "b"))),
+        ),
+    ];
+    let home = from_trash(&b);
+    let under = RestoreIntent::from_trash(b.clone(), Some(a.clone()), None).unwrap();
+    let moved = op::Op::Move(proto::Move {
+        pending_for: String::new(),
+        node_id: a.clone(),
+        new_parent_id: b.clone(),
+        new_name: "a".into(),
+        from: None,
+    });
+    let cases = [
+        (
+            [&home, &under],
+            vec![restore_op(&home), restore_op(&under), moved],
+        ),
+        ([&under, &home], vec![restore_op(&under), restore_op(&home)]),
+    ];
+    for (requested, sent) in cases {
+        let mut trees = trees(&rows);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        commits.restore(id(100), requested[0].clone());
+        commits.restore(id(101), requested[1].clone());
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        assert_eq!(ops(&commit), sent);
+    }
+}
