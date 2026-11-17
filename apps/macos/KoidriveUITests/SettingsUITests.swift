@@ -20,10 +20,12 @@ final class SettingsUITests: XCTestCase {
     @MainActor
     private func assertToolbarShowsEveryTab(scenario: String, file: StaticString = #filePath, line: UInt = #line) {
         let app = XCUIApplication()
-        app.launchArguments = ["-FakeScenario", scenario, "-settingsTab", "storage"]
+        app.launchArguments = ["-FakeScenario", scenario, "-settingsTab", "storage", "-OpenSharedLinks", "YES"]
         app.launch()
         addTeardownBlock { app.terminate() }
-        app.activate()
+        let links = app.windows["Shared Links"]
+        XCTAssert(links.waitForExistence(timeout: 20), file: file, line: line)
+        links.click()
         app.typeKey(",", modifierFlags: .command)
         let window = app.windows["Storage"]
         XCTAssert(window.waitForExistence(timeout: 20), file: file, line: line)
