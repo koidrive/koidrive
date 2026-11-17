@@ -220,7 +220,7 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
         terminal.separator();
         terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.");
         terminal
-            .message("No file names, paths, contents, error messages, server address, or account.");
+            .message("No file names, paths or contents.");
         terminal.message("Reports carry your IP address, which estimates your country and city.");
         terminal
             .message("Yes also sends the reports of this setup. Preview: koi telemetry preview.");
@@ -228,7 +228,7 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     } else {
         terminal.message("Send usage reports to the Koidrive project?");
         terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, your server's hourly request counts, and your OS and Koidrive version.");
-        terminal.message("They never hold file names, paths, contents, error messages, your server address or your account.");
+        terminal.message("They never hold file names, paths or contents.");
         terminal.message("They carry your IP address, which estimates your country and city.");
         terminal
             .message("Yes also sends the reports of this command. Preview: koi telemetry preview.");

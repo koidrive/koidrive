@@ -1933,7 +1933,7 @@ fn complete(home: &Home, text: &str) {
     for visible in [
         "Yes also sends the reports of this setup. Preview: koi telemetry preview.",
         "Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.",
-        "No file names, paths, contents, error messages, server address, or account.",
+        "No file names, paths or contents.",
         "Reports carry your IP address, which estimates your country and city.",
         "This device is connected",
         "~/Koidrive is linked",

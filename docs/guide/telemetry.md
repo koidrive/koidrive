@@ -1,6 +1,6 @@
 # Usage reports
 
-Koidrive can send usage reports to the Koidrive project. They help the project find failed setups, crashes and slow sync. Reports never hold your files' names, paths or contents, your server's address or your account. Each report carries your IP address, which the project stores and uses to estimate your country and city.
+Koidrive can send usage reports to the Koidrive project. They help the project find failed setups, crashes and slow sync. Reports never hold your files' names, paths or contents. Each report carries your IP address, which the project stores and uses to estimate your country and city.
 
 ## Turn reports on or off
 
@@ -87,7 +87,7 @@ While reports are on, your Koidrive server sends one report an hour to `tel.koid
 - How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
 - The server's version and the protocol versions it speaks.
 
-Each hour's report carries a new random id, so one hour's report can't be linked to another. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Cloudflare adds the domain your Worker runs on to every request a Worker sends ([`CF-Worker`](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-worker)), so `tel.koidrive.com` receives that domain with the report. Counting adds a few small requests and storage writes a minute while your server is busy, and nothing while it's idle. Your Worker logs stay in your Cloudflare account.
+Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds a few small requests and storage writes a minute while your server is busy, and nothing while it's idle. Your Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 
