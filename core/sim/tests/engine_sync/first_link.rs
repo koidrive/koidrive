@@ -1225,3 +1225,126 @@ fn a_discarded_folder_the_user_takes_a_server_file_back_out_of_before_it_is_sent
     )
     .unwrap();
 }
+
+#[test]
+fn a_first_link_discard_takes_along_a_folder_the_server_excludes_after_the_user_deleted_an_entry() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (true, vec![act(0, 0, 6143651230719131862, 0, 0)]),
+            (true, vec![act(4, 3723815044277860101, 0, 0, 0)]),
+        ],
+        act(8, 0, 0, 0, 0),
+        vec![
+            (
+                false,
+                vec![
+                    act(0, 0, 393246980653295408, 0, 0),
+                    act(3, 2489304970407150330, 7897093711423239965, 0, 0),
+                ],
+            ),
+            (true, vec![act(0, 0, 0, 0, 0)]),
+        ],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["a"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 3, 0),
+            act(1, 0, 0, 3, 0),
+            act(1, 0, 2711637186835934911, 2, 0),
+            act(1, 0, 12044279749324718203, 2, 0),
+            act(1, 0, 17518525026918653311, 2, 0),
+        ],
+        &[act(0, 0, 0, 2, 0), act(0, 0, 901096871437522843, 2, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        7,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_link_discard_takes_along_a_folder_whose_deleted_entry_the_keep_rule_brings_back() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![],
+        act(8, 0, 0, 0, 0),
+        vec![
+            (false, vec![act(4, 5902506458575076078, 0, 0, 0)]),
+            (
+                false,
+                vec![act(3, 3178496309646421934, 8834845962153142654, 0, 0)],
+            ),
+        ],
+        act(7, 138867428890129899, 0, 0, 0),
+        act(9, 4899837622381071773, 0, 0, 2),
+        vec!["*.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 0, 0),
+            act(1, 0, 6013222925077551386, 0, 0),
+            act(0, 0, 4938777378806610997, 0, 0),
+            act(1, 0, 12070172744303450150, 0, 0),
+            act(1, 0, 0, 0, 0),
+            act(0, 0, 2229239498280160517, 0, 0),
+        ],
+        &[act(0, 0, 0, 2, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        7,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_discarded_folder_stays_discarded_when_the_keep_rule_brings_back_a_folder_the_user_deleted() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(
+            false,
+            vec![act(3, 15680877563213661197, 14518141476999504328, 0, 0)],
+        )],
+        act(8, 3332313473884684837, 0, 0, 0),
+        vec![(
+            false,
+            vec![act(3, 9362973579064359648, 2824538069448625041, 0, 0)],
+        )],
+        act(7, 171470286317878745, 0, 0, 0),
+        act(9, 7283403821086187110, 0, 0, 2),
+        vec!["c.txt"],
+    );
+    run_ignoring_answering_after(
+        &[
+            act(0, 0, 0, 3, 0),
+            act(0, 0, 1055555136860197332, 5, 0),
+            act(1, 0, 5557856237184014422, 0, 0),
+            act(1, 0, 4159129869147441962, 0, 0),
+            act(0, 0, 3360597633019559603, 0, 0),
+            act(0, 0, 10997035567734722199, 0, 0),
+            act(1, 0, 2676797848052099272, 0, 0),
+        ],
+        &[act(0, 0, 0, 0, 0), act(1, 0, 8915017329082556, 3, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}

@@ -1171,7 +1171,7 @@ fn server_copy(
                     && (device.removed_from.get(child).is_some_and(|from| from == id)
                         || device.removed_from.contains_key(child)
                             && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
-                    && !(device.kept_back.contains(child) && acknowledged_shape(trees, child).is_none())
+                    && acknowledged_shape(trees, child).is_some()
                     && !kept_by_r7(device, child)
             });
             !removed
@@ -1323,7 +1323,8 @@ fn placement_check(
     ) {
         let taken_along =
             kept_with.contains_key(&record.node) && !acted_below(device, &record.node, kept_with);
-        let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+        let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
+        let reverted = closes_a_cycle(&device.trees, &record.node, parent)
             && (device.trees.remote().live(&record.node))
                 .is_some_and(|remote| remote.same_position(after));
         let left_where_put =
