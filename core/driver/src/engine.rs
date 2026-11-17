@@ -956,15 +956,7 @@ impl Engine {
                                 })
                                 .map(|(node, _)| node.clone())
                         })
-                        .or_else(|| {
-                            marked_node.clone().filter(|node| {
-                                !linked
-                                    && self.cursor.is_some()
-                                    && self.trees.local().get(node).is_none()
-                                    && self.trees.synced().get(node).is_none()
-                                    && self.trees.remote().get(node).is_none()
-                            })
-                        });
+                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
                     self.place(
                         node,
                         path,
@@ -982,10 +974,12 @@ impl Engine {
                     id,
                     linked,
                     content,
+                    marked_node,
                 } => {
                     let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let node = resolve(&self.trees, &self.mounts, path, &identity, *linked);
+                    let node = resolve(&self.trees, &self.mounts, path, &identity, *linked)
+                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
                     self.place(
                         node,
                         path,
@@ -1015,6 +1009,20 @@ impl Engine {
             }
         }
         touched
+    }
+
+    fn unclaimed(&self, marked_node: Option<&NodeId>, linked: bool) -> Option<NodeId> {
+        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery(_)));
+        marked_node
+            .filter(|node| {
+                !linked
+                    && !recovering
+                    && self.cursor.is_some()
+                    && self.trees.local().get(node).is_none()
+                    && self.trees.synced().get(node).is_none()
+                    && self.trees.remote().get(node).is_none()
+            })
+            .cloned()
     }
 
     fn scanned(&self, id: &str) -> bool {
@@ -2629,6 +2637,7 @@ mod tests {
                     marked_node: None,
                 },
                 Change::Modified { path } => Observed::Modified {
+                    marked_node: None,
                     content: Some(bytes(entry(&path).size)),
                     id: entry(&path).id,
                     linked: false,
@@ -2892,6 +2901,22 @@ mod tests {
         let (taken, ..) = holding(&engine, "a").unwrap();
         assert_ne!(taken, held);
         assert_eq!(holding(&engine, "b").map(|(id, ..)| id), Some(held));
+    }
+
+    #[test]
+    fn a_new_entry_takes_a_new_node_while_a_recovery_decides_what_the_disk_holds() {
+        let (_dir, mut engine) = mapper();
+        engine.cursor = Some(cursor(1));
+        engine
+            .commits
+            .enter_recovery(koidrive_engine::question::RecoveryCause::of(
+                koidrive_engine::question::RecoveryTrigger::StoreOlderThanDisk,
+            ));
+        engine.observe(&[marked("a", 1, "lost")], 0);
+        assert_ne!(
+            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            Some("lost")
+        );
     }
 
     #[test]
@@ -3308,6 +3333,7 @@ mod tests {
         );
 
         let edited = Observed::Modified {
+            marked_node: None,
             path: "one.txt".into(),
             id: ino(1),
             linked: true,
@@ -3348,6 +3374,7 @@ mod tests {
         let (one, _, _) = holding(&engine, "one.txt").unwrap();
         let (two, _, _) = holding(&engine, "two.txt").unwrap();
         let replaced = Observed::Modified {
+            marked_node: None,
             path: "two.txt".into(),
             id: ino(1),
             linked: true,
@@ -3377,6 +3404,7 @@ mod tests {
         let (one, _, _) = holding(&engine, "one").unwrap();
         let (two, _, _) = holding(&engine, "two").unwrap();
         let edited = Observed::Modified {
+            marked_node: None,
             path: "two".into(),
             id: ino(1),
             linked: false,
@@ -3507,6 +3535,7 @@ mod tests {
                 }),
                 Change::Modified { path } => {
                     (entry(&path).kind == EntryKind::File).then(|| Observed::Modified {
+                        marked_node: None,
                         content: Some(bytes(entry(&path).size)),
                         id: entry(&path).id,
                         linked: false,

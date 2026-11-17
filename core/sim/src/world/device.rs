@@ -144,6 +144,7 @@ impl Engine {
         while let Some(ino) = queue.pop_front() {
             let entry = &disk.entries()[&ino];
             let marked = (entry.mark.as_ref())
+                .filter(|_| !matches!(self.commits.halted(), Some(Halt::Recovery(_))))
                 .filter(|mark| mark.ino == ino)
                 .map(|mark| mark.node.clone())
                 .filter(|node| {

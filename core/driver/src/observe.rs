@@ -105,6 +105,7 @@ pub enum Observed {
         id: FileId,
         linked: bool,
         content: Option<Content>,
+        marked_node: Option<String>,
     },
     Renamed {
         from: PathBuf,
@@ -395,8 +396,13 @@ impl FsObserver {
                     return;
                 }
                 let content = self.content(&path, &entry, reads, false);
+                let marked_node = content
+                    .is_some()
+                    .then(|| self.marked_node(&path, &entry))
+                    .flatten();
                 out.push(Observed::Modified {
                     content,
+                    marked_node,
                     id: entry.id,
                     linked: self.linked(&path, entry.kind),
                     path,
@@ -498,6 +504,7 @@ impl FsObserver {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
                         linked: self.linked(&path, entry.kind),
+                        marked_node: self.marked_node(&path, &entry),
                         path,
                         id: entry.id,
                         content: Some(content),
@@ -1007,6 +1014,53 @@ mod tests {
                 (Path::new("d"), Some("node-d")),
             ])
         );
+    }
+
+    #[test]
+    fn a_new_file_read_after_the_budget_ran_out_keeps_the_node_its_mark_names() {
+        let dir = marked();
+        for i in 0..READ_FILES {
+            fs::write(dir.path().join(format!("f{i:04}.txt")), b"").unwrap();
+        }
+        fs::write(dir.path().join("zzz.txt"), b"one").unwrap();
+        let file = fs::File::open(dir.path().join("zzz.txt")).unwrap();
+        let space =
+            koidrive_fs::Space::bind(fs::File::open(dir.path()).unwrap().into(), dir.path())
+                .unwrap();
+        let at = koidrive_fs::Location::At {
+            base: koidrive_fs::Base::Root,
+            dirs: Vec::new(),
+            name: "zzz.txt".into(),
+        };
+        space
+            .mark(&at, koidrive_fs::id_of(file.as_fd()).unwrap(), "lost")
+            .unwrap();
+        let mut observer = observer(dir.path());
+        let (created, _) = observe_until(&mut observer, |seen| !seen.is_empty());
+        assert!(created.iter().any(|change| matches!(change,
+            Observed::Created { path, content: None, .. } if path == Path::new("zzz.txt")
+        )));
+        let store_dir = tempfile::tempdir().unwrap();
+        let mut store = koidrive_store::Store::open(store_dir.path().join("state.db")).unwrap();
+        let mut engine = store
+            .transaction(|tx| crate::engine::Engine::load(tx, "root"))
+            .unwrap();
+        engine.cursor = Some(koidrive_store::Cursor {
+            history_id: "h".into(),
+            last_seq: 1,
+            ..Default::default()
+        });
+        engine.observe(&created, 0);
+        let (retried, _) = observe_until(&mut observer, |seen| {
+            seen.iter().any(|change| matches!(change,
+                Observed::Modified { path, content: Some(_), .. } if path == Path::new("zzz.txt")
+            ))
+        });
+        engine.observe(&retried, 0);
+        let taken = (engine.trees.local().iter())
+            .find(|(_, node)| node.shape.name == "zzz.txt")
+            .map(|(id, _)| id.as_str());
+        assert_eq!(taken, Some("lost"));
     }
 
     #[test]

@@ -1735,6 +1735,7 @@ fn a_stale_batch_does_not_undo_an_effect_and_the_rescan_reports_its_result() {
     assert_eq!(
         fresh.observation.changes,
         vec![Observed::Modified {
+            marked_node: None,
             path: "report.txt".into(),
             id: known.id,
             linked: false,
