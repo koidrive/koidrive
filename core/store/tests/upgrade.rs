@@ -151,3 +151,4 @@ include!("upgrade_cases/root_identity.rs");
 include!("upgrade_cases/volume_mounts.rs");
 include!("upgrade_cases/lost_shapes.rs");
 include!("upgrade_cases/content_provenance.rs");
+include!("upgrade_cases/given_up.rs");
