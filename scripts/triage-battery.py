@@ -265,7 +265,7 @@ def combine(spec, replays):
         sides = {side: replays[side]["results"][index] if side in replays
                  else {"runs": [{"result": "error", "message": f"the {side} replay left no result"}], "target": None}
                  for side in ("head", "base")}
-        if case["shared"] and settle(sides["head"]["runs"])["result"] != "fail":
+        if case["shared"] and settle(sides["head"]["runs"])["result"] == "pass":
             continue
         rows.append({
             "case": case["case"],
@@ -329,7 +329,7 @@ def markdown(spec, rows, others, run_url):
         "Messages are compared as they are, with nothing normalised. "
         "Proptest saves a seed once, so when two tests of one binary fail on the same seed in a shard, only the first "
         "saves it. The other test gets a row, marked as saved by another test, for each case that shard saved in the "
-        "same binary and that fails it on the head. "
+        "same binary, unless that case passes it on every head run. "
         f"This table cuts messages at {DISPLAY_LIMIT} characters; triage.json holds them in full.",
         "",
         "| Case | Binary and test | Head | Base | Head message | Base message | Verdict |",
@@ -341,8 +341,8 @@ def markdown(spec, rows, others, run_url):
               f"{row['verdict']} |"
               for row in rows]
     if others:
-        lines += ["", "These tests failed without saving a new case, and no case their shards saved in the same binary "
-                  "fails them on the head, so they are not in the table:", ""]
+        lines += ["", "These tests failed without saving a new case, and every case their shards saved in the same "
+                  "binary passes them on every head run, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
                   for other in others]
     return "\n".join(lines) + "\n"

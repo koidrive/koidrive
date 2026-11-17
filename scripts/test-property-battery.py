@@ -306,14 +306,19 @@ class Triage(unittest.TestCase):
                 "others": [{"binary": "devices", "test": "lose_no_write", "shards": [2], "cases": [path]}]}
         def side(result, message):
             return {"runs": [{"result": result, "message": message}] * 2, "target": "sim --test devices"}
+        flaky = {"runs": [{"result": "fail", "message": "lost"}, {"result": "pass", "message": None}],
+                 "target": "sim --test devices"}
         for head, kept, listed in ((side("fail", "lost"), ["converge", "lose_no_write"], []),
+                                   (flaky, ["converge", "lose_no_write"], []),
                                    (side("pass", None), ["converge"], ["lose_no_write"])):
-            with self.subTest(head=head["runs"][0]["result"]):
+            with self.subTest(head=[run["result"] for run in head["runs"]]):
                 replays = {"head": {"results": [side("fail", "lost"), head]},
                            "base": {"results": [side("fail", "lost"), side("fail", "lost")]}}
                 rows = triage.combine(spec, replays)
                 others = triage.caseless(spec, rows)
                 self.assertEqual(sorted(row["test"] for row in rows), kept)
+                if head is flaky:
+                    self.assertEqual(next(row["verdict"] for row in rows if row["shared"]), "unstable")
                 self.assertEqual([other["test"] for other in others], listed)
                 text = triage.markdown(spec, rows, others, "https://example.com/runs/7")
                 self.assertEqual("(saved by another test)" in text, bool(listed) is False)
