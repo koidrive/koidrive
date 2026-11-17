@@ -512,6 +512,7 @@ mod tests {
     fn a_restart_forgets_an_unlink_that_never_took_hold() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
+        fs::write(store.with_file_name("lifecycle.json"), b"{}").unwrap();
         fs::write(store.with_file_name(UNLINKING), b"").unwrap();
         let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
         lifecycle.halt(
