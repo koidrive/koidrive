@@ -313,7 +313,7 @@ struct FolderStep: View {
                         if let path = setup.linkedPath(ofSpace: space.spaceId) {
                             Text("\(space.name) — linked to \(abbreviatingHome(path))")
                                 .tag(Optional(space.spaceId))
-                                .disabled(true)
+                                .selectionDisabled()
                         } else {
                             Text(space.name).tag(Optional(space.spaceId))
                         }
