@@ -102,7 +102,7 @@ pub(crate) mod tests {
 
     fn stopped() -> FolderStatus {
         serde_json::from_value(json!({
-            "space_id": "abc", "space_name": "Alice Notes", "path": "/Users/alice/Notes",
+            "space_id": "space-of-notes", "space_name": "Alice Notes", "path": "/Users/alice/Notes",
             "state": "stopped", "history_id": null, "last_seq": null, "head_seq": null,
             "remote_nodes": 3198, "local_entries": null, "questions": 0, "problem": null,
         }))
@@ -163,7 +163,7 @@ pub(crate) mod tests {
         assert_eq!(cleared[0]["problem"], "halted.root");
         assert_eq!(cleared[0]["lasted"], "1d_3d");
         let text = Value::Array(events).to_string();
-        for private in ["alice", "Alice", "/Users", "abc"] {
+        for private in ["alice", "Alice", "/Users", "space-of-notes"] {
             assert!(!text.contains(private), "{private} in {text}");
         }
     }
