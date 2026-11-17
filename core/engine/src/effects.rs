@@ -700,6 +700,7 @@ impl Effects {
         let record = self.take(effect_id)?;
         self.cleared.set(*self.cleared + 1);
         trees.keep_folder(&record.node);
+        trees.keep_entries(&record.node, held.iter().map(|(name, _)| *name));
         trees.keep_folders_of_kept_folders();
         self.failed.remove(&record.node);
         Ok(())

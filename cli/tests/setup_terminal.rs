@@ -522,6 +522,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
         held_disks: Vec::new(),
         activity: None,
         bytes_moved: 0,
+        kept_entries: Vec::new(),
         wait: None,
         recovery: None,
     }

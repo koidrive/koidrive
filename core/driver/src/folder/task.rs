@@ -561,6 +561,7 @@ impl FolderTask {
             questions: status.questions,
             recovery: status.recovery,
             held_disks: status.held_disks.clone(),
+            kept_entries: status.kept_entries.clone(),
         };
         if shown == view && status.activity == activity && !asked && !began_or_ended {
             return;
@@ -577,6 +578,7 @@ impl FolderTask {
         status.questions = view.questions;
         status.recovery = view.recovery;
         status.held_disks = view.held_disks;
+        status.kept_entries = view.kept_entries;
         drop(status);
         self.changed.send_replace(());
     }

@@ -563,6 +563,7 @@ mod tests {
             held_disks: Vec::new(),
             activity: None,
             bytes_moved: 0,
+            kept_entries: Vec::new(),
         }
     }
 
@@ -1031,6 +1032,7 @@ mod unreachable_tests {
                 held_disks: Vec::new(),
                 activity: None,
                 bytes_moved: 0,
+                kept_entries: Vec::new(),
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
                     until_ms: Some(7),
@@ -1076,6 +1078,7 @@ mod unreachable_tests {
                     held_disks: Vec::new(),
                     activity: None,
                     bytes_moved: 0,
+                    kept_entries: Vec::new(),
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
                         until_ms: Some(1),

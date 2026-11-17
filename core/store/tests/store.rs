@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, LostPosition, MovedHere, PendingFinish,
-    TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, KeptEntries, LostPosition, MovedHere,
+    PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -112,6 +112,7 @@ fn migrations_apply_from_empty() {
             "guard_ledger",
             "guard_remote",
             "guard_remote_dismissed",
+            "kept_entries",
             "kept_folders",
             "kept_originals",
             "link",
@@ -1379,6 +1380,22 @@ fn engine_state() -> EngineState {
             unsent_moves: nodes(["m"]),
             unsent_creates: nodes(["c"]),
             kept_folders: nodes(["k"]),
+            kept_entries: BTreeMap::from([
+                (
+                    "e".into(),
+                    KeptEntries {
+                        names: [".env".into(), "node_modules".into()].into(),
+                        taken: true,
+                    },
+                ),
+                (
+                    "f".into(),
+                    KeptEntries {
+                        names: [".env".into()].into(),
+                        taken: false,
+                    },
+                ),
+            ]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -1619,7 +1636,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 46] = [
+const ENGINE_TABLES: [&str; 47] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1661,6 +1678,7 @@ const ENGINE_TABLES: [&str; 46] = [
     "unsent_creates",
     "removed_here",
     "kept_folders",
+    "kept_entries",
     "unsent_marks",
     "pending_finishes",
     "lost_positions",
@@ -4810,7 +4828,9 @@ fn a_store_from_before_kept_folders_were_recorded_opens_with_none_recorded() {
     assert_eq!(applied(&path), all_migrations());
     let after = before.clone();
     before.trees.kept_folders.clear();
+    before.trees.kept_entries.clear();
     assert!(!after.trees.kept_folders.is_empty());
+    assert!(!after.trees.kept_entries.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

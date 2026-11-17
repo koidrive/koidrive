@@ -2856,6 +2856,7 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     trees.rekey_discarded(from, to);
     trees.rekey_lost_shapes(from, to);
     trees.sent_create(from);
+    trees.rekey_kept_entries(from, to);
     trees.rekey_local(from, to, node);
     trees.set_left_out_when_placed(to, left_out_when_placed);
     if parked {
@@ -2979,12 +2980,14 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
             continue;
         }
         if local.kind == Kind::File {
-            if trees.remote().live(&local.parent).is_some() {
-                rekey(trees, &id, &ids.uuid_v7(now_ms));
-            }
+            rekey(trees, &id, &ids.uuid_v7(now_ms));
             continue;
         }
         let taken = twin(trees, &local, true);
+        match taken {
+            Some(_) => trees.take_kept_entries(&id),
+            None => trees.end_kept_entries(&id),
+        }
         let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
         rekey(trees, &id, &to);
         if taken.is_some() {

@@ -270,6 +270,9 @@ impl Folder {
                     },
                 })
                 .collect(),
+            kept_entries: (self.engine.trees.kept_entry_paths().into_iter())
+                .map(|names| names.join("/").into())
+                .collect(),
         }
     }
 

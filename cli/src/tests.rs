@@ -421,6 +421,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         activity: None,
         bytes_moved: 0,
         held_disks: Vec::new(),
+        kept_entries: Vec::new(),
         wait: None,
     };
     let status = Status {
@@ -477,6 +478,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
                 kind: koidrive_driver::HeldDiskKind::MountedOver,
             },
         ],
+        kept_entries: Vec::new(),
         wait: None,
     };
     let status = Status {
@@ -497,6 +499,44 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
 }
 
 #[test]
+fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
+    let folder = FolderStatus {
+        recovery: None,
+        space_id: "s1".into(),
+        space_name: "Home".into(),
+        path: "/home/ada/Docs".into(),
+        state: FolderState::UpToDate,
+        history_id: None,
+        last_seq: None,
+        head_seq: None,
+        remote_nodes: 0,
+        local_entries: None,
+        questions: 0,
+        problem: None,
+        progress: None,
+        activity: None,
+        bytes_moved: 0,
+        held_disks: Vec::new(),
+        kept_entries: vec!["app/.env".into(), "app/node_modules".into()],
+        wait: None,
+    };
+    let status = Status {
+        running: true,
+        folders: vec![folder.clone()],
+        ..Status::default()
+    };
+    let notice = UpdateNoticeData::of(&status.update, "0.1.0", Some("koi update"));
+    let kept = r#"  2 entries kept after another device deleted their folder stay out of sync under that folder's rules: "/home/ada/Docs/app/.env", "/home/ada/Docs/app/node_modules". To sync one, delete it and create it again.
+"#;
+    for text in [
+        status_text(&status, &[], "", &notice),
+        crate::status::folder_text(&folder),
+    ] {
+        assert!(text.contains(kept), "{text}");
+    }
+}
+
+#[test]
 fn the_status_text_names_the_rewind_a_folder_recovers_from() {
     let folder = FolderStatus {
         recovery: Some(koidrive_engine::question::RecoveryCause::rewind(
@@ -507,6 +547,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         activity: None,
         bytes_moved: 0,
         held_disks: Vec::new(),
+        kept_entries: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
         path: "/home/ada/Docs".into(),
@@ -539,6 +580,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         activity: None,
         bytes_moved: 0,
         held_disks: Vec::new(),
+        kept_entries: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
         path: "/home/ada/Docs".into(),
@@ -588,6 +630,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         activity: None,
         bytes_moved: 0,
         held_disks: Vec::new(),
+        kept_entries: Vec::new(),
         wait: None,
     };
     for state in [FolderState::Stopped, FolderState::CatchingUp] {

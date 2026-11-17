@@ -301,6 +301,15 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, name, taken FROM kept_entries")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let kept = state.trees.kept_entries.entry(row.get(0)?).or_default();
+            kept.names.insert(row.get(1)?);
+            kept.taken = row.get(2)?;
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -496,6 +505,7 @@ impl Tx<'_> {
             "unsent_moves",
             "unsent_creates",
             "kept_folders",
+            "kept_entries",
             "unseen_changes",
             "replaced_versions",
             "content_provenance",
@@ -567,6 +577,7 @@ impl Tx<'_> {
             unsent_moves,
             unsent_creates,
             kept_folders,
+            kept_entries,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -771,6 +782,22 @@ impl Tx<'_> {
             "DELETE FROM kept_folders WHERE node_id = ?1",
             "INSERT OR IGNORE INTO kept_folders (node_id) VALUES (?1)",
         )?;
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM kept_entries WHERE node_id = ?1")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT INTO kept_entries (node_id, name, taken) VALUES (?1, ?2, ?3)",
+        )?;
+        for (node, kept) in kept_entries {
+            remove.execute([node])?;
+            for name in kept.iter().flat_map(|kept| &kept.names) {
+                put.execute(params![
+                    node,
+                    name,
+                    kept.as_ref().is_some_and(|kept| kept.taken)
+                ])?;
+            }
+        }
         self.write_set(
             unseen_changes,
             "DELETE FROM unseen_changes WHERE node_id = ?1",

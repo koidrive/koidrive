@@ -644,3 +644,159 @@ fn a_file_the_scans_have_not_seen_that_brings_back_a_deleted_folder_keeps_its_ru
     assert_eq!(fs::read(site.root.join("app/.env")).unwrap(), b"SECRET=local");
     assert_eq!(fs::read(site.root.join("app/.koiignore")).unwrap(), b".env\n");
 }
+
+#[test]
+fn a_kept_folder_taken_over_by_a_folder_without_rules_uploads_none_of_its_entries() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, _site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    let tree = remote.tree();
+    assert!(!tree.contains_key("app/.env"), "{tree:?}");
+    assert!(!tree.contains_key("app/node_modules"), "{tree:?}");
+}
+
+#[test]
+fn a_kept_folder_taken_over_while_this_device_is_stopped_uploads_none_of_its_entries() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    drop(b);
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    for path in ignored {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+    assert_eq!(b.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn an_entry_kept_through_a_takeover_syncs_only_once_the_person_makes_it_again() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    fs::write(site.root.join("app/.env"), b"SECRET=edited").unwrap();
+    fs::write(site.root.join("app/node_modules/pkg/new.js"), b"new").unwrap();
+    fs::write(site.root.join("app/notes.txt"), b"new").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md", "app/notes.txt"]
+    );
+    let mut kept = b.folder.view().kept_entries;
+    kept.sort();
+    assert_eq!(kept, [koidrive_fs::ItemPath::from("app/.env"), "app/node_modules".into()]);
+
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+    fs::write(site.root.join("app/.env"), b"PUBLIC=yes").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.env", "app/README.md", "app/notes.txt"]
+    );
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/node_modules")]);
+
+    fs::remove_dir_all(site.root.join("app/node_modules")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert!(b.folder.view().kept_entries.is_empty());
+    assert!(b.folder.engine.trees.state().kept_entries.is_empty());
+}
+
+
+#[test]
+fn a_kept_folder_below_a_folder_taken_over_without_rules_uploads_none_of_its_entries() {
+    let ignored = ["sub/.env", "sub/node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md", "sub/README.md"],
+        &ignored,
+    );
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    for path in ignored {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+}
+
+
+#[test]
+fn a_kept_rules_file_the_person_renames_uploads_under_a_new_id() {
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    let nodes = server_nodes(&remote);
+    let old = nodes.iter().find(|(name, ..)| name == ".koiignore").unwrap().1.clone();
+
+    fs::rename(site.root.join("app/.koiignore"), site.root.join("app/notes.txt")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    let tree = remote.tree();
+    assert_eq!(
+        tree.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.env", "app/notes.txt"]
+    );
+    assert_ne!(tree["app/notes.txt"], old);
+}
+

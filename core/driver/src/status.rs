@@ -88,6 +88,10 @@ pub struct FolderStatus {
     /// The disks inside the folder whose files the folder keeps as they were, while it is running.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_disks: Vec<HeldDisk>,
+    /// Entries, relative to the folder, that another device's delete left here and that stay out of sync under the
+    /// rules of the deleted folder they were in, until the person deletes or makes them again (design §5.10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_entries: Vec<koidrive_fs::ItemPath>,
 }
 
 /// A disk inside a folder whose files stay on the server as they were and do not sync until it is back.
@@ -122,6 +126,22 @@ impl HeldDisk {
             ),
         }
     }
+}
+
+/// What a person reads about the entries of a folder at `folder` that stay excluded under the rules of a deleted
+/// folder they were kept in ([`FolderStatus::kept_entries`]).
+pub fn describe_kept(folder: &str, entries: &[koidrive_fs::ItemPath]) -> String {
+    let paths: Vec<String> = (entries.iter())
+        .map(|entry| koidrive_fs::quoted(&std::path::Path::new(folder).join(entry)).to_string())
+        .collect();
+    let (count, stay, entry) = match entries.len() {
+        1 => ("1 entry".to_owned(), "stays", "it"),
+        count => (format!("{count} entries"), "stay", "one"),
+    };
+    format!(
+        "{count} kept after another device deleted their folder {stay} out of sync under that folder's rules: {}. To sync {entry}, delete it and create it again.",
+        paths.join(", ")
+    )
 }
 
 /// What a person reads about `cause`.

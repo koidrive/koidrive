@@ -240,7 +240,7 @@ The store writes, per `handle` call and in one transaction:
 - parked nodes with the name of their parked entry, and held and problem nodes;
 - the queued restores with the outcomes of those that ended;
 - the entries a Publish answer to a first link released, or a fresh first link sent, until the server applies their create (§2.7);
-- the folders another device deleted that stay on disk for the entries this device does not sync in them (§5.10);
+- the folders another device deleted that stay on disk for the entries this device does not sync in them, with the names of those entries, which stay excluded after another device makes a folder at their place (§5.10);
 - the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
 - every open question with what it holds;
 - the ID generator's state (`IdGen::state`).
