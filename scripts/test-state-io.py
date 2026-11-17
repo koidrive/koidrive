@@ -80,6 +80,19 @@ class ChangedIo(unittest.TestCase):
         before = "use crate::log_paths as selected;\n" + chain
         self.assertTrue(self.introduced(before, "use crate::state_paths as selected;\n" + chain, start=3))
         self.assertTrue(self.introduced("use std::{io, path};\n" + call, "use std::{fs as TARGET, path};\n" + call, start=2))
+        for prefix in ("self::", "super::"):
+            chain = f"use {prefix}selected::TARGET;\n" + call
+            before = "use crate::log_paths as selected;\n" + chain
+            self.assertTrue(self.introduced(before, "use crate::state_paths as selected;\n" + chain, start=3))
+        raw = "std::fs::write(r#TARGET, bytes);"
+        before = "use crate::paths::LOG as r#TARGET;\n" + raw
+        self.assertTrue(self.introduced(before, "use crate::paths::STATE as r#TARGET;\n" + raw, start=2))
+
+    def test_an_import_without_a_terminator_is_compared_not_fatal(self):
+        call = "fs::write(path, bytes);\n"
+        tests = "#[cfg(test)]\nmod tests { #[test] fn t() {} }"
+        self.assertFalse(self.introduced(call + tests, call + "pub fn g() {}\n" + tests))
+        self.assertTrue(self.introduced(call + "mod tests {}", call + "mod tests { use crate::io as fs; }"))
 
     def test_a_test_writer_cannot_become_production_code_unchecked(self):
         self.assertTrue(self.introduced("#[cfg(test)]\nfn save() {\nfs::write(path, bytes);\n}", "\nfn save() {\nfs::write(path, bytes);\n}", start=3))

@@ -22,7 +22,7 @@ IO_LINT = "clippy::disallowed_methods"
 FORCED_LINTS = [IO_LINT, *sorted(LOCK_LINTS)]
 IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
 IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
-USE_TOKEN = re.compile(r"::|[{},*]|[A-Za-z_]\w*")
+USE_TOKEN = re.compile(r"::|[{},*]|(?:r#)?[A-Za-z_]\w*")
 VISIBILITY = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?")
 SHADOWABLE = {"fs", "tempfile"}
 ROOTS = {"std", "core", "alloc", "crate", "self", "super"}
@@ -101,12 +101,7 @@ def imports(text):
 
 
 def import_bindings(item):
-    tokens = USE_TOKEN.findall(VISIBILITY.sub("", item, count=1).rstrip(";"))
-    kind, rest = tokens[0], tokens[1:]
-    if kind == "mod":
-        return {rest[0]}, set()
-    if kind == "extern":
-        return {rest[-1]}, set()
+    tokens = [token.removeprefix("r#") for token in USE_TOKEN.findall(VISIBILITY.sub("", item, count=1).rstrip(";"))]
     bound, roots = set(), set()
 
     def tree(i, prefix):
@@ -115,7 +110,7 @@ def import_bindings(item):
             token = rest[i]
             i += 1
             if token == "*":
-                roots.update(path[:1])
+                roots.update(local_root(path))
                 bound.add("*")
                 return i
             if token == "{":
@@ -130,15 +125,23 @@ def import_bindings(item):
             i += 2
         elif path:
             bound.add(path[-2] if path[-1] == "self" and len(path) > 1 else path[-1])
-        if path:
-            roots.add(path[0])
+        roots.update(local_root(path))
         return i
 
     try:
+        kind, rest = tokens[0], tokens[1:]
+        if kind == "mod":
+            return {rest[0]}, set()
+        if kind == "extern":
+            return {rest[-1]}, set()
         tree(0, [])
     except IndexError:
         return {"*"}, set()
     return bound - {"_"}, roots
+
+
+def local_root(path):
+    return [segment for segment in path if segment not in ("self", "super")][:1]
 
 
 def shadowing_imports(text, call):
