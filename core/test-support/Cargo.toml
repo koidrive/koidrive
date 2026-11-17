@@ -12,3 +12,6 @@ publish.workspace = true
 [dependencies]
 proptest = "1.12.0"
 tempfile = "3.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = { version = "1.10.3", default-features = false }
