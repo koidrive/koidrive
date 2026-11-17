@@ -219,6 +219,45 @@ struct GitignoreSettingTests {
         #expect(session.calls(.gitignoreOnly) == 1)
     }
 
+    @Test func aCountAskedForAfterACancelledOneStillCounts() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app)
+
+        session.holdNext(.gitignoreOnly)
+        let left = Task { await gitignore.recount() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        left.cancel()
+        let back = Task { await gitignore.recount() }
+        try await Task.sleep(for: .milliseconds(20))
+
+        session.release.signal()
+        await left.value
+        await back.value
+        #expect(gitignore.count?.files == files)
+    }
+
+    @Test func leavingTheTabWhileTheTurnedOnCountRunsKeepsTheLine() async throws {
+        let (app, session) = scripted()
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app)
+        await gitignore.recount()
+
+        session.holdNext(.gitignoreOnly)
+        let turningOn = Task { await gitignore.set(follow: true) }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        let visit = Task { await gitignore.recount() }
+        try await Task.sleep(for: .milliseconds(20))
+        visit.cancel()
+        try await Task.sleep(for: .milliseconds(20))
+
+        session.release.signal()
+        await turningOn.value
+        await visit.value
+        #expect(gitignore.noLongerSyncing == files)
+    }
+
     @Test func theSwitchIgnoresInputWhileAChangeApplies() async throws {
         let (app, session) = scripted()
         let gitignore = GitignoreSettingModel(app: app)

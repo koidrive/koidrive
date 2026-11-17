@@ -32,13 +32,34 @@ public final class GitignoreSettingModel {
         case applying(Bool)
     }
 
-    private final class Walk {
+    private final class Walk: @unchecked Sendable {
         let startedAtMs: UInt64
         let task: Task<GitignoreCount?, Never>
+        private let lock = NSLock()
+        private var waiters = 0
 
         init(startedAtMs: UInt64, task: Task<GitignoreCount?, Never>) {
             self.startedAtMs = startedAtMs
             self.task = task
+        }
+
+        func join() -> Bool {
+            lock.withLock {
+                guard !task.isCancelled else { return false }
+                waiters += 1
+                return true
+            }
+        }
+
+        func leave() {
+            lock.withLock {
+                waiters -= 1
+                if waiters == 0 { task.cancel() }
+            }
+        }
+
+        func wait() async -> GitignoreCount? {
+            await withTaskCancellationHandler { await task.value } onCancel: { leave() }
         }
     }
 
@@ -115,14 +136,14 @@ public final class GitignoreSettingModel {
 
     private func counted(startedAfterMs: UInt64) async -> GitignoreCount? {
         let current: Walk
-        if let walk, walk.startedAtMs >= startedAfterMs {
+        if let walk, walk.startedAtMs >= startedAfterMs, walk.join() {
             current = walk
         } else {
             current = Walk(startedAtMs: Self.nowMs(), task: Task { [app] in await app.gitignoreOnly() })
+            _ = current.join()
             walk = current
         }
-        let task = current.task
-        let fresh = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        let fresh = await current.wait()
         if walk === current { walk = nil }
         if let fresh, fresh.countedAtMs >= count?.countedAtMs ?? 0 {
             count = fresh
