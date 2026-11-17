@@ -6,6 +6,7 @@ use determinator::rules::{
     DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathMatch, PathRule,
     RuleIndex,
 };
+use globset::{Glob, GlobSetBuilder};
 use guppy::MetadataCommand;
 use guppy::graph::cargo::CargoOptions;
 use guppy::graph::feature::StandardFeatures;
@@ -20,7 +21,16 @@ use std::{env, fs};
 #[serde(deny_unknown_fields)]
 struct Config {
     path: Vec<PathEntry>,
+    #[serde(default)]
+    read: Vec<Read>,
     job: BTreeMap<String, Job>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Read {
+    globs: Vec<String>,
+    by: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -107,10 +117,40 @@ fn outcome(matched: PathMatch) -> PathOutcome {
     }
 }
 
+fn tests(job: &Job, package: &str) -> bool {
+    match &job.packages {
+        Packages::Any(_) => !job.except.iter().any(|name| name == package),
+        Packages::Named(packages) => packages.iter().any(|name| name == package),
+        Packages::None => false,
+    }
+}
+
+fn reads(config: &Config, changed: &[&str]) -> Result<Vec<(String, String)>, String> {
+    let mut found = Vec::new();
+    for read in &config.read {
+        let mut globs = GlobSetBuilder::new();
+        for glob in &read.globs {
+            globs.add(Glob::new(glob).map_err(|error| format!("ci-select config: {error}"))?);
+        }
+        let globs = globs
+            .build()
+            .map_err(|error| format!("ci-select config: {error}"))?;
+        for path in changed.iter().filter(|path| globs.is_match(path)) {
+            found.extend(
+                read.by
+                    .iter()
+                    .map(|package| (path.to_string(), package.clone())),
+            );
+        }
+    }
+    Ok(found)
+}
+
 fn select(
     config: &Config,
     affected: &BTreeSet<String>,
     paths: &[(String, PathOutcome)],
+    reads: &[(String, String)],
 ) -> BTreeMap<String, Option<String>> {
     config
         .job
@@ -131,19 +171,24 @@ fn select(
                     _ => None,
                 })
             };
+            let by_read = || {
+                reads
+                    .iter()
+                    .find(|(_, package)| tests(job, package))
+                    .map(|(path, package)| format!("the tests of {package} read {path}"))
+            };
             let by_package = || {
                 affected
                     .iter()
-                    .find(|package| match &job.packages {
-                        Packages::Any(_) => !job.except.contains(package),
-                        Packages::Named(packages) => packages.contains(package),
-                        Packages::None => false,
-                    })
+                    .find(|package| tests(job, package))
                     .map(|package| format!("the change affects {package}"))
             };
             (
                 name.clone(),
-                everything.or_else(by_path).or_else(by_package),
+                everything
+                    .or_else(by_path)
+                    .or_else(by_read)
+                    .or_else(by_package),
             )
         })
         .collect()
@@ -158,6 +203,18 @@ fn check(config: &Config, graph: &PackageGraph) -> Result<(), String> {
             return Err(format!(
                 "path rule {:?} names the unknown job {job}",
                 entry.globs
+            ));
+        }
+    }
+    for read in &config.read {
+        if let Some(package) = read
+            .by
+            .iter()
+            .find(|package| !workspace.contains_name(package.as_str()))
+        {
+            return Err(format!(
+                "read rule {:?} names {package}, which is not a workspace package",
+                read.globs
             ));
         }
     }
@@ -229,6 +286,7 @@ fn compute(
     changed: &[&str],
 ) -> Result<BTreeMap<String, Option<String>>, String> {
     check(config, head)?;
+    let readers = reads(config, changed)?;
     let rules = rules(config);
     let changed: Vec<&Utf8Path> = changed.iter().copied().map(Utf8Path::new).collect();
     let mut options = CargoOptions::new();
@@ -261,7 +319,7 @@ fn compute(
             )
         })
         .collect();
-    Ok(select(config, &affected, &paths))
+    Ok(select(config, &affected, &paths, &readers))
 }
 
 fn main() -> ExitCode {
@@ -496,18 +554,9 @@ mod tests {
                 .job
                 .iter()
                 .filter(|(_, job)| {
-                    workspace.iter().any(|tested| {
-                        let selects = match &job.packages {
-                            Packages::Any(_) => {
-                                !job.except.iter().any(|name| name == tested.name())
-                            }
-                            Packages::Named(names) => {
-                                names.iter().any(|name| name == tested.name())
-                            }
-                            Packages::None => false,
-                        };
-                        selects && builds(&tested, &changed)
-                    })
+                    workspace
+                        .iter()
+                        .any(|tested| tests(job, tested.name()) && builds(&tested, &changed))
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -528,6 +577,43 @@ mod tests {
                     "{path} must run {missing:?}, ran {running:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_change_to_a_crate_the_quoted_paths_test_reads_runs_the_jobs_that_test_koidrive_fs() {
+        let quoted = fs::read_to_string(format!("{ROOT}/core/fs/tests/quoted.rs")).unwrap();
+        let crates: Vec<_> = quoted
+            .split_once("const CRATES_THE_DAEMON_AND_THE_APP_RUN")
+            .and_then(|(_, rest)| rest.split_once("= ["))
+            .and_then(|(_, rest)| rest.split_once("];"))
+            .unwrap()
+            .0
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .collect();
+        assert!(crates.len() >= 10, "{crates:?}");
+        let testing_fs: BTreeSet<String> = CONFIG
+            .job
+            .iter()
+            .filter(|(_, job)| tests(job, "koidrive-fs"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in crates {
+            let path = format!("core/{name}/src/new_module/new.rs");
+            assert!(
+                reads(&CONFIG, &[path.as_str()])
+                    .unwrap()
+                    .contains(&(path.clone(), "koidrive-fs".to_string())),
+                "core/fs/tests/quoted.rs reads {path}, but no read rule in ci-select.toml says so"
+            );
+            let running = running(&[path.as_str()]);
+            let missing: Vec<_> = testing_fs.difference(&running).collect();
+            assert!(
+                missing.is_empty(),
+                "{path} must run {missing:?}, ran {running:?}"
+            );
         }
     }
 
