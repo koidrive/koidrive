@@ -22,11 +22,19 @@ jobs:
   changes:
     name: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
     outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      rust_suites: ${{ steps.paths.outputs.rust_suites }}
+      server: ${{ steps.paths.outputs.server }}
+      server_deploy: ${{ steps.paths.outputs.server_deploy }}
+      net_integration: ${{ steps.paths.outputs.net_integration }}
+      driver_integration: ${{ steps.paths.outputs.driver_integration }}
+      cli_integration: ${{ steps.paths.outputs.cli_integration }}
+      ffi_integration: ${{ steps.paths.outputs.ffi_integration }}
       rust_macos: ${{ steps.paths.outputs.rust_macos }}
       server_macos: ${{ steps.paths.outputs.server_macos }}
       spec_macos: ${{ steps.paths.outputs.spec_macos }}
@@ -41,15 +49,30 @@ jobs:
         run: python3 scripts/test-ci-workflow.py -v
       - name: Test Rust partition coverage
         run: python3 scripts/test-ci-rust-partitions.py RustPartitions -v
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: scripts/ci-select
+      - name: Build the job selector
+        id: selector
+        continue-on-error: true
+        run: cargo build --locked --manifest-path scripts/ci-select/Cargo.toml
       - name: Decide which jobs the change needs
         id: paths
         env:
+          SELECTOR_BUILD: ${{ steps.selector.outcome }}
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT" = push ]; then
-            echo "site_only=false" >> "$GITHUB_OUTPUT"
+            echo "Push to main: every Linux job runs."
+            {
+              echo "site_only=false"
+              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration
+              echo 'rust_suites=["driver","engine","sim"]'
+            } >> "$GITHUB_OUTPUT"
             api() {
               curl -fsS --max-time 15 -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/$1"
             }
@@ -96,15 +119,34 @@ jobs:
           printf '%s\n' "$changed"
           if [ -n "$changed" ] && ! grep -qv '^site/' <<<"$changed"; then
             echo "site_only: true, because every changed file is under site/, so the build and test jobs skip."
-            printf '%s=false\n' rust_macos server_macos spec_macos macos_app >> "$GITHUB_OUTPUT"
-            echo "site_only=true" >> "$GITHUB_OUTPUT"
+            {
+              printf '%s=false\n' rust_macos server_macos spec_macos macos_app rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration
+              echo "rust_suites=[]"
+              echo "site_only=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "site_only: false, because a changed file is outside site/."
           echo "site_only=false" >> "$GITHUB_OUTPUT"
+          echo "Jobs this change selects against $BASE (.github/ci-select.toml):"
+          if [ "$SELECTOR_BUILD" != success ] || ! git worktree add --detach "$RUNNER_TEMP/base" "$BASE" || ! selection="$(scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed")"; then
+            echo "::warning::The job selector failed to build or run (see the error above), so every job runs."
+            selection="$(printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration macos_app)"
+          fi
+          suites="$(jq -Rcn '[inputs | capture("^rust_(?<suite>driver|engine|sim)=true$") | .suite]' <<<"$selection")"
+          echo "rust tests suites: $suites"
+          {
+            grep -v '^macos_app=' <<<"$selection"
+            echo "rust_suites=$suites"
+          } >> "$GITHUB_OUTPUT"
+          app_selected=false
+          if grep -Fxq macos_app=true <<<"$selection"; then app_selected=true; fi
           if [ "$EVENT" = merge_group ]; then
-            echo "Merge queue run: every macOS job runs."
-            printf '%s=true\n' rust_macos server_macos spec_macos macos_app >> "$GITHUB_OUTPUT"
+            echo "Merge queue run: every macOS leg of a selected job runs."
+            {
+              printf '%s=true\n' rust_macos server_macos spec_macos
+              echo "macos_app=$app_selected"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           bash scripts/test-macos-changes.sh
@@ -119,13 +161,18 @@ jobs:
               echo "$1: runs, because of $(tr '\n' ' ' <<<"$3")"
               echo "$1=true" >> "$GITHUB_OUTPUT"
             else
-              echo "$1: skipped, because $2. The merge queue runs it."
+              echo "$1: skipped, because $2. The merge queue runs it if the change selects it."
               echo "$1=false" >> "$GITHUB_OUTPUT"
             fi
           }
           workflow="$(grep -E '^(\.github/workflows/ci\.yml$|scripts/(test-)?macos-changes\.sh$)' <<<"$changed" || true)"
           decide rust_macos "no macOS-specific Rust input changed" "$(cut -f1 <<<"$macos" | grep -v '^apps/macos/' || true)"$'\n'"$workflow"
-          decide macos_app "neither the app nor a macOS-specific input of the core changed" "$(cut -f1 <<<"$macos" | grep -v '^cli/' || true)"$'\n'"$workflow"
+          if [ "$app_selected" = true ]; then
+            decide macos_app "neither the app nor a macOS-specific input of the core changed" "$(cut -f1 <<<"$macos" | grep -v '^cli/' || true)"$'\n'"$workflow"
+          else
+            echo "macos_app: skipped, because the change reaches neither the app nor the Rust packages it builds."
+            echo "macos_app=false" >> "$GITHUB_OUTPUT"
+          fi
           for job in server_macos spec_macos; do
             decide "$job" "ci.yml did not change" "$(grep -Fx '.github/workflows/ci.yml' <<<"$changed" || true)"
           done
@@ -167,7 +214,7 @@ jobs:
   rust:
     name: rust (${{ matrix.os }})
     needs: [changes]
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -235,12 +282,12 @@ jobs:
   rust-tests:
     name: rust tests (${{ matrix.os }}, ${{ matrix.suite }})
     needs: [changes]
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_suites != '[]'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-        suite: [driver, engine, sim]
+        suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}
     runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
     timeout-minutes: 30
     steps:
@@ -274,6 +321,14 @@ jobs:
           nice -n 10 cargo fmt --manifest-path scripts/test-split/Cargo.toml --check
           nice -n 10 cargo clippy --manifest-path scripts/test-split/Cargo.toml --all-targets --locked -- -D warnings
           python3 scripts/test-split/test_split.py -v
+      - name: Test the job selector
+        if: ${{ !cancelled() && matrix.suite == 'engine' }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ci-select-target
+        run: |
+          nice -n 10 cargo fmt --manifest-path scripts/ci-select/Cargo.toml --check
+          nice -n 10 cargo clippy --manifest-path scripts/ci-select/Cargo.toml --all-targets --locked -- -D warnings
+          nice -n 10 cargo test --manifest-path scripts/ci-select/Cargo.toml --locked
       - name: List the package test inventory
         if: ${{ !cancelled() }}
         env:
@@ -334,7 +389,7 @@ jobs:
   server:
     name: server (${{ matrix.os }})
     needs: [changes]
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.server == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -365,7 +420,7 @@ jobs:
   server-deploy:
     name: server deploy check
     needs: changes
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.server_deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -401,7 +456,7 @@ jobs:
   net-integration:
     name: net integration (ubuntu-latest)
     needs: changes
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.net_integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -426,7 +481,7 @@ jobs:
   driver-integration:
     name: driver integration (ubuntu-latest)
     needs: changes
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.driver_integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -451,7 +506,7 @@ jobs:
   cli-integration:
     name: cli integration (ubuntu-latest)
     needs: changes
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.cli_integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -487,7 +542,7 @@ jobs:
   ffi-integration:
     name: ffi integration (ubuntu-latest)
     needs: changes
-    if: needs.changes.outputs.site_only != 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.ffi_integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -769,15 +824,15 @@ jobs:
             echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS). Open that job's log for the cause."
             exit 1
           fi
-      - name: Fail unless the build and test jobs ran for a change outside site/
+      - name: Fail unless every build and test job the change selects ran
         if: needs.changes.outputs.site_only != 'true'
         env:
-          RESULTS: rust=${{ needs.rust.result }} rust-tests=${{ needs.rust-tests.result }} server=${{ needs.server.result }} server-deploy=${{ needs.server-deploy.result }} net-integration=${{ needs.net-integration.result }} driver-integration=${{ needs.driver-integration.result }} cli-integration=${{ needs.cli-integration.result }} ffi-integration=${{ needs.ffi-integration.result }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }}
+          RESULTS: rust=${{ needs.changes.outputs.rust == 'true' && needs.rust.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_suites != '[]' && needs.rust-tests.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }}
         run: |
-          echo "Build and test jobs for a change outside site/: $RESULTS"
+          echo "Build and test jobs (not-needed: the change does not select it): $RESULTS"
           for r in $RESULTS; do
-            if [ "${r#*=}" != success ]; then
-              echo "::error::A change outside site/ must run and pass every build and test job, but ${r%%=*} is ${r#*=}. Only a change whose files are all under site/ may skip them."
+            if [ "${r#*=}" != success ] && [ "${r#*=}" != not-needed ]; then
+              echo "::error::Every build and test job the change selects must run and pass, but ${r%%=*} is ${r#*=}. The changes job log says why the change selects it."
               exit 1
             fi
           done

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "ci-select"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+camino = "1"
+determinator = "0.13"
+guppy = "0.19"
+serde = { version = "1", features = ["derive"] }
+toml = "1"

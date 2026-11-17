@@ -1,0 +1,138 @@
+[[path]]
+globs = [
+  "Cargo.toml",
+  ".github/workflows/ci.yml",
+  ".github/actions/**",
+  ".github/ci-select.toml",
+  "scripts/ci-select/**",
+  "rust-toolchain.toml",
+  ".cargo/**",
+  "scripts/macos-changes.sh",
+  "scripts/test-macos-changes.sh",
+]
+jobs = "all"
+
+[[path]]
+globs = ["spec/**"]
+packages = ["koidrive-proto", "koidrive-engine", "koidrive-driver", "koidrive-sim"]
+jobs = ["server", "server_deploy", "net_integration", "driver_integration", "cli_integration", "ffi_integration"]
+
+[[path]]
+globs = ["server/**"]
+jobs = ["server", "server_deploy", "net_integration", "driver_integration", "cli_integration", "ffi_integration"]
+
+[[path]]
+globs = ["docs/json-schema/**"]
+packages = ["koidrive-cli", "koidrive-ffi"]
+
+[[path]]
+globs = ["apps/macos/**"]
+jobs = ["macos_app"]
+
+[[path]]
+globs = [
+  "scripts/test-ci-rust-partitions.py",
+  "scripts/test-split-proptest-regressions.py",
+  "scripts/split-proptest-regressions.py",
+]
+jobs = ["rust"]
+
+[[path]]
+globs = [
+  "clippy.toml",
+  "rustfmt.toml",
+  ".rustfmt.toml",
+  "scripts/check-proptest-persistence/**",
+  "scripts/test-property-battery.py",
+  ".github/workflows/property-battery.yml",
+  ".github/workflows/heavy-tests.yml",
+  "scripts/test-split/**",
+  "scripts/split-tests.py",
+]
+jobs = ["rust_engine"]
+
+[[path]]
+globs = ["scripts/stamp-release-version.py"]
+jobs = ["rust_driver"]
+
+[[path]]
+globs = ["scripts/require-runtime-checks.sh"]
+jobs = ["rust_engine", "rust_driver", "rust_sim"]
+
+[[path]]
+globs = [
+  "Cargo.lock",
+  ".gitignore",
+  "LICENSE",
+  "apps/LICENSE",
+  "core/LICENSE",
+  "docs/**",
+  "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  ".coderabbit.yaml",
+  "install.sh",
+  ".github/actionlint.yaml",
+  ".github/dependabot.yml",
+  ".github/release-allowed-signers",
+  ".github/requirements-musl.txt",
+  ".github/workflows/*",
+  "scripts/check-new-comments.py",
+  "scripts/test-check-new-comments.py",
+  "scripts/split-sync-design.py",
+  "scripts/test-split-sync-design.py",
+  "scripts/check-store-upgrades.py",
+  "scripts/test-check-store-upgrades.py",
+  "scripts/check-state-io.py",
+  "scripts/test-state-io.py",
+  "scripts/state-io/**",
+  "scripts/test-fixtures/**",
+  "scripts/fn-docs/**",
+  "scripts/test-install.sh",
+  "scripts/test-install-journey.py",
+  "scripts/test-ci-workflow.py",
+  "scripts/homebrew-*.sh",
+  "scripts/test-homebrew-*.sh",
+  "scripts/publish-release.sh",
+  "scripts/test-publish-release.sh",
+  "scripts/release-*",
+  "scripts/test-release-*.py",
+  "scripts/sign-checksums.sh",
+  "scripts/battery.sh",
+  "scripts/mutations.sh",
+  "scripts/engine-mutations.sh",
+  "scripts/test-engine-mutations.sh",
+  "scripts/test-mutations.py",
+]
+
+[job.rust]
+packages = "any"
+except = ["koidrive-driver", "koidrive-engine", "koidrive-sim"]
+
+[job.rust_engine]
+packages = "any"
+
+[job.rust_driver]
+packages = ["koidrive-driver", "koidrive-cli"]
+
+[job.rust_sim]
+packages = ["koidrive-sim"]
+
+[job.server]
+
+[job.server_deploy]
+
+[job.net_integration]
+packages = ["koidrive-net"]
+
+[job.driver_integration]
+packages = ["koidrive-driver"]
+
+[job.cli_integration]
+packages = ["koidrive-cli"]
+
+[job.ffi_integration]
+packages = ["koidrive-ffi", "koidrive-cli"]
+
+[job.macos_app]
+packages = ["koidrive-ffi", "koidrive-cli", "uniffi-bindgen-swift"]
