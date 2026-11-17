@@ -443,12 +443,32 @@ class KnownFailures(unittest.TestCase):
         self.assertEqual(rows[0]["class"], "B, C")
         self.assertIn(f"| {triage.SAME} | B, C | GUN-2, GUN-3 |", text)
 
+    def test_an_entry_that_lists_cases_labels_only_those_cases_and_comes_first(self):
+        scoped = KNOWN + f"""
+[[failure]]
+class = "D"
+issue = "GUN-4"
+tests = ["devices_converge"]
+message = '''write <n> is lost'''
+examples = ["write 1 is lost"]
+cases = ["{1:064}"]
+"""
+        run, rows, text = self.report(scoped, [
+            ("devices_converge", ("fail", "write 1 is lost"), ("fail", "write 1 is lost")),
+            ("devices_converge", ("fail", "write 2 is lost"), ("fail", "write 2 is lost")),
+            ("devices_lose_no_write", ("fail", "write 3 is lost"), ("fail", "write 3 is lost")),
+        ])
+        self.assertEqual(run.returncode, 0, run.stdout)
+        self.assertEqual({row["case"]: (row["class"], row["issue"]) for row in rows},
+                         {f"{0:064}": ("A", "GUN-1"), f"{1:064}": ("D", "GUN-4"), f"{2:064}": ("A", "GUN-1")})
+        self.assertIn(f"| {triage.SAME} | D | GUN-4 |", text)
+
     def test_every_registry_example_matches_its_own_entry_and_no_other(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
         self.assertTrue(entries)
         for index, entry in enumerate(entries):
             with self.subTest(entry=index, failure=entry["class"]):
-                self.assertEqual(set(entry), {"class", "issue", "tests", "message", "examples", "pattern"})
+                self.assertLessEqual(set(entry) - {"class", "issue", "tests", "message", "examples", "pattern"}, {"cases"})
                 self.assertRegex(entry["class"], r"^[A-Z]$")
                 self.assertRegex(entry["issue"], r"^GUN-[1-9][0-9]*$")
                 self.assertTrue(entry["tests"])
@@ -456,8 +476,9 @@ class KnownFailures(unittest.TestCase):
                 self.assertTrue(entry["examples"])
                 for example in entry["examples"]:
                     for test in entry["tests"]:
-                        found = triage.matches(entries, test, example)
-                        self.assertEqual([entries.index(other) for other in found], [index], (test, example))
+                        for case in entry.get("cases", [""]):
+                            found = triage.matches(entries, test, example, case)
+                            self.assertEqual([entries.index(other) for other in found], [index], (test, example, case))
 
     def test_every_registry_test_name_is_a_test_in_core(self):
         files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
@@ -478,6 +499,11 @@ class KnownFailures(unittest.TestCase):
             "a message that isn't a string": KNOWN.replace("'''write <n> is lost'''", "1"),
             "a class that isn't a string": KNOWN.replace('class = "A"', "class = 1"),
             "an entry that isn't a table": "failure = [1]\n",
+            "cases as a string": KNOWN + 'cases = "0123456789ab"\n',
+            "a case that is too short": KNOWN + 'cases = ["0123"]\n',
+            "a case that isn't hex": KNOWN + 'cases = ["0123456789az"]\n',
+            "no cases": KNOWN + "cases = []\n",
+            "an unknown field": KNOWN + 'shards = ["1"]\n',
         }
         for name, text in broken.items():
             with self.subTest(name), self.assertRaises(ValueError):
