@@ -336,8 +336,18 @@ class Triage(unittest.TestCase):
                          "ignored")
         self.assertEqual(triage.outcome(101, FAILING_LOG.format(case="a"))["message"].splitlines()[0],
                          "assertion failed: §(left == right)§".replace("§", chr(96)))
-        self.assertEqual(triage.outcome(-6, "thread 'main' has overflowed its stack\n"),
-                         {"result": "fail", "message": "killed by signal 6"})
+        self.assertEqual(triage.outcome(-6, ""), {"result": "fail", "message": "killed by signal 6"})
+
+    def test_a_stack_overflow_and_an_abort_are_different_failures(self):
+        running = "running 1 test\ntest devices_converge ... "
+        overflow = triage.outcome(-6, running + "\nthread 'devices_converge' (2963) has overflowed its stack\n"
+                                       "fatal runtime error: stack overflow, aborting\n")
+        abort = triage.outcome(-6, running)
+        self.assertEqual(overflow, {"result": "fail",
+                                    "message": "killed by signal 6 after: fatal runtime error: stack overflow, aborting"})
+        self.assertEqual(abort, {"result": "fail", "message": "killed by signal 6 after: test devices_converge ..."})
+        self.assertEqual(triage.verdict([abort] * 2, [overflow] * 2), "PR-caused")
+        self.assertEqual(triage.verdict([overflow] * 2, [overflow] * 2), triage.SAME)
 
     def test_an_outcome_without_a_harness_result_is_an_error(self):
         for returncode, output in ((101, "error: no such test"), (127, ""), (0, ""), (0, "running 0 tests\n"),

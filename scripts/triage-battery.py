@@ -181,7 +181,9 @@ def outcome(returncode, output):
     if returncode == 0 and re.search(r"^test result: ok\. 0 passed; 0 failed; 1 ignored;", output, re.M):
         return {"result": "ignored", "message": None}
     if returncode < 0:
-        return {"result": "fail", "message": failure_message(output) or f"killed by signal {-returncode}"}
+        last = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), None)
+        return {"result": "fail", "message": failure_message(output)
+                or f"killed by signal {-returncode}" + (f" after: {last}" if last else "")}
     if returncode != 0 and re.search(r"^test result: FAILED\.", output, re.M):
         return {"result": "fail", "message": failure_message(output) or f"exit code {returncode}"}
     return {"result": "error", "message": f"exit code {returncode} without a test result"}
