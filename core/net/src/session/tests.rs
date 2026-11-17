@@ -1695,17 +1695,37 @@ async fn each_way_a_connection_fails_names_its_step_and_cause() {
     let plain_http = serve_once(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n").await;
     let hung_up = serve_once(b"").await;
     let token_refused = serve_once(b"HTTP/1.1 503 Unavailable\r\ncontent-length: 0\r\n\r\n").await;
+    let port_zero = "http://127.0.0.1:0".to_owned();
+    let port_zero_cause = if cfg!(target_os = "macos") {
+        "unreachable"
+    } else {
+        "refused"
+    };
     let cases = [
-        (format!("http://{reset}"), true, "upgrade: reset"),
+        (
+            port_zero.clone(),
+            true,
+            format!("connect: {port_zero_cause}"),
+        ),
+        (format!("http://{reset}"), true, "upgrade: reset".to_owned()),
         (
             "https://koidrive-test.invalid".to_owned(),
             true,
-            "connect: dns",
+            "connect: dns".to_owned(),
         ),
-        (format!("http://{reset}"), false, "token: reset"),
-        (format!("http://{token_refused}"), false, "token: http 503"),
-        (format!("https://{plain_http}"), true, "tls: tls"),
-        (format!("http://{hung_up}"), true, "upgrade: reset"),
+        (port_zero, false, format!("token: {port_zero_cause}")),
+        (format!("http://{reset}"), false, "token: reset".to_owned()),
+        (
+            format!("http://{token_refused}"),
+            false,
+            "token: http 503".to_owned(),
+        ),
+        (format!("https://{plain_http}"), true, "tls: tls".to_owned()),
+        (
+            format!("http://{hung_up}"),
+            true,
+            "upgrade: reset".to_owned(),
+        ),
     ];
     for (base, token, kind) in cases {
         let reason = first_disconnect(auth_at(&base, token)).await;
