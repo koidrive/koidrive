@@ -208,8 +208,8 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             }),
             None => return,
         },
-        7 => {
-            let trashed = nodes_with(space, 2, Some(2));
+        7 | 9 => {
+            let trashed = nodes_with(space, 2, (action.kind == 7).then_some(2));
             match target(&[trashed.as_slice(), files.as_slice()].concat()) {
                 Some(node_id) if trashed.contains(&node_id) => {
                     space.purge(&node_id, NOW);

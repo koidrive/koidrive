@@ -15,6 +15,7 @@ fn u(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Step {
 #[test]
 fn a_device_that_missed_the_delete_of_a_folder_owing_its_name_brings_it_back_by_its_users_edit_and_finishes_the_name()
  {
+    let _red = expect_red(Check::OwnerFinish);
     use Step::*;
     let phases = vec![
         vec![(0, u(1, 0, 0, 0, 0))],

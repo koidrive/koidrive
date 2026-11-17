@@ -1,0 +1,13 @@
+class = "B"
+issue = "GUN-984"
+tests = [
+  "devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back",
+  "devices_converge_around_an_owed_rename",
+  "devices_converge_around_a_folder_another_device_replaces",
+  "devices_converge_once_the_faults_stop",
+  "devices_converge_across_rewinds_and_rollbacks",
+]
+message = '''after phase <n>: a commit of device <n> finishes the pending name \".*\" of node <id>, which the user of device <n> never gave it\.'''
+examples = [
+  "after phase 1: a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it.",
+]

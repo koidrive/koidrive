@@ -1,0 +1,12 @@
+class = "B"
+issue = "GUN-984"
+tests = [
+  "devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back",
+  "devices_converge_around_an_owed_rename",
+  "devices_converge_across_rewinds_and_rollbacks",
+  "devices_converge_across_server_restores",
+]
+message = '''after phase <n>: a commit of device <n> moves node <id> to \".*\", a place the user of device <n> never gave it\.'''
+examples = [
+  "after phase 1: a commit of device 1 moves node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 to \"a\", a place the user of device 1 never gave it.",
+]

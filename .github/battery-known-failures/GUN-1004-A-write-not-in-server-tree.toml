@@ -1,0 +1,14 @@
+class = "A"
+issue = "GUN-1004"
+tests = [
+  "devices_converge_across_restores_and_rewinds",
+  "devices_converge_across_server_restores",
+  "devices_converge_across_rewinds_and_rollbacks",
+  "devices_lose_no_write_across_rewinds_and_rollbacks",
+  "devices_lose_no_write_across_restores_and_rewinds",
+  "devices_lose_no_write_across_server_restores",
+]
+message = '''after phase <n>: write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\.'''
+examples = [
+  "after phase 1: write 4 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it.",
+]
