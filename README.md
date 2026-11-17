@@ -64,7 +64,7 @@ Dropbox does much more, and charges per person for it. Koidrive does the core of
 | **Windows and iOS** | Coming | Yes |
 | **Web interface** | Coming | Yes |
 | **Admin tools** | Revoke a lost device with `koi device revoke` | Device approvals, remote wipe and account transfer |
-| **Support** | GitHub issues | Yes |
+| **Support** | GitHub Discussions and issues | Yes |
 
 ## What it costs
 
@@ -81,11 +81,27 @@ Files in the trash and old versions count as storage for the 30 days Koidrive ke
 
 ## Get started
 
-You need a Cloudflare account with R2 turned on, and a Mac with Apple silicon or a Linux machine.
+You need a Cloudflare account, and a Mac with Apple silicon or a Linux machine. R2 needs a payment method on your Cloudflare account. Usage within the free tier costs nothing.
+
+### Install and set up
+
+1. **Install `koi`** on Linux or a Mac with Apple silicon:
+
+   ```sh
+   curl -fsSL https://koidrive.com/install.sh | sh
+   ```
+
+   On macOS, the installer continues into `koi setup` and installs the Mac app. In an attended terminal, it configures `PATH` for zsh, bash, or fish. Start a new login shell to run `koi` by name. [Install](docs/guide/install.md) covers opting out and building from source.
+
+2. **Run `koi setup`** if the installer didn't start it. It logs in with Cloudflare, deploys your server or finds it, signs in this machine and links `~/Koidrive`. If your account has no workers.dev subdomain, setup suggests one. [koi setup](docs/guide/koi-setup.md) describes each question.
+
+3. **Add your other machines.** On a machine that is signed in, run `koi device invite`. It prints a command with a pairing code. Run that command on the new machine. On a signed-in Mac, **Settings**, **Account**, **Add a Device…** gives the pairing code too.
 
 ### The macOS app
 
 Koidrive for Mac is the full sync client for macOS 26 or later on Apple silicon. Set up this Mac, link folders and manage sync in the app. The menu bar shows sync status and notices, opens your folders in Finder and lets you pause or resume sync. **Needs You** asks before a large delete reaches your other machines, and lets you compare and keep either copy of a file changed on two devices. Deleted Files and Version History bring back deleted files and earlier versions of a file. Share Link makes a link that lets anyone download a file or folder, and Shared Links lists your links so you can revoke one.
+
+The install command above sets up the Mac app for you. To install it by hand:
 
 1. Download `Koidrive-<version>-arm64.dmg` from the [latest release](https://github.com/koidrive/koidrive/releases/latest), open it and drag Koidrive to Applications.
 
@@ -95,46 +111,12 @@ Koidrive for Mac is the full sync client for macOS 26 or later on Apple silicon.
    brew install --cask koidrive/tap/koidrive
    ```
 
-2. If you have no server, [deploy one](docs/deploy.md#deploy) in your Cloudflare account. Open `<your server>/setup` and find the claim code in the Worker's logs. For an existing account, skip this step.
+2. If you have no server, run the install command above instead. `koi setup` deploys one.
 3. Open Koidrive. The **Set Up Koidrive** window connects to your server, signs in this Mac and links a folder. For an existing account, use a pairing code from a signed-in device.
 
 **Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs for managing folders, devices, storage use, problems and app preferences. The [Mac app guide](docs/guide/macos.md) walks through setup and everyday use, including adding another Mac.
 
-### The CLI for Linux, servers and scripts
-
-The `koi` command works on Linux and Macs with Apple silicon. The Mac app includes `koi` and shares its device, profile and background sync service. Folders linked in either appear in both.
-
-1. **Install the `koi` command.**
-
-   ```sh
-   curl -fsSL https://koidrive.com/install.sh | sh
-   ```
-
-   On macOS, the installer continues into guided setup, which installs and verifies the app and connects this machine. In an attended terminal, it configures `PATH` for zsh, bash, or fish. Start a new login shell to run `koi` by name. [Install](docs/guide/install.md) covers opting out and building from source.
-
-   Skip steps 2 and 3 if guided setup has connected this machine and linked a folder. Otherwise, complete the steps that remain.
-
-2. **Deploy your server and sign in this machine if you skipped guided setup.** Deploy the server with the deploy button, open `<your server>/setup` to get a claim code, and claim the server:
-
-   ```sh
-   koi server claim koidrive.alice.workers.dev ABCD-EFGH-JKLM --user "Alice Park"
-   ```
-
-   [Set up](docs/guide/setup.md#deploy-a-server-and-claim-it) walks through each step.
-
-3. **Link a folder if setup has not linked one.**
-
-   ```sh
-   mkdir -p ~/Koidrive
-   koi space create Koidrive
-   koi folder link ~/Koidrive --space Koidrive
-   ```
-
-   The folder syncs in the background, including after a restart (on macOS, while you're logged in). `koi status` shows it as `UpToDate` once it has the server's files.
-
-4. **Add your other machines.** On a machine that is signed in, run `koi device invite`. It prints a command with a pairing code. Run that command on the new machine, then link a folder there too.
-
-The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, limits and how to remove everything.
+The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, limits and how to remove everything. Ask questions in [Discussions](https://github.com/koidrive/koidrive/discussions) and report bugs in [Issues](https://github.com/koidrive/koidrive/issues).
 
 ## Repository layout
 

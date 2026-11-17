@@ -6,7 +6,7 @@ Koidrive has no backup of its own. If you delete the R2 bucket or lose the Cloud
 
 The steps follow Cloudflare's [rclone guide](https://developers.cloudflare.com/r2/examples/rclone/) and [R2 authentication](https://developers.cloudflare.com/r2/api/tokens/) pages.
 
-1. Find the bucket's name on the **R2 object storage** page of the Cloudflare dashboard. `koi setup` names it `koidrive-` followed by 16 hex digits. The deploy button uses the name you chose, `koidrive` by default. The commands below write it as `<bucket>`.
+1. Find the bucket's name on the **R2 object storage** page of the Cloudflare dashboard. `koi setup` names it `koidrive-` followed by 16 hex digits. Wrangler uses the name in `wrangler.jsonc`, `koidrive` by default. The commands below write it as `<bucket>`.
 2. On the same page, select **Manage** next to **API Tokens**. Create a token with the **Object Read only** permission, scoped to `<bucket>`. Note its **Access Key ID** and **Secret Access Key**, and your account ID.
 3. Install rclone 1.59 or later. Earlier versions can fail against R2.
 4. Add a remote for R2 to the rclone configuration file. `rclone config file` prints where it is.
