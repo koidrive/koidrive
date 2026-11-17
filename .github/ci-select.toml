@@ -44,6 +44,7 @@ globs = [
   ".rustfmt.toml",
   "scripts/check-proptest-persistence/**",
   "scripts/test-property-battery.py",
+  "scripts/triage-battery.py",
   ".github/workflows/property-battery.yml",
   ".github/workflows/heavy-tests.yml",
   "scripts/test-split/**",
