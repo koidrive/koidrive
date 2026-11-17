@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
-use crate::api::Api;
+use crate::api::{Api, is_protobuf};
 use crate::backoff::Backoff;
 use crate::error::{CallError, Resend, ServerError};
 use crate::session::Session;
@@ -1051,7 +1051,7 @@ fn protobuf(response: &reqwest::Response) -> bool {
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("application/x-protobuf"))
+        .is_some_and(is_protobuf)
 }
 
 fn edge_code(body: &[u8]) -> Option<u16> {

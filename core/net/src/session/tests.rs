@@ -11,6 +11,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::WebSocketStream;
 
 use super::*;
+use crate::api::PROTOBUF;
 use crate::{Api, Credentials};
 use koidrive_proto::v1::error::Code;
 

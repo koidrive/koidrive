@@ -747,6 +747,11 @@ async fn refusals_follow_the_server_error_code_before_the_http_status() {
         (503, protobuf, error(999, 0)),
         (429, protobuf, error(Code::QuotaExceeded as i32, 0)),
         (429, protobuf, error(Code::QuotaExceeded as i32, 100)),
+        (
+            429,
+            "Application/X-Protobuf; charset=binary",
+            error(Code::QuotaExceeded as i32, 100),
+        ),
         (503, protobuf, error(Code::Internal as i32, 0)),
         (500, "text/plain", Vec::new()),
         (
@@ -778,6 +783,16 @@ async fn refusals_follow_the_server_error_code_before_the_http_status() {
     assert!(
         matches!(put().await, Attempt::Retry(_)),
         "a quota with a wait is retried"
+    );
+    assert!(
+        matches!(
+            put().await,
+            Attempt::Retry(ChunkError::Refused {
+                error: Some(ref server),
+                ..
+            }) if server.0.retry_after_ms == 100
+        ),
+        "media types match without case and with parameters"
     );
     assert!(
         matches!(put().await, Attempt::Retry(_)),
