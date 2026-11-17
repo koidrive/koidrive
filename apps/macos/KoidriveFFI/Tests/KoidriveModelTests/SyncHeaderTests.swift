@@ -30,6 +30,7 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
         #expect(model.headline == .status(.syncing))
         let header = model.syncHeader
         #expect(header.folders == 1)
+        #expect(header.folder == "Photos")
         #expect(header.activity == .scanning(folder: "Photos", files: nil))
         #expect(header.meter == Meter(fill: .sliding, caption: .filesFound(12_408)))
         #expect(header.note == nil)
@@ -134,6 +135,24 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
         #expect(model.headline == .status(.syncing))
         #expect(model.syncHeader.meter == Meter(fill: .sliding))
         #expect(model.syncHeader.note == .waitingForAnswer(.one("Photos")))
+    }
+
+    @Test func aQuestionKeepsItsBadgeWhileOtherFoldersSync() {
+        let transferring = syncing([folder("Documents", nil), folder("Photos", .awaitingAnswers(questions: 1))],
+                                   transfers(up: 820, done: 0, total: 10_800_000_000), scenario: .massDelete)
+        #expect(transferring.headline == .status(.syncing))
+        #expect(transferring.iconBadge == .question)
+        #expect(!transferring.turnsMenuBarArrows(reduceMotion: false))
+
+        let scanning = syncing([folder("Documents", nil, state: .upToDate), folder("Photos", .scanning(files: 12))], scenario: .massDelete)
+        #expect(scanning.iconBadge == .question)
+    }
+
+    @Test func aMassDeleteQuestionShowsTheQuestionBadge() {
+        let model = AppModel.fake(scenario: .massDelete)
+        model.start()
+        #expect(model.iconBadge == .question)
+        #expect(!model.turnsMenuBarArrows(reduceMotion: false))
     }
 
     @Test func aSyncingFolderThatReportsNothingStillSlides() {

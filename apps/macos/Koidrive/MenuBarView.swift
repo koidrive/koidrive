@@ -13,7 +13,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(turningArrows.isTurning ? "MenuBar/syncing-fish" : model.iconBadge.imageName)
-            .accessibilityLabel(Text("Koidrive: \(model.headline == .questions ? String(localized: "Needs you") : model.headlineTitle)"))
+            .accessibilityLabel(Text("Koidrive: \(model.iconBadge == .question ? String(localized: "Needs you") : model.headlineTitle)"))
             .onChange(of: model.turnsMenuBarArrows(reduceMotion: reduceMotion), initial: true) { _, turns in
                 turningArrows.turn(turns)
             }
@@ -366,6 +366,7 @@ extension AppModel {
 /// not the tint.
 private struct ProgressBar: View {
     let fill: Meter.Fill
+    let label: String
     let reduceMotion: Bool
 
     var body: some View {
@@ -395,6 +396,7 @@ private struct ProgressBar: View {
                 }
             }
             .accessibilityElement()
+            .accessibilityLabel(Text(verbatim: label))
             .accessibilityValue(accessibilityValue)
     }
 
@@ -417,7 +419,7 @@ private struct SyncHeaderRows: View {
                 line(activity.leadText)
             }
             HStack(spacing: 10) {
-                ProgressBar(fill: header.meter.fill, reduceMotion: reduceMotion)
+                ProgressBar(fill: header.meter.fill, label: header.accessibilityLabel, reduceMotion: reduceMotion)
                 if let caption = header.meter.caption {
                     line(caption.text)
                         .fixedSize()

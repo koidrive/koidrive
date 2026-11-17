@@ -6,6 +6,8 @@ import KoidriveFFI
 public struct SyncHeader: Equatable, Sendable {
     /// The number of folders the title counts: syncing folders that do more than wait for answers.
     public var folders: Int
+    /// The only busy folder's name.
+    public var folder: String?
     /// What the only busy folder is doing, above the meter.
     public var activity: ActivityLine?
     public var meter: Meter
@@ -86,6 +88,7 @@ extension SyncHeader {
         let only = busy.count == 1 ? busy[0] : nil
         let transfers = progress != nil
         folders = busy.count
+        folder = only?.spaceName
         uploads = progress?.filesToUpload ?? 0
         downloads = progress?.filesToDownload ?? 0
         current = progress?.current

@@ -882,6 +882,7 @@
     "Sync state older than the folder" : {},
     "Sync stopped so older files aren't uploaded as edits." : {},
     "Syncing" : {},
+    "Syncing %@" : {},
     "Syncing %lld folders" : {},
     "Syncing…" : {},
     "The copy moved to Deleted Files." : {},

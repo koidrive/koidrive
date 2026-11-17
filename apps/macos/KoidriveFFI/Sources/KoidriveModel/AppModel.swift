@@ -224,18 +224,17 @@ public final class AppModel {
         FolderNames(state.folders.filter(\.awaitsAnswers).map(\.spaceName))
     }
 
-    /// The badge on the menu bar icon. It follows the headline, except that a problem that
-    /// stopped no folder still shows the problem badge.
+    /// The badge on the menu bar icon, in priority order: nothing before setup, then a problem,
+    /// then unanswered questions, then the sync status.
     public var iconBadge: IconBadge {
-        switch headline {
-        case .setup: .none
-        case .halted: .problem
-        case _ where state.problems.contains(where: { !$0.kind.isServerUnreachable }): .problem
-        case .questions: .question
-        case .status(.offline): .offline
-        case .status(.paused): .paused
-        case .status(.syncing), .status(.connecting): .syncing
-        case .status: .none
+        if needsSetup { return .none }
+        if state.status == .halted || state.problems.contains(where: { !$0.kind.isServerUnreachable }) { return .problem }
+        if !state.questions.isEmpty { return .question }
+        switch state.status {
+        case .offline: return .offline
+        case .paused: return .paused
+        case .syncing, .connecting: return .syncing
+        case .idle, .stopped, .needsSetup, .halted: return .none
         }
     }
 
