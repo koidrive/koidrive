@@ -1245,7 +1245,7 @@ impl Trees {
     }
 
     pub(crate) fn yield_resends(&mut self) {
-        if self.resends.is_empty() {
+        if self.resends.is_empty() && self.lost_creates.is_empty() {
             return;
         }
         let holding_changes = self.holding_changes();
@@ -1255,7 +1255,13 @@ impl Trees {
                 self.local_chain(id)
                     .any(|id| self.r.get(id).is_some_and(|remote| remote.trashed))
             })
+            .chain(
+                (self.resends.iter().chain(self.lost_creates.iter()))
+                    .filter(|id| !holding_changes.contains(*id) && self.edit_held_elsewhere(id)),
+            )
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         yielded.sort_by_key(|id| self.local_chain(id).count());
         for id in yielded {
@@ -1339,6 +1345,36 @@ impl Trees {
         if !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
             self.wait(id, Some(shape), origin);
         }
+    }
+
+    pub(crate) fn edit_held_elsewhere(&self, id: &str) -> bool {
+        let Some(write) = (self.l.live(id)).and_then(|local| local.content.as_ref()) else {
+            return false;
+        };
+        let made_over = self.edit_bases(id);
+        let within = |a: &[String], b: &[String]| a.iter().all(|id| b.contains(id));
+        let overwritten_here =
+            |other: &str, held: &Content| match (self.l.live(other), self.s.live(other)) {
+                (Some(local), Some(synced)) => {
+                    (local.content.as_ref()).is_some_and(|kept| !same_content(kept, held))
+                        && (synced.content.as_ref()).is_some_and(|base| same_content(base, held))
+                }
+                _ => false,
+            };
+        self.r.get(id).is_none()
+            && !made_over.is_empty()
+            && write.mtime_ns % 10_000_000 != 0
+            && (self.r.iter()).any(|(other, node)| {
+                other != id
+                    && node.is_live()
+                    && !node.made_over.is_empty()
+                    && (within(&made_over, &node.made_over) || within(&node.made_over, &made_over))
+                    && (node.shape.content.as_ref()).is_some_and(|held| {
+                        same_content(held, write)
+                            && held.mtime_ns == write.mtime_ns
+                            && !overwritten_here(other, held)
+                    })
+            })
     }
 
     pub(crate) fn write_held_beside(&self, id: &str) -> bool {

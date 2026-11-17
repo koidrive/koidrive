@@ -57,7 +57,7 @@ pub(crate) fn group(trees: &Trees, id: &str) -> Option<RecoveryGroup> {
     match (local, synced) {
         (Some(l), _) if trees.adopted(id) && pending(l) => None,
         (Some(_), Some(_)) if same(local, synced) && remote.is_none() => {
-            Some(RecoveryGroup::CreatedAfterRestorePoint)
+            (!trees.edit_held_elsewhere(id)).then_some(RecoveryGroup::CreatedAfterRestorePoint)
         }
         (Some(_), Some(_)) if same(local, synced) && !trees.unsent_edits().contains(id) => None,
         (Some(_), Some(_)) => Some(RecoveryGroup::ChangedOnThisDevice),
