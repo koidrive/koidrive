@@ -85,6 +85,7 @@ pub(crate) struct Tracker {
     total: u64,
     finished: u64,
     current: Option<Item>,
+    moved: u64,
     sink: Option<Sink>,
 }
 
@@ -118,6 +119,10 @@ impl Tracker {
                 .and_then(|item| self.entries.get(item))
                 .and_then(|entry| entry.path.clone()),
         })
+    }
+
+    pub fn moved(&self) -> u64 {
+        self.moved
     }
 
     pub fn track(&mut self, wanted: BTreeMap<Item, u64>, synced: impl Fn(&Item) -> bool) -> bool {
@@ -280,6 +285,11 @@ impl Credit {
                 .collect(),
             chunks: HashMap::new(),
         }
+    }
+
+    pub fn moved(&self, bytes: u64) {
+        let Some(tracker) = &self.tracker else { return };
+        tracker.lock().unwrap().moved += bytes;
     }
 
     pub fn chunk(&self, hash: &[u8]) {

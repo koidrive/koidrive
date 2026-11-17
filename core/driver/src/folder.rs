@@ -2905,6 +2905,7 @@ async fn upload_counted(
     let credit = upload.credit.clone();
     let stored = |chunk: &ChunkRef| {
         stored(u64::from(chunk.size));
+        credit.moved(u64::from(chunk.size));
         credit.chunk(&chunk.hash);
     };
     let present = |chunk: &ChunkRef| credit.chunk(&chunk.hash);

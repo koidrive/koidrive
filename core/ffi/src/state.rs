@@ -130,6 +130,7 @@ pub(crate) fn folder(folder: &driver::FolderStatus) -> LinkedFolder {
             driver::Activity::Applying { changes } => FolderActivity::Applying { changes },
             driver::Activity::CatchingUp => FolderActivity::CatchingUp,
         }),
+        bytes_moved: folder.bytes_moved,
     }
 }
 
@@ -555,6 +556,7 @@ mod tests {
             progress: None,
             held_disks: Vec::new(),
             activity: None,
+            bytes_moved: 0,
         }
     }
 
@@ -645,6 +647,7 @@ mod tests {
         status.folders = vec![
             driver::FolderStatus {
                 progress: Some(transfers),
+                bytes_moved: 4_096,
                 ..folder_in(DriverFolderState::CatchingUp, None)
             },
             driver::FolderStatus {
@@ -679,6 +682,12 @@ mod tests {
                 ),
             ]
         );
+        let moved: Vec<_> = state
+            .folders
+            .iter()
+            .map(|folder| folder.bytes_moved)
+            .collect();
+        assert_eq!(moved, [4_096, 0]);
         let progress = state.progress.unwrap();
         assert_eq!((progress.files_to_upload, progress.bytes_total), (2, 40));
     }
@@ -994,6 +1003,7 @@ mod unreachable_tests {
                 progress: None,
                 held_disks: Vec::new(),
                 activity: None,
+                bytes_moved: 0,
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
                     until_ms: Some(7),
@@ -1038,6 +1048,7 @@ mod unreachable_tests {
                     progress: None,
                     held_disks: Vec::new(),
                     activity: None,
+                    bytes_moved: 0,
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
                         until_ms: Some(1),

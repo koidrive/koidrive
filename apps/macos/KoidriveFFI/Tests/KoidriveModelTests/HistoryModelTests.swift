@@ -544,7 +544,7 @@ private let fourVersions = [
         let base = FileManager.default.temporaryDirectory.appending(path: "koidrive-alias-\(UUID().uuidString)").resolvingSymlinksInPath()
         let root = base.appending(path: "Sync")
         try FileManager.default.createDirectory(at: root.appending(path: "Docs"), withIntermediateDirectories: true)
-        let folder = LinkedFolder(spaceId: "space-sync", spaceName: "Sync", path: root.path(percentEncoded: false), state: .upToDate, activity: nil)
+        let folder = LinkedFolder(spaceId: "space-sync", spaceName: "Sync", path: root.path(percentEncoded: false), state: .upToDate, activity: nil, bytesMoved: 0)
         let app = AppModel.fake(scenario: .upToDate)
         app.apply(.folders(folders: [folder]))
         return (app, base, root, folder)
@@ -620,7 +620,7 @@ private let fourVersions = [
         try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
         let link = base.appending(path: "Current")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
-        let folder = LinkedFolder(spaceId: "space-current", spaceName: "Current", path: link.path(percentEncoded: false), state: .upToDate, activity: nil)
+        let folder = LinkedFolder(spaceId: "space-current", spaceName: "Current", path: link.path(percentEncoded: false), state: .upToDate, activity: nil, bytesMoved: 0)
         app.apply(.folders(folders: [folder]))
         #expect(app.folder(containing: first.appending(path: "Plan.key")) == folder)
 

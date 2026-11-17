@@ -67,6 +67,21 @@ private final class Fetches {
         #expect(model.folder(spaceID: "space-photos")?.activity == .scanning(files: 20_000))
     }
 
+    @Test func eachFolderReportsTheBytesItMovedAndANewCountReplacesTheOld() throws {
+        let model = AppModel.fake(scenario: .syncing)
+        model.start()
+        #expect(model.folder(spaceID: "space-photos")?.bytesMoved == 48_000_000)
+        #expect(model.folder(spaceID: "space-documents")?.bytesMoved == 0)
+
+        let restarted = model.state.folders.map { folder in
+            var folder = folder
+            if folder.spaceId == "space-photos" { folder.bytesMoved = 1_000 }
+            return folder
+        }
+        model.apply(.folders(folders: restarted))
+        #expect(model.folder(spaceID: "space-photos")?.bytesMoved == 1_000)
+    }
+
     @Test func everySyncingScenarioReportsActivityOrTransfers() {
         for scenario in [FakeScenario.syncing, .firstScan] {
             let model = AppModel.fake(scenario: scenario)

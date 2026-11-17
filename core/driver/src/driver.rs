@@ -637,6 +637,7 @@ impl Driver {
                 if let Some(Activity::Scanning { files }) = &mut status.activity {
                     *files = folder.found.load(Ordering::Relaxed);
                 }
+                status.bytes_moved = folder.progress.lock().unwrap().moved();
                 status
             })
             .collect();
@@ -2227,6 +2228,7 @@ fn folder_status(
         progress: None,
         held_disks: Vec::new(),
         activity: None,
+        bytes_moved: 0,
     }
 }
 
@@ -6805,6 +6807,19 @@ mod tests {
         );
         status.lock().unwrap().state = FolderState::Offline;
         assert_eq!(driver.status().folders[0].activity, None);
+
+        let tracker = driver
+            .inner
+            .folders
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .progress
+            .clone();
+        crate::progress::Credit::download(&tracker, []).moved(4_096);
+        assert_eq!(driver.status().folders[0].bytes_moved, 4_096);
         gate.open();
         driver.stop().await;
     }

@@ -421,7 +421,7 @@ enum Snapshots {
     private static func captureOpenPanel(_ picker: FilePicker, dark: Bool, to url: URL) async {
         let root = FileManager.default.temporaryDirectory.appending(path: "Koidrive Snapshots", directoryHint: .isDirectory)
         let folders = ["Documents", "Photos"].map { name in
-            LinkedFolder(spaceId: "space-\(name)", spaceName: name, path: root.appending(path: name).path(percentEncoded: false), state: .upToDate, activity: nil)
+            LinkedFolder(spaceId: "space-\(name)", spaceName: name, path: root.appending(path: name).path(percentEncoded: false), state: .upToDate, activity: nil, bytesMoved: 0)
         }
         for path in ["Documents/Archive", "Documents/Finance", "Photos/2026"] {
             try? FileManager.default.createDirectory(at: root.appending(path: path), withIntermediateDirectories: true)

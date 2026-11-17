@@ -85,6 +85,7 @@ fn signed_in() -> Saved {
         path: format!("{home}/Koidrive/{name}"),
         state: FolderState::UpToDate,
         activity: None,
+        bytes_moved: 0,
     };
     Saved {
         server: Some(ServerInfo {
@@ -506,6 +507,9 @@ pub(super) fn build(scenario: FakeScenario, now: i64) -> Script {
             });
             for folder in &mut saved.folders {
                 folder.state = FolderState::Syncing;
+            }
+            for folder in (saved.folders.iter_mut()).filter(|folder| folder.space_id == PHOTOS) {
+                folder.bytes_moved = 48_000_000;
             }
         }
         FakeScenario::FirstScan => {

@@ -419,6 +419,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         problem: Some("cannot read \u{1b}[31mred\u{9b}31m".into()),
         progress: None,
         activity: None,
+        bytes_moved: 0,
         held_disks: Vec::new(),
         wait: None,
     };
@@ -465,6 +466,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
         problem: None,
         progress: None,
         activity: None,
+        bytes_moved: 0,
         held_disks: vec![
             koidrive_driver::HeldDisk {
                 path: "Disk".into(),
@@ -503,6 +505,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         )),
         progress: None,
         activity: None,
+        bytes_moved: 0,
         held_disks: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
@@ -534,6 +537,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         recovery: Some(cause),
         progress: None,
         activity: None,
+        bytes_moved: 0,
         held_disks: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
@@ -582,6 +586,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         problem: problem.map(str::to_owned),
         progress: None,
         activity: None,
+        bytes_moved: 0,
         held_disks: Vec::new(),
         wait: None,
     };

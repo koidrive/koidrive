@@ -413,3 +413,71 @@ fn a_folder_that_does_not_sync_reports_no_activity() {
         assert_eq!(a.folder.activity(state, 5), None, "{state:?}");
     }
 }
+
+fn moved(device: &Device) -> u64 {
+    device.folder.progress.lock().unwrap().moved()
+}
+
+fn upload_through(upload: Upload, held: Vec<Vec<u8>>) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let (relay, _) = crate::scripted::relay(1).await;
+        let (session, _events, api) = crate::scripted::session_holding(relay, held).await;
+        let transfer = Transfer::new(&api);
+        upload_counted(&session, &transfer, upload, |_| {}).await.unwrap();
+    });
+}
+
+#[test]
+fn a_deduplicated_upload_moves_no_bytes() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::write(site.root.join("held.bin"), noise(3, MIB)).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    let upload = next_upload(&mut a);
+    let held = upload.chunks.iter().map(|chunk| chunk.hash.clone()).collect();
+    upload_through(upload, held);
+    assert_eq!(moved(&a), 0);
+    assert_eq!(counts(&a).map(|(.., done, total)| done == total), Some(true));
+}
+
+#[test]
+fn an_upload_moves_the_bytes_of_the_chunks_it_sends_and_only_those() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    for seed in 0..4 {
+        fs::write(site.root.join(format!("{seed}.bin")), noise(seed + 10, 64 << 10)).unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    let upload = next_upload(&mut a);
+    let distinct: BTreeMap<_, _> = (upload.chunks.iter())
+        .map(|chunk| (chunk.hash.clone(), u64::from(chunk.size)))
+        .collect();
+    assert!(distinct.len() > 2, "{} chunks", distinct.len());
+    let held: Vec<Vec<u8>> = distinct.keys().step_by(2).cloned().collect();
+    let sent: u64 = (distinct.iter())
+        .filter(|(hash, _)| !held.contains(hash))
+        .map(|(_, size)| size)
+        .sum();
+    upload_through(upload, held);
+    assert_eq!(moved(&a), sent);
+}
+
+#[test]
+fn downloads_move_their_bytes_and_the_count_only_grows() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let (_site_b, mut b) = linked(&mut remote, "b");
+    let mut seen = moved(&b);
+    for (seed, size) in [(6, MIB), (7, 2 * MIB), (8, 3 * MIB)] {
+        let name = format!("{seed}.bin");
+        a.create(&mut remote, &site_a.root.join(&name), &noise(seed, size));
+        a.settle();
+        b.pull(&remote);
+        b.rest(&mut remote);
+        let now = moved(&b);
+        assert_eq!(now - seen, size as u64, "{name}");
+        seen = now;
+    }
+    assert_eq!(moved(&a), 0, "the test server stores uploads without the network");
+}
