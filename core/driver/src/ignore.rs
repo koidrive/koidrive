@@ -251,6 +251,14 @@ mod tests {
     }
 
     #[test]
+    fn sync_entries_count_a_git_folder_like_any_other_entry_a_rule_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git/objects")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        assert!(has_sync_entries(dir.path()).unwrap());
+    }
+
+    #[test]
     fn sync_entries_do_not_apply_unreviewed_ignore_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".koiignore"), b"*\n").unwrap();
