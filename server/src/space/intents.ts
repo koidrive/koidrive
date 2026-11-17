@@ -5,6 +5,7 @@ import type { Op } from "../gen/koidrive/v1/commit_pb";
 import { type CommitRecord, CommitRecordSchema, type FieldIntents, FieldIntentsSchema, type Intent, IntentSchema, NodeStatus } from "../gen/koidrive/v1/model_pb";
 import type { Sql } from "../host";
 import { fromHex, toHex, uuidv7 } from "../ids";
+import { LEGACY_INTENTS_DUE } from "./schema";
 
 export const FIELDS = ["place", "content", "status"] as const;
 export type Field = (typeof FIELDS)[number];
@@ -208,6 +209,12 @@ function decodedChanges(record: ArrayBuffer): CommitRecord["changes"] {
   } catch {
     return [];
   }
+}
+
+export function backfillMigratedIntents(sql: Sql): void {
+  if (sql.exec("SELECT 1 FROM meta WHERE key = ?", LEGACY_INTENTS_DUE).toArray().length === 0) return;
+  backfillLegacyIntents(sql);
+  sql.exec("DELETE FROM meta WHERE key = ?", LEGACY_INTENTS_DUE);
 }
 
 export function backfillLegacyIntents(sql: Sql): void {
