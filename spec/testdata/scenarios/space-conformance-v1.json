@@ -7,20 +7,20 @@
   "mtime_ns": "1794268740123456789",
   "conventions": [
     "Each scenario starts from empty spaces (one named main unless the scenario lists spaces) and runs its steps in order. A step runs in the space named by its space field, main by default, at at_ms, or now_ms when absent; the runner pins the server clock to that time.",
-    "A scenario or step with reference_only checks behaviour that the server and the reference share but spec v0 and RFC 0001 do not define; its value says what is undefined. A runner for another implementation may skip it, and no later step depends on it. Every other expectation follows from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0004 section 5, RFC 0006 section 8, RFC 0015, RFC 0016, RFC 0017, RFC 0018, RFC 0019, RFC 0026 and RFC 0028.",
+    "A scenario or step with reference_only checks behaviour that the server and the reference share but spec v0 and RFC 0001 do not define; its value says what is undefined. A runner for another implementation may skip it, and no later step depends on it. Every other expectation follows from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0004 section 5, RFC 0006 section 8, RFC 0015, RFC 0016, RFC 0017, RFC 0018, RFC 0019, RFC 0026 and RFC 0029.",
     "devices maps a device symbol to its session: name (the device name used in conflict names), role (owner by default, editor or viewer) and max_format (the newest space format the client supports, 1 by default).",
     "Every ID in a scenario is a symbol. root is the space's root (its space_id). A symbol that starts with = is the literal text after it. An op symbol not seen before is bound to a fresh UUIDv7 that the runner mints. A symbol in an expectation that is not bound yet is bound to the value the server returned; one already bound must equal it. Two different symbols never bind the same value.",
     "contents maps a content symbol to a file content. chunks lists its chunks: {text} is a chunk of those UTF-8 bytes, {counter_le32: n} is n chunks whose bytes are the 4-byte little-endian encodings of 0 to n-1, and repeat: n lists an entry's chunks n times in a row. A chunk's hash is the SHA-256 of its bytes and its size is its byte length unless size overrides it. The content's size is the sum of its chunk sizes unless size overrides it; mtime_ns is the file-level mtime_ns (an int64 written as a string, as in proto3 JSON), executable is false, encoding is 0, chunker is fastcdc2020-1m-4m-16m, and manifest_digest follows spec v0 section 5.1 over the listed (hash, size) pairs.",
-    "Ops: create_dir {node, parent, name, pending_for?}; create_file {node, parent, name, content, pending_for?, made_over?, source_version_id?}; update_content {node, content, resend?, made_over?, source_version_id?} where resend is RFC 0018's flag, made_over lists version symbols and source_version_id is a version symbol (RFC 0026); move {node, parent, name, pending_for?, from?} where from is {parent, name} (RFC 0019); delete {node, requires?, unseen?, held?} where requires is {node, content_rev, meta_rev}, the Delete's precondition (RFC 0015), and unseen and held list intent symbols (RFC 0028 section 3.3); restore {node, version?, parent?, name?} where absent fields are empty; empty {} is an Op with no op set. Every op may carry intent, and create_dir and create_file may carry fields {place?, content?, status?}, each an intent (RFC 0028 section 2). Two macros expand in place: {repeat: n, op} is n copies of op, and create_dir_chain {prefix, parent, count} creates directories prefix1 to prefixN, each named after its symbol and each inside the previous one, the first inside parent.",
-    "An intent is {id, author, replay?, over?, applied_at_ms?} (RFC 0028 section 2). id and over are intent symbols: they bind like node IDs, but to 16-byte UUIDv7 values, and are compared as bytes. author is a device symbol, sent as that device's device_id, or \"\" for an empty author. replay is false and applied_at_ms is 0 when absent, and an absent over is empty.",
+    "Ops: create_dir {node, parent, name, pending_for?}; create_file {node, parent, name, content, pending_for?, made_over?, source_version_id?}; update_content {node, content, resend?, made_over?, source_version_id?} where resend is RFC 0018's flag, made_over lists version symbols and source_version_id is a version symbol (RFC 0026); move {node, parent, name, pending_for?, from?} where from is {parent, name} (RFC 0019); delete {node, requires?, unseen?, held?} where requires is {node, content_rev, meta_rev}, the Delete's precondition (RFC 0015), and unseen and held list intent symbols (RFC 0029 section 3.3); restore {node, version?, parent?, name?} where absent fields are empty; empty {} is an Op with no op set. Every op may carry intent, and create_dir and create_file may carry fields {place?, content?, status?}, each an intent (RFC 0029 section 2). Two macros expand in place: {repeat: n, op} is n copies of op, and create_dir_chain {prefix, parent, count} creates directories prefix1 to prefixN, each named after its symbol and each inside the previous one, the first inside parent.",
+    "An intent is {id, author, replay?, over?, applied_at_ms?} (RFC 0029 section 2). id and over are intent symbols: they bind like node IDs, but to 16-byte UUIDv7 values, and are compared as bytes. author is a device symbol, sent as that device's device_id, or \"\" for an empty author. replay is false and applied_at_ms is 0 when absent, and an absent over is empty.",
     "commit: commit_id is a symbol (a fresh ID when absent), base_seq is sent as given. Unless upload is false, the runner first uploads every chunk of the contents the ops reference (PrepareUpload in batches of at most 1,000 distinct chunks, then a PUT for each chunk the plan says to upload) and sends the receipts it got. With upload false it sends the receipts that the device's earlier upload steps got in the space named by receipts_from (the step's space by default), each with its size increased by receipt_size_delta when that is set. history_id is a symbol (one not seen before is a fresh UUIDv7, so it names another history) and is the space's current history_id, as Welcome gives it, when absent. device_seq is sent as given. When absent, a commit_id the device sent before in that space keeps the device_seq it was first sent with, because a client resends a commit unchanged (RFC 0002 section 2); otherwise it is one more than the device_seq of the device's last commit in that space that was applied, that is, that returned a seq above every seq a commit returned in that space before (1 when there is none). require_head is sent as given, false when absent.",
     "upload {contents}: PrepareUpload and PUT for those contents' chunks; the receipts are kept for the device in that space. upload {last_missing: true} does the same for the chunks that the device's last MISSING_CHUNKS error from a commit in that space listed, each a chunk of some content. prepare_upload {chunks} or {contents} sends one PrepareUpload; expect.actions lists the action of each distinct chunk in order.",
     "Commit expectations: error is the whole-call error code; missing lists content symbols whose chunk hashes must be exactly the error's missing_chunks; missing_some {contents, count, total} requires that missing_chunks holds exactly count hashes, each a chunk of those contents, and that the first decimal number in the error's message is total. Otherwise seq, results (one per op, in order; code, and where given node, name and reason, compared exactly) and changed (the node symbols with a NodeState in the result's changes, compared as a set). In changed and live, one symbol that is not bound yet binds to the one node the server reported that no other listed symbol names, such as a conflict copy that no result names.",
     "list_versions {node, cursor, limit}: cursor is absent (empty), a literal written with =, or {returned: k}, the next_cursor an earlier step bound to k; limit is 0 when absent. Expectations: error, count (the number of versions), versions (each with version symbol, seq and content) and next_cursor, which is either empty (the last page) or {bind: k}, which requires another page and keeps its cursor as k without looking inside it.",
-    "nodes: each entry names a node and the fields it must have: parent, name, kind (DIR or FILE), status (LIVE or TRASHED), content_rev, meta_rev, meta_edit_rev, trash_group (a symbol, or null for none), pending_for (a name, or null for none), pending_by (the author of the intent that set the mark, or null for none), content (a content symbol, compared by size, manifest digest, executable bit and mtime_ns), intents {place?, content?, status?}, where each entry is null when the field holds no intent, or {id?, author?, replay?, applied_at_ms?} for the intent that set it: id is an intent symbol, author a device symbol or \"\" for an empty one, replay whether the value is carried and applied_at_ms the time the server first applied it, and the intent's over must be empty; trash_held (intent symbols, compared as a set: the trash's held list, RFC 0028 section 3.3), or absent: true when the server must not know the node. live lists every live node other than the root, as a set. head is the space's head_seq.",
-    "rule is A (the default) or B, the rule of RFC 0028 section 4 that the server runs for the whole scenario. A scenario whose covers include RFC0028-6 checks RFC 0028 section 6, which a runner may skip; the server runner skips it.",
+    "nodes: each entry names a node and the fields it must have: parent, name, kind (DIR or FILE), status (LIVE or TRASHED), content_rev, meta_rev, meta_edit_rev, trash_group (a symbol, or null for none), pending_for (a name, or null for none), pending_by (the author of the intent that set the mark, or null for none), content (a content symbol, compared by size, manifest digest, executable bit and mtime_ns), intents {place?, content?, status?}, where each entry is null when the field holds no intent, or {id?, author?, replay?, applied_at_ms?} for the intent that set it: id is an intent symbol, author a device symbol or \"\" for an empty one, replay whether the value is carried and applied_at_ms the time the server first applied it, and the intent's over must be empty; trash_held (intent symbols, compared as a set: the trash's held list, RFC 0029 section 3.3), or absent: true when the server must not know the node. live lists every live node other than the root, as a set. head is the space's head_seq.",
+    "rule is A (the default) or B, the rule of RFC 0029 section 4 that the server runs for the whole scenario. A scenario whose covers include RFC0029-6 checks RFC 0029 section 6, which a runner may skip; the server runner skips it.",
     "Steps without a device: revoke {device} revokes that device (RFC 0009) at at_ms. purge {at_ms} runs garbage collection at at_ms, which purges every trashed node older than the trash retention of 30 days. restore_storage {to_step} puts the space's storage back to its state right after step to_step (1-based, an earlier step), as a point-in-time restore the server does not see (RFC 0013), and every later step has a later at_ms; a device's next device_seq follows the restored state. rebuild {at_ms} exports the space at at_ms, which must be five minutes or more after the first commit the export lacks, rebuilds it from the export (RFC 0004 section 5) and requires the rebuilt nodes to equal the server's, intents and trash_held included, and the export to hold every tombstone an earlier purge wrote.",
-    "Expected values are written by hand from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0004 section 5, RFC 0006 section 8, RFC 0015, RFC 0016, RFC 0017, RFC 0018, RFC 0019, RFC 0026 and RFC 0028, not produced by either implementation.",
+    "Expected values are written by hand from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0004 section 5, RFC 0006 section 8, RFC 0015, RFC 0016, RFC 0017, RFC 0018, RFC 0019, RFC 0026 and RFC 0029, not produced by either implementation.",
     "Every field a scenario uses is listed here. A runner fails a scenario that has an unknown field, or a field of the wrong type, rather than skipping the check."
   ],
   "scenarios": [
@@ -13236,10 +13236,10 @@
       ]
     },
     {
-      "name": "rfc0028-an-op-without-an-intent-gets-one-minted-intent-for-every-field-it-sets",
+      "name": "rfc0029-an-op-without-an-intent-gets-one-minted-intent-for-every-field-it-sets",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1"
+        "RFC0029",
+        "RFC0029-3.1"
       ],
       "devices": {
         "a": {
@@ -13457,10 +13457,10 @@
       ]
     },
     {
-      "name": "rfc0028-an-op-whose-intent-and-value-the-field-holds-is-applied-and-changes-nothing",
+      "name": "rfc0029-an-op-whose-intent-and-value-the-field-holds-is-applied-and-changes-nothing",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1"
+        "RFC0029",
+        "RFC0029-3.1"
       ],
       "devices": {
         "a": {
@@ -13664,10 +13664,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-create-with-fields-records-a-different-intent-per-field",
+      "name": "rfc0029-a-create-with-fields-records-a-different-intent-per-field",
       "covers": [
-        "RFC0028",
-        "RFC0028-2"
+        "RFC0029",
+        "RFC0029-2"
       ],
       "devices": {
         "a": {
@@ -13834,11 +13834,11 @@
       ]
     },
     {
-      "name": "rfc0028-a-carried-edit-on-a-trashed-file-makes-a-conflict-copy-unless-the-trash-holds-it",
+      "name": "rfc0029-a-carried-edit-on-a-trashed-file-makes-a-conflict-copy-unless-the-trash-holds-it",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.4",
-        "RFC0028-3.5"
+        "RFC0029",
+        "RFC0029-3.4",
+        "RFC0029-3.5"
       ],
       "devices": {
         "a": {
@@ -14108,11 +14108,11 @@
       ]
     },
     {
-      "name": "rfc0028-an-authors-replayed-move-on-a-trashed-folder-is-superseded-under-rule-a",
+      "name": "rfc0029-an-authors-replayed-move-on-a-trashed-folder-is-superseded-under-rule-a",
       "covers": [
-        "RFC0028",
-        "RFC0028-4",
-        "RFC0028-3.4"
+        "RFC0029",
+        "RFC0029-4",
+        "RFC0029-3.4"
       ],
       "rule": "A",
       "devices": {
@@ -14277,11 +14277,11 @@
       ]
     },
     {
-      "name": "rfc0028-an-authors-replayed-move-on-a-trashed-folder-revives-it-under-rule-b",
+      "name": "rfc0029-an-authors-replayed-move-on-a-trashed-folder-revives-it-under-rule-b",
       "covers": [
-        "RFC0028",
-        "RFC0028-4",
-        "RFC0028-3.4"
+        "RFC0029",
+        "RFC0029-4",
+        "RFC0029-3.4"
       ],
       "rule": "B",
       "devices": {
@@ -14451,10 +14451,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-delete-keeps-a-node-whose-user-intent-it-lists-as-unseen",
+      "name": "rfc0029-a-delete-keeps-a-node-whose-user-intent-it-lists-as-unseen",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3"
+        "RFC0029",
+        "RFC0029-3.3"
       ],
       "devices": {
         "a": {
@@ -14647,11 +14647,11 @@
       ]
     },
     {
-      "name": "rfc0028-a-delete-listing-unseen-carried-content-trashes-the-file-and-copies-the-content",
+      "name": "rfc0029-a-delete-listing-unseen-carried-content-trashes-the-file-and-copies-the-content",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3",
-        "RFC0028-3.5"
+        "RFC0029",
+        "RFC0029-3.3",
+        "RFC0029-3.5"
       ],
       "devices": {
         "a": {
@@ -14862,10 +14862,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-replay-of-an-intent-the-index-holds-on-another-node-is-superseded",
+      "name": "rfc0029-a-replay-of-an-intent-the-index-holds-on-another-node-is-superseded",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.6"
+        "RFC0029",
+        "RFC0029-3.6"
       ],
       "devices": {
         "a": {
@@ -15094,9 +15094,9 @@
       ]
     },
     {
-      "name": "rfc0028-a-carried-create-dir-with-a-mark-keeps-its-author-as-pending-by-and-keeps-no-mark-once-the-author-is-revoked",
+      "name": "rfc0029-a-carried-create-dir-with-a-mark-keeps-its-author-as-pending-by-and-keeps-no-mark-once-the-author-is-revoked",
       "covers": [
-        "RFC0028-6"
+        "RFC0029-6"
       ],
       "devices": {
         "a": {
@@ -15250,9 +15250,9 @@
       ]
     },
     {
-      "name": "rfc0028-a-move-to-a-marked-folders-own-place-clears-the-mark-and-sets-a-new-place-intent",
+      "name": "rfc0029-a-move-to-a-marked-folders-own-place-clears-the-mark-and-sets-a-new-place-intent",
       "covers": [
-        "RFC0028-6"
+        "RFC0029-6"
       ],
       "devices": {
         "a": {
@@ -15381,9 +15381,9 @@
       ]
     },
     {
-      "name": "rfc0028-an-owners-finish-with-the-marking-intent-applies-and-a-same-place-mark-clear-supersedes-it",
+      "name": "rfc0029-an-owners-finish-with-the-marking-intent-applies-and-a-same-place-mark-clear-supersedes-it",
       "covers": [
-        "RFC0028-6"
+        "RFC0029-6"
       ],
       "devices": {
         "a": {
@@ -15598,10 +15598,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-move-or-delete-whose-over-the-node-does-not-hold-is-superseded-and-one-over-the-status-the-trash-replaced-merges-its-held",
+      "name": "rfc0029-a-move-or-delete-whose-over-the-node-does-not-hold-is-superseded-and-one-over-the-status-the-trash-replaced-merges-its-held",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1"
+        "RFC0029",
+        "RFC0029-3.1"
       ],
       "devices": {
         "a": {
@@ -15935,10 +15935,10 @@
       ]
     },
     {
-      "name": "rfc0028-an-edit-whose-made-over-lacks-the-current-version-makes-a-conflict-copy-whatever-its-base-seq",
+      "name": "rfc0029-an-edit-whose-made-over-lacks-the-current-version-makes-a-conflict-copy-whatever-its-base-seq",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.8"
+        "RFC0029",
+        "RFC0029-3.8"
       ],
       "devices": {
         "a": {
@@ -16179,11 +16179,11 @@
       ]
     },
     {
-      "name": "rfc0028-a-delete-sent-to-a-folder-another-delete-trashed-with-over-the-replaced-status-adds-its-held-to-the-group",
+      "name": "rfc0029-a-delete-sent-to-a-folder-another-delete-trashed-with-over-the-replaced-status-adds-its-held-to-the-group",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3",
-        "RFC0028-5.3"
+        "RFC0029",
+        "RFC0029-3.3",
+        "RFC0029-5.3"
       ],
       "devices": {
         "a": {
@@ -16387,11 +16387,11 @@
       ]
     },
     {
-      "name": "rfc0028-a-second-delete-of-a-trashed-file-adds-its-held-and-a-carried-replay-either-lists-is-superseded",
+      "name": "rfc0029-a-second-delete-of-a-trashed-file-adds-its-held-and-a-carried-replay-either-lists-is-superseded",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3",
-        "RFC0028-3.4"
+        "RFC0029",
+        "RFC0029-3.3",
+        "RFC0029-3.4"
       ],
       "devices": {
         "a": {
@@ -16660,10 +16660,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-carried-create-file-whose-place-the-trash-held-lists-copies-its-content-unless-the-trash-lists-that-too",
+      "name": "rfc0029-a-carried-create-file-whose-place-the-trash-held-lists-copies-its-content-unless-the-trash-lists-that-too",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.4"
+        "RFC0029",
+        "RFC0029-3.4"
       ],
       "devices": {
         "a": {
@@ -16886,12 +16886,12 @@
       ]
     },
     {
-      "name": "rfc0028-an-authors-replay-of-a-value-the-field-holds-as-carried-changes-nothing-under-rule-a",
+      "name": "rfc0029-an-authors-replay-of-a-value-the-field-holds-as-carried-changes-nothing-under-rule-a",
       "covers": [
-        "RFC0028",
-        "RFC0028-4",
-        "RFC0028-3.1",
-        "RFC0028-3.8"
+        "RFC0029",
+        "RFC0029-4",
+        "RFC0029-3.1",
+        "RFC0029-3.8"
       ],
       "rule": "A",
       "devices": {
@@ -17090,12 +17090,12 @@
       ]
     },
     {
-      "name": "rfc0028-an-authors-claim-of-a-carried-value-in-the-chain-clears-the-carried-flag-under-rule-b",
+      "name": "rfc0029-an-authors-claim-of-a-carried-value-in-the-chain-clears-the-carried-flag-under-rule-b",
       "covers": [
-        "RFC0028",
-        "RFC0028-4",
-        "RFC0028-3.1",
-        "RFC0028-3.8"
+        "RFC0029",
+        "RFC0029-4",
+        "RFC0029-3.1",
+        "RFC0029-3.8"
       ],
       "rule": "B",
       "devices": {
@@ -17297,10 +17297,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-reused-commit-id-that-differs-only-in-an-intent-is-refused",
+      "name": "rfc0029-a-reused-commit-id-that-differs-only-in-an-intent-is-refused",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.7",
+        "RFC0029",
+        "RFC0029-3.7",
         "RFC 0006 section 8"
       ],
       "devices": {
@@ -17452,10 +17452,10 @@
       ]
     },
     {
-      "name": "rfc0028-each-field-intent-keeps-the-time-it-was-first-applied-and-commit-times-grow-across-a-storage-restore",
+      "name": "rfc0029-each-field-intent-keeps-the-time-it-was-first-applied-and-commit-times-grow-across-a-storage-restore",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1"
+        "RFC0029",
+        "RFC0029-3.1"
       ],
       "devices": {
         "a": {
@@ -17942,11 +17942,11 @@
       ]
     },
     {
-      "name": "rfc0028-an-op-without-an-intent-that-has-resend-from-or-source-version-gets-a-carried-intent-with-an-empty-author",
+      "name": "rfc0029-an-op-without-an-intent-that-has-resend-from-or-source-version-gets-a-carried-intent-with-an-empty-author",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1",
-        "RFC0028-8"
+        "RFC0029",
+        "RFC0029-3.1",
+        "RFC0029-8"
       ],
       "devices": {
         "a": {
@@ -18176,11 +18176,11 @@
       ]
     },
     {
-      "name": "rfc0028-a-copy-of-a-carried-edit-is-carried-and-a-delete-of-its-folder-moves-it-to-the-nearest-live-ancestor",
+      "name": "rfc0029-a-copy-of-a-carried-edit-is-carried-and-a-delete-of-its-folder-moves-it-to-the-nearest-live-ancestor",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3",
-        "RFC0028-3.5"
+        "RFC0029",
+        "RFC0029-3.3",
+        "RFC0029-3.5"
       ],
       "devices": {
         "a": {
@@ -18419,10 +18419,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-delete-whose-view-holds-a-carried-copys-content-trashes-the-copy-in-its-trash-group",
+      "name": "rfc0029-a-delete-whose-view-holds-a-carried-copys-content-trashes-the-copy-in-its-trash-group",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3"
+        "RFC0029",
+        "RFC0029-3.3"
       ],
       "devices": {
         "a": {
@@ -18748,9 +18748,9 @@
       ]
     },
     {
-      "name": "rfc0028-revoking-a-device-finishes-its-marks-whose-names-are-free-and-leaves-the-rest-ownerless",
+      "name": "rfc0029-revoking-a-device-finishes-its-marks-whose-names-are-free-and-leaves-the-rest-ownerless",
       "covers": [
-        "RFC0028-6"
+        "RFC0029-6"
       ],
       "devices": {
         "a": {
@@ -18898,10 +18898,10 @@
       ]
     },
     {
-      "name": "rfc0028-a-replay-of-a-purged-file-makes-a-content-copy-unless-the-tombstone-holds-or-lists-it",
+      "name": "rfc0029-a-replay-of-a-purged-file-makes-a-content-copy-unless-the-tombstone-holds-or-lists-it",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.3"
+        "RFC0029",
+        "RFC0029-3.3"
       ],
       "devices": {
         "a": {
@@ -19192,10 +19192,10 @@
       ]
     },
     {
-      "name": "rfc0028-trash-held-is-reported-on-every-node-of-the-trash-group-and-a-rebuild-keeps-it",
+      "name": "rfc0029-trash-held-is-reported-on-every-node-of-the-trash-group-and-a-rebuild-keeps-it",
       "covers": [
-        "RFC0028",
-        "RFC0028-2",
+        "RFC0029",
+        "RFC0029-2",
         "RFC 0004 section 5"
       ],
       "devices": {
@@ -19370,12 +19370,12 @@
       ]
     },
     {
-      "name": "rfc0028-a-delete-sent-again-with-its-intent-and-a-larger-held-adds-the-held-to-the-trash-and-a-plain-retry-changes-nothing",
+      "name": "rfc0029-a-delete-sent-again-with-its-intent-and-a-larger-held-adds-the-held-to-the-trash-and-a-plain-retry-changes-nothing",
       "covers": [
-        "RFC0028",
-        "RFC0028-3.1",
-        "RFC0028-3.3",
-        "RFC0028-5.3"
+        "RFC0029",
+        "RFC0029-3.1",
+        "RFC0029-3.3",
+        "RFC0029-5.3"
       ],
       "devices": {
         "a": {

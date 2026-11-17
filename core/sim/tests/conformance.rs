@@ -180,7 +180,7 @@ fn run_file(path: &str, doc: &Value) -> usize {
         let name = scenario["name"].as_str().unwrap_or("?");
         if covers_intents(scenario) {
             skipped += 1;
-            println!("scenario {name} ... skipped: the reference has no RFC 0028 intents");
+            println!("scenario {name} ... skipped: the reference has no RFC 0029 intents");
             continue;
         }
         let tag = if scenario.get("reference_only").is_some() {
@@ -208,7 +208,7 @@ fn covers_intents(scenario: &Value) -> bool {
         .as_array()
         .into_iter()
         .flatten()
-        .any(|cover| cover == "RFC0028" || cover == "RFC0028-6")
+        .any(|cover| cover == "RFC0029" || cover == "RFC0029-6")
 }
 
 const SEEDS: u64 = 16;

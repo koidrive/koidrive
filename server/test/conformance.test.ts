@@ -1169,7 +1169,7 @@ for (const [path, file] of files) {
 
     for (const scenario of req(optList(file, "scenarios"), "scenarios")) {
       const { name, reference_only, covers } = object(scenario, "a scenario");
-      const later = Array.isArray(covers) && covers.includes("RFC0028-6");
+      const later = Array.isArray(covers) && covers.includes("RFC0029-6");
       const test = reference_only === undefined && !later ? it : it.skip;
       test(String(name), { timeout: 120_000 }, async () => {
         expect(await run(scenario, file)).toBeUndefined();
