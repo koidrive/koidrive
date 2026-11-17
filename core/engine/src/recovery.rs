@@ -59,7 +59,13 @@ pub(crate) fn group(trees: &Trees, id: &str) -> Option<RecoveryGroup> {
         (Some(_), Some(_)) if same(local, synced) && remote.is_none() => {
             Some(RecoveryGroup::CreatedAfterRestorePoint)
         }
-        (Some(_), Some(_)) if same(local, synced) && !trees.unsent_edits().contains(id) => None,
+        (Some(_), Some(_))
+            if same(local, synced)
+                && !trees.unsent_edits().contains(id)
+                && !trees.made_over_remote(id) =>
+        {
+            None
+        }
         (Some(_), Some(_)) => Some(RecoveryGroup::ChangedOnThisDevice),
         (Some(_), None) if remote.is_none() => Some(RecoveryGroup::CreatedOnThisDevice),
         (Some(_), None) => Some(RecoveryGroup::ChangedOnThisDevice),

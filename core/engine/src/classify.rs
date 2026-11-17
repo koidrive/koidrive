@@ -12,7 +12,7 @@ use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, LostPosition, MovedHere,
-    PendingFinish, StateError, TreesChanges, TreesState,
+    PendingFinish, StateError, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -1001,9 +1001,8 @@ impl Trees {
         let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
         let changed_after_loss = !made_here
             && sent_again
-            && self.source_version_id(&id).is_some_and(|source| {
-                !node.trashed && node.made_over.iter().any(|base| base == source)
-            });
+            && (self.source_version_id(&id))
+                .is_some_and(|source| !node.trashed && made_over(&node.made_over, source));
         let sent_by_another = !(made_here && self.lost_positions.contains_key(&id))
             && !node.trashed
             && sent_again
@@ -1120,6 +1119,22 @@ impl Trees {
 
     pub(crate) fn resends(&self) -> &BTreeSet<NodeId> {
         &self.resends
+    }
+
+    pub(crate) fn made_over_remote(&self, id: &str) -> bool {
+        let Some(source) = (self.content_provenance.get(id)).and_then(|p| p.local.as_ref()) else {
+            return false;
+        };
+        let Some(remote) = self.r.get(id).filter(|remote| !remote.trashed) else {
+            return false;
+        };
+        let local = (self.l.get(id)).and_then(|local| local.shape.content.as_ref());
+        let listed = remote.shape.content.as_ref();
+        local
+            .zip(listed)
+            .is_some_and(|(local, listed)| !same_content(local, listed))
+            && source.version_id != remote.version_id
+            && made_over(&source.made_over, &remote.version_id)
     }
 
     pub(crate) fn source_version_id(&self, id: &str) -> Option<&str> {
@@ -3350,9 +3365,9 @@ impl Trees {
     ///
     /// Any other node S forgets that R lacks and L holds as S did, whose position no move of
     /// `moved` set, is created again as L holds it, as above. Another device that creates it again
-    /// first held it, so R taking it again, live with the content L holds or with a version made
-    /// over that value, is a remote move here too, also when that device held only a position that
-    /// a later create of this device replaced ([`TreesState::lost_creates`]).
+    /// first held it, so R taking it again, live with the content L holds, is a remote move here
+    /// too, also when that device held only a position that a later create of this device replaced
+    /// ([`TreesState::lost_creates`]).
     ///
     /// A node of `moved` or `edited` whose commit has a seq above `held_through` holds a change of
     /// this device's user that the server lost ([`TreesState::local_changes`]).
@@ -3407,20 +3422,16 @@ impl Trees {
         held_through: u64,
         accepted: u64,
     ) {
-        let older_bases: BTreeSet<NodeId> = records
-            .iter()
-            .filter_map(|(id, record)| {
-                let source = self.content_provenance.get(id)?.local.as_ref()?;
-                let remote = self.r.get(id)?;
-                let local = self.l.get(id)?.shape.content.as_ref()?;
-                let listed = remote.shape.content.as_ref()?;
-                (record.source_version_id.as_ref() == Some(&source.version_id)
-                    && !remote.trashed
-                    && source.version_id != remote.version_id
-                    && source.made_over.contains(&remote.version_id)
-                    && !same_content(local, listed))
-                .then(|| id.clone())
+        let older_bases: BTreeSet<NodeId> = (records.iter())
+            .filter(|(id, record)| {
+                (self.content_provenance.get(*id))
+                    .and_then(|provenance| provenance.local.as_ref())
+                    .is_some_and(|source| {
+                        record.source_version_id.as_ref() == Some(&source.version_id)
+                    })
+                    && self.made_over_remote(id)
             })
+            .map(|(id, _)| id.clone())
             .collect();
         let held: Vec<NodeId> = (self.reverted.iter())
             .filter(|id| {
@@ -3693,10 +3704,8 @@ impl Trees {
                         .get(*id)
                         .and_then(|record| record.source_version_id.as_ref())
                         .is_some_and(|source| {
-                            self.r.get(id).is_some_and(|remote| {
-                                !remote.trashed
-                                    && !source.is_empty()
-                                    && remote.made_over.contains(source)
+                            (self.r.get(id)).is_some_and(|remote| {
+                                !remote.trashed && made_over(&remote.made_over, source)
                             })
                         });
                 self.r.get(id).is_none()

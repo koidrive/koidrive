@@ -83,6 +83,10 @@ pub(crate) fn content_chain(ids: impl IntoIterator<Item = String>) -> Vec<String
         .collect()
 }
 
+pub(crate) fn made_over(made_over: &[String], version_id: &str) -> bool {
+    !version_id.is_empty() && made_over.iter().any(|base| base == version_id)
+}
+
 impl From<&crate::tree::Content> for ContentValue {
     fn from(content: &crate::tree::Content) -> Self {
         Self {
@@ -260,8 +264,7 @@ pub struct TreesState {
     /// The nodes S forgot after a server loss that R lacks and L holds as S did, whose position no
     /// move of this device set: a create of this device, if any, set it, and the server lost that
     /// create. Another device that creates such a node again held it, so R taking the node again,
-    /// live with the content L holds or with a version made over the value L holds (RFC 0026), is a
-    /// remote move: S takes L's shape. That includes a device
+    /// live with the content L holds, is a remote move: S takes L's shape. That includes a device
     /// that held only a position from before an earlier loss, which a later create of this device
     /// replaced. Unlike a resend, a delete made after the loss does not beat it. The record ends
     /// when R holds the node again, and when S takes L's shape or L changes or removes the node.

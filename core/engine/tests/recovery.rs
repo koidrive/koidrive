@@ -256,6 +256,56 @@ fn a_node_changed_on_this_device_is_held_until_it_is_published() {
     assert!(!trees.held("n"));
 }
 
+fn restored_under(made_over: &[&str]) -> Trees {
+    let mut trees = trees(&[("n", file(ROOT, "a", 2))], &[], &[]);
+    let version = |digest, version_id: &str, made_over: &[&str]| RemoteNode {
+        made_over: made_over.iter().map(|id| (*id).into()).collect(),
+        shape: file(ROOT, "a", digest),
+        trashed: false,
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: version_id.into(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("n".into(), version(2, "v2", made_over));
+    trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
+    trees.settle();
+    trees.set_remote("n".into(), version(1, "v1", &[]));
+    trees.settle();
+    trees
+}
+
+#[test]
+fn a_restored_older_value_holds_the_value_made_over_it_until_it_is_published() {
+    let mut trees = restored_under(&["v1"]);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(trees.held("n"));
+    assert_eq!(effects(&mut trees, &mut ids), []);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("update", "n".into())]
+    );
+}
+
+#[test]
+fn a_restored_value_no_ancestry_names_is_followed() {
+    let mut trees = restored_under(&["other"]);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::WriteFile { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
 #[test]
 fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
     let mut trees = trees(

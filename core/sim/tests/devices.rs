@@ -1459,6 +1459,34 @@ fn a_creator_takes_a_write_made_over_its_lost_create_so_a_second_restore_leaves_
 }
 
 #[test]
+fn a_restore_of_an_older_value_holds_the_write_a_disk_made_over_it() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(0, 0, 0)), (1, u(1, 0, 0))],
+        vec![
+            (0, u(0, 0, 1)),
+            (0, Step::Work(0)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Served)),
+            (0, u(2, 1469111414549624374, 0)),
+            (0, Step::Backup),
+            (0, Step::RestoreEarlier),
+            (0, Step::Backup),
+        ],
+        vec![(0, Step::RestoreEarlier)],
+    ];
+    keep(2, &phases).unwrap();
+}
+
+#[test]
 fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
     let u = |kind| {
         Step::User(Action {
