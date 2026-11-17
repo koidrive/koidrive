@@ -328,16 +328,21 @@ class ReleaseJourneys(unittest.TestCase):
     def test_homebrew_update_runs_with_the_worker_and_in_the_full_matrix(self):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
         self.assertEqual(journeys.count("if: contains(fromJSON('[\"installer\", \"homebrew-update\", \"uninstall\"]'), matrix.scenario)"), 3)
-        self.assertLessEqual(DRIVER.release_order("0.1.0-alpha.5"), DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE))
 
-    def test_a_cask_that_self_updates_runs_koi_update_without_ci_so_the_app_updater_runs(self):
-        self.assertLess(DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE), DRIVER.release_order(DRIVER.CASK_SELF_UPDATE_SINCE))
+    def test_koi_update_runs_without_ci_so_the_app_updater_runs(self):
         env = {"CI": "true", "PATH": "/opt/homebrew/bin:/usr/bin", "HOME": "/Users/runner"}
-        older = DRIVER.update_env(env, DRIVER.HOMEBREW_UPDATE_SINCE)
-        self.assertEqual(older, {**env, "PATH": DRIVER.SYSTEM_PATH})
-        newer = DRIVER.update_env(env, DRIVER.CASK_SELF_UPDATE_SINCE)
-        self.assertEqual(newer, {"PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner"})
+        self.assertEqual(DRIVER.update_env(env), {"PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner"})
         self.assertEqual(env["CI"], "true")
+
+    def test_homebrew_update_passes_only_after_the_updated_service_syncs_and_zap_cleans_up(self):
+        printed_only = {"release assets verified", "clean account", "tap cask matches release",
+                        "previous release installed", "previous release syncs", "koi update through Homebrew"}
+        for observed in (printed_only, DRIVER.REQUIRED["homebrew-update"] - {"updated service syncs"},
+                         DRIVER.REQUIRED["homebrew-update"] - {"zap removes the self-updated app"}):
+            report = {"scenario": "homebrew-update", "assertions": [{"name": name, "passed": True} for name in observed],
+                      "cleanup": [{"name": "owned state", "passed": True}], "errors": []}
+            with self.subTest(missing=sorted(DRIVER.REQUIRED["homebrew-update"] - observed)):
+                self.assertFalse(DRIVER.passed(report))
 
     def test_checksums_allow_standard_text_and_binary_markers(self):
         result = DRIVER.checksums("a" * 64 + "  koi.tar.gz\n" + "b" * 64 + " *Koidrive.dmg\n")
