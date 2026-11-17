@@ -551,3 +551,80 @@ extension RestoreRefusal {
         }
     }
 }
+
+extension ActivityLine {
+    var leadText: String {
+        switch self {
+        case .scanning(let folder, nil): String(localized: "Checking \(folder)…")
+        case .comparing(let folder, let files): String(localized: "Comparing \(files) files in \(folder)…")
+        case .applying(let folder, let changes): String(localized: "Applying \(changes) changes to \(folder)…")
+        case .listing(let folder): String(localized: "Getting the file list for \(folder)…")
+        case .finishingUp(let folder): String(localized: "Finishing up \(folder)…")
+        case .scanning, .waitingForAnswer: noteText
+        }
+    }
+
+    var noteText: String {
+        switch self {
+        case .scanning(let folder, let files?): String(localized: "Checking \(folder), \(files) files found")
+        case .scanning(let folder, nil): String(localized: "Checking \(folder)")
+        case .comparing(let folder, let files): String(localized: "Comparing \(files) files in \(folder)")
+        case .applying(let folder, let changes): String(localized: "Applying \(changes) changes to \(folder)")
+        case .listing(let folder): String(localized: "Getting the file list for \(folder)")
+        case .finishingUp(let folder): String(localized: "Finishing up \(folder)")
+        case .waitingForAnswer(let folders): folders.waitingTitle
+        }
+    }
+}
+
+extension SyncHeader {
+    var accessibilityLabel: String {
+        if let activity, !meterShowsTransfers { return activity.noteText }
+        if let folder { return String(localized: "Syncing \(folder)") }
+        return folders > 1 ? String(localized: "Syncing \(folders) folders") : SyncStatus.syncing.title
+    }
+}
+
+extension FolderNames {
+    var waitingTitle: String {
+        switch self {
+        case .one(let folder): String(localized: "Waiting for your answer in \(folder)")
+        case .two(let first, let second): String(localized: "Waiting for your answer in \(first) and \(second)")
+        case .several(let count): String(localized: "Waiting for your answer in \(count) folders")
+        }
+    }
+}
+
+extension Meter.Caption {
+    var text: String {
+        switch self {
+        case .filesFound(let files): String(localized: "\(files) files found")
+        case .bytes(let done, let total): Self.byteProgress(done: done, total: total)
+        case .left(let bytes, let files):
+            String(localized: "\(ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)) left, \(files) files")
+        }
+    }
+
+    private static func byteProgress(done: UInt64, total: UInt64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        let units: [ByteCountFormatter.Units] = [.useBytes, .useKB, .useMB, .useGB, .useTB]
+        let power = { (bytes: UInt64) in min(units.count - 1, bytes < 1000 ? 0 : Int(log10(Double(bytes)) / 3)) }
+        formatter.allowedUnits = units[power(total)]
+        let totalText = formatter.string(fromByteCount: Int64(clamping: total))
+        formatter.allowedUnits = units[power(done)]
+        formatter.includesUnit = power(done) != power(total)
+        let doneText = formatter.string(fromByteCount: Int64(clamping: done))
+        return String(localized: "\(doneText) of \(totalText)")
+    }
+}
+
+extension RemainingTime {
+    var text: String {
+        switch self {
+        case .minutes(let minutes): String(localized: "About \(minutes) minutes left")
+        case .hours(let hours): String(localized: "About \(hours) hours left")
+        }
+    }
+}

@@ -20,6 +20,10 @@ enum Snapshots {
                 await capture(MenuContent().environment(model).background(.background), width: 330, titled: nil,
                               dark: dark, to: directory.appending(path: "menubar-\(name)-\(suffix).png"))
             }
+            for (name, model) in await syncProgressStates() {
+                await capture(MenuContent().environment(model).background(.background), width: 330, titled: nil,
+                              dark: dark, to: directory.appending(path: "sync-progress-\(name)-\(suffix).png"))
+            }
             for (name, model, shown) in await updateStates() {
                 await capture(MenuContent().environment(model).environment(\.shownUpdateNotice, shown).background(.background),
                               width: 330, titled: nil, dark: dark, to: directory.appending(path: "update-popover-\(name)-\(suffix).png"))
@@ -530,6 +534,77 @@ enum Snapshots {
         states.append(("9-stopped", stopped))
         try? await Task.sleep(for: .milliseconds(200))
         return states
+    }
+
+    private static func syncProgressStates() async -> [(String, AppModel)] {
+        func folder(_ name: String, _ activity: FolderActivity?, state: FolderState = .syncing, moved: UInt64 = 0) -> LinkedFolder {
+            LinkedFolder(spaceId: "space-\(name.lowercased())", spaceName: name, path: "/Users/ada/Koidrive/\(name)", state: state,
+                         activity: activity, bytesMoved: moved)
+        }
+        func transfers(up: UInt64 = 0, down: UInt64 = 0, done: UInt64, total: UInt64, _ space: String, _ path: String) -> SyncProgress {
+            SyncProgress(filesToUpload: up, filesToDownload: down, bytesDone: done, bytesTotal: total,
+                         current: FolderPath(spaceId: "space-\(space.lowercased())", path: path))
+        }
+        func model(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil, questions: Bool = false) async -> AppModel {
+            let model = AppModel.fake(scenario: questions ? .massDelete : .upToDate)
+            try? await Task.sleep(for: .milliseconds(300))
+            model.apply(.questions(questions: Array(model.state.questions.prefix(1))))
+            model.apply(.status(status: .syncing))
+            model.apply(.folders(folders: folders))
+            model.apply(.progress(progress: progress))
+            return model
+        }
+        func steady(_ model: AppModel, bytesPerSecond: UInt64) -> AppModel {
+            let start = Date.now.addingTimeInterval(-61)
+            var now = start
+            model.clock = { now }
+            for second in 0...61 {
+                now = start.addingTimeInterval(Double(second))
+                model.apply(.folders(folders: model.state.folders.map { folder in
+                    var folder = folder
+                    if folder.spaceId == "space-photos" { folder.bytesMoved = UInt64(second) * bytesPerSecond }
+                    return folder
+                }))
+                model.sampleTransfers()
+            }
+            return model
+        }
+        let documents = folder("Documents", nil, state: .upToDate)
+        let comparing = await model([folder("Photos", .checking(files: 3_120, bytes: 4_200_000_000)), documents])
+        comparing.apply(.folders(folders: [folder("Photos", .checking(files: 3_120, bytes: 3_100_000_000)), documents]))
+        comparing.apply(.progress(progress: transfers(up: 214, done: 2_000_000, total: 90_000_000, "Photos", "2024/IMG_1180.heic")))
+        func backlog() async -> AppModel {
+            await model([folder("Photos", nil), documents],
+                        transfers(up: 820, down: 420, done: 2_600_000_000, total: 10_800_000_000, "Photos", "2025/Jeju/IMG_2214.mov"))
+        }
+        return [
+            ("01-first-scan", await model([folder("Photos", .scanning(files: 12_408)), documents])),
+            ("02-file-list", await model([folder("Photos", .listing), documents])),
+            ("03-comparing-size-known", comparing),
+            ("04-comparing-size-not-known", await model([folder("Photos", .checking(files: 3_120, bytes: 0)), documents])),
+            ("05-applying", await model([folder("Photos", .applying(changes: 84)), documents])),
+            ("06-waiting-for-answer", await model([folder("Photos", .awaitingAnswers(questions: 1)), documents], questions: true)),
+            ("07-finishing-up", await model([folder("Photos", .catchingUp), documents])),
+            ("08-upload", await model([folder("Documents", nil), folder("Photos", nil, state: .upToDate)],
+                                transfers(up: 320, done: 148_000_000, total: 240_000_000, "Documents", "Reports/q3-draft.pdf"))),
+            ("09-download", await model([folder("Photos", nil), documents],
+                                  transfers(down: 1_204, done: 1_200_000_000, total: 6_400_000_000, "Photos", "2026/Seoul/IMG_0413.heic"))),
+            ("10-both", await model([folder("Photos", nil), documents],
+                              transfers(up: 320, down: 1_204, done: 2_600_000_000, total: 6_400_000_000, "Photos", "2026/Seoul/IMG_0413.heic"))),
+            ("11-five-folders", await model(["Documents", "Photos", "Music", "Design", "Archive"].map { folder($0, nil) },
+                                      transfers(up: 320, down: 1_204, done: 2_600_000_000, total: 6_400_000_000, "Photos", "2026/Seoul/IMG_0413.heic"))),
+            ("12-scan-and-transfer", await model([folder("Documents", nil), folder("Photos", .scanning(files: 12_408))],
+                                           transfers(up: 320, done: 148_000_000, total: 240_000_000, "Documents", "Reports/q3-draft.pdf"))),
+            ("13-waiting-and-transfer", await model([folder("Documents", nil), folder("Music", nil), folder("Photos", .awaitingAnswers(questions: 1))],
+                                              transfers(up: 320, done: 148_000_000, total: 240_000_000, "Documents", "Reports/q3-draft.pdf"),
+                                              questions: true)),
+            ("14-large-backlog", await backlog()),
+            ("15-steady-estimate", steady(await backlog(), bytesPerSecond: 5_470_000)),
+            ("16-over-an-hour", steady(await model([folder("Photos", nil), documents],
+                                                   transfers(up: 4_812, done: 2_400_000_000, total: 34_000_000_000, "Photos", "2019/IMG_0031.heic")),
+                                       bytesPerSecond: 4_390_000)),
+            ("17-done", AppModel.preview(.upToDate)),
+        ]
     }
 
     private static func setupStates() async -> [(String, SetupModel, AppModel, (@MainActor () async -> Void)?)] {
