@@ -4386,13 +4386,17 @@ impl Trees {
         self.cycle_reverted.insert(id);
     }
 
+    pub(crate) fn holds_merge(&self, id: &str) -> bool {
+        self.l.get(id).is_some() && self.reverted.contains(id)
+    }
+
     fn release_cycle_reverts(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         let released: Vec<NodeId> = (self.cycle_reverted.iter())
             .filter(|&id| {
                 !self.reverted.contains(id)
                     || (self.l.get(id)).is_some_and(|local| {
-                        let parent = merged
-                            .get(&local.shape.parent)
+                        let parent = (merged.get(&local.shape.parent))
+                            .filter(|_| self.holds_merge(&local.shape.parent))
                             .unwrap_or(&local.shape.parent);
                         !self.closes_a_cycle(id, parent)
                     })

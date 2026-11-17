@@ -612,9 +612,7 @@ fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed
     );
 }
 
-
-#[test]
-fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere() {
+fn moved_into_the_folder_merged_into_it(renamed: bool) -> (Trees, Commits, IdGen) {
     let mut trees = trees(&[
         ("a", Some(dir(ROOT, "d")), None, None),
         (
@@ -637,7 +635,64 @@ fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_
     trees.settle_with_merges(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.reverted().contains("b"));
+    if renamed {
+        let mut renamed = trees.local().get("a").unwrap().clone();
+        renamed.shape = dir(ROOT, "f");
+        trees.set_local_changed("a".into(), renamed);
+    }
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere() {
+    let (mut trees, commits, _) = moved_into_the_folder_merged_into_it(false);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
     trees.settle_with_merges(commits.aliases());
     assert!(trees.reverted().contains("b"));
+}
+
+#[test]
+fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_while_the_server_changes_elsewhere() {
+    let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
+    trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
+    trees.settle_with_merges(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
+    assert!(!trees.reverted().contains("b"));
+}
+
+#[test]
+fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the_server_changes_elsewhere() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "d")), None, None),
+        ("c", Some(dir("a", "g")), None, None),
+        (
+            "b",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote(dir(ROOT, "d"))),
+        ),
+        synced("x", dir("b", "g")),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(commit.ops.len(), 2, "{:?}", ops(&commit));
+    let merged = |into: &str| OpResult {
+        node_id: into.into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    acknowledge(&mut commits, &mut trees, vec![merged("b"), merged("x")]);
+    assert_eq!(commits.aliases().get("c").map(String::as_str), Some("x"));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = dir("c", "e");
+    trees.set_local_changed("b".into(), moved);
+    trees.settle_with_merges(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains("b"));
+    for (i, name) in ["z1", "z2", "z3", "z4"].into_iter().enumerate() {
+        trees.set_remote(name.into(), remote(file(ROOT, name, i as u8)));
+        trees.settle_with_merges(commits.aliases());
+        assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+        assert!(trees.reverted().contains("b"));
+    }
 }
