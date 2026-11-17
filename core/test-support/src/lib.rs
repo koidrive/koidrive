@@ -26,6 +26,7 @@ pub fn replay_each_case(list: &str) {
     let scratch = tempfile::tempdir().expect("scratch directory");
     let mut red = 0;
     let mut total = 0;
+    let mut report = String::new();
     for (index, line) in list.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).enumerate() {
         let mut words = line.split_whitespace();
         let (issue, property, cc, hash) = (words.next().unwrap(), words.next().unwrap(), words.next().unwrap(), words.next().unwrap());
@@ -54,9 +55,9 @@ pub fn replay_each_case(list: &str) {
             .chars()
             .take(400)
             .collect::<String>();
-        println!("TRIAGE\t{verdict}\t{issue}\t{property}\t{}\t{why}", &hash[..12]);
+        report.push_str(&format!("TRIAGE\t{verdict}\t{issue}\t{property}\t{}\t{why}\n", &hash[..12]));
     }
-    println!("TRIAGE-SUMMARY\t{total} cases\t{red} not green");
+    panic!("triage report\n{report}TRIAGE-SUMMARY\t{total} cases\t{red} not green");
 }
 
 /// Replays saved regressions beside `legacy` and saves each new failure in its own file.
