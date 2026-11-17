@@ -2240,7 +2240,7 @@ describe("chunk relay", () => {
 
   function relay(request: Request, put: (key: string, body: ReadableStream | null, options: R2PutOptions) => Promise<R2Object | null>) {
     const bucket = { put };
-    return worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET: bucket } as unknown as Env, {} as ExecutionContext);
+    return worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET: bucket } as unknown as Env, { waitUntil() {} } as unknown as ExecutionContext);
   }
 
   it("removes an object that a late PUT recreated after GC deleted its row", async () => {
@@ -2331,7 +2331,7 @@ describe("chunk relay", () => {
       if (calls === 1) throw new Error("injected Account DO failure");
       return account().serverKey();
     });
-    const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, {} as ExecutionContext);
+    const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, { waitUntil() {} } as unknown as ExecutionContext);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = await send();
     expect(failed.status).toBe(500);
@@ -2356,7 +2356,7 @@ describe("chunk relay", () => {
       },
     );
     const relayEnv = { ...env, ACCOUNT, BUCKET } as unknown as Env;
-    const send = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as Parameters<typeof worker.fetch>[0], relayEnv, {} as ExecutionContext);
+    const send = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as Parameters<typeof worker.fetch>[0], relayEnv, { waitUntil() {} } as unknown as ExecutionContext);
     for (let i = 0; i < 20; i++) {
       const url = `${BASE}/v1/spaces/${uuidv7()}/chunks/${"ab".repeat(32)}?inc=0.1&ticket=v1.9999999999999.AAAA`;
       expect((await send(url, { method: "PUT", body: new Uint8Array(4), headers: { "Content-Length": "4" } })).status).toBe(403);

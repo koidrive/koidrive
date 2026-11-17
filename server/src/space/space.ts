@@ -65,6 +65,8 @@ import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
+import { refusalOutcome } from "../http";
+import { UsageTally, type UsageHours } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -301,7 +303,7 @@ function fitPage<R, T>(rows: R[], build: (row: R) => T, encodedSize: (item: T) =
   return page;
 }
 
-export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "retireChunks" | "serverKey" | "shareResolve">;
+export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "recordUsage" | "retireChunks" | "serverKey" | "shareResolve">;
 
 export function spaceLogic<B extends abstract new (...args: any[]) => object>(Base: B) {
   abstract class Space extends Base {
@@ -314,6 +316,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     snapshotPageNodes = 1000;
+    private readonly traffic = new UsageTally();
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
@@ -433,7 +436,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private knownCheck(deviceId: string): SessionCheck | undefined {
-      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, historyId: null, kind: "", scope: null, leaseMs: 0 };
+      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, historyId: null, kind: "", scope: null, leaseMs: 0, reporting: false };
       const lease = this.leases.get(deviceId);
       if (!lease) return undefined;
       const leftMs = lease.untilMs - this.clock();
@@ -454,6 +457,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check.historyId === undefined) return;
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
+      this.traffic.reporting = check.reporting;
     }
 
     private renewLeases(): void {
@@ -714,6 +718,26 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (!current || Number(current.due_ms) > dueMs) await this.schedule("tokens", dueMs);
     }
     async call(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
+      const startedMs = this.clock();
+      const answered = await this.answer(session, request);
+      const nowMs = this.clock();
+      const result = answered.response.result;
+      const outcome = result.case === "error" ? refusalOutcome(result.value.code, result.value.cause) : "ok";
+      this.traffic.count("rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase()), outcome, nowMs - startedMs, nowMs);
+      const hours = this.traffic.take(nowMs);
+      if (hours) void this.flushUsage(hours);
+      return answered;
+    }
+
+    private async flushUsage(hours: UsageHours): Promise<void> {
+      try {
+        this.traffic.reporting = await this.account().recordUsage(hours);
+      } catch (error) {
+        console.error("usage flush failed", errorText(error));
+      }
+    }
+
+    private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
       const reqId = request.reqId;
       try {
         this.checkOpen();

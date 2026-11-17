@@ -19,9 +19,27 @@ export async function readMessage<S extends DescMessage>(request: Request, schem
   }
 }
 
+const refusals = new WeakMap<Response, { code: Error_Code; cause: Error_Cause }>();
+
 export function reply<S extends DescMessage>(request: Request, schema: S, message: MessageShape<S>, status = 200): Response {
-  if (wantsJson(request)) return Response.json(toJson(schema, message), { status });
-  return new Response(toBinary(schema, message), { status, headers: { "Content-Type": "application/x-protobuf" } });
+  const response = wantsJson(request)
+    ? Response.json(toJson(schema, message), { status })
+    : new Response(toBinary(schema, message), { status, headers: { "Content-Type": "application/x-protobuf" } });
+  if (schema.typeName === ErrorSchema.typeName) {
+    const { code, cause } = message as MessageShape<typeof ErrorSchema>;
+    refusals.set(response, { code, cause });
+  }
+  return response;
+}
+
+export function refusalOutcome(code: Error_Code, cause: Error_Cause): string {
+  const name = Error_Code[code]?.toLowerCase() ?? "unknown";
+  return cause === Error_Cause.UNSPECIFIED ? name : name + "." + (Error_Cause[cause]?.toLowerCase() ?? "unknown");
+}
+
+export function responseOutcome(response: Response): string {
+  const refusal = refusals.get(response);
+  return refusal ? response.status + "." + refusalOutcome(refusal.code, refusal.cause) : String(response.status);
 }
 
 const STATUS: Partial<Record<Error_Code, number>> = {

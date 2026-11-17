@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { create, type DescMessage, fromBinary, type MessageInitShape, toBinary } from "@bufbuild/protobuf";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AccountDO } from "../src/account-do";
+import {
+  ClaimRequestSchema,
+  CreateSpaceRequestSchema,
+  type DeviceCredentials,
+  DeviceCredentialsSchema,
+  PairCompleteRequestSchema,
+  PairStartResponseSchema,
+  SpaceInfoSchema,
+  TokenRequest_Telemetry,
+  TokenRequestSchema,
+} from "../src/gen/koidrive/v1/auth_pb";
+import { RpcRequestSchema } from "../src/gen/koidrive/v1/messages_pb";
+import { reportBatch } from "../src/report/payload";
+import { emptyUsage, FLUSH_MS, LATENCY_BUCKETS, latencyBucket, UsageTally } from "../src/report/usage";
+
+const BASE = "https://koidrive.test";
+const HOUR_MS = 3_600_000;
+
+function body<S extends DescMessage>(schema: S, init: MessageInitShape<S>): Uint8Array {
+  return toBinary(schema, create(schema, init));
+}
+
+async function post<S extends DescMessage>(path: string, sent: Uint8Array, token?: string, schema?: S) {
+  const headers: Record<string, string> = { "Content-Type": "application/x-protobuf" };
+  if (token) headers.Authorization = "Bearer " + token;
+  const response = await exports.default.fetch(BASE + path, { method: "POST", headers, body: sent });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return { status: response.status, message: schema && response.ok ? fromBinary(schema, bytes) : undefined };
+}
+
+function account() {
+  return env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
+}
+
+async function claim(): Promise<DeviceCredentials> {
+  const log = vi.spyOn(console, "log");
+  await exports.default.fetch(BASE + "/setup");
+  const code = log.mock.calls.map((args) => String(args[0])).find((text) => text.startsWith("Koidrive claim code"))!.split(": ")[1]!;
+  log.mockRestore();
+  return (await post("/v1/claim", body(ClaimRequestSchema, { code, userName: "Owner", deviceName: "Laptop A", platform: "macos" }), undefined, DeviceCredentialsSchema)).message!;
+}
+
+async function pair(inviter: DeviceCredentials): Promise<DeviceCredentials> {
+  const started = await post("/v1/pair/start", new Uint8Array(), inviter.access!.token, PairStartResponseSchema);
+  const paired = await post("/v1/pair/complete", body(PairCompleteRequestSchema, { code: started.message!.code, deviceName: "Laptop B", platform: "linux" }), undefined, DeviceCredentialsSchema);
+  return paired.message!;
+}
+
+async function refresh(device: DeviceCredentials, telemetry: TokenRequest_Telemetry): Promise<string> {
+  const answer = await post("/v1/token", body(TokenRequestSchema, { deviceId: device.deviceId, refreshCredential: device.refreshCredential, telemetry }));
+  expect(answer.status).toBe(200);
+  return device.deviceId;
+}
+
+const reporting = () => runInDurableObject(account(), (instance: AccountDO) => instance.reporting());
+const storedHours = () => runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT hour, usage FROM usage_hours").toArray());
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("usage tally", () => {
+  it("buckets latencies by powers of two", () => {
+    expect([0, 0.5, 1, 2, 3, 4, 1000, 16_384, 1e9].map(latencyBucket)).toEqual([0, 0, 1, 2, 2, 3, 10, 15, 15]);
+  });
+
+  it("hands over its hours at most once a minute and counts nothing once the server said it does not report", () => {
+    const tally = new UsageTally();
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    const first = tally.take(10 * HOUR_MS);
+    expect(first).toEqual({ 10: { counts: { "get_server.200": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } });
+    tally.count("get_server", "200", 3, 10 * HOUR_MS + 1);
+    expect(tally.take(10 * HOUR_MS + 1)).toBeUndefined();
+    expect(Object.keys(tally.take(10 * HOUR_MS + FLUSH_MS)!)).toEqual(["10"]);
+    tally.reporting = false;
+    tally.count("get_server", "200", 3, 11 * HOUR_MS);
+    expect(tally.take(12 * HOUR_MS)).toBeUndefined();
+  });
+});
+
+describe("report payload", () => {
+  it("holds exactly these keys and only route and outcome names", () => {
+    const usage = emptyUsage();
+    usage.counts["put_chunk.503.retry_later.r2_rate_limited"] = 2;
+    usage.counts["rpc_list_tree.ok"] = 5;
+    usage.latency.put_chunk = new Array(LATENCY_BUCKETS).fill(1);
+    const sent = reportBatch([{ hour: 490_000, id: "7d3c2a4e-0000-4000-8000-000000000001", usage }], { version: "0.1.0", protoMin: 1, protoMax: 1 }) as {
+      batch: { properties: Record<string, unknown> }[];
+    };
+    expect(Object.keys(sent).sort()).toEqual(["api_key", "batch", "historical_migration"]);
+    expect(sent.batch).toHaveLength(1);
+    expect(Object.keys(sent.batch[0]!).sort()).toEqual(["event", "properties", "timestamp", "uuid"]);
+    expect(sent.batch[0]).toMatchObject({ event: "server_report", uuid: "7d3c2a4e-0000-4000-8000-000000000001", timestamp: "2025-11-24T16:00:00.000Z" });
+    expect(Object.keys(sent.batch[0]!.properties).sort()).toEqual([
+      "$geoip_disable",
+      "$process_person_profile",
+      "c.put_chunk.503.retry_later.r2_rate_limited",
+      "c.rpc_list_tree.ok",
+      "distinct_id",
+      "h.put_chunk",
+      "proto_max",
+      "proto_min",
+      "schema",
+      "server_version",
+    ]);
+    expect(sent.batch[0]!.properties).toMatchObject({ distinct_id: "7d3c2a4e-0000-4000-8000-000000000001", $process_person_profile: false, $geoip_disable: true, schema: 1 });
+  });
+});
+
+describe("hourly server report", () => {
+  it("follows the devices' choice, counts the hour's traffic and sends it once with no id of a device, space or person", async () => {
+    const owner = await claim();
+    const second = await pair(owner);
+    expect(await reporting()).toBe(false);
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    expect(await reporting()).toBe(true);
+    await refresh(second, TokenRequest_Telemetry.OFF);
+    expect(await reporting()).toBe(false);
+    await refresh(second, TokenRequest_Telemetry.UNSPECIFIED);
+    expect(await reporting()).toBe(false);
+    await refresh(second, TokenRequest_Telemetry.ON);
+    expect(await reporting()).toBe(true);
+
+    const startMs = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => startMs + 2 * FLUSH_MS);
+    const created = await post("/v1/spaces", body(CreateSpaceRequestSchema, { name: "Holiday photos" }), owner.access!.token, SpaceInfoSchema);
+    const spaceId = created.message!.spaceId;
+    const listed = await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }), owner.access!.token);
+    expect(listed.status).toBe(200);
+    await vi.waitFor(async () => {
+      const keys = (await storedHours()).flatMap((row) => Object.keys(JSON.parse(String(row.usage)).counts));
+      expect(keys).toEqual(expect.arrayContaining(["post_spaces.201", "rpc_list_tree.ok"]));
+    });
+
+    const sent: unknown[] = [];
+    await runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => startMs + 3 * HOUR_MS;
+      instance.sendReport = async (report) => {
+        sent.push(report);
+        return true;
+      };
+    });
+    await runDurableObjectAlarm(account());
+    expect(sent).toHaveLength(1);
+    const text = JSON.stringify(sent[0]);
+    for (const secret of [owner.deviceId, second.deviceId, spaceId, owner.userId, "Owner", "Laptop", "Holiday", owner.refreshCredential]) {
+      expect(text).not.toContain(secret);
+    }
+    const properties = (sent[0] as { batch: { properties: Record<string, unknown> }[] }).batch.flatMap((event) => Object.keys(event.properties));
+    for (const key of properties) expect(key).toMatch(/^(?:\$geoip_disable|\$process_person_profile|distinct_id|schema|server_version|proto_min|proto_max|c\.[a-z_]+\.[a-z0-9_.]+|h\.[a-z_]+)$/);
+    expect(await storedHours()).toEqual([]);
+  });
+
+  it("drops the stored hours without sending them once a device turns reports off", async () => {
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const sent: unknown[] = [];
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
+      instance.clock = () => (hour + 2) * HOUR_MS;
+      instance.sendReport = async (report) => {
+        sent.push(report);
+        return true;
+      };
+    });
+    expect(await storedHours()).toHaveLength(1);
+    await runDurableObjectAlarm(account());
+    expect(sent).toEqual([]);
+    expect(await storedHours()).toEqual([]);
+    expect(await runInDurableObject(account(), (instance: AccountDO) => instance.recordUsage({ [hour]: emptyUsage() }))).toBe(false);
+  });
+
+  it("keeps an hour whose send failed for the next hour, and drops it after a day", async () => {
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const tries: number[] = [];
+    let nowMs = (hour + 2) * HOUR_MS;
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      instance.clock = () => nowMs;
+      instance.sendReport = async () => {
+        tries.push(nowMs);
+        throw new Error("network down");
+      };
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await runDurableObjectAlarm(account());
+    expect(tries).toHaveLength(1);
+    nowMs += HOUR_MS / 2;
+    await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
+    expect(tries).toHaveLength(1);
+    nowMs = (hour + 26) * HOUR_MS;
+    await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
+    expect(tries).toHaveLength(2);
+    expect(await storedHours()).toEqual([]);
+  });
+});

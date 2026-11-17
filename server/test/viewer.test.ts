@@ -15,7 +15,7 @@ function expectViewerHeaders(response: Response) {
 describe("share links: web viewer (RFC 0005 section 8)", () => {
   it("serves the same page for every well-formed link id without looking the link up", async () => {
     const unreachable = { ...env, ACCOUNT: { idFromName: () => { throw new Error("the viewer page reached the Account DO"); } } } as unknown as Env;
-    const response = await worker.fetch(new Request(`${BASE}/s/${LINK}`) as Parameters<typeof worker.fetch>[0], unreachable, {} as ExecutionContext);
+    const response = await worker.fetch(new Request(`${BASE}/s/${LINK}`) as Parameters<typeof worker.fetch>[0], unreachable, { waitUntil() {} } as unknown as ExecutionContext);
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
