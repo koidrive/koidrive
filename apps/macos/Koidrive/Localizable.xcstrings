@@ -14,6 +14,7 @@
     "%@ to upload" : {},
     "%@ was recovered" : {},
     "%@ would remove %@ of %@." : {},
+    "%@ — linked to %@" : {},
     "%@, %@" : {},
     "%@, added %@" : {},
     "%@. Answer in Needs You." : {},

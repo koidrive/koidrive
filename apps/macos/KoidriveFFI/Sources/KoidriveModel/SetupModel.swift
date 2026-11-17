@@ -71,7 +71,14 @@ public final class SetupModel {
     }
 
     public var canLink: Bool {
-        !isBusy && folderPath != nil && (selectedSpaceID != nil || !newSpaceName.trimmed.isEmpty)
+        guard !isBusy, folderPath != nil else { return false }
+        guard let selectedSpaceID else { return !newSpaceName.trimmed.isEmpty }
+        return linkedPath(ofSpace: selectedSpaceID) == nil
+    }
+
+    /// The folder on this Mac that a space syncs with, or nil while the space can be linked here.
+    public func linkedPath(ofSpace spaceID: String) -> String? {
+        app.folder(spaceID: spaceID)?.path
     }
 
     public func connect() async {
@@ -131,9 +138,19 @@ public final class SetupModel {
 
     private func reloadSpaces() async throws {
         spaces = try await app.spaces()
-        if selectedSpaceID == nil || !spaces.contains(where: { $0.spaceId == selectedSpaceID }) {
-            selectedSpaceID = spaces.first?.spaceId
+        let unlinked = spaces.filter { linkedPath(ofSpace: $0.spaceId) == nil }
+        if !unlinked.contains(where: { $0.spaceId == selectedSpaceID }) {
+            selectedSpaceID = unlinked.first?.spaceId
         }
+        if selectedSpaceID == nil {
+            newSpaceName = unusedSpaceName(like: newSpaceName.trimmed)
+        }
+    }
+
+    private func unusedSpaceName(like name: String) -> String {
+        let taken = Set(spaces.map { $0.name.lowercased() })
+        guard taken.contains(name.lowercased()) else { return name }
+        return (2...).lazy.map { "\(name) \($0)" }.first { !taken.contains($0.lowercased()) }!
     }
 
     private func attempt(_ body: () async throws -> Void) async {

@@ -593,6 +593,12 @@ enum Snapshots {
         let (overlap, overlapApp) = addFolder()
         await overlap.loadSpaces()
         overlap.folderPath = documents.path(percentEncoded: false)
+        let (allLinked, allLinkedApp) = addFolder()
+        let archive = FileManager.default.temporaryDirectory.appending(path: "Archive", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        _ = try? await allLinkedApp.linkFolder(spaceID: "space-archive", path: archive.path(percentEncoded: false))
+        await allLinked.loadSpaces()
+        allLinked.folderPath = documents.path(percentEncoded: false)
         let failLinking: @MainActor () async -> Void = {
             overlapApp.session.fakeCore()?.failNext(error: .FolderOverlaps(other: "~/Koidrive/Photos"))
             await overlap.link()
@@ -613,7 +619,7 @@ enum Snapshots {
                 ("2a-sign-in-error", pair, pairApp, nil), ("2b-claim", claim, claimApp, nil),
                 ("3-folder", folder, folderApp, nil), ("3a-folder-existing", existing, existingApp, nil),
                 ("3b-folder-none", noFolder, noFolderApp, nil), ("3c-folder-overlap", overlap, overlapApp, failLinking),
-                ("4-done", done, doneApp, nil)]
+                ("3d-folder-all-linked", allLinked, allLinkedApp, nil), ("4-done", done, doneApp, nil)]
     }
 
     private static func settingsStates() async -> [(String, AnyView)] {
