@@ -25,7 +25,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 
 On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. `runner hook` runs when it touches `.github/runner/`. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` runs each macOS job unless a passing merge queue run on the same commit passed it or did not select it. The macOS jobs run on GitHub-hosted runners unless the `MACOS_RUNS_ON` variable selects the [self-hosted runners](../.github/runner/README.md).
 
-One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test is skipped unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
+One test in `cli/tests/server.rs` needs a systemd user instance. The `cli integration` job starts one, and locally the test is skipped unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
 
 Two other workflows run on pull requests. [CLI distribution](../.github/workflows/release-cli.yml) builds the CLI tarballs, tests the installer and installs the CLI from a local Homebrew tap. [DCO](../.github/workflows/dco.yml) checks the `Signed-off-by` line of every commit.
 
