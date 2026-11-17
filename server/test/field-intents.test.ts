@@ -148,13 +148,24 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     expect((await stateOf(space, plain))!.intents!.content!.appliedAtMs).toBe(done.committedAtMs);
   });
 
-  it("stamps each commit later than the head's, even when the clock stands still or goes back", async () => {
+  it("waits for its clock to pass the head's stamp before it commits, and stamps one past the head after 50 ms behind it", async () => {
     const { space, a, root } = await setup();
-    await setClock(space, 5_000_000_000_000);
+    const waits: number[] = [];
+    let atMs = 5_000_000_000_000;
+    await runInDurableObject(space.stub, (instance: SpaceDO) => {
+      instance.clock = () => atMs;
+      instance.sleep = async (ms) => {
+        waits.push(ms);
+        atMs += ms;
+      };
+    });
     const first = await a.commit([op.mkdir(uuidv7(), root, "one")]);
     const second = await a.commit([op.mkdir(uuidv7(), root, "two")]);
-    await setClock(space, 1_000);
+    expect(waits).toEqual([1]);
+    expect(second.committedAtMs).toBe(BigInt(atMs));
+    atMs = 1_000;
     const third = await a.commit([op.mkdir(uuidv7(), root, "three")]);
+    expect(waits).toEqual([1, 50]);
     expect([second.committedAtMs - first.committedAtMs, third.committedAtMs - second.committedAtMs]).toEqual([1n, 1n]);
   });
 
@@ -231,6 +242,19 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     const trashed = (await stateOf(space, nodeId))!;
     expect(trashed.trashHeld.map(toHex)).toEqual([toHex(lostRename)]);
     expect(merged.changes.map(changedId)).toEqual([nodeId]);
+  });
+
+  it("reports on a trashed node the status intent its trash replaced, as the status intent's over, and clears it on restore", async () => {
+    const { space, a, values, root } = await setup();
+    const nodeId = await file(a, root, "slides.pptx", values[0]!);
+    const created = (await stateOf(space, nodeId))!.intents!.status!;
+    const removal = intent(a.session.deviceId);
+    await a.commit([sent(del(nodeId), removal)]);
+    const trashed = (await stateOf(space, nodeId))!.intents!.status!;
+    expect([idOf(trashed), toHex(trashed.over)]).toEqual([idOf(removal), idOf(created)]);
+    for (const field of ["place", "content"] as const) expect((await stateOf(space, nodeId))!.intents![field]!.over).toHaveLength(0);
+    await a.commit([sent(op.restore(nodeId), intent(a.session.deviceId))]);
+    expect((await stateOf(space, nodeId))!.intents!.status!.over).toHaveLength(0);
   });
 
   it("keeps the field's intent when RFC 0016 makes an edit a no-op, and reports the node", async () => {
@@ -390,11 +414,14 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     await c.commit([sent(op.create(besideEdit, kept, "carried.txt", values[1]!), intent(a.session.deviceId, { replay: true, appliedAtMs: 1n }))]);
     await c.commit([sent(op.create(inGone, gone, "carried.txt", values[1]!), intent(a.session.deviceId, { replay: true, appliedAtMs: 1n }))]);
     await a.commit([sent(update(edited, values[2]!), intent(a.session.deviceId))]);
+    const placeBefore = (await stateOf(space, besideEdit))!.intents!.place;
     const deleted = await b.commit([sent(del(top), intent(b.session.deviceId))]);
     expect(deleted.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     expect((await stateOf(space, kept))!.status).toBe(NodeStatus.LIVE);
     expect((await stateOf(space, gone))!.status).toBe(NodeStatus.TRASHED);
-    expect((await stateOf(space, besideEdit))!).toMatchObject({ parentId: kept, status: NodeStatus.LIVE });
+    const beside = (await stateOf(space, besideEdit))!;
+    expect(beside).toMatchObject({ parentId: kept, status: NodeStatus.LIVE });
+    expect(idOf(beside.intents!.place)).toBe(idOf(placeBefore));
     expect((await stateOf(space, inGone))!).toMatchObject({ parentId: top, status: NodeStatus.LIVE });
   });
 
@@ -652,6 +679,7 @@ describe("RFC 0028 section 3.6: replays the server already holds", () => {
     expect(copied.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
     const replay = await c.commit([sent(update(nodeId, values[2]!), create(IntentSchema, { ...lost, replay: true }))], { baseSeq: a.baseSeq });
     expect(replay.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect(replay.changes.map(changedId)).toEqual([copied.results[0]!.nodeId]);
     expect(idOf((await stateOf(space, nodeId))!.intents!.content)).not.toBe(idOf(lost));
   });
 });

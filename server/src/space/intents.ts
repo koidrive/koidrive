@@ -87,9 +87,11 @@ export function wireIntent(intent: FieldIntent | undefined): Intent | undefined 
   return create(IntentSchema, { id: intentBytes(intent.id), authorDeviceId: intent.author, replay: intent.carried, appliedAtMs: BigInt(intent.appliedAtMs) });
 }
 
-export function wireIntents(intents: NodeIntents): FieldIntents | undefined {
+export function wireIntents(intents: NodeIntents, replacedStatus?: string | null): FieldIntents | undefined {
   if (!intents.place && !intents.content && !intents.status) return undefined;
-  return create(FieldIntentsSchema, { place: wireIntent(intents.place), content: wireIntent(intents.content), status: wireIntent(intents.status) });
+  const status = wireIntent(intents.status);
+  if (status && replacedStatus) status.over = intentBytes(replacedStatus);
+  return create(FieldIntentsSchema, { place: wireIntent(intents.place), content: wireIntent(intents.content), status });
 }
 
 const INTENT_BYTES = 16;

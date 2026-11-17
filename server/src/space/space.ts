@@ -111,6 +111,7 @@ const MAX_SERVER_FRAME = 1024 * 1024;
 export const MAX_CLIENT_FRAME = 8 * 1024 * 1024;
 const MAX_REQ_ID = 2n ** 64n - 1n;
 const RETRY_LATER_MS = 60_000;
+const CLOCK_WAIT_MS = 50;
 const PAGE_ENVELOPE_BYTES = 1024;
 const GC_BATCH = 1000;
 const GC_RETRY_MS = 10 * 60_000;
@@ -315,6 +316,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract account(): Directory;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
+    sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     lostChangeRule: LostChangeRule = LOST_CHANGE_RULE;
     snapshotPageNodes = 1000;
     private exporting: Promise<void> | undefined;
@@ -416,6 +418,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (msg.case === "resume") return this.resume(ws, attachment, msg.value);
       if (msg.case === "rpc") {
         const { response, record } = await this.call(this.sessionOf(attachment, attachment.role, attachment.maxFormat, check), msg.value);
+        if (response.result.case === "error" && this.revoked(attachment.identity.deviceId)) return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
         this.send(ws, { case: "rpc", value: response });
         if (record) await this.broadcast(record, attachment.connId);
         return;
@@ -816,8 +819,16 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       };
     }
 
-    private commitTime(nowMs: number): number {
-      return Math.max(nowMs, Number(this.tokenAt(this.headSeq).committedAtMs) + 1);
+    private async stampAfterHead(): Promise<number> {
+      for (let waited = 0; ; ) {
+        const head = Number(this.tokenAt(this.headSeq).committedAtMs);
+        const now = this.clock();
+        if (now > head) return now;
+        if (waited >= CLOCK_WAIT_MS) return head + 1;
+        const ms = Math.min(head + 1 - now, CLOCK_WAIT_MS - waited);
+        await this.sleep(ms);
+        waited = this.clock() > now ? waited + ms : CLOCK_WAIT_MS;
+      }
     }
 
     private tokenAt(seq: number): { commitId: string; committedAtMs: bigint } {
@@ -908,8 +919,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           referenced.set(hex, chunk);
         }
       }
-      const nowMs = this.clock();
-      const confirmed = await this.confirmUploads(referenced, commit.receipts, nowMs);
+      const confirmed = await this.confirmUploads(referenced, commit.receipts, this.clock());
+      const committedAtMs = await this.stampAfterHead();
 
       const done = this.db.transactionSync((): { result: CommitResult; record?: CommitRecord; rearm?: boolean } => {
         if (this.revoked(session.deviceId)) fail(Error_Code.UNAUTHENTICATED, "device revoked");
@@ -917,7 +928,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const again = this.checkCommitOrder(session.deviceId, commit, digests);
         if (again) return { result: again };
         const head = this.headSeq;
-        const committedAtMs = this.commitTime(nowMs);
 
         const missing: Uint8Array[] = [];
         for (const [hex, chunk] of referenced) {
@@ -1197,7 +1207,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       this.sql.exec("DELETE FROM versions WHERE version_id = ?", version.version_id);
     }
 
-    async collectGarbage(nowMs: number): Promise<GcReport> {
+    async collectGarbage(atMs: number): Promise<GcReport> {
+      const nowMs = atMs > Number(this.tokenAt(this.headSeq).committedAtMs) ? atMs : await this.stampAfterHead();
       const settings = this.settings();
       const spaceId = this.spaceId;
       const purge = this.db.transactionSync(() => {
@@ -1245,9 +1256,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         let record: CommitRecord | undefined;
         if (changes.length > 0) {
           const seq = BigInt(this.headSeq + 1);
-          const committedAtMs = this.commitTime(nowMs);
-          record = create(CommitRecordSchema, { seq, commitId: uuidv7(committedAtMs), committedAtMs: BigInt(committedAtMs), changes });
-          this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(committedAtMs) }), null);
+          record = create(CommitRecordSchema, { seq, commitId: uuidv7(nowMs), committedAtMs: BigInt(nowMs), changes });
+          this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(nowMs) }), null);
           noteCommitted(this.sql, record);
         }
         return { expiredVersions: expired.length, purgedNodes: changes.length, record };
