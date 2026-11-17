@@ -1446,7 +1446,7 @@ impl Driver {
     /// the background, at most once a minute, which marks [`Driver::watch`] changed when it names writers.
     pub fn questions(&self) -> Result<Vec<Question>, DriverError> {
         let runtime = tokio::runtime::Handle::try_current().ok();
-        let (questions, listing) = self.named_questions(runtime.is_some())?;
+        let (questions, listing) = self.named_questions(runtime.is_some(), true)?;
         if let (Some(runtime), Some(listing)) = (runtime, listing) {
             let inner = Arc::downgrade(&self.inner);
             let listing = runtime
@@ -1469,7 +1469,7 @@ impl Driver {
     /// driver and frees the profile before it lists the account's devices, for at most three seconds, when an open
     /// conflict has a writer the cached device list does not name.
     pub async fn into_questions(self) -> Result<Vec<Question>, DriverError> {
-        let (mut questions, listing) = self.named_questions(true)?;
+        let (mut questions, listing) = self.named_questions(true, false)?;
         drop(self);
         if let Some(listing) = listing
             && let Ok(Some(names)) = tokio::time::timeout(DEVICES_WAIT, listing).await
@@ -1510,6 +1510,7 @@ impl Driver {
     fn named_questions(
         &self,
         may_list: bool,
+        holds_profile: bool,
     ) -> Result<
         (
             Vec<Question>,
@@ -1526,7 +1527,11 @@ impl Driver {
         if !(may_list && unknown && due) {
             return Ok((questions, None));
         }
-        let Ok(auth) = self.signed_in() else {
+        let auth = match holds_profile {
+            true => self.signed_in(),
+            false => self.reading_auth(),
+        };
+        let Ok(auth) = auth else {
             return Ok((questions, None));
         };
         devices.listed_at = Some(Instant::now());
@@ -2008,6 +2013,33 @@ impl Driver {
     pub fn signed_in(&self) -> Result<Arc<Auth>, DriverError> {
         let credential = self.credential()?;
         Ok(self.auth(&credential)?)
+    }
+
+    fn reading_auth(&self) -> Result<Arc<Auth>, DriverError> {
+        let credential = self.credential()?;
+        let path = self.inner.paths.credential();
+        let original = credential.clone();
+        let reload = Arc::new(move || {
+            let stored = Credential::load_stored(&path)
+                .map_err(io::Error::other)?
+                .ok_or_else(|| io::Error::other("the profile no longer holds a credential"))?;
+            if (
+                &stored.credential.server,
+                &stored.credential.user_id,
+                &stored.credential.device_id,
+            ) != (&original.server, &original.user_id, &original.device_id)
+            {
+                return Err(io::Error::other(
+                    "the profile now holds another device's credential",
+                ));
+            }
+            Ok(stored.net())
+        });
+        Ok(Arc::new(Auth::reloading(
+            credential.api()?,
+            credential.net(),
+            reload,
+        )))
     }
 
     fn credential(&self) -> Result<Credential, DriverError> {
@@ -3021,6 +3053,97 @@ mod tests {
             .collect();
         assert_eq!(writers, [("d1".to_owned(), None), ("d2".to_owned(), None)]);
         served.abort();
+    }
+
+    #[tokio::test]
+    async fn questions_read_once_never_rotate_the_credential_of_the_process_that_takes_the_profile()
+    {
+        use koidrive_proto::v1::{AccessToken, TokenRequest};
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let (asked, mut asking) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let released = gate.clone();
+        let served = tokio::spawn(async move {
+            let mut current = "secret".to_owned();
+            let mut first = true;
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (path, body) = read_request(&mut socket).await;
+                if path.contains("/v1/devices") {
+                    held.push(socket);
+                    continue;
+                }
+                let request: TokenRequest = prost::Message::decode(body.as_slice()).unwrap();
+                if first {
+                    first = false;
+                    asked.send(()).unwrap();
+                    released.notified().await;
+                }
+                let (status, reply) = if request.refresh_credential != current {
+                    let refusal = koidrive_proto::v1::Error {
+                        code: koidrive_proto::v1::error::Code::Unauthenticated.into(),
+                        message: "unknown credential".into(),
+                        ..Default::default()
+                    };
+                    (401, prost::Message::encode_to_vec(&refusal))
+                } else {
+                    let rotated = !request.next_refresh_credential.is_empty();
+                    if rotated {
+                        current = request.next_refresh_credential.clone();
+                    }
+                    let token = AccessToken {
+                        token: "token".into(),
+                        expires_at_ms: i64::MAX,
+                        server_time_ms: unix_ms_now(),
+                        rotated,
+                    };
+                    (200, prost::Message::encode_to_vec(&token))
+                };
+                let head = format!(
+                    "HTTP/1.1 {status} Reply\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    reply.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&reply).await.unwrap();
+            }
+        });
+        let paths = linked_with_server(&base, server);
+        conflict_written_by_d1_and_d2(&paths);
+        fs::File::options()
+            .write(true)
+            .open(paths.credential())
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(2 * 86_400))
+            .unwrap();
+
+        let saved = fs::read(paths.credential()).unwrap();
+        let reading = tokio::spawn(Driver::open(paths.clone()).unwrap().into_questions());
+        asking.recv().await.unwrap();
+        let daemon = Driver::open(paths.clone())
+            .expect("the profile is free while the one-shot read refreshes");
+        let auth = daemon.signed_in().unwrap();
+        gate.notify_one();
+        reading.await.unwrap().unwrap();
+        assert_eq!(fs::read(paths.credential()).unwrap(), saved);
+        let answer = auth.access_token().await;
+        served.abort();
+        assert!(
+            answer.is_ok(),
+            "the process that holds the profile was refused: {answer:?}"
+        );
+    }
+
+    fn unix_ms_now() -> i64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
     }
 
     #[tokio::test]

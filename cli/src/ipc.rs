@@ -79,10 +79,18 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
         Request::Status | Request::Access | Request::Questions | Request::ShareLinks
     );
     let outcome: Result<Response, DriverError> = match request {
-        request @ (Request::Status
-        | Request::Questions
-        | Request::AnsweredQuestion { .. }
-        | Request::Restores { .. }) => local(driver, request),
+        Request::Status => Ok(Response::Status {
+            status: driver.status(),
+        }),
+        Request::Questions => driver
+            .questions()
+            .map(|questions| Response::Questions { questions }),
+        Request::AnsweredQuestion { question_id } => driver
+            .answered_question(&question_id)
+            .map(|question| Response::AnsweredQuestion { question }),
+        Request::Restores { space_id } => driver
+            .restores(&space_id)
+            .map(|restores| Response::Restores { restores }),
         Request::Pair { server, code, name } => match driver.pair(&server, &code, &name).await {
             Ok(account) => Ok(Response::Paired { account }),
             Err(error) => return Response::from(CliError::code_refused(error)),
@@ -220,24 +228,6 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             CliError::from(error)
         })
     })
-}
-
-fn local(driver: &Driver, request: Request) -> Result<Response, DriverError> {
-    match request {
-        Request::Status => Ok(Response::Status {
-            status: driver.status(),
-        }),
-        Request::Questions => driver
-            .questions()
-            .map(|questions| Response::Questions { questions }),
-        Request::AnsweredQuestion { question_id } => driver
-            .answered_question(&question_id)
-            .map(|question| Response::AnsweredQuestion { question }),
-        Request::Restores { space_id } => driver
-            .restores(&space_id)
-            .map(|restores| Response::Restores { restores }),
-        other => unreachable!("{other:?} needs more than this device's state"),
-    }
 }
 
 static READING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
