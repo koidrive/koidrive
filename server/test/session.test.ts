@@ -21,7 +21,7 @@ import {
   SpaceListSchema,
   TokenRequestSchema,
 } from "../src/gen/koidrive/v1/auth_pb";
-import { OpResult_Code, type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/commit_pb";
+import { CommitResultSchema, OpResult_Code, type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/commit_pb";
 import {
   type ClientMessage,
   ClientMessageSchema,
@@ -2011,6 +2011,41 @@ describe("WebSocket session", () => {
     await sa.commit(1n, [op.mkdir(uuidv7(), spaceId, "two")]);
     expect((await (await Socket.connect(spaceId, a)).hello()).deviceSeq).toBe(2n);
     expect((await (await Socket.connect(spaceId, b)).hello()).deviceSeq).toBe(0n);
+  });
+
+  it("reports the commit token of the device's commit at device_seq in Welcome, also once the log no longer holds it", async () => {
+    const { a, b, spaceId } = await twoDevices();
+    const sa = await Socket.connect(spaceId, a);
+    expect(await sa.start()).toMatchObject({ deviceSeq: 0n, deviceCommitId: "", deviceCommittedAtMs: 0n });
+    await sa.commit(0n, [op.mkdir(uuidv7(), spaceId, "one")]);
+    const second = await sa.commit(1n, [op.mkdir(uuidv7(), spaceId, "two")]);
+    const stub = env.SPACE.get(env.SPACE.idFromName(spaceId));
+    const token = await runInDurableObject(stub, (_instance, state) => {
+      const row = state.storage.sql.exec("SELECT commit_id, committed_at_ms FROM commits WHERE seq = 2").one();
+      return { deviceCommitId: String(row.commit_id), deviceCommittedAtMs: BigInt(Number(row.committed_at_ms)) };
+    });
+    expect(token.deviceCommittedAtMs).toBe(second.committedAtMs);
+    expect(await (await Socket.connect(spaceId, a)).hello()).toMatchObject({ deviceSeq: 2n, ...token });
+    expect(await (await Socket.connect(spaceId, b)).hello()).toMatchObject({ deviceSeq: 0n, deviceCommitId: "", deviceCommittedAtMs: 0n });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM commits");
+    });
+    expect(await (await Socket.connect(spaceId, a)).hello()).toMatchObject({ deviceSeq: 2n, ...token });
+  });
+
+  it("reports no commit token in Welcome for a stored result from before commit tokens whose commit the log no longer holds", async () => {
+    const { a, spaceId } = await twoDevices();
+    const sa = await Socket.connect(spaceId, a);
+    await sa.start();
+    await sa.commit(0n, [op.mkdir(uuidv7(), spaceId, "one")]);
+    await runInDurableObject(env.SPACE.get(env.SPACE.idFromName(spaceId)), (_instance, state) => {
+      const row = state.storage.sql.exec("SELECT results FROM device_commits").one();
+      const result = fromBinary(CommitResultSchema, new Uint8Array(row.results as ArrayBuffer));
+      result.committedAtMs = 0n;
+      state.storage.sql.exec("UPDATE device_commits SET results = ?", toBinary(CommitResultSchema, result));
+      state.storage.sql.exec("DELETE FROM commits");
+    });
+    expect(await (await Socket.connect(spaceId, a)).hello()).toMatchObject({ deviceSeq: 1n, deviceCommitId: "", deviceCommittedAtMs: 0n });
   });
 
   it("lets two devices commit and receive each other's changes", async () => {
