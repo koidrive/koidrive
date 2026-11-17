@@ -66,7 +66,8 @@ EOF
 #!/bin/sh
 printf 'koi %s\n' '$version'
 EOF
-    hdiutil create -volname Koidrive -srcfolder "$tmp/image" -format UDZO "$release/Koidrive-$version-arm64.dmg"
+    hdiutil makehybrid -hfs -hfs-volume-name Koidrive -o "$tmp/Koidrive-$version.hfs.dmg" "$tmp/image"
+    hdiutil convert "$tmp/Koidrive-$version.hfs.dmg" -format UDZO -o "$release/Koidrive-$version-arm64.dmg"
     (cd "$release" && shasum -a 256 ./*.dmg | sed 's#  ./#  #' > SHA256SUMS)
     KOIDRIVE_RELEASE_BASE_URL="file://$releases" bash "$root/scripts/homebrew-cask.sh" "$tag" "$release/SHA256SUMS" \
         > "$repository/Casks/koidrive.rb"

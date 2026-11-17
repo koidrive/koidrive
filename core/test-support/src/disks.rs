@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,7 +26,10 @@ pub fn is_volume_metadata(path: &Path) -> bool {
 }
 
 fn output(program: &str, args: &[&OsStr]) -> Result<String, String> {
-    let out = Command::new(program).args(args).output().unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{program} {args:?}: {error}"))?;
     if !out.status.success() {
         return Err(format!(
             "{program} {args:?}: {}",
@@ -39,11 +43,60 @@ fn run(program: &str, args: &[&OsStr]) -> String {
     output(program, args).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
+fn hdiutil(args: &[&OsStr]) -> String {
+    until_ready(std::time::Duration::from_secs(120), || {
+        output("hdiutil", args)
+    })
+    .unwrap_or_else(|failure| panic!("{failure}"))
+}
+
+fn until_ready(
+    deadline: std::time::Duration,
+    mut command: impl FnMut() -> Result<String, String>,
+) -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let mut refusals = Vec::new();
+    loop {
+        match command() {
+            Ok(out) => {
+                if let Some(last) = refusals.last() {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "succeeded after {} refusals in {:?}, the last: {last}",
+                        refusals.len(),
+                        started.elapsed()
+                    );
+                }
+                return Ok(out);
+            }
+            Err(failure)
+                if started.elapsed() < deadline
+                    && ["Resource busy", "Permission denied"]
+                        .iter()
+                        .any(|transient| failure.contains(transient)) =>
+            {
+                refusals.push(failure);
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
+}
+
 /// Disk images mounted into folders the way a person mounts a USB drive: APFS images through `hdiutil` on macOS,
-/// and ext4 images through `sudo -n mount -o loop` on Linux. Every image still mounted is detached on drop.
+/// and ext4 images through `sudo -n mount -o loop` on Linux. Drop attempts to detach every image and
+/// retains the directory without panicking if the OS cannot release one.
 pub struct Disks {
     dir: tempfile::TempDir,
-    mounted: Vec<PathBuf>,
+    mounted: Vec<Mounted>,
+}
+
+struct Mounted {
+    at: PathBuf,
+    #[cfg(target_os = "macos")]
+    image: PathBuf,
+    #[cfg(target_os = "macos")]
+    device: String,
 }
 
 impl Disks {
@@ -113,6 +166,7 @@ impl Disks {
         let mut args: Vec<OsString> = [
             "create",
             "-ov",
+            "-nospotlight",
             "-size",
             "16m",
             "-fs",
@@ -130,7 +184,7 @@ impl Disks {
             args.push(format!("-I {:#x}", serial.finish() as u32).into());
         }
         args.push(image.clone().into());
-        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>()).unwrap();
+        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
         image
     }
 
@@ -139,84 +193,110 @@ impl Disks {
         let copy = image
             .with_file_name(name)
             .with_extension(image.extension().unwrap());
-        fs::copy(image, &copy).unwrap();
+        let stage = koidrive_state_file::AtomicFile::prepare(&copy).unwrap();
+        std::io::copy(&mut fs::File::open(image).unwrap(), &mut stage.as_file()).unwrap();
+        stage.finish(koidrive_state_file::Publish::Replace).unwrap();
         copy
     }
 
     /// Mounts `image` at the folder `at`, which must exist, and leaves its root writable by this user.
     pub fn attach(&mut self, image: &Path, at: &Path) {
-        if cfg!(target_os = "macos") {
-            hdiutil(&[
+        #[cfg(target_os = "macos")]
+        {
+            let attached = hdiutil(&[
                 "attach".as_ref(),
+                "-plist".as_ref(),
                 "-nobrowse".as_ref(),
+                "-noautoopen".as_ref(),
                 "-mountpoint".as_ref(),
                 at.as_os_str(),
                 image.as_os_str(),
-            ])
-            .unwrap();
-        } else if image
-            .extension()
-            .is_some_and(|extension| extension == "fat")
-        {
-            let options = format!(
-                "loop,uid={},gid={}",
-                run("id", &["-u".as_ref()]),
-                run("id", &["-g".as_ref()])
-            );
-            sudo(&[
-                "mount".as_ref(),
-                "-o".as_ref(),
-                options.as_ref(),
-                image.as_ref(),
-                at.as_ref(),
             ]);
-        } else {
-            sudo(&[
-                "mount".as_ref(),
-                "-o".as_ref(),
-                "loop".as_ref(),
-                image.as_ref(),
-                at.as_ref(),
-            ]);
-            let owner = format!(
-                "{}:{}",
-                run("id", &["-u".as_ref()]),
-                run("id", &["-g".as_ref()])
-            );
-            sudo(&["chown".as_ref(), owner.as_ref(), at.as_ref()]);
+            let device = whole_device(&attached)
+                .unwrap_or_else(|failure| panic!("{} attached: {failure}", image.display()));
+            self.mounted.push(Mounted {
+                at: at.to_path_buf(),
+                image: std::path::absolute(image).unwrap(),
+                device,
+            });
         }
-        self.mounted.push(at.to_path_buf());
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.mounted.push(Mounted {
+                at: at.to_path_buf(),
+            });
+            if image
+                .extension()
+                .is_some_and(|extension| extension == "fat")
+            {
+                let options = format!(
+                    "loop,uid={},gid={}",
+                    run("id", &["-u".as_ref()]),
+                    run("id", &["-g".as_ref()])
+                );
+                sudo(&[
+                    "mount".as_ref(),
+                    "-o".as_ref(),
+                    options.as_ref(),
+                    image.as_ref(),
+                    at.as_ref(),
+                ]);
+            } else {
+                sudo(&[
+                    "mount".as_ref(),
+                    "-o".as_ref(),
+                    "loop".as_ref(),
+                    image.as_ref(),
+                    at.as_ref(),
+                ]);
+                let owner = format!(
+                    "{}:{}",
+                    run("id", &["-u".as_ref()]),
+                    run("id", &["-g".as_ref()])
+                );
+                sudo(&["chown".as_ref(), owner.as_ref(), at.as_ref()]);
+            }
+        }
     }
 
     /// Unmounts the image mounted at `at`, as ejecting the disk does.
     pub fn detach(&mut self, at: &Path) {
-        if let Err(failure) = unmount(at) {
+        let index = self
+            .mounted
+            .iter()
+            .position(|mounted| mounted.at == at)
+            .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
+        if let Err(failure) = unmount(&self.mounted[index]) {
             panic!("{failure}");
         }
-        self.mounted.retain(|mounted| mounted != at);
+        self.mounted.remove(index);
     }
 
     /// Records that the image mounted at `from` is at `to` now, after a folder above it moved.
     pub fn moved(&mut self, from: &Path, to: &Path) {
         for mounted in &mut self.mounted {
-            if let Ok(below) = mounted.strip_prefix(from) {
-                *mounted = to.join(below);
+            if let Ok(below) = mounted.at.strip_prefix(from) {
+                mounted.at = to.join(below);
             }
         }
     }
-}
 
-fn hdiutil(args: &[&OsStr]) -> Result<(), String> {
-    let mut failures = Vec::new();
-    while failures.len() < 10 {
-        let out = Command::new("hdiutil").args(args).output().unwrap();
-        if out.status.success() {
-            return Ok(());
+    fn cleanup(&mut self, mut detach: impl FnMut(&Mounted) -> Result<(), String>) {
+        let failures: Vec<String> = self
+            .mounted
+            .drain(..)
+            .rev()
+            .filter_map(|mounted| detach(&mounted).err())
+            .collect();
+        if !failures.is_empty() {
+            self.dir.disable_cleanup(true);
+            let _ = writeln!(
+                std::io::stderr(),
+                "Disk cleanup failed; keeping {} for the OS to reclaim: {failures:?}",
+                self.dir.path().display()
+            );
         }
-        failures.push(String::from_utf8_lossy(&out.stderr).into_owned());
-        std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    Err(format!("hdiutil {args:?}: {failures:?}"))
 }
 
 fn sudo(args: &[&OsStr]) {
@@ -225,38 +305,310 @@ fn sudo(args: &[&OsStr]) {
     run("sudo", &all);
 }
 
-fn unmount(at: &Path) -> Result<(), String> {
-    if cfg!(target_os = "macos") {
-        let dev = |path: &Path| {
-            fs::metadata(path)
-                .map(|meta| meta.dev())
-                .map_err(|err| format!("{}: {err}", path.display()))
-        };
-        if dev(at)? == dev(at.parent().unwrap())? {
-            return Err(format!("no disk mounted at {}", at.display()));
+#[cfg(target_os = "macos")]
+fn whole_device(attached: &str) -> Result<String, String> {
+    let attached =
+        plist::Value::from_reader_xml(attached.as_bytes()).map_err(|error| error.to_string())?;
+    attached
+        .as_dictionary()
+        .and_then(|attached| attached.get("system-entities"))
+        .and_then(plist::Value::as_array)
+        .ok_or("hdiutil attach has no system-entities")?
+        .iter()
+        .rev()
+        .filter_map(plist::Value::as_dictionary)
+        .filter_map(|entity| {
+            let device = entity.get("dev-entry")?.as_string()?;
+            device.strip_prefix("/dev/disk").filter(|number| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            })?;
+            let partition_map = entity
+                .get("content-hint")
+                .and_then(plist::Value::as_string)
+                .is_some_and(|hint| hint.ends_with("_partition_scheme"));
+            Some((partition_map, device))
+        })
+        .max_by_key(|(partition_map, _)| *partition_map)
+        .map(|(_, device)| device.to_owned())
+        .ok_or_else(|| "no whole device".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn image_on(info: &plist::Value, device: &str) -> Result<Option<PathBuf>, String> {
+    let images = info
+        .as_dictionary()
+        .and_then(|info| info.get("images"))
+        .and_then(plist::Value::as_array)
+        .ok_or("hdiutil info has no images array")?;
+    for attached in images {
+        let attached = attached.as_dictionary().ok_or("invalid hdiutil image")?;
+        let on_device = attached
+            .get("system-entities")
+            .and_then(plist::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(plist::Value::as_dictionary)
+            .any(|entity| {
+                entity.get("dev-entry").and_then(plist::Value::as_string) == Some(device)
+            });
+        if on_device {
+            return Ok(attached
+                .get("image-path")
+                .and_then(plist::Value::as_string)
+                .map(PathBuf::from));
         }
-        let device = format!(
-            "/dev/{}",
-            output("stat", &["-f".as_ref(), "%Sd".as_ref(), at.as_os_str()])?
-        );
-        hdiutil(&["detach".as_ref(), "-force".as_ref(), device.as_ref()])
-    } else {
-        output("sudo", &["-n".as_ref(), "umount".as_ref(), at.as_ref()]).map(drop)
     }
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn still_attached(mounted: &Mounted) -> Result<bool, String> {
+    if !Path::new(&mounted.device).exists() {
+        return Ok(false);
+    }
+    let info = output("hdiutil", &["info".as_ref(), "-plist".as_ref()])?;
+    let info = plist::Value::from_reader_xml(info.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(image_on(&info, &mounted.device)?.is_none_or(|image| image == mounted.image))
+}
+
+#[cfg(target_os = "macos")]
+fn unmount(mounted: &Mounted) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut busy = None;
+    loop {
+        let is_mounted = match (
+            fs::metadata(&mounted.at),
+            mounted.at.parent().map(fs::metadata),
+        ) {
+            (Ok(at), Some(Ok(parent))) => at.dev() != parent.dev(),
+            (Err(error), _) if error.kind() == std::io::ErrorKind::NotFound => false,
+            (Err(error), _) | (_, Some(Err(error))) => return Err(error.to_string()),
+            _ => return Err(format!("no parent for {}", mounted.at.display())),
+        };
+        let detached = if is_mounted {
+            output("/sbin/umount", &["-f".as_ref(), mounted.at.as_os_str()])
+        } else {
+            Ok(String::new())
+        }
+        .and_then(|_| {
+            output(
+                "hdiutil",
+                &[
+                    "detach".as_ref(),
+                    "-force".as_ref(),
+                    mounted.device.as_ref(),
+                ],
+            )
+        });
+        let Err(failure) = detached else {
+            break;
+        };
+        if !still_attached(mounted)? {
+            break;
+        }
+        if !failure.contains("Resource busy") {
+            return Err(failure);
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(30) {
+            return Err(format!(
+                "{} remains attached as {}: {failure}",
+                mounted.image.display(),
+                mounted.device
+            ));
+        }
+        busy.get_or_insert_with(std::time::Instant::now);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if let Some(busy) = busy {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{} detached after {:?} of Resource busy",
+            mounted.image.display(),
+            busy.elapsed()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unmount(mounted: &Mounted) -> Result<(), String> {
+    output(
+        "sudo",
+        &["-n".as_ref(), "umount".as_ref(), mounted.at.as_ref()],
+    )
+    .map(drop)
 }
 
 impl Drop for Disks {
     fn drop(&mut self) {
-        let failures: Vec<String> = (self.mounted.drain(..).rev())
-            .filter_map(|at| unmount(&at).err())
+        self.cleanup(unmount);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owned(dir: tempfile::TempDir) -> Disks {
+        let mounted = ["outer", "inner"]
+            .into_iter()
+            .map(|name| Mounted {
+                at: dir.path().join(name),
+                #[cfg(target_os = "macos")]
+                image: dir.path().join(format!("{name}.dmg")),
+                #[cfg(target_os = "macos")]
+                device: String::new(),
+            })
             .collect();
-        if failures.is_empty() {
-            return;
-        }
-        if std::thread::panicking() {
-            let _ = writeln!(std::io::stderr(), "{failures:?}");
-        } else {
-            panic!("{failures:?}");
+        Disks { dir, mounted }
+    }
+
+    #[test]
+    fn cleanup_failure_keeps_files_and_does_not_replace_the_test_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        fs::write(base.join("image.dmg"), "keep").unwrap();
+        let mut disks = owned(dir);
+        let mut tried = Vec::new();
+        disks.cleanup(|mounted| {
+            tried.push(mounted.at.file_name().unwrap().to_owned());
+            Err("Resource busy".to_owned())
+        });
+        drop(disks);
+        assert_eq!(tried, ["inner", "outer"]);
+        assert_eq!(fs::read(base.join("image.dmg")).unwrap(), b"keep");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_refused_disk_command_is_tried_again_until_it_succeeds_or_fails_otherwise() {
+        let mut answers = vec![
+            Err("hdiutil: create failed - Resource busy".to_owned()),
+            Err("hdiutil: attach failed - Permission denied".to_owned()),
+            Ok("done".to_owned()),
+        ]
+        .into_iter();
+        let ready = until_ready(std::time::Duration::from_secs(5), || {
+            answers.next().unwrap()
+        });
+        assert_eq!(ready.as_deref(), Ok("done"));
+        let mut tries = 0;
+        let broken = until_ready(std::time::Duration::from_secs(5), || {
+            tries += 1;
+            Err("hdiutil: create failed - No space left on device".to_owned())
+        });
+        assert_eq!(tries, 1);
+        assert!(broken.unwrap_err().contains("No space left"));
+        let busy = until_ready(std::time::Duration::from_millis(600), || {
+            Err("hdiutil: create failed - Resource busy".to_owned())
+        });
+        assert!(busy.unwrap_err().contains("Resource busy"));
+    }
+
+    #[test]
+    fn successful_cleanup_removes_the_fixture_directory() {
+        let mut disks = owned(tempfile::tempdir().unwrap());
+        let base = disks.base();
+        disks.cleanup(|_| Ok(()));
+        drop(disks);
+        assert!(!base.exists());
+    }
+
+    #[test]
+    fn image_copies_publish_the_same_bytes_without_an_unfinished_stage() {
+        let disks = Disks {
+            dir: tempfile::tempdir().unwrap(),
+            mounted: Vec::new(),
+        };
+        let image = disks.base().join("source.dmg");
+        let bytes = vec![42; 16_384];
+        fs::write(&image, &bytes).unwrap();
+        let copy = disks.copy(&image, "copy");
+        assert_eq!(fs::read(&copy).unwrap(), bytes);
+        assert!(std::panic::catch_unwind(|| disks.copy(&disks.base().join("missing.dmg"), "unfinished")).is_err());
+        assert!(!disks.base().join("unfinished.dmg").exists());
+        let mut files: Vec<_> = fs::read_dir(disks.base())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["copy.dmg", "source.dmg"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_image_owns_the_physical_disk_not_its_apfs_volume() {
+        let attached = r#"<?xml version="1.0"?><plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk6s1</string></dict><dict><key>dev-entry</key><string>/dev/disk6</string></dict><dict><key>dev-entry</key><string>/dev/disk5</string><key>content-hint</key><string>GUID_partition_scheme</string></dict></array></dict></plist>"#;
+        assert_eq!(whole_device(attached).as_deref(), Ok("/dev/disk5"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_image_without_a_whole_device_is_not_detached_by_partition() {
+        let attached = r#"<?xml version="1.0"?><plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk6s1</string></dict></array></dict></plist>"#;
+        assert!(whole_device(attached).is_err());
+        assert!(whole_device("bad").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_device_belongs_to_the_image_hdiutil_lists_on_it() {
+        let info = plist::Value::from_reader_xml(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array><dict><key>image-path</key><string>/fixture/other.dmg</string><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk5</string></dict></array></dict></array></dict></plist>"#.as_slice()).unwrap();
+        assert_eq!(
+            image_on(&info, "/dev/disk5"),
+            Ok(Some(PathBuf::from("/fixture/other.dmg")))
+        );
+        assert_eq!(image_on(&info, "/dev/disk7"), Ok(None));
+        assert!(image_on(&plist::Value::String("bad".into()), "/dev/disk5").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_busy_image_attached_through_a_symlinked_path_is_still_ejected() {
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Spelled");
+        let spelled = disks.base().join("Alias.dmg");
+        std::os::unix::fs::symlink(&image, &spelled).unwrap();
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&spelled, &at);
+        let device = disks.mounted[0].device.clone();
+        let held = fs::File::open(&device).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(held);
+        });
+        disks.detach(&at);
+        release.join().unwrap();
+        assert!(!Path::new(&device).exists(), "{device}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn images_detach_after_releasing_a_file_and_moving_the_parent() {
+        for format in ["APFS", "MS-DOS", "ExFAT"] {
+            let mut disks = Disks::new().unwrap();
+            let image = disks.formatted("Held", format);
+            let old = disks.base().join("parent");
+            let moved = disks.base().join("moved");
+            let mount = old.join("mount");
+            fs::create_dir_all(&mount).unwrap();
+            disks.attach(&image, &mount);
+            fs::write(mount.join("held.txt"), b"saved").unwrap();
+            let held = fs::File::open(mount.join("held.txt")).unwrap();
+            drop(held);
+            fs::rename(&old, &moved).unwrap();
+            disks.moved(&old, &moved);
+            let first = disks.mounted[0].device.clone();
+            disks.detach(&moved.join("mount"));
+            assert!(!Path::new(&first).exists(), "{format}");
+            disks.attach(&image, &moved.join("mount"));
+            assert_eq!(fs::read(moved.join("mount/held.txt")).unwrap(), b"saved");
+            let second = disks.mounted[0].device.clone();
+            let base = disks.base();
+            drop(disks);
+            assert!(!Path::new(&second).exists(), "{format}");
+            assert!(!base.exists(), "{format}");
         }
     }
 }

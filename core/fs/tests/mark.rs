@@ -154,43 +154,14 @@ fn an_entry_that_took_the_path_since_gets_no_mark() {
 }
 
 #[cfg(target_vendor = "apple")]
-struct Volume(std::path::PathBuf);
-
-#[cfg(target_vendor = "apple")]
-impl Drop for Volume {
-    fn drop(&mut self) {
-        let _ = Command::new("hdiutil")
-            .arg("detach")
-            .arg(&self.0)
-            .arg("-force")
-            .status();
-    }
-}
-
-#[cfg(target_vendor = "apple")]
 #[test]
 fn a_volume_that_keeps_attributes_in_companion_files_gets_no_mark() {
-    let dir = tempfile::tempdir().unwrap();
-    let image = dir.path().join("fat.dmg");
-    let mounted = dir.path().join("fat");
+    let mut disks = koidrive_test_support::Disks::new().unwrap();
+    let image = disks.fat("KOIMARK");
+    let mounted = disks.base().join("fat");
     fs::create_dir(&mounted).unwrap();
-    let created = Command::new("hdiutil")
-        .args([
-            "create", "-quiet", "-size", "8m", "-fs", "MS-DOS", "-volname", "KOIMARK",
-        ])
-        .arg(&image)
-        .status()
-        .unwrap();
-    assert!(created.success());
-    let attached = Command::new("hdiutil")
-        .args(["attach", "-quiet", "-nobrowse", "-noverify", "-mountpoint"])
-        .arg(&mounted)
-        .arg(&image)
-        .status()
-        .unwrap();
-    assert!(attached.success());
-    let volume = Volume(mounted.clone());
-    let root = volume.0.as_path();
+    disks.attach(&image, &mounted);
+    let root = mounted.as_path();
     fs::create_dir(root.join("docs")).unwrap();
     fs::write(root.join("docs/a.txt"), b"bytes").unwrap();
     fs::write(root.join("docs/control.txt"), b"bytes").unwrap();

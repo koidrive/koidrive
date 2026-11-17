@@ -10,7 +10,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+koidrive-state-file = { path = "../state-file" }
 proptest = "1.12.0"
 rustix = "1.1.6"
 socket2 = "0.6.5"
 tempfile = "3.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = { version = "1.10.3", default-features = false }
