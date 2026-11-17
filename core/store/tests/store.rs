@@ -1386,6 +1386,7 @@ fn engine_state() -> EngineState {
                     KeptEntries {
                         names: [".env".into(), "node_modules".into()].into(),
                         listed: true,
+                        nodes: [("n1".into(), ".env".into())].into(),
                     },
                 ),
                 (
@@ -1393,6 +1394,7 @@ fn engine_state() -> EngineState {
                     KeptEntries {
                         names: [".env".into()].into(),
                         listed: false,
+                        nodes: Default::default(),
                     },
                 ),
             ]),

@@ -15,6 +15,7 @@ upgrade_case!(kept_folders, |store| {
             let kept = koidrive_engine::state::KeptEntries {
                 names: [".env".into()].into(),
                 listed: true,
+                        nodes: Default::default(),
             };
             state.trees.kept_entries.insert(report.node_id.clone(), kept.clone());
             tx.set_engine_state(&state)?;

@@ -887,7 +887,67 @@ fn a_kept_folder_taken_over_by_a_folder_with_its_own_rules_keeps_its_entries_out
 
 
 #[test]
-fn a_kept_entry_the_person_renames_frees_its_old_name() {
+fn a_kept_entry_the_person_renames_stays_out_of_sync_and_keeps_its_name() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let settle = |b: &mut Device, remote: &mut Remote| {
+        for _ in 0..2 {
+            b.settle();
+            b.run(remote);
+        }
+    };
+
+    fs::rename(site.root.join("app/.env"), site.root.join("app/settings.txt")).unwrap();
+    settle(&mut b, &mut remote);
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [koidrive_fs::ItemPath::from("app/node_modules"), "app/settings.txt".into()]
+    );
+    fs::write(site.root.join("app/.env"), b"SECRET=new").unwrap();
+    settle(&mut b, &mut remote);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [
+            koidrive_fs::ItemPath::from("app/.env"),
+            "app/node_modules".into(),
+            "app/settings.txt".into()
+        ]
+    );
+
+    fs::remove_file(site.root.join("app/settings.txt")).unwrap();
+    settle(&mut b, &mut remote);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    settle(&mut b, &mut remote);
+    fs::write(site.root.join("app/.env"), b"PUBLIC=yes").unwrap();
+    settle(&mut b, &mut remote);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.env", "app/README.md"]
+    );
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/node_modules")]);
+}
+
+#[test]
+fn a_save_that_renames_a_kept_entry_to_a_backup_uploads_neither_file() {
     let ignored = [".env", "node_modules/pkg/index.js"];
     let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
         &[(".koiignore", ".env\nnode_modules/\n")],
@@ -902,13 +962,16 @@ fn a_kept_entry_the_person_renames_frees_its_old_name() {
         b.settle();
     }
 
-    fs::rename(site.root.join("app/.env"), site.root.join("app/settings.txt")).unwrap();
+    fs::rename(site.root.join("app/.env"), site.root.join("app/.env~")).unwrap();
+    fs::write(site.root.join("app/.env"), b"SECRET=saved").unwrap();
     for _ in 0..2 {
         b.settle();
         b.run(&mut remote);
     }
-    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/node_modules")]);
-    fs::write(site.root.join("app/.env"), b"PUBLIC=yes").unwrap();
+    drop(b);
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
     for _ in 0..2 {
         b.settle();
         b.run(&mut remote);
@@ -916,7 +979,15 @@ fn a_kept_entry_the_person_renames_frees_its_old_name() {
 
     assert_eq!(
         remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
-        ["app", "app/.env", "app/README.md", "app/settings.txt"]
+        ["app", "app/README.md"]
+    );
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [
+            koidrive_fs::ItemPath::from("app/.env"),
+            "app/.env~".into(),
+            "app/node_modules".into()
+        ]
     );
 }
 

@@ -144,6 +144,7 @@ fn trees_state() -> TreesState {
             KeptEntries {
                 names: [".env".into()].into(),
                 listed: true,
+                nodes: Default::default(),
             },
         )]
         .into(),

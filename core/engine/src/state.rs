@@ -67,6 +67,7 @@ pub struct ContentValue {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptEntries {
     pub names: BTreeSet<String>,
+    pub nodes: BTreeMap<NodeId, String>,
     pub listed: bool,
 }
 
@@ -232,8 +233,9 @@ pub struct TreesState {
     pub kept_folders: BTreeSet<NodeId>,
     /// The kept folders that another device's folder took over, at their place or at the place of a kept folder above
     /// them, with the names of the entries a listing of each found there that L did not hold, before the rules of the
-    /// deleted folder stopped applying. Each entry stays excluded with everything below it, whatever rules apply there,
-    /// until L no longer holds it (section 5.10).
+    /// deleted folder stopped applying, and the local nodes that left one of those names, each with that name. Each entry
+    /// stays excluded with everything below it, whatever rules apply there, wherever the person moves it, until L no longer
+    /// holds it. A name stays reserved until L no longer holds the node at it (section 5.10).
     pub kept_entries: BTreeMap<NodeId, KeptEntries>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a

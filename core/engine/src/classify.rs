@@ -1756,7 +1756,7 @@ impl Trees {
             provenance.unversioned_bases.clear();
         }
         if (self.l.get(&id)).is_some_and(|old| !old.shape.same_position(&node.shape)) {
-            self.release_kept_entry(&id);
+            self.bind_kept_entry(&id);
         }
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
@@ -3036,6 +3036,7 @@ impl Trees {
                 KeptEntries {
                     names,
                     listed: true,
+                    ..KeptEntries::default()
                 },
             ),
         };
@@ -3045,13 +3046,31 @@ impl Trees {
         if let Some(kept) = self.kept_entries.remove(from) {
             self.kept_entries.insert(to.to_owned(), kept);
         }
+        let holding: Vec<NodeId> = (self.kept_entries.iter())
+            .filter(|(_, kept)| kept.nodes.contains_key(from))
+            .map(|(folder, _)| folder.clone())
+            .collect();
+        for folder in holding {
+            let Some(mut kept) = self.kept_entries.get(&folder).cloned() else {
+                continue;
+            };
+            if let Some(name) = kept.nodes.remove(from) {
+                kept.nodes.insert(to.to_owned(), name);
+            }
+            self.kept_entries.insert(folder, kept);
+        }
     }
 
     fn kept_entry(&self, id: &str) -> bool {
-        (self.l.get(id)).is_some_and(|node| {
-            (self.kept_entries.get(&node.shape.parent))
-                .is_some_and(|kept| kept.names.contains(&node.shape.name))
-        })
+        self.kept_at_name(id).is_some()
+            || (self.kept_entries.iter()).any(|(_, kept)| kept.nodes.contains_key(id))
+    }
+
+    fn kept_at_name(&self, id: &str) -> Option<&NodeId> {
+        let node = self.l.get(id).filter(|_| self.r.get(id).is_none())?;
+        (self.kept_entries.get(&node.shape.parent))
+            .filter(|kept| kept.names.contains(&node.shape.name))
+            .map(|_| &node.shape.parent)
     }
 
     fn under_kept_entry(&self, id: &str) -> bool {
@@ -3071,38 +3090,73 @@ impl Trees {
         false
     }
 
+    fn bind_kept_entry(&mut self, id: &str) {
+        let Some(folder) = self.kept_at_name(id).cloned() else {
+            return;
+        };
+        let (Some(node), Some(mut kept)) =
+            (self.l.get(id), self.kept_entries.get(&folder).cloned())
+        else {
+            return;
+        };
+        kept.nodes.insert(id.to_owned(), node.shape.name.clone());
+        self.kept_entries.insert(folder, kept);
+    }
+
     fn release_kept_entry(&mut self, id: &str) {
-        let Some(node) = self.l.get(id).filter(|_| self.kept_entry(id)) else {
+        let at_name = self.kept_at_name(id).cloned();
+        let Some(name) = self.l.get(id).map(|node| node.shape.name.clone()) else {
             return;
         };
-        let (folder, name) = (node.shape.parent.clone(), node.shape.name.clone());
-        let Some(mut kept) = self.kept_entries.get(&folder).cloned() else {
-            return;
-        };
-        kept.names.remove(&name);
-        match kept.names.is_empty() {
-            true => self.kept_entries.remove(&folder),
-            false => self.kept_entries.insert(folder, kept),
-        };
+        let folders: Vec<NodeId> = (self.kept_entries.iter())
+            .filter(|(folder, kept)| {
+                kept.nodes.contains_key(id) || at_name.as_ref() == Some(*folder)
+            })
+            .map(|(folder, _)| folder.clone())
+            .collect();
+        for folder in folders {
+            let Some(mut kept) = self.kept_entries.get(&folder).cloned() else {
+                continue;
+            };
+            kept.nodes.remove(id);
+            if at_name.as_ref() == Some(&folder) {
+                kept.names.remove(&name);
+            }
+            match kept.names.is_empty() && kept.nodes.is_empty() {
+                true => self.kept_entries.remove(&folder),
+                false => self.kept_entries.insert(folder, kept),
+            };
+        }
     }
 
     /// The paths of the entries that stay excluded under the rules of a deleted folder they were kept in
-    /// ([`TreesState::kept_entries`]).
+    /// ([`TreesState::kept_entries`]), each where it is now.
     pub fn kept_entry_paths(&self) -> Vec<Vec<&str>> {
-        (self.kept_entries.iter())
-            .filter_map(|(folder, kept)| {
-                let folder = match folder == &self.l.root {
-                    true => Vec::new(),
-                    false => path(&self.l, folder)?.0,
-                };
-                Some(kept.names.iter().map(move |name| {
-                    let mut entry = folder.clone();
+        let mut paths = BTreeSet::new();
+        for (folder, kept) in self.kept_entries.iter() {
+            let Some(above) = (match folder == &self.l.root {
+                true => Some(Vec::new()),
+                false => path(&self.l, folder).map(|(names, _)| names),
+            }) else {
+                continue;
+            };
+            let held: BTreeSet<&str> = (self.local_children_placed_or_parked(folder))
+                .filter_map(|child| self.l.get(child).map(|node| node.shape.name.as_str()))
+                .collect();
+            for name in &kept.names {
+                if held.contains(name.as_str()) || !kept.nodes.values().any(|left| left == name) {
+                    let mut entry = above.clone();
                     entry.push(name.as_str());
-                    entry
-                }))
-            })
-            .flatten()
-            .collect()
+                    paths.insert(entry);
+                }
+            }
+            paths.extend(
+                kept.nodes
+                    .keys()
+                    .filter_map(|node| Some(path(&self.l, node)?.0)),
+            );
+        }
+        paths.into_iter().collect()
     }
 
     pub(crate) fn end_kept_folder(&mut self, id: &str) {
