@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommitRecordSchema, NodeKind, type NodeState, NodeStateSchema, NodeStatus } from "../../src/gen/koidrive/v1/model_pb";
-import { type Content, contents, format, keypair, listing, matches, seal, startDaemon, trees, unseal } from "./e2e.ts";
+import { type Content, contents, format, keypair, listing, matches, parseListing, removedByRewind, seal, startDaemon, trees, unseal } from "./e2e.ts";
 import { replay, rewindMismatch } from "./rewind.ts";
 
 const roots: string[] = [];
@@ -58,6 +58,33 @@ describe("a folder against a scenario's tree", () => {
     const text = format(listing(folder({ "b.txt": "fromMac", "a/c.txt": "fromLinux" })));
     expect(text.split("\n").map((line) => line.slice(66))).toEqual(["a/c.txt", "b.txt", ""]);
     expect(text).toMatch(/^[0-9a-f]{64} {2}a\/c\.txt\n/);
+  });
+});
+
+describe("the files a rewind removed", () => {
+  it("names files the restored seq lacks by path and content, not files it moved or holds at their place", () => {
+    const before = new Map([
+      ["after-point-mac.bin", "09bb"],
+      ["docs/after-point-linux.txt", "5941"],
+      ["docs/from-mac-renamed.txt", "0958"],
+      ["notes/random-from-linux.bin", "0f21"],
+      ["notes/random-moved.bin", "00cb"],
+      ["shared (conflict from linux 2026-11-17).txt", "c5b2"],
+      ["shared.txt", "7a5a"],
+    ]);
+    const rewound = new Map([
+      ["docs/from-mac-renamed.txt", "0958"],
+      ["notes/from-linux.txt", "f3cf"],
+      ["notes/random-from-linux.bin", "0f21"],
+      ["random-from-mac.bin", "00cb"],
+      ["shared.txt", "af41"],
+    ]);
+    expect(removedByRewind(before, rewound)).toEqual(["after-point-mac.bin", "docs/after-point-linux.txt", "shared (conflict from linux 2026-11-17).txt"]);
+  });
+
+  it("reads back a listing it formatted", () => {
+    const files = new Map([["a b/c (1).txt", "f".repeat(64)], ["d.txt", "0".repeat(64)]]);
+    expect(parseListing(format(files))).toEqual(files);
   });
 });
 
