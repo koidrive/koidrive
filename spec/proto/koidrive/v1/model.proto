@@ -73,6 +73,25 @@ message NodeState {
   // that carried a user's move to the place such a move gave it (RFC 0019). 0 from a server before RFC 0019, read as
   // meta_rev.
   uint64 meta_edit_rev = 13;
+  // The intent that set each field (RFC 0028). Empty from a server without field_intents.
+  FieldIntents intents = 14;
+}
+
+// One user change to one node (RFC 0028).
+message Intent {
+  // UUIDv7 minted by the author's device, 16 bytes.
+  bytes id = 1;
+  string author_device_id = 2;
+  // On an op: a send of an intent whose commit the server lost. On a NodeState: the value is carried.
+  bool replay = 3;
+  // The intent a Move or Delete expects the node's place or status to hold; otherwise it is answered CODE_SUPERSEDED.
+  bytes over = 4;
+}
+
+message FieldIntents {
+  Intent place = 1;
+  Intent content = 2;
+  Intent status = 3;
 }
 
 message ChangeRecord {

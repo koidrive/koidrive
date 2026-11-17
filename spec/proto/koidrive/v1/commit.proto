@@ -16,6 +16,10 @@ message Op {
     Delete delete = 5;
     Restore restore = 6;
   }
+  // The user change this op sends (RFC 0028). Empty from a client before RFC 0028; the server mints one.
+  Intent intent = 7;
+  // Set only on CreateDir and CreateFile: a separate intent for each field. A field left empty takes `intent`.
+  FieldIntents fields = 8;
 }
 
 message CreateDir {
@@ -33,6 +37,8 @@ message CreateFile {
   Content content = 4;
   repeated string made_over = 5;
   string source_version_id = 6;
+  // The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0028).
+  string pending_for = 7;
 }
 
 message UpdateContent {
@@ -69,6 +75,10 @@ message Delete {
   // When set, the delete applies only while this node is live at these revisions; otherwise it is answered with
   // CODE_SUPERSEDED and trashes nothing (RFC 0015).
   NodeRevisions requires = 2;
+  // Intents R held on this node and below whose values the deleting user never held (RFC 0028).
+  repeated bytes unseen = 3;
+  // Intents the deleting user held there whose values R lacked when the delete was built (RFC 0028).
+  repeated bytes held = 4;
 }
 
 // A node at the revisions of its NodeState.
