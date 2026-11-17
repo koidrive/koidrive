@@ -2722,7 +2722,7 @@ impl Trees {
         };
         if copy {
             let left_out = (self.synced_children(id))
-                .filter(|child| self.l.get(*child).is_none() && self.ignored_in_remote(child))
+                .filter(|child| self.l.get(child).is_none() && self.ignored_in_remote(child))
                 .filter_map(|child| Some((child.clone(), self.r.live(child)?.clone())));
             kept.extend(left_out);
             kept.push((id.clone(), local.shape.clone()));
