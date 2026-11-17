@@ -37,6 +37,7 @@ fn a_file_moved_into_an_ignored_folder_stays_on_the_server_when_its_folder_is_re
         let sections = a.folder.sections();
         let batch = Batch {
             stamp: sections.stamp(),
+            unread: (0, 0),
             answered: None,
             observation: crate::observe::Observation {
                 changes,

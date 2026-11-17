@@ -36,7 +36,7 @@ use crate::paths::{Paths, PathsError};
 use crate::pending_claim;
 use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
-use crate::status::{Account, FolderState, FolderStatus, Status};
+use crate::status::{Account, Activity, FolderState, FolderStatus, Status};
 use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
@@ -347,6 +347,7 @@ struct Folder {
     unlink: Option<Unlink>,
     store: Arc<RwLock<()>>,
     progress: Arc<Mutex<crate::progress::Tracker>>,
+    observing: Arc<Mutex<Option<crate::observe::Observing>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -629,7 +630,11 @@ impl Driver {
                     FolderState::Bootstrapping | FolderState::CatchingUp
                 ) {
                     status.progress = None;
+                    status.activity = None;
                 }
+                status.activity =
+                    Activity::live(status.activity, *folder.observing.lock().unwrap());
+                status.bytes_moved = folder.progress.lock().unwrap().moved();
                 status
             })
             .collect();
@@ -1363,6 +1368,7 @@ impl Driver {
             unlink: None,
             store: Arc::default(),
             progress: Arc::default(),
+            observing: Arc::default(),
         };
         drop(lock);
         if self.syncs() && !folder.status.needs_restart() {
@@ -1997,6 +2003,7 @@ impl Driver {
             auth,
             status: folder.status.clone(),
             progress: folder.progress.clone(),
+            observing: folder.observing.clone(),
             matcher: self.inner.matcher.clone(),
             local: self.inner.local.clone(),
             trash_cap: self.inner.trash_cap,
@@ -2215,6 +2222,8 @@ fn folder_status(
         wait: None,
         progress: None,
         held_disks: Vec::new(),
+        activity: None,
+        bytes_moved: 0,
     }
 }
 
@@ -2236,6 +2245,7 @@ fn load_folders(
                     unlink: None,
                     store: Arc::default(),
                     progress: Arc::default(),
+                    observing: Arc::default(),
                 },
             )
         })
@@ -6973,6 +6983,70 @@ mod tests {
         let paused = driver.status();
         assert_eq!(paused.folders[0].progress, None);
         assert_eq!(paused.progress, None);
+    }
+
+    #[tokio::test]
+    async fn the_status_shows_the_files_the_first_scan_has_found_so_far() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let paths = Paths::under(&base.join("profile"));
+        let (driver, gate) = paused_driver(&paths, &root).await;
+        let (status, found) = {
+            let folders = driver.inner.folders.lock().unwrap();
+            let folder = folders.values().next().unwrap();
+            (folder.status.clone(), folder.observing.clone())
+        };
+        {
+            let mut shown = status.lock().unwrap();
+            shown.state = FolderState::CatchingUp;
+            shown.activity = Some(Activity::Scanning { files: 0 });
+        }
+        *found.lock().unwrap() = Some(crate::observe::Observing::Walking { files: 12_345 });
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::Scanning { files: 12_345 })
+        );
+        *found.lock().unwrap() = Some(crate::observe::Observing::Reading {
+            files: 7,
+            bytes: 9_000,
+        });
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::Checking {
+                files: 7,
+                bytes: 9_000
+            })
+        );
+        {
+            let mut shown = status.lock().unwrap();
+            shown.progress = Some(crate::status::Progress::default());
+            shown.activity = None;
+            assert!(shown.end_transfers());
+            assert!(!shown.end_transfers());
+        }
+        *found.lock().unwrap() = None;
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::CatchingUp)
+        );
+        status.lock().unwrap().state = FolderState::Offline;
+        assert_eq!(driver.status().folders[0].activity, None);
+
+        let tracker = driver
+            .inner
+            .folders
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .progress
+            .clone();
+        crate::progress::Credit::download(&tracker, []).moved(4_096);
+        assert_eq!(driver.status().folders[0].bytes_moved, 4_096);
+        gate.open();
+        driver.stop().await;
     }
 
     #[tokio::test]

@@ -164,6 +164,16 @@ pub struct FsObserver {
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
     stopped: Arc<dyn Fn() -> bool + Send + Sync>,
+    progress: Arc<dyn Fn(Observing) + Send + Sync>,
+}
+
+/// What an observation is doing before it returns its batch, as [`FsObserver::start`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Observing {
+    /// A scan walks the folder and has found `files` files so far.
+    Walking { files: u64 },
+    /// The walk is done, and `files` files of `bytes` bytes are left to read for this observation and later ones.
+    Reading { files: u64, bytes: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,28 +184,34 @@ struct Retry {
 
 #[derive(Debug, Default)]
 struct Unread {
-    files: BTreeMap<PathBuf, Retry>,
+    files: BTreeMap<PathBuf, (Retry, u64)>,
     due: BTreeSet<(Instant, PathBuf)>,
+    bytes: u64,
 }
 
 impl Unread {
-    fn insert(&mut self, path: PathBuf, retry: Retry) -> Option<Retry> {
-        let old = self.files.insert(path.clone(), retry);
-        if let Some(old) = old {
+    fn insert(&mut self, path: PathBuf, retry: Retry, size: u64) {
+        if let Some((old, old_size)) = self.files.insert(path.clone(), (retry, size)) {
             self.due.remove(&(old.due, path.clone()));
+            self.bytes -= old_size;
         }
+        self.bytes += size;
         self.due.insert((retry.due, path));
-        old
     }
 
     fn remove(&mut self, path: &Path) -> Option<Retry> {
-        let old = self.files.remove(path)?;
+        let (old, size) = self.files.remove(path)?;
         self.due.remove(&(old.due, path.to_path_buf()));
+        self.bytes -= size;
         Some(old)
     }
 
     fn get(&self, path: &Path) -> Option<&Retry> {
-        self.files.get(path)
+        self.files.get(path).map(|(retry, _)| retry)
+    }
+
+    fn totals(&self) -> (u64, u64) {
+        (self.files.len() as u64, self.bytes)
     }
 
     fn contains_key(&self, path: &Path) -> bool {
@@ -214,7 +230,7 @@ impl Unread {
 
     #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = (&PathBuf, &Retry)> {
-        self.files.iter()
+        self.files.iter().map(|(path, (retry, _))| (path, retry))
     }
 
     #[cfg(test)]
@@ -224,7 +240,7 @@ impl Unread {
 
     #[cfg(test)]
     fn values(&self) -> impl Iterator<Item = &Retry> {
-        self.files.values()
+        self.files.values().map(|(retry, _)| retry)
     }
 
     fn below(&self, dir: &Path) -> impl Iterator<Item = &PathBuf> {
@@ -265,6 +281,8 @@ struct Reads {
     /// that the batch takes out of L with the folder, which the engine keeps only for a created file with content, so
     /// such a file is read whatever the budget left.
     replaced: Vec<PathBuf>,
+    left_files: u64,
+    left_bytes: u64,
 }
 
 impl Reads {
@@ -300,7 +318,8 @@ impl FsObserver {
     /// folder exclude. Once `stopped` holds, the scan walking the tree is left at its next entry and the file being
     /// read at its next chunk, and `observe` returns `None` without the rest, so a caller that stops waits neither
     /// for a walk of the whole tree nor for every file of a scan to be read. The observer's snapshot then counts
-    /// changes it never returned, so drop the observer.
+    /// changes it never returned, so drop the observer. Each observation calls `progress` as it walks the folder and
+    /// as it reads file content, at each file found and each chunk read.
     pub fn start(
         root: &Path,
         space_id: &str,
@@ -308,17 +327,23 @@ impl FsObserver {
         previous: Snapshot,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
+        progress: impl Fn(Observing) + Send + Sync + 'static,
     ) -> Result<Self, FsError> {
         let stopped: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(stopped);
+        let progress: Arc<dyn Fn(Observing) + Send + Sync> = Arc::new(progress);
         let (watcher, native): (Box<dyn Watcher + Send>, bool) =
             match NativeWatcher::start_with_rules(root, previous.clone(), scan_rules(&matcher)) {
-                Ok(watcher) => (Box::new(watcher.stopping_when(watching(&stopped))), true),
+                Ok(watcher) => {
+                    let watcher = watcher.stopping_when(watching(&stopped));
+                    (Box::new(watcher.counting(walking(&progress))), true)
+                }
                 Err(FsError::Watch(error)) => {
                     tracing::warn!(%error, "the platform watcher is unavailable; rescanning periodically");
                     let rules = scan_rules(&matcher);
                     let watcher =
                         RescanWatcher::with_rules(root, previous, RESCAN_INTERVAL, rules)?;
-                    (Box::new(watcher.stopping_when(watching(&stopped))), false)
+                    let watcher = watcher.stopping_when(watching(&stopped));
+                    (Box::new(watcher.counting(walking(&progress))), false)
                 }
                 Err(error) => return Err(error),
             };
@@ -335,7 +360,22 @@ impl FsObserver {
             reset: false,
             unread: Unread::default(),
             stopped,
+            progress,
         })
+    }
+
+    /// The files whose content is still to be read, left to a later observation or busy and read again later, and
+    /// their bytes.
+    pub fn unread(&self) -> (u64, u64) {
+        self.unread.totals()
+    }
+
+    fn size(&self, path: &Path) -> u64 {
+        self.watcher
+            .snapshot()
+            .entries
+            .get(path)
+            .map_or(0, |entry| entry.size)
     }
 
     /// The root folder the latest scan opened, `None` until a scan has opened it. A folder with nothing to report
@@ -469,7 +509,8 @@ impl FsObserver {
             };
             let kept = !placed.contains(&moved) && self.unread.contains_key(&moved) && moved > path;
             if !kept {
-                self.unread.insert(moved.clone(), retry);
+                let size = self.size(&moved);
+                self.unread.insert(moved.clone(), retry, size);
                 placed.insert(moved);
             }
         }
@@ -499,7 +540,7 @@ impl FsObserver {
             if !reads.take(entry.size, false) {
                 continue;
             }
-            match read_content(&self.root, &path, &entry, &*self.stopped) {
+            match self.read(&path, &entry, reads) {
                 Ok(Some(content)) => {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
@@ -513,7 +554,8 @@ impl FsObserver {
                 Err(_) if (self.stopped)() => break,
                 _ => {
                     let failures = self.unread.get(&path).expect("an unread file").failures + 1;
-                    self.unread.insert(path, Retry::after(failures, now));
+                    self.unread
+                        .insert(path, Retry::after(failures, now), entry.size);
                 }
             }
         }
@@ -523,6 +565,25 @@ impl FsObserver {
     fn linked(&self, path: &Path, kind: EntryKind) -> bool {
         kind == EntryKind::File
             && std::fs::symlink_metadata(self.root.join(path)).is_ok_and(|meta| meta.nlink() > 1)
+    }
+
+    fn read(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> io::Result<Option<Content>> {
+        let (files, bytes) = (reads.left_files, reads.left_bytes);
+        let mut read = 0;
+        let content = read_content(&self.root, path, entry, &*self.stopped, &mut |chunk| {
+            read += chunk;
+            let bytes = bytes.saturating_sub(read);
+            (self.progress)(Observing::Reading { files, bytes });
+        });
+        if let Ok(Some(_)) = content {
+            reads.left_files = files.saturating_sub(1);
+            reads.left_bytes = bytes.saturating_sub(entry.size);
+        }
+        (self.progress)(Observing::Reading {
+            files: reads.left_files,
+            bytes: reads.left_bytes,
+        });
+        content
     }
 
     /// Chunks the file at `path` if `reads` has room for it or it `must` be read, it is still the entry the scan saw and
@@ -538,7 +599,7 @@ impl FsObserver {
             reads.deferred.push(path.to_path_buf());
             return None;
         }
-        match read_content(&self.root, path, entry, &*self.stopped) {
+        match self.read(path, entry, reads) {
             Ok(Some(content)) => Some(content),
             Ok(None) => {
                 reads.busy.push(path.to_path_buf());
@@ -580,7 +641,8 @@ impl Observer for FsObserver {
                 let rules = scan_rules(&self.matcher);
                 let watcher =
                     RescanWatcher::with_rules(&self.root, snapshot, RESCAN_INTERVAL, rules)?;
-                self.watcher = Box::new(watcher.stopping_when(watching(&self.stopped)));
+                let watcher = watcher.stopping_when(watching(&self.stopped));
+                self.watcher = Box::new(watcher.counting(walking(&self.progress)));
                 self.native = false;
                 self.first = true;
                 self.settling = true;
@@ -613,6 +675,29 @@ impl Observer for FsObserver {
         };
         let observed = !poll.changes.is_empty();
         self.supersede(&poll.changes);
+        let entries = &self.watcher.snapshot().entries;
+        (reads.left_files, reads.left_bytes) = self.unread.totals();
+        let changed = (poll.changes.iter())
+            .filter_map(|change| match change {
+                Change::Created { path, .. } | Change::Modified { path } => Some(path),
+                _ => None,
+            })
+            .filter(|path| !self.unread.contains_key(path))
+            .filter_map(|path| {
+                entries
+                    .get(path)
+                    .filter(|entry| entry.kind == EntryKind::File)
+            });
+        for entry in changed {
+            reads.left_files += 1;
+            reads.left_bytes += entry.size;
+        }
+        if reads.left_files > 0 {
+            (self.progress)(Observing::Reading {
+                files: reads.left_files,
+                bytes: reads.left_bytes,
+            });
+        }
         let mut retried = Vec::new();
         self.retry(now, &mut retried, &mut reads);
         for change in poll.changes {
@@ -626,16 +711,16 @@ impl Observer for FsObserver {
             return Ok(None);
         }
         for path in &reads.busy {
-            self.unread.insert(path.clone(), Retry::after(0, now));
+            let size = self.size(path);
+            self.unread.insert(path.clone(), Retry::after(0, now), size);
         }
         for path in reads.deferred {
-            self.unread.insert(
-                path,
-                Retry {
-                    failures: 0,
-                    due: now,
-                },
-            );
+            let size = self.size(&path);
+            let retry = Retry {
+                failures: 0,
+                due: now,
+            };
+            self.unread.insert(path, retry, size);
         }
         let rules: Vec<RulesChange> = (poll.rules.into_iter())
             .map(|(dir, bytes)| RulesChange {
@@ -699,13 +784,20 @@ fn watching(stopped: &Arc<dyn Fn() -> bool + Send + Sync>) -> impl Fn() -> bool 
     move || stopped()
 }
 
+fn walking(progress: &Arc<dyn Fn(Observing) + Send + Sync>) -> impl Fn(u64) + Send + 'static {
+    let progress = progress.clone();
+    move |files| progress(Observing::Walking { files })
+}
+
 /// The content of the file at `path` under `root`, or `None` when it is not the file the scan saw or changed while
-/// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds.
+/// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds. Passes the size of
+/// each chunk to `chunked` once it is read.
 pub(crate) fn read_content(
     root: &Path,
     path: &Path,
     entry: &Entry,
     stopped: &dyn Fn() -> bool,
+    chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
     let file = open_beneath(root, path)?;
     let before = file.metadata()?;
@@ -717,7 +809,10 @@ pub(crate) fn read_content(
     let chunks = koidrive_chunk::chunks(io::Read::take(&file, entry.size), config)
         .map(|chunk| match stopped() {
             true => Err(io::ErrorKind::Interrupted.into()),
-            false => chunk.map(|chunk| chunk.chunk_ref()),
+            false => chunk.map(|chunk| {
+                chunked(chunk.data.len() as u64);
+                chunk.chunk_ref()
+            }),
         })
         .collect::<io::Result<Vec<ChunkRef>>>()?;
     let after = file.metadata()?;
@@ -813,6 +908,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             || false,
+            |_| {},
         )
         .unwrap()
     }
@@ -842,6 +938,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             stopped,
+            |_| {},
         );
         let mut observer = started.unwrap();
         assert!(matches!(
@@ -1071,15 +1168,28 @@ mod tests {
         snapshot.rescan(dir.path(), [PathBuf::new()]).unwrap();
         let entry = snapshot.entries[Path::new("a.txt")];
         assert!(
-            read_content(dir.path(), Path::new("a.txt"), &entry, &|| false)
-                .unwrap()
-                .is_some()
+            read_content(
+                dir.path(),
+                Path::new("a.txt"),
+                &entry,
+                &|| false,
+                &mut |_| {}
+            )
+            .unwrap()
+            .is_some()
         );
 
         fs::remove_file(dir.path().join("a.txt")).unwrap();
         fs::write(dir.path().join("a.txt"), b"other bytes").unwrap();
         assert_eq!(
-            read_content(dir.path(), Path::new("a.txt"), &entry, &|| false).unwrap(),
+            read_content(
+                dir.path(),
+                Path::new("a.txt"),
+                &entry,
+                &|| false,
+                &mut |_| {}
+            )
+            .unwrap(),
             None
         );
     }
@@ -1108,6 +1218,7 @@ mod tests {
             [Path::new("1000.txt")],
             "one file is past the budget"
         );
+        assert_eq!(observer.unread(), (1, 4));
 
         let (later, _) = observe_until(&mut observer, |seen| !seen.is_empty());
         assert!(
@@ -1119,6 +1230,7 @@ mod tests {
             "{later:?}"
         );
         assert!(observer.unread.is_empty());
+        assert_eq!(observer.unread(), (0, 0));
     }
 
     #[test]
@@ -1169,7 +1281,7 @@ mod tests {
                 failures: 0,
                 due: later,
             };
-            observer.unread.insert(format!("{file}").into(), retry);
+            observer.unread.insert(format!("{file}").into(), retry, 0);
         }
         let before = crate::counting::allocations();
         for _ in 0..20 {
@@ -1204,6 +1316,7 @@ mod tests {
                 failures: 0,
                 due: now,
             },
+            0,
         );
         observer.unread.insert(
             "b.txt".into(),
@@ -1211,6 +1324,7 @@ mod tests {
                 failures: 3,
                 due: now - Duration::from_secs(1),
             },
+            0,
         );
         let mut reads = Reads {
             files: READ_FILES - 1,
@@ -1248,6 +1362,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             stopped,
+            |_| {},
         );
         let mut observer = started.unwrap();
         observe_until(&mut observer, |seen| seen.len() >= 20);
@@ -1259,6 +1374,7 @@ mod tests {
                     failures: 0,
                     due: now,
                 },
+                0,
             );
         }
         stop.store(true, Ordering::SeqCst);
@@ -1291,6 +1407,7 @@ mod tests {
                     failures: 0,
                     due: now,
                 },
+                0,
             );
         }
         INTERRUPTED_OPEN.set(Some("0000.txt".into()));
@@ -1339,6 +1456,45 @@ mod tests {
         assert!(open_beneath(dir.path(), Path::new("file")).is_err());
         assert!(open_beneath(dir.path(), Path::new("../x")).is_err());
     }
+    #[test]
+    fn a_file_that_could_not_be_read_stays_in_what_is_left_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = marked();
+        let file = dir.path().join("locked");
+        fs::write(&file, b"content").unwrap();
+        fs::write(dir.path().join("open"), b"readable").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            assert!(rustix::process::geteuid().is_root());
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
+        let reports: Arc<std::sync::Mutex<Vec<Observing>>> = Arc::default();
+        let reported = reports.clone();
+        let dev = RootAt {
+            dev: fs::metadata(dir.path()).unwrap().dev(),
+            volume: None,
+        };
+        let mut observer = FsObserver::start(
+            dir.path(),
+            SPACE,
+            dev,
+            Snapshot::default(),
+            Arc::new(Unfiltered),
+            || false,
+            move |report| reported.lock().unwrap().push(report),
+        )
+        .unwrap();
+        observe_until(&mut observer, |seen| seen.len() >= 2);
+        assert_eq!(observer.unread(), (1, 7));
+        assert_eq!(
+            reports.lock().unwrap().last(),
+            Some(&Observing::Reading { files: 1, bytes: 7 })
+        );
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     #[test]
     fn a_file_that_could_not_be_read_is_read_again_once_it_can_be() {
         use std::os::unix::fs::PermissionsExt;
@@ -1596,13 +1752,18 @@ mod tests {
         }
         let mut observer = observer(dir.path());
         observe_until(&mut observer, |seen| !seen.is_empty());
-        assert_eq!(observer.unread.len(), 1);
+        assert_eq!(observer.unread(), (1, 7));
 
         fs::rename(&file, dir.path().join("moved")).unwrap();
         observe_until(&mut observer, |seen| {
             seen.iter()
                 .any(|change| matches!(change, Observed::Renamed { .. }))
         });
+        assert_eq!(
+            observer.unread(),
+            (1, 7),
+            "a moved file keeps its bytes counted once"
+        );
         fs::set_permissions(dir.path().join("moved"), fs::Permissions::from_mode(0o600)).unwrap();
         let (seen, _) = observe_until(&mut observer, |seen| {
             seen.iter()
@@ -1643,6 +1804,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(IgnoredFolder),
             || false,
+            |_| {},
         )
         .unwrap();
         let (seen, _) = observe_until(&mut observer, |seen| !seen.is_empty());
@@ -1749,6 +1911,7 @@ mod tests {
             snapshot.clone(),
             Arc::new(Unfiltered),
             || false,
+            |_| {},
         )
         .unwrap();
         let proj = PathBuf::from("proj");
@@ -1933,8 +2096,16 @@ mod tests {
             dev: fs::metadata(root).unwrap().dev(),
             volume: None,
         };
-        let mut observer =
-            FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap();
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            previous,
+            Arc::new(Unfiltered),
+            || false,
+            |_| {},
+        )
+        .unwrap();
         let observation = observer.observe(Duration::from_secs(10)).unwrap().unwrap();
         let [Observed::Renamed { from, to, .. }] = &observation.changes[..] else {
             panic!("one move, no removal: {:?}", observation.changes);
@@ -1968,8 +2139,16 @@ mod tests {
             volume: None,
         };
         let matcher = crate::ignore::matcher(&sync).unwrap();
-        let mut observer =
-            FsObserver::start(root, SPACE, dev, Snapshot::default(), matcher, || false).unwrap();
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            Snapshot::default(),
+            matcher,
+            || false,
+            |_| {},
+        )
+        .unwrap();
         let observation = observer.observe(Duration::from_secs(10)).unwrap().unwrap();
         assert_eq!(
             paths(&observation.changes),

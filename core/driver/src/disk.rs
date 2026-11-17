@@ -215,6 +215,7 @@ impl Sections {
             stamp,
             answered: observer.answered().then_some(requests),
             observation,
+            unread: observer.unread(),
         }))
     }
 }
@@ -229,6 +230,7 @@ pub(crate) struct Batch {
     /// which scopes they read.
     pub answered: Option<Requests>,
     pub observation: Observation,
+    pub unread: (u64, u64),
 }
 
 /// The places a crash test stops an effect at, besides the steps of `core/fs`.
@@ -639,6 +641,7 @@ impl Disk {
             stamp,
             answered,
             observation,
+            unread: _,
         } = batch;
         if observation.scanned != Some(self.space.id()) {
             return Err(Stop::OtherRoot);
@@ -990,6 +993,7 @@ impl Pending {
                         ));
                     }
                     let chunk = key(chunk);
+                    self.credit.moved(bytes.len() as u64);
                     for (write, offsets) in targets.get(&chunk).into_iter().flatten() {
                         let (index, content, _) = &writes[*write];
                         if unfetchable[*index].is_some() {

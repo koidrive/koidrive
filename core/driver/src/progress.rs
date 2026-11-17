@@ -85,6 +85,7 @@ pub(crate) struct Tracker {
     total: u64,
     finished: u64,
     current: Option<Item>,
+    moved: u64,
     sink: Option<Sink>,
 }
 
@@ -118,6 +119,10 @@ impl Tracker {
                 .and_then(|item| self.entries.get(item))
                 .and_then(|entry| entry.path.clone()),
         })
+    }
+
+    pub fn moved(&self) -> u64 {
+        self.moved
     }
 
     pub fn track(&mut self, wanted: BTreeMap<Item, u64>, synced: impl Fn(&Item) -> bool) -> bool {
@@ -279,6 +284,15 @@ impl Credit {
                 .map(|(node, path)| (node.to_owned(), path.to_string_lossy().into_owned()))
                 .collect(),
             chunks: HashMap::new(),
+        }
+    }
+
+    pub fn moved(&self, bytes: u64) {
+        let Some(tracker) = &self.tracker else { return };
+        let mut tracker = tracker.lock().unwrap();
+        tracker.moved += bytes;
+        if let Some(sink) = tracker.sink.as_ref().filter(|_| bytes > 0) {
+            sink.progressed.send_replace(());
         }
     }
 
@@ -499,5 +513,24 @@ mod tests {
         assert_eq!(shown(&sum), None);
         b.want(&[("b2", 10)], &[]);
         assert_eq!(shown(&sum), Some((0, 10)));
+    }
+
+    #[test]
+    fn bytes_moved_wake_the_readers_of_the_status() {
+        let sum = Arc::default();
+        let mut a = folder("a", &sum);
+        let progressed = Arc::new(watch::Sender::new(()));
+        let mut readers = progressed.subscribe();
+        (a.tracker).publish_to(a.status.clone(), progressed, sum, "a".into());
+        let tracker = Arc::new(Mutex::new(a.tracker));
+        let credit = Credit::download(&tracker, []);
+        credit.moved(0);
+        assert!(!readers.has_changed().unwrap());
+        credit.moved(4_096);
+        assert!(readers.has_changed().unwrap());
+        readers.mark_unchanged();
+        credit.moved(4_096);
+        assert!(readers.has_changed().unwrap());
+        assert_eq!(tracker.lock().unwrap().moved(), 8_192);
     }
 }

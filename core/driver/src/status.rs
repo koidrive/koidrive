@@ -7,6 +7,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use serde::{Deserialize, Serialize};
 
+use crate::observe::Observing;
 use crate::update::Update;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,17 @@ pub struct FolderStatus {
     /// How far the folder's transfers have got, while it has files to send or fetch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// What the folder does while it syncs besides the transfers `progress` counts. None when those transfers are all
+    /// it has left, and while it does not sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Activity>,
+    /// Bytes the folder's transfers moved over the network since this process started: each chunk the server stored
+    /// from this device and each chunk fetched from the server, once. A chunk the server refused and that is sent
+    /// again counts once, so the count is bytes delivered. Chunks the server already held and content found locally
+    /// add nothing, and the count never decreases while the process runs. It starts from zero again
+    /// when the process restarts, so a reader treats a decrease as a new baseline.
+    #[serde(default)]
+    pub bytes_moved: u64,
     /// The disks inside the folder whose files the folder keeps as they were, while it is running.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_disks: Vec<HeldDisk>,
@@ -161,6 +173,47 @@ pub struct Progress {
     pub current: Option<String>,
 }
 
+/// What a syncing folder is busy with besides moving file content (docs/design/driver.md, "A syncing folder says
+/// what it is doing"). A folder that bootstraps or catches up has an activity, its transfers, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Activity {
+    /// The first scan since the folder started walks the disk. `files` counts the files it has found so far.
+    Scanning { files: u64 },
+    /// The folder reads the space's tree from the server.
+    Listing,
+    /// The walk is done, and `files` files of `bytes` bytes found on the disk are still to be read, to learn what
+    /// changed. Both fall as the folder reads, chunk by chunk.
+    Checking { files: u64, bytes: u64 },
+    /// Changes that move no file content, such as new folders, renames, moves and removals.
+    Applying { changes: u64 },
+    /// Nothing is left to sync but what `questions` unanswered questions hold until the person answers.
+    AwaitingAnswers { questions: u64 },
+    /// The folder waits for the rest of the server's changes or for the server to take its own.
+    CatchingUp,
+    /// A kind a newer Koidrive reports.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Activity {
+    pub(crate) fn live(
+        activity: Option<Activity>,
+        observing: Option<Observing>,
+    ) -> Option<Activity> {
+        match (activity, observing) {
+            (Some(Activity::Scanning { .. }), Some(Observing::Walking { files })) => {
+                Some(Activity::Scanning { files })
+            }
+            (
+                Some(Activity::Scanning { .. } | Activity::Checking { .. }),
+                Some(Observing::Reading { files, bytes }),
+            ) => Some(Activity::Checking { files, bytes }),
+            (activity, _) => activity,
+        }
+    }
+}
+
 /// The files every folder still sends or fetches and the bytes they moved, summed while any folder has a file left
 /// (docs/design/driver.md, "Progress counts the files left to sync"). A folder that finishes, abandons a file, goes
 /// offline or stops keeps the bytes it moved in the sum until no folder has a file left, so `bytes_done` never
@@ -174,6 +227,19 @@ pub struct Totals {
 }
 
 impl FolderStatus {
+    pub(crate) fn end_transfers(&mut self) -> bool {
+        let ended = self.progress.take().is_some();
+        if ended
+            && matches!(
+                self.state,
+                FolderState::Bootstrapping | FolderState::CatchingUp
+            )
+        {
+            self.activity = Some(Activity::CatchingUp);
+        }
+        ended
+    }
+
     /// Why the folder cannot reach the server, and when it tries again in Unix milliseconds, while it is offline. No
     /// time means it is trying now.
     pub fn unreachable(&self) -> Option<(&Unreachable, Option<i64>)> {

@@ -368,6 +368,38 @@ pub struct LinkedFolder {
     /// The folder's absolute path.
     pub path: String,
     pub state: FolderState,
+    /// What the folder does while it syncs besides the transfers [`SyncProgress`] counts. A
+    /// [`FolderState::Syncing`] folder has an activity, transfers in the session's progress, or both,
+    /// unless an older daemon reports no activity or a newer one reports a kind this build does not
+    /// know. Any other folder has none.
+    pub activity: Option<FolderActivity>,
+    /// Bytes the folder's transfers moved over the network since the daemon started: each chunk
+    /// uploaded or downloaded, once. A chunk the server refused and that is sent again counts once,
+    /// so the count is bytes delivered. Chunks the server already held and content found locally
+    /// add nothing. It never decreases while the daemon runs and starts from zero again when the daemon
+    /// restarts, so treat a decrease as a new baseline.
+    pub bytes_moved: u64,
+}
+
+/// What a syncing folder is busy with besides moving file content (docs/design/driver.md, "A
+/// syncing folder says what it is doing").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderActivity {
+    /// The folder's first scan since sync started walks the disk. `files` counts the files it
+    /// has found so far.
+    Scanning { files: u64 },
+    /// The folder reads the space's file list from the server.
+    Listing,
+    /// The walk is done, and `files` files of `bytes` bytes it found are still to be read, to
+    /// learn what changed. Both fall as the folder reads, chunk by chunk.
+    Checking { files: u64, bytes: u64 },
+    /// Changes that move no file content, such as new folders, renames, moves and removals.
+    Applying { changes: u64 },
+    /// Nothing is left to sync but what `questions` unanswered questions hold until the person
+    /// answers them.
+    AwaitingAnswers { questions: u64 },
+    /// The folder waits for the rest of the server's changes or for the server to take its own.
+    CatchingUp,
 }
 
 /// What sync is doing for one linked folder.

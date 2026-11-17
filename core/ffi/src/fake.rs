@@ -46,8 +46,11 @@ pub enum FakeScenario {
     /// newer with a password; one that works to an item that is gone; one expired; one revoked. A new link to a name
     /// with an extension is a file's, any other a folder's.
     UpToDate,
-    /// Syncing, with progress and recent changes.
+    /// Syncing, with progress and recent changes. Photos has moved 48 MB over the network.
     Syncing,
+    /// Photos was just linked and its first scan has found 12,345 files so far; Documents is up to
+    /// date. Nothing is being transferred yet.
+    FirstScan,
     /// Paused by the person.
     Paused,
     /// The server cannot be reached, and no update check has answered.
@@ -971,6 +974,8 @@ impl Core for FakeCore {
                 space_name: space.name,
                 path: folder.to_string_lossy().into_owned(),
                 state: FolderState::UpToDate,
+                activity: None,
+                bytes_moved: 0,
             };
             saved.folders.push(linked.clone());
             Ok(linked)

@@ -833,6 +833,8 @@ mod tests {
             questions: 0,
             problem: None,
             progress: None,
+            activity: None,
+            bytes_moved: 0,
             held_disks: Vec::new(),
             wait: None,
         };

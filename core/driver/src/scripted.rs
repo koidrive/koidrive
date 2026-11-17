@@ -128,6 +128,13 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 pub(crate) async fn session(relay: SocketAddr) -> (Session, Events, Api) {
+    session_holding(relay, Vec::new()).await
+}
+
+pub(crate) async fn session_holding(
+    relay: SocketAddr,
+    held: Vec<Vec<u8>>,
+) -> (Session, Events, Api) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let api = Api::local_development(base.parse().unwrap()).unwrap();
@@ -173,18 +180,25 @@ pub(crate) async fn session(relay: SocketAddr) -> (Session, Events, Api) {
                         panic!("expected PrepareUpload, got {:?}", request.call);
                     };
                     let chunks = (prepare.chunks.iter())
-                        .map(|chunk| ChunkPlan {
-                            hash: chunk.hash.clone(),
-                            action: chunk_plan::Action::Upload as i32,
-                            target: Some(Target {
-                                url: format!(
-                                    "http://{relay}/v1/spaces/s/chunks/x?ticket={}",
-                                    hex(&chunk.hash)
-                                ),
-                                expires_at_ms: in_an_hour(),
+                        .map(|chunk| match held.contains(&chunk.hash) {
+                            true => ChunkPlan {
+                                hash: chunk.hash.clone(),
+                                action: chunk_plan::Action::Present as i32,
                                 ..Default::default()
-                            }),
-                            retry_after_ms: 0,
+                            },
+                            false => ChunkPlan {
+                                hash: chunk.hash.clone(),
+                                action: chunk_plan::Action::Upload as i32,
+                                target: Some(Target {
+                                    url: format!(
+                                        "http://{relay}/v1/spaces/s/chunks/x?ticket={}",
+                                        hex(&chunk.hash)
+                                    ),
+                                    expires_at_ms: in_an_hour(),
+                                    ..Default::default()
+                                }),
+                                retry_after_ms: 0,
+                            },
                         })
                         .collect();
                     server_message::Msg::Rpc(RpcResponse {

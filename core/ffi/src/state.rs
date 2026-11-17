@@ -6,10 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use koidrive_driver::{self as driver, FolderState as DriverFolderState, Status};
 
 use crate::types::{
-    Account, Answer, ConflictSide, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder,
-    MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question, QuestionKind,
-    RecoveryCause, RecoveryGroup, RecoveryTrigger, SessionState, SyncProgress, SyncStatus,
-    UpdateStatus,
+    Account, Answer, ConflictSide, FolderActivity, FolderPath, FolderState, HeldItem, ItemDetail,
+    LinkedFolder, MassDeleteLimit, NodeKind, Notice, NoticeKind, Problem, ProblemKind, Question,
+    QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger, SessionState, SyncProgress,
+    SyncStatus, UpdateStatus,
 };
 
 pub(crate) type Seen = BTreeMap<String, (String, i64)>;
@@ -123,6 +123,20 @@ pub(crate) fn folder(folder: &driver::FolderStatus) -> LinkedFolder {
             DriverFolderState::UpToDate => FolderState::UpToDate,
             DriverFolderState::Halted => FolderState::Halted,
         },
+        activity: folder.activity.and_then(|activity| match activity {
+            driver::Activity::Scanning { files } => Some(FolderActivity::Scanning { files }),
+            driver::Activity::Listing => Some(FolderActivity::Listing),
+            driver::Activity::Checking { files, bytes } => {
+                Some(FolderActivity::Checking { files, bytes })
+            }
+            driver::Activity::Applying { changes } => Some(FolderActivity::Applying { changes }),
+            driver::Activity::AwaitingAnswers { questions } => {
+                Some(FolderActivity::AwaitingAnswers { questions })
+            }
+            driver::Activity::CatchingUp => Some(FolderActivity::CatchingUp),
+            driver::Activity::Unknown => None,
+        }),
+        bytes_moved: folder.bytes_moved,
     }
 }
 
@@ -547,6 +561,8 @@ mod tests {
             problem: problem.map(str::to_owned),
             progress: None,
             held_disks: Vec::new(),
+            activity: None,
+            bytes_moved: 0,
         }
     }
 
@@ -622,6 +638,117 @@ mod tests {
             account(up.account.as_ref().unwrap()).server_url,
             "https://files.example.com"
         );
+    }
+
+    #[test]
+    fn a_folder_on_its_first_scan_reports_its_activity_beside_another_folders_transfers() {
+        let mut status = status_of(&[]);
+        let transfers = driver::Progress {
+            files_to_upload: 2,
+            files_to_download: 0,
+            bytes_done: 10,
+            bytes_total: 40,
+            current: Some("Report.docx".into()),
+        };
+        status.folders = vec![
+            driver::FolderStatus {
+                progress: Some(transfers),
+                bytes_moved: 4_096,
+                ..folder_in(DriverFolderState::CatchingUp, None)
+            },
+            driver::FolderStatus {
+                space_id: "0190a5b0-0000-7000-8000-000000000002".into(),
+                space_name: "Codes".into(),
+                path: "/Users/ada/Codes".into(),
+                activity: Some(driver::Activity::Scanning { files: 12_345 }),
+                ..folder_in(DriverFolderState::Bootstrapping, None)
+            },
+        ];
+        status.progress = Some(driver::Totals {
+            files_to_upload: 2,
+            files_to_download: 0,
+            bytes_done: 10,
+            bytes_total: 40,
+        });
+        let sent = serde_json::to_string(&status).unwrap();
+        let received: Status = serde_json::from_str(&sent).unwrap();
+        let state = session_state(&received, &[], true, &mut Seen::new());
+        assert_eq!(state.status, SyncStatus::Syncing);
+        let activities: Vec<_> = (state.folders.iter())
+            .map(|folder| (folder.space_name.as_str(), folder.state, folder.activity))
+            .collect();
+        assert_eq!(
+            activities,
+            [
+                ("Documents", FolderState::Syncing, None),
+                (
+                    "Codes",
+                    FolderState::Syncing,
+                    Some(FolderActivity::Scanning { files: 12_345 })
+                ),
+            ]
+        );
+        let moved: Vec<_> = state
+            .folders
+            .iter()
+            .map(|folder| folder.bytes_moved)
+            .collect();
+        assert_eq!(moved, [4_096, 0]);
+        let progress = state.progress.unwrap();
+        assert_eq!((progress.files_to_upload, progress.bytes_total), (2, 40));
+    }
+
+    #[test]
+    fn every_activity_the_driver_reports_reaches_the_app() {
+        for (reported, shown) in [
+            (
+                driver::Activity::Scanning { files: 3 },
+                FolderActivity::Scanning { files: 3 },
+            ),
+            (driver::Activity::Listing, FolderActivity::Listing),
+            (
+                driver::Activity::Checking {
+                    files: 7,
+                    bytes: 9_000,
+                },
+                FolderActivity::Checking {
+                    files: 7,
+                    bytes: 9_000,
+                },
+            ),
+            (
+                driver::Activity::Applying { changes: 2 },
+                FolderActivity::Applying { changes: 2 },
+            ),
+            (
+                driver::Activity::AwaitingAnswers { questions: 1 },
+                FolderActivity::AwaitingAnswers { questions: 1 },
+            ),
+            (driver::Activity::CatchingUp, FolderActivity::CatchingUp),
+        ] {
+            let syncing = driver::FolderStatus {
+                activity: Some(reported),
+                ..folder_in(DriverFolderState::CatchingUp, None)
+            };
+            let json = serde_json::to_string(&syncing).unwrap();
+            let received: driver::FolderStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(folder(&received).activity, Some(shown), "{json}");
+        }
+        assert_eq!(
+            folder(&folder_in(DriverFolderState::UpToDate, None)).activity,
+            None
+        );
+    }
+
+    #[test]
+    fn an_activity_a_newer_daemon_reports_leaves_the_rest_of_the_status_readable() {
+        let syncing = folder_in(DriverFolderState::CatchingUp, None);
+        let mut json = serde_json::to_value(&syncing).unwrap();
+        json["activity"] = serde_json::json!({ "kind": "indexing", "files": 3 });
+        let received: driver::FolderStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(received.activity, Some(driver::Activity::Unknown));
+        let shown = folder(&received);
+        assert_eq!((shown.state, shown.activity), (FolderState::Syncing, None));
     }
 
     #[test]
@@ -902,6 +1029,8 @@ mod unreachable_tests {
                 ),
                 progress: None,
                 held_disks: Vec::new(),
+                activity: None,
+                bytes_moved: 0,
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
                     until_ms: Some(7),
@@ -945,6 +1074,8 @@ mod unreachable_tests {
                     problem: Some("the folder is missing".into()),
                     progress: None,
                     held_disks: Vec::new(),
+                    activity: None,
+                    bytes_moved: 0,
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
                         until_ms: Some(1),

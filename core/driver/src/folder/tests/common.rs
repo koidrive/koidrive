@@ -267,6 +267,8 @@ impl Site {
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
         let folder = Folder::open(link, &lock, &self.db, local).unwrap();
+        let reports: Arc<Mutex<Vec<Observing>>> = Arc::default();
+        let reported = reports.clone();
         let observer = FsObserver::start(
             &self.root,
             &self.link.space_id,
@@ -274,11 +276,13 @@ impl Site {
             folder.snapshot(),
             matcher(sync).unwrap(),
             || false,
+            move |report| reported.lock().unwrap().push(report),
         )
         .unwrap();
         Device {
             folder,
             observer,
+            reports,
             root: self.root.clone(),
             matcher: matcher(sync).unwrap(),
             caller: self.caller.clone(),
@@ -293,6 +297,7 @@ impl Site {
 struct Device {
     folder: Folder,
     observer: FsObserver,
+    reports: Arc<Mutex<Vec<Observing>>>,
     root: PathBuf,
     matcher: Arc<dyn Matcher>,
     caller: Caller,
