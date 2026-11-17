@@ -74,7 +74,8 @@ fn served_at_5_then_lost(
         synced,
         moved,
         untaken,
-        records, &Default::default(),
+        records,
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );

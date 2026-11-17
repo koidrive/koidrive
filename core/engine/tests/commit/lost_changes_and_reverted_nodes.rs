@@ -16,7 +16,8 @@ fn a_delete_the_server_lost_is_sent_again() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -64,7 +65,8 @@ fn a_delete_the_server_lost_is_sent_again_only_for_what_it_saw() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -96,7 +98,8 @@ fn an_edit_the_server_lost_is_sent_again() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -124,7 +127,8 @@ fn an_edit_the_server_lost_is_not_sent_again_over_a_later_edit() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -150,7 +154,8 @@ fn an_edit_the_server_lost_is_sent_again_over_a_later_delete() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -564,7 +569,8 @@ fn a_reverted_file_the_server_lost_is_created_again_under_its_id() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -605,7 +611,8 @@ fn a_reverted_file_whose_s_update_waits_is_created_again_under_its_id_once_the_s
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -758,7 +765,8 @@ fn a_move_another_device_made_after_a_loss_is_taken() {
         Vec::new(),
         moved,
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -785,7 +793,8 @@ fn a_file_whose_folder_the_server_lost(
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -881,7 +890,8 @@ fn a_file_in_a_folder_the_server_lost_that_a_later_loss_takes_is_kept_beside_ano
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -902,7 +912,8 @@ fn a_lost_edit_of_a_file_in_a_folder_the_server_lost_is_kept_beside_another_devi
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1082,7 +1093,8 @@ fn a_file_renamed_here_before_the_server_lost_it(name: &str, digest: u8) -> (Tre
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1136,7 +1148,8 @@ fn a_file_moved_here_into_another_folder_before_a_loss_takes_the_copy_created_ag
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1239,7 +1252,8 @@ fn a_file_in_a_folder_linked_after_a_loss_takes_the_copy_created_again_at_its_ol
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1509,7 +1523,8 @@ fn a_lost_move_of_a_folder_keeps_a_move_another_device_made_of_its_child_after_t
         Vec::new(),
         moved,
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -1588,7 +1603,8 @@ fn a_lost_folder_move_keeps_its_childs_remote_move_when_its_old_name_is_held_in_
         Vec::new(),
         moved,
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -1725,7 +1741,8 @@ fn a_delete_the_server_lost_is_sent_again_for_a_record_it_saw_above_the_bound() 
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -1774,7 +1791,8 @@ fn a_file_this_device_made_follows_a_delete_after_another_device_edited_it_past_
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -1816,7 +1834,8 @@ fn a_file_another_device_edited_before_a_loss_follows_a_delete_made_after_it() {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1859,7 +1878,8 @@ fn an_untaken_edit_then(listed: RemoteNode) -> (Trees, Option<proto::Commit>) {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1926,7 +1946,8 @@ fn an_untaken_edit_below_a_lost_folder_follows_a_later_delete() {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -1989,7 +2010,8 @@ fn an_untaken_edit_renamed_in_a_lost_commit_is_renamed_again() {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         3,
         0,
     );
@@ -2035,7 +2057,8 @@ fn an_untaken_edit_another_device_moved_before_the_loss_stays_where_it_moved() {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         3,
         0,
     );
@@ -2117,7 +2140,8 @@ fn content_l_went_back_to_while_an_acknowledged_edit_waits_is_sent_after_a_loss(
         synced,
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -2164,7 +2188,8 @@ fn content_l_went_back_to_while_its_edit_was_in_flight_is_sent_after_a_loss() {
         synced,
         trees.moved_here(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -2217,7 +2242,8 @@ fn an_untaken_edit_another_device_moved_after_the_loss_stays_where_it_moved() {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         3,
         0,
     );
@@ -2261,7 +2287,8 @@ fn content_l_went_back_to_while_its_equal_edit_was_in_flight_is_sent_after_a_los
         synced,
         trees.moved_here(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -2303,7 +2330,8 @@ fn content_this_devices_restore_set_is_not_kept_beside_it_after_a_loss() {
         synced,
         trees.moved_here(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -2366,7 +2394,8 @@ fn a_lost_move_and_edit_are_sent_again_when_another_file_held_the_old_name() {
             synced,
             moved,
             untaken,
-            records, &Default::default(),
+            records,
+            &Default::default(),
             commits.held_through(),
             commits.accepted(),
         );
@@ -2406,7 +2435,8 @@ fn a_file_another_device_edited_and_deleted_before_a_loss_stays_deleted() {
         Vec::new(),
         Vec::new(),
         untaken,
-        records, &Default::default(),
+        records,
+        &Default::default(),
         2,
         0,
     );
@@ -2450,7 +2480,8 @@ fn a_folder_another_device_deleted_before_a_loss_that_took_it_stays_deleted() {
         Vec::new(),
         Vec::new(),
         untaken,
-        records, &Default::default(),
+        records,
+        &Default::default(),
         0,
         0,
     );
@@ -2471,7 +2502,8 @@ fn lose_and_build(trees: &mut Trees) -> Option<proto::Commit> {
         Vec::new(),
         Vec::new(),
         untaken,
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -2517,7 +2549,8 @@ fn a_delete_of_another_device_stays_across_two_losses_before_the_device_takes_it
             Vec::new(),
             Vec::new(),
             untaken,
-            Default::default(), &Default::default(),
+            Default::default(),
+            &Default::default(),
             0,
             0,
         );

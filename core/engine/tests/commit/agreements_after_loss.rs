@@ -29,7 +29,8 @@ fn an_edit_the_server_took_first_from_another_device_is_sent_again_as_an_edit_af
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -66,7 +67,8 @@ fn a_late_acknowledgement_after_a_rollback_keeps_an_agreement_the_server_kept() 
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         4,
         commits.accepted(),
     );
@@ -111,7 +113,8 @@ fn a_late_create_acknowledgement_after_a_rollback_keeps_an_agreement_r_still_hol
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         0,
         commits.accepted(),
     );
@@ -154,7 +157,8 @@ fn a_late_create_acknowledgement_after_a_rollback_drops_the_agreement_the_server
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         7,
         commits.accepted(),
     );
@@ -208,7 +212,8 @@ fn a_reused_revision_does_not_keep_an_agreement_the_server_lost() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         7,
         commits.accepted(),
     );
@@ -264,7 +269,8 @@ fn an_agreement_survives_a_loss_only_on_a_kept_seq_or_its_exact_record() {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Default::default(), &Default::default(),
+            Default::default(),
+            &Default::default(),
             held_through,
             commits.accepted(),
         );
@@ -306,7 +312,8 @@ fn a_resend_lost_in_a_second_loss_is_not_sent_again_as_this_devices_edit() {
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(), &Default::default(),
+        Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
