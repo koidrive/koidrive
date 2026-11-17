@@ -16,9 +16,6 @@
   <a href="docs/guide/README.md">User guide</a>
 </p>
 
-> [!WARNING]
-> **Koidrive is in alpha.** [Get started](#get-started) with the Mac app or the `koi` command. The protocol and storage format may change before 0.1.0. Keep another copy of anything you sync.
-
 ## Why Koidrive
 
 **You pay for storage, not for seats.** Koidrive is free and open source. Cloudflare bills your account for the storage and requests you use, with no egress fee, as [What it costs](#what-it-costs) shows. Dropbox sells storage in fixed tiers, and its team plans charge for every person.
