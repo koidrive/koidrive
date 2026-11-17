@@ -1075,24 +1075,32 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: note.clone(),
                 parent_id: docs.clone(),
                 name: "note.txt".into(),
                 content: Some(file_content(b"first")),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: gone.clone(),
                 parent_id: docs.clone(),
                 name: "gone.txt".into(),
                 content: Some(file_content(b"deleted later")),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: uuidv7(),
                 parent_id: docs.clone(),
                 name: "link.txt".into(),
                 content: Some(file_content(b"link")),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: uuidv7(),
                 parent_id: docs.clone(),
                 name: "target.txt".into(),
@@ -1110,6 +1118,8 @@ async fn trash_and_versions_list_what_the_space_keeps() {
         &[b"second!"],
         vec![
             op::Op::UpdateContent(UpdateContent {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: note,
                 content: Some(file_content(b"second!")),
                 resend: false,
@@ -1258,12 +1268,16 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
                 pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: note.clone(),
                 parent_id: docs.clone(),
                 name: "note.txt".into(),
                 content: Some(file_content(b"first")),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: gone.clone(),
                 parent_id: docs,
                 name: "gone.txt".into(),
@@ -1284,6 +1298,8 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
         &[b"second!"],
         vec![
             op::Op::UpdateContent(UpdateContent {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: note,
                 content: Some(file_content(b"second!")),
                 resend: false,
@@ -1949,6 +1965,8 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
         &space.space_id,
         &[b"written on another device"],
         vec![op::Op::CreateFile(CreateFile {
+            made_over: Vec::new(),
+            source_version_id: String::new(),
             node_id: uuidv7(),
             parent_id: space.space_id.clone(),
             name: "Slides.pptx".into(),
@@ -2112,6 +2130,8 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
                 pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: uuidv7(),
                 parent_id: docs.clone(),
                 name: "plan.txt".into(),
@@ -2126,6 +2146,8 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
         &elsewhere.space_id,
         &[b"away"],
         vec![op::Op::CreateFile(CreateFile {
+            made_over: Vec::new(),
+            source_version_id: String::new(),
             node_id: away.clone(),
             parent_id: elsewhere.space_id.clone(),
             name: "away.txt".into(),
@@ -2405,6 +2427,8 @@ async fn refuses_local_replacements_and_edits_that_have_not_synced() {
                 pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: original.clone(),
                 parent_id: docs,
                 name: "contract.txt".into(),
@@ -2516,6 +2540,8 @@ async fn a_restore_of_an_item_deleted_before_the_first_sync_lists_its_path() {
                 pending_for: String::new(),
             }),
             op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: early.clone(),
                 parent_id: docs.clone(),
                 name: "early.txt".into(),

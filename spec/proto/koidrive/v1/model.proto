@@ -46,6 +46,7 @@ message VersionInfo {
   string device_id = 4;
   string user_id = 5;
   int64 created_at_ms = 6;
+  repeated string made_over = 7;
 }
 
 // The full resulting state of a node after a commit.

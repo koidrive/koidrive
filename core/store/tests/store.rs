@@ -96,6 +96,7 @@ fn migrations_apply_from_empty() {
             "commit_in_flight_restore_members",
             "commit_slots",
             "commit_state",
+            "content_provenance",
             "cycle_reverted",
             "discarded_nodes",
             "dropped_edits",
@@ -1035,6 +1036,7 @@ fn three_trees_round_trip() {
         trash_group: "4:0".into(),
         current: Some(VersionInfo {
             version_id: "v1".into(),
+            made_over: Vec::new(),
             seq: 4,
             content: Some(content(3)),
             device_id: "d1".into(),
@@ -1224,6 +1226,8 @@ fn engine_state() -> EngineState {
                     parent_id: "root".into(),
                     name: "new.txt".into(),
                     content: Some(content(3)),
+                    made_over: Vec::new(),
+                    source_version_id: String::new(),
                 })),
             },
             Op {
@@ -1357,6 +1361,7 @@ fn engine_state() -> EngineState {
                     name: "u-before.txt".into(),
                 },
             )]),
+            content_provenance: BTreeMap::new(),
             replaced_versions: BTreeMap::from([(
                 "e".into(),
                 vec![
@@ -1563,7 +1568,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 43] = [
+const ENGINE_TABLES: [&str; 44] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1578,6 +1583,7 @@ const ENGINE_TABLES: [&str; 43] = [
     "commit_slots",
     "edited_here",
     "replaced_versions",
+    "content_provenance",
     "resends",
     "local_changes",
     "kept_originals",
@@ -2189,6 +2195,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         meta_edit_rev: 1,
         edit_rev: 1,
         version_id: "v1".into(),
+        made_over: Vec::new(),
         trash_group: String::new(),
         pending_for: None,
         pending_by: None,
@@ -2300,6 +2307,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         meta_edit_rev: 1,
         edit_rev: 1,
         version_id: "v1".into(),
+        made_over: Vec::new(),
         trash_group: String::new(),
         pending_for: None,
         pending_by: None,
@@ -2386,6 +2394,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         "n".into(),
         RemoteNode {
             version_id: "v2".into(),
+            made_over: Vec::new(),
             ..remote
         },
     );
@@ -2868,6 +2877,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         edit_rev: 0,
         trash_group: String::new(),
         version_id: String::new(),
+        made_over: Vec::new(),
         pending_for: None,
         pending_by: None,
     };
@@ -2991,6 +3001,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
             String::new()
         },
         version_id: String::new(),
+        made_over: Vec::new(),
         pending_for: None,
         pending_by: None,
     };
@@ -3703,6 +3714,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
             content_rev: 1,
             trash_group: String::new(),
             version_id: String::new(),
+            made_over: Vec::new(),
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
@@ -4245,6 +4257,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 content_rev: 1,
                 trash_group: String::new(),
                 version_id: String::new(),
+                made_over: Vec::new(),
                 edit_rev: 1,
                 pending_for: None,
                 pending_by: None,
@@ -4741,6 +4754,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         edit_rev: rev,
         trash_group: String::new(),
         version_id: version_id.into(),
+        made_over: Vec::new(),
     };
     let local = |shape, ino| EngineLocalNode {
         left_out_when_placed: false,

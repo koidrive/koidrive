@@ -44,6 +44,8 @@ fn content(chunks: &[ChunkRef]) -> Content {
 
 fn create_file(parent_id: &str, name: &str, content: Content) -> Op {
     let file = CreateFile {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
         node_id: uuidv7(),
         parent_id: parent_id.into(),
         name: name.into(),

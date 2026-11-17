@@ -10,7 +10,7 @@ fn a_download_the_server_lost_is_sent_again_over_the_version_it_replaced() {
     );
     assert_eq!(trees.class("a"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [resend("a", 2)]);
+    assert_eq!(ops(&commit), [resend("a", 2, "v2")]);
 }
 
 #[test]
@@ -27,7 +27,12 @@ fn an_edit_of_a_resend_back_to_the_restored_bytes_through_another_edit_is_sent()
     }
     assert_eq!(trees.class("a"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [update("a", 1)]);
+    assert_eq!(ops(&commit), [op::Op::UpdateContent(proto::UpdateContent {
+        node_id: "a".into(),
+        content: Some(content(1)),
+        made_over: vec!["v2".into()],
+        ..Default::default()
+    })]);
 }
 
 #[test]
@@ -55,7 +60,7 @@ fn a_download_the_server_lost_with_the_delete_after_it_is_sent_again_as_a_resend
         version(remote(file(ROOT, "a", 1)), "v1"),
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [resend("a", 2)]);
+    assert_eq!(ops(&commit), [resend("a", 2, "v2")]);
 }
 
 #[test]
@@ -352,6 +357,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
     }
 }
 
+
 #[test]
 fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken() {
     for name in ["a", "b"] {
@@ -382,4 +388,3 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
         assert!(trees.unsent_edits().is_empty(), "at {name}");
     }
 }
-

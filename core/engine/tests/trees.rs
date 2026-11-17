@@ -44,6 +44,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,

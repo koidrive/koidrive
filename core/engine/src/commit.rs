@@ -23,7 +23,9 @@ use crate::question::{
 };
 use crate::recovery;
 use crate::restore::{Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent};
-use crate::state::{Agreed, CommitsChanges, CommitsState, FinishOrigin, StateError};
+use crate::state::{
+    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, StateError,
+};
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
 
@@ -41,6 +43,8 @@ pub const MAX_COMMIT_BYTES: usize = 512 * 1024;
 /// What one change record costs besides the node's name and content: its IDs, revisions, version
 /// and framing.
 const RECORD_BYTES: usize = 256;
+
+const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 
 /// The seq a commit builds on and the commit token there (RFC 0013): the `commit_id` and
 /// `committed_at_ms` of the commit R applied at that seq. An empty token claims nothing, so a
@@ -1284,7 +1288,7 @@ impl Commits {
                 .take(cap)
                 .take_while(|(id, _, name, _)| {
                     let shape = trees.remote().live(id).or(trees.synced().live(id));
-                    let cost = record_cost(shape) + name.len();
+                    let cost = record_cost(shape) + held_ancestry_cost(trees, id) + name.len();
                     let fits = bytes == 0 || bytes + cost <= MAX_COMMIT_BYTES;
                     bytes += cost;
                     fits
@@ -1449,6 +1453,8 @@ impl Commits {
                             node_id: original.node_id.clone(),
                             content: Some(copied),
                             resend: false,
+                            made_over: Vec::new(),
+                            source_version_id: String::new(),
                         }))
                     }
                     _ => {
@@ -1869,6 +1875,14 @@ impl Commits {
                             agreed.extend(agree(trees, &create.node_id, result.seq));
                             synced.set(&create.node_id, Some(shape));
                         }
+                        if trees.source_version_id(&create.node_id).is_none() {
+                            trees.sent_version(
+                                &create.node_id,
+                                create.content.as_ref(),
+                                result.seq,
+                                true,
+                            );
+                        }
                         trees.sent_edit(&create.node_id, create.content.as_ref());
                     }
                     let exists = taken && trees.remote().get(&create.node_id).is_some();
@@ -1899,6 +1913,9 @@ impl Commits {
                     }
                     if applied && !update.resend {
                         trees.record_edited(id, update.content.as_ref());
+                    }
+                    if applied {
+                        trees.sent_version(id, update.content.as_ref(), result.seq, !update.resend);
                     }
                     if applied || code == Code::ConflictCopy {
                         trees.sent_edit(id, update.content.as_ref());
@@ -2746,8 +2763,7 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     let (parked, left_out_when_placed) = (node.parked, node.left_out_when_placed);
     trees.rekey_discarded(from, to);
     trees.rekey_lost_shapes(from, to);
-    trees.remove_local(from);
-    trees.set_local_changed(to.to_owned(), node);
+    trees.rekey_local(from, to, node);
     trees.set_left_out_when_placed(to, left_out_when_placed);
     if parked {
         trees.park_as(to.to_owned(), parked_name);
@@ -3139,13 +3155,57 @@ fn record_cost(shape: Option<&Shape>) -> usize {
         })
 }
 
+fn made_over_cost(ids: &[String]) -> usize {
+    ids.iter()
+        .map(|id| 1 + prost::length_delimiter_len(id.len()) + id.len())
+        .sum()
+}
+
+fn held_ancestry_cost(trees: &Trees, id: &str) -> usize {
+    trees
+        .remote()
+        .get(id)
+        .map_or(0, |node| made_over_cost(&node.made_over))
+}
+
+fn expanded_ancestry_cost(bases: &[String], source: Option<&str>) -> usize {
+    if !bases.is_empty() {
+        MAX_ANCESTRY_BYTES
+    } else {
+        source.map_or(0, |id| 1 + prost::length_delimiter_len(id.len()) + id.len())
+    }
+}
+
+fn edited_ancestry_cost(trees: &Trees, id: &str) -> usize {
+    let bases = trees.edit_bases(id);
+    let source = trees.source_version_id(id);
+    let expanded = expanded_ancestry_cost(&bases, source);
+    if source.is_some()
+        && bases.is_empty()
+        && trees
+            .local()
+            .live(id)
+            .zip(trees.remote().live(id))
+            .is_some_and(|(local, remote)| {
+                matches!((&local.content, &remote.content),
+                (Some(local), Some(remote)) if same_content(local, remote))
+            })
+    {
+        expanded + held_ancestry_cost(trees, id)
+    } else {
+        expanded
+    }
+}
+
 /// The bytes of change records `want` makes, roughly: one record for each node it changes, and a
 /// record carries the node's current content.
 fn cost(trees: &Trees, want: &Want) -> usize {
     match want {
         Want::Create {
-            shape, pending_for, ..
-        } => record_cost(Some(shape)) + marked(pending_for),
+            id,
+            shape,
+            pending_for,
+        } => record_cost(Some(shape)) + edited_ancestry_cost(trees, id) + marked(pending_for),
         Want::Move {
             id,
             name,
@@ -3153,17 +3213,23 @@ fn cost(trees: &Trees, want: &Want) -> usize {
             ..
         } => {
             record_cost(trees.remote().live(id).or(trees.synced().live(id)))
+                + held_ancestry_cost(trees, id)
                 + name.len()
                 + marked(pending_for)
         }
-        Want::Content { content, .. } => RECORD_BYTES + content.encoded_len(),
+        Want::Content { id, content } => {
+            RECORD_BYTES + content.encoded_len() + edited_ancestry_cost(trees, id)
+        }
         Want::Delete { members, .. } => members
             .iter()
-            .map(|node| record_cost(trees.synced().live(node)))
+            .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
             .sum(),
         Want::Retrash { members, .. } => members
             .iter()
-            .map(|node| 2 * record_cost(trees.remote().get(node).map(|node| &node.shape)))
+            .map(|node| {
+                2 * (record_cost(trees.remote().get(node).map(|node| &node.shape))
+                    + held_ancestry_cost(trees, node))
+            })
             .sum(),
         Want::Restore { cost, .. } => *cost,
     }
@@ -3265,15 +3331,23 @@ fn plan(
     let mut wants = Vec::new();
     if !restores.is_empty() {
         let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
-        for (_, node) in trees.remote().iter().filter(|(_, node)| node.trashed) {
-            *groups.entry(&node.trash_group).or_default() += record_cost(Some(&node.shape));
+        for (id, node) in trees.remote().iter().filter(|(_, node)| node.trashed) {
+            *groups.entry(&node.trash_group).or_default() +=
+                record_cost(Some(&node.shape)) + held_ancestry_cost(trees, id);
         }
         for intent in restores.values() {
             let cost = match trees.remote().get(intent.node()) {
                 Some(node) if node.trashed && intent.version_id().is_none() => {
                     groups[node.trash_group.as_str()]
                 }
-                node => record_cost(node.map(|node| &node.shape)),
+                node => {
+                    record_cost(node.map(|node| &node.shape))
+                        + if intent.version_id().is_some() {
+                            MAX_ANCESTRY_BYTES
+                        } else {
+                            held_ancestry_cost(trees, intent.node())
+                        }
+                }
             };
             wants.push(Want::Restore {
                 op: intent.op().clone(),
@@ -3404,7 +3478,7 @@ fn plan(
         }
         let bytes: usize = members
             .iter()
-            .map(|node| record_cost(trees.synced().live(node)))
+            .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
             .sum();
         let kept = (scratch.subtree(id).iter())
             .any(|node| trees.excluded(node) || trees.kept_original(node).is_some());
@@ -3571,6 +3645,11 @@ fn plan(
                         pending_for: pending_for.unwrap_or_default(),
                     }),
                     Kind::File => op::Op::CreateFile(proto::CreateFile {
+                        made_over: trees.edit_bases(&id),
+                        source_version_id: trees
+                            .source_version_id(&id)
+                            .unwrap_or_default()
+                            .to_owned(),
                         node_id: id,
                         parent_id: shape.parent,
                         name: shape.name,
@@ -3616,6 +3695,8 @@ fn plan(
                 scratch.revive(&id);
                 op::Op::UpdateContent(proto::UpdateContent {
                     resend: trees.resends().contains(&id),
+                    made_over: trees.edit_bases(&id),
+                    source_version_id: trees.source_version_id(&id).unwrap_or_default().to_owned(),
                     node_id: id,
                     content: Some(content),
                 })
@@ -3683,9 +3764,18 @@ fn plan(
     let mut bytes = (answered.iter().filter_map(|op| op.op.as_ref()))
         .map(|op| match op {
             op::Op::UpdateContent(update) => {
-                RECORD_BYTES + update.content.as_ref().map_or(0, |c| c.encoded_len())
+                RECORD_BYTES
+                    + update.content.as_ref().map_or(0, |c| c.encoded_len())
+                    + expanded_ancestry_cost(
+                        &update.made_over,
+                        (!update.source_version_id.is_empty())
+                            .then_some(update.source_version_id.as_str()),
+                    )
             }
-            op => record_cost(trees.synced().live(op_node(op))),
+            op => {
+                record_cost(trees.synced().live(op_node(op)))
+                    + held_ancestry_cost(trees, op_node(op))
+            }
         })
         .sum();
     let fits = |emitted: usize, bytes: usize, ops: usize, cost: usize| {
@@ -4487,7 +4577,10 @@ impl<'a> Scratch<'a> {
     }
 
     fn revival(&self, want: &Want, answers: &BTreeSet<NodeId>, trees: &Trees) -> usize {
-        let record = |id: &str| record_cost(trees.remote().get(id).map(|node| &node.shape));
+        let record = |id: &str| {
+            record_cost(trees.remote().get(id).map(|node| &node.shape))
+                + held_ancestry_cost(trees, id)
+        };
         let (mut current, group) = match want {
             Want::Create { shape, .. } => (shape.parent.clone(), None),
             Want::Move { id, parent, .. } => {
@@ -4590,5 +4683,131 @@ impl<'a> Scratch<'a> {
             bundle.push(retrash);
         }
         Some(bundle)
+    }
+}
+
+#[cfg(test)]
+mod ancestry_size_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+
+    fn version(n: usize) -> String {
+        format!("0190a6b2-0000-7000-8000-{n:012x}")
+    }
+
+    #[test]
+    fn ancestry_cost_charges_only_present_or_expandable_chains() {
+        assert_eq!(expanded_ancestry_cost(&[], None), 0);
+        assert_eq!(expanded_ancestry_cost(&[], Some(&version(1))), 38);
+        assert_eq!(
+            expanded_ancestry_cost(&[version(1)], None),
+            MAX_ANCESTRY_BYTES
+        );
+        assert_eq!(made_over_cost(&vec![version(1); 64]), MAX_ANCESTRY_BYTES);
+    }
+
+    #[test]
+    fn ancestry_heavy_batch_stays_within_the_estimated_record_limit() {
+        let mut trees = Trees::new("root");
+        for n in 0..300 {
+            let id = version(n + 1000);
+            let shape = Shape {
+                parent: "root".into(),
+                name: format!("file-{n}"),
+                kind: Kind::File,
+                content: Some(Content {
+                    manifest_digest: vec![1; 32],
+                    ..Content::default()
+                }),
+            };
+            trees.set_remote(
+                id.clone(),
+                RemoteNode {
+                    shape: shape.clone(),
+                    trashed: false,
+                    content_rev: 1,
+                    meta_rev: 1,
+                    meta_edit_rev: 1,
+                    trash_group: String::new(),
+                    version_id: version(n),
+                    made_over: Vec::new(),
+                    edit_rev: 1,
+                    pending_for: None,
+                    pending_by: None,
+                },
+            );
+            let mut local = LocalNode {
+                shape: shape.clone(),
+                identity: FileIdentity {
+                    ino: n as u128 + 1,
+                    birth_ns: Some(0),
+                },
+                parked: false,
+                left_out_when_placed: false,
+                content_from_server: true,
+            };
+            trees.set_local(id.clone(), local.clone());
+            trees.set_synced(id.clone(), Some(shape));
+            local.shape.content.as_mut().unwrap().manifest_digest = vec![2; 32];
+            trees.set_local_changed(id, local);
+        }
+        trees.settle();
+        let mut commits = Commits::default();
+        let commit = commits
+            .build(
+                &mut trees,
+                &mut IdGen::new(1),
+                1_794_268_740_000,
+                "history",
+                "device",
+                1,
+            )
+            .unwrap();
+        assert!(!commit.ops.is_empty());
+        assert!(commit.ops.len() < 300);
+        let mut encoded = 0;
+        let mut estimated = 0;
+        for op in &commit.ops {
+            let Some(op::Op::UpdateContent(update)) = &op.op else {
+                panic!("{op:?}");
+            };
+            assert_eq!(update.made_over.len(), 1);
+            let mut made_over = update.made_over.clone();
+            made_over.extend((0..63).map(|n| version(n + 2000)));
+            let remote = trees.remote().get(&update.node_id).unwrap();
+            encoded += proto::ChangeRecord {
+                change: Some(proto::change_record::Change::Node(proto::NodeState {
+                    node_id: update.node_id.clone(),
+                    parent_id: remote.shape.parent.clone(),
+                    name: remote.shape.name.clone(),
+                    kind: proto::NodeKind::File as i32,
+                    status: proto::NodeStatus::Live as i32,
+                    content_rev: 2,
+                    meta_rev: 1,
+                    edit_rev: 2,
+                    meta_edit_rev: 1,
+                    current: Some(proto::VersionInfo {
+                        version_id: version(3000),
+                        content: update.content.clone(),
+                        made_over,
+                        user_id: version(4000),
+                        device_id: version(5000),
+                        seq: 2,
+                        created_at_ms: 1_794_268_740_000,
+                    }),
+                    ..proto::NodeState::default()
+                })),
+            }
+            .encoded_len();
+            estimated += cost(
+                &trees,
+                &Want::Content {
+                    id: update.node_id.clone(),
+                    content: update.content.clone().unwrap(),
+                },
+            );
+        }
+        assert!(encoded <= estimated, "{encoded} > {estimated}");
+        assert!(estimated <= MAX_COMMIT_BYTES, "{estimated}");
     }
 }

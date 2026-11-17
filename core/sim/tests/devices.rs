@@ -1354,6 +1354,144 @@ fn a_device_with_a_commit_in_flight_does_not_commit_a_remote_name_back() {
     converge(3, &phases).unwrap();
 }
 
+#[test]
+fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(1))],
+        vec![(0, Step::Backup), (0, Step::RestoreEarlier), (0, u(2))],
+        vec![(0, Step::Restore)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn two_bystanders_take_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1)), (0, Step::Backup)],
+        vec![(0, Step::Backup), (0, u(2)), (0, Step::RestoreEarlier)],
+        vec![(0, Step::Restore)],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_bystander_sends_a_later_write_again_over_the_older_version_a_second_restore_brings_back() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (1, u(1, 0, 0)), (0, u(1, 0, 2))],
+        vec![
+            (0, Step::Backup),
+            (0, u(2, 9250263226113705932, 0)),
+            (1, u(2, 0, 0)),
+            (0, u(3, 199443798501314294, 1)),
+            (0, Step::RestoreEarlier),
+        ],
+        vec![(0, Step::Backup), (0, Step::RestoreEarlier)],
+    ];
+    keep(2, &phases).unwrap();
+}
+#[test]
+fn a_device_that_linked_by_listing_sends_its_write_again_over_an_older_version_a_restore_from_before_its_link_brings_back()
+ {
+    let user = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let sent = [
+        (0, Step::Scan),
+        (0, Step::Commit(Reply::Served)),
+        (0, Step::Commit(Reply::Served)),
+        (0, Step::Deliver(0)),
+    ];
+    let mut world = world(2);
+    let mut author = vec![(0, Step::Connect), (0, user(1))];
+    author.extend(sent);
+    author.extend([(0, Step::Backup), (0, user(2))]);
+    author.extend(sent);
+    author.push((0, Step::Leave));
+    world.run(0, &author).unwrap();
+    world.truncate_log();
+    world.phase(0, &[(1, Step::Connect)]).unwrap();
+    assert!(world.seen.contains_key("resume finds the log truncated"));
+    world.phase(1, &[(1, Step::Restore)]).unwrap();
+}
+
+#[test]
+fn a_late_device_keeps_a_bystanders_resend_when_author_and_bystander_are_gone_and_an_older_backup_returns()
+ {
+    let user = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let sent = |device| {
+        [
+            (device, Step::Scan),
+            (device, Step::Commit(Reply::Served)),
+            (device, Step::Commit(Reply::Served)),
+            (device, Step::Deliver(0)),
+        ]
+    };
+    let mut world = world(3);
+    let mut steps = vec![
+        (0, Step::Connect),
+        (1, Step::Connect),
+        (0, Step::Backup),
+        (0, user(1)),
+    ];
+    steps.extend(sent(0));
+    steps.extend([(1, Step::Work(0)); 30]);
+    steps.extend([(0, Step::Backup), (0, user(2))]);
+    steps.extend(sent(0));
+    steps.extend([(1, Step::Work(0)); 30]);
+    steps.extend([
+        (0, Step::Leave),
+        (1, Step::RestoreEarlier),
+        (1, Step::Connect),
+    ]);
+    steps.extend([(1, Step::Work(0)); 40]);
+    steps.push((2, Step::Connect));
+    steps.extend([(2, Step::Work(0)); 40]);
+    steps.extend([(1, Step::Leave), (2, Step::Restore)]);
+    world.run(0, &steps).unwrap();
+    world.phase(1, &[(2, Step::Connect)]).unwrap();
+}
+
 /// Device 2 makes folder A next to the synced folder a, commits it, and moves A into a while
 /// device 0 deletes a. A's acknowledged S update waits, since a still holds the name key in S on
 /// device 2, and a cannot leave the disk while it holds A. Device 2 sends the move against the
@@ -2177,6 +2315,22 @@ fn copies_of(world: &World, write: i64) -> usize {
         .count()
 }
 
+fn version_of_write(world: &World, write: i64) -> koidrive_proto::v1::VersionInfo {
+    world
+        .space()
+        .nodes()
+        .into_iter()
+        .find_map(|node| {
+            let current = node.current?;
+            current
+                .content
+                .as_ref()
+                .is_some_and(|content| content.mtime_ns == write)
+                .then_some(current)
+        })
+        .unwrap()
+}
+
 fn a_write_a_restore_kept_and_another_device_then_edited() -> Vec<Vec<(usize, Step)>> {
     vec![
         vec![
@@ -2212,9 +2366,15 @@ fn a_write_a_restore_kept_and_another_device_then_edited() -> Vec<Vec<(usize, St
 }
 
 #[test]
-fn each_device_that_cannot_tell_a_restore_kept_a_write_keeps_its_copy_beside_a_later_edit() {
-    let world = converge(3, &a_write_a_restore_kept_and_another_device_then_edited()).unwrap();
-    assert_eq!(copies_of(&world, 3), 2);
+fn a_write_continued_by_a_later_edit_needs_only_one_recovery_copy() {
+    let phases = a_write_a_restore_kept_and_another_device_then_edited();
+    let mut world = world(3);
+    world.phase(0, &phases[0]).unwrap();
+    world.phase(1, &phases[1]).unwrap();
+    let source = version_of_write(&world, 3).version_id;
+    world.phase(2, &phases[2]).unwrap();
+    assert!(version_of_write(&world, 5).made_over.contains(&source));
+    assert_eq!(copies_of(&world, 3), 1);
 }
 
 #[test]
@@ -2236,7 +2396,7 @@ fn a_copy_beside_the_copies_of_a_write_a_restore_kept_is_refused() {
 }
 
 #[test]
-fn a_copy_of_a_kept_write_by_a_device_whose_own_commit_shows_the_server_kept_it_is_refused() {
+fn a_later_edit_made_over_a_kept_write_does_not_need_a_recovery_copy() {
     let phases = [
         vec![(0, file("a"))],
         vec![(2, delete(0)), (0, rename(0, 0, "ß")), (0, BACKUP)],
@@ -2252,15 +2412,13 @@ fn a_copy_of_a_kept_write_by_a_device_whose_own_commit_shows_the_server_kept_it_
             (2, Step::Work(0)),
         ],
     ];
-    match converge(3, &phases) {
-        Ok(world) => assert_eq!(copies_of(&world, 1), 1),
-        Err(failure) => assert!(
-            failure
-                .to_string()
-                .contains("write 1 is in more than one file"),
-            "{failure}"
-        ),
-    }
+    let mut world = world(3);
+    world.phase(0, &phases[0]).unwrap();
+    world.phase(1, &phases[1]).unwrap();
+    let source = version_of_write(&world, 1).version_id;
+    world.phase(2, &phases[2]).unwrap();
+    assert!(version_of_write(&world, 2).made_over.contains(&source));
+    assert_eq!(copies_of(&world, 1), 0);
 }
 
 #[test]
@@ -2608,7 +2766,7 @@ fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_bes
 }
 
 #[test]
-fn a_write_two_downloads_place_after_a_restore_took_it_is_kept_once_beside_the_edit_over_it() {
+fn a_write_two_downloads_place_after_a_restore_is_replaced_by_the_edit_made_over_it() {
     let mut lost = vec![(0, file("a"))];
     lost.extend(commit(0));
     lost.extend([
@@ -2621,7 +2779,16 @@ fn a_write_two_downloads_place_after_a_restore_took_it_is_kept_once_beside_the_e
         (1, EFFECT),
         (2, EFFECT),
     ]);
-    let world = converge(3, &[vec![(0, BACKUP)], lost]).unwrap();
+    let mut world = world(3);
+    world.phase(0, &[(0, BACKUP)]).unwrap();
+    let edit = lost
+        .iter()
+        .position(|(_, step)| matches!(step, Step::User(action) if action.kind == 2))
+        .unwrap();
+    world.run(1, &lost[..edit]).unwrap();
+    let source = version_of_write(&world, 1).version_id;
+    world.phase(1, &lost[edit..]).unwrap();
+    assert!(version_of_write(&world, 2).made_over.contains(&source));
     for device in &world.devices {
         let disk = &device.disk;
         let write = |ino: &u128| disk.entries()[ino].content.as_ref().map(|c| c.mtime_ns);
@@ -2629,7 +2796,7 @@ fn a_write_two_downloads_place_after_a_restore_took_it_is_kept_once_beside_the_e
         assert_eq!(write(&a), Some(2));
         let mut writes: Vec<Option<i64>> = disk.entries().keys().map(write).collect();
         writes.sort();
-        assert_eq!(writes, [Some(1), Some(2)]);
+        assert_eq!(writes, [Some(2)]);
     }
 }
 
@@ -4019,7 +4186,7 @@ fn a_lost_write_sent_again_by_another_device_first_leaves_one_copy() {
 }
 
 #[test]
-fn a_lost_write_kept_beside_a_later_edit_survives_a_delete_of_the_copy_on_another_device() {
+fn a_copy_of_a_write_replaced_by_a_later_edit_can_be_deleted() {
     let edit = |device, text| {
         let action = Action {
             kind: 2,
@@ -4034,6 +4201,7 @@ fn a_lost_write_kept_beside_a_later_edit_survives_a_delete_of_the_copy_on_anothe
     let lost = (world.devices[2].disk.entries().values())
         .find_map(|entry| entry.content.clone())
         .unwrap();
+    let source = version_of_write(&world, lost.mtime_ns).version_id;
     let mut steps = vec![(0, RESTORE), (1, Step::Connect)];
     steps.extend([(1, DELIVER); 8]);
     steps.push(edit(1, 2));
@@ -4057,12 +4225,13 @@ fn a_lost_write_kept_beside_a_later_edit_survives_a_delete_of_the_copy_on_anothe
     delete.extend(commit(2));
     delete.extend([(2, DELIVER); 4]);
     world.phase(3, &delete).unwrap();
+    assert!(version_of_write(&world, 3).made_over.contains(&source));
     for device in &world.devices {
         let entries: Vec<_> = device.disk.entries().values().collect();
         let copies = (entries.iter())
             .filter(|entry| entry.content.as_ref() == Some(&lost))
             .count();
-        assert_eq!(copies, 1, "{entries:?}");
+        assert_eq!(copies, 0, "{entries:?}");
     }
 }
 
@@ -4560,23 +4729,42 @@ fn the_authors_lost_edit_is_sent_again_at_its_name_after_a_restore_to_an_earlier
 }
 
 #[test]
-fn an_author_that_edits_again_before_it_reconnects_keeps_the_lost_edit_beside_the_new_one() {
+fn an_author_that_edits_again_before_it_reconnects_replaces_its_lost_edit_with_the_new_one() {
     let mut world = converge(
         2,
         &[vec![(1, file("a"))], vec![(0, BACKUP), (0, overwrite(0))]],
     )
     .unwrap();
     let lost = content_on(&world, 0, "a");
+    let lost_version = world
+        .space()
+        .nodes()
+        .into_iter()
+        .find_map(|node| {
+            let current = node.current?;
+            (current.content.as_ref() == Some(&lost)).then_some(current.version_id)
+        })
+        .unwrap();
     world.run(2, &[(0, RESTORE), (0, overwrite(0))]).unwrap();
     let edit = content_on(&world, 0, "a");
     let mut steps = Vec::new();
     reconnect(&mut steps, 0, true);
     reconnect(&mut steps, 1, false);
     world.phase(3, &steps).unwrap();
-    every_device_holds(&world, &[&lost, &edit]);
+    let later = world
+        .space()
+        .nodes()
+        .into_iter()
+        .find_map(|node| {
+            let current = node.current?;
+            (current.content.as_ref() == Some(&edit)).then_some(current)
+        })
+        .unwrap();
+    assert!(later.made_over.contains(&lost_version), "{later:?}");
+    every_device_holds(&world, &[&edit]);
     for device in 0..2 {
         let files = files_on(&world, device);
-        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!(files.len(), 1, "{files:?}");
         assert_eq!(content_on(&world, device, "a"), edit);
     }
 }

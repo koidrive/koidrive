@@ -106,6 +106,7 @@ pub(crate) struct Version {
     device_id: String,
     user_id: String,
     created_at_ms: i64,
+    made_over: Vec<String>,
 }
 
 /// Everything one commit can change, cloned per commit so that a failing commit leaves no trace.
@@ -143,6 +144,7 @@ impl State {
             device_id: version.device_id.clone(),
             user_id: version.user_id.clone(),
             created_at_ms: version.created_at_ms,
+            made_over: version.made_over.clone(),
         }
     }
 
@@ -255,8 +257,19 @@ fn check_content(content: Option<&Content>) -> Result<&Content, Error> {
 fn check_ids(op: &Op, index: usize) -> Result<(), Error> {
     let (required, optional): (Vec<&str>, Vec<&str>) = match &op.op {
         Some(op::Op::CreateDir(o)) => (vec![&o.node_id, &o.parent_id], vec![]),
-        Some(op::Op::CreateFile(o)) => (vec![&o.node_id, &o.parent_id], vec![]),
-        Some(op::Op::UpdateContent(o)) => (vec![&o.node_id], vec![]),
+        Some(op::Op::CreateFile(o)) => (
+            [o.node_id.as_str(), o.parent_id.as_str()]
+                .into_iter()
+                .chain(o.made_over.iter().map(String::as_str))
+                .collect(),
+            vec![&o.source_version_id],
+        ),
+        Some(op::Op::UpdateContent(o)) => (
+            std::iter::once(o.node_id.as_str())
+                .chain(o.made_over.iter().map(String::as_str))
+                .collect(),
+            vec![&o.source_version_id],
+        ),
         Some(op::Op::Delete(o)) => (vec![&o.node_id], vec![]),
         Some(op::Op::Move(o)) => (vec![&o.node_id, &o.new_parent_id], vec![]),
         Some(op::Op::Restore(o)) => (vec![&o.node_id], vec![&o.version_id, &o.target_parent_id]),

@@ -2021,6 +2021,7 @@ mod tests {
             }
             if let Some(shape) = remote {
                 let node = RemoteNode {
+                    made_over: Vec::new(),
                     shape: shape.clone(),
                     trashed: false,
                     content_rev: 1,
@@ -2319,6 +2320,7 @@ mod tests {
                     trees.set_local("d".into(), held(dir("n", "d"), 1));
                     trees.set_synced("d".into(), Some(dir("n", "d")));
                     let node = RemoteNode {
+                        made_over: Vec::new(),
                         shape: dir(ROOT, "n"),
                         trashed: false,
                         content_rev: 1,

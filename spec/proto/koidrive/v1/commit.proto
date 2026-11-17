@@ -31,6 +31,8 @@ message CreateFile {
   string parent_id = 2;
   string name = 3;
   Content content = 4;
+  repeated string made_over = 5;
+  string source_version_id = 6;
 }
 
 message UpdateContent {
@@ -40,6 +42,8 @@ message UpdateContent {
   // device's user in it. It leaves the node's edit_rev as it was, and a trashed target answers it with CODE_SUPERSEDED
   // (RFC 0018).
   bool resend = 3;
+  repeated string made_over = 4;
+  string source_version_id = 5;
 }
 
 message Move {

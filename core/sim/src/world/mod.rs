@@ -2854,6 +2854,14 @@ impl World {
                 file(&content)
             )
             .unwrap();
+            if let Some(version) = &node.current {
+                writeln!(
+                    out,
+                    "    version {} made_over {:?}",
+                    version.version_id, version.made_over
+                )
+                .unwrap();
+            }
         }
         for (d, device) in self.devices.iter().enumerate() {
             let engine = &device.engine;
@@ -3937,6 +3945,7 @@ mod tests {
         );
         engine.trees.rules_scanned();
         let folder = RemoteNode {
+            made_over: Vec::new(),
             shape: Shape {
                 parent: "root".into(),
                 name: "d".into(),

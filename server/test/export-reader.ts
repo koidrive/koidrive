@@ -18,7 +18,7 @@ import {
 } from "../src/gen/koidrive/v1/model_pb";
 import { sha256 } from "../src/crypto";
 import { toHex } from "../src/ids";
-import { nodeState, type NodeRow, rows, type VersionRow, versionInfo } from "../src/space/store";
+import { boundMadeOver, nodeState, type NodeRow, rows, type VersionRow, versionInfo } from "../src/space/store";
 
 export interface RestoredNode {
   state: NodeState;
@@ -76,7 +76,7 @@ async function keys(prefix: string): Promise<string[]> {
   return out;
 }
 
-function replay(nodes: Map<string, RestoredNode>, record: CommitRecord): void {
+function replay(nodes: Map<string, RestoredNode>, record: CommitRecord, snapshotEndSeq: bigint): void {
   for (const { change } of record.changes) {
     if (change.case === "purged") {
       nodes.delete(change.value.nodeId);
@@ -85,6 +85,11 @@ function replay(nodes: Map<string, RestoredNode>, record: CommitRecord): void {
     if (change.case !== "node") throw new Error(`unexpected change ${change.case}`);
     const incoming = change.value;
     const known = nodes.get(incoming.nodeId);
+    const version = incoming.current;
+    const held = version && (known?.state.current?.versionId === version.versionId ? known.state.current : known?.previous.get(version.versionId)?.version);
+    if (held && version) {
+      held.madeOver = record.seq > snapshotEndSeq ? boundMadeOver(version.madeOver) : boundMadeOver([...held.madeOver, ...version.madeOver]);
+    }
     const rev = (state: NodeState) => [state.contentRev, state.metaRev, state.editRev, state.metaEditRev].reduce((a, b) => (a > b ? a : b));
     if (known && rev(incoming) <= rev(known.state)) continue;
     const previous = new Map(known?.previous);
@@ -174,7 +179,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", spaceId, historyId)) {
         const record = fromBinary(CommitRecordSchema, frame);
         if (Number(record.seq) !== seq++) throw new Error(`${segment.key} skips a seq`);
-        if (record.seq > BigInt(startSeq)) replay(nodes, record);
+        if (record.seq > BigInt(startSeq)) replay(nodes, record, BigInt(manifest?.end_seq ?? 0));
       }
       if (seq !== segment.last + 1) throw new Error(`${segment.key} ends early`);
       next = seq;

@@ -22,7 +22,9 @@ import type { OpEffect } from "../policy";
 import { conflictName, isReservedAtRoot, nameKey, normalizeName } from "./names";
 import { NodeKindValue, NodeStatusValue } from "./schema";
 import {
+  boundMadeOver,
   encodeChunkList,
+  expandMadeOver,
   getNode,
   getVersion,
   metaEditDev,
@@ -33,6 +35,7 @@ import {
   rows,
   versionChunks,
   versionContent,
+  versionMadeOver,
 } from "./store";
 
 export const MAX_DEPTH = 256;
@@ -160,7 +163,7 @@ export class CommitApplier {
       case "createFile":
         return this.createFile(op.op.value);
       case "updateContent":
-        return this.updateContent(op.op.value.nodeId, op.op.value.content!, op.op.value.content!.chunks, op.op.value.resend);
+        return this.updateContent(op.op.value.nodeId, op.op.value.content!, op.op.value.content!.chunks, op.op.value);
       case "move":
         return this.move(op.op.value);
       case "delete":
@@ -349,12 +352,12 @@ export class CommitApplier {
     this.created.add(nodeId);
   }
 
-  private insertVersion(nodeId: string, content: Content, chunks: readonly ChunkRef[]): string {
+  private insertVersion(nodeId: string, content: Content, chunks: readonly ChunkRef[], madeOver: readonly string[] = []): string {
     const versionId = uuidv7(this.ctx.nowMs);
     const paged = chunks.length > PAGE_CHUNKS;
     this.sql.exec(
       `INSERT INTO versions (version_id, node_id, seq, size, mtime_ns, executable, chunk_count, manifest_digest, chunker,
-         chunks, device_id, user_id, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         chunks, device_id, user_id, created_at_ms, made_over) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       versionId,
       nodeId,
       this.ctx.seq,
@@ -368,6 +371,7 @@ export class CommitApplier {
       this.dev,
       this.ctx.committer.userId,
       this.ctx.nowMs,
+      boundMadeOver(madeOver).join(","),
     );
     for (let page = 0; paged && page * PAGE_CHUNKS < chunks.length; page++) {
       this.sql.exec(
@@ -424,33 +428,48 @@ export class CommitApplier {
     if (typeof parent === "string") return rejected(parent);
     if (!parent.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
     const picked = this.pickName(parent.node_id, name, "");
-    const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks);
+    const bases = expandMadeOver(this.sql, op.nodeId, op.madeOver);
+    const madeOver = boundMadeOver(op.sourceVersionId ? [op.sourceVersionId, ...bases] : bases);
+    const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks, madeOver);
     this.insertNode(op.nodeId, parent.node_id, picked.name, NodeKindValue.FILE, versionId, this.dev);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
 
-  private updateContent(nodeId: string, content: Content, chunks: readonly ChunkRef[], resend = false): OpResult {
+  private updateContent(nodeId: string, content: Content, chunks: readonly ChunkRef[], ancestry?: UpdateContent): OpResult {
     const found = this.node(nodeId);
     if (!found) return rejected("NOT_FOUND");
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
+    const resend = ancestry?.resend ?? false;
     if (resend && found.status === NodeStatusValue.TRASHED) return result(OpResult_Code.SUPERSEDED);
+    const current = found.cur_version_id ? getVersion(this.sql, found.cur_version_id) : undefined;
+    if (resend && ancestry?.sourceVersionId && current && versionMadeOver(current).includes(ancestry.sourceVersionId)) {
+      return result(OpResult_Code.SUPERSEDED);
+    }
+    const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
+    const overCurrent = current !== undefined && bases.includes(current.version_id);
     if (this.unseenContent(found) && this.holds(found, content)) {
+      if (resend && ancestry?.sourceVersionId && current) {
+        const madeOver = boundMadeOver([ancestry.sourceVersionId, ...versionMadeOver(current)]);
+        this.sql.exec("UPDATE versions SET made_over = ? WHERE version_id = ?", madeOver.join(","), current.version_id);
+        this.touch(found.node_id);
+      }
       if (resend || found.edit_rev >= found.content_rev) return result(OpResult_Code.APPLIED, "", found.name);
       const { node, renamed } = this.reviveTarget(found);
       this.sql.exec("UPDATE nodes SET edit_rev = ?, edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
       this.touch(node.node_id);
       return result(renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", node.name);
     }
+    const madeOver = boundMadeOver(resend && ancestry?.sourceVersionId ? [ancestry.sourceVersionId, ...bases] : bases);
     const { node, renamed } = this.reviveTarget(found);
-    if (this.unseenContent(node)) {
+    if (this.unseenContent(node) && !overCurrent) {
       const copyId = uuidv7(this.ctx.nowMs);
       const name = this.pickConflictCopyName(node.parent_id!, node.name);
-      const versionId = this.insertVersion(copyId, content, chunks);
+      const versionId = this.insertVersion(copyId, content, chunks, madeOver);
       this.insertNode(copyId, node.parent_id!, name, NodeKindValue.FILE, versionId, "");
       return result(OpResult_Code.CONFLICT_COPY, copyId, name);
     }
     this.sql.exec("UPDATE versions SET superseded_at_ms = ? WHERE version_id = ?", this.ctx.nowMs, node.cur_version_id);
-    const versionId = this.insertVersion(node.node_id, content, chunks);
+    const versionId = this.insertVersion(node.node_id, content, chunks, madeOver);
     const [editRev, editDev] = resend ? [node.edit_rev, node.edit_dev] : [this.ctx.seq, this.dev];
     this.sql.exec(
       "UPDATE nodes SET cur_version_id = ?, content_rev = ?, content_dev = ?, edit_rev = ?, edit_dev = ? WHERE node_id = ?",

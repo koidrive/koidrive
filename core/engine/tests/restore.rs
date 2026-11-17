@@ -49,6 +49,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -133,6 +134,8 @@ fn restore_op(intent: &RestoreIntent) -> op::Op {
 
 fn update(node: &str, digest: u8) -> op::Op {
     op::Op::UpdateContent(proto::UpdateContent {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
         node_id: node.into(),
         content: Some(content(digest)),
         resend: false,

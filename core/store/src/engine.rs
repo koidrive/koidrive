@@ -12,8 +12,9 @@ use koidrive_engine::commit::{Halt, InFlight};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::state::{
-    Agreed, CommitsChanges, CommitsState, EffectsChanges, EffectsState, FinishOrigin, LostPosition,
-    MapChanges, MovedHere, PendingFinish, SetChanges, TreesChanges, TreesState,
+    Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
+    FinishOrigin, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges, TreesChanges,
+    TreesState,
 };
 use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -310,6 +311,19 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.trees.resends.insert(row.get(0)?);
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, provenance FROM content_provenance")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(1)?;
+            let provenance: ContentProvenance = serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("content provenance: {error}")))?;
+            state
+                .trees
+                .content_provenance
+                .insert(row.get(0)?, provenance);
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM local_changes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -465,6 +479,7 @@ impl Tx<'_> {
             "unsent_moves",
             "unseen_changes",
             "replaced_versions",
+            "content_provenance",
             "resends",
             "local_changes",
             "lost_positions",
@@ -533,6 +548,7 @@ impl Tx<'_> {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            content_provenance,
             resends,
             local_changes,
             lost_positions,
@@ -764,6 +780,24 @@ impl Tx<'_> {
             remove.execute([node])?;
             for (position, version) in versions.iter().flatten().enumerate() {
                 put.execute(params![node, position, version])?;
+            }
+        }
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM content_provenance WHERE node_id = ?1")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT OR REPLACE INTO content_provenance (node_id, provenance) VALUES (?1, ?2)",
+        )?;
+        for (node, provenance) in content_provenance {
+            match provenance {
+                Some(provenance) => {
+                    let bytes = serde_json::to_vec(provenance)
+                        .map_err(|error| invalid(format!("content provenance: {error}")))?;
+                    put.execute(params![node, bytes])?;
+                }
+                None => {
+                    remove.execute([node])?;
+                }
             }
         }
         self.write_set(

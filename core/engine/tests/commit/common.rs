@@ -59,7 +59,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 }
 
 fn remote(shape: Shape) -> RemoteNode {
-    RemoteNode {
+    RemoteNode { made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -163,18 +163,20 @@ fn delete(node: &str) -> op::Op {
 }
 
 fn update(node: &str, digest: u8) -> op::Op {
-    op::Op::UpdateContent(proto::UpdateContent {
+    op::Op::UpdateContent(proto::UpdateContent { made_over: Vec::new(), source_version_id: String::new(),
         node_id: node.into(),
         content: Some(content(digest)),
         resend: false,
     })
 }
 
-fn resend(node: &str, digest: u8) -> op::Op {
+fn resend(node: &str, digest: u8, source: &str) -> op::Op {
     op::Op::UpdateContent(proto::UpdateContent {
         node_id: node.into(),
         content: Some(content(digest)),
         resend: true,
+        made_over: Vec::new(),
+        source_version_id: source.into(),
     })
 }
 

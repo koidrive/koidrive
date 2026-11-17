@@ -20,9 +20,294 @@ fn remote(shape: Shape) -> RemoteNode {
         meta_edit_rev: 1,
         trash_group: String::new(),
         version_id: String::new(),
+        made_over: Vec::new(),
         pending_for: None,
         pending_by: None,
     }
+}
+
+fn ancestry_file(value: u8) -> Shape {
+    Shape {
+        parent: "root".into(),
+        name: "f".into(),
+        kind: Kind::File,
+        content: Some(Content {
+            size: 1,
+            manifest_digest: vec![value; 32],
+            ..Content::default()
+        }),
+    }
+}
+
+fn ancestry_remote(value: u8, version: &str, bases: &[&str]) -> RemoteNode {
+    RemoteNode {
+        version_id: version.into(),
+        made_over: bases.iter().map(|id| (*id).into()).collect(),
+        content_rev: 10,
+        edit_rev: 10,
+        ..remote(ancestry_file(value))
+    }
+}
+
+fn ancestry_tree() -> Trees {
+    let mut trees = Trees::new("root");
+    trees.set_remote("f".into(), ancestry_remote(1, "held", &["foreign-base"]));
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            shape: ancestry_file(1),
+            identity: FileIdentity {
+                ino: 1,
+                birth_ns: Some(0),
+            },
+            parked: false,
+            left_out_when_placed: false,
+            content_from_server: false,
+        },
+    );
+    trees.set_synced("f".into(), Some(ancestry_file(1)));
+    trees.set_content_from_server("f", true);
+    trees
+}
+
+fn ancestry_write(trees: &mut Trees, value: u8) {
+    let mut local = trees.l.get("f").unwrap().clone();
+    local.shape = ancestry_file(value);
+    trees.set_local_changed("f".into(), local);
+}
+
+#[test]
+fn ancestry_of_an_edit_stops_at_its_actual_foreign_base() {
+    let mut trees = ancestry_tree();
+    trees.set_remote("f".into(), ancestry_remote(3, "unheld", &["unrelated"]));
+    ancestry_write(&mut trees, 2);
+    assert_eq!(trees.edit_bases("f"), ["held"]);
+    assert_eq!(trees.source_version_id("f"), None);
+    ancestry_write(&mut trees, 4);
+    assert_eq!(trees.edit_bases("f"), ["held"]);
+}
+
+#[test]
+fn ancestry_of_own_edits_includes_held_versions_but_no_uncommitted_ids() {
+    let mut trees = ancestry_tree();
+    ancestry_write(&mut trees, 2);
+    trees.set_remote_edited_here("f".into(), ancestry_remote(2, "own-2", &["held"]));
+    ancestry_write(&mut trees, 3);
+    ancestry_write(&mut trees, 4);
+    assert_eq!(trees.edit_bases("f"), ["own-2", "held"]);
+    trees.set_remote_edited_here("f".into(), ancestry_remote(3, "own-3", &["own-2", "held"]));
+    assert_eq!(trees.edit_bases("f"), ["own-3", "own-2", "held"]);
+}
+
+#[test]
+fn ancestry_does_not_recover_an_old_own_base_after_a_foreign_download() {
+    let mut trees = ancestry_tree();
+    ancestry_write(&mut trees, 2);
+    ancestry_write(&mut trees, 3);
+    trees.set_remote("f".into(), ancestry_remote(4, "foreign-4", &[]));
+    let mut local = trees.l.get("f").unwrap().clone();
+    local.shape = ancestry_file(4);
+    trees.set_local("f".into(), local);
+    trees.set_synced("f".into(), Some(ancestry_file(4)));
+    trees.set_content_from_server("f", true);
+    ancestry_write(&mut trees, 5);
+    trees.set_remote_edited_here("f".into(), ancestry_remote(2, "late-own-2", &["held"]));
+    assert_eq!(trees.edit_bases("f"), ["foreign-4"]);
+}
+
+#[test]
+fn ancestry_record_give_way_uses_the_resent_value_not_an_older_listing() {
+    let mut trees = ancestry_tree();
+    trees.set_listed_remote("f".into(), ancestry_remote(0, "older-listing", &[]));
+    trees.set_synced("f".into(), Some(ancestry_file(0)));
+    trees.resends.insert("f".into());
+    let before = trees.state();
+    trees.restore(before).unwrap();
+    trees.set_remote(
+        "f".into(),
+        ancestry_remote(2, "unrelated", &["older-listing"]),
+    );
+    assert!(trees.resends.contains("f"));
+    assert_eq!(trees.source_version_id("f"), Some("held"));
+    trees.set_remote("f".into(), ancestry_remote(3, "continuation", &["held"]));
+    assert!(!trees.resends.contains("f"));
+    assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
+}
+
+#[test]
+fn ancestry_listing_give_way_uses_the_snapshot_source() {
+    for carries_source in [false, true] {
+        let mut trees = ancestry_tree();
+        let records = trees.remote_records(|_| false);
+        let synced = trees.taken_from_others(|_| false);
+        let bases = if carries_source {
+            vec!["held"]
+        } else {
+            vec!["foreign-base"]
+        };
+        trees.set_listed_remote("f".into(), ancestry_remote(2, "after-loss", &bases));
+        trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 0, 0);
+        assert_eq!(trees.s.get("f").is_some(), carries_source);
+        assert_eq!(trees.source_version_id("f"), Some("held"));
+    }
+}
+
+#[test]
+fn ancestry_a_reused_sequence_does_not_discard_a_known_later_value() {
+    let mut trees = ancestry_tree();
+    let records = trees.remote_records(|_| false);
+    let synced = trees.taken_from_others(|_| false);
+    trees.set_listed_remote("f".into(), ancestry_remote(0, "foreign-base", &[]));
+    trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 10, 0);
+    trees.settle();
+    let mut commits = crate::commit::Commits::default();
+    let commit = commits.build(
+        &mut trees,
+        &mut crate::ids::IdGen::new(1),
+        1_794_268_740_000,
+        "history",
+        "device",
+        10,
+    );
+    assert!(commit.is_some_and(|commit| matches!(commit.ops.as_slice(), [op]
+        if matches!(&op.op, Some(koidrive_proto::v1::op::Op::UpdateContent(update))
+            if update.resend && update.source_version_id == "held" && update.content == ancestry_file(1).content))), "{commit:?}");
+}
+
+#[test]
+fn ancestry_unknown_relationships_keep_sequence_based_survival() {
+    for matching_source in [false, true] {
+        let mut trees = ancestry_tree();
+        let mut records = trees.remote_records(|_| false);
+        let synced = trees.taken_from_others(|_| false);
+        let listed = if matching_source {
+            "unrelated"
+        } else {
+            records.get_mut("f").unwrap().source_version_id = Some("other-source".into());
+            "foreign-base"
+        };
+        trees.set_listed_remote("f".into(), ancestry_remote(0, listed, &[]));
+        trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 10, 0);
+        assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
+        assert!(!trees.resends.contains("f"));
+    }
+}
+
+#[test]
+fn ancestry_old_store_without_provenance_does_not_guess_a_base() {
+    let mut trees = ancestry_tree();
+    let mut state = trees.state();
+    state.content_provenance.clear();
+    trees.restore(state).unwrap();
+    ancestry_write(&mut trees, 2);
+    assert!(trees.edit_bases("f").is_empty());
+}
+
+#[test]
+fn ancestry_is_newest_first_deduplicated_and_bounded() {
+    let mut trees = ancestry_tree();
+    for n in 2..100 {
+        ancestry_write(&mut trees, n);
+        let mut node = ancestry_remote(n, &format!("own-{n}"), &[]);
+        node.made_over = trees
+            .edit_bases("f")
+            .into_iter()
+            .flat_map(|base| [base.clone(), base])
+            .collect();
+        trees.set_remote_edited_here("f".into(), node);
+    }
+    ancestry_write(&mut trees, 100);
+    let bases = trees.edit_bases("f");
+    assert_eq!(bases.len(), 64);
+    assert_eq!(&bases[..3], ["own-99", "own-98", "own-97"]);
+    assert_eq!(bases.last().unwrap(), "own-36");
+}
+
+#[test]
+fn ancestry_does_not_claim_unheld_transitive_foreign_values_as_own_bases() {
+    let mut trees = ancestry_tree();
+    ancestry_write(&mut trees, 2);
+    trees.set_remote_edited_here(
+        "f".into(),
+        ancestry_remote(2, "own-2", &["held", "foreign-base"]),
+    );
+    ancestry_write(&mut trees, 3);
+    assert_eq!(trees.edit_bases("f"), ["own-2", "held"]);
+}
+
+#[test]
+fn ancestry_restore_rejects_an_unbounded_or_ambiguous_chain() {
+    let mut trees = ancestry_tree();
+    let before = trees.state();
+    for bases in [
+        vec!["v".to_owned(); 65],
+        vec!["v".to_owned(), "v".to_owned()],
+        vec![String::new()],
+    ] {
+        let mut state = before.clone();
+        state.content_provenance.get_mut("f").unwrap().edit_bases = bases;
+        assert_eq!(
+            trees.restore(state),
+            Err(StateError::InvalidContentProvenance("f".into()))
+        );
+    }
+}
+
+#[test]
+fn ancestry_incoming_version_chain_is_retained_with_a_bound() {
+    use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, VersionInfo};
+
+    let state = NodeState {
+        node_id: "f".into(),
+        parent_id: "root".into(),
+        name: "f".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        current: Some(VersionInfo {
+            version_id: "current".into(),
+            made_over: (0..100)
+                .flat_map(|n| [format!("v{n}"), format!("v{n}")])
+                .collect(),
+            content: Some(Content::default()),
+            ..VersionInfo::default()
+        }),
+        ..NodeState::default()
+    };
+    let (_, remote) = RemoteNode::from_state(&state).unwrap();
+    assert_eq!(
+        remote.made_over,
+        (0..64).map(|n| format!("v{n}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ancestry_internal_rekey_preserves_the_value_and_leaves_the_old_synced_source() {
+    for edited in [false, true] {
+        let mut trees = ancestry_tree();
+        if edited {
+            ancestry_write(&mut trees, 2);
+            ancestry_write(&mut trees, 3);
+        }
+        let before = trees.state().content_provenance["f"].clone();
+        crate::commit::rekey(&mut trees, "f", "copy");
+        let state = trees.state();
+        let moved = &state.content_provenance["copy"];
+        assert_eq!(moved.local, before.local);
+        assert_eq!(moved.edit_bases, before.edit_bases);
+        assert_eq!(moved.unversioned_bases, before.unversioned_bases);
+        assert_eq!(moved.synced, None);
+        assert_eq!(state.content_provenance["f"].synced, before.synced);
+        assert_eq!(state.content_provenance["f"].local, None);
+    }
+}
+
+#[test]
+fn ancestry_an_explicit_local_copy_does_not_claim_the_originals_source() {
+    let mut trees = ancestry_tree();
+    let node = trees.l.get("f").unwrap().clone();
+    trees.set_local_changed("copy".into(), node);
+    assert_eq!(trees.source_version_id("copy"), None);
+    assert!(trees.edit_bases("copy").is_empty());
 }
 
 fn waiting(shape: Shape) -> Waiting {

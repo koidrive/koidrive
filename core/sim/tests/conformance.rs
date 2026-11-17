@@ -1244,12 +1244,16 @@ impl Run {
                     pending_for,
                 }),
                 "create_file" => op::Op::CreateFile(CreateFile {
+                    made_over: Vec::new(),
+                    source_version_id: String::new(),
                     node_id: node,
                     parent_id: parent,
                     name,
                     content: Some(req(content(), "content")?),
                 }),
                 "update_content" => op::Op::UpdateContent(UpdateContent {
+                    made_over: Vec::new(),
+                    source_version_id: String::new(),
                     node_id: node,
                     content: Some(req(content(), "content")?),
                     resend: opt_bool(body, "resend")?.unwrap_or(false),
@@ -1538,6 +1542,7 @@ impl Run {
 
     fn recorded_current(&mut self, space: &str, version: &VersionInfo) -> Result<Value, String> {
         let VersionInfo {
+            made_over: _,
             version_id,
             seq,
             content,
@@ -2096,6 +2101,7 @@ impl Run {
         keys(want, "a current version", CURRENT_FIELDS)?;
         every(want, CURRENT_FIELDS)?;
         let VersionInfo {
+            made_over: _,
             version_id,
             seq,
             content,

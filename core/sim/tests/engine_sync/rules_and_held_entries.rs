@@ -343,7 +343,7 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         device.trees.set_synced(id.into(), Some(shape.clone()));
         device.trees.set_remote(
             id.into(),
-            RemoteNode {
+            RemoteNode { made_over: Vec::new(),
                 shape,
                 trashed: false,
                 content_rev: 1,
@@ -575,7 +575,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
     };
-    let remote = |shape: koidrive_engine::tree::Shape| RemoteNode {
+    let remote = |shape: koidrive_engine::tree::Shape| RemoteNode { made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -632,4 +632,3 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     assert!(device.trees.local().get("f").is_none());
     assert!(acted_below(&device, "k"));
 }
-
