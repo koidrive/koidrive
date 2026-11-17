@@ -761,7 +761,7 @@ impl Driver {
         let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
             Ok(issued) => issued,
             Err(error) => {
-                if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed)
+                if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed && !error.platform_failure())
                 {
                     pending_claim::forget(&self.inner._lock, &pending, api.base(), code)
                         .map_err(io_error(&pending))?;
@@ -4649,6 +4649,79 @@ mod tests {
             })
             .collect();
         assert_ne!(ids[0], ids[1]);
+    }
+
+    async fn request_ids_around_an_internal_error(cause: i32) -> (bool, Vec<String>) {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let refusal = prost::Message::encode_to_vec(&koidrive_proto::v1::Error {
+            code: koidrive_proto::v1::error::Code::Internal as i32,
+            message: "internal error".into(),
+            cause,
+            ..Default::default()
+        });
+        let served = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                bodies.push(read_request(&mut socket).await.1);
+                if bodies.len() == 5 {
+                    write_reply(&mut socket, &issued("d1")).await;
+                    return bodies;
+                }
+                let head = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    refusal.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&refusal).await.unwrap();
+            }
+        });
+
+        let failed = driver.claim(&server, "claim-code", "Ada", "laptop").await;
+        assert!(matches!(failed, Err(DriverError::Api(_))), "{failed:?}");
+        let pending = crate::claim_pending(&paths, &url::Url::parse(&server).unwrap());
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let ids = (served.await.unwrap().iter())
+            .map(|body| {
+                prost::Message::decode(body.as_slice())
+                    .map(|request: ClaimRequest| request.request_id)
+                    .unwrap()
+            })
+            .collect();
+        (pending, ids)
+    }
+
+    #[tokio::test]
+    async fn a_claim_keeps_its_request_id_only_through_an_internal_platform_failure() {
+        use koidrive_proto::v1::error::Cause;
+
+        let (platform, exception, unspecified) = tokio::join!(
+            request_ids_around_an_internal_error(Cause::DoUnavailable as i32),
+            request_ids_around_an_internal_error(Cause::Exception as i32),
+            request_ids_around_an_internal_error(Cause::Unspecified as i32),
+        );
+
+        assert!(platform.0, "the platform failure forgot the pending claim");
+        assert!(
+            platform.1.iter().all(|id| *id == platform.1[0]),
+            "{:?}",
+            platform.1
+        );
+        for (pending, ids) in [exception, unspecified] {
+            assert!(!pending);
+            assert!(ids[..4].iter().all(|id| *id == ids[0]), "{ids:?}");
+            assert_ne!(ids[4], ids[0]);
+        }
     }
 
     #[tokio::test]

@@ -201,6 +201,21 @@ mod tests {
     }
 
     #[test]
+    fn an_edge_error_page_is_named_by_its_code() {
+        let names = [1101, 1102, 1027, 1015, 520].map(|code| edge_cause(code).name());
+        assert_eq!(
+            names,
+            [
+                "edge_exception",
+                "edge_resource_limit",
+                "edge_daily_requests",
+                "edge_other",
+                "edge_other",
+            ]
+        );
+    }
+
+    #[test]
     fn a_refusal_counts_the_server_cause_or_the_edge_error_beside_its_code() {
         take_counted_here();
         transfer_failed(

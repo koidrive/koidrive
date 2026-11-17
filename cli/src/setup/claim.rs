@@ -181,6 +181,9 @@ impl<'a> Claim<'a> {
                 Err(ApiError::Server { error, .. }) if error.code() == Code::RetryLater => {
                     error.retry_after().unwrap_or(Duration::from_secs(10))
                 }
+                Err(ApiError::Server { error, .. }) if error.platform_failure() => {
+                    Duration::from_secs(3)
+                }
                 Err(
                     ApiError::Transport(_)
                     | ApiError::TooLarge { .. }
@@ -557,5 +560,123 @@ mod tests {
         );
         assert!(fake.seen().is_empty());
         assert!(paths.credential().exists());
+    }
+
+    async fn claims_after_one_failure(
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> (String, usize) {
+        let issued = koidrive_proto::v1::DeviceCredentials {
+            user_id: "user".into(),
+            device_id: "0194f8a2-0000-7000-8000-000000000002".into(),
+            refresh_credential: "device".into(),
+            ..Default::default()
+        };
+        let failed = Reply {
+            method: "POST",
+            path: "/v1/claim".into(),
+            status: 500,
+            content_type,
+            body,
+        };
+        let fake = Fake::start(vec![tokens(), failed, proto("POST", "/v1/claim", issued)]).await;
+        let mut session = session(&fake).await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+        let daemon = tokio::net::UnixListener::bind(paths.socket()).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = daemon.accept().await.unwrap();
+            let (reader, mut writer) = stream.split();
+            let mut request = String::new();
+            BufReader::new(reader)
+                .read_line(&mut request)
+                .await
+                .unwrap();
+            let refusal = Response::Error {
+                message: "the claim reached the credential save".into(),
+                human: None,
+                code: koidrive_ipc::Code::Failed,
+                reason: None,
+                next: Vec::new(),
+            };
+            let line = format!("{}\n", serde_json::to_string(&refusal).unwrap());
+            writer.write_all(line.as_bytes()).await.unwrap();
+        });
+        let server = Found {
+            script: koidrive_cloudflare::Script {
+                id: "koidrive".into(),
+                created_on: None,
+                tags: Vec::new(),
+                migration_tag: None,
+                has_assets: true,
+            },
+            bucket: None,
+            url: fake.base.clone(),
+            info: None,
+        };
+        let state = SetupState {
+            account: ACCOUNT.into(),
+            script: "koidrive".into(),
+            step: Step::Serving,
+            secret_set: true,
+            setup_attempt: Some("attempt".into()),
+            ..SetupState::default()
+        };
+        let error = Claim::new(
+            &mut session,
+            &paths,
+            &server,
+            "laptop",
+            state,
+            Some(Secret::random(32)),
+        )
+        .run(Duration::from_secs(60))
+        .await
+        .unwrap_err();
+        let claims = (fake.seen().iter())
+            .filter(|seen| seen.path == "/v1/claim")
+            .count();
+        (error.message, claims)
+    }
+
+    #[tokio::test]
+    async fn a_claim_is_sent_again_after_a_worker_exception_page_or_an_internal_platform_failure() {
+        let exception_page =
+            claims_after_one_failure("text/plain; charset=UTF-8", b"error code: 1101".to_vec())
+                .await;
+        let platform_failure = claims_after_one_failure(
+            "application/x-protobuf",
+            Error {
+                code: Code::Internal as i32,
+                message: "internal error".into(),
+                cause: koidrive_proto::v1::error::Cause::DoUnavailable as i32,
+                ..Error::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+
+        let saved = ("the claim reached the credential save".to_owned(), 2);
+        assert_eq!(exception_page, saved);
+        assert_eq!(platform_failure, saved, "the claim was not retried");
+    }
+
+    #[tokio::test]
+    async fn an_internal_exception_stops_the_claim() {
+        let (error, claims) = claims_after_one_failure(
+            "application/x-protobuf",
+            Error {
+                code: Code::Internal as i32,
+                message: "internal error".into(),
+                cause: koidrive_proto::v1::error::Cause::Exception as i32,
+                ..Error::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+
+        assert!(error.contains("the server refused the claim"), "{error}");
+        assert_eq!(claims, 1);
     }
 }
