@@ -359,7 +359,8 @@ class ReleaseJourneys(unittest.TestCase):
                 self.send_header("X-RateLimit-Remaining", "0" if limited else "999")
                 self.send_header("X-RateLimit-Reset", "1800000000")
                 self.send_header("ETag", '"list"')
-                self.send_header("Link", f'<{DRIVER.GITHUB_API}{DRIVER.RELEASE_LIST}?page=2>; rel="next"')
+                self.send_header("Link", f'<{DRIVER.GITHUB_API}/repositories/1/releases?per_page=20&page=2>; rel="next", '
+                                         f'<{DRIVER.GITHUB_API}/repositories/1/releases?per_page=20&page=3>; rel="last"')
                 body = b"[]"
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -381,7 +382,11 @@ class ReleaseJourneys(unittest.TestCase):
                 with opener.open(request, timeout=5) as response:
                     self.assertEqual((response.status, response.read()), (200, b"[]"))
                     self.assertEqual(response.headers["ETag"], '"list"')
-                    self.assertEqual(response.headers["Link"], f'<{base}{DRIVER.RELEASE_LIST}?page=2>; rel="next"')
+                    link = response.headers["Link"]
+                self.assertEqual(link, f'<{base}/repositories/1/releases?per_page=20&page=2>; rel="next", '
+                                       f'<{base}/repositories/1/releases?per_page=20&page=3>; rel="last"')
+                with opener.open(re.match(r"<([^>]+)>", link)[1], timeout=5) as response:
+                    self.assertEqual((response.status, response.read()), (200, b"[]"))
                 with self.assertRaises(urllib.error.HTTPError) as limited:
                     opener.open(base + DRIVER.RELEASE_LIST + "?limited=1", timeout=5)
                 with limited.exception as refused:
@@ -395,9 +400,10 @@ class ReleaseJourneys(unittest.TestCase):
                 relay.server_close()
                 github.shutdown()
                 github.server_close()
-        self.assertEqual([entry["authorization"] for entry in seen], ["Bearer ghs_journey"] * 2)
+        self.assertEqual([entry["authorization"] for entry in seen], ["Bearer ghs_journey"] * 3)
         self.assertEqual(seen[0]["if_none_match"], '"old"')
-        self.assertEqual([(a["status"], a["ratelimit_remaining"]) for a in answers], [(200, "999"), (403, "0")])
+        self.assertEqual(seen[1]["path"], "/repositories/1/releases?per_page=20&page=2")
+        self.assertEqual([(a["status"], a["ratelimit_remaining"]) for a in answers], [(200, "999"), (200, "999"), (403, "0")])
 
     def test_homebrew_update_passes_only_after_the_updated_service_syncs_and_zap_cleans_up(self):
         printed_only = {"release assets verified", "clean account", "tap cask matches release",
@@ -450,14 +456,17 @@ class ReleaseJourneys(unittest.TestCase):
                 DRIVER.hosted_guard(env={"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", key: "fake"},
                                     system="Darwin", machine="arm64", home=self.root, account_home=self.root)
 
-    def test_hosted_guard_accepts_every_variable_the_runtime_job_sets(self):
+    def test_hosted_guard_accepts_every_variable_the_guarded_jobs_set(self):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
-        runtime = journeys.split("\n  runtime:\n", 1)[1]
-        keys = set(re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*):", runtime))
+        guarded = journeys.split("\n  verify:\n", 1)[1]
+        self.assertIn("\n  runtime:\n", guarded)
+        keys = set(re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*):", guarded))
+        keys |= set(re.findall(r"(?m)^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=", guarded))
+        keys |= set(re.findall(r"\bexport\s+([A-Z][A-Z0-9_]*)", guarded))
         DRIVER.hosted_guard(env={**{key: "set" for key in keys}, "GITHUB_ACTIONS": "true",
                                  "RUNNER_ENVIRONMENT": "github-hosted"},
                             system="Darwin", machine="arm64", home=self.root, account_home=self.root)
-        self.assertIn("JOURNEY_GITHUB_TOKEN", keys)
+        self.assertLessEqual({"RELEASE_TAG", "SCENARIO", "JOURNEY_GITHUB_TOKEN"}, keys)
 
     def test_main_refuses_local_runtime_before_starting_any_command(self):
         destination = self.root / "evidence"

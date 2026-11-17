@@ -39,6 +39,7 @@ APP = Path("/Applications/Koidrive.app")
 TAP = "koidrive/tap/koidrive"
 GITHUB_API = "https://api.github.com"
 RELEASE_LIST = "/repos/koidrive/koidrive/releases"
+RELEASE_PAGE = re.compile(r"/repos/koidrive/koidrive/releases|/repositories/[0-9]+/releases")
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 SCENARIOS = ("verify", "cask", "formula-conflict", "installer", "homebrew-update", "uninstall")
 REQUIRED = {
@@ -1005,7 +1006,7 @@ def update_env(env, release_list):
 def release_relay(token, answers):
     class Relay(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.split("?", 1)[0] != RELEASE_LIST:
+            if not RELEASE_PAGE.fullmatch(self.path.split("?", 1)[0]):
                 self.send_error(404)
                 return
             headers = {"Accept": self.headers.get("Accept", "application/vnd.github+json"), "User-Agent": "koidrive",
