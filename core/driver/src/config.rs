@@ -13,6 +13,7 @@ use serde::Deserialize;
 /// [sync]
 /// include = ["Projects/", "Notes/2026"]
 /// exclude = ["*.iso", "build/"]
+/// gitignore = false
 ///
 /// [trash]
 /// max_size_mb = 2048
@@ -137,16 +138,27 @@ impl TryFrom<i64> for UploadConcurrency {
 /// - `include`: paths relative to the folder's root. When the list is not empty, only these paths and what is under
 ///   them are synced.
 /// - `exclude`: patterns in `.koiignore` syntax (`.gitignore` syntax, design §5.10), relative to the folder's root.
+/// - `gitignore`: whether the folder's `.gitignore` files leave paths out along with its `.koiignore` files. True
+///   unless set to false.
 ///
-/// Both turn into the same matcher input as a `.koiignore` file (see [`SyncRules::lines`]), so they follow the
-/// same rule: becoming ignored never deletes anything, on either side.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// `include` and `exclude` turn into the same matcher input as a `.koiignore` file (see [`SyncRules::lines`]).
+/// All three follow the same rule: becoming ignored never deletes anything, on either side.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SyncRules {
-    #[serde(default)]
     pub include: Vec<String>,
-    #[serde(default)]
     pub exclude: Vec<String>,
+    pub gitignore: bool,
+}
+
+impl Default for SyncRules {
+    fn default() -> Self {
+        SyncRules {
+            include: Vec::new(),
+            exclude: Vec::new(),
+            gitignore: true,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -273,6 +285,7 @@ mod tests {
         SyncRules {
             include: include.iter().map(|s| s.to_string()).collect(),
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
+            ..SyncRules::default()
         }
     }
 
@@ -370,6 +383,26 @@ mod tests {
         std::fs::write(&path, "[trash]\nmax_size_gb = 10\n").unwrap();
         assert!(matches!(
             Config::load(&path),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn gitignore_files_are_followed_unless_the_sync_table_turns_them_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let load = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            Config::load(&path).map(|config| config.sync.gitignore)
+        };
+        assert!(Config::load(&path).unwrap().sync.gitignore);
+        assert!(load("").unwrap());
+        assert!(load("[sync]\n").unwrap());
+        assert!(load("[sync]\nexclude = [\"*.tmp\"]\n").unwrap());
+        assert!(load("[sync]\ngitignore = true\n").unwrap());
+        assert!(!load("[sync]\ngitignore = false\n").unwrap());
+        assert!(matches!(
+            load("[sync]\ngitignore = \"no\"\n"),
             Err(ConfigError::Invalid { .. })
         ));
     }

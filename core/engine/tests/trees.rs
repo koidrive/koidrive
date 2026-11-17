@@ -3,7 +3,7 @@
 //! The three trees and the classification table of docs/design/sync-engine.md sections 2.2 and 2.3.
 
 use koidrive_engine::classify::{Class, SETTLE_GROUP_LIMIT, Trees, classify};
-use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{name_key, nfc};
 use koidrive_engine::state::MovedHere;
 use koidrive_engine::tree::{
@@ -403,7 +403,11 @@ fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() 
     trashed.trashed = true;
     trees.set_remote("e".into(), trashed);
     same_change(&mut trees, "c", dir("e", "ss"), dir(ROOT, "A"), 2);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"x/\n")),
+    );
     assert_eq!(trees.check(), Ok(()));
     assert!(trees.ignored("e") && !trees.ignored("c"));
     trees.settle(&Default::default());
@@ -432,7 +436,11 @@ fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it(
     let mut trashed = remote(dir("t", "a"));
     trashed.trashed = true;
     trees.set_remote("0e".into(), trashed);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"x/\n")),
+    );
     assert_eq!(trees.check(), Ok(()));
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
@@ -455,7 +463,11 @@ fn settling_a_rotation_beside_a_released_folder_searches_the_rotation_on_its_own
     trashed.trashed = true;
     trees.set_remote("e".into(), trashed);
     same_change(&mut trees, "c", dir("e", "ss"), dir("r00", "A"), 2);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"x/\n")),
+    );
     trees.settle(&Default::default());
     assert_eq!(trees.synced().get("r00"), Some(&dir(ROOT, "y1")));
     assert!(trees.unsearched().is_empty(), "{:?}", trees.unsearched());
@@ -472,11 +484,19 @@ fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settl
     trees.set_remote("h".into(), remote(file(ROOT, "X", 4)));
     same_change(&mut trees, "f", file(ROOT, "b", 3), file(ROOT, "g", 3), 3);
     same_change(&mut trees, "c", dir("e", "ss"), dir(ROOT, "A"), 2);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"x/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"x/\n")),
+    );
     trees.settle(&Default::default());
     trees.settle(&Default::default());
     assert_eq!(trees.synced().get("e"), Some(&dir(ROOT, "b")));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"")),
+    );
     trees.settle(&Default::default());
     assert!(
         trees.work().contains(&("e".to_owned(), Class::Local)),
@@ -1105,7 +1125,7 @@ proptest! {
         trees.settle(&Default::default());
         for (step, rules, at) in steps {
             rules_at[at] = rule_files[rules];
-            trees.set_rules(rule_dirs[at], rules_at[at].map(|rules| RuleFile::parse(rules.as_bytes())));
+            trees.set_rules(rule_dirs[at], Source::Koiignore, rules_at[at].map(|rules| RuleFile::parse(rules.as_bytes())));
             for (node, side, edit) in step {
                 let id = format!("n{}", node as usize % n);
                 let shape = edit.map(|(parent, name, directory, digest)| {
@@ -1146,7 +1166,7 @@ proptest! {
             }
             let mut everything = Trees::new(ROOT);
             for (folder, rules) in rule_dirs.iter().zip(rules_at) {
-                everything.set_rules(folder, rules.map(|rules| RuleFile::parse(rules.as_bytes())));
+                everything.set_rules(folder, Source::Koiignore, rules.map(|rules| RuleFile::parse(rules.as_bytes())));
             }
             for (id, node) in trees.remote().iter() {
                 everything.set_remote(id.clone(), node.clone());

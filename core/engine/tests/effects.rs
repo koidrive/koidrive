@@ -1374,6 +1374,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_move_into_an_igno
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     let mut local = trees.local().get("f").unwrap().clone();
@@ -1412,6 +1413,7 @@ fn a_reverted_folder_whose_r_folder_sits_inside_it_waits_in_place() {
         ]);
         trees.set_rules(
             &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
             Some(koidrive_engine::ignore::RuleFile::parse(rules)),
         );
         let mut x = trees.local().get("x").unwrap().clone();
@@ -1456,6 +1458,7 @@ fn a_reverted_folder_whose_inner_folder_an_excluded_node_holds_out_waits_in_plac
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"b/\n")),
     );
     for (id, shape, ino, area, name) in [
@@ -1490,6 +1493,7 @@ fn a_name_holder_whose_s_position_the_rules_leave_out_reaches_its_r_position() {
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"b/\n")),
     );
     for (id, shape, ino, area, name) in [
@@ -1523,6 +1527,7 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_goes_back_to_its_l
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"a\n")),
     );
     let mut moved = trees.local().get("e").unwrap().clone();
@@ -1554,6 +1559,7 @@ fn a_reverted_name_cycle_out_of_an_excluded_folder_reaches_its_r_positions() {
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"b/\n")),
     );
     for (id, shape, ino, area, name) in [
@@ -1586,6 +1592,7 @@ fn a_reverted_case_only_rename_out_of_an_excluded_folder_reaches_its_r_name() {
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"b/\n")),
     );
     for (id, shape, ino, name) in [
@@ -1617,6 +1624,7 @@ fn two_reverted_files_moved_out_of_an_excluded_folder_swap_names_into_their_r_po
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     for (id, name, ino) in [("a", "p", 2), ("b", "q", 3)] {
@@ -1648,6 +1656,7 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_brings_back_its_de
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     let mut local = trees.local().get("x").unwrap().clone();
@@ -1678,6 +1687,7 @@ fn a_reverted_parked_edit_whose_r_folder_the_rules_exclude_stays_at_its_local_po
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     let mut f = trees.local().get("f").unwrap().clone();
@@ -1716,6 +1726,7 @@ fn an_edit_whose_r_folder_the_rules_exclude_is_not_parked_to_free_its_name() {
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     let mut f = trees.local().get("f").unwrap().clone();
@@ -1780,6 +1791,7 @@ fn an_ignored_parked_file_whose_local_name_an_excluded_folder_holds_goes_into_it
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"A\n")),
     );
     let mut local = trees.local().get("p").unwrap().clone();
@@ -1823,6 +1835,7 @@ fn a_parked_folder_the_rules_now_exclude_whose_local_name_another_node_took_goes
     assert_eq!(trees.local().get("z").unwrap().shape, file(ROOT, "a", 1));
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"b/\n")),
     );
     trees.check().unwrap();
@@ -1854,6 +1867,7 @@ fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out
     entry.name = "x".into();
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"ss/\n")),
     );
     trees.check().unwrap();
@@ -1863,6 +1877,7 @@ fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out
     assert_eq!(trees.local().get("x"), None);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"")),
     );
     assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
@@ -1900,6 +1915,7 @@ fn parked_folder_with_a_file_the_server_trashed(edited: bool) -> (Trees, Disk) {
     }
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"ss/\n")),
     );
     trees.check().unwrap();
@@ -1994,6 +2010,7 @@ fn two_reverted_parked_folders_where_one_was_refused_the_others_r_name_both_go_t
         ]);
         trees.set_rules(
             &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
             Some(koidrive_engine::ignore::RuleFile::parse(b"b\n")),
         );
         park_reverted(&mut trees, &mut disk, x, 2, dir(ROOT, "a"));
@@ -2028,6 +2045,7 @@ fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
     ]);
     trees.set_rules(
         &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"archive/\n")),
     );
     let mut f = trees.local().get("f").unwrap().clone();

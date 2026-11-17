@@ -291,11 +291,11 @@ fn folders_included_by_the_registration_rescan_keep_watch_coverage() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     fs::create_dir(root.join("ig")).unwrap();
-    fs::write(root.join(RULES_FILE), "ig\n").unwrap();
+    fs::write(root.join(Source::Koiignore.file_name()), "ig\n").unwrap();
     fs::write(root.join("ig/file.txt"), "before").unwrap();
     let rules = Rules::new(Box::new(Lines::default()));
     let mut watcher = NativeWatcher::start_with_rules(&root, Snapshot::default(), rules).unwrap();
-    let mut remove = Some(root.join(RULES_FILE));
+    let mut remove = Some(root.join(Source::Koiignore.file_name()));
     watcher.before_register = Some(Box::new(move || {
         if let Some(path) = remove.take() {
             fs::remove_file(path).unwrap();
@@ -304,9 +304,12 @@ fn folders_included_by_the_registration_rescan_keep_watch_coverage() {
 
     let first = watcher.poll(Duration::ZERO).unwrap();
     watcher.before_register = None;
-    assert_eq!(first.rules, [(PathBuf::new(), Some(b"ig\n".to_vec()))]);
+    assert_eq!(
+        first.rules,
+        [(PathBuf::new(), Source::Koiignore, Some(b"ig\n".to_vec()))]
+    );
     let second = watcher.poll(Duration::ZERO).unwrap();
-    assert_eq!(second.rules, [(PathBuf::new(), None)]);
+    assert_eq!(second.rules, [(PathBuf::new(), Source::Koiignore, None)]);
     assert!(second.changes.contains(&created("ig", EntryKind::Dir)));
     assert!(
         second

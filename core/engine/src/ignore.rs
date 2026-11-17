@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_ignore::Source;
+pub use koidrive_ignore::Source;
 
 use crate::names::name_key;
 

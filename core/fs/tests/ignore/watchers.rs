@@ -148,15 +148,15 @@ fn native_watcher_reports_a_rules_change_and_does_not_rescan_below_an_ignored_fo
         &[],
     );
 
-    write(&root, RULES_FILE, "ig/\n");
+    write(&root, KOIIGNORE, "ig/\n");
     let polls = expect(
         &mut watcher,
-        &[created(RULES_FILE, File)],
+        &[created(KOIIGNORE, File)],
         &[rule("", Some("ig/\n"))],
     );
     let changes: Vec<&Change> = polls.iter().flat_map(|poll| &poll.changes).collect();
-    assert_eq!(changes, [&created(RULES_FILE, File)]);
-    assert_eq!(known(watcher.snapshot()), [RULES_FILE, "keep.txt"]);
+    assert_eq!(changes, [&created(KOIIGNORE, File)]);
+    assert_eq!(known(watcher.snapshot()), [KOIIGNORE, "keep.txt"]);
 
     // Events from before the rule may still arrive, so let them pass.
     while watcher
@@ -176,7 +176,7 @@ fn native_watcher_reports_a_rules_change_and_does_not_rescan_below_an_ignored_fo
     expect(&mut watcher, &[created("later.txt", File)], &[]);
     assert_eq!(
         known(watcher.snapshot()),
-        [RULES_FILE, "keep.txt", "later.txt"]
+        [KOIIGNORE, "keep.txt", "later.txt"]
     );
 }
 
@@ -226,7 +226,7 @@ fn rescan_watcher_applies_the_rules_and_reports_them() {
         }]
     );
     assert_eq!(poll.rules, []);
-    assert_eq!(known(watcher.snapshot()), [RULES_FILE, "d", "d/g.txt"]);
+    assert_eq!(known(watcher.snapshot()), [KOIIGNORE, "d", "d/g.txt"]);
 }
 
 #[cfg(target_os = "linux")]
@@ -236,7 +236,7 @@ fn no_inotify_watch_is_registered_below_an_ignored_folder() {
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    write(&root, RULES_FILE, "ig/\n");
+    write(&root, KOIIGNORE, "ig/\n");
     write(&root, "ig/deep/x", "x");
     write(&root, "keep/sub/y", "y");
     let inode = |path: &str| fs::metadata(root.join(path)).unwrap().ino();

@@ -4,7 +4,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use koidrive_engine::classify::Trees;
-use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 
 const ROOT: &str = "root";
@@ -121,7 +121,11 @@ fn settle_cost_while_the_rules_leave_out_a_large_folder() {
         big.push(id);
     }
     trees.settle(&Default::default());
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"big/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"big/\n")),
+    );
     trees.settle(&Default::default());
     assert!(trees.excluded("f0"));
     report(&mut trees, big.len(), "excluded");

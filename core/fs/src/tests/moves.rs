@@ -338,7 +338,7 @@ fn a_file_moved_away_from_a_link_the_rules_leave_out_is_a_rename() {
         for part in ["x/d", "e", "ig"] {
             fs::create_dir_all(root.join(part)).unwrap();
         }
-        fs::write(root.join(RULES_FILE), "ig\n").unwrap();
+        fs::write(root.join(Source::Koiignore.file_name()), "ig\n").unwrap();
         let other = if first_link == "x/d/g.txt" {
             "ig/g.txt"
         } else {
@@ -531,7 +531,11 @@ fn a_folder_moved_out_of_an_unreadable_folder_takes_along_a_child_the_rules_leav
     fs::write(root.join("x/d/sub/f"), "f").unwrap();
     let mut rules = Rules::new(Box::new(Lines::default()));
     let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
-    fs::write(root.join("x/d/sub").join(RULES_FILE), "f\n").unwrap();
+    fs::write(
+        root.join("x/d/sub").join(Source::Koiignore.file_name()),
+        "f\n",
+    )
+    .unwrap();
     snapshot
         .rescan_with_rules(&root, [PathBuf::new()], &mut rules)
         .unwrap();

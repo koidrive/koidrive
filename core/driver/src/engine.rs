@@ -749,9 +749,9 @@ impl Engine {
         if all {
             self.trees.clear_rules();
         }
-        for RulesChange { dir, rules } in rules {
+        for RulesChange { dir, source, rules } in rules {
             if let Some(dir) = names(&dir) {
-                self.trees.set_rules(&dir, rules);
+                self.trees.set_rules(&dir, source, rules);
             }
         }
         self.trees.rules_scanned();
@@ -2869,7 +2869,11 @@ mod tests {
         let root = outer.path().join("space");
         fs::create_dir_all(root.join("d/sub")).unwrap();
         fs::create_dir_all(root.join("ig/zz/deep")).unwrap();
-        fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\n").unwrap();
+        fs::write(
+            root.join(koidrive_fs::Source::Koiignore.file_name()),
+            "ig/\n",
+        )
+        .unwrap();
         for n in 0..30 {
             fs::create_dir_all(root.join(format!("ig/{n:02}"))).unwrap();
             for m in 0..10 {
@@ -2925,7 +2929,11 @@ mod tests {
                 fs::create_dir_all(root.join("x/d/sub")).unwrap();
                 fs::create_dir_all(root.join("e")).unwrap();
                 fs::create_dir_all(root.join("ig")).unwrap();
-                fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\n").unwrap();
+                fs::write(
+                    root.join(koidrive_fs::Source::Koiignore.file_name()),
+                    "ig/\n",
+                )
+                .unwrap();
                 fs::write(root.join("x/d/g.txt"), "g").unwrap();
                 fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
                 if linked {
@@ -2937,6 +2945,7 @@ mod tests {
                 engine.rules(
                     vec![RulesChange {
                         dir: PathBuf::new(),
+                        source: koidrive_fs::Source::Koiignore,
                         rules: Some(koidrive_engine::ignore::RuleFile::parse(b"ig/\n")),
                     }],
                     true,
@@ -3359,6 +3368,7 @@ mod tests {
         let (_dir, mut engine) = mapper();
         let log = || RulesChange {
             dir: "proj".into(),
+            source: koidrive_fs::Source::Koiignore,
             rules: Some(koidrive_engine::ignore::RuleFile::parse(b"*.log\n")),
         };
         engine.rules(vec![log()], true);
@@ -4384,8 +4394,9 @@ mod tests {
                 .rescan_with_rules(root, [PathBuf::new()], rules)
                 .unwrap();
             let changes = (rescan.rules.iter())
-                .map(|(dir, text)| RulesChange {
+                .map(|(dir, source, text)| RulesChange {
                     dir: dir.clone(),
+                    source: *source,
                     rules: text
                         .as_deref()
                         .map(koidrive_engine::ignore::RuleFile::parse),
@@ -4419,6 +4430,7 @@ mod tests {
         engine.rules(
             vec![RulesChange {
                 dir: PathBuf::new(),
+                source: koidrive_fs::Source::Koiignore,
                 rules: ignored,
             }],
             true,
@@ -4426,11 +4438,11 @@ mod tests {
         observe_rescan(&mut engine, &mut snapshot, &root, &mut rules);
         synced_everywhere(&mut engine);
         let (x, _, _) = holding(&engine, "d/x.txt").unwrap();
-        fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\nd/x.txt\n").unwrap();
+        fs::write(root.join(".koiignore"), "ig/\nd/x.txt\n").unwrap();
         scan(&mut engine, &mut snapshot, &root, &mut rules);
         assert!(engine.trees.unobserved(&x));
         fs::remove_file(root.join("d/x.txt")).unwrap();
-        fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\n").unwrap();
+        fs::write(root.join(".koiignore"), "ig/\n").unwrap();
         let mut held = 0;
         while !scan(&mut engine, &mut snapshot, &root, &mut rules).is_empty() {
             held += 1;

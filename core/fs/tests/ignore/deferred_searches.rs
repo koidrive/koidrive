@@ -453,7 +453,7 @@ fn a_file_moved_over_another_out_of_a_deferred_folder_leaves_with_the_folder() {
         rescan.unsettled,
         [PathBuf::from("b/c"), PathBuf::from("top.txt")]
     );
-    assert_eq!(known(&snapshot), [RULES_FILE, "b", "top.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "b", "top.txt"]);
 
     let mut paths = rescan.unsettled;
     let changes = loop {
@@ -612,14 +612,14 @@ fn a_reset_to_entries_the_rules_leave_out_reports_nothing_for_them() {
                 id: moved
             },
             Change::Modified {
-                path: RULES_FILE.into()
+                path: KOIIGNORE.into()
             },
             Change::Modified {
                 path: "d/g.txt".into()
             },
         ]
     );
-    assert_eq!(known(&snapshot), [RULES_FILE, "d", "d/g.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "d", "d/g.txt"]);
 }
 
 #[test]
@@ -707,7 +707,7 @@ fn a_held_removal_whose_path_the_rules_then_leave_out_is_decided() {
             if !restarted {
                 write(root, "d/f.txt", "new");
             }
-            write(root, RULES_FILE, rules_after);
+            write(root, KOIIGNORE, rules_after);
             let decided = match moved {
                 true => Change::Ignored {
                     from: "d/f.txt".into(),
@@ -721,7 +721,7 @@ fn a_held_removal_whose_path_the_rules_then_leave_out_is_decided() {
                 settle(&mut snapshot, root, &mut rules),
                 [
                     Change::Modified {
-                        path: RULES_FILE.into()
+                        path: KOIIGNORE.into()
                     },
                     decided
                 ],
@@ -735,7 +735,7 @@ fn a_held_removal_whose_path_the_rules_then_leave_out_is_decided() {
 fn an_entry_a_rule_left_out_is_removed_once_it_leaves_the_disk() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "*.tmp\ncache/\n");
+    write(root, KOIIGNORE, "*.tmp\ncache/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -759,7 +759,7 @@ fn an_entry_a_rule_left_out_is_removed_once_it_leaves_the_disk() {
 fn an_entry_a_rule_left_out_moved_to_an_included_name_is_renamed() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\n");
+    write(root, KOIIGNORE, "cache/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -788,7 +788,7 @@ fn an_entry_a_rule_left_out_moved_to_an_included_name_is_renamed() {
 fn an_entry_a_rule_left_out_before_its_handle_was_read_moved_to_an_included_name_is_renamed() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\n");
+    write(root, KOIIGNORE, "cache/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -837,7 +837,7 @@ fn a_reset_to_an_entry_the_rules_leave_out_that_is_gone_reports_it_removed() {
         .filter(|change| matches!(change, Change::Removed { .. }))
         .collect();
     assert_eq!(gone, [&removed("ig", Dir)]);
-    assert_eq!(known(&snapshot), [RULES_FILE, "d", "d/g.txt", "f.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "d", "d/g.txt", "f.txt"]);
     assert!(snapshot.left_out.is_empty());
 }
 
@@ -845,7 +845,7 @@ fn a_reset_to_an_entry_the_rules_leave_out_that_is_gone_reports_it_removed() {
 fn a_rescan_of_a_sibling_reports_an_entry_a_rule_left_out_as_removed_once_it_is_gone() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\n");
+    write(root, KOIIGNORE, "cache/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -871,7 +871,7 @@ fn a_rescan_of_a_sibling_reports_an_entry_a_rule_left_out_as_removed_once_it_is_
 fn an_entry_a_rule_left_out_moved_to_another_excluded_name_is_removed_once_it_is_gone() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\nother/\n");
+    write(root, KOIIGNORE, "cache/\nother/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -892,7 +892,7 @@ fn an_entry_a_rule_left_out_moved_to_another_excluded_name_is_removed_once_it_is
 fn an_entry_a_rule_left_out_in_a_renamed_folder_is_removed_once_it_is_gone() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\n");
+    write(root, KOIIGNORE, "cache/\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -913,7 +913,7 @@ fn an_entry_a_rule_left_out_in_a_renamed_folder_is_removed_once_it_is_gone() {
 fn an_entry_renamed_to_a_name_the_rules_exclude_is_removed_once_it_is_gone() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "cache/\n*.log\n");
+    write(root, KOIIGNORE, "cache/\n*.log\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -943,12 +943,12 @@ fn an_entry_a_rule_left_out_in_an_unreadable_folder_is_created_once_included_and
 
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "b.txt\n");
+    write(root, KOIIGNORE, "b.txt\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
     fs::set_permissions(root.join("sub"), fs::Permissions::from_mode(0o000)).unwrap();
-    write(root, RULES_FILE, "c.txt\n");
+    write(root, KOIIGNORE, "c.txt\n");
     let blocked = snapshot.rescan_with_rules(root, whole(), &mut rules);
     fs::set_permissions(root.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(blocked.unwrap().unreadable, [PathBuf::from("sub")]);
@@ -971,13 +971,13 @@ fn an_entry_a_rule_left_out_in_a_renamed_unreadable_folder_is_created_once_inclu
     use std::os::unix::fs::PermissionsExt;
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "b.txt\n");
+    write(root, KOIIGNORE, "b.txt\n");
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
     fs::rename(root.join("sub"), root.join("moved")).unwrap();
     fs::set_permissions(root.join("moved"), fs::Permissions::from_mode(0o000)).unwrap();
-    write(root, RULES_FILE, "c.txt\n");
+    write(root, KOIIGNORE, "c.txt\n");
     let blocked = snapshot.rescan_with_rules(root, whole(), &mut rules);
     fs::set_permissions(root.join("moved"), fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(blocked.unwrap().unreadable, [PathBuf::from("moved")]);

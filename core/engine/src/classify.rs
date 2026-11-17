@@ -2272,7 +2272,7 @@ impl Trees {
         (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
     }
 
-    /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
+    /// Forgets the rules of every rules file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
         self.relink = true;

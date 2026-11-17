@@ -41,6 +41,7 @@ fn ignore_rules() -> SyncRules {
     SyncRules {
         include: Vec::new(),
         exclude: vec![".env".into(), "*.log".into(), "node_modules/".into()],
+        ..SyncRules::default()
     }
 }
 
@@ -380,6 +381,7 @@ fn a_rule_that_lets_a_kept_entry_in_uploads_the_kept_folder_as_a_new_folder() {
     let mut b = site.start_with(&SyncRules {
         include: Vec::new(),
         exclude: vec![".env".into()],
+        ..SyncRules::default()
     });
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);
@@ -1400,8 +1402,8 @@ fn a_kept_entry_syncs_once_the_person_lets_it_in_with_local_lists_changed_while_
     drop(b);
 
     let mut b = site.start_with(&SyncRules {
-        include: Vec::new(),
         exclude: vec!["*.log".into()],
+        ..SyncRules::default()
     });
     b.connect(&remote);
     b.scan_until(|b| b.folder.scanned);

@@ -347,6 +347,7 @@ fn an_excluded_folder_removed_while_the_device_is_stopped_frees_its_name_for_the
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["ss/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);
@@ -389,6 +390,7 @@ fn an_excluded_folder_deleted_after_a_move_leaves_l(
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["cache/".into(), "other/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);

@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
-    Change, EntryKind, FileId, Ignore, Ignored, Known, NativeWatcher, Poll, RULES_FILE,
-    RescanWatcher, Rules, Snapshot, Watcher,
+    Change, EntryKind, FileId, Ignore, Ignored, Known, NativeWatcher, Poll, RescanWatcher, Rules,
+    Snapshot, Source, Watcher,
 };
 
 use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Status};
@@ -23,6 +23,10 @@ use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Stat
 use EntryKind::{Dir, File};
 
 const WAIT: Duration = Duration::from_secs(10);
+
+const KOIIGNORE: &str = Source::Koiignore.file_name();
+
+const GITIGNORE: &str = Source::Gitignore.file_name();
 
 struct Folded;
 
@@ -41,9 +45,9 @@ fn names(path: &Path) -> Vec<String> {
 }
 
 impl Ignore for Matched {
-    fn set_rules(&mut self, dir: &Path, rules: Option<&[u8]>) {
+    fn set_rules(&mut self, dir: &Path, source: Source, rules: Option<&[u8]>) {
         self.0
-            .set_rules(&names(dir), rules.map(RuleFile::parse), []);
+            .set_rules(&names(dir), source, rules.map(RuleFile::parse), []);
     }
 
     fn status(&self, path: &Path, kind: EntryKind) -> Ignored {
@@ -95,8 +99,22 @@ fn removed(path: &str, kind: EntryKind) -> Change {
     }
 }
 
-fn rule(dir: &str, rules: Option<&str>) -> (PathBuf, Option<Vec<u8>>) {
-    (dir.into(), rules.map(|rules| rules.as_bytes().to_vec()))
+type RulesFile = (PathBuf, Source, Option<Vec<u8>>);
+
+fn rule(dir: &str, rules: Option<&str>) -> RulesFile {
+    (
+        dir.into(),
+        Source::Koiignore,
+        rules.map(|rules| rules.as_bytes().to_vec()),
+    )
+}
+
+fn git_rule(dir: &str, rules: Option<&str>) -> RulesFile {
+    (
+        dir.into(),
+        Source::Gitignore,
+        rules.map(|rules| rules.as_bytes().to_vec()),
+    )
 }
 
 fn whole() -> [PathBuf; 1] {
@@ -130,20 +148,20 @@ fn tree_without_rules() -> (tempfile::TempDir, Snapshot, Rules) {
 fn tree_with_an_ignored_folder() -> (tempfile::TempDir, Snapshot, Rules) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "ig/deep/old.txt", "o");
     write(root, "f.txt", "f");
     write(root, "d/g.txt", "g");
     let mut rules = rules();
     let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
-    assert_eq!(known(&snapshot), [RULES_FILE, "d", "d/g.txt", "f.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "d", "d/g.txt", "f.txt"]);
     (dir, snapshot, rules)
 }
 
 fn large_ignored_tree() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     for n in 0..30 {
         for m in 0..10 {
             write(root, &format!("ig/{n:02}/{m}.txt"), "x");
@@ -210,7 +228,7 @@ impl Changer {
         let mut all = Vec::new();
         listed(root, Path::new(""), &mut all);
         let included: Vec<(PathBuf, bool)> = (all.iter())
-            .filter(|(path, _)| !path.starts_with("ig") && path != Path::new(RULES_FILE))
+            .filter(|(path, _)| !path.starts_with("ig") && path != Path::new(KOIIGNORE))
             .cloned()
             .collect();
         let folders = |ignored: bool| -> Vec<PathBuf> {
@@ -483,7 +501,7 @@ impl Run {
 fn small_tree() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     for n in 0..4 {
         for m in 0..4 {
             write(root, &format!("ig/{n}/{m}.txt"), "x");
@@ -502,11 +520,7 @@ fn small_tree() -> tempfile::TempDir {
     dir
 }
 
-fn expect(
-    watcher: &mut dyn Watcher,
-    expected: &[Change],
-    rules: &[(PathBuf, Option<Vec<u8>>)],
-) -> Vec<Poll> {
+fn expect(watcher: &mut dyn Watcher, expected: &[Change], rules: &[RulesFile]) -> Vec<Poll> {
     let deadline = Instant::now() + WAIT;
     let mut polls: Vec<Poll> = Vec::new();
     loop {

@@ -3262,12 +3262,17 @@ fn a_path_an_effect_changed_after_the_scan_read_it_is_not_listed_from_that_scan(
         });
         assert_eq!(running.step(&server), Some(Settled::Done));
         let excluding = koidrive_engine::ignore::RuleFile::parse(b"report.txt\n");
-        running
-            .engine
-            .trees
-            .set_rules(&[] as &[&str], Some(excluding));
+        running.engine.trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(excluding),
+        );
         running.engine.trees.settle(&Default::default());
-        running.engine.trees.set_rules(&[] as &[&str], None);
+        running.engine.trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            None,
+        );
         assert!(running.engine.trees.unobserved(NODE));
 
         if !stale {

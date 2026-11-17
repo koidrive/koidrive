@@ -53,15 +53,17 @@ fn root_id(root: &Path) -> FileId {
     stat_fd(open_root(root).unwrap().as_fd()).unwrap().id
 }
 
+type Given = BTreeMap<(PathBuf, Source), Vec<u8>>;
+
 #[derive(Clone, Default)]
-struct Lines(std::sync::Arc<std::sync::Mutex<BTreeMap<PathBuf, Vec<u8>>>>);
+struct Lines(std::sync::Arc<std::sync::Mutex<Given>>);
 
 impl Ignore for Lines {
-    fn set_rules(&mut self, dir: &Path, rules: Option<&[u8]>) {
+    fn set_rules(&mut self, dir: &Path, source: Source, rules: Option<&[u8]>) {
         let mut given = self.0.lock().unwrap();
         match rules {
-            Some(rules) => given.insert(dir.to_path_buf(), rules.to_vec()),
-            None => given.remove(dir),
+            Some(rules) => given.insert((dir.to_path_buf(), source), rules.to_vec()),
+            None => given.remove(&(dir.to_path_buf(), source)),
         };
     }
 
@@ -69,10 +71,12 @@ impl Ignore for Lines {
         let given = self.0.lock().unwrap();
         let mut dir = PathBuf::new();
         for name in path {
-            let left_out = given.get(&dir).is_some_and(|rules| {
-                rules
-                    .split(|byte| *byte == b'\n')
-                    .any(|line| line == name.as_bytes())
+            let left_out = Source::ALL.iter().any(|source| {
+                given.get(&(dir.clone(), *source)).is_some_and(|rules| {
+                    rules
+                        .split(|byte| *byte == b'\n')
+                        .any(|line| line == name.as_bytes())
+                })
             });
             if left_out {
                 return Ignored::Rule;

@@ -58,6 +58,7 @@ pub use driver::{
 };
 pub use failures::{Failure, failures};
 pub use folder::MAX_FORMAT;
+pub use ignore::GitignoreOnly;
 pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use koidrive_state_file::Flock;
 pub use observe::{FsObserver, Observation, Observed, Observer, Observing, RulesChange};

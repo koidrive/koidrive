@@ -9,12 +9,11 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{Dir, FileType, Mode, OFlags};
 
+use koidrive_ignore::Source;
+
 use crate::{
     Cut, Entry, EntryKind, FileId, Stat, is_gone, open_attached, open_dir_at, stat_at, stat_fd,
 };
-
-/// The name of a rules file.
-pub const RULES_FILE: &str = ".koiignore";
 
 const MAX_RULES: u64 = 1 << 20;
 
@@ -24,16 +23,16 @@ pub enum Ignored {
     No,
     /// A platform file such as `.DS_Store`. No rule can bring it back.
     BuiltIn,
-    /// A `.koiignore` rule or the device's own list.
+    /// A rule of a rules file or the device's own list.
     Rule,
 }
 
 /// The matcher scans ask. The driver implements it over
 /// `koidrive_ignore::Matcher`.
 pub trait Ignore {
-    /// The rules file of folder `dir` (relative to the root, empty for the
-    /// root) holds `rules`, or the folder has none.
-    fn set_rules(&mut self, dir: &Path, rules: Option<&[u8]>);
+    /// The rules file of kind `source` in folder `dir` (relative to the
+    /// root, empty for the root) holds `rules`, or the folder has none.
+    fn set_rules(&mut self, dir: &Path, source: Source, rules: Option<&[u8]>);
 
     /// Whether the entry at `path`, relative to the root, is left out. A path
     /// below a left-out folder is left out.
@@ -41,8 +40,8 @@ pub trait Ignore {
 
     /// The form in which the matcher compares `name`. Names with the same key
     /// are one name to it: it holds the rules of a folder under the keys of
-    /// the folder's path, and a file whose name has the key of [`RULES_FILE`]
-    /// is a rules file.
+    /// the folder's path, and a file whose name has the key of a
+    /// [`Source::file_name`] is a rules file of that kind.
     fn key(&self, name: &OsStr) -> OsString;
 }
 
@@ -50,12 +49,12 @@ type Held = (PathBuf, Vec<u8>);
 
 /// The rules of one root and what its scans have seen of them.
 ///
-/// A new `Rules` knows no rules file. A scan reads the rules file of each
+/// A new `Rules` knows no rules file. A scan reads the rules files of each
 /// folder it lists, so scan the whole tree before any part of it.
 pub struct Rules {
     ignore: Box<dyn Ignore + Send>,
-    rules_file: OsString,
-    files: BTreeMap<PathBuf, Held>,
+    rules_files: [(Source, OsString); Source::ALL.len()],
+    files: BTreeMap<(PathBuf, Source), Held>,
     ignored: BTreeMap<PathBuf, BTreeSet<OsString>>,
     budget: usize,
     search: Search,
@@ -151,7 +150,8 @@ const SEARCH_BUDGET: usize = 20_000;
 impl Rules {
     pub fn new(ignore: Box<dyn Ignore + Send>) -> Self {
         Self {
-            rules_file: ignore.key(OsStr::new(RULES_FILE)),
+            rules_files: Source::ALL
+                .map(|source| (source, ignore.key(source.file_name().as_ref()))),
             ignore,
             files: BTreeMap::new(),
             ignored: BTreeMap::new(),
@@ -195,9 +195,9 @@ impl Rules {
         self.ignore.status(path, kind)
     }
 
-    fn set(&mut self, dir: &Path, rules: Option<Vec<u8>>) -> Option<Held> {
-        self.ignore.set_rules(dir, rules.as_deref());
-        let key = self.key(dir);
+    fn set(&mut self, dir: &Path, source: Source, rules: Option<Vec<u8>>) -> Option<Held> {
+        self.ignore.set_rules(dir, source, rules.as_deref());
+        let key = (self.key(dir), source);
         match rules {
             Some(bytes) => self.files.insert(key, (dir.to_path_buf(), bytes)),
             None => self.files.remove(&key),
@@ -219,7 +219,7 @@ fn keys_of(entry: &Entry) -> impl Iterator<Item = Key> {
 
 pub(crate) struct Pending<'r> {
     rules: &'r mut Rules,
-    before: BTreeMap<PathBuf, Option<Held>>,
+    before: BTreeMap<(PathBuf, Source), Option<Held>>,
     listed: BTreeMap<PathBuf, BTreeSet<OsString>>,
     read: BTreeSet<PathBuf>,
 }
@@ -244,39 +244,48 @@ impl<'r> Pending<'r> {
         rel: &Path,
         names: &BTreeSet<OsString>,
     ) -> RulesRead {
-        let files: Vec<&OsString> = (names.iter())
-            .filter(|name| self.rules.ignore.key(name) == self.rules.rules_file)
-            .filter(|name| match stat_at(dir, name) {
-                Ok(stat) => stat.file_type == FileType::RegularFile,
-                Err(err) => !is_gone(&err),
-            })
-            .collect();
-        if files.len() > 1 {
-            return RulesRead::Unknown;
-        }
-        let key = self.rules.key(rel);
-        let read = files.first().map(|name| read_rules(dir, name));
-        if matches!(read, Some(Err(_))) && !self.rules.files.contains_key(&key) {
-            return RulesRead::Unknown;
+        let dir_key = self.rules.key(rel);
+        let mut reads = Vec::new();
+        for (source, file_key) in &self.rules.rules_files {
+            let files: Vec<&OsString> = (names.iter())
+                .filter(|name| self.rules.ignore.key(name) == *file_key)
+                .filter(|name| match stat_at(dir, name) {
+                    Ok(stat) => stat.file_type == FileType::RegularFile,
+                    Err(err) => !is_gone(&err),
+                })
+                .collect();
+            if files.len() > 1 {
+                return RulesRead::Unknown;
+            }
+            let key = (dir_key.clone(), *source);
+            let read = files.first().map(|name| read_rules(dir, name));
+            if matches!(read, Some(Err(_))) && !self.rules.files.contains_key(&key) {
+                return RulesRead::Unknown;
+            }
+            reads.push((key, read));
         }
         self.listed.entry(rel.to_path_buf()).or_default();
         self.read.insert(rel.to_path_buf());
-        let found = match read {
-            Some(Ok(found)) => found,
-            Some(Err(_)) => return RulesRead::Same,
-            None => None,
-        };
-        let held = self.rules.files.get(&key);
-        let same = found.as_ref() == held.map(|(_, bytes)| bytes);
-        if same && held.is_none_or(|(dir, _)| dir == rel) {
-            return RulesRead::Same;
+        let mut changed = false;
+        for (key, read) in reads {
+            let found = match read {
+                Some(Ok(found)) => found,
+                Some(Err(_)) => continue,
+                None => None,
+            };
+            let held = self.rules.files.get(&key);
+            let same = found.as_ref() == held.map(|(_, bytes)| bytes);
+            if same && held.is_none_or(|(dir, _)| dir == rel) {
+                continue;
+            }
+            let before = self.rules.set(rel, key.1, found);
+            self.before.entry(key).or_insert(before);
+            changed |= !same;
         }
-        let before = self.rules.set(rel, found);
-        self.before.entry(key).or_insert(before);
-        if same {
-            RulesRead::Same
-        } else {
+        if changed {
             RulesRead::Changed
+        } else {
+            RulesRead::Same
         }
     }
 
@@ -299,9 +308,10 @@ impl<'r> Pending<'r> {
     pub(crate) fn undo(self) {
         for (key, before) in self.before {
             let now = self.rules.files.get(&key).map(|(dir, _)| dir.clone());
+            let source = key.1;
             match (before, now) {
-                (Some((dir, bytes)), _) => self.rules.set(&dir, Some(bytes)),
-                (None, Some(dir)) => self.rules.set(&dir, None),
+                (Some((dir, bytes)), _) => self.rules.set(&dir, source, Some(bytes)),
+                (None, Some(dir)) => self.rules.set(&dir, source, None),
                 (None, None) => None,
             };
         }
@@ -747,23 +757,21 @@ impl<'r> Pending<'r> {
             ..
         } = self;
         let held = |dir: &Path| dir.as_os_str().is_empty() || is_folder(dir);
-        let stale: Vec<PathBuf> = rules
-            .files
-            .values()
-            .filter(|(dir, _)| !held(dir))
-            .map(|(dir, _)| dir.clone())
+        let stale: Vec<(PathBuf, Source)> = (rules.files.iter())
+            .filter(|(_, (dir, _))| !held(dir))
+            .map(|((_, source), (dir, _))| (dir.clone(), *source))
             .collect();
-        for dir in stale {
-            let key = rules.key(&dir);
-            let dropped = rules.set(&dir, None);
+        for (dir, source) in stale {
+            let key = (rules.key(&dir), source);
+            let dropped = rules.set(&dir, source, None);
             before.entry(key).or_insert(dropped);
         }
         rules.ignored.retain(|dir, _| held(dir));
         let changed = (before.iter())
             .filter_map(|(key, before)| match (rules.files.get(key), before) {
                 (Some((_, now)), Some((_, before))) if now == before => None,
-                (Some((dir, now)), _) => Some((dir.clone(), Some(now.clone()))),
-                (None, Some((dir, _))) => Some((dir.clone(), None)),
+                (Some((dir, now)), _) => Some((dir.clone(), key.1, Some(now.clone()))),
+                (None, Some((dir, _))) => Some((dir.clone(), key.1, None)),
                 (None, None) => None,
             })
             .collect();
@@ -771,7 +779,7 @@ impl<'r> Pending<'r> {
     }
 }
 
-pub(crate) type RulesFile = (PathBuf, Option<Vec<u8>>);
+pub(crate) type RulesFile = (PathBuf, Source, Option<Vec<u8>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RulesRead {

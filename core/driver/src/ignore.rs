@@ -1,30 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The ignore rules of a linked folder as the driver holds them (design §5.10). The matcher is the engine's
-//! ([`koidrive_engine::ignore`]): the built-in exclusions, this device's `[sync]` list and the `.koiignore` files of
-//! the folder. [`matcher`] builds the part that is the same for every folder of the profile, and `scan_rules` gives
-//! `core/fs` the form its scans and watchers apply, which also reads the `.koiignore` files. The engine's trees take the
+//! ([`koidrive_engine::ignore`]): the built-in exclusions, this device's `[sync]` list and the rules files of the
+//! folder. [`matcher`] builds the part that is the same for every folder of the profile, and `scan_rules` gives
+//! `core/fs` the form its scans and watchers apply, which also reads the rules files. The engine's trees take the
 //! same list through [`local_rules`] and the same files with each observation, so a scan leaves out exactly the paths
 //! the engine excludes.
 
 use std::ffi::{OsStr, OsString};
+use std::io;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use koidrive_engine::ignore::{LocalRules, Matcher as Rules, RuleFile};
 use koidrive_engine::names::name_key;
-use koidrive_fs::{EntryKind, Ignore, Ignored};
+use koidrive_fs::{EntryKind, Ignore, Ignored, Snapshot, Source};
 use koidrive_ignore::{Kind, LocalRulesError, Reason, Status};
 
 use crate::config::SyncRules;
 
-/// Decides whether a path of a linked folder is excluded on this device, before any `.koiignore` file is read.
+/// Decides whether a path of a linked folder is excluded on this device, before any rules file is read.
 pub trait Matcher: Send + Sync {
     /// `path` is relative to the folder's root; `dir` says whether it names a folder.
     fn is_excluded(&self, path: &Path, dir: bool) -> bool;
+
+    /// Whether the folder's `.gitignore` files apply along with its `.koiignore` files.
+    fn follows_gitignore(&self) -> bool {
+        true
+    }
 }
 
-/// Excludes nothing of its own. The built-in exclusions and the `.koiignore` files still apply to a scan.
+/// Excludes nothing of its own. The built-in exclusions and the rules files still apply to a scan.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unfiltered;
 
@@ -48,16 +54,30 @@ fn status(rules: &Rules, path: &Path, dir: bool) -> Status {
 }
 
 /// The built-in exclusions and this device's list.
-struct Device(Rules);
+struct Device {
+    rules: Rules,
+    gitignore: bool,
+}
 
 impl Matcher for Device {
     fn is_excluded(&self, path: &Path, dir: bool) -> bool {
-        status(&self.0, path, dir) != Status::Included
+        status(&self.rules, path, dir) != Status::Included
+    }
+
+    fn follows_gitignore(&self) -> bool {
+        self.gitignore
     }
 }
 
-/// This device's `[sync]` list in the form the matcher takes, for the engine's trees as well. An include path is
-/// read as [`SyncRules::lines`] reads it, with any number of slashes around it.
+pub(crate) fn device(local: LocalRules) -> Arc<dyn Matcher> {
+    Arc::new(Device {
+        gitignore: local.follows_gitignore(),
+        rules: Rules::new(local),
+    })
+}
+
+/// This device's `[sync]` list and its `gitignore` setting in the form the matcher takes, for the engine's trees as
+/// well. An include path is read as [`SyncRules::lines`] reads it, with any number of slashes around it.
 pub fn local_rules(sync: &SyncRules) -> Result<LocalRules, LocalRulesError> {
     let include: Vec<String> = sync
         .include
@@ -67,12 +87,12 @@ pub fn local_rules(sync: &SyncRules) -> Result<LocalRules, LocalRulesError> {
             format!("{}{dir}", path.trim_matches('/'))
         })
         .collect();
-    LocalRules::new(&include, &sync.exclude)
+    Ok(LocalRules::new(&include, &sync.exclude)?.with_gitignore(sync.gitignore))
 }
 
 /// The matcher of this device's `[sync]` list and the built-in exclusions.
 pub fn matcher(sync: &SyncRules) -> Result<Arc<dyn Matcher>, LocalRulesError> {
-    Ok(Arc::new(Device(Rules::new(local_rules(sync)?))))
+    Ok(device(local_rules(sync)?))
 }
 
 /// Whether the root holds entries other than the engine's built-in exclusions, before any user rules apply.
@@ -85,16 +105,17 @@ pub fn has_sync_entries(root: &Path) -> std::io::Result<bool> {
     })
 }
 
-/// What `core/fs` asks while it scans: the device's matcher, and the `.koiignore` files the scan has read so far.
+/// What `core/fs` asks while it scans: the device's matcher, and the rules files the scan has read so far.
 struct Scanned {
     device: Arc<dyn Matcher>,
     files: Rules,
 }
 
 impl Ignore for Scanned {
-    fn set_rules(&mut self, dir: &Path, rules: Option<&[u8]>) {
+    fn set_rules(&mut self, dir: &Path, source: Source, rules: Option<&[u8]>) {
         let rules = rules.map(RuleFile::parse);
-        self.files.set_rules(&names(dir), rules, std::iter::empty());
+        self.files
+            .set_rules(&names(dir), source, rules, std::iter::empty());
     }
 
     fn status(&self, path: &Path, kind: EntryKind) -> Ignored {
@@ -112,13 +133,77 @@ impl Ignore for Scanned {
     }
 }
 
-/// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the `.koiignore` files, of
-/// which it has read none yet. Its first scan reads and reports every one.
+/// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the rules files, of which it
+/// has read none yet. Its first scan reads and reports every one.
 pub(crate) fn scan_rules(device: &Arc<dyn Matcher>) -> koidrive_fs::Rules {
     koidrive_fs::Rules::new(Box::new(Scanned {
         device: device.clone(),
-        files: Rules::new(LocalRules::default()),
+        files: Rules::new(LocalRules::default().with_gitignore(device.follows_gitignore())),
     }))
+}
+
+/// The files of a folder that only its `.gitignore` files leave out, and their size in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GitignoreOnly {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+struct Both {
+    with: Rules,
+    without: Rules,
+}
+
+struct Counted(Arc<Mutex<Both>>);
+
+impl Ignore for Counted {
+    fn set_rules(&mut self, dir: &Path, source: Source, rules: Option<&[u8]>) {
+        let mut both = self.0.lock().unwrap();
+        let Both { with, without } = &mut *both;
+        for rules_of in [with, without] {
+            let rules = rules.map(RuleFile::parse);
+            rules_of.set_rules(&names(dir), source, rules, std::iter::empty());
+        }
+    }
+
+    fn status(&self, path: &Path, kind: EntryKind) -> Ignored {
+        match status(
+            &self.0.lock().unwrap().without,
+            path,
+            kind == EntryKind::Dir,
+        ) {
+            Status::Excluded(Reason::BuiltIn) => Ignored::BuiltIn,
+            Status::Excluded(_) => Ignored::Rule,
+            Status::Included => Ignored::No,
+        }
+    }
+
+    fn key(&self, name: &OsStr) -> OsString {
+        name_key(&name.to_string_lossy()).into()
+    }
+}
+
+pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> io::Result<GitignoreOnly> {
+    let both = Arc::new(Mutex::new(Both {
+        with: Rules::new(local.clone().with_gitignore(true)),
+        without: Rules::new(local.with_gitignore(false)),
+    }));
+    let mut rules = koidrive_fs::Rules::new(Box::new(Counted(both.clone())));
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).map_err(|error| match error {
+        koidrive_fs::Error::Io(error) => error,
+        other => io::Error::other(other),
+    })?;
+    let both = both.lock().unwrap();
+    Ok((snapshot.entries.iter())
+        .filter(|(path, entry)| {
+            entry.kind == EntryKind::File && status(&both.with, path, false) != Status::Included
+        })
+        .fold(GitignoreOnly::default(), |found, (_, entry)| {
+            GitignoreOnly {
+                files: found.files + 1,
+                bytes: found.bytes + entry.size,
+            }
+        }))
 }
 
 #[cfg(test)]
@@ -177,6 +262,7 @@ mod tests {
         SyncRules {
             include: include.iter().map(|path| (*path).to_owned()).collect(),
             exclude: exclude.iter().map(|line| (*line).to_owned()).collect(),
+            ..SyncRules::default()
         }
     }
 
@@ -232,10 +318,10 @@ mod tests {
         );
         assert_eq!(status(&scanned, "a/b.log", EntryKind::File), Ignored::No);
 
-        scanned.set_rules(Path::new("a"), Some(b"*.log\n"));
+        scanned.set_rules(Path::new("a"), Source::Koiignore, Some(b"*.log\n"));
         assert_eq!(status(&scanned, "a/b.log", EntryKind::File), Ignored::Rule);
         assert_eq!(status(&scanned, "b.log", EntryKind::File), Ignored::No);
-        scanned.set_rules(Path::new("a"), None);
+        scanned.set_rules(Path::new("a"), Source::Koiignore, None);
         assert_eq!(status(&scanned, "a/b.log", EntryKind::File), Ignored::No);
     }
 }

@@ -1317,6 +1317,7 @@ fn a_file_parked_behind_an_excluded_folder() -> (Remote, Site, Device, PathBuf) 
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["ss/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);

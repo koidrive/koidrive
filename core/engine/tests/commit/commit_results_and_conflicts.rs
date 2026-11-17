@@ -728,7 +728,7 @@ fn a_resent_answer_delete_keeps_its_precondition_when_another_device_removed_the
     let mut state = trees.state();
     state.kept_originals.insert("y".into(), "f".into());
     trees.restore(state).unwrap();
-    trees.set_rules::<&str>(&[], None);
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.rules_scanned();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -756,7 +756,7 @@ fn a_resent_answer_delete_drops_its_precondition_once_a_delete_of_this_device_tr
     let mut state = trees.state();
     state.kept_originals.insert("a".into(), "f".into());
     trees.restore(state).unwrap();
-    trees.set_rules::<&str>(&[], None);
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.rules_scanned();
     trees.remove_local("f");
     let state = koidrive_engine::state::CommitsState {

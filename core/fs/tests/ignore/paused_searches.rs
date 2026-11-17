@@ -6,7 +6,7 @@ fn a_folder_replaced_on_the_path_of_a_paused_search_keeps_the_move() {
     for budget in (1..=8).chain(30..=50) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, RULES_FILE, "ig/\n");
+        write(root, KOIIGNORE, "ig/\n");
         write(root, "f.txt", "f");
         write(root, &format!("ig/p/{deep}leaf"), "x");
         for i in 0..5 {
@@ -49,7 +49,7 @@ fn a_deep_folder_renamed_while_a_search_is_paused_is_followed() {
     for budget in [3, 50] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, RULES_FILE, "ig/\n");
+        write(root, KOIIGNORE, "ig/\n");
         write(root, "f.txt", "f");
         for k in 0..30 {
             let level: PathBuf = ["c"; 30].iter().take(k).collect();
@@ -94,7 +94,7 @@ fn a_scanned_folder_replaced_above_a_paused_search_keeps_the_move() {
     for budget in 1..=8 {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, RULES_FILE, "ig/\n");
+        write(root, KOIIGNORE, "ig/\n");
         write(root, "f.txt", "f");
         write(root, "proj/keep.txt", "k");
         for i in 0..5 {
@@ -137,7 +137,7 @@ fn an_unreadable_folder_past_the_open_folder_cap_does_not_stop_the_search() {
         for budget in [50, 1000] {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
-            write(root, RULES_FILE, "ig/\n");
+            write(root, KOIIGNORE, "ig/\n");
             let locked: PathBuf = std::iter::once("ig")
                 .chain(std::iter::repeat_n("c", depth))
                 .chain(["locked"])

@@ -4,15 +4,15 @@
 fn adding_a_rule_drops_the_matching_entries_without_a_removal_and_reports_the_rules() {
     let (dir, mut snapshot, mut rules) = tree_without_rules();
     let root = dir.path();
-    write(root, RULES_FILE, "*.tmp\ncache/\n");
+    write(root, KOIIGNORE, "*.tmp\ncache/\n");
 
     let rescan = snapshot
-        .rescan_with_rules(root, [PathBuf::from(RULES_FILE)], &mut rules)
+        .rescan_with_rules(root, [PathBuf::from(KOIIGNORE)], &mut rules)
         .unwrap();
-    assert_eq!(rescan.changes, [created(RULES_FILE, File)]);
+    assert_eq!(rescan.changes, [created(KOIIGNORE, File)]);
     assert_eq!(rescan.rules, [rule("", Some("*.tmp\ncache/\n"))]);
     assert_eq!(rescan.unsettled, Vec::<PathBuf>::new());
-    assert_eq!(known(&snapshot), [RULES_FILE, "sub", "sub/b.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "sub", "sub/b.txt"]);
     assert!(root.join("sub/cache/x/y.txt").exists());
 }
 
@@ -41,7 +41,7 @@ fn a_file_moved_into_an_ignored_folder_is_ignored_not_removed() {
             }],
             "{to} {paths:?}"
         );
-        assert_eq!(known(&snapshot), [RULES_FILE, "d", "d/g.txt"]);
+        assert_eq!(known(&snapshot), [KOIIGNORE, "d", "d/g.txt"]);
     }
 }
 
@@ -215,7 +215,7 @@ fn a_folder_moved_into_an_ignored_folder_is_ignored_as_a_whole() {
             id,
         }]
     );
-    assert_eq!(known(&snapshot), [RULES_FILE, "f.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "f.txt"]);
 }
 
 #[test]
@@ -244,14 +244,14 @@ fn a_file_moved_into_an_ignored_folder_before_its_folder_was_removed_is_ignored(
             },
         ]
     );
-    assert_eq!(known(&snapshot), [RULES_FILE, "f.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "f.txt"]);
 }
 
 #[test]
 fn a_file_moved_into_an_ignored_folder_before_a_folder_above_it_was_renamed_is_ignored() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "d/a/b/file", "kept");
     fs::create_dir(root.join("ig")).unwrap();
     fs::create_dir(root.join("dest")).unwrap();
@@ -280,7 +280,7 @@ fn a_file_moved_into_an_ignored_folder_before_a_folder_above_it_was_renamed_is_i
 fn a_folder_moved_into_an_ignored_folder_before_a_folder_above_it_was_renamed_is_ignored_once() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "d/a/b/file", "kept");
     fs::create_dir(root.join("ig")).unwrap();
     fs::create_dir(root.join("dest")).unwrap();
@@ -314,7 +314,7 @@ fn a_folder_moved_into_an_ignored_folder_before_a_folder_above_it_was_renamed_is
 fn a_file_renamed_to_a_name_a_rule_leaves_out_is_ignored_not_removed() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "*.bak\n");
+    write(root, KOIIGNORE, "*.bak\n");
     write(root, "d/notes.txt", "n");
     let mut rules = rules();
     let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
@@ -347,14 +347,14 @@ fn a_file_moved_into_an_ignored_folder_and_saved_under_a_new_identity_is_removed
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
     assert_eq!(rescan.changes, [removed("f.txt", File)]);
-    assert_eq!(known(&snapshot), [RULES_FILE, "d", "d/g.txt"]);
+    assert_eq!(known(&snapshot), [KOIIGNORE, "d", "d/g.txt"]);
 }
 
 #[test]
 fn a_removal_with_no_ignored_entry_is_removed() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n*.tmp\n");
+    write(root, KOIIGNORE, "ig/\n*.tmp\n");
     write(root, "f.txt", "f");
     write(root, "d/g.txt", "g");
     let mut rules = rules();
@@ -366,7 +366,7 @@ fn a_removal_with_no_ignored_entry_is_removed() {
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
     assert_eq!(rescan.changes, [removed("d", Dir), removed("f.txt", File)]);
-    assert_eq!(known(&snapshot), [RULES_FILE]);
+    assert_eq!(known(&snapshot), [KOIIGNORE]);
 }
 
 #[test]
@@ -410,13 +410,13 @@ fn a_folder_renamed_only_in_case_keeps_its_rules() {
 fn a_rules_file_renamed_only_in_case_keeps_its_rules() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "x\n");
+    write(root, KOIIGNORE, "x\n");
     write(root, "x", "left out");
     let mut rules = rules();
     let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
-    assert_eq!(known(&snapshot), [RULES_FILE]);
+    assert_eq!(known(&snapshot), [KOIIGNORE]);
 
-    fs::rename(root.join(RULES_FILE), root.join(".KOIIGNORE")).unwrap();
+    fs::rename(root.join(KOIIGNORE), root.join(".KOIIGNORE")).unwrap();
     let rescan = snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
@@ -435,7 +435,7 @@ fn a_rules_file_renamed_only_in_case_keeps_its_rules() {
 fn a_file_swapped_with_an_ignored_file_is_ignored_and_the_other_created() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "old.txt\n");
+    write(root, KOIIGNORE, "old.txt\n");
     write(root, "old.txt", "o");
     write(root, "f.txt", "f");
     let mut rules = rules();
@@ -468,7 +468,7 @@ fn many_files_moved_out_of_a_removed_folder_are_renamed_in_less_than_a_second() 
     let files = 20_000;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "ig/deep/old.txt", "o");
     fs::create_dir(root.join("d")).unwrap();
     fs::create_dir(root.join("e")).unwrap();

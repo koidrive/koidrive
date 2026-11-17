@@ -2,6 +2,7 @@
 
 include!("ignore/common.rs");
 include!("ignore/deferred_searches.rs");
+include!("ignore/gitignore.rs");
 include!("ignore/hard_links.rs");
 include!("ignore/moves_and_removals.rs");
 include!("ignore/paused_searches.rs");
