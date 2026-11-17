@@ -1876,10 +1876,19 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         if capped {
             classes.push("reach search capped".into());
         }
-        let better = reached
-            .iter()
-            .copied()
-            .find(|&mask| mask & end == end && mask != end);
+        let made_up = made_up_first | made_up_later;
+        let improving = || {
+            (reached.iter())
+                .copied()
+                .filter(|&mask| mask & end == end && mask != end)
+        };
+        let names = |mask: u64| {
+            (0..world.len()).any(|i| mask & !end & 1 << i != 0 && world.local_place(i).is_some())
+        };
+        let better = improving()
+            .find(|&mask| mask & made_up != 0)
+            .or_else(|| improving().find(|&mask| names(mask)))
+            .or_else(|| improving().next());
         let show = |mask: u64| {
             (0..world.len())
                 .filter(|&i| mask & 1 << i != 0)
@@ -1895,7 +1904,6 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         let resolution = first_resolution
             .filter(|_| made_up_first != 0)
             .map_or(String::new(), |r| format!(" → {r}"));
-        let made_up = made_up_first | made_up_later;
         match better {
             Some(mask) if mask & made_up != 0 => {
                 hard = true;
@@ -2861,6 +2869,7 @@ fn threads() -> usize {
     std::env::var("PLANNER_MODEL_THREADS")
         .ok()
         .and_then(|threads| threads.parse().ok())
+        .filter(|&threads: &usize| threads > 0)
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |threads| threads.get()))
 }
 
