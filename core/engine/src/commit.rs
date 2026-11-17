@@ -4129,11 +4129,14 @@ fn plan(
         emitted += ops;
         bytes += cost;
         if let Some(Want::Create {
-            shape, pending_for, ..
+            id,
+            shape,
+            pending_for,
         }) = wants[at].as_mut()
             && shape.kind == Kind::Dir
             && (scratch.holders(&shape.parent, &shape.name)).any(|other| {
                 leaves(other, &scratch, &moving)
+                    || moving.contains(other) && scratch.leaves_unplaced(&scratch.ends, other, id)
                     || leaving_unsent(&scratch, aliases, problems, other)
             })
         {
@@ -4603,6 +4606,7 @@ impl<'a> Scratch<'a> {
                 _ => None,
             })
             .collect();
+        let unplaced = |holder: &str, folder: &str| self.leaves_unplaced(before, holder, folder);
         let named: BTreeSet<(&str, String)> = (wants.iter())
             .filter_map(|want| match want {
                 Want::Move { parent, name, .. } => Some((parent.as_str(), name_key(name))),
@@ -4685,7 +4689,9 @@ impl<'a> Scratch<'a> {
                 match kind {
                     Lands::Create(Kind::Dir) => {
                         let holder = self.holders(to, name).find(|holder| {
-                            !moved.contains(holder.as_str()) && self.kind(holder) == Some(Kind::Dir)
+                            !moved.contains(holder.as_str())
+                                && !unplaced(holder, id)
+                                && self.kind(holder) == Some(Kind::Dir)
                         });
                         match holder {
                             Some(holder) => aliases.insert(id, holder.as_str()),
@@ -4739,6 +4745,31 @@ impl<'a> Scratch<'a> {
         }
         let taken = self.holders(parent, name).any(|other| other != id);
         if taken { Fit::NameTaken } else { Fit::Valid }
+    }
+
+    fn leaves_unplaced(&self, ends: &Ends, holder: &str, folder: &str) -> bool {
+        ends.missing.contains(holder)
+            && (self.moves.get(holder)).is_some_and(|to| {
+                !self.local_inside(to, folder)
+                    && match self.trees.remote().get(to) {
+                        Some(_) => self.trees.remote().live(to).is_some(),
+                        None => self.trees.synced().get(to).is_none(),
+                    }
+            })
+    }
+
+    fn local_inside(&self, id: &str, ancestor: &str) -> bool {
+        let mut current = Some(id);
+        for _ in 0..=self.trees.local().len() {
+            match current {
+                Some(at) if at == ancestor => return true,
+                Some(at) => {
+                    current = (self.trees.local().get(at)).map(|node| node.shape.parent.as_str())
+                }
+                None => return false,
+            }
+        }
+        false
     }
 
     /// True when `ancestor` is `id` or holds it.
