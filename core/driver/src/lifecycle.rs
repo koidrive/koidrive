@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LockResult, Mutex, MutexGuard};
 
 use koidrive_telemetry::schema::Age;
@@ -35,16 +35,24 @@ struct Halt {
     since: u64,
 }
 
+pub(crate) const UNFINISHED_UNLINK: &str =
+    "unlinking the folder did not finish; unlink it again to finish";
+
 fn unreadable(path: &Path, error: &io::Error) -> Checkpoint {
     tracing::warn!(path = %koidrive_fs::quoted(path), %error, "a folder's lifecycle record cannot be read");
-    failures::failed(Failure::Halted(Halted::Store));
     let since = (fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok())
     .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
     .map_or_else(koidrive_telemetry::now, |since| since.as_secs());
-    Checkpoint {
-        halt: Some(Halt {
+    let halt = match path.with_file_name(UNLINKING).exists() {
+        true => Halt {
+            problem: UNFINISHED_UNLINK.into(),
+            recovery: Recovery::Unlink,
+            why: Some(Halted::Unlink),
+            since,
+        },
+        false => Halt {
             problem: format!(
                 "the folder's sync record {} can't be read ({error}); run koi folder restart to check the folder and sync it again",
                 koidrive_fs::quoted(path)
@@ -52,10 +60,15 @@ fn unreadable(path: &Path, error: &io::Error) -> Checkpoint {
             recovery: Recovery::Restart,
             why: Some(Halted::Store),
             since,
-        }),
+        },
+    };
+    Checkpoint {
+        halt: Some(halt),
         ..Checkpoint::default()
     }
 }
+
+const UNLINKING: &str = "unlinking";
 
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
     deserializer: D,
@@ -86,17 +99,19 @@ pub(crate) struct Lifecycle {
     checkpoint: Mutex<Checkpoint>,
     pending: AtomicU64,
     telemetry: Recorder,
+    unreadable: AtomicBool,
 }
 
 impl Lifecycle {
     pub(crate) fn open(store: &Path, mut status: FolderStatus, telemetry: Recorder) -> Self {
         let path = store.with_file_name("lifecycle.json");
-        let checkpoint = match fs::read(&path) {
+        let read = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Checkpoint::default()),
             Err(error) => Err(error),
-        }
-        .unwrap_or_else(|error| unreadable(&path, &error));
+        };
+        let unreadable_record = read.is_err();
+        let checkpoint = read.unwrap_or_else(|error| unreadable(&path, &error));
         if let Some(halt) = &checkpoint.halt {
             status.state = FolderState::Halted;
             status.problem = Some(halt.problem.clone());
@@ -107,6 +122,7 @@ impl Lifecycle {
             checkpoint: Mutex::new(checkpoint),
             pending: AtomicU64::new(0),
             telemetry,
+            unreadable: AtomicBool::new(unreadable_record),
         }
     }
 
@@ -162,6 +178,10 @@ impl Lifecycle {
             synced: checkpoint.synced,
             ..Checkpoint::default()
         };
+        koidrive_state_file::remove_with_legacy_matching(
+            &self.path.with_file_name(UNLINKING),
+            |_| false,
+        )?;
         self.save(&next)?;
         self.cleared(checkpoint.halt.as_ref());
         *checkpoint = next;
@@ -177,7 +197,7 @@ impl Lifecycle {
         let next = Checkpoint {
             root: checkpoint.root,
             halt: Some(Halt {
-                problem: "unlinking the folder did not finish; unlink it again to finish".into(),
+                problem: UNFINISHED_UNLINK.into(),
                 recovery: Recovery::Unlink,
                 why: Some(Halted::Unlink),
                 since: (checkpoint.halt.as_ref())
@@ -186,9 +206,23 @@ impl Lifecycle {
             }),
             synced: checkpoint.synced,
         };
+        koidrive_state_file::write(&self.path.with_file_name(UNLINKING), b"")?;
         self.save(&next)?;
         *checkpoint = next;
         Ok(())
+    }
+
+    pub(crate) fn settle_unreadable(&self) {
+        if !self.unreadable.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let checkpoint = self.checkpoint.lock().unwrap();
+        if let Some(why) = checkpoint.halt.as_ref().and_then(|halt| halt.why) {
+            failures::failed(Failure::Halted(why));
+        }
+        if let Err(error) = self.save(&checkpoint) {
+            tracing::warn!(path = %koidrive_fs::quoted(&self.path), %error, "a folder's halt could not be saved over its unreadable lifecycle record");
+        }
     }
 
     pub(crate) fn persist(&self) -> io::Result<()> {
@@ -434,6 +468,45 @@ mod tests {
         assert!(!lifecycle.needs_restart());
         drop(lifecycle);
         assert!(!Lifecycle::open(&store, status(), Recorder::off()).needs_restart());
+    }
+
+    #[test]
+    fn an_unlink_whose_record_became_unreadable_stays_an_unlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        lifecycle.begin_unlink().unwrap();
+        drop(lifecycle);
+        fs::write(store.with_file_name("lifecycle.json"), b"{\"halt\":").unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
+        reopened.restart().unwrap();
+        assert!(reopened.needs_restart());
+        assert!(store.with_file_name(UNLINKING).exists());
+        let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Unlink));
+        assert_eq!(
+            reopened.lock().unwrap().problem.as_deref(),
+            Some(UNFINISHED_UNLINK)
+        );
+    }
+
+    #[test]
+    fn a_restart_forgets_an_unlink_that_never_took_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        fs::write(store.with_file_name(UNLINKING), b"").unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        lifecycle.halt(
+            Halted::Io,
+            "the folder could not be unlinked".into(),
+            Recovery::Restart,
+        );
+        lifecycle.restart().unwrap();
+        assert!(!store.with_file_name(UNLINKING).exists());
+        fs::write(store.with_file_name("lifecycle.json"), b"not json").unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
+        let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Store));
     }
 
     #[test]

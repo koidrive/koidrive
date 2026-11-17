@@ -370,7 +370,7 @@ impl Drop for Unlinking<'_> {
             folder.unlink = Some(Unlink::Abandoned);
             folder.status.halt(
                 Halted::Unlink,
-                "unlinking the folder did not finish; unlink it again to finish".into(),
+                crate::lifecycle::UNFINISHED_UNLINK.into(),
                 crate::lifecycle::Recovery::Unlink,
             );
             drop(folders);
@@ -621,9 +621,7 @@ impl Driver {
                 let mut status = folder.status.lock().unwrap().clone();
                 if folder.unlink == Some(Unlink::Abandoned) {
                     status.state = FolderState::Halted;
-                    status.problem = Some(
-                        "unlinking the folder did not finish; unlink it again to finish".into(),
-                    );
+                    status.problem = Some(crate::lifecycle::UNFINISHED_UNLINK.into());
                 }
                 if !matches!(
                     status.state,
@@ -2225,6 +2223,7 @@ fn load_folders(
     Ok(read_folders(paths, telemetry, |path| Store::open(path))?
         .into_iter()
         .map(|(link, status)| {
+            status.settle_unreadable();
             (
                 link.space_id.clone(),
                 Folder {
@@ -3568,6 +3567,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unlink_whose_record_became_unreadable_waits_to_be_finished_not_restarted() {
+        let (_dir, paths, root) = profile(&[]);
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        fs::write(record.with_file_name("unlinking"), b"").unwrap();
+        fs::write(&record, b"not json").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        let status = driver.status().folders[0].clone();
+        assert_eq!(status.state, FolderState::Halted);
+        assert_eq!(
+            status.problem.as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await;
+        assert!(
+            restarted.is_err() || restarted.unwrap().state == FolderState::Halted,
+            "a restart lifted an unfinished unlink"
+        );
+        assert!(!matches!(claim::owner(&root), Ok(Some(_))));
+        driver.unlink(&root).await.unwrap();
+        assert!(driver.status().folders.is_empty());
+        assert!(!record.parent().unwrap().exists());
+        driver.stop().await;
+    }
+
+    #[tokio::test]
     async fn an_unreadable_lifecycle_record_halts_only_its_folder_until_a_restart() {
         use crate::health::tests::{named, posthog, with_prefix};
 
@@ -3594,7 +3619,12 @@ mod tests {
             .with_file_name("lifecycle.json");
         fs::write(&record, br#"{"halt":null,"ro"#).unwrap();
         let halted = Failure::Halted(Halted::Store);
-        let before = failures::count(halted);
+        let counted = || {
+            (failures::take_counted_here().get(&halted))
+                .copied()
+                .unwrap_or(0)
+        };
+        counted();
 
         let listed = Driver::linked_folders(&paths).unwrap();
         let state = |folders: &[FolderStatus], space: &str| {
@@ -3608,8 +3638,12 @@ mod tests {
             state(&listed, "0190f0a0-0000-7000-8000-0000000000b1").state,
             FolderState::Halted
         );
+        assert_eq!(counted(), 0, "a listing counts no halt");
+        drop(Driver::open(paths.clone()).unwrap());
+        assert_eq!(counted(), 1);
         let recorder = koidrive_telemetry::Recorder::on();
         let driver = Driver::open_with_telemetry(paths, recorder.clone()).unwrap();
+        assert_eq!(counted(), 0, "a halt is counted once");
         driver.start();
         let problem = state(
             &driver.status().folders,
@@ -3621,7 +3655,6 @@ mod tests {
             problem.contains("lifecycle.json") && problem.contains("koi folder restart"),
             "{problem}"
         );
-        assert!(failures::count(halted) > before);
         eventually("the healthy folder is claimed", || {
             claim::owner(&healthy).unwrap().is_some()
         })
