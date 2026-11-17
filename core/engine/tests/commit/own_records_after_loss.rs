@@ -74,11 +74,11 @@ fn served_at_5_then_lost(
         synced,
         moved,
         untaken,
-        records,
+        records, &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
-    commits.forget_lost(&mut trees);
+    commits.forget_lost_slots();
     trees.settle();
     let effects = effects_for(&mut trees, &mut ids, "n");
     let sent = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
@@ -211,7 +211,7 @@ fn a_lost_own_move_the_server_holds_again_as_l_and_s_do_is_no_change() {
     let moved = trees.moved_here();
     assert_eq!(moved.len(), 1);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 6));
-    trees.forget_lost(vec![], vec![], vec![], moved, vec![], Default::default(), 3, 0);
+    trees.forget_lost(vec![], vec![], vec![], moved, vec![], Default::default(), &Default::default(), 3, 0);
     trees.settle();
     assert_eq!(trees.class("n"), Class::InSync);
     assert!(trees.state().local_changes.is_empty());

@@ -212,7 +212,7 @@ fn a_download_the_server_lost_is_not_sent_again_without_a_recorded_version() {
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -311,7 +311,7 @@ fn a_lost_create_under_a_folder_deleted_after_the_loss_is_not_sent_again() {
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -347,7 +347,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
             synced,
             Vec::new(),
             Vec::new(),
-            records,
+            records, &Default::default(),
             0,
             0,
         );
@@ -379,7 +379,7 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
             synced,
             Vec::new(),
             Vec::new(),
-            records,
+            records, &Default::default(),
             1,
             1,
         );

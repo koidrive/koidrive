@@ -1985,10 +1985,11 @@ impl World {
                         moved,
                         untaken,
                         records,
+                        commits.aliases(),
                         commits.held_through(),
                         commits.accepted(),
                     );
-                    commits.forget_lost(trees);
+                    commits.forget_lost_slots();
                 }
                 *cursor = head;
                 *behind = false;

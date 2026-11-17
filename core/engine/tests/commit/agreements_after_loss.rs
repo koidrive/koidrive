@@ -29,7 +29,7 @@ fn an_edit_the_server_took_first_from_another_device_is_sent_again_as_an_edit_af
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -66,7 +66,7 @@ fn a_late_acknowledgement_after_a_rollback_keeps_an_agreement_the_server_kept() 
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         4,
         commits.accepted(),
     );
@@ -111,7 +111,7 @@ fn a_late_create_acknowledgement_after_a_rollback_keeps_an_agreement_r_still_hol
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         0,
         commits.accepted(),
     );
@@ -154,7 +154,7 @@ fn a_late_create_acknowledgement_after_a_rollback_drops_the_agreement_the_server
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         7,
         commits.accepted(),
     );
@@ -208,7 +208,7 @@ fn a_reused_revision_does_not_keep_an_agreement_the_server_lost() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         7,
         commits.accepted(),
     );
@@ -264,7 +264,7 @@ fn an_agreement_survives_a_loss_only_on_a_kept_seq_or_its_exact_record() {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Default::default(),
+            Default::default(), &Default::default(),
             held_through,
             commits.accepted(),
         );
@@ -306,7 +306,7 @@ fn a_resend_lost_in_a_second_loss_is_not_sent_again_as_this_devices_edit() {
         synced,
         Vec::new(),
         Vec::new(),
-        Default::default(),
+        Default::default(), &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -320,7 +320,7 @@ fn renamed_elsewhere_then_lost() -> (Trees, Commits, IdGen) {
     trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 2));
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     (trees, Commits::default(), IdGen::new(1))
 }
@@ -347,7 +347,7 @@ fn a_resend_whose_lost_folder_the_user_deleted_is_created_where_l_holds_it() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("p");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.remove_local("p");
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -365,7 +365,7 @@ fn a_resend_whose_lost_folder_is_excluded_is_created_where_l_holds_it() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("p");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"/p/\n")));
     trees.settle();
     assert!(trees.excluded("p"));
@@ -382,7 +382,7 @@ fn a_resend_whose_lost_folder_the_user_moved_into_it_is_created_where_l_holds_it
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("p");
     trees.remove_remote("q");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_local("q".into(), local(dir("p", "q"), 2));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -411,7 +411,7 @@ fn a_resend_below_a_cycle_of_lost_folders_keeps_the_position_another_device_gave
     for id in [file_id, "p", "q", "r"] {
         trees.remove_remote(id);
     }
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
     trees.set_local_changed("r".into(), local(dir("p", "r"), 3));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -446,7 +446,7 @@ fn a_resend_in_a_lost_folder_the_user_moved_into_it_keeps_the_position_another_d
     trees.remove_remote("f");
     trees.remove_remote("p");
     trees.remove_remote("q");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_local("q".into(), local(dir("p", "q"), 2));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -469,7 +469,7 @@ fn a_resent_folder_the_server_merges_into_another_takes_the_position_the_server_
     trees.set_remote("d".into(), remote_at(dir(ROOT, "y"), 2));
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("d");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -497,7 +497,7 @@ fn a_file_in_a_resent_folder_the_server_merges_keeps_the_name_l_holds() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("d");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("m".into(), remote(dir(ROOT, "y")));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -525,7 +525,7 @@ fn merged_folder_in_split_commits(local_parent: &str, saved_parent: &str, expect
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("d");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("m".into(), remote(dir(ROOT, "y")));
     trees.settle();
     let state = CommitsState { cap: Some(1), ..Default::default() };
@@ -570,7 +570,7 @@ fn a_resend_the_server_creates_under_another_name_is_not_sent_again_as_an_edit()
     let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("d".into(), remote(dir(ROOT, "a")));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -598,7 +598,7 @@ fn a_resend_into_a_lost_folder_l_still_holds_is_created_in_it() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("p");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -662,7 +662,7 @@ fn a_file_another_device_renamed_and_edited_before_a_loss_is_created_at_its_new_
     let mut trees = trees(&[("f", held.clone(), held, Some(renamed))]);
     let untaken = trees.untaken_changes(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), Vec::new(), Vec::new(), untaken, Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), Vec::new(), Vec::new(), untaken, Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -681,7 +681,7 @@ fn a_second_loss_before_l_takes_a_resends_position_creates_it_there_again() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("d");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("m".into(), remote(dir(ROOT, "y")));
     trees.settle();
     let state = CommitsState { cap: Some(1), ..Default::default() };
@@ -697,8 +697,8 @@ fn a_second_loss_before_l_takes_a_resends_position_creates_it_there_again() {
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, Default::default(), commits.held_through(), commits.accepted());
-    commits.forget_lost(&mut trees);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, Default::default(), &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
     trees.settle();
     assert!(!trees.waiting().contains_key("f"));
     let next = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -717,7 +717,7 @@ fn a_resend_the_server_renames_to_the_name_l_holds_leaves_no_lost_position() {
     trees.set_remote("f".into(), remote_at(file(ROOT, "b", 1), 2));
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("d".into(), remote(dir(ROOT, "b")));
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -743,7 +743,7 @@ fn a_resend_the_server_merges_into_a_folder_and_renames_to_the_name_l_holds_leav
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("d");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.set_remote("m".into(), remote(dir(ROOT, "y")));
     trees.set_remote("g".into(), remote(dir("m", "b")));
     trees.settle();
@@ -788,7 +788,7 @@ fn acknowledged_resend_at_its_lost_position(peer_name: Option<&str>) -> (Trees, 
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
@@ -819,8 +819,8 @@ fn a_second_loss_after_another_device_renamed_a_resend_creates_it_at_that_name()
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     assert_eq!(records.get("f").map(|record| record.node.shape.name.as_str()), Some("c"));
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost(&mut trees);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
     trees.settle();
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
     let planned = ops(&commit);
@@ -836,8 +836,8 @@ fn a_rename_another_device_makes_during_a_second_resend_is_not_undone() {
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost(&mut trees);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
     trees.settle();
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(create)] if create.name == "b"));
@@ -865,7 +865,7 @@ fn a_resend_another_device_trashes_before_its_acknowledgement_is_not_revived() {
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
@@ -913,7 +913,7 @@ fn a_file_edited_here_before_a_loss_is_created_where_another_device_renamed_it()
     let untaken = trees.untaken_changes(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -936,7 +936,7 @@ fn a_file_whose_lost_edit_another_device_renamed_is_created_at_that_name() {
     let untaken = trees.untaken_changes(|seq| seq == 5);
     let records = trees.remote_records(|seq| seq == 5);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), vec![("f".into(), 5)], synced, Vec::new(), untaken, records, 0, 0);
+    trees.forget_lost(Vec::new(), vec![("f".into(), 5)], synced, Vec::new(), untaken, records, &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -970,8 +970,8 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
-    trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost(&mut trees);
+    trees.forget_lost(trashed, edited, synced, moved, untaken, records, &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
     trees.settle();
     assert!(trees.state().lost_positions.is_empty());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -988,7 +988,7 @@ fn a_resend_into_a_lost_folder_the_server_refused_waits_for_that_folder() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("p");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1023,8 +1023,8 @@ fn undone_move_then_edit_then_loss(peer: Option<&str>) -> Vec<(String, u8)> {
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
-    trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost(&mut trees);
+    trees.forget_lost(trashed, edited, synced, moved, untaken, records, &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
     trees.settle();
     created_at(&build(&mut commits, &mut trees, &mut ids).unwrap())
 }
@@ -1051,7 +1051,7 @@ fn a_resend_whose_lost_folder_is_left_out_of_the_planned_creates_is_not_created_
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("q");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let state = koidrive_engine::state::CommitsState {
         cap: Some(1),
@@ -1069,7 +1069,7 @@ fn a_folder_another_device_renamed_before_a_loss_is_created_without_the_name_it_
     trees.set_remote("f".into(), remote_at(dir(ROOT, "b"), 2));
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();

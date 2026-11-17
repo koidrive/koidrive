@@ -552,10 +552,11 @@ impl Engine {
                 moved,
                 untaken,
                 records,
+                self.commits.aliases(),
                 self.commits.held_through(),
                 self.commits.accepted(),
             );
-            self.commits.forget_lost(&mut self.trees);
+            self.commits.forget_lost_slots();
         }
         tx.clear_remote_nodes()?;
         for state in staging.nodes.values() {

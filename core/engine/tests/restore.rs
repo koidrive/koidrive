@@ -394,6 +394,7 @@ fn an_edit_and_a_restore_of_one_file_in_one_commit_leave_the_restored_content_re
         moved,
         untaken,
         Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
