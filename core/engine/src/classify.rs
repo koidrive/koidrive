@@ -907,16 +907,10 @@ impl Trees {
                 old.meta_rev == node.meta_rev && old.meta_edit_rev != node.meta_edit_rev
             });
         if let Some(replaced) = (self.r.get(&id))
-            .map(|old| &old.version_id)
-            .filter(|old| !old.is_empty() && **old != node.version_id)
+            .map(|old| old.version_id.clone())
+            .filter(|old| *old != node.version_id)
         {
-            let versions = (self.replaced_versions).get_or_insert_with(id.clone(), Vec::new);
-            if !versions.contains(replaced) {
-                versions.push(replaced.clone());
-            }
-            if versions.len() > REPLACED_VERSIONS_KEPT {
-                versions.remove(0);
-            }
+            self.hold_replaced(&id, replaced);
         }
         let edited_here = edit
             && !node.trashed
@@ -990,6 +984,10 @@ impl Trees {
     }
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
+        let last = self.r.get(&id).map(|old| old.version_id.as_str());
+        let changed_after_loss = !made_here
+            && self.resends.contains(&id)
+            && self.never_held(&id, &node.version_id, last);
         let sent_by_another = !(made_here && self.lost_positions.contains_key(&id))
             && !node.trashed
             && (self.resends.contains(&id) || self.lost_creates.contains(&id))
@@ -1002,7 +1000,8 @@ impl Trees {
                     };
                     at.same(remote)
                 };
-                holds_local(&node.shape) && !self.r.live(&id).is_some_and(holds_local)
+                changed_after_loss
+                    || holds_local(&node.shape) && !self.r.live(&id).is_some_and(holds_local)
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
@@ -1104,6 +1103,26 @@ impl Trees {
 
     pub(crate) fn resends(&self) -> &BTreeSet<NodeId> {
         &self.resends
+    }
+
+    fn hold_replaced(&mut self, id: &str, version: String) {
+        if version.is_empty() {
+            return;
+        }
+        let versions = (self.replaced_versions).get_or_insert_with(id.to_owned(), Vec::new);
+        if !versions.contains(&version) {
+            versions.push(version);
+        }
+        if versions.len() > REPLACED_VERSIONS_KEPT {
+            versions.remove(0);
+        }
+    }
+
+    fn never_held(&self, id: &str, version: &str, last: Option<&str>) -> bool {
+        !version.is_empty()
+            && last != Some(version)
+            && !(self.replaced_versions.get(id))
+                .is_some_and(|held| held.iter().any(|v| v == version))
     }
 
     pub(crate) fn lost_position(&self, id: &str) -> Option<&LostPosition> {
@@ -1269,7 +1288,13 @@ impl Trees {
         self.count_trashed(id, false);
         self.displaced.remove(id);
         self.edited_here.remove(id);
-        self.replaced_versions.remove(id);
+        match (self.l.get(id), self.r.get(id)) {
+            (None, _) => {
+                self.replaced_versions.remove(id);
+            }
+            (Some(_), Some(old)) => self.hold_replaced(id, old.version_id.clone()),
+            (Some(_), None) => {}
+        }
         self.lost_creates.remove(id);
         self.resends.remove(id);
         self.moved_here.remove(id);
@@ -1693,6 +1718,9 @@ impl Trees {
         self.end_local_claim(id);
         self.end_resend(id);
         self.forgotten_shapes.remove(id);
+        if self.r.get(id).is_none() {
+            self.replaced_versions.remove(id);
+        }
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
@@ -3160,7 +3188,12 @@ impl Trees {
     /// Resends give way parents first, so S takes each folder before what it holds.
     /// R taking the node live with the content L holds, where it lacked the node or held other
     /// content, ends its resend too: another device sent it first, and its position is a remote
-    /// move. The device that made the change sends it again itself, as above.
+    /// move. The device that made the change sends it again itself, as above. So does R taking
+    /// the node live at a content version this device never held, from a record or from the
+    /// listing itself: that version was made after the loss, so S keeps L's shape and L takes
+    /// R's content. A version this device held before is older than the resend, which goes out
+    /// over it. A record's version tells whether R still holds what S held; its seq does not,
+    /// since a restored server gives lost seqs again.
     /// A node R lacks whose position R held elsewhere before the loss, a move L had not taken, is
     /// created at that position ([`TreesState::lost_positions`]), so the resend does not undo that
     /// move.
@@ -3457,6 +3490,7 @@ impl Trees {
                 Some((id, kept))
             })
             .collect();
+        let resendable = &synced;
         let mut lost: BTreeSet<&str> = (self.s.iter())
             .filter(|(id, _)| !deleted.contains(*id))
             .filter(|(id, synced)| {
@@ -3474,13 +3508,21 @@ impl Trees {
                 };
                 let survived = (records.get(*id).map(|record| &record.node))
                     .zip(self.r.get(id))
-                    .is_some_and(|(old, remote)| {
-                        old.content_rev <= held_through
-                            || (!old.version_id.is_empty() && old.version_id == remote.version_id)
+                    .is_some_and(|(old, remote)| match old.version_id.is_empty() {
+                        true => old.content_rev <= held_through,
+                        false => old.version_id == remote.version_id,
+                    });
+                let last = records.get(*id).map(|old| old.node.version_id.as_str());
+                let changed_after_loss = resendable.contains(*id)
+                    && !lost_edits.contains(*id)
+                    && (self.l.get(id)).is_some_and(|local| local.shape.same(synced))
+                    && (self.r.get(id)).is_some_and(|remote| {
+                        !remote.trashed && self.never_held(id, &remote.version_id, last)
                     });
                 self.r.get(id).is_none()
                     || (!untaken.contains_key(*id)
                         && !survived
+                        && !changed_after_loss
                         && (self.r.live(id))
                             .is_some_and(|remote| !remote.same(synced) && !moved(remote)))
             })
@@ -4698,7 +4740,9 @@ impl Trees {
         if let Some(id) = (state.unseen_changes.iter()).find(|id| self.s.get(id).is_none()) {
             return Err(StateError::NotUnseenChange(id.clone()));
         }
-        if let Some(id) = (state.replaced_versions.keys()).find(|id| self.r.get(id).is_none()) {
+        if let Some(id) = (state.replaced_versions.keys())
+            .find(|id| self.r.get(id).is_none() && self.l.get(id).is_none())
+        {
             return Err(StateError::NotRemote(id.clone()));
         }
         if let Some(id) = (state.resends.iter()).find(|id| self.l.get(id).is_none()) {

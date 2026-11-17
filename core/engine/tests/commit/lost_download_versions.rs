@@ -86,7 +86,7 @@ fn a_download_the_server_lost_is_not_sent_again_over_a_later_edit() {
     };
     let commits = Commits::default();
     list_after_a_loss(&mut trees, &commits, later);
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class("a"), Class::Remote);
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn a_download_the_server_lost_is_not_sent_again_over_a_restored_version() {
         ..version(remote(file(ROOT, "a", 1)), "v1-restored")
     };
     list_after_a_loss(&mut trees, &commits, restored);
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class("a"), Class::Remote);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn a_version_a_listing_took_r_back_from_is_not_sent_over() {
     );
     assert_eq!(trees.class("a"), Class::InSync);
     list_after_a_loss(&mut trees, &commits, lost);
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class("a"), Class::Remote);
     assert!(!trees.state().replaced_versions.contains_key("a"));
 }
 
@@ -261,6 +261,8 @@ fn r_keeps_the_newest_versions_a_file_held() {
     assert_eq!(kept.len(), REPLACED_VERSIONS_KEPT);
     assert_eq!(kept.first().map(String::as_str), Some("v3"));
     trees.remove_remote("a");
+    assert_eq!(trees.state().replaced_versions["a"].last().map(String::as_str), Some("v67"));
+    trees.remove_local("a");
     assert!(trees.state().replaced_versions.is_empty());
 }
 
@@ -383,3 +385,65 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
     }
 }
 
+
+fn resent_after_losing_v1() -> Trees {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
+    trees.set_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    trees
+}
+
+fn written_after_the_loss(digest: u8, version_id: &str) -> RemoteNode {
+    let node = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        ..remote_at(file(ROOT, "a", digest), 2)
+    };
+    version(node, version_id)
+}
+
+#[test]
+fn a_resend_gives_way_to_content_another_device_wrote_after_the_loss() {
+    let mut trees = resent_after_losing_v1();
+    trees.set_remote("f".into(), written_after_the_loss(2, "v2"));
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::Remote);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_resend_gives_way_to_a_listed_version_this_device_never_held() {
+    let mut trees = trees(&[synced("f", file(ROOT, "a", 1))]);
+    trees.set_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.set_listed_remote("f".into(), written_after_the_loss(2, "v2"));
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.settle();
+    assert_eq!(trees.class("f"), Class::Remote);
+    assert!(trees.unsent_edits().is_empty());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_resend_goes_out_over_a_version_this_device_held_before_the_server_lost_the_file() {
+    let mut trees = resent_after_losing_v1();
+    trees.set_remote("f".into(), written_after_the_loss(2, "v2"));
+    trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
+    trees.set_synced("f".into(), Some(file(ROOT, "a", 2)));
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    let records = trees.remote_records(|_| false);
+    trees.set_listed_remote("f".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 2, 2);
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [resend("f", 2)]);
+}

@@ -10464,3 +10464,66 @@ fn a_file_a_rolled_back_store_knows_under_an_old_id_is_linked_to_the_servers_cop
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(1))],
+        vec![(0, Step::Backup), (0, Step::RestoreEarlier), (0, u(2))],
+        vec![(0, Step::Restore)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn two_bystanders_take_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1)), (0, Step::Backup)],
+        vec![(0, Step::Backup), (0, u(2)), (0, Step::RestoreEarlier)],
+        vec![(0, Step::Restore)],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_bystander_sends_a_later_write_again_over_the_older_version_a_second_restore_brings_back() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (1, u(1, 0, 0)), (0, u(1, 0, 2))],
+        vec![
+            (0, Step::Backup),
+            (0, u(2, 9250263226113705932, 0)),
+            (1, u(2, 0, 0)),
+            (0, u(3, 199443798501314294, 1)),
+            (0, Step::RestoreEarlier),
+        ],
+        vec![(0, Step::Backup), (0, Step::RestoreEarlier)],
+    ];
+    keep(2, &phases).unwrap();
+}

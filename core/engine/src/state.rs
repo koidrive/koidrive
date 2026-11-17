@@ -120,7 +120,7 @@ pub struct TreesState {
     /// sent again after the server lost it (section 4.4).
     pub kept_originals: BTreeMap<NodeId, NodeId>,
     /// For each file of R, the `version_id`s it held before its current one as the log moved it
-    /// forward, oldest first, at most
+    /// forward, and the one it held when R dropped a file L still holds, oldest first, at most
     /// [`REPLACED_VERSIONS_KEPT`](crate::classify::REPLACED_VERSIONS_KEPT). A server never gives a
     /// version ID to two versions, also across a loss of commits (RFC 0016), so a version of this
     /// list that a restored server holds is one that the content S took from R replaced.
@@ -130,7 +130,8 @@ pub struct TreesState {
     /// sent again, and a node S forgot that L holds as S did. A delete that R holds of the node, or
     /// of a folder L holds it under, beats the resend unless L holds a change of this device's user
     /// below it: S then takes L's shape, so the delete reaches L. So does R taking the node again,
-    /// live with the content L holds, after R lacked it. The record also ends when S takes L's shape
+    /// live with the content L holds, after R lacked it, and R taking it at a version not in
+    /// [`TreesState::replaced_versions`]. The record also ends when S takes L's shape
     /// or L changes the node. A file whose resend ends with a change of this device's user holds an
     /// edit the server does not have ([`TreesState::unsent_edits`]). A folder S holds and R lacks
     /// that L holds such a change under is sent again as a resend.
