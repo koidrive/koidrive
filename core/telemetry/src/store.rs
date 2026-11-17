@@ -1041,6 +1041,20 @@ mod tests {
     }
 
     #[test]
+    fn what_a_dropped_hold_kept_is_deleted_while_a_child_process_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        let child = koidrive_test_support::Forked::start();
+        drop(hold);
+        let held = store.held().unwrap();
+        drop(child);
+        assert!(held.is_empty());
+        assert_eq!(held_files(dir.path()), 0);
+    }
+
+    #[test]
     fn what_a_run_that_died_held_is_deleted_and_never_queued() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
