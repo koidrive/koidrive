@@ -47,3 +47,7 @@ An old server ignores both fields and reports no ancestry. A new client MUST tre
 ## 7. Conformance
 
 Server tests cover an edit over an unseen current version, expansion through a retained version after a rollback, an overwritten resend returning `SUPERSEDED` without a write, an old client retaining a distinct write as a conflict copy, digest versions, and a sequence longer than 64 edits whose stored versions, change records, and listings remain bounded.
+
+## 8. Trust
+
+`made_over` is a client claim that authorizes the server to skip a conflict copy for a named version. This trust model is acceptable with one owner per server. The trust model MUST be reconsidered before teams or several people share one server.

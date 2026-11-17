@@ -3315,6 +3315,177 @@ mod tests {
 
     use super::*;
 
+    fn ancestry_user(kind: u8, text: u8) -> Step {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text,
+        })
+    }
+
+    fn ancestry_version(world: &World, write: i64) -> koidrive_proto::v1::VersionInfo {
+        world
+            .space
+            .node(&live_writes(&world.space)[&write])
+            .unwrap()
+            .current
+            .unwrap()
+    }
+
+    #[test]
+    fn ancestry_truncation_copies_when_expansion_pushes_the_authorizing_id_to_65() {
+        let mut world = World::new(2);
+        world.phase(0, &[(0, ancestry_user(1, 0))]).unwrap();
+        let first = ancestry_version(&world, 1);
+        world.phase(1, &[(0, ancestry_user(2, 1))]).unwrap();
+        let second = ancestry_version(&world, 2);
+        world
+            .run(
+                2,
+                &[
+                    (1, ancestry_user(2, 3)),
+                    (1, Step::Scan),
+                    (1, Step::Commit(Reply::Served)),
+                ],
+            )
+            .unwrap();
+        world.run(2, &[(0, ancestry_user(2, 2))]).unwrap();
+        send(&mut world, 0).unwrap();
+        let current = ancestry_version(&world, 4);
+        let unknown: Vec<_> = (0..62)
+            .map(|_| world.devices[1].engine.ids.uuid_v7(NOW as u64))
+            .collect();
+        let mut state = world.devices[1].engine.commits.state();
+        let flight = state.in_flight.as_mut().unwrap();
+        let commit_id = flight.commit.commit_id.clone();
+        let [
+            koidrive_proto::v1::Op {
+                op: Some(op::Op::UpdateContent(edit)),
+            },
+        ] = flight.commit.ops.as_mut_slice()
+        else {
+            panic!("{:?}", flight.commit.ops);
+        };
+        edit.made_over = std::iter::once(second.version_id.clone())
+            .chain(unknown.iter().cloned())
+            .chain([current.version_id.clone()])
+            .collect();
+        assert_eq!(edit.made_over.len(), 64);
+        world.devices[1].engine.commits = commit::Commits::from_state(state).unwrap();
+        world.devices[1].store.commits = world.devices[1].engine.commits.clone();
+        assert!(world.commit(1, Reply::Served).unwrap());
+        let result = world.space.recorded_result(&commit_id).unwrap();
+        assert_eq!(result.results[0].code, op_result::Code::ConflictCopy as i32);
+        let copy = world
+            .space
+            .node(&result.results[0].node_id)
+            .unwrap()
+            .current
+            .unwrap();
+        assert_eq!(ancestry_version(&world, 4), current);
+        assert_eq!(copy.content.as_ref().unwrap().mtime_ns, 3);
+        let expected: Vec<_> = [second.version_id, first.version_id]
+            .into_iter()
+            .chain(unknown)
+            .collect();
+        assert_eq!(copy.made_over, expected);
+        assert!(!copy.made_over.contains(&current.version_id));
+        world.phase(3, &[]).unwrap();
+        world.kept().unwrap();
+        let writes = live_writes(&world.space);
+        assert!(writes.contains_key(&3) && writes.contains_key(&4));
+    }
+
+    #[test]
+    fn a_resend_of_a_resend_preserves_its_value_and_names_the_first_replay() {
+        let mut world = World::new(3);
+        world.phase(0, &[(0, ancestry_user(1, 0))]).unwrap();
+        world.run(1, &[(0, Step::Backup)]).unwrap();
+        world.run(1, &[(0, ancestry_user(2, 1))]).unwrap();
+        send(&mut world, 0).unwrap();
+        world.run(1, &[(1, Step::Deliver(0)); 8]).unwrap();
+        world.run(1, &[(1, Step::Effect(Outcome::Run)); 4]).unwrap();
+        world.scan(1).unwrap();
+        assert!(world.devices[1].disk.holds(2));
+        assert!(!world.devices[2].disk.holds(2));
+        let original = ancestry_version(&world, 2);
+        world
+            .run(
+                2,
+                &[(0, Step::Restore), (0, Step::Leave), (1, Step::Connect)],
+            )
+            .unwrap();
+        world.run(2, &[(1, Step::Deliver(0)); 8]).unwrap();
+        send(&mut world, 1).unwrap();
+        let replay = ancestry_version(&world, 2);
+        assert_ne!(replay.version_id, original.version_id);
+        assert!(replay.made_over.contains(&original.version_id));
+        world.phase(2, &[]).unwrap();
+        world
+            .phase(3, &[(2, Step::Restore), (1, Step::Leave)])
+            .unwrap();
+        let replayed_again = ancestry_version(&world, 2);
+        assert_ne!(replayed_again.version_id, replay.version_id);
+        assert!(replayed_again.made_over.contains(&replay.version_id));
+        assert_eq!(replayed_again.content, original.content);
+        world.kept().unwrap();
+    }
+
+    #[test]
+    fn an_edit_made_over_the_original_value_after_a_resend_alias_loses_no_write() {
+        let mut world = World::new(2);
+        world.phase(0, &[(0, ancestry_user(1, 0))]).unwrap();
+        world.run(1, &[(0, Step::Backup)]).unwrap();
+        world.phase(1, &[(0, ancestry_user(2, 1))]).unwrap();
+        let original = ancestry_version(&world, 2);
+        world
+            .run(
+                2,
+                &[
+                    (0, Step::Restore),
+                    (0, ancestry_user(2, 2)),
+                    (0, Step::Connect),
+                ],
+            )
+            .unwrap();
+        for _ in 0..8 {
+            world.deliver(0, 0).unwrap();
+        }
+        world.scan(0).unwrap();
+        assert!(world.commit(0, Reply::Served).unwrap());
+        let flight = world.devices[0].engine.commits.in_flight().unwrap();
+        let [
+            koidrive_proto::v1::Op {
+                op: Some(op::Op::UpdateContent(edit)),
+            },
+        ] = flight.commit.ops.as_slice()
+        else {
+            panic!("{:?}", flight.commit.ops);
+        };
+        assert!(edit.made_over.contains(&original.version_id));
+        let commit_id = flight.commit.commit_id.clone();
+        world.connect(1).unwrap();
+        for _ in 0..8 {
+            world.deliver(1, 0).unwrap();
+        }
+        send(&mut world, 1).unwrap();
+        let replay = ancestry_version(&world, 2);
+        assert_ne!(replay.version_id, original.version_id);
+        assert!(replay.made_over.contains(&original.version_id));
+        assert!(world.commit(0, Reply::Served).unwrap());
+        let result = world.space.recorded_result(&commit_id).unwrap();
+        assert_eq!(result.results[0].code, op_result::Code::ConflictCopy as i32);
+        world.phase(3, &[]).unwrap();
+        assert!(
+            ancestry_version(&world, 3)
+                .made_over
+                .contains(&original.version_id)
+        );
+        world.kept().unwrap();
+    }
+
     #[test]
     fn a_move_answered_superseded_that_still_moved_the_node_is_a_made_up_name() {
         let mut space = SpaceDo::new(1, 0);

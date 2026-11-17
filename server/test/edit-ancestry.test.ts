@@ -311,6 +311,39 @@ describe("RFC 0026 edit ancestry", () => {
     expect((await a.tree()).get(file)!.current!.madeOver).toEqual(ids.slice(0, 64));
   });
 
+  it("keeps both writes when ancestry expansion pushes the current version past the 64-ID bound", async () => {
+    const { a, b, file, first, values } = await setup();
+    await a.commit([update(file, values[1]!, { madeOver: [first.versionId] })]);
+    const second = (await a.tree()).get(file)!.current!;
+    await a.commit([update(file, values[2]!, { madeOver: [second.versionId] })]);
+    const before = (await a.tree()).get(file)!;
+    const current = before.current!;
+    const unknown = Array.from({ length: 62 }, () => uuidv7());
+    expect(new Set(unknown).size).toBe(62);
+    const madeOver = [second.versionId, ...unknown, current.versionId];
+    expect(madeOver).toHaveLength(64);
+    const result = await b.commit([update(file, values[3]!, { madeOver })]);
+    expect(result.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
+    const tree = await a.tree();
+    expect(tree.size).toBe(3);
+    expect(tree.get(file)).toEqual(before);
+    expect(tree.get(file)!.current!.content!.manifestDigest).toEqual(values[2]!.manifestDigest);
+    const copy = tree.get(result.results[0]!.nodeId)!.current!;
+    expect(copy.content!.manifestDigest).toEqual(values[3]!.manifestDigest);
+    expect(copy.content!.manifestDigest).not.toEqual(current.content!.manifestDigest);
+    const expected = [second.versionId, first.versionId, ...unknown];
+    expect(copy.madeOver).toEqual(expected);
+    expect(copy.madeOver).toHaveLength(64);
+    expect(copy.madeOver).not.toContain(current.versionId);
+    const stored = await runInDurableObject(a.stub, (_instance, state) =>
+      state.storage.sql.exec("SELECT made_over FROM versions WHERE version_id = ?", copy.versionId).one(),
+    );
+    const storedChain = String(stored.made_over).split(",");
+    expect(storedChain).toEqual(expected);
+    expect(storedChain).toHaveLength(64);
+    expect(storedChain).not.toContain(current.versionId);
+  });
+
   it("upgrades existing versions with empty ancestry and keeps their content across restarts", async () => {
     const { a, file, first } = await setup();
     await runInDurableObject(a.stub, (_instance, state) => {
