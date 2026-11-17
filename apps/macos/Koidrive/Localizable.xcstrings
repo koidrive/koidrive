@@ -6,6 +6,38 @@
     "%@ is kept" : {},
     "%@ is missing." : {},
     "%@ isn't in a linked folder." : {},
+    "%@ left, %llu files" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ left, %2$#@n@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 2,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg file"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg files"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%@ now has the copy's content" : {},
     "%@ of %@" : {},
     "%@ of %@ removed. Copies are in the folder's local trash." : {},
@@ -196,6 +228,28 @@
         }
       }
     },
+    "%llu files found" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu file found"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu files found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "(this Mac)" : {},
     "A disk is mounted over a synced folder" : {},
     "A file can't be read" : {},
@@ -207,6 +261,50 @@
     "A name isn't allowed on this Mac" : {},
     "A waiting restore goes out once its folder’s earlier changes sync." : {},
     "About" : {},
+    "About %lld hours left" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "About %lld hour left"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "About %lld hours left"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "About %lld minutes left" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "About %lld minute left"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "About %lld minutes left"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Account" : {},
     "Active" : {},
     "Add Folder…" : {},
@@ -225,6 +323,70 @@
     "Anyone with the link can browse and download this folder, including files added later." : {},
     "Anyone with the link can download this file." : {},
     "Applies to %@, %@" : {},
+    "Applying %llu changes to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applying %1$#@n@ to %2$@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg change"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg changes"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Applying %llu changes to %@…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applying %1$#@n@ to %2$@…"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg change"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg changes"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Asked %@" : {},
     "At least 8 characters." : {},
     "Both files are kept" : {},
@@ -248,6 +410,40 @@
     "Checked %@ at %@." : {},
     "Checked today at %@." : {},
     "Checked yesterday at %@." : {},
+    "Checking %@" : {},
+    "Checking %@, %llu files found" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checking %1$@, %2$#@n@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 2,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg file found"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg files found"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Checking %@…" : {},
     "Checking files before sharing…" : {},
     "Checking for updates…" : {},
     "Choose" : {},
@@ -265,6 +461,70 @@
     "Claim this server" : {},
     "Codes expire after a few minutes." : {},
     "Command-line tool: koi" : {},
+    "Comparing %llu files in %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comparing %1$#@n@ in %2$@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg file"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg files"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Comparing %llu files in %@…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comparing %1$#@n@ in %2$@…"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "llu",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg file"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg files"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Conflicted copy" : {},
     "Conflicting copy of %@" : {},
     "Connect" : {},
@@ -357,6 +617,8 @@
     "Files deleted in %@ show up here." : {},
     "Files disappeared" : {},
     "Files stay in the folder and on the server." : {},
+    "Finishing up %@" : {},
+    "Finishing up %@…" : {},
     "Fix or remove line %u of .koiignore." : {},
     "Folder" : {},
     "Folder recovered" : {},
@@ -365,6 +627,8 @@
     "Free up disk space. %@" : {},
     "General" : {},
     "Get a code from Settings > Account on a signed-in device." : {},
+    "Getting the file list for %@" : {},
+    "Getting the file list for %@…" : {},
     "Held deletions" : {},
     "Held files" : {},
     "If the name is taken, Koidrive keeps both." : {},
@@ -414,6 +678,7 @@
       }
     },
     "In less than an hour" : {},
+    "In progress" : {},
     "It changes too often to upload. If it's a log or database, add it to .koiignore." : {},
     "It never shares file names, paths or contents." : {},
     "It stops syncing. Files already on it stay there." : {},
@@ -617,6 +882,7 @@
     "Sync state older than the folder" : {},
     "Sync stopped so older files aren't uploaded as edits." : {},
     "Syncing" : {},
+    "Syncing %lld folders" : {},
     "Syncing…" : {},
     "The copy moved to Deleted Files." : {},
     "The folder and the space sync both ways." : {},
@@ -714,6 +980,9 @@
     "Versions load when Koidrive reconnects." : {},
     "Waiting" : {},
     "Waiting for %@ to sync" : {},
+    "Waiting for your answer in %@" : {},
+    "Waiting for your answer in %@ and %@" : {},
+    "Waiting for your answer in %lld folders" : {},
     "Waiting until a refused change to it is fixed" : {},
     "What’s New" : {},
     "When you restore a file, you can follow it here." : {},

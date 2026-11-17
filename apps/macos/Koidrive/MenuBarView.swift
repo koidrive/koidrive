@@ -104,7 +104,8 @@ extension AppModel {
         switch headline {
         case .setup: SyncStatus.needsSetup.title
         case .halted: SyncStatus.halted.title
-        case .questions: String(localized: "Needs your answer")
+        case .questions: foldersWaitingForAnswers.map(\.waitingTitle) ?? String(localized: "Needs your answer")
+        case .status(.syncing) where syncHeader.folders > 1: String(localized: "Syncing \(syncHeader.folders) folders")
         case .status(let status): status.title
         }
     }
@@ -122,7 +123,8 @@ extension AppModel {
             }
             .joined(separator: " ")
         case .questions:
-            return state.status == .idle ? String(localized: "Everything else is up to date.") : state.status.title
+            return state.status == .idle || foldersWaitingForAnswers != nil
+                ? String(localized: "Everything else is up to date.") : state.status.title
         case .status(.paused):
             return String(localized: "Changes sync when you resume.")
         case .status(.offline):
@@ -214,31 +216,9 @@ struct MenuContent: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 24)
             }
-            if let progress = model.state.progress, model.headline == .status(.syncing) {
-                HStack(spacing: 10) {
-                    if let fraction = model.progressFraction {
-                        ProgressBar(fraction: fraction)
-                    }
-                    Text(byteProgress(done: progress.bytesDone, total: progress.bytesTotal))
-                        .font(.callout)
-                        .foregroundStyle(Color.text2)
-                }
-                .padding(.leading, 24)
-                .padding(.top, 4)
-                HStack(spacing: 6) {
-                    if progress.filesToUpload > 0 {
-                        CountChip(title: String(localized: "\(progress.filesToUpload.formatted()) to upload"), systemImage: "arrow.up")
-                    }
-                    if progress.filesToDownload > 0 {
-                        CountChip(title: String(localized: "\(progress.filesToDownload.formatted()) to download"), systemImage: "arrow.down")
-                    }
-                }
-                .padding(.leading, 24)
-                if let current = progress.current {
-                    PathText(path: model.displayPath(current.path, spaceID: current.spaceId))
-                        .font(.callout)
-                        .padding(.leading, 24)
-                }
+            if model.headline == .status(.syncing) {
+                SyncHeaderRows(header: model.syncHeader, current: model.syncHeader.current.map { model.displayPath($0.path, spaceID: $0.spaceId) },
+                               reduceMotion: reduceMotion)
             }
         }
         .padding(.horizontal, 7)
@@ -373,20 +353,6 @@ struct MenuContent: View {
             }
         }
     }
-
-    private func byteProgress(done: UInt64, total: UInt64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        formatter.allowsNonnumericFormatting = false
-        let units: [ByteCountFormatter.Units] = [.useBytes, .useKB, .useMB, .useGB, .useTB]
-        let power = { (bytes: UInt64) in min(units.count - 1, bytes < 1000 ? 0 : Int(log10(Double(bytes)) / 3)) }
-        formatter.allowedUnits = units[power(total)]
-        let totalText = formatter.string(fromByteCount: Int64(clamping: total))
-        formatter.allowedUnits = units[power(done)]
-        formatter.includesUnit = power(done) != power(total)
-        let doneText = formatter.string(fromByteCount: Int64(clamping: done))
-        return String(localized: "\(doneText) of \(totalText)")
-    }
 }
 
 extension AppModel {
@@ -399,7 +365,8 @@ extension AppModel {
 /// The system's linear progress view takes the system accent colour on macOS,
 /// not the tint.
 private struct ProgressBar: View {
-    let fraction: Double
+    let fill: Meter.Fill
+    let reduceMotion: Bool
 
     var body: some View {
         Capsule()
@@ -407,13 +374,92 @@ private struct ProgressBar: View {
             .frame(height: 4)
             .overlay(alignment: .leading) {
                 GeometryReader { geometry in
-                    Capsule()
-                        .fill(Color.koi)
-                        .frame(width: geometry.size.width * fraction)
+                    switch fill {
+                    case .fraction(let fraction):
+                        Capsule()
+                            .fill(Color.koi)
+                            .frame(width: geometry.size.width * fraction)
+                    case .sliding:
+                        TimelineView(.animation(paused: reduceMotion)) { context in
+                            let segment = geometry.size.width * 0.28
+                            let seconds = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6)
+                            let phase = reduceMotion ? 0.34 : seconds / 1.6 * 1.28 - 0.28
+                            Capsule()
+                                .fill(Color.koi)
+                                .frame(width: segment)
+                                .offset(x: geometry.size.width * phase)
+                        }
+                        .clipShape(Capsule())
+                    }
                 }
             }
             .accessibilityElement()
-            .accessibilityValue(Text(fraction, format: .percent.precision(.fractionLength(0))))
+            .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: Text {
+        switch fill {
+        case .fraction(let fraction): Text(fraction, format: .percent.precision(.fractionLength(0)))
+        case .sliding: Text("In progress")
+        }
+    }
+}
+
+private struct SyncHeaderRows: View {
+    let header: SyncHeader
+    let current: String?
+    let reduceMotion: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let activity = header.activity {
+                line(activity.leadText)
+            }
+            HStack(spacing: 10) {
+                ProgressBar(fill: header.meter.fill, reduceMotion: reduceMotion)
+                if let caption = header.meter.caption {
+                    line(caption.text)
+                        .fixedSize()
+                }
+            }
+            if header.meter.backlog != nil {
+                HStack {
+                    if let backlog = header.meter.backlog {
+                        line(backlog.text)
+                    }
+                    Spacer(minLength: 8)
+                    if let remaining = header.meter.remaining {
+                        line(remaining.text)
+                    }
+                }
+            }
+            if header.uploads > 0 || header.downloads > 0 {
+                HStack(spacing: 6) {
+                    if header.uploads > 0 {
+                        CountChip(title: String(localized: "\(header.uploads.formatted()) to upload"), systemImage: "arrow.up")
+                    }
+                    if header.downloads > 0 {
+                        CountChip(title: String(localized: "\(header.downloads.formatted()) to download"), systemImage: "arrow.down")
+                    }
+                }
+            }
+            if let current {
+                PathText(path: current)
+                    .font(.callout)
+            }
+            if let note = header.note {
+                line(note.noteText)
+            }
+        }
+        .padding(.leading, 24)
+        .padding(.top, 4)
+    }
+
+    private func line(_ text: String) -> some View {
+        Text(verbatim: text)
+            .font(.callout)
+            .foregroundStyle(Color.text2)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

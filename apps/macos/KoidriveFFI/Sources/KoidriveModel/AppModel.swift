@@ -32,6 +32,10 @@ public final class AppModel {
     public private(set) var checkedUpdate: UpdateStatus?
     public private(set) var failedUpdateCheck: FailedUpdateCheck?
     public private(set) var showsUpdateCheck = false
+    /// About how long the transfers have left, once their rate has held steady.
+    public private(set) var remainingTime: RemainingTime?
+    /// The clock the time-left estimate samples; previews and tests set their own.
+    @ObservationIgnored public var clock: @MainActor () -> Date = { .now }
     public let session: SyncSession
     @ObservationIgnored public let version: String
     @ObservationIgnored private let defaults: UserDefaults?
@@ -39,6 +43,9 @@ public final class AppModel {
     @ObservationIgnored private var realRoots: [String: String?] = [:]
     @ObservationIgnored private var updateInFlight: Task<UpdateResult, Error>?
     @ObservationIgnored private var updateCheckInFlight: Task<Void, Never>?
+    @ObservationIgnored private var checkingTotals: [String: UInt64] = [:]
+    @ObservationIgnored private var estimator = TransferEstimator()
+    @ObservationIgnored private var sampler: Task<Void, Never>?
     private static let acknowledgedVersion = "AcknowledgedVersion"
 
     /// With `defaults`, the model remembers there which version's update note the person saw; without, it shows none.
@@ -109,21 +116,51 @@ public final class AppModel {
 
     deinit {
         consumer?.cancel()
+        sampler?.cancel()
     }
 
     public func apply(_ event: SessionEvent) {
         switch event {
         case .status(let status): state.status = status
-        case .progress(let progress): state.progress = progress
+        case .progress(let progress):
+            state.progress = progress
+            sampleTransfers()
         case .account(let account): state.account = account
         case .folders(let folders):
             if folders.map(\.path) != state.folders.map(\.path) { realRoots.removeAll() }
             state.folders = folders
+            checkingTotals = folders.reduce(into: [:]) { totals, folder in
+                guard case .checking(_, let bytes) = folder.activity else { return }
+                totals[folder.spaceId] = max(bytes, checkingTotals[folder.spaceId] ?? 0)
+            }
         case .recentChanges(let changes): state.recentChanges = changes
         case .questions(let questions): replaceQuestions(questions)
         case .problems(let problems): state.problems = problems
         case .notices(let notices): state.notices = notices
         case .update(let update): state.update = update
+        }
+    }
+
+    /// Samples the bytes the folders moved for the time-left estimate. While transfers run, the model
+    /// samples once a second on its own.
+    public func sampleTransfers() {
+        guard let progress = state.progress else {
+            sampler?.cancel()
+            sampler = nil
+            estimator = TransferEstimator()
+            remainingTime = nil
+            return
+        }
+        let moved = state.folders.reduce(UInt64(0)) { $0 &+ $1.bytesMoved }
+        let estimate = estimator.update(at: clock(), moved: moved, done: progress.bytesDone, total: progress.bytesTotal)
+        if remainingTime != estimate { remainingTime = estimate }
+        if sampler == nil {
+            sampler = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    self?.sampleTransfers()
+                }
+            }
         }
     }
 
@@ -166,12 +203,26 @@ public final class AppModel {
     public var attentionCount: Int { state.questions.count + state.problems.count }
 
     /// What the menu bar popover leads with, in priority order: setup, then a folder that stopped,
-    /// then unanswered questions, then the sync status.
+    /// then unanswered questions while nothing else moves, then the sync status.
     public var headline: Headline {
         if needsSetup { return .setup }
         if state.status == .halted { return .halted }
-        if !state.questions.isEmpty { return .questions }
+        if !state.questions.isEmpty && !syncMoves { return .questions }
         return .status(state.status)
+    }
+
+    private var syncMoves: Bool {
+        state.status == .syncing && (state.progress != nil || state.folders.contains { $0.isBusy && $0.activity != nil })
+    }
+
+    /// What the header shows under a Syncing title.
+    public var syncHeader: SyncHeader {
+        SyncHeader(state: state, checkingTotals: checkingTotals, remaining: remainingTime)
+    }
+
+    /// The folders that wait only for the person's answers.
+    public var foldersWaitingForAnswers: FolderNames? {
+        FolderNames(state.folders.filter(\.awaitsAnswers).map(\.spaceName))
     }
 
     /// The badge on the menu bar icon. It follows the headline, except that a problem that
