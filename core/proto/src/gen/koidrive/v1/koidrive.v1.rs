@@ -152,6 +152,41 @@ pub struct TokenRequest {
     /// The deadline for next_refresh_credential, in Unix milliseconds of the server's rotation clock.
     #[prost(int64, tag="5")]
     pub rotate_before_ms: i64,
+    #[prost(enumeration="token_request::Telemetry", tag="6")]
+    pub telemetry: i32,
+}
+/// Nested message and enum types in `TokenRequest`.
+pub mod token_request {
+    /// This device's choice about usage reports, which the server's own report follows (RFC 0028).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Telemetry {
+        Unspecified = 0,
+        On = 1,
+        Off = 2,
+    }
+    impl Telemetry {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "TELEMETRY_UNSPECIFIED",
+                Self::On => "TELEMETRY_ON",
+                Self::Off => "TELEMETRY_OFF",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "TELEMETRY_UNSPECIFIED" => Some(Self::Unspecified),
+                "TELEMETRY_ON" => Some(Self::On),
+                "TELEMETRY_OFF" => Some(Self::Off),
+                _ => None,
+            }
+        }
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AccessToken {
