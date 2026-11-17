@@ -13,7 +13,6 @@ enum SettingsTab: String {
 }
 
 struct SettingsView: View {
-    @Environment(AppModel.self) private var model
     @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.folders
 
     var body: some View {
@@ -29,7 +28,6 @@ struct SettingsView: View {
                 .tag(SettingsTab.storage)
             ProblemsSettings()
                 .tabItem { Label("Problems", systemImage: "exclamationmark.triangle") }
-                .badge(model.state.problems.count)
                 .tag(SettingsTab.problems)
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
