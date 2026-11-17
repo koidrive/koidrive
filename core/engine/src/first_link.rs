@@ -596,12 +596,10 @@ fn at_place(shape: &Shape, remote: &Shape) -> bool {
 }
 
 fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
-    match (remote, local) {
-        (Some(remote), Some(local)) => {
-            remote.mtime_ns % 10_000_000 != 0 && remote.mtime_ns == local.mtime_ns
-        }
-        _ => false,
-    }
+    remote
+        .as_ref()
+        .is_some_and(|remote| remote.mtime_ns % 10_000_000 != 0)
+        && placed_here(remote, local)
 }
 
 fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {

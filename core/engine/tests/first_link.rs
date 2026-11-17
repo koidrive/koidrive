@@ -3871,6 +3871,43 @@ fn two_writes_with_the_same_bytes_and_a_coarse_mtime_are_not_linked() {
 }
 
 #[test]
+fn a_download_whose_time_a_coarse_disk_cut_is_linked_to_the_server_file_at_its_place() {
+    for local_mtime_ns in [
+        1_794_268_746_000_000_000,
+        1_794_268_747_000_000_000,
+        1_794_268_747_230_000_000,
+        1_794_268_747_234_567_800,
+    ] {
+        let (sent, trees) = sent_beside(local_mtime_ns, 1_794_268_747_234_567_891);
+        assert_eq!(sent, [], "{local_mtime_ns}");
+        assert_eq!(
+            trees.synced().live("r-a"),
+            Some(&written("a", 1_794_268_747_234_567_891)),
+            "{local_mtime_ns}"
+        );
+        assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+    }
+}
+
+#[test]
+fn a_coarse_time_that_is_not_the_server_files_time_cut_to_its_precision_is_sent() {
+    for local_mtime_ns in [
+        1_794_268_748_000_000_000,
+        1_794_268_744_000_000_000,
+        1_794_268_747_240_000_000,
+        1_794_268_747_234_567_900,
+    ] {
+        let (sent, trees) = sent_beside(local_mtime_ns, 1_794_268_747_234_567_891);
+        assert_eq!(
+            sent,
+            [("create file", "l-a".to_owned())],
+            "{local_mtime_ns}"
+        );
+        assert_eq!(trees.synced().get("r-a"), None, "{local_mtime_ns}");
+    }
+}
+
+#[test]
 fn two_writes_with_the_same_bytes_and_a_copied_sub_second_mtime_are_linked() {
     let (sent, trees) = sent_beside(1_794_268_740_123_456_789, 1_794_268_740_123_456_789);
     assert_eq!(sent, []);
