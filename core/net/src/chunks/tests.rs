@@ -2319,3 +2319,43 @@ async fn a_chunk_falling_back_to_puts_keeps_the_attempts_its_bundle_already_used
         "4 bundle attempts leave one PUT attempt of 5"
     );
 }
+
+#[tokio::test]
+async fn a_bundle_waiting_to_be_resent_goes_as_puts_once_another_bundle_gets_a_404() {
+    fn busy_then_missing(bundle: &ChunkBundle, n: usize) -> (u16, Vec<u8>) {
+        match n {
+            1 => {
+                let error = ProtoError {
+                    code: Code::RetryLater as i32,
+                    retry_after_ms: 300,
+                    ..Default::default()
+                };
+                (503, error.encode_to_vec())
+            }
+            2 => (404, Vec::new()),
+            _ => all_stored(bundle, n),
+        }
+    }
+    let parts = named(130);
+    let run = posting(
+        busy_then_missing,
+        &parts,
+        transfer(),
+        Duration::from_millis(30),
+    )
+    .await;
+    assert_eq!(run.result.as_ref().unwrap().len(), 130);
+    let bundles: Vec<_> = (run.sent.iter())
+        .filter_map(|sent| match sent {
+            Wire::Bundle(tickets) => Some(tickets.clone()),
+            Wire::Put(_) => None,
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    assert!(
+        bundles.iter().all(|tickets| seen.insert(tickets.clone())),
+        "a bundle was sent again after another bundle got a 404: {:?}",
+        run.posts()
+    );
+    assert!(!run.session.bundles_offered());
+}
