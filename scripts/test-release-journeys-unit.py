@@ -35,6 +35,53 @@ class ReleaseJourneys(unittest.TestCase):
     def evidence(self, scenario="verify"):
         return DRIVER.Evidence(self.root / "evidence", "v0.1.0-alpha.3", scenario)
 
+    def worker_fixture(self, output, status=None):
+        (self.root / "server/web/dist").mkdir(parents=True)
+        wrangler = self.root / "server/node_modules/wrangler/bin/wrangler.js"
+        wrangler.parent.mkdir(parents=True)
+        wrangler.touch()
+        (self.root / "server/wrangler.jsonc").write_text(json.dumps({"assets": {}}))
+        evidence = unittest.mock.Mock(report={"inputs": {}}, secrets=[])
+        process = unittest.mock.Mock()
+        process.poll.return_value = status
+        evidence.start.return_value = (process, {}, unittest.mock.Mock(raw=""), unittest.mock.Mock(raw=output))
+        return evidence
+
+    def test_worker_uses_captured_assigned_url_and_disables_inspector_port(self):
+        url = "http://127.0.0.1:49317"
+        claim = "ABCD-1234"
+        evidence = self.worker_fixture("\x1b[32m[wrangler:info] Ready on " + url + "\x1b[0m\nKoidrive claim code (valid for 1 hour): " + claim + "\n")
+        with patch.object(DRIVER, "REPO", self.root), patch.object(DRIVER.urllib.request, "build_opener") as opener:
+            self.assertEqual(DRIVER.worker(evidence, self.root), (url, claim))
+        opener.return_value.open.assert_called_once_with(url + "/setup", timeout=15)
+        argv = evidence.start.call_args.args[0]
+        self.assertEqual(argv[argv.index("--port") + 1], "0")
+        self.assertEqual(argv[argv.index("--inspector-port") + 1], "0")
+        self.assertEqual(evidence.secrets, [claim])
+
+    def test_worker_refuses_malformed_ready_url_before_requesting_setup(self):
+        evidence = self.worker_fixture("[wrangler:info] Ready on http://example.com:49317\n")
+        with patch.object(DRIVER, "REPO", self.root), patch.object(DRIVER.urllib.request, "build_opener") as opener:
+            with self.assertRaises(ValueError):
+                DRIVER.worker(evidence, self.root)
+        opener.assert_not_called()
+
+    def test_worker_exit_with_ready_output_does_not_request_setup(self):
+        evidence = self.worker_fixture("[wrangler:info] Ready on http://localhost:49317\n", status=17)
+        with patch.object(DRIVER, "REPO", self.root), patch.object(DRIVER.urllib.request, "build_opener") as opener:
+            with self.assertRaisesRegex(RuntimeError, "did not become ready"):
+                DRIVER.worker(evidence, self.root)
+        opener.assert_not_called()
+
+    def test_worker_startup_timeout_does_not_request_setup(self):
+        evidence = self.worker_fixture("Starting local server...\n")
+        with patch.object(DRIVER, "REPO", self.root), patch.object(DRIVER.urllib.request, "build_opener") as opener, \
+                patch.object(DRIVER, "until", side_effect=lambda predicate, timeout: predicate()) as wait:
+            with self.assertRaisesRegex(RuntimeError, "did not become ready"):
+                DRIVER.worker(evidence, self.root)
+        self.assertEqual(wait.call_args.args[1], 90)
+        opener.assert_not_called()
+
     def passing_report(self, scenario):
         return {"scenario": scenario, "assertions": [{"name": name, "passed": True}
                 for name in DRIVER.REQUIRED[scenario]], "cleanup": [{"name": "owned state", "passed": True}], "errors": []}

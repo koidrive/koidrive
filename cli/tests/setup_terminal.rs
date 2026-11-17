@@ -636,7 +636,10 @@ fn koi(home: &Path) -> Command {
         .env_remove("KOIDRIVE_TELEMETRY")
         .env_remove("CI")
         .env_remove("KOI_PLAIN")
-        .env("KOIDRIVE_TELEMETRY_URL", "http://127.0.0.1:9");
+        .env(
+            "KOIDRIVE_TELEMETRY_URL",
+            format!("http://{}", koidrive_test_support::reset_tcp_address()),
+        );
     command
 }
 
@@ -1593,9 +1596,7 @@ fn a_wrong_claim_code_is_asked_again_after_a_new_code_is_requested() {
 #[test]
 fn an_address_without_a_server_is_asked_again() {
     let home = Home::new(&[]);
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-    let nowhere = format!("http://{}", closed.local_addr().unwrap());
-    drop(closed);
+    let nowhere = format!("http://{}", koidrive_test_support::reset_tcp_address());
     let steps = [
         step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&nowhere)),

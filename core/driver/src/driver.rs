@@ -3586,11 +3586,14 @@ mod tests {
         driver.stop().await;
     }
 
-    const NOWHERE: &str = "http://127.0.0.1:9/";
+    fn nowhere() -> &'static str {
+        static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        URL.get_or_init(|| format!("http://{}/", koidrive_test_support::reset_tcp_address()))
+    }
 
     fn paired(paths: &Paths, device_id: &str) {
         Credential {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             ..credential(device_id)
         }
         .save_new(&paths.credential())
@@ -3620,7 +3623,7 @@ mod tests {
             root: root.to_path_buf(),
             root_dev: fs::metadata(root).unwrap().dev(),
             root_volume: None,
-            server_url: NOWHERE.into(),
+            server_url: nowhere().into(),
             device_id: device_id.into(),
             linked_at_ms: 1,
             found_marker: false,
@@ -3982,7 +3985,7 @@ mod tests {
         let paths = Paths::under(&base.join("profile"));
         linked(&paths, &root, "d1");
         let other = Owner {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             device_id: "d2".into(),
         };
         claim::set_owner(&root, &other).unwrap();
@@ -5427,8 +5430,8 @@ mod tests {
                 Err(CredentialError::SignOutPending)
             ));
             for refused in [
-                driver.pair(NOWHERE, "code", "other").await,
-                driver.claim(NOWHERE, "code", "Ada", "other").await,
+                driver.pair(nowhere(), "code", "other").await,
+                driver.claim(nowhere(), "code", "Ada", "other").await,
                 driver.save_credential(credential.clone()).await,
             ] {
                 assert!(matches!(
@@ -5503,7 +5506,7 @@ mod tests {
 
     fn owned(paths: &Paths, root: &Path) {
         let owner = Owner {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             device_id: "d1".into(),
         };
         claim::set_owner(root, &owner).unwrap();
@@ -5554,7 +5557,7 @@ mod tests {
         let new = base.join("New");
         linked(&paths, &old, "d1");
         let owner = Owner {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             device_id: "d1".into(),
         };
         claim::set_owner(&old, &owner).unwrap();
@@ -5587,7 +5590,7 @@ mod tests {
             let root = base.join("Koidrive");
             linked(&paths, &root, "d1");
             let old = Owner {
-                server: NOWHERE.into(),
+                server: nowhere().into(),
                 device_id: "d1".into(),
             };
             claim::set_owner(&root, &old).unwrap();
@@ -5657,7 +5660,7 @@ mod tests {
         leaving.set_phase(Phase::Committed).unwrap();
         drop(driver);
         let replacement = Owner {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             device_id: "d2".into(),
         };
         claim::set_owner(&root, &replacement).unwrap();
@@ -6168,7 +6171,7 @@ mod tests {
         claim::set_owner(
             &other,
             &Owner {
-                server: NOWHERE.into(),
+                server: nowhere().into(),
                 device_id: "d1".into(),
             },
         )
@@ -6493,7 +6496,7 @@ mod tests {
         claim::set_owner(
             &root,
             &Owner {
-                server: NOWHERE.into(),
+                server: nowhere().into(),
                 device_id: "d1".into(),
             },
         )
@@ -7413,7 +7416,7 @@ mod tests {
         let driver = Driver::open(paths).unwrap();
         fs::create_dir(root.join(koidrive_fs::PRIVATE_DIR)).unwrap();
         let first = Owner {
-            server: NOWHERE.into(),
+            server: nowhere().into(),
             device_id: "d1".into(),
         };
         claim::set_owner(&root, &first).unwrap();

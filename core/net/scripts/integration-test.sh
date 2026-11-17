@@ -9,7 +9,7 @@ set -m
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 work="$(mktemp -d)"
-port="${KOIDRIVE_TEST_PORT:-$(node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })')}"
+port="${KOIDRIVE_TEST_PORT:-0}"
 log="$work/wrangler.log"
 wrangler="$root/server/node_modules/.bin/wrangler"
 
@@ -34,24 +34,29 @@ trap cleanup EXIT
 
 # set -m puts the server in its own process group, so cleanup stops workerd with it.
 (cd "$root/server" && WRANGLER_SEND_METRICS=false exec "$wrangler" dev --ip 127.0.0.1 --port "$port" \
-  --persist-to "$work/state" --show-interactive-dev-session=false) >"$log" 2>&1 &
+  --inspector-port 0 --persist-to "$work/state" --show-interactive-dev-session=false) >"$log" 2>&1 &
 server_pid=$!
 
 for _ in $(seq 1 120); do
-  if grep -q "Ready on" "$log"; then
-    break
-  fi
   if ! kill -0 "$server_pid" 2>/dev/null; then
     echo "error: wrangler dev exited before it was ready." >&2
     exit 1
   fi
+  if server_url=$(python3 "$root/scripts/worker_ready.py" "$log"); then
+    break
+  else
+    parse_status=$?
+    if [ "$parse_status" -ne 1 ]; then
+      exit "$parse_status"
+    fi
+  fi
   sleep 0.5
 done
-if ! grep -q "Ready on" "$log"; then
+if [ -z "${server_url:-}" ]; then
   echo "error: wrangler dev was not ready on port $port after 60 seconds." >&2
   exit 1
 fi
 
 cd "$root"
-KOIDRIVE_TEST_SERVER="http://127.0.0.1:$port" KOIDRIVE_TEST_SERVER_LOG="$log" \
+KOIDRIVE_TEST_SERVER="$server_url" KOIDRIVE_TEST_SERVER_LOG="$log" \
   cargo test -p koidrive-net --locked --test server -- --ignored "$@"

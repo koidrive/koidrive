@@ -1691,22 +1691,18 @@ async fn serve_once(answer: &'static [u8]) -> std::net::SocketAddr {
 
 #[tokio::test]
 async fn each_way_a_connection_fails_names_its_step_and_cause() {
-    let closed = TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    let reset = koidrive_test_support::reset_tcp_address();
     let plain_http = serve_once(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n").await;
     let hung_up = serve_once(b"").await;
     let token_refused = serve_once(b"HTTP/1.1 503 Unavailable\r\ncontent-length: 0\r\n\r\n").await;
     let cases = [
-        (format!("http://{closed}"), true, "connect: refused"),
+        (format!("http://{reset}"), true, "upgrade: reset"),
         (
             "https://koidrive-test.invalid".to_owned(),
             true,
             "connect: dns",
         ),
-        (format!("http://{closed}"), false, "token: refused"),
+        (format!("http://{reset}"), false, "token: reset"),
         (format!("http://{token_refused}"), false, "token: http 503"),
         (format!("https://{plain_http}"), true, "tls: tls"),
         (format!("http://{hung_up}"), true, "upgrade: reset"),
@@ -1770,6 +1766,9 @@ fn a_disconnect_reads_in_plain_words() {
     let transport = Transport::of(Step::Tls, &certificate);
     assert_eq!(transport.cause, Cause::Certificate);
     assert!(transport.detail.contains("UnknownIssuer"), "{transport:?}");
+    let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+    let transport = Transport::of(Step::Connect, &refused);
+    assert_eq!(transport.cause, Cause::Refused);
 }
 
 #[tokio::test]
@@ -1793,12 +1792,16 @@ async fn the_first_retry_after_a_working_connection_is_quick_and_the_next_backs_
     };
     assert!(retry_in <= Duration::from_millis(400), "{retry_in:?}");
 
-    drop(listener);
     drop(silent);
-    let Event::Disconnected { reason, retry_in } = next(&mut events).await else {
+    let (event, _) = tokio::join!(next(&mut events), async {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        assert!(tcp.read(&mut request).await.unwrap() > 0);
+    });
+    let Event::Disconnected { reason, retry_in } = event else {
         panic!("the next attempt fails");
     };
-    assert_eq!(reason.kind(), "connect: refused");
+    assert_eq!(reason.kind(), "upgrade: reset");
     assert!(retry_in >= Duration::from_millis(400), "{retry_in:?}");
     session.close().await;
 }

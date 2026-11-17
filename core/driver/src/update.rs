@@ -1478,8 +1478,8 @@ mod tests {
             "a redirect is not followed"
         );
 
-        drop(listener);
-        let (closed, _) = releases_url(Some(&base)).unwrap();
+        let closed_base = format!("http://{}/", koidrive_test_support::reset_tcp_address());
+        let (closed, _) = releases_url(Some(&closed_base)).unwrap();
         assert_eq!(ask(&http, closed, None, ASSET).await, Answer::Unreachable);
     }
 
@@ -1616,7 +1616,8 @@ mod tests {
         );
         assert_eq!(answered, Err(CheckError::Refused));
         assert_eq!(updates.notice(), Update::UpToDate { checked_at_ms: 100 });
-        drop(listener);
+        let closed_base = format!("http://{}/", koidrive_test_support::reset_tcp_address());
+        let (url, _) = releases_url(Some(&closed_base)).unwrap();
         assert_eq!(
             updates.ask_once(&http, url, &changed).await,
             Err(CheckError::Unreachable)

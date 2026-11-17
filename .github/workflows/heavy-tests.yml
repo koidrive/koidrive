@@ -31,6 +31,15 @@ on:
         description: Number of times to run the selection on each OS, 1 to 100
         type: string
         default: '1'
+      parallel:
+        description: Repetitions running at once on the same host, 1 to 8
+        type: string
+        default: '1'
+      mode:
+        description: Cargo tests or fresh local Worker integration launchers
+        type: choice
+        options: [cargo, worker]
+        default: cargo
       seed:
         description: PROPTEST_RNG_SEED of the first run; run k uses seed + k - 1 (empty derives it from the run ID)
         type: string
@@ -61,6 +70,8 @@ env:
   SEED: ${{ inputs.seed }}
   FEATURES: ${{ inputs.features }}
   IGNORED: ${{ inputs.ignored }}
+  PARALLEL: ${{ inputs.parallel || '1' }}
+  MODE: ${{ inputs.mode || 'cargo' }}
 
 defaults:
   run:
@@ -88,6 +99,16 @@ jobs:
           [[ "$FILTER" != -* ]] || errors+=("filter must be a test name, not an option: '$FILTER' starts with '-'.")
           [[ "$CASES" =~ ^[0-9]{0,7}$ ]] || errors+=("cases must be empty or a whole number up to 9999999, got '$CASES'.")
           [[ "$REPEAT" =~ ^([1-9][0-9]?|100)$ ]] || errors+=("repeat must be a whole number from 1 to 100, got '$REPEAT'.")
+          [[ "$PARALLEL" =~ ^[1-8]$ ]] || errors+=("parallel must be a whole number from 1 to 8, got '$PARALLEL'.")
+          [[ "$MODE" == cargo || "$MODE" == worker ]] || errors+=("mode must be cargo or worker.")
+          if [ "$MODE" = worker ]; then
+            case "$CRATE" in
+              koidrive-net) worker_test=server ;;
+              koidrive-driver) worker_test=sync ;;
+              *) worker_test=; errors+=("worker mode supports koidrive-net and koidrive-driver.") ;;
+            esac
+            [[ -z "$TEST" || "$TEST" == "$worker_test" ]] || errors+=("worker mode runs --test $worker_test, not '$TEST'.")
+          fi
           [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
           [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
           for error in "${errors[@]}"; do echo "::error::$error"; done
@@ -124,19 +145,56 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: env.MODE == 'worker' || env.PARALLEL != '1'
+        with:
+          ref: ${{ github.sha }}
+          path: .heavy-harness
+          sparse-checkout: scripts
+          persist-credentials: false
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: heavy-tests
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+        if: env.MODE == 'worker'
+        with:
+          package_json_file: server/package.json
+          dest: ${{ runner.tool_cache }}/setup-pnpm
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        if: env.MODE == 'worker'
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - name: Install the Worker dependencies
+        if: env.MODE == 'worker'
+        working-directory: server
+        run: pnpm install --frozen-lockfile && pnpm build:web
       - name: Build the tests
         run: |
           if ! cargo metadata --format-version 1 --locked --no-deps | jq -e --arg crate "$CRATE" 'any(.packages[]; .name == $crate)' > /dev/null; then
             echo "::error::$CRATE is not a package of the workspace at $SHA."
             exit 1
           fi
+          if [ "$MODE" = worker ]; then
+            case "$CRATE" in
+              koidrive-net) TEST=server ;;
+              koidrive-driver) TEST=sync ;;
+            esac
+          fi
           cargo test --locked --no-run -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+      - name: Run parallel or Worker repetitions
+        if: env.MODE == 'worker' || env.PARALLEL != '1'
+        run: |
+          python3 .heavy-harness/scripts/stress-test-servers.py \
+            --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/heavy-tests" \
+            --mode "$MODE" --crate "$CRATE" --test "$TEST" --filter "$FILTER" \
+            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" \
+            --repeat "$REPEAT" --parallel "$PARALLEL" --seed "$SEED_BASE"
       - name: Run the tests
+        if: env.MODE == 'cargo' && env.PARALLEL == '1'
         run: |
           out="$RUNNER_TEMP/heavy-tests"
           mkdir -p "$out/logs" "$out/regressions"

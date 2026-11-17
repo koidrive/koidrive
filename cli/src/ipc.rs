@@ -908,7 +908,7 @@ pub(crate) mod tests {
         let (_dir, paths, root) = linked_profile();
         fs::write(root.join("kept.txt"), b"kept").unwrap();
         koidrive_driver::Credential {
-            server: "http://127.0.0.1:9/".into(),
+            server: format!("http://{}/", koidrive_test_support::reset_tcp_address()),
             user_id: "u1".into(),
             user_name: None,
             device_id: "d1".into(),
