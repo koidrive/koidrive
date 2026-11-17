@@ -2994,8 +2994,9 @@ impl Trees {
 
     /// The changes of other devices that this device has not taken yet, for [`Trees::forget_lost`]
     /// once a bootstrap has replaced R: the nodes L holds as S does, with no local change below them,
-    /// while R holds them in the trash, and the files whose content L and S hold alike, with no
-    /// waiting S update to other content, while R holds other content live. Neither holds an unsent edit or content an edit of this
+    /// while R holds them in the trash or, with no waiting S update, does not hold them, and the
+    /// files whose content L and S hold alike, with no waiting S update to other content, while R
+    /// holds other content live. Neither holds an unsent edit or content an edit of this
     /// device set ([`Trees::edited_here`]). Each edit comes with whether a commit of this device
     /// that the server lost made R's record of the file's position: `lost_here` tells whether a seq
     /// is one of those commits.
@@ -3006,12 +3007,14 @@ impl Trees {
                 !self.unsent_edits.contains(*id) && !self.edited_here.contains_key(*id)
             })
             .filter_map(|(id, synced)| {
-                let remote = self.r.get(id)?;
-                if remote.trashed {
+                let remote = self.r.get(id);
+                if remote.is_none_or(|remote| remote.trashed) {
                     let unchanged = self.l.live(id).is_some_and(|local| local.same(synced))
+                        && (remote.is_some() || self.acknowledged(id) == Some(synced))
                         && !holding_changes.contains(id);
                     return unchanged.then(|| (id.clone(), Untaken::Delete));
                 }
+                let remote = remote?;
                 let held = synced.content.as_ref()?;
                 let acknowledged = self.acknowledged(id)?.content.as_ref()?;
                 let local = self.l.live(id)?.content.as_ref()?;
@@ -3192,9 +3195,9 @@ impl Trees {
     /// tell it survived (GUN-457). The agreement is then taken again from L and the new R.
     ///
     /// `untaken` lists the changes of other devices that this device had not taken before the
-    /// bootstrap ([`Trees::untaken_changes`]). A node L held as S did while R held it in the trash
-    /// was deleted by another device, so L holds nothing the server lacks. It keeps S whatever the
-    /// new R holds, so the trash, R lacking the node, or the content a restore brought back is a
+    /// bootstrap ([`Trees::untaken_changes`]). A node L held as S did while R held it in the trash,
+    /// or did not hold it, was deleted by another device, so L holds nothing the server lacks. It
+    /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore brought back is a
     /// remote change, and the delete is not undone.
     ///
     /// The other changes are files whose content L and S held alike while R held other content
