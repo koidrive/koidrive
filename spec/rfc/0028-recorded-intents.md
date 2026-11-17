@@ -1,6 +1,6 @@
 # RFC 0028: Recorded intents
 
-Status: proposed. Applies to spec v0 (format_version 1). Amends spec v0 §6.2 R3, R7 and R8, RFC 0004 §5, RFC 0006 §8, RFC 0017 §2 and §3, RFC 0018 §4, §5 and §7, RFC 0019 §4, RFC 0022 §2, RFC 0026 §3, and the sync-engine design §2.8, §4.4 and §6.4. Adds messages and fields to `Op`, `NodeState`, `Delete`, `CreateFile` and `Welcome`.
+Status: proposed. Applies to spec v0 (format_version 1). Amends spec v0 §6.2 R3, R7 and R8, RFC 0004 §5, RFC 0006 §8, RFC 0017 §2 and §3, RFC 0018 §4, §5 and §7, RFC 0019 §4, RFC 0022 §2, RFC 0026 §3, and the sync-engine design §2.8, §4.4 and §6.4. Adds messages and fields to `Op`, `NodeState`, `Delete` and `CreateFile`.
 
 When a server loses commits (a restore within one history, RFC 0013), each device has to work out again which changes its own user made that the server no longer holds, which values it holds that another user made and the server lost, and which of its deletes are still owed. The protocol carries none of these facts. A device reads them from its remote, synced and local trees (R, S and L, design §2.2) and from side tables keyed by seq. Seqs are reused after a loss, and S is a snapshot of a server state that no longer exists, so each rule guesses, and each fix to a guess has broken another one.
 
@@ -25,7 +25,7 @@ message Intent {
   string author_device_id = 2;
   bool replay = 3;
   bytes over = 4;
-  uint64 generation = 5;
+  int64 applied_at_ms = 5;
 }
 
 message FieldIntents {
@@ -57,16 +57,10 @@ message NodeState {
   FieldIntents intents = 14;
   repeated bytes trash_held = 15;
 }
-
-message Welcome {
-  // fields 1 to 14 as before (13 and 14: GUN-1004)
-  uint64 restore_generation = 15;
-}
 ```
 
 - `Op.intent` names the intent an op sends. `over` is the intent the sender expects a node's place or status to hold: such an op applies only while the field holds it (§3.1). Content ops leave it empty. `Op.fields` is set only on `CreateDir` and `CreateFile` and names a separate intent for each field, for a create whose fields different users set (§5.4). A field it leaves empty takes `Op.intent`.
-- On a `NodeState`, `intents` names the intent that set each field, `replay` on each one means the value is carried, and `generation` is the restore generation at which the field took it (§3.1). `trash_held` is the trash's `held` list on a trashed node (§3.3).
-- `Welcome.restore_generation` is the space's current restore generation.
+- On a `NodeState`, `intents` names the intent that set each field, `replay` on each one means the value is carried, and `applied_at_ms` is when the server first applied it (§3.1). On a replayed op, `applied_at_ms` repeats the time the row's result reported. `trash_held` is the trash's `held` list on a trashed node (§3.3).
 - `Delete.unseen` and `Delete.held` describe what the deleting user saw (§3.3, §5.3).
 - `CreateFile.pending_for` is RFC 0017's mark, as on `CreateDir`.
 
@@ -78,24 +72,24 @@ The feature `field_intents` (RFC 0022 §2) announces this RFC.
 
 - An applied op sets each field it changes to the op's intent for that field. A change of a node's mark is a change of its place.
 - An op without an intent, from a client before this RFC, gets one the server mints: a new UUIDv7 with `replay` false. Its author is the committing device, except that an op with RFC 0018 `resend`, RFC 0019 `from` or a `CreateFile.source_version_id` gets an empty author, so it is carried (§3.2).
-- The server stamps each field's intent with the **restore generation** at which the field took it. The generation is a counter per history that each restore within the history (RFC 0013) increments. A restore keeps a prefix of the server's commits, so a field intent from an earlier generation than a lost commit was set before that commit.
+- The server stamps each field's intent with its **applied time**: the `committed_at_ms` (RFC 0013 §2) of the commit that first applied the intent. A replay that sends `applied_at_ms` keeps that time; any other op gets its own commit's. The server stamps each commit later than its head's, so commit times only grow within a history, also across a restore of its storage, which it doesn't see. A restore keeps a prefix of the server's commits, so a field intent applied at or before a lost commit's time was set before that commit, and one applied later was set after the restore.
 - An op whose intent and value equal what the field holds changes nothing and is answered `APPLIED`. Under rule B (§4), such an op from the intent's author claims a carried value: the server clears the carried flag. Among the checks an op meets, this one runs first, ahead of the rest of this section and §3.4 to §3.8. A retry of a stored `commit_id` gets its stored result before any op check (RFC 0006 §8).
 - A `Move` or `Delete` with `over` is `SUPERSEDED` and changes nothing unless the node's place or status holds `over`, with one exception: a `Delete` whose node is trashed, and whose `over` is the status intent that the current trash replaced, adds its `held` to the trash (§3.3) and is `APPLIED` without other change. Place and status replays carry `over` (§5.4), and so does an owner's finishing move (§6.1), which sends the intent that set the mark with `over` set to that same intent, so a user's rename or mark clear in between supersedes it. A content op has no `over`: R3 and RFC 0026 §3 decide it from `made_over`.
 - An op that RFC 0016 makes a no-op because the content is equal keeps the field's intent, and the result reports the `NodeState`.
 - A conflict copy (R3) gets the op's content intent, and place and status intents that the server mints. When the op is carried, these are carried too, with the content intent's author (§3.5). A merge (R2) keeps the target's intents.
-- When the server revokes a device (RFC 0009), it finishes each mark that device owns (§6.1) whose folder holds no live node at the owed name. Any other mark it owns becomes ownerless, and RFC 0017 §3 lets any device finish it. A mark that a restore or a replay brings back with a revoked owner is treated the same at the commit that brings it.
-- Each change of a field's intent or carried flag, and each `held` merge (§3.3), writes a change record and moves a revision that RFC 0004 §5 compares: `content_rev` for content, `meta_rev` for place and status. A claim under rule B (§4) also moves the edit revisions (RFC 0018 §3, RFC 0019 §3).
+- When the server revokes a device (RFC 0009), it finishes each mark that device owns (§6.1) whose folder holds no live node at the owed name. A mark whose owner is revoked counts as ownerless wherever it is read, including one that a restore or a replay brings back, and RFC 0017 §3 lets any device finish it.
+- Each change of a field's intent or carried flag, and each `held` merge (§3.3), writes a change record and moves a revision that RFC 0004 §5 compares: `content_rev` for content, `meta_rev` for place and status. A claim under rule B (§4) moves `meta_rev` and the edit revisions (RFC 0018 §3, RFC 0019 §3), not `content_rev`, so an old client's R3 sees no new version.
 - An upgrading server gives every existing field a legacy intent (§7.2), and an RFC 0004 §5 rebuild gives one to each record without intents.
 
 ### 3.2 Carried values
 
-A replay is carried when its author is another device. An empty author counts as another device. Under rule A (§4), the author's own replay is carried too. A carried value never brings a node out of the trash, and it never keeps a node that a delete trashes, except as §3.3 says.
+An op is carried when its author is another device, whether or not it is a replay. An empty author counts as another device. Under rule A (§4), the author's own replay is carried too. A carried value never brings a node out of the trash, and it never keeps a node that a delete trashes, except as §3.3 says.
 
 ### 3.3 Deletes
 
 A `Delete` with `unseen` or `held` set states what its user saw. `unseen` lists the intents its device held in R, on the target and below it, whose values L never held. `held` lists the intents L held there whose values R lacked when the delete was built: values a loss took.
 
-The server takes the delete's **view** of each node in the subtree to be the intents in `held`, plus the node's field intents that were set at or before `base_seq` and are not in `unseen`. R7 keeps a node of the subtree, and the folders between it and the deleted node, when a field holds an intent that is not carried and not in the view, and that is either in `unseen` or set by another device after `base_seq`. A carried content intent that is not in the view lands as a conflict copy beside the node (§3.5), and the node is trashed. A node whose place is carried, such as an earlier copy of carried content, keeps no folder: when its content is not in the view, it moves to the nearest live ancestor of the deleted node, and otherwise it is trashed with the subtree. A carried place intent is passed over.
+The server takes the delete's **view** of each node in the subtree to be the intents in `held`, plus the node's field intents that were set at or before `base_seq` and are not in `unseen`. R7 keeps a node of the subtree, and the folders between it and the deleted node, when a field holds an intent that is not carried and not in the view, and that is either in `unseen` or set by another device after `base_seq`. A carried content intent that is not in the view lands as a conflict copy beside the node (§3.5), and the node is trashed. A node whose place is carried, such as an earlier copy of carried content, keeps no folder by its place: when its content is not in the view, it moves to the nearest live ancestor of the deleted node, and otherwise it is trashed with the subtree. When that node also holds an unseen intent that is not carried, R7 keeps it and its folders as above. A carried place intent is passed over.
 
 The trash keeps each trashed node's field intents and the status intent it replaced, and stores `held` with it. A later delete of the node while it stays in the trash adds its `held` to the stored list. A restore or revival of the node clears the list.
 
@@ -156,7 +150,7 @@ A device keeps a **journal** with one row per node and field whose value in L is
 | wire base | What the op sends as its base: RFC 0026's `made_over` and `source_version_id` for content, kept from the content's provenance; the place the user moved the node from. |
 | state | `local` (in no commit), `sent` (in the commit in flight, with its slot) or `held` (a result showed the server holding it). |
 | held_as | The intent the server's `NodeState` reported for the field in the result, and for content the version id. It differs from the row's intent when RFC 0016 made the op a no-op. |
-| generation | `Welcome.restore_generation` on the connection that sent the row's op, or that brought its result. |
+| time | The `committed_at_ms` of the row's commit, from its result. Before a result, R's head time when the op was built. |
 | replay | The row's intent was in a commit the server lost. |
 
 The device writes an own row in the same transaction as the scan that finds the change (design §5.1). A later change of the same field replaces the row with a new intent:
@@ -167,7 +161,7 @@ The device writes an own row in the same transaction as the scan that finds the 
 
 A delete is a status row while L lacks the node, and it keeps the **view**: every intent that L held for the node and the nodes below it, at the time of the delete and before, up to 64 per node and field.
 
-The device also keeps, per node and field, the ids and generations of the newest 64 intents that R held, in the order R first held them, each marked when L held its value too: the **history**. An intent that R holds again keeps its first position. It gives a delete its view. When a result makes a row `held`, the device adds its `held_as` to the history, since the server held that value. A row's own intent need not be in the history: §5.4 orders R's intents against the row's base.
+The device also keeps, per node and field, the ids and applied times of the newest 64 intents that R held, in the order R first held them, each marked when L held its value too: the **history**. An intent that R holds again keeps its first position. It gives a delete its view. When a result makes a row `held`, the device adds its `held_as` to the history, since the server held that value. A row's own intent need not be in the history: §5.4 orders R's intents against the row's base.
 
 A row ends when:
 - for a `held` row, R holds an intent for the field that the history places after the row's `held_as`. A record that reaches R while the row is `local` or `sent` does not end it: the row's op is still sent, and the server decides between the two (R3, or the later place);
@@ -181,8 +175,8 @@ A row in state `held`, own or carried, stays until one of these, because a later
 
 - Every op names the intent of the row it sends. A create names one intent per field when the rows have different intents.
 - A result that applies an op makes each row it proves `held`, with `held_as` from the result's `NodeState`, and adds `held_as` to the history. A result proves only the fields its op set.
-- When a result reports a field for an intent the commit sent, every row whose base is that intent takes the reported intent as its base: `held_as` when the op applied, else the field's intent in the result's `NodeState`. This holds whether or not the sent intent still has a row.
-- A row whose op was answered `SUPERSEDED` ends, and the change that superseded it reaches L as a remote change. A replay is the exception when the result's `NodeState` holds, for the field, an intent that case 2 of §5.4 accepts against the row, such as the row's base replayed by another device first: the row is sent again with `over` set to that intent.
+- When a result reports a field for an intent the commit sent, every row whose base is that intent takes the reported intent as its base: `held_as` when the op applied, the op's own intent on a `CONFLICT_COPY` (the copy holds it), else the field's intent in the result's `NodeState`. This holds whether or not the sent intent still has a row.
+- A row whose op was answered `SUPERSEDED` ends, and the change that superseded it reaches L as a remote change. A replay is the exception when the result's `NodeState` holds, for the field, an intent applied before the row's time, or one that case 2 of §5.4 accepts against the row, such as the row's base replayed by another device first. That intent came before the row on the server, so the row is sent again with `over` set to it.
 - `CONFLICT_COPY`: the content row moves to the copy node, which L's file now is (design §2.7), and becomes `held` there. The original node's rows for this device stay.
 - `MERGED_INTO`: the node's place and status rows end, since the target's stand for them. Its content row and the rows of its children move to the target. No row names the merged node afterwards, so no loss creates it again (GUN-968).
 - `APPLIED_RENAMED`: the place row becomes `held` with the reported intent, and L takes the server's name.
@@ -205,9 +199,9 @@ The device detects a loss as before: `AHEAD_OF_SERVER`, or a `Welcome` whose dev
 
 0. **A change not yet sent.** A `local` row is sent as a fresh user op, with its intent and without `replay`. Its wire base is the row's own, except that a content row whose own chain ends at O takes O's version as its wire base, since this device's user made every change between O and L. When the chain ends elsewhere, the original wire base stays, and R3 keeps O beside the row's value. S takes the new R's value for the field.
 1. **The server holds the row's intent.** O is the row's intent or its `held_as`. When the new R holds the row's value, for a marked place the owed name, the row becomes `held`. When the new R holds the stand-in, the row stays `sent` with `replay` and the owner sends the finish again (§6.1). S takes the new R's value. Under rule B, an author's row whose O is carried is sent once more as a claim.
-2. **A loss took this device's change.** A row with `replay`, own or carried, and O was set before the loss: O's generation is at most the row's, O is the row's base, the history places O before the base, or the new R lacks the node. A restore keeps a prefix of the server's commits (§3.1), so an O from the row's generation or an earlier one came before the lost commit, whether or not the history holds it. S takes the new R's value, and the row is sent with `replay`, its intent and its wire base. A place or status row also sends `over` set to O, or no `over` when the new R lacks the node. A replayed move's `from` (RFC 0019 §4) is the new R's place, not the row's wire base. A content replay whose earlier result reported a version id sends it as `source_version_id`, so an edit made over that version on another device still finds it in the chain (RFC 0026 §2).
-3. **Another user changed the field after the loss.** An own row with `replay`, O's generation is greater than the row's, and O is neither the row's base nor placed before it by the history. Under rule A, a place row ends; a status row whose node R holds trashed sends its view as §5.3 says and then ends, and any other status row ends; a content row is sent with its wire base, whose `made_over` lacks O's version, so R3 keeps both values (§3.8). Under rule B, the row is sent as in case 2. A carried row ends.
-4. **No row, and L holds what S holds.** When the new R holds S's value too, S takes the new R's intent. Otherwise X is the old R's intent for the field. When the history places O before X, O's generation is lower than X's, or the new R lacks the node, and the new R holds X on no node, the device writes a carried row for X with X's author, `replay`, and X's predecessor in the history as its base, and sends it as in case 2. For content it does so only when L holds X's bytes. The row is sent as any row, and S takes the new R's value.
+2. **A loss took this device's change.** A row with `replay`, own or carried, and O was set before the loss: O's applied time is at or before the row's time, O is the row's base, the history places O before the base, or the new R lacks the node. A restore keeps a prefix of the server's commits (§3.1), so such an O came before the lost commit, whether or not the history holds it. S takes the new R's value, and the row is sent with `replay`, its intent, its `applied_at_ms` when a result reported one, and its wire base. A place or status row also sends `over` set to O, or no `over` when the new R lacks the node. A replayed move's `from` (RFC 0019 §4) is the new R's place, not the row's wire base. A content replay whose earlier result reported a version id sends it as `source_version_id`, so an edit made over that version on another device still finds it in the chain (RFC 0026 §2).
+3. **Another user changed the field after the loss.** An own row with `replay`, O's applied time is after the row's time, and O is neither the row's base nor placed before it by the history. Under rule A, a place row ends; a status row whose node R holds trashed sends its view as §5.3 says and then ends, and any other status row ends; a content row is sent with its wire base, whose `made_over` lacks O's version, so R3 keeps both values (§3.8). Under rule B, the row is sent as in case 2. A carried row ends.
+4. **No row, and L holds what S holds.** When the new R holds S's value too, S takes the new R's intent. Otherwise X is the old R's intent for the field. When the history places O before X, O's applied time is earlier than X's, or the new R lacks the node, and the new R holds X on no node, the device writes a carried row for X with X's author, `replay`, and X's predecessor in the history as its base, and sends it as in case 2. For content it does so only when L holds X's bytes. The row is sent as any row, and S takes the new R's value.
 5. **Anything else.** R's value reaches L as a remote change.
 
 A node that the new R lacks is created again by its rows, or by carried rows, in one create that names each field's intent. Its parents come first, by the same cases. A server-made conflict copy whose content intent the new R holds on another node is not created again (GUN-850). A node that the new R lacks and that no row covers is a value nobody can show the server lost: S forgets it and it is not sent.
@@ -241,19 +235,19 @@ A user's move of a marked node clears the mark and sets a new place intent, also
 One migration adds:
 
 - `journal`, keyed by node and field, with the columns of §5.1;
-- `delete_views(node_id, view_node_id, field, intent)` for status rows;
+- `delete_views(node_id, view_node_id, field, intent, value)` for status rows, where the value is the version id and manifest digest, the parent and name, or the status;
 - `intent_history(node_id, field, ord, intent, in_local)`;
 - `remote_nodes.intents` and `synced_nodes.intents`: the node's three intents.
 
 It fills them in this order. A later step does not overwrite a row an earlier one wrote, except that step 3 writes the row for L's value when the user changed a field again after an op step 2 read, with that op's intent as its base:
 
-1. `resends` and `lost_creates`: a carried row with an empty author for every field of each node, whose intent is the legacy intent (§7.2) of L's value. Neither table records who made the value.
+1. `resends` and `lost_creates`: a carried row with an empty author, whose intent is the legacy intent (§7.2) of L's value, for each field where L differs from R, and for every field when R lacks the node. Neither table records who made the value. The rows are carried by their author (§3.2), so they are never sent as user changes.
 2. The commit in flight, in state `sent`. An own row for an op whose node `local_changes`, `edited_here` or `moved_here` holds and that has no `resend`, `from` other than a pending finish, or `source_version_id`. A carried row with an empty author for every other op. The op's provenance decides the author, never the device that sent it. A value whose author the store can't show is carried, which can cost a conflict copy but never a write. Then `unsent_edits`: own `local` rows. Each row gets `replay` when the store records a loss.
 3. Every other field where L differs from the acknowledged value (the waiting update when one waits, else S; `Trees::acknowledged`), and every node L lacks and that value holds: an own `local` row with a new intent, whose base is the legacy intent of the acknowledged value. A waiting acknowledged op goes to step 4.
 4. `edited_here`, `moved_here`, `trashed_here` and waiting acknowledged ops: own `held` rows whose intent and `held_as` are the field's legacy intent, and whose base is the legacy intent of the `replaced_versions` or `past_positions` entry the change replaced, or of the status before the delete.
 5. `remote_nodes.intents`, `synced_nodes.intents` and `intent_history`: legacy intents, one per field, plus one for each `replaced_versions` and `past_positions` entry. S's place intent is R's when S's place equals R's, else that of the matching `past_positions` entry. A status row's view takes the history entries L held, and, for a node L lacks, the entries S holds. For a `trashed_here` node it takes R's trashed record and the `past_positions` entry that record replaced.
 
-On first contact with a server that announces `field_intents`, a migrated store lists the space again before any row takes a base from R. It replaces each id it computed, in R, S, the history and the rows' bases and views, with the server's intent for the same node, field and value.
+On first contact with a server that announces `field_intents`, a migrated store lists the space again before any row takes a base from R. It replaces each id it computed, in R, S, the history and the rows' intents, `held_as`, bases and views, with the server's intent for the same node, field and value.
 
 A store with a loss recorded but not yet listed keeps the record, and the bootstrap that follows recovers with these rows.
 
@@ -297,7 +291,7 @@ The key is the version ID for content, `meta_rev` with the parent and name for p
 - a carried `CreateFile` whose place intent the trash's `held` lists and whose content intent it does not makes a conflict copy;
 - an author's claim of a carried value whose `source_version_id` is in the chain clears the carried flag;
 - digest v5 refuses a reused `commit_id` that differs only in an intent;
-- each field intent carries the restore generation it was set in, and a restore increments `Welcome.restore_generation`;
+- each field intent carries the time of the commit that first applied it, a replay that sends `applied_at_ms` keeps it, and commit times grow across a restore of storage;
 - an op without an intent that has `resend`, `from` or `source_version_id` gets a carried intent with an empty author;
 - a conflict copy made from a carried op has carried place and status intents, and a later `Delete` of its folder moves it to the nearest live ancestor;
 - a `Delete` whose view holds a carried copy's content intent trashes that copy in its group, also when it only adds `held` to an existing trash;
@@ -311,6 +305,7 @@ The key is the version ID for content, `meta_rev` with the parent and name for p
 - Each `NodeState` grows by up to 200 bytes, so a listing of 100,000 nodes grows by about 20 MB before compression.
 - A replayed `Delete` grows by 16 bytes per intent in `unseen` and `held`: the values a loss took or that reached R but not L.
 - The server stores three intents per node, an index row per current intent, a carried flag per field and the `held` list on trashed nodes.
+- The server keeps a tombstone per purged node, about 100 bytes plus its `held` list, for the life of the history.
 - The client stores up to three journal rows per changed node, up to 64 history entries per node and field, and a view per pending delete.
 
 ## 11. Not covered
@@ -318,6 +313,7 @@ The key is the version ID for content, `meta_rev` with the parent and name for p
 - **History beyond 64 intents.** A restore that brings back a value older than a device's history makes case 5 of §5.4 apply where case 4 should. The device downloads the older value, and the author still replays its change. A delete counts such a value as unseen and keeps the node. No write is lost.
 - **A carried create after 30 days.** A status row whose node R lacks ends after 30 days. A carried create that reaches the server later brings the node back.
 - **The owner never comes back.** A mark whose owner never commits again and is not revoked keeps its stand-in name.
+- **A row whose result never arrived.** Its time is R's head time when its op was built. Another device's change applied between that head and the lost commit counts as later (case 3), so under rule A this device's lost place or status change gives way to it.
 - **An old client re-creating a folder.** Its intent is not carried (§8), so a new device's waiting delete of that folder can keep it.
 
 ## Appendix A. Open issues and the rule that fixes each
@@ -335,7 +331,7 @@ Rows marked † are cc families without a hand schedule. PR 1 of the delivery pl
 | GUN-862, GUN-868 | Whether a resent create is a user's move; whether a delete is still owed | §5.3 owed status row; §3.3; §3.1 carries an old client's resend |
 | GUN-589 (+869) | Whether a delete is still owed after S forgets the node | §5.1 status row with its view; §3.4 supersedes a replay the view held |
 | GUN-665 | What an edit was made over once R trashed the file | §5.1 row with its wire base; §5.4 case 2 |
-| GUN-689 | Whether this device made the no-op edit | §5.4 case 2 compares O's restore generation with the row's, so the row is replayed whether or not its intent ever reached R; §5.2 rewrites dependent bases |
+| GUN-689 | Whether this device made the no-op edit | §5.4 case 2 compares O's applied time with the row's, so the row is replayed whether or not its intent ever reached R; §5.2 rewrites dependent bases |
 | GUN-698 | An untouched download or a revert over an in-flight edit | §5.1 replacement rules; §5.4 cases 0 and 2 |
 | GUN-866 | Whether R's content is the edit's base | §5.4 case 2 with `made_over`; an `ID_EXISTS` create is planned again per field |
 | GUN-716 | Whether a holder's untaken value is its own write | §5.4 case 4 carries content only with the bytes of the old R's value |

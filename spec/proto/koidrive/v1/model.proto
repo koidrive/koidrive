@@ -88,8 +88,9 @@ message Intent {
   bool replay = 3;
   // The intent a Move or Delete expects the node's place or status to hold; otherwise it is answered CODE_SUPERSEDED.
   bytes over = 4;
-  // Set by the server on a NodeState: the restore generation at which the field took this intent.
-  uint64 generation = 5;
+  // The committed_at_ms of the commit that first applied this intent (RFC 0013). Set by the server on a NodeState;
+  // a replay repeats the time its earlier result reported.
+  int64 applied_at_ms = 5;
 }
 
 message FieldIntents {
