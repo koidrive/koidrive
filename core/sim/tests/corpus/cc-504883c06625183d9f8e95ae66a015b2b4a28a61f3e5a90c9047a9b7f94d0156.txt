@@ -1,0 +1,1 @@
+cc 504883c06625183d9f8e95ae66a015b2b4a28a61f3e5a90c9047a9b7f94d0156 # shrinks to devices = 3, phases = [[(1, User(Action { kind: 1, target: 0, parent: 0, name: 0, text: 0 })), (1, Work(0)), (1, Work(0)), (0, Backup), (1, Work(0)), (1, User(Action { kind: 2, target: 0, parent: 0, name: 0, text: 0 })), (0, Backup)], [(0, RestoreEarlier), (0, Restore)]]
