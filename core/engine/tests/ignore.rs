@@ -559,7 +559,9 @@ fn a_folder_deleted_here_that_another_device_moved_comes_back_there_and_frees_it
     assert_eq!(trees.synced().live("new"), Some(&file(ROOT, "d", 2)));
     assert_eq!(trees.check(), Ok(()));
     trees.set_rules(&AT_ROOT, None);
-    assert_eq!(ops(&mut trees), [delete("log")]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
 }
 
 #[test]
@@ -1204,7 +1206,7 @@ fn a_kept_folder_another_device_moves_below_the_folder_taking_its_stale_name_com
 }
 
 #[test]
-fn a_kept_folder_another_device_renames_comes_back_and_the_child_the_rules_let_in_is_deleted() {
+fn a_kept_folder_another_device_renames_comes_back_with_the_child_the_rules_let_in() {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "ss")),
         synced("log", file("d", "a.log", 1)),
@@ -1218,7 +1220,82 @@ fn a_kept_folder_another_device_renames_comes_back_and_the_child_the_rules_let_i
     assert!(trees.kept_for_excluded()("d"));
     assert_eq!(ops(&mut trees), []);
     let done: Vec<String> = effects(&mut trees).into_iter().map(|(id, _)| id).collect();
-    assert_eq!(done, ["d"]);
+    assert_eq!(done, ["d", "log"]);
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(ops(&mut trees), [delete("log")]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), []);
+}
+
+#[test]
+fn a_node_deleted_while_excluded_is_downloaded_again_when_the_rules_let_it_in() {
+    let mut trees = trees(&[
+        synced("dist", dir(ROOT, "dist")),
+        synced("app", file("dist", "app.js", 1)),
+        synced("sub", dir("dist", "sub")),
+        synced("deep", file("sub", "report.docx", 2)),
+        synced("log", file(ROOT, "a.log", 3)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    for id in ["deep", "sub", "app", "dist", "log"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    let mut done = nodes(&effects(&mut trees))
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    done.sort();
+    assert_eq!(done, ["app", "deep", "dist", "log", "sub"]);
+    for id in ["dist", "app", "sub", "deep", "log"] {
+        assert_eq!(trees.local().live(id), trees.remote().live(id), "{id}");
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_folder_deleted_with_the_excluded_file_it_holds_comes_back_with_it_when_the_rules_let_the_file_in()
+ {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("log", file("d", "a.log", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.remove_local("log");
+    trees.remove_local("d");
+    assert_eq!(ops(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["d", "log"]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), []);
+}
+
+#[test]
+fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
+    let mut trees = trees(&[
+        synced("dist", dir(ROOT, "dist")),
+        synced("app", file("dist", "app.js", 1)),
+        synced("log", file(ROOT, "a.log", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, None);
+    for id in ["app", "dist", "log"] {
+        trees.remove_local(id);
+    }
+    let sent: BTreeSet<String> = (ops(&mut trees).into_iter())
+        .map(|op| format!("{op:?}"))
+        .collect();
+    let wanted: BTreeSet<String> = [delete("dist"), delete("log")]
+        .iter()
+        .map(|op| format!("{op:?}"))
+        .collect();
+    assert_eq!(sent, wanted);
+    assert_eq!(effects(&mut trees), []);
 }

@@ -2753,7 +2753,7 @@ impl Trees {
             .map(|(id, _)| id)
     }
 
-    /// Whether S holds the node at a position that neither placed L nor R holds, the nodes
+    /// Whether S holds the node at a position that neither placed L nor R holds, or L lost the node, the nodes
     /// [`Trees::released`] may give that position up for.
     fn orphaned_in_s(&self, id: &str) -> bool {
         let Some(synced) = self.s.live(id) else {
@@ -2763,11 +2763,15 @@ impl Trees {
         let placed = (self.l.get(id))
             .filter(|node| !node.parked)
             .map(|node| &node.shape);
-        !held(placed) && !held(self.r.live(id))
+        !held(placed) && (self.vanished(id) || !held(self.r.live(id)))
     }
 
-    /// What S may become for an excluded node whose S position neither L nor R holds any more,
-    /// in order of preference, or `None` when the node is not one. A parked node holds no
+    fn vanished(&self, id: &str) -> bool {
+        self.l.get(id).is_none() && !self.displaced.contains_key(id)
+    }
+
+    /// What S may become for an excluded node whose S position neither L nor R holds any more, or
+    /// whose local copy L lost, in order of preference, or `None` when the node is not one. A parked node holds no
     /// position in L, so one that the rules now leave out gives up its S position too, also
     /// while its old name is taken and it cannot be moved back. Nothing is planned for the node,
     /// so no op would ever move its S entry, and the name it holds in S would keep every other
@@ -2784,7 +2788,7 @@ impl Trees {
         let fits = |shape: &Shape| !server || !self.under_discarded(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
-        if (held(placed) || held(remote)) && fits(synced)
+        if (held(placed) || held(remote) && !self.vanished(id)) && fits(synced)
             || !self.ignored(id)
             || self.trashed_while_parked(id)
         {

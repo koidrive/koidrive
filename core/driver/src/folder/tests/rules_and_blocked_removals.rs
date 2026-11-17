@@ -1022,3 +1022,83 @@ fn a_remote_delete_of_a_folder_holding_a_symlink_with_a_name_that_is_not_utf8_ke
     assert!(b.sent.is_empty(), "{:?}", b.sent);
 }
 
+fn excluded_dist(count: usize) -> (Remote, Site, Vec<(String, String)>) {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir_all(site.root.join("dist/sub")).unwrap();
+    for n in 0..count {
+        let dir = if n % 2 == 0 { "dist" } else { "dist/sub" };
+        fs::write(site.root.join(format!("{dir}/f{n}.docx")), format!("report {n}")).unwrap();
+    }
+    b.rescan();
+    b.rest(&mut remote);
+    let synced = files(&site.root);
+    assert_eq!(synced.len(), count);
+    drop(b);
+    (remote, site, synced)
+}
+
+fn started(site: &Site, remote: &mut Remote, sync: &SyncRules) -> Device {
+    let mut device = site.start_with(sync);
+    device.connect(remote);
+    device.scan_until(|device| device.folder.scanned);
+    device.rest(remote);
+    device
+}
+
+fn dist_left_out() -> SyncRules {
+    SyncRules {
+        include: Vec::new(),
+        exclude: vec!["dist/".into()],
+    }
+}
+
+fn a_node_deleted_while_excluded_downloads_again_when_the_rules_let_it_in(count: usize) {
+    let (mut remote, site, synced) = excluded_dist(count);
+    let server = remote.tree();
+
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::remove_dir_all(site.root.join("dist")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent while dist is left out");
+    drop(b);
+
+    let b = started(&site, &mut remote, &SyncRules::default());
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "sent {sent:?}");
+    assert_eq!(remote.tree(), server);
+    assert_eq!(files(&site.root), synced);
+    assert!(trashed(&site.root).is_empty());
+    assert!(shown(&site).is_empty(), "no question opens");
+    assert_eq!(b.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_folder_of_2000_files_deleted_while_excluded_downloads_again_when_the_rules_let_it_in() {
+    a_node_deleted_while_excluded_downloads_again_when_the_rules_let_it_in(2000);
+}
+
+#[test]
+fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted_and_an_edit_made_while_excluded_is_uploaded() {
+    let (mut remote, site, _) = excluded_dist(3);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::write(site.root.join("dist/f0.docx"), "edited while left out").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty());
+    drop(b);
+
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content"]);
+    assert_eq!(remote.names(), ["dist", "f0.docx", "f1.docx", "f2.docx", "sub"]);
+
+    fs::remove_dir_all(site.root.join("dist")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content", "delete"]);
+    assert!(remote.names().is_empty());
+    assert!(files(&site.root).is_empty());
+}
