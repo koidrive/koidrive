@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
 import argparse
+import json
 import re
 import shlex
 import subprocess
@@ -9,6 +10,7 @@ import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+SELECTOR = WORKFLOW.parent.parent / "ci-select.toml"
 TARGETS = ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu")
 
 
@@ -46,7 +48,8 @@ def suite_features(expression, suite):
     raise ValueError("Rust suite features need a fallback")
 
 
-def check_partitions(workflow):
+def check_partitions(workflow, selector=None):
+    selector = SELECTOR.read_text() if selector is None else selector
     remainder = test_arguments(job(workflow, "rust"), "--workspace")
     parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
     parser.add_argument("--workspace", action="store_true")
@@ -61,10 +64,16 @@ def check_partitions(workflow):
         raise ValueError("The remainder must select the workspace")
     excluded = remaining.exclude
     shards = job(workflow, "rust-tests")
-    matrix = re.search(r"(?m)^        suite: \[([^\]]+)\]$", shards)
-    if matrix is None:
-        raise ValueError("Expected a literal Rust suite matrix")
-    packages = ["koidrive-" + name.strip(" '\"") for name in matrix[1].split(",")]
+    if re.search(r"(?m)^        suite: \$\{\{ fromJSON\(needs\.changes\.outputs\.rust_suites\) \}\}$", shards) is None:
+        raise ValueError("The Rust suite matrix must come from the changes job's rust_suites")
+    every = re.search(r"""(?m)^ +echo 'rust_suites=(\[[^']*\])'$""", job(workflow, "changes"))
+    if every is None:
+        raise ValueError("Expected the changes job to list every Rust suite for a push")
+    suites = json.loads(every[1])
+    missing = [suite for suite in suites if f"\n[job.rust_{suite}]\n" not in selector]
+    if missing:
+        raise ValueError(f"ci-select.toml has no job for the Rust suites {missing}")
+    packages = ["koidrive-" + suite for suite in suites]
     if len(excluded) != len(set(excluded)) or len(packages) != len(set(packages)):
         raise ValueError("Rust partitions must not contain duplicate packages")
     if set(excluded) != set(packages):
@@ -127,14 +136,24 @@ class RustPartitions(unittest.TestCase):
             check_partitions(changed)
 
     def test_missing_shard_is_rejected(self):
-        changed = self.workflow.replace("suite: [driver, engine, sim]", "suite: [driver, engine]")
+        changed = self.workflow.replace("""'rust_suites=["driver","engine","sim"]'""", """'rust_suites=["driver","engine"]'""")
         with self.assertRaisesRegex(ValueError, "Every excluded package"):
             check_partitions(changed)
 
     def test_duplicate_shard_is_rejected(self):
-        changed = self.workflow.replace("suite: [driver, engine, sim]", "suite: [driver, engine, sim, sim]")
+        changed = self.workflow.replace("""'rust_suites=["driver","engine","sim"]'""", """'rust_suites=["driver","engine","sim","sim"]'""")
         with self.assertRaisesRegex(ValueError, "duplicate packages"):
             check_partitions(changed)
+
+    def test_literal_suite_matrix_is_rejected(self):
+        changed = self.workflow.replace("suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}", "suite: [driver, engine, sim]")
+        with self.assertRaisesRegex(ValueError, "must come from the changes job"):
+            check_partitions(changed)
+
+    def test_suite_without_a_selector_job_is_rejected(self):
+        selector = SELECTOR.read_text().replace("[job.rust_sim]", "[job.rust_simulation]")
+        with self.assertRaisesRegex(ValueError, "no job for the Rust suites"):
+            check_partitions(self.workflow, selector)
 
     def test_different_listing_selection_is_rejected(self):
         changed = self.workflow.replace(" --exclude koidrive-sim", "", 1)

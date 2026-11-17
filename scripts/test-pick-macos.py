@@ -13,6 +13,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 JOBS = ("macos_app", "rust", "rust_driver", "rust_engine", "rust_sim", "server", "spec", "runner_hook")
+SELECTED = ("rust", "rust_driver", "rust_engine", "rust_sim", "server", "server_deploy", "net_integration",
+            "driver_integration", "cli_integration", "ffi_integration")
 SELF_HOSTED = ["self-hosted", "custom-mac", "ARM64"]
 XCODE = "/Applications/Xcode_27.2.app/Contents/Developer"
 SELF_XCODE = "/Applications/Xcode.app/Contents/Developer"
@@ -172,24 +174,44 @@ class Picker(unittest.TestCase):
         self.assert_routes(outputs, ("rust", "rust_engine", "rust_sim"))
         self.assertIn("hosted_load=4 hosted_cap=5 to_self_hosted=3 to_hosted=1", self.log)
 
-    def test_push_reuses_rust_only_when_all_macos_shards_pass(self):
+    def run_push(self, jobs):
+        fixtures = {
+            "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {
+                "workflow_runs": [{"id": 1, "html_url": "https://fixture.invalid/run"}]},
+            "runs/1/jobs?filter=latest&per_page=100": {"jobs": jobs},
+        }
+        (self.dir / "fixtures").write_text(json.dumps(fixtures))
+        (self.dir / "requests").write_text("")
+        result, outputs = self.run_script(inline_script("changes"), {
+            "EVENT": "push", "GITHUB_SHA": "fixture-sha", "GITHUB_REPOSITORY": "koidrive/koidrive",
+            "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return outputs
+
+    def test_push_covers_macos_jobs_the_merge_queue_passed_or_did_not_select(self):
         names = ("rust (macos)", "rust tests (macos, driver)", "rust tests (macos, engine)", "rust tests (macos, sim)")
         for missing in (None, *names):
             with self.subTest(missing=missing):
-                fixtures = {
-                    "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {
-                        "workflow_runs": [{"id": 1, "html_url": "https://fixture.invalid/run"}]},
-                    "runs/1/jobs?filter=latest&per_page=100": {
-                        "jobs": [{"name": name, "conclusion": "success"} for name in names if name != missing]},
-                }
-                (self.dir / "fixtures").write_text(json.dumps(fixtures))
-                (self.dir / "requests").write_text("")
-                result, outputs = self.run_script(inline_script("changes"), {
-                    "EVENT": "push", "GITHUB_SHA": "fixture-sha", "GITHUB_REPOSITORY": "koidrive/koidrive",
-                    "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
-                })
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(outputs["rust_macos"], "covered" if missing is None else "true")
+                outputs = self.run_push([{"name": name, "conclusion": "success"} for name in names if name != missing])
+                self.assertEqual(outputs["rust_macos"], "covered")
+                self.assertEqual(outputs["macos_app"], "covered")
+        outputs = self.run_push([{"name": "rust tests (macos, sim)", "conclusion": "skipped"}])
+        self.assertEqual(outputs["rust_macos"], "covered")
+
+    def test_push_runs_a_macos_job_the_merge_queue_did_not_pass(self):
+        for conclusion in ("failure", "cancelled", "timed_out"):
+            for name in ("rust (macos)", "rust tests (macos, engine)"):
+                with self.subTest(conclusion=conclusion, name=name):
+                    outputs = self.run_push([{"name": name, "conclusion": conclusion}])
+                    self.assertEqual(outputs["rust_macos"], "true")
+                    self.assertEqual(outputs["macos_app"], "covered")
+
+    def test_push_runs_every_linux_job(self):
+        outputs = self.run_push([])
+        for job in SELECTED:
+            self.assertEqual(outputs[job], "true", job)
+        self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
 
     def test_missing_status_token_falls_back_without_api(self):
         self.assert_routes(self.pick(labels=SELF_HOSTED, env={"RUNNER_STATUS_TOKEN": ""}))
@@ -229,7 +251,7 @@ class Picker(unittest.TestCase):
                 self.assertIn("MACOS_RUNS_ON variable must be a JSON array", result.stdout)
                 self.assertEqual(outputs, {})
 
-    def test_workflow_changes_run_server_and_spec_but_ordinary_paths_skip(self):
+    def run_changes(self, changed, selected=(), event="pull_request", selector_fails=False):
         self.write_executable("git", """
             import os
             import sys
@@ -237,24 +259,62 @@ class Picker(unittest.TestCase):
                 print('fixture-base')
             elif sys.argv[1:] == ['diff', '-z', '--name-only', '--no-renames', 'fixture-base', 'HEAD']:
                 sys.stdout.write(os.environ['CHANGED'] + '\\0')
+            elif sys.argv[1:] == ['fetch', '--no-tags', '--depth=1', 'origin', 'fixture-base']:
+                pass
+            elif sys.argv[1:] == ['worktree', 'add', '--detach', os.environ['RUNNER_TEMP'] + '/base', 'fixture-base']:
+                pass
             else:
-                sys.exit('Unexpected git call')
+                sys.exit('Unexpected git call: ' + ' '.join(sys.argv[1:]))
         """)
         scripts = self.dir / "scripts"
-        scripts.mkdir()
+        scripts.mkdir(exist_ok=True)
         for name in ("test-macos-changes.sh", "macos-changes.sh"):
             path = scripts / name
             path.write_text("#!/bin/bash\nexit 0\n")
             path.chmod(0o755)
+        selector = scripts / "ci-select/target/debug/ci-select"
+        selector.parent.mkdir(parents=True, exist_ok=True)
+        lines = "".join(f"{job}={'true' if job in selected else 'false'}\\n" for job in (*SELECTED, "macos_app"))
+        selector.write_text("#!/bin/bash\n" + ("echo 'selector broke' >&2; exit 1\n" if selector_fails else
+                            f'[ "$1 $2 $3" = ".github/ci-select.toml $RUNNER_TEMP/base ." ] || exit 9\nprintf "{lines}"\n'))
+        selector.chmod(0o755)
+        return self.run_script(inline_script("changes"), {"EVENT": event, "CHANGED": changed, "BASE": "fixture-base"})
+
+    def test_workflow_changes_run_server_and_spec_but_ordinary_paths_skip(self):
         for changed in (".github/workflows/ci.yml", "server/src/index.ts", "spec/proto/api.proto", "site/index.html"):
             with self.subTest(changed=changed):
-                result, outputs = self.run_script(inline_script("changes"), {"EVENT": "pull_request", "CHANGED": changed})
+                result, outputs = self.run_changes(changed)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 wanted = "true" if changed == ".github/workflows/ci.yml" else "false"
                 self.assertEqual(outputs["server_macos"], wanted)
                 self.assertEqual(outputs["spec_macos"], wanted)
                 self.assertEqual(outputs["site_only"], "true" if changed.startswith("site/") else "false")
 
+    def test_the_selection_becomes_the_job_outputs(self):
+        for event in ("pull_request", "merge_group"):
+            with self.subTest(event=event):
+                result, outputs = self.run_changes("core/sim/tests/devices.rs", ("rust_engine", "rust_sim", "server"), event)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for job in SELECTED:
+                    self.assertEqual(outputs[job], "true" if job in ("rust_engine", "rust_sim", "server") else "false", job)
+                self.assertEqual(json.loads(outputs["rust_suites"]), ["engine", "sim"])
+                self.assertEqual(outputs["macos_app"], "false")
+        result, outputs = self.run_changes("docs/deploy.md")
+        self.assertEqual(json.loads(outputs["rust_suites"]), [])
+
+    def test_the_merge_queue_runs_the_app_only_when_selected(self):
+        for selected, expected in (((), "false"), (("macos_app",), "true")):
+            with self.subTest(selected=selected):
+                result, outputs = self.run_changes("apps/macos/Koidrive/App.swift", selected, "merge_group")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(outputs["macos_app"], expected)
+                self.assertEqual(outputs["rust_macos"], "true")
+
+    def test_a_selector_failure_fails_the_job(self):
+        result, outputs = self.run_changes("core/engine/src/lib.rs", selector_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("The job selector failed", result.stdout)
+        self.assertNotIn("rust", outputs)
 
 if __name__ == "__main__":
     unittest.main()

@@ -130,7 +130,7 @@ jobs:
             echo "::error::The job selector failed (see the error above), so the jobs this change needs are unknown."
             exit 1
           fi
-          suites="$(for suite in driver engine sim; do grep -Fxq "rust_$suite=true" <<<"$selection" && echo "$suite"; done | jq -Rcs 'split("\n") | map(select(. != ""))')"
+          suites="$(jq -Rcn '[inputs | capture("^rust_(?<suite>driver|engine|sim)=true$") | .suite]' <<<"$selection")"
           echo "rust tests suites: $suites"
           {
             grep -v '^macos_app=' <<<"$selection"
