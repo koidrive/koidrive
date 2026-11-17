@@ -1106,6 +1106,35 @@ fn differs(
     }
 }
 
+impl Space {
+    /// The entries of the folder `dirs` resolve to from `base`, each with its kind: none for an entry that is neither
+    /// a file nor a folder.
+    pub fn entries(
+        &self,
+        base: &Base,
+        dirs: &[crate::Dir],
+    ) -> Result<Vec<(OsString, Option<EntryKind>)>, Unresolved> {
+        let folder = self.folder(base, dirs)?;
+        let failed = |err| Unresolved::Io {
+            path: folder.path(),
+            err,
+        };
+        let mut entries = Vec::new();
+        for name in list(folder.fd()).map_err(failed)? {
+            let Some(stat) = lookup(folder.fd(), &name).map_err(failed)? else {
+                continue;
+            };
+            let kind = match stat.file_type {
+                FileType::Directory => Some(EntryKind::Dir),
+                FileType::RegularFile => Some(EntryKind::File),
+                _ => None,
+            };
+            entries.push((name, kind));
+        }
+        Ok(entries)
+    }
+}
+
 fn held(parent: BorrowedFd<'_>, name: &OsStr, along: &[Displaced]) -> io::Result<Option<Reason>> {
     let dir = rustix::fs::openat(parent, name, crate::DIR_FLAGS, Mode::empty())?;
     let mut held = Vec::new();

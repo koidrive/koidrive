@@ -143,7 +143,7 @@ fn trees_state() -> TreesState {
             "e".into(),
             KeptEntries {
                 names: [".env".into()].into(),
-                taken: true,
+                listed: true,
             },
         )]
         .into(),

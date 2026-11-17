@@ -1385,14 +1385,14 @@ fn engine_state() -> EngineState {
                     "e".into(),
                     KeptEntries {
                         names: [".env".into(), "node_modules".into()].into(),
-                        taken: true,
+                        listed: true,
                     },
                 ),
                 (
                     "f".into(),
                     KeptEntries {
                         names: [".env".into()].into(),
-                        taken: false,
+                        listed: false,
                     },
                 ),
             ]),

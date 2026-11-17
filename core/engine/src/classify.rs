@@ -2974,40 +2974,68 @@ impl Trees {
         &self.kept_folders
     }
 
-    pub(crate) fn keep_entries<'a>(
-        &mut self,
-        folder: &str,
-        names: impl IntoIterator<Item = &'a str>,
-    ) {
-        let mut kept = self.kept_entries.get(folder).cloned().unwrap_or_default();
-        kept.names.extend(names.into_iter().map(str::to_owned));
-        if !kept.names.is_empty() {
-            self.kept_entries.insert(folder.to_owned(), kept);
-        }
-    }
-
     pub(crate) fn take_kept_entries(&mut self, folder: &str) {
         let mut folders = vec![folder.to_owned()];
         while let Some(folder) = folders.pop() {
-            if let Some(kept) = self.kept_entries.get_mut(&folder) {
-                kept.taken = true;
-            }
             folders.extend(
                 (self.local_children_placed_or_parked(&folder))
-                    .filter(|child| self.kept_folders.contains(*child))
+                    .filter(|child| {
+                        (self.l.get(child)).is_some_and(|node| node.shape.kind == Kind::Dir)
+                    })
                     .cloned(),
             );
+            if self.kept_entries.get(&folder).is_none() {
+                self.kept_entries.insert(folder, KeptEntries::default());
+            }
         }
     }
 
-    pub(crate) fn end_kept_entries(&mut self, folder: &str) {
-        if self
-            .kept_entries
-            .get(folder)
-            .is_some_and(|kept| !kept.taken)
-        {
-            self.kept_entries.remove(folder);
-        }
+    /// The folders of [`TreesState::kept_entries`] no listing has recorded the entries of yet.
+    pub fn unlisted_kept_folders(&self) -> Vec<NodeId> {
+        (self.kept_entries.iter())
+            .filter(|(_, kept)| !kept.listed)
+            .map(|(folder, _)| folder.clone())
+            .collect()
+    }
+
+    /// Records what a listing of the kept folder `folder` found on disk: each entry's name and kind, none for an entry
+    /// that is neither a file nor a folder. The entries L does not hold there, other than platform files, stay
+    /// excluded ([`TreesState::kept_entries`]).
+    pub fn list_kept_folder(
+        &mut self,
+        folder: &str,
+        entries: impl IntoIterator<Item = (String, Option<Kind>)>,
+    ) {
+        let Some((above, _)) = path(&self.l, folder) else {
+            return;
+        };
+        let held: BTreeSet<String> = (self.local_children_placed_or_parked(folder))
+            .filter_map(|child| self.l.get(child).map(|node| name_key(&node.shape.name)))
+            .collect();
+        let names: BTreeSet<String> = (entries.into_iter())
+            .filter(|(name, kind)| {
+                let mut entry = above.clone();
+                entry.push(name);
+                let kind = match kind.unwrap_or(Kind::File) {
+                    Kind::Dir => koidrive_ignore::Kind::Dir,
+                    Kind::File => koidrive_ignore::Kind::File,
+                };
+                !held.contains(&name_key(name))
+                    && self.ignore.status(&entry, kind)
+                        != Status::Excluded(koidrive_ignore::Reason::BuiltIn)
+            })
+            .map(|(name, _)| name)
+            .collect();
+        match names.is_empty() {
+            true => self.kept_entries.remove(folder),
+            false => self.kept_entries.insert(
+                folder.to_owned(),
+                KeptEntries {
+                    names,
+                    listed: true,
+                },
+            ),
+        };
     }
 
     pub(crate) fn rekey_kept_entries(&mut self, from: &str, to: &str) {
@@ -3019,7 +3047,7 @@ impl Trees {
     fn kept_entry(&self, id: &str) -> bool {
         (self.l.get(id)).is_some_and(|node| {
             (self.kept_entries.get(&node.shape.parent))
-                .is_some_and(|kept| kept.taken && kept.names.contains(&node.shape.name))
+                .is_some_and(|kept| kept.names.contains(&node.shape.name))
         })
     }
 
@@ -3055,11 +3083,10 @@ impl Trees {
         };
     }
 
-    /// The paths of the entries that stay excluded under the rules of a deleted folder they were kept in, once another
-    /// device made a folder at its place ([`TreesState::kept_entries`]).
+    /// The paths of the entries that stay excluded under the rules of a deleted folder they were kept in
+    /// ([`TreesState::kept_entries`]).
     pub fn kept_entry_paths(&self) -> Vec<Vec<&str>> {
         (self.kept_entries.iter())
-            .filter(|(_, kept)| kept.taken)
             .filter_map(|(folder, kept)| {
                 let folder = match folder == &self.l.root {
                     true => Vec::new(),

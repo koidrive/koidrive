@@ -67,7 +67,7 @@ pub struct ContentValue {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptEntries {
     pub names: BTreeSet<String>,
-    pub taken: bool,
+    pub listed: bool,
 }
 
 /// The held versions and unsent edit bases of a file, independent of R's current version.
@@ -230,10 +230,10 @@ pub struct TreesState {
     /// sync (section 5.10). L holds each under its old ID, S does not, and nothing is planned for it while L holds
     /// nothing below it that this device syncs and R holds nothing live at its place.
     pub kept_folders: BTreeSet<NodeId>,
-    /// The names of the entries each kept folder held when the delete left it here, which the rules then excluded.
-    /// Once another device makes a folder at the place of the kept folder or of a kept folder above it (`taken`), each
-    /// entry stays excluded with everything below it, whatever rules apply there, until L no longer holds it
-    /// (section 5.10).
+    /// The kept folders that another device's folder took over, at their place or at the place of a kept folder above
+    /// them, with the names of the entries a listing of each found there that L did not hold, before the rules of the
+    /// deleted folder stopped applying. Each entry stays excluded with everything below it, whatever rules apply there,
+    /// until L no longer holds it (section 5.10).
     pub kept_entries: BTreeMap<NodeId, KeptEntries>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a

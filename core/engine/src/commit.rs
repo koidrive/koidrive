@@ -2984,9 +2984,8 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
             continue;
         }
         let taken = twin(trees, &local, true);
-        match taken {
-            Some(_) => trees.take_kept_entries(&id),
-            None => trees.end_kept_entries(&id),
+        if taken.is_some() {
+            trees.take_kept_entries(&id);
         }
         let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
         rekey(trees, &id, &to);

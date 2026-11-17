@@ -800,3 +800,88 @@ fn a_kept_rules_file_the_person_renames_uploads_under_a_new_id() {
     assert_ne!(tree["app/notes.txt"], old);
 }
 
+
+#[test]
+fn an_entry_made_in_a_kept_folder_before_a_takeover_stays_out_of_sync() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env*\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    let made = site.root.join("app/.env.local");
+    fs::write(&made, local_only(&made)).unwrap();
+    b.settle();
+    b.run(&mut remote);
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    drop(b);
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    fs::write(&made, b"SECRET=edited").unwrap();
+    for _ in 0..2 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    assert_eq!(fs::read(&made).unwrap(), b"SECRET=edited");
+    let mut kept = b.folder.view().kept_entries;
+    kept.sort();
+    assert_eq!(
+        kept,
+        [
+            koidrive_fs::ItemPath::from("app/.env"),
+            "app/.env.local".into(),
+            "app/node_modules".into()
+        ]
+    );
+}
+
+#[test]
+fn a_kept_folder_taken_over_by_a_folder_with_its_own_rules_keeps_its_entries_out_and_follows_the_new_rules() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env*\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b"*.log\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(fs::read(site.root.join("app/.koiignore")).unwrap(), b"*.log\n");
+
+    fs::write(site.root.join("app/.env"), b"SECRET=edited").unwrap();
+    fs::write(site.root.join("app/.env.example"), b"SECRET=").unwrap();
+    fs::write(site.root.join("app/debug.log"), b"log").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.env.example", "app/.koiignore", "app/README.md"]
+    );
+    let mut kept = b.folder.view().kept_entries;
+    kept.sort();
+    assert_eq!(kept, [koidrive_fs::ItemPath::from("app/.env"), "app/node_modules".into()]);
+}
+

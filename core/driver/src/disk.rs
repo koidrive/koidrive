@@ -46,8 +46,8 @@ use bytes::Bytes;
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
-    Base as EngineBase, BatchLimit, Displaced as EngineDisplaced, Effect as EngineEffect,
-    EffectRecord, Location as EngineLocation, location_of,
+    Base as EngineBase, BatchLimit, Dir as EngineDir, Displaced as EngineDisplaced,
+    Effect as EngineEffect, EffectRecord, Location as EngineLocation, location_of,
 };
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
@@ -56,7 +56,7 @@ use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
-    check_root_at, open_root_folder, root_at,
+    Unresolved, check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -524,6 +524,7 @@ impl Disk {
         let hook = &mut self.hook;
         let pending = store.transaction(|tx| -> Result<_, Stop> {
             let blocked = engine.effects.blocked().len();
+            let listed = list_kept_folders(space, &mut engine.trees)?;
             let records = (engine.effects)
                 .plan(
                     &engine.trees,
@@ -534,7 +535,7 @@ impl Disk {
                 )
                 .to_vec();
             if records.is_empty() {
-                if engine.effects.blocked().len() != blocked {
+                if listed || engine.effects.blocked().len() != blocked {
                     engine.checkpoint(tx)?;
                 }
                 return Ok(None);
@@ -1546,6 +1547,63 @@ fn settle(
         };
         Ok(settled)
     }
+}
+
+/// Lists each folder that kept entries after another device deleted it and that another device's folder then took over
+/// ([`Trees::unlisted_kept_folders`]), before the effects stop applying the deleted folder's rules there. Returns
+/// whether it listed any. A folder that is gone or replaced on disk holds none of the entries.
+fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
+    let folders = trees.unlisted_kept_folders();
+    for folder in &folders {
+        let Some(identity) = trees.local().get(folder).map(|node| node.identity) else {
+            continue;
+        };
+        let Some(EngineLocation::At {
+            base,
+            dirs,
+            name: last,
+        }) = location_of(trees, folder)
+        else {
+            continue;
+        };
+        let dirs = (dirs.iter().chain([&EngineDir {
+            name: last,
+            identity,
+        }]))
+        .map(|dir| {
+            Ok(Dir {
+                name: name(&dir.name)?,
+                id: file_id(dir.identity),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>();
+        let base = match base {
+            EngineBase::Root => Ok(Base::Root),
+            EngineBase::Parked { node, identity } => name(&node).map(|name| Base::Parked {
+                name,
+                id: file_id(identity),
+            }),
+        };
+        let (Ok(base), Ok(dirs)) = (base, dirs) else {
+            continue;
+        };
+        let entries = match space.entries(&base, &dirs) {
+            Ok(entries) => entries,
+            Err(
+                Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. },
+            ) => Vec::new(),
+            Err(unresolved) => return Err(Stop::Io(unresolved.into())),
+        };
+        let entries = (entries.into_iter()).filter_map(|(name, kind)| {
+            let kind = kind.map(|kind| match kind {
+                EntryKind::File => Kind::File,
+                EntryKind::Dir => Kind::Dir,
+            });
+            Some((name.into_string().ok()?, kind))
+        });
+        trees.list_kept_folder(folder, entries);
+    }
+    Ok(!folders.is_empty())
 }
 
 fn held(names: &[(OsString, Option<EntryKind>)]) -> Option<Vec<(&str, Option<Kind>)>> {

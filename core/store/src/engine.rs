@@ -301,12 +301,13 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
-            .prepare_cached("SELECT node_id, name, taken FROM kept_entries")?;
+            .prepare_cached("SELECT node_id, entries FROM kept_entries")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let kept = state.trees.kept_entries.entry(row.get(0)?).or_default();
-            kept.names.insert(row.get(1)?);
-            kept.taken = row.get(2)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            let kept = serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("kept entries: {error}")))?;
+            state.trees.kept_entries.insert(row.get(0)?, kept);
         }
         let mut stmt = self
             .0
@@ -786,16 +787,18 @@ impl Tx<'_> {
             .0
             .prepare_cached("DELETE FROM kept_entries WHERE node_id = ?1")?;
         let mut put = self.0.prepare_cached(
-            "INSERT INTO kept_entries (node_id, name, taken) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO kept_entries (node_id, entries) VALUES (?1, ?2)",
         )?;
         for (node, kept) in kept_entries {
-            remove.execute([node])?;
-            for name in kept.iter().flat_map(|kept| &kept.names) {
-                put.execute(params![
-                    node,
-                    name,
-                    kept.as_ref().is_some_and(|kept| kept.taken)
-                ])?;
+            match kept {
+                Some(kept) => {
+                    let bytes = serde_json::to_vec(kept)
+                        .map_err(|error| invalid(format!("kept entries: {error}")))?;
+                    put.execute(params![node, bytes])?;
+                }
+                None => {
+                    remove.execute([node])?;
+                }
             }
         }
         self.write_set(
