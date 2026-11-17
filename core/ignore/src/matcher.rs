@@ -8,6 +8,7 @@ use crate::{NameKey, Source};
 
 pub const PLATFORM_FILES: [&str; 4] = [".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"];
 const STATE_DIR: &str = ".koidrive";
+const GIT_DIR: &str = ".git";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -29,6 +30,8 @@ pub enum Reason {
     BuiltIn,
     /// The device-local include or exclude list.
     Local,
+    /// A `.git` directory, which the device leaves out unless a `.koiignore` pattern includes it.
+    Default,
     /// Line `line` of the rules file of kind `source` in the path's ancestor at `depth` (0 is the
     /// root).
     Rule {
@@ -217,13 +220,14 @@ impl<K: NameKey> LocalRules<K> {
 
 type Folder<K> = [Option<RuleFile<K>>; Source::ALL.len()];
 
-/// The rules in force on this device: the built-in exclusions, the device-local list and the
-/// rules files known so far, by directory.
+/// The rules in force on this device: the built-in exclusions, the device-local list, the rules
+/// files known so far, by directory, and the default that leaves `.git` directories out.
 pub struct Matcher<K> {
     local: LocalRules<K>,
     files: HashMap<Vec<String>, Folder<K>>,
     platform_files: Vec<String>,
     state_dir: String,
+    git_dir: String,
     rules_files: Vec<String>,
 }
 
@@ -234,6 +238,7 @@ impl<K> Clone for Matcher<K> {
             files: self.files.clone(),
             platform_files: self.platform_files.clone(),
             state_dir: self.state_dir.clone(),
+            git_dir: self.git_dir.clone(),
             rules_files: self.rules_files.clone(),
         }
     }
@@ -262,6 +267,7 @@ impl<K: NameKey> Matcher<K> {
             files: HashMap::new(),
             platform_files: PLATFORM_FILES.iter().map(|name| key::<K>(name)).collect(),
             state_dir: key::<K>(STATE_DIR),
+            git_dir: key::<K>(GIT_DIR),
             rules_files: Source::ALL.map(|s| key::<K>(s.file_name())).to_vec(),
         }
     }
@@ -495,11 +501,7 @@ impl<'a, K: NameKey> Scope<'a, K> {
         {
             return (Status::Excluded(Reason::Local), None);
         }
-        let sources = match matcher.local.gitignore {
-            true => &Source::ALL[..],
-            false => &[Source::Koiignore][..],
-        };
-        let decided = sources.iter().find_map(|&source| {
+        let decide = |source: Source| {
             (self.files.iter().rev())
                 .filter(|(_, file_source, _)| *file_source == source)
                 .find_map(|&(depth, _, file)| {
@@ -510,7 +512,10 @@ impl<'a, K: NameKey> Scope<'a, K> {
                         line: rule.line,
                     }))
                 })
-        });
+        };
+        let git_dir = || (is_dir && name == matcher.git_dir).then_some(Some(Reason::Default));
+        let gitignore = || (matcher.local.gitignore).then(|| decide(Source::Gitignore))?;
+        let decided = (decide(Source::Koiignore).or_else(git_dir)).or_else(gitignore);
         match decided.flatten() {
             Some(reason) => (Status::Excluded(reason), None),
             None => (Status::Included, Some(include)),

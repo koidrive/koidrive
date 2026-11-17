@@ -166,3 +166,249 @@ fn a_folder_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_th
     assert!(shown(&site).is_empty(), "no question opens");
     assert_eq!(b.state(), FolderState::UpToDate);
 }
+
+fn repository(root: &Path, at: &str) {
+    for (path, text) in [
+        (".git/HEAD", "ref: refs/heads/main\n"),
+        (".git/config", "[core]\n\tfsmonitor = .git/hooks/watch\n"),
+        (".git/hooks/pre-commit", "#!/bin/sh\n"),
+        ("README.md", "readme"),
+    ] {
+        let path = root.join(at).join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+}
+
+fn deletes(device: &Device) -> Vec<String> {
+    (device.sent.iter().flat_map(|commit| &commit.ops))
+        .filter_map(|op| match &op.op {
+            Some(op::Op::Delete(delete)) => Some(delete.node_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn without(files: &[(String, String)], path: &str) -> Vec<(String, String)> {
+    (files.iter())
+        .filter(|(at, _)| at != path)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_repository_s_git_folder_never_uploads_whether_the_device_follows_gitignore_files_or_not() {
+    for sync in [SyncRules::default(), not_following_gitignore()] {
+        let mut remote = Remote::new();
+        let site = Site::new(&remote, "b");
+        let mut b = started_with(&site, &mut remote, &sync);
+        repository(&site.root, "Code/app");
+        repository(&site.root, "Code/app/vendor/lib");
+        fs::create_dir(site.root.join("Code/app/sub")).unwrap();
+        fs::write(
+            site.root.join("Code/app/sub/.git"),
+            "gitdir: ../.git/modules/sub\n",
+        )
+        .unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        assert_eq!(
+            remote.tree().keys().collect::<Vec<_>>(),
+            [
+                "Code",
+                "Code/app",
+                "Code/app/README.md",
+                "Code/app/sub",
+                "Code/app/sub/.git",
+                "Code/app/vendor",
+                "Code/app/vendor/lib",
+                "Code/app/vendor/lib/README.md",
+            ],
+            "gitignore {}",
+            sync.gitignore
+        );
+        assert_eq!(
+            on_server(&mut remote, "c"),
+            texts(&[
+                ("Code/app/README.md", "readme"),
+                ("Code/app/sub/.git", "gitdir: ../.git/modules/sub\n"),
+                ("Code/app/vendor/lib/README.md", "readme"),
+            ])
+        );
+    }
+}
+
+#[test]
+fn a_git_folder_that_synced_before_stays_on_disk_on_the_server_and_on_the_other_device_once_it_is_left_out()
+ {
+    let mut remote = Remote::new();
+    let site = Site::new(&remote, "b");
+    let mut b = started_with(&site, &mut remote, &SyncRules::default());
+    repository(&site.root, "app");
+    fs::write(site.root.join(".koiignore"), "!.git/\n").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    let site_c = Site::new(&remote, "c");
+    let mut c = started_with(&site_c, &mut remote, &SyncRules::default());
+    let synced = files(&site.root);
+    assert!(synced.iter().any(|(path, _)| path == "app/.git/config"));
+    assert_eq!(files(&site_c.root), synced);
+    let before = remote.tree();
+    drop(b);
+
+    fs::remove_file(site.root.join(".koiignore")).unwrap();
+    let mut b = started_with(&site, &mut remote, &SyncRules::default());
+    assert_eq!(deletes(&b), [before[".koiignore"].clone()]);
+    let mut after = before.clone();
+    after.remove(".koiignore");
+    assert_eq!(remote.tree(), after);
+    let kept = without(&synced, ".koiignore");
+    assert_eq!(files(&site.root), kept);
+    assert!(trashed(&site.root).is_empty());
+    assert!(b.folder.engine.trees.excluded(&before["app/.git"]));
+
+    let sent = b.sent.len();
+    fs::write(site.root.join("app/.git/HEAD"), "ref: refs/heads/topic\n").unwrap();
+    b.rescan();
+    b.settle();
+    assert!(b.work.is_empty());
+    assert_eq!(
+        b.sent.len(),
+        sent,
+        "an edit inside a left-out .git folder uploads nothing"
+    );
+
+    c.pull(&remote);
+    c.rest(&mut remote);
+    assert!(deletes(&c).is_empty());
+    assert_eq!(files(&site_c.root), kept);
+    assert!(
+        !trashed(&site_c.root)
+            .iter()
+            .any(|name| name.starts_with(".git"))
+    );
+    assert!(c.folder.engine.trees.excluded(&before["app/.git"]));
+    assert_eq!(remote.tree(), after);
+}
+
+#[test]
+fn a_koiignore_pattern_written_while_the_device_is_stopped_uploads_git_folders_through_a_server_error()
+ {
+    let mut remote = Remote::new();
+    let site = Site::new(&remote, "b");
+    let mut b = started_with(&site, &mut remote, &SyncRules::default());
+    repository(&site.root, "app");
+    b.rescan();
+    b.rest(&mut remote);
+    let site_c = Site::new(&remote, "c");
+    let mut c = started_with(&site_c, &mut remote, &SyncRules::default());
+    let without_git = SyncRules {
+        exclude: vec![".git/".into()],
+        ..SyncRules::default()
+    };
+    let site_d = Site::new(&remote, "d");
+    let mut d = started_with(&site_d, &mut remote, &without_git);
+    assert_eq!(
+        remote.tree().keys().collect::<Vec<_>>(),
+        ["app", "app/README.md"]
+    );
+    drop(b);
+
+    fs::write(site.root.join("app/.koiignore"), "!.git/\n").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|device| device.folder.scanned);
+    let mut rounds = 0;
+    let refused = loop {
+        rounds += 1;
+        assert!(rounds < 1000, "the folder sends a commit");
+        match b.work.pop_front() {
+            Some(Work::Send(commit)) => break commit,
+            Some(work) => b.perform(work, &mut remote).unwrap(),
+            None => b.settle(),
+        }
+    };
+    b.sent.push(refused);
+    let unavailable = put_off(koidrive_proto::v1::error::Code::RetryLater);
+    let step = b.folder.sent(Err(CallError::Server(unavailable)));
+    b.take(step).unwrap();
+    b.rest(&mut remote);
+    assert!(deletes(&b).is_empty());
+    let everything = files(&site.root);
+    assert_eq!(
+        everything
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "app/.git/HEAD",
+            "app/.git/config",
+            "app/.git/hooks/pre-commit",
+            "app/.koiignore",
+            "app/README.md",
+        ]
+    );
+    assert_eq!(on_server(&mut remote, "e"), everything);
+
+    c.pull(&remote);
+    c.rest(&mut remote);
+    assert_eq!(files(&site_c.root), everything);
+    assert!(c.sent.is_empty());
+
+    d.pull(&remote);
+    d.rest(&mut remote);
+    assert_eq!(
+        files(&site_d.root),
+        texts(&[("app/.koiignore", "!.git/\n"), ("app/README.md", "readme")])
+    );
+    assert!(d.sent.is_empty());
+}
+
+#[test]
+fn renaming_and_moving_a_folder_that_holds_a_repository_moves_it_without_deleting_anything() {
+    for included in [false, true] {
+        let mut remote = Remote::new();
+        let site = Site::new(&remote, "b");
+        let mut b = started_with(&site, &mut remote, &SyncRules::default());
+        repository(&site.root, "Projects/app");
+        fs::create_dir(site.root.join("Archive")).unwrap();
+        if included {
+            fs::write(site.root.join(".koiignore"), "!.git/\n").unwrap();
+        }
+        b.rescan();
+        b.rest(&mut remote);
+        let before = remote.tree();
+        let site_c = Site::new(&remote, "c");
+        let mut c = started_with(&site_c, &mut remote, &SyncRules::default());
+
+        fs::rename(site.root.join("Projects"), site.root.join("Work")).unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        fs::rename(site.root.join("Work/app"), site.root.join("Archive/app")).unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        assert!(deletes(&b).is_empty(), "included {included}");
+
+        let moved = |path: &str| {
+            path.replacen("Projects/app", "Archive/app", 1)
+                .replacen("Projects", "Work", 1)
+        };
+        let expected: BTreeMap<String, String> = (before.iter())
+            .map(|(path, id)| (moved(path), id.clone()))
+            .collect();
+        assert_eq!(remote.tree(), expected, "included {included}");
+        assert_eq!(
+            expected.contains_key("Archive/app/.git/HEAD"),
+            included,
+            "included {included}"
+        );
+        let git = |root: &Path| fs::read_to_string(root.join("Archive/app/.git/HEAD")).ok();
+        assert_eq!(git(&site.root).as_deref(), Some("ref: refs/heads/main\n"));
+
+        c.pull(&remote);
+        c.rest(&mut remote);
+        assert!(deletes(&c).is_empty());
+        assert_eq!(files(&site_c.root), on_server(&mut remote, "d"));
+        assert_eq!(git(&site_c.root).is_some(), included);
+    }
+}

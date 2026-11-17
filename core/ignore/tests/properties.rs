@@ -32,6 +32,7 @@ fn name() -> impl Strategy<Value = String> {
         1 => Just(".koiignore".to_owned()),
         1 => Just(".DS_Store".to_owned()),
         1 => Just(".koidrive".to_owned()),
+        1 => Just(".git".to_owned()),
     ]
 }
 
@@ -86,6 +87,8 @@ fn line() -> impl Strategy<Value = String> {
             "!*/",
             "b/*",
             "!b/a",
+            ".git/",
+            "!.git/",
         ])
         .prop_map(str::to_owned),
         "[aAb*?!/\\[\\]]{1,5}",
@@ -315,6 +318,18 @@ proptest! {
                 prop_assert_eq!(status[path], Status::Excluded(Reason::BuiltIn));
             } else if *kind == Kind::File && name == ".koiignore" {
                 prop_assert_eq!(status[path], Status::Included);
+            } else if *kind == Kind::Dir && name == ".git" {
+                let by_gitignore = matches!(
+                    status[path],
+                    Status::Excluded(Reason::Rule { source: Source::Gitignore, .. })
+                );
+                prop_assert!(!by_gitignore);
+                let negated = |(_, source, text): &(Index, Source, String)| {
+                    *source == Source::Koiignore && text.contains('!')
+                };
+                if status[path] == Status::Included {
+                    prop_assert!(files.iter().any(negated));
+                }
             }
         }
     }

@@ -56,7 +56,9 @@ impl Ignore for Matched {
         match self.0.status(&names(path), kind) {
             Status::Included => Ignored::No,
             Status::Excluded(Reason::BuiltIn) => Ignored::BuiltIn,
-            Status::Excluded(_) => Ignored::Rule,
+            Status::Excluded(Reason::Local | Reason::Default | Reason::Rule { .. }) => {
+                Ignored::Rule
+            }
         }
     }
 

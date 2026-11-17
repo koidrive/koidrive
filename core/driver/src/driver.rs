@@ -10805,6 +10805,12 @@ mod tests {
             ("sub/.gitignore", "*.tmp\n"),
             ("sub/t.tmp", "tmp"),
             (".DS_Store", "built in"),
+            (".git/HEAD", "ref: refs/heads/main"),
+            (".git/logs/x.log", "left out with every .git folder"),
+            (
+                "sub/.git/objects/pack/p.pack",
+                "left out with every .git folder",
+            ),
         ] {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             fs::write(root.join(path), text).unwrap();
