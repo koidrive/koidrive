@@ -10543,8 +10543,10 @@ fn replay_corpus() {
                 Ok(()) => "pass".to_owned(),
                 Err(error) => format!("FAIL: {}", error.to_string().lines().next().unwrap_or("").replace('\t', " ")),
             };
+            let verdict: String = verdict.chars().take(300).collect();
             println!("REPLAY\t{}\t{name}\t{verdict}", &seed[3..]);
         }
     }
+    panic!("corpus replayed");
 }
 
