@@ -1,14 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
+import { appendFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type Account, accountFromEnv, ApiError, graphql } from "./cloudflare.ts";
 import { readState } from "./state.ts";
 
 class Failed extends Error {}
 
 const SUPPORTED_NS = ["1", "2", "4", "8"];
+const ANALYTICS_MS = 10 * 60_000;
+const ANALYTICS_EVERY_MS = 30_000;
 
-function inputs(): { ns: string; repetitions: string } {
+type Kind = "chunks" | "small";
+
+interface Inputs {
+  kind: Kind;
+  env: Record<string, string>;
+}
+
+function bounded(name: string, value: string, min: number, max: number): string {
+  if (!/^[1-9][0-9]*$/.test(value) || Number(value) < min || Number(value) > max) throw new Failed(name + " must be an integer from " + min + " to " + max);
+  return value;
+}
+
+function inputs(kind: Kind): Inputs {
+  if (kind === "small") {
+    return {
+      kind,
+      env: {
+        KOIDRIVE_BENCH_SMALL_FILES: bounded("KOIDRIVE_BENCH_SMALL_FILES", process.env.KOIDRIVE_BENCH_SMALL_FILES ?? "20000", 32, 50_000),
+        KOIDRIVE_BENCH_SMALL_KIB: bounded("KOIDRIVE_BENCH_SMALL_KIB", process.env.KOIDRIVE_BENCH_SMALL_KIB ?? "16", 1, 255),
+      },
+    };
+  }
   const ns = process.env.KOIDRIVE_BENCH_NS ?? SUPPORTED_NS.join(",");
   const values = ns.split(",");
   if (values.length > 4 || new Set(values).size !== values.length || values.some((n) => !SUPPORTED_NS.includes(n))) {
@@ -16,10 +43,15 @@ function inputs(): { ns: string; repetitions: string } {
   }
   const repetitions = process.env.KOIDRIVE_BENCH_REPETITIONS ?? "3";
   if (!/^[1-3]$/.test(repetitions)) throw new Failed("KOIDRIVE_BENCH_REPETITIONS must be an integer from 1 to 3");
-  return { ns, repetitions };
+  return { kind, env: { KOIDRIVE_BENCH_NS: ns, KOIDRIVE_BENCH_REPETITIONS: repetitions } };
 }
 
-async function bench({ ns, repetitions }: ReturnType<typeof inputs>): Promise<void> {
+function emit(markdown: string): void {
+  console.log(markdown);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown + "\n");
+}
+
+async function bench({ kind, env: settings }: Inputs): Promise<void> {
   let state: ReturnType<typeof readState>;
   try {
     state = readState();
@@ -33,11 +65,13 @@ async function bench({ ns, repetitions }: ReturnType<typeof inputs>): Promise<vo
   }
   env.KOIDRIVE_BENCH_URL = state.url;
   env.KOIDRIVE_BENCH_OWNER = JSON.stringify(state.owner);
-  env.KOIDRIVE_BENCH_NS = ns;
-  env.KOIDRIVE_BENCH_REPETITIONS = repetitions;
-  if (!process.env.GITHUB_ACTIONS && process.env.KOIDRIVE_BENCH_MIB !== undefined) env.KOIDRIVE_BENCH_MIB = process.env.KOIDRIVE_BENCH_MIB;
+  Object.assign(env, settings);
+  const windows = join(process.env.RUNNER_TEMP || tmpdir(), "koidrive-bench-windows-" + process.pid + ".json");
+  if (kind === "small") env.KOIDRIVE_BENCH_WINDOWS = windows;
+  if (kind === "chunks" && !process.env.GITHUB_ACTIONS && process.env.KOIDRIVE_BENCH_MIB !== undefined) env.KOIDRIVE_BENCH_MIB = process.env.KOIDRIVE_BENCH_MIB;
+  const test = kind === "small" ? "small_file_benchmark" : "upload_benchmark";
   await new Promise<void>((resolve, reject) => {
-    const child = spawn("cargo", ["test", "-p", "koidrive-net", "--release", "--locked", "--test", "upload_bench", "upload_benchmark", "--", "--ignored", "--exact", "--nocapture"], {
+    const child = spawn("cargo", ["test", "-p", "koidrive-net", "--release", "--locked", "--test", "upload_bench", test, "--", "--ignored", "--exact", "--nocapture"], {
       cwd: fileURLToPath(new URL("../../../", import.meta.url)),
       env,
       stdio: ["ignore", "inherit", "inherit"],
@@ -48,13 +82,85 @@ async function bench({ ns, repetitions }: ReturnType<typeof inputs>): Promise<vo
       else reject(new Failed(status === null ? "cargo terminated without an exit status" : "cargo exited with status " + status));
     });
   });
+  if (kind === "small") await workerCpu(state.name, windows);
+}
+
+interface Window {
+  side: string;
+  startMs: number;
+  endMs: number;
+  requests: number;
+}
+
+interface Invocations {
+  sum: { requests: number; errors: number };
+  quantiles: { cpuTimeP50: number; cpuTimeP99: number };
+}
+
+const INVOCATIONS = `query($accountTag: string!, $scriptName: string!, $start: Time!, $end: Time!) {
+  viewer { accounts(filter: { accountTag: $accountTag }) {
+    workersInvocationsAdaptive(limit: 1, filter: { scriptName: $scriptName, datetime_geq: $start, datetime_leq: $end }) {
+      sum { requests errors }
+      quantiles { cpuTimeP50 cpuTimeP99 }
+    }
+  } }
+}`;
+
+async function invocations(account: Account, script: string, window: Window): Promise<Invocations | undefined> {
+  const data = await graphql<{ viewer: { accounts: { workersInvocationsAdaptive: Invocations[] }[] } }>(account, INVOCATIONS, {
+    accountTag: account.id,
+    scriptName: script,
+    start: new Date(window.startMs).toISOString(),
+    end: new Date(window.endMs).toISOString(),
+  });
+  return data.viewer.accounts[0]?.workersInvocationsAdaptive[0];
+}
+
+function missingScope(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 403 || /not authorized|unauthori[sz]ed|permission|access denied/i.test(error.message));
+}
+
+async function workerCpu(script: string, path: string): Promise<void> {
+  const windows = JSON.parse(readFileSync(path, "utf8")) as Window[];
+  emit("\n#### Worker CPU per request (Analytics API)\n");
+  const account = accountFromEnv();
+  if (!account) {
+    emit("Worker CPU unavailable: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set. The sync times and request counts above are complete.");
+    return;
+  }
+  const rows: string[] = [];
+  for (const window of windows) {
+    const deadline = Date.now() + ANALYTICS_MS;
+    let seen: Invocations | undefined;
+    try {
+      for (;;) {
+        seen = await invocations(account, script, window);
+        if ((seen?.sum.requests ?? 0) >= window.requests || Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, ANALYTICS_EVERY_MS));
+      }
+    } catch (error) {
+      if (missingScope(error)) {
+        emit("Worker CPU unavailable: the deploy-test token lacks Account Analytics Read. The sync times and request counts above are complete.");
+      } else {
+        emit("Worker CPU unavailable: " + (error instanceof Error ? error.message : String(error)).slice(0, 200) + ". The sync times and request counts above are complete.");
+      }
+      return;
+    }
+    const n = seen?.sum.requests ?? 0;
+    const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
+    rows.push("| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial after " + ANALYTICS_MS / 60_000 + " min)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |");
+  }
+  emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | Errors |\n|---|---|---|---|---|---|\n" + rows.join("\n"));
+  emit("\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle.");
 }
 
 try {
-  const config = inputs();
-  const command = process.argv[2];
-  if (process.argv.length > 3 || (command !== undefined && command !== "validate")) throw new Failed("usage: bench.ts [validate]");
-  if (command !== "validate") await bench(config);
+  const args = process.argv.slice(2);
+  const kind: Kind = args[0] === "small" ? "small" : "chunks";
+  const rest = kind === "small" ? args.slice(1) : args;
+  if (rest.length > 1 || (rest[0] !== undefined && rest[0] !== "validate")) throw new Failed("usage: bench.ts [small] [validate]");
+  const config = inputs(kind);
+  if (rest[0] !== "validate") await bench(config);
 } catch (error) {
   console.error("::error::deploy benchmark: " + (error instanceof Failed ? error.message : "benchmark runner failed; private error details suppressed"));
   process.exitCode = 1;

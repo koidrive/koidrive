@@ -133,15 +133,22 @@ impl Retries {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Requests {
+    sent: usize,
+    chunks: usize,
+}
+
 struct RetryCounter {
     retries: Arc<Mutex<Retries>>,
     protocols: Arc<Mutex<HashSet<&'static str>>>,
     uploading: Arc<AtomicBool>,
+    requests: Arc<Mutex<Requests>>,
 }
 
 impl Subscriber for RetryCounter {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        (metadata.target() == "koidrive_net::chunks" && *metadata.level() == tracing::Level::DEBUG)
+        (metadata.target() == "koidrive_net::chunks" && *metadata.level() >= tracing::Level::DEBUG)
             || (metadata.target() == "hyper_util::client::legacy::client"
                 && *metadata.level() == tracing::Level::TRACE)
     }
@@ -157,8 +164,17 @@ impl Subscriber for RetryCounter {
         struct Fields {
             message: String,
             error: String,
+            chunks: u64,
         }
         impl Visit for Fields {
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "chunks" {
+                    self.chunks = value;
+                }
+            }
+            fn record_i64(&mut self, field: &Field, value: i64) {
+                self.record_u64(field, value.try_into().unwrap_or_default());
+            }
             fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
                 match field.name() {
                     "message" => self.message = format!("{value:?}"),
@@ -171,6 +187,11 @@ impl Subscriber for RetryCounter {
         event.record(&mut fields);
         if fields.message == "koidrive chunk transfer will be retried" {
             self.retries.lock().unwrap().record(&fields.error);
+        }
+        if fields.message == "koidrive chunk upload request" {
+            let mut requests = self.requests.lock().unwrap();
+            requests.sent += 1;
+            requests.chunks += fields.chunks as usize;
         }
         if self.uploading.load(Ordering::Relaxed) {
             let protocol = match fields.message.as_str() {
@@ -244,16 +265,7 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
-#[tokio::test]
-#[ignore = "deploy-test bench mode, or a local Worker with KOIDRIVE_BENCH_MIB=64"]
-async fn upload_benchmark() {
-    let setting = |key: &str, default: &str| std::env::var(key).unwrap_or_else(|_| default.into());
-    let config = Config::parse(
-        &setting("KOIDRIVE_BENCH_NS", "1,2,4,8"),
-        &setting("KOIDRIVE_BENCH_REPETITIONS", "3"),
-        &setting("KOIDRIVE_BENCH_MIB", "1024"),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+async fn deployment() -> (Api, Arc<Auth>) {
     let deployed = std::env::var("KOIDRIVE_BENCH_URL").ok();
     let api = if let Some(url) = &deployed {
         Api::new(url.parse().expect("benchmark URL")).expect("HTTPS benchmark origin")
@@ -273,6 +285,27 @@ async fn upload_benchmark() {
         owner().await
     };
     let auth = Arc::new(Auth::new(api.clone(), credentials));
+    (api, auth)
+}
+
+fn commit_sha() -> String {
+    std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .unwrap_or_else(|| "local checkout".into())
+}
+
+#[tokio::test]
+#[ignore = "deploy-test bench mode, or a local Worker with KOIDRIVE_BENCH_MIB=64"]
+async fn upload_benchmark() {
+    let setting = |key: &str, default: &str| std::env::var(key).unwrap_or_else(|_| default.into());
+    let config = Config::parse(
+        &setting("KOIDRIVE_BENCH_NS", "1,2,4,8"),
+        &setting("KOIDRIVE_BENCH_REPETITIONS", "3"),
+        &setting("KOIDRIVE_BENCH_MIB", "1024"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (api, auth) = deployment().await;
     let retries = Arc::new(Mutex::new(Retries::default()));
     let protocols = Arc::new(Mutex::new(HashSet::new()));
     let uploading = Arc::new(AtomicBool::new(false));
@@ -280,6 +313,7 @@ async fn upload_benchmark() {
         retries: retries.clone(),
         protocols: protocols.clone(),
         uploading: uploading.clone(),
+        requests: Arc::default(),
     })
     .expect("install retry counter");
 
@@ -333,10 +367,7 @@ async fn upload_benchmark() {
     versions.sort();
     let mut colos = colos.into_iter().collect::<Vec<_>>();
     colos.sort();
-    let sha = std::env::var("GITHUB_SHA")
-        .ok()
-        .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-        .unwrap_or_else(|| "local checkout".into());
+    let sha = commit_sha();
     emit(&format!(
         "### Chunk upload benchmark\n\nCommit `{}`. {} MiB per measurement in 4 MiB chunks. Region: {}.\n\nWorker probe negotiated {}; cf-ray colo {}; median warm small-request RTT {:.2} ms, 9 requests after one warmup.\n\nPUT duration includes the Worker and R2 write; it does not isolate R2 latency.\n\n| Rep | N | upload() seconds | MB/s | Receipts | Observed retries |\n|---|---|---|---|---|---|",
         sha,
@@ -471,6 +502,198 @@ async fn upload_benchmark() {
     );
 }
 
+#[derive(Debug, PartialEq)]
+struct SmallConfig {
+    files: usize,
+    kib: usize,
+}
+
+impl SmallConfig {
+    fn parse(files: &str, kib: &str) -> Result<Self, &'static str> {
+        let files = files
+            .parse()
+            .map_err(|_| "files must be an integer from 32 to 50000")?;
+        if !(32..=50_000).contains(&files) {
+            return Err("files must be an integer from 32 to 50000");
+        }
+        let kib = kib
+            .parse()
+            .map_err(|_| "KiB must be an integer from 1 to 255")?;
+        if !(1..=255).contains(&kib) {
+            return Err("KiB must be an integer from 1 to 255");
+        }
+        Ok(Self { files, kib })
+    }
+}
+
+fn small_files(config: &SmallConfig) -> (Vec<ChunkRef>, HashMap<Vec<u8>, Bytes>) {
+    let mut chunks = Vec::new();
+    let mut source = HashMap::new();
+    for _ in 0..config.files {
+        let mut bytes = vec![0; config.kib << 10];
+        fastrand::fill(&mut bytes);
+        let chunk = ChunkRef {
+            hash: Sha256::digest(&bytes).to_vec(),
+            size: bytes.len() as u32,
+            encoding: 0,
+        };
+        source.insert(chunk.hash.clone(), Bytes::from(bytes));
+        chunks.push(chunk);
+    }
+    assert_eq!(chunks.len(), source.len(), "every chunk must be fresh");
+    (chunks, source)
+}
+
+fn epoch_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}
+
+#[tokio::test]
+#[ignore = "deploy-test bench-small mode, or a local Worker with KOIDRIVE_BENCH_SMALL_FILES=320"]
+async fn small_file_benchmark() {
+    let setting = |key: &str, default: &str| std::env::var(key).unwrap_or_else(|_| default.into());
+    let config = SmallConfig::parse(
+        &setting("KOIDRIVE_BENCH_SMALL_FILES", "20000"),
+        &setting("KOIDRIVE_BENCH_SMALL_KIB", "16"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (api, auth) = deployment().await;
+    let retries = Arc::new(Mutex::new(Retries::default()));
+    let requests = Arc::new(Mutex::new(Requests::default()));
+    tracing::subscriber::set_global_default(RetryCounter {
+        retries: retries.clone(),
+        protocols: Arc::default(),
+        uploading: Arc::default(),
+        requests: requests.clone(),
+    })
+    .expect("install request counter");
+    emit(&format!(
+        "### Small-file upload benchmark\n\nCommit `{}`. {} fresh files of {} KiB per side, one chunk each, default upload concurrency.\n\n| Side | upload() seconds | Files/s | Upload requests | Chunks per request | Receipts | Observed retries |\n|---|---|---|---|---|---|---|",
+        commit_sha(),
+        config.files,
+        config.kib
+    ));
+    let mut windows = Vec::new();
+    for (side, bundles) in [("bundles", true), ("puts", false)] {
+        let (chunks, source) = small_files(&config);
+        let space = api
+            .create_space(
+                &auth,
+                &CreateSpaceRequest {
+                    name: format!("Small-file benchmark {side}"),
+                    request_id: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let (session, mut events) = Session::start(
+            auth.clone(),
+            SessionConfig::new(
+                &space.space_id,
+                "small-file benchmark",
+                env!("CARGO_PKG_VERSION"),
+                1,
+            ),
+        )
+        .unwrap();
+        let welcome = connected(&mut events).await;
+        assert!(
+            !bundles
+                || welcome
+                    .features
+                    .iter()
+                    .any(|f| f == koidrive_net::CHUNK_BUNDLES),
+            "the deployed Worker does not offer chunk bundles"
+        );
+        let mut transfer = Transfer::new(&api);
+        transfer.bundles = bundles;
+        *retries.lock().unwrap() = Retries::default();
+        *requests.lock().unwrap() = Requests::default();
+        let start_ms = epoch_ms();
+        let started = Instant::now();
+        let outcome = transfer
+            .upload(&session, &chunks, |chunk| {
+                std::future::ready(
+                    source
+                        .get(&chunk.hash)
+                        .cloned()
+                        .ok_or_else(|| std::io::Error::other("unknown benchmark chunk")),
+                )
+            })
+            .await;
+        let seconds = started.elapsed().as_secs_f64();
+        let end_ms = epoch_ms();
+        let observed = retries.lock().unwrap().clone();
+        let sent = *requests.lock().unwrap();
+        session.close().await;
+        let receipts = match outcome {
+            Ok(receipts) => receipts,
+            Err(error) => {
+                emit(&format!(
+                    "| {side} | {seconds:.3} | FAILED | {} | | 0 | {} |\n\nUpload failed: {error}",
+                    sent.sent,
+                    observed.text()
+                ));
+                panic!("small-file benchmark upload failed");
+            }
+        };
+        assert_eq!(
+            receipts.len(),
+            chunks.len(),
+            "every fresh chunk needs a receipt"
+        );
+        emit(&format!(
+            "| {side} | {seconds:.3} | {:.0} | {} | {:.1} | {} | {} |",
+            config.files as f64 / seconds,
+            sent.sent,
+            sent.chunks as f64 / sent.sent.max(1) as f64,
+            receipts.len(),
+            observed.text()
+        ));
+        windows.push(serde_json::json!({
+            "side": side,
+            "startMs": start_ms as u64,
+            "endMs": end_ms as u64,
+            "requests": sent.sent,
+            "chunks": sent.chunks,
+        }));
+    }
+    if let Ok(path) = std::env::var("KOIDRIVE_BENCH_WINDOWS") {
+        std::fs::write(path, serde_json::to_string(&windows).unwrap())
+            .expect("write benchmark windows");
+    }
+    emit(
+        "\nEach side uses a fresh space and fresh random bytes. Generation, hashing, space creation and session setup are outside the timer. PrepareUpload, upload requests and retry waits are inside. Upload requests count every chunk PUT and bundle POST the client sent, retries included.",
+    );
+}
+
+#[test]
+fn small_benchmark_accepts_only_bounded_sizes_before_network() {
+    for (files, kib) in [
+        ("31", "16"),
+        ("50001", "16"),
+        ("x", "16"),
+        ("320", "0"),
+        ("320", "256"),
+        ("320", "x"),
+    ] {
+        assert!(
+            SmallConfig::parse(files, kib).is_err(),
+            "{files} files of {kib} KiB"
+        );
+    }
+    assert_eq!(
+        SmallConfig::parse("20000", "16"),
+        Ok(SmallConfig {
+            files: 20000,
+            kib: 16
+        })
+    );
+}
+
 #[test]
 fn benchmark_accepts_only_supported_concurrency_before_network() {
     for ns in ["0", "3", "16", "1,1", "1,2,4,8,1", ""] {
@@ -559,10 +782,12 @@ fn trace_observer_counts_retries_and_only_active_upload_handshakes() {
     let retries = Arc::new(Mutex::new(Retries::default()));
     let protocols = Arc::new(Mutex::new(HashSet::new()));
     let uploading = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Requests::default()));
     let counter = RetryCounter {
         retries: retries.clone(),
         protocols: protocols.clone(),
         uploading: uploading.clone(),
+        requests: requests.clone(),
     };
     tracing::subscriber::with_default(counter, || {
         tracing::trace!(target: "hyper_util::client::legacy::client", "http2 handshake complete, spawning background dispatcher task");
@@ -576,7 +801,16 @@ fn trace_observer_counts_retries_and_only_active_upload_handshakes() {
             cloudflare_error_code: None,
         };
         tracing::debug!(target: "koidrive_net::chunks", %error, "koidrive chunk transfer will be retried");
+        tracing::trace!(target: "koidrive_net::chunks", chunks = 32, "koidrive chunk upload request");
+        tracing::trace!(target: "koidrive_net::chunks", chunks = 1, "koidrive chunk upload request");
     });
+    assert_eq!(
+        *requests.lock().unwrap(),
+        Requests {
+            sent: 2,
+            chunks: 33
+        }
+    );
     assert_eq!(
         retries.lock().unwrap().text(),
         "1 chunks; 1 retry events (429: 1)"

@@ -569,6 +569,16 @@ describe("claim", () => {
     expect(mock.logQueries).toBe(5);
   });
 
+  it("re-sends the probe while its request has not reached the logs, then claims", async () => {
+    mock.probeLagQueries = 6;
+    claimState();
+    const { status, output } = await runTs("claim");
+    expect(output).toContain("Claimed " + mock.url);
+    expect(status).toBe(0);
+    expect(mock.probeRequests).toBeGreaterThan(1);
+    expect(mock.setupRequests).toBe(1);
+  });
+
   it("ignores a claim code another Worker logged", async () => {
     mock.logs.push({ script: "koidrive-test-2-1", message: "Koidrive claim code (valid for 1 hour): AAAA-BBBB-CCCC", timestamp: Date.now() });
     claimState();

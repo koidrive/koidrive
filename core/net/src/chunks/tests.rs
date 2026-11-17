@@ -2450,3 +2450,17 @@ async fn a_refusal_keeps_the_server_cause_and_the_code_of_an_edge_error_page() {
     ));
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn a_transfer_with_bundles_off_sends_one_put_per_chunk_to_a_server_that_offers_them() {
+    let parts = named(40);
+    let off = Transfer {
+        bundles: false,
+        ..transfer()
+    };
+    let run = posting(all_stored, &parts, off, Duration::ZERO).await;
+    assert_eq!(run.result.as_ref().unwrap().len(), 40);
+    assert_eq!(run.posts(), Vec::<usize>::new());
+    assert_eq!(run.puts(), 40);
+    assert!(run.session.bundles_offered());
+}

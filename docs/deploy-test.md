@@ -18,11 +18,13 @@ In the browser, open **Actions**, **Deploy test**, **Run workflow**, keep `main`
 | `upgrade` | Data written by an earlier release survives an upgrade to this commit |
 | `e2e` | A macOS and a Linux device sync one space with `koi` |
 | `bench` | Rust chunk upload speed at several concurrency values |
+| `bench-small` | Upload time, request count and Worker CPU for many small files, with and without bundles |
 
 ```sh
 gh workflow run deploy-test.yml --ref main -f mode=upgrade -f from_ref=<commit or tag>
 gh workflow run deploy-test.yml --ref main -f mode=e2e
 gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f bench_repetitions=3
+gh workflow run deploy-test.yml --ref main -f mode=bench-small -f bench_small_files=20000 -f bench_small_kib=16
 ```
 
 **smoke** runs `smoke.ts`, a Vitest suite that stops at the first failure. It checks that:
@@ -51,6 +53,8 @@ A job moves on only when its folder holds exactly the expected tree. The last st
 
 **bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. The test times only `Transfer::upload`, with its hashing, planning, PUTs and retry waits. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
 
+**bench-small** runs the Rust release test `small_file_benchmark` in the same file. `bench_small_files` takes 32 to 50,000 and `bench_small_kib` takes 1 to 255. The test uploads that many fresh files of that size twice, each time to a new space: once with bundles, and once with one PUT per chunk. For each side the summary gives the upload time, files per second, the upload requests the client sent with retries included, and chunks per request. After the test, `bench.ts` asks the Cloudflare GraphQL Analytics API for the Worker's invocations and CPU time p50 and p99 in each side's time window, retrying for up to 10 minutes while the analytics catch up. On the bundles side, CPU per invocation is CPU per bundle. If the token lacks Account Analytics Read or the query fails, the summary says so and the run still passes with the upload numbers.
+
 ## Each run deploys, tests and deletes one server
 
 Every run uses one name, `koidrive-test-<run id>-<run attempt>`, for its Worker and its R2 bucket.
@@ -58,7 +62,7 @@ Every run uses one name, `koidrive-test-<run id>-<run attempt>`, for its Worker 
 1. **Trust check.** A job without secrets refuses the run unless it started from `main` of `koidrive/koidrive` for a commit on `main`, and the `deploy-test` environment is [protected](#set-up-the-protected-environment). Only then does the job with the secrets wait for approval.
 2. **Preflight.** If a Worker or a bucket already has the run's name, the run stops before creating anything.
 3. **Deploy.** The run copies the tracked files of `server/`, sets the Worker and bucket names in `wrangler.jsonc` as an owner does before a Wrangler deploy, creates the bucket, and runs `pnpm run deploy` with a random `--tag`. The tag marks the Worker as this run's even if the deploy fails after the upload. The run then waits until the new version takes all traffic and `/v1/server` answers.
-4. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The run never prints the code.
+4. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, sending the request again on every query for up to 10 minutes, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The run never prints the code.
 5. **Test**, in the chosen mode.
 6. **Teardown**, whatever happened before. It deletes the Worker, and with it the Worker's Durable Objects, only if a version carries the run's tag. It deletes the bucket only if its creation date is the one the run recorded. It fails the job if anything it created is left, or if something with the run's name was not its own.
 7. **Usage summary**, in the log and on the summary page: the test client's requests and bytes, what R2 held at teardown, and Worker, Durable Object and R2 figures from the Analytics API. Those figures can lag by several minutes, and the Durable Object storage figure covers the whole test account.
@@ -72,7 +76,7 @@ The failing step's log names the cause. The common ones:
 - **"R2 is not activated for this account"** (code 10042). Activate R2 as [What you need](deploy.md#what-you-need) describes. The run deployed nothing.
 - **"wrangler deploy printed no workers.dev address".** The account has no `workers.dev` subdomain. Open **Workers & Pages** in the dashboard once to create it.
 - **"a Worker named ... already exists" or "an R2 bucket named ... already exists".** Something has the run's name. The run created nothing and left it alone.
-- **"no query of this Worker's logs showed its request ..."** The token cannot read Workers Logs, or the logs are slow. The run did not open `/setup`, so no claim code was spent. Rerun the failed jobs.
+- **"no query of this Worker's logs showed its request ..."** The token cannot read Workers Logs, or the logs lagged by more than 10 minutes. The run did not open `/setup`, so no claim code was spent. Rerun the failed jobs.
 - **HTTP 403 with "the token lacks a permission this call needs".** Compare the token with [The token's permissions](#the-tokens-permissions).
 - **Code 10007 after an upload.** The API lists a new Worker late. The run deploys again after 10 and 30 seconds and stops after the third upload.
 
@@ -116,6 +120,6 @@ Create a custom token (**Manage account**, **Account API tokens**, **Create Toke
 | Account, Workers Scripts, Edit | Workers Scripts Write | Deploy the Worker and its Durable Object classes, read its versions and deployments, list its Durable Object namespaces, and delete it |
 | Account, Workers Observability, Edit | Workers Observability Write | [Query Workers Logs](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) for the claim code |
 | Account, Workers R2 Storage, Edit | Workers R2 Storage Write | Create the bucket and read its creation date, list, read and delete its objects, and delete it |
-| Account, Account Analytics, Read | Account Analytics Read | Read the usage summary's figures. Without it they show as unavailable |
+| Account, Account Analytics, Read | Account Analytics Read | Read the usage summary's figures and `bench-small`'s Worker CPU. Without it they show as unavailable |
 
 Anyone with this token can deploy, read and delete every Worker and bucket in the account. Use an account that holds nothing else of value, give the token an expiry date, and roll it if a run log ever shows it.

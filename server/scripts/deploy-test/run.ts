@@ -36,8 +36,9 @@ import { readState, type State, testName, writeState } from "./state.ts";
 const INSTALL_MS = 5 * 60_000;
 const DEPLOY_MS = 5 * 60_000;
 const SERVING_MS = 3 * 60_000;
-const CLAIM_LOG_MS = 4 * 60_000;
+const CLAIM_LOG_MS = 10 * 60_000;
 const CLAIM_LOG_EVERY_MS = 5_000;
+const CLAIM_PROGRESS_EVERY_MS = 60_000;
 const CLOCK_SKEW_MS = 60_000;
 const CODE_LIFETIME_MS = 60 * 60_000;
 const DEPLOY_ATTEMPTS = 3;
@@ -279,13 +280,25 @@ async function claim(account: Account): Promise<void> {
   const url = state.url!;
   const fromMs = first.atMs - CLOCK_SKEW_MS;
   const marker = "/deploy-test-probe-" + randomBytes(8).toString("hex");
-  await fetch(url + marker, { signal: AbortSignal.timeout(15_000) }).then((response) => response.body?.cancel(), () => undefined);
+  const sendProbe = () => fetch(url + marker, { signal: AbortSignal.timeout(15_000) }).then((response) => response.body?.cancel(), () => undefined);
+  const startedMs = Date.now();
+  let reportedMs = startedMs;
+  const progress = (what: string) => {
+    if (Date.now() - reportedMs < CLAIM_PROGRESS_EVERY_MS) return;
+    reportedMs = Date.now();
+    console.log("Still waiting for " + what + " in this Worker's logs after " + Math.round((reportedMs - startedMs) / 1000) + " s");
+  };
+  await sendProbe();
   const probe = { atMs: Date.now() + CLAIM_LOG_MS, what: "no query of this Worker's logs showed its request to " + marker + " within " + CLAIM_LOG_MS / 1000 + " s" };
   let proven: { key: WorkerKey; timestamp: unknown } | undefined;
+  let probes = 1;
   try {
     while (!(proven = await provenKey(account, state.name, fromMs, marker, probe))) {
-      if (Date.now() > probe.atMs) throw new DeadlineError(probe.what);
+      if (Date.now() > probe.atMs) throw new DeadlineError(probe.what + " (" + probes + " probe requests sent)");
+      progress("the request to " + marker);
       await sleep(CLAIM_LOG_EVERY_MS);
+      await sendProbe();
+      probes++;
     }
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
@@ -300,6 +313,7 @@ async function claim(account: Account): Promise<void> {
   let code: string | undefined;
   while (!(code = await claimCode(account, key, state.name, fromMs, wait))) {
     if (Date.now() > wait.atMs) fail(wait.what);
+    progress("the claim code");
     await sleep(CLAIM_LOG_EVERY_MS);
   }
   console.log("Read the claim code from this Worker's logs");
