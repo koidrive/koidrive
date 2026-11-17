@@ -297,6 +297,7 @@ struct Inner {
     /// Held by every write to the credential files and by the sign-out while it removes them (`CredentialFiles`).
     credential_writes: Arc<Mutex<()>>,
     folders: Mutex<BTreeMap<String, Folder>>,
+    unplaced: Mutex<BTreeMap<String, Arc<crate::lifecycle::Lifecycle>>>,
     running: AtomicBool,
     paused: AtomicBool,
     updates: Arc<Updates>,
@@ -498,7 +499,7 @@ impl Driver {
                 Store::open_read_only(path)
             })?
             .into_iter()
-            .map(|(_, status)| status.lock().unwrap().clone())
+            .map(|found| found.status.lock().unwrap().clone())
             .collect(),
         )
     }
@@ -558,8 +559,8 @@ impl Driver {
             .as_ref()
             .and_then(|stored| rotating_auth(&paths, stored, &credential_writes).ok());
         let credential = stored.map(|stored| stored.credential);
-        let folders = if blocked {
-            Default::default()
+        let loaded = if blocked {
+            Loaded::default()
         } else {
             load_folders(&paths, &telemetry)?
         };
@@ -583,7 +584,8 @@ impl Driver {
                 credential: Mutex::new(credential),
                 auth: Mutex::new(auth),
                 credential_writes,
-                folders: Mutex::new(folders),
+                folders: Mutex::new(loaded.folders),
+                unplaced: Mutex::new(loaded.unplaced),
                 running: AtomicBool::new(false),
                 paused: AtomicBool::new(paused),
                 updates: Arc::new(updates),
@@ -613,7 +615,7 @@ impl Driver {
             .unwrap()
             .as_ref()
             .map(Credential::account);
-        let folders: Vec<FolderStatus> = self
+        let mut folders: Vec<FolderStatus> = self
             .inner
             .folders
             .lock()
@@ -638,6 +640,10 @@ impl Driver {
                 status
             })
             .collect();
+        folders.extend(
+            (self.inner.unplaced.lock().unwrap().values())
+                .map(|status| status.lock().unwrap().clone()),
+        );
         Status {
             account,
             running: self.inner.running.load(Ordering::SeqCst),
@@ -658,9 +664,10 @@ impl Driver {
     }
 
     fn record_health_at(&self, now: u64) {
-        let lifecycles: Vec<_> = (self.inner.folders.lock().unwrap().values())
+        let mut lifecycles: Vec<_> = (self.inner.folders.lock().unwrap().values())
             .map(|folder| folder.status.clone())
             .collect();
+        lifecycles.extend(self.inner.unplaced.lock().unwrap().values().cloned());
         let folders: Vec<_> = (lifecycles.iter())
             .map(|lifecycle| lifecycle.health(now))
             .collect();
@@ -926,8 +933,9 @@ impl Driver {
                     *self.inner.credential.lock().unwrap() = stored.map(|stored| stored.credential);
                     *self.inner.auth.lock().unwrap() = previous_auth;
                     if self.inner.folders.lock().unwrap().is_empty() {
-                        let folders = load_folders(&self.inner.paths, &self.inner.telemetry)?;
-                        *self.inner.folders.lock().unwrap() = folders;
+                        let loaded = load_folders(&self.inner.paths, &self.inner.telemetry)?;
+                        *self.inner.folders.lock().unwrap() = loaded.folders;
+                        *self.inner.unplaced.lock().unwrap() = loaded.unplaced;
                     }
                     if let Err(error) = leaving.finish() {
                         tracing::warn!(path = %koidrive_fs::quoted(&path), %error, "the refused sign-out record could not be removed");
@@ -1351,6 +1359,9 @@ impl Driver {
         Store::open(&store_path)
             .and_then(|mut store| store.transaction(|tx| tx.set_link(&link)))
             .map_err(store_error(&store_path))?;
+        if let Err(error) = crate::link_copy::write(&store_path, &link) {
+            tracing::warn!(path = %koidrive_fs::quoted(&crate::link_copy::path(&store_path)), %error, "the copy of a folder's link could not be saved");
+        }
         crate::timing::Timing::initialize(&store_path, link.linked_at_ms, &self.inner.telemetry);
         tracing::info!(space_id = link.space_id, path = %koidrive_fs::quoted(&link.root), "linked a folder");
         let status = Arc::new(crate::lifecycle::Lifecycle::open(
@@ -1446,6 +1457,32 @@ impl Driver {
         forgotten.map(|()| link)
     }
 
+    /// Unlinks the folder that syncs `space_id` as [`Driver::unlink`] does, and returns its link. A folder whose sync
+    /// database and copy of its link can't be read has no known path: only its state on this device is removed, and
+    /// this returns `None`.
+    pub async fn unlink_space(&self, space_id: &str) -> Result<Option<Link>, DriverError> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        let store = self.inner.paths.store(space_id)?;
+        let root = (self.inner.folders.lock().unwrap().get(space_id))
+            .map(|folder| folder.link.root.clone());
+        if let Some(root) = root {
+            return self.unlink_folder(&root).await.map(Some);
+        }
+        if !self.inner.unplaced.lock().unwrap().contains_key(space_id) {
+            return Err(DriverError::SpaceNotLinked(space_id.to_owned()));
+        }
+        let dir = store.parent().expect("a store path has a parent");
+        match fs::remove_dir_all(dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(dir)(error)),
+        }
+        self.inner.unplaced.lock().unwrap().remove(space_id);
+        tracing::info!(space_id, "unlinked a folder whose path is unknown");
+        self.changed();
+        Ok(None)
+    }
+
     /// Removes the folder's owner record, then its store. The store records the link, so it goes last: until both are
     /// gone, the folder is found again to finish unlinking it. Either one already missing counts as removed.
     fn forget(&self, link: &Link) -> Result<(), DriverError> {
@@ -1514,7 +1551,7 @@ impl Driver {
     fn open_questions(&self) -> Result<Vec<Question>, DriverError> {
         let mut questions = Vec::new();
         for space_id in self.space_ids() {
-            let open = self.read_store(&space_id, |store| {
+            let open = match self.read_store(&space_id, |store| {
                 store.transaction(|tx| {
                     let mut open = Vec::new();
                     for stored in tx.questions()? {
@@ -1533,7 +1570,10 @@ impl Driver {
                     }
                     Ok(open)
                 })
-            })?;
+            }) {
+                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                open => open?,
+            };
             questions.extend(open.into_iter().flatten());
         }
         Ok(questions)
@@ -1589,7 +1629,7 @@ impl Driver {
     /// dropped it before it took an answer.
     pub fn answered_question(&self, question_id: &str) -> Result<Option<Question>, DriverError> {
         for space_id in self.space_ids() {
-            let stored = self.read_store(&space_id, |store| {
+            let stored = match self.read_store(&space_id, |store| {
                 store.transaction(|tx| {
                     let current = (tx.questions()?.into_iter())
                         .find(|stored| stored.question_id == question_id);
@@ -1598,7 +1638,10 @@ impl Driver {
                         None => tx.taken_question(question_id),
                     }
                 })
-            })?;
+            }) {
+                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                stored => stored?,
+            };
             if let Some(question) =
                 (stored.flatten()).and_then(|stored| decode_question(&space_id, &stored))
             {
@@ -1619,7 +1662,7 @@ impl Driver {
             Err(_) => Err(DriverError::QuestionNotFound(question_id.to_owned())),
         };
         for space_id in self.space_ids() {
-            let outcome = self.read_store(&space_id, |store| {
+            let outcome = match self.read_store(&space_id, |store| {
                 store.transaction(|tx| {
                     let stored = (tx.questions()?.into_iter())
                         .find(|stored| stored.question_id == question_id);
@@ -1654,7 +1697,10 @@ impl Driver {
                         .count();
                     Ok(Some(Ok(Some(left as u64))))
                 })
-            })?;
+            }) {
+                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                outcome => outcome?,
+            };
             match outcome.flatten() {
                 None => continue,
                 Some(Err(error)) => return Err(error),
@@ -2088,6 +2134,11 @@ impl Driver {
         self.inner.folders.lock().unwrap().keys().cloned().collect()
     }
 
+    fn store_halted(&self, space_id: &str) -> bool {
+        (self.inner.folders.lock().unwrap().get(space_id))
+            .is_some_and(|folder| folder.status.halted_by() == Some(Halted::Store))
+    }
+
     #[cfg(test)]
     fn stored_questions(&self, space_id: &str) -> Result<Option<Vec<StoredQuestion>>, DriverError> {
         self.read_store(space_id, |store| store.transaction(|tx| tx.questions()))
@@ -2207,17 +2258,29 @@ fn folder_status(
     questions: u64,
 ) -> FolderStatus {
     FolderStatus {
-        recovery: None,
-        space_id: link.space_id.clone(),
         space_name: link.space_name.clone(),
         path: link.root.to_string_lossy().into_owned(),
-        state: FolderState::Stopped,
         history_id: cursor.as_ref().map(|cursor| cursor.history_id.clone()),
         last_seq: cursor.map(|cursor| cursor.last_seq),
-        head_seq: None,
         remote_nodes: nodes,
-        local_entries: None,
         questions,
+        ..stopped_status(&link.space_id)
+    }
+}
+
+fn stopped_status(space_id: &str) -> FolderStatus {
+    FolderStatus {
+        recovery: None,
+        space_id: space_id.to_owned(),
+        space_name: String::new(),
+        path: String::new(),
+        state: FolderState::Stopped,
+        history_id: None,
+        last_seq: None,
+        head_seq: None,
+        remote_nodes: 0,
+        local_entries: None,
+        questions: 0,
         problem: None,
         wait: None,
         progress: None,
@@ -2227,36 +2290,69 @@ fn folder_status(
     }
 }
 
+#[derive(Default)]
+struct Loaded {
+    folders: BTreeMap<String, Folder>,
+    unplaced: BTreeMap<String, Arc<crate::lifecycle::Lifecycle>>,
+}
+
 fn load_folders(
     paths: &Paths,
     telemetry: &koidrive_telemetry::Recorder,
-) -> Result<BTreeMap<String, Folder>, DriverError> {
-    Ok(read_folders(paths, telemetry, |path| Store::open(path))?
-        .into_iter()
-        .map(|(link, status)| {
-            status.settle_unreadable();
-            (
-                link.space_id.clone(),
-                Folder {
-                    linked_started: None,
-                    status,
-                    link,
-                    run: None,
-                    unlink: None,
-                    store: Arc::default(),
-                    progress: Arc::default(),
-                    observing: Arc::default(),
-                },
-            )
-        })
-        .collect())
+) -> Result<Loaded, DriverError> {
+    let mut loaded = Loaded::default();
+    for found in read_folders(paths, telemetry, |path| Store::open(path))? {
+        found.status.settle_unreadable();
+        let link = match found.place {
+            Place::Store(link) => {
+                if crate::link_copy::read(&found.store, &found.space_id).as_ref() != Some(&link)
+                    && let Err(error) = crate::link_copy::write(&found.store, &link)
+                {
+                    tracing::warn!(path = %koidrive_fs::quoted(&crate::link_copy::path(&found.store)), %error, "the copy of a folder's link could not be saved");
+                }
+                link
+            }
+            Place::Copy(link) => link,
+            Place::Unknown => {
+                loaded.unplaced.insert(found.space_id, found.status);
+                continue;
+            }
+        };
+        loaded.folders.insert(
+            link.space_id.clone(),
+            Folder {
+                linked_started: None,
+                status: found.status,
+                link,
+                run: None,
+                unlink: None,
+                store: Arc::default(),
+                progress: Arc::default(),
+                observing: Arc::default(),
+            },
+        );
+    }
+    Ok(loaded)
+}
+
+enum Place {
+    Store(Link),
+    Copy(Link),
+    Unknown,
+}
+
+struct Found {
+    space_id: String,
+    store: PathBuf,
+    place: Place,
+    status: Arc<crate::lifecycle::Lifecycle>,
 }
 
 fn read_folders(
     paths: &Paths,
     telemetry: &koidrive_telemetry::Recorder,
     open: impl Fn(&Path) -> Result<Store, koidrive_store::Error>,
-) -> Result<Vec<(Link, Arc<crate::lifecycle::Lifecycle>)>, DriverError> {
+) -> Result<Vec<Found>, DriverError> {
     let spaces = paths.spaces();
     let entries = match fs::read_dir(&spaces) {
         Ok(entries) => entries,
@@ -2266,15 +2362,15 @@ fn read_folders(
     let mut folders = Vec::new();
     for entry in entries {
         let entry = entry.map_err(io_error(&spaces))?;
-        let Ok(path) = paths.store(&entry.file_name().to_string_lossy()) else {
+        let space_id = entry.file_name().to_string_lossy().into_owned();
+        let Ok(store) = paths.store(&space_id) else {
             continue;
         };
-        if !path.exists() {
+        if !store.exists() {
             continue;
         }
-        let mut store = open(&path).map_err(store_error(&path))?;
-        let (link, cursor, nodes, questions) = store
-            .transaction(|tx| {
+        let read = open(&store).and_then(|mut opened| {
+            opened.transaction(|tx| {
                 let questions = tx
                     .questions()?
                     .iter()
@@ -2287,17 +2383,51 @@ fn read_folders(
                     questions,
                 ))
             })
-            .map_err(store_error(&path))?;
-        let Some(link) = link else {
-            tracing::warn!(path = %koidrive_fs::quoted(&path), "a store records no linked folder; ignoring it");
-            continue;
+        });
+        let lifecycle = |status| {
+            Arc::new(crate::lifecycle::Lifecycle::open(
+                &store,
+                status,
+                telemetry.clone(),
+            ))
         };
-        let status = Arc::new(crate::lifecycle::Lifecycle::open(
-            &path,
-            folder_status(&link, cursor, nodes, questions as u64),
-            telemetry.clone(),
-        ));
-        folders.push((link, status));
+        let (place, status) = match read {
+            Ok((Some(link), cursor, nodes, questions)) => {
+                let status = lifecycle(folder_status(&link, cursor, nodes, questions as u64));
+                (Place::Store(link), status)
+            }
+            Ok((None, ..)) => {
+                tracing::warn!(path = %koidrive_fs::quoted(&store), "a store records no linked folder; ignoring it");
+                continue;
+            }
+            Err(
+                error @ (koidrive_store::Error::SchemaTooOld { .. }
+                | koidrive_store::Error::LogNotApplied(_)),
+            ) => return Err(store_error(&store)(error)),
+            Err(error) => {
+                tracing::warn!(path = %koidrive_fs::quoted(&store), %error, "a folder's sync database cannot be opened");
+                match crate::link_copy::read(&store, &space_id) {
+                    Some(link) => {
+                        let status = lifecycle(folder_status(&link, None, 0, 0));
+                        status.store_unopened(crate::lifecycle::unopened(&store, &error));
+                        (Place::Copy(link), status)
+                    }
+                    None => {
+                        let status = lifecycle(stopped_status(&space_id));
+                        status.store_unopened(crate::lifecycle::unopened_unplaced(
+                            &store, &error, &space_id,
+                        ));
+                        (Place::Unknown, status)
+                    }
+                }
+            }
+        };
+        folders.push(Found {
+            space_id,
+            store,
+            place,
+            status,
+        });
     }
     Ok(folders)
 }
@@ -3787,6 +3917,289 @@ mod tests {
         assert_eq!(cleared, ["halted.store"]);
         driver.stop().await;
         serde_json::from_slice::<serde_json::Value>(&fs::read(&record).unwrap()).unwrap();
+    }
+
+    fn garble(paths: &Paths, space_id: &str) {
+        let store = paths.store(space_id).unwrap();
+        for log in ["-wal", "-shm"] {
+            let mut path = store.clone().into_os_string();
+            path.push(log);
+            let _ = fs::remove_file(path);
+        }
+        fs::write(&store, b"these bytes are no database").unwrap();
+    }
+
+    fn from_a_newer_build(paths: &Paths, space_id: &str) {
+        rusqlite::Connection::open(paths.store(space_id).unwrap())
+            .unwrap()
+            .execute(
+                "INSERT INTO migrations (name) VALUES ('9999_from_a_newer_build')",
+                [],
+            )
+            .unwrap();
+    }
+
+    fn records(spaces: &Path) -> Vec<(PathBuf, SystemTime, Vec<u8>)> {
+        (snapshot(spaces).into_iter())
+            .filter(|(path, ..)| {
+                path.file_name()
+                    .is_some_and(|name| name == "lifecycle.json" || name == "link.json")
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_damaged_store_halts_only_its_folder_and_counts_once() {
+        use crate::health::tests::{named, posthog, with_prefix};
+
+        const GARBLED: &str = "0190f0a0-0000-7000-8000-0000000000c1";
+        const NEWER: &str = "0190f0a0-0000-7000-8000-0000000000c2";
+        const HEALTHY: &str = "0190f0a0-0000-7000-8000-0000000000c3";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        paired(&paths, "d1");
+        let roots = [GARBLED, NEWER, HEALTHY].map(|space_id| {
+            let root = base.join(space_id);
+            linked_to(&paths, &root, "d1", space_id);
+            root
+        });
+        drop(Driver::open(paths.clone()).unwrap());
+        garble(&paths, GARBLED);
+        from_a_newer_build(&paths, NEWER);
+        let halted = Failure::Halted(Halted::Store);
+        let counted = || {
+            (failures::take_counted_here().get(&halted))
+                .copied()
+                .unwrap_or(0)
+        };
+        counted();
+        let folder = |folders: &[FolderStatus], space_id: &str| {
+            (folders.iter())
+                .find(|folder| folder.space_id == space_id)
+                .unwrap()
+                .clone()
+        };
+
+        let before = snapshot(&paths.spaces());
+        let listed = Driver::linked_folders(&paths).unwrap();
+        assert_eq!(
+            snapshot(&paths.spaces()),
+            before,
+            "a listing writes nothing"
+        );
+        assert_eq!(counted(), 0, "a listing counts no halt");
+        assert_eq!(listed.len(), 3);
+        for (space_id, root) in [GARBLED, NEWER].into_iter().zip(&roots) {
+            let broken = folder(&listed, space_id);
+            assert_eq!(broken.state, FolderState::Halted);
+            assert_eq!(broken.path, root.display().to_string());
+            let problem = broken.problem.unwrap();
+            assert!(
+                problem.starts_with("the folder's sync database \"")
+                    && problem.contains("store.sqlite\" can't be opened (")
+                    && problem.ends_with(
+                        "); run koi folder restart to try again, or unlink the folder and link it again"
+                    ),
+                "{problem}"
+            );
+        }
+        assert_ne!(folder(&listed, HEALTHY).state, FolderState::Halted);
+
+        drop(Driver::open(paths.clone()).unwrap());
+        assert_eq!(counted(), 2);
+        let saved = records(&paths.spaces());
+        let recorder = koidrive_telemetry::Recorder::on();
+        let driver = Driver::open_with_telemetry(paths.clone(), recorder.clone()).unwrap();
+        assert_eq!(counted(), 0, "a halt is counted once");
+        assert_eq!(
+            records(&paths.spaces()),
+            saved,
+            "a saved halt is not saved again"
+        );
+        driver.start();
+        eventually("the healthy folder is claimed", || {
+            claim::owner(&roots[2]).unwrap().is_some()
+        })
+        .await;
+        assert!(claim::owner(&roots[0]).unwrap().is_none());
+        assert!(claim::owner(&roots[1]).unwrap().is_none());
+        let newer = folder(&driver.status().folders, NEWER).problem.unwrap();
+        assert!(newer.contains("a newer Koidrive build"), "{newer}");
+        assert!(driver.questions().unwrap().is_empty());
+        driver.record_health();
+        let events = posthog(recorder.take());
+        let report = named(&events, "hourly_report")[0];
+        assert_eq!(with_prefix(report, "l.halted."), [("l.halted.store", 2)]);
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_restart_retries_a_damaged_store_and_syncs_once_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        drop(Driver::open(paths.clone()).unwrap());
+        let store = paths.store(SPACE).unwrap();
+        let link = crate::link_copy::read(&store, SPACE).unwrap();
+        garble(&paths, SPACE);
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        let halt = driver.status().folders[0].problem.clone().unwrap();
+        failures::take_counted_here();
+
+        driver.restart(&root).await.unwrap();
+        assert_eq!(halted(&driver).await, halt);
+        assert_eq!(
+            failures::take_counted_here(),
+            BTreeMap::from([(Failure::Halted(Halted::Store), 1)])
+        );
+        assert!(claim::owner(&root).unwrap().is_none());
+
+        garble(&paths, SPACE);
+        fs::remove_file(&store).unwrap();
+        Store::open(&store)
+            .unwrap()
+            .transaction(|tx| {
+                tx.set_link(&link)?;
+                tx.put_question(&StoredQuestion {
+                    question_id: "q1".into(),
+                    asked_at_ms: 10,
+                    body: serde_json::to_vec(&mass_delete("q1")).unwrap(),
+                    answer: None,
+                })
+            })
+            .unwrap();
+        driver.restart(&root).await.unwrap();
+        eventually("the restarted folder reads its store", || {
+            let folder = &driver.status().folders[0];
+            folder.state != FolderState::Halted && folder.questions == 1
+        })
+        .await;
+        eventually("the restarted folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        assert_eq!(driver.questions().unwrap().len(), 1);
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn unlinking_a_folder_whose_store_is_damaged_forgets_it_and_keeps_its_files() {
+        for by_space in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let paths = Paths::under(&base.join("profile"));
+            let root = base.join("Koidrive");
+            linked(&paths, &root, "d1");
+            let driver = Driver::open(paths.clone()).unwrap();
+            driver.start();
+            eventually("the folder is claimed", || {
+                claim::owner(&root).unwrap().is_some()
+            })
+            .await;
+            driver.stop().await;
+            drop(driver);
+            fs::write(root.join("notes.txt"), b"kept").unwrap();
+            garble(&paths, SPACE);
+
+            let driver = Driver::open(paths.clone()).unwrap();
+            let unlinked = match by_space {
+                true => driver.unlink_space(SPACE).await.unwrap().unwrap(),
+                false => driver.unlink(&root).await.unwrap(),
+            };
+            assert_eq!(unlinked.root, root);
+            assert!(driver.status().folders.is_empty());
+            assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
+            assert!(claim::owner(&root).unwrap().is_none());
+            assert_eq!(fs::read(root.join("notes.txt")).unwrap(), b"kept");
+            drop(driver);
+            assert!(Driver::linked_folders(&paths).unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_damaged_store_without_a_copy_of_its_link_shows_by_its_space_and_unlinks_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        garble(&paths, SPACE);
+
+        let listed = Driver::linked_folders(&paths).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].space_id.as_str(), listed[0].path.as_str()),
+            (SPACE, "")
+        );
+        assert_eq!(listed[0].state, FolderState::Halted);
+        let problem = listed[0].problem.clone().unwrap();
+        assert!(
+            problem.ends_with(&format!(
+                "and the folder's path is unknown; run koi folder unlink --space {SPACE}, then link the folder again"
+            )),
+            "{problem}"
+        );
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        assert_eq!(driver.status().folders, listed);
+        assert!(matches!(
+            driver.restart(&root).await,
+            Err(DriverError::NotLinked(_))
+        ));
+        assert!(claim::owner(&root).unwrap().is_none());
+
+        assert!(matches!(
+            driver.unlink_space("../x").await,
+            Err(DriverError::Paths(PathsError::BadSpaceId(_)))
+        ));
+        assert!(matches!(
+            driver
+                .unlink_space("0190f0a0-0000-7000-8000-0000000000ff")
+                .await,
+            Err(DriverError::SpaceNotLinked(_))
+        ));
+        assert_eq!(driver.status().folders, listed);
+        assert_eq!(driver.unlink_space(SPACE).await.unwrap(), None);
+        assert!(driver.status().folders.is_empty());
+        assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
+        assert!(matches!(
+            driver.unlink_space(SPACE).await,
+            Err(DriverError::SpaceNotLinked(_))
+        ));
+        driver.stop().await;
+    }
+
+    #[test]
+    fn a_store_linked_before_links_had_a_copy_gets_one_when_the_profile_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let store = paths.store(SPACE).unwrap();
+        let copy = crate::link_copy::path(&store);
+
+        Driver::linked_folders(&paths).unwrap();
+        assert!(!copy.exists(), "a listing writes no copy");
+        drop(Driver::open(paths.clone()).unwrap());
+        let link = (Store::open(&store).unwrap())
+            .transaction(|tx| tx.link())
+            .unwrap()
+            .unwrap();
+        assert_eq!(crate::link_copy::read(&store, SPACE).as_ref(), Some(&link));
+
+        let stale = Link {
+            space_name: "Renamed".into(),
+            ..link.clone()
+        };
+        crate::link_copy::write(&store, &stale).unwrap();
+        Driver::linked_folders(&paths).unwrap();
+        assert_eq!(crate::link_copy::read(&store, SPACE), Some(stale));
+        drop(Driver::open(paths.clone()).unwrap());
+        assert_eq!(crate::link_copy::read(&store, SPACE), Some(link));
     }
 
     #[tokio::test]
@@ -7768,6 +8181,11 @@ mod tests {
         assert_eq!(read_marker(&root).unwrap().unwrap().space_id, SPACE);
         driver.link(&root, "Projects").await.unwrap();
         assert!(found_marker());
+        let store = paths.store(SPACE).unwrap();
+        let link = (Store::open(&store).unwrap())
+            .transaction(|tx| tx.link())
+            .unwrap();
+        assert_eq!(crate::link_copy::read(&store, SPACE), link);
     }
 
     #[tokio::test]

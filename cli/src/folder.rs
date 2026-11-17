@@ -24,7 +24,11 @@ pub(crate) enum FolderAction {
     /// Stop syncing a folder. Its files stay where they are.
     Unlink {
         /// The linked folder.
-        folder: PathBuf,
+        #[arg(required_unless_present = "space")]
+        folder: Option<PathBuf>,
+        /// The space whose folder to unlink, for a folder whose path is unknown.
+        #[arg(long, hide = true, conflicts_with = "folder")]
+        space: Option<String>,
     },
     /// Sync a linked folder again from the start, after fixing the problem that halted it.
     Restart {
@@ -66,8 +70,14 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
                     .human(linked_summary(&folder, outcome), "")
             });
         }
-        FolderAction::Unlink { folder } => Request::Unlink {
+        FolderAction::Unlink {
+            folder: Some(folder),
+            ..
+        } => Request::Unlink {
             folder: absolute(&folder)?,
+        },
+        FolderAction::Unlink { space, .. } => Request::UnlinkSpace {
+            space_id: space.unwrap_or_default(),
         },
         FolderAction::Restart { folder, request } => {
             let folder = absolute(&folder)?;
@@ -101,6 +111,17 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
                 path: path.display().to_string(),
             };
             Ok(Done::ok(data, text).human(summary, "").completed())
+        }
+        Response::UnlinkedSpace { space_id } => {
+            let text = format!(
+                "Unlinked the folder of space {}. Its files stay where they are.\n",
+                printable(&space_id)
+            );
+            let data = UnlinkedData {
+                space_id: Some(space_id),
+                path: String::new(),
+            };
+            Ok(Done::ok(data, text.clone()).human(text, "").completed())
         }
         Response::NotLinked { path } => {
             let summary = format!("{} is not linked. Nothing changed.\n", output::path(&path));

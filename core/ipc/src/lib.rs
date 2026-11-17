@@ -72,6 +72,10 @@ pub enum Request {
     Unlink {
         folder: PathBuf,
     },
+    /// `Driver::unlink_space`.
+    UnlinkSpace {
+        space_id: String,
+    },
     Restart {
         folder: PathBuf,
     },
@@ -166,6 +170,10 @@ pub enum Response {
     Unlinked {
         space_id: String,
         path: PathBuf,
+    },
+    /// The folder of `space_id` was unlinked, whose path was unknown.
+    UnlinkedSpace {
+        space_id: String,
     },
     /// The folder to unlink was not linked.
     NotLinked {

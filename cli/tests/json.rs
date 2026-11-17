@@ -377,6 +377,42 @@ fn a_share_password_is_the_first_line_of_stdin_and_a_short_one_names_its_reason(
 }
 
 #[test]
+fn a_folder_whose_sync_database_and_link_copy_cannot_be_read_unlinks_by_its_space() {
+    const SPACE: &str = "0190f0a0-0000-7000-8000-0000000000d1";
+    let profile = Profile::new();
+    let dir = profile
+        .home
+        .path()
+        .join("state/koidrive/spaces")
+        .join(SPACE);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("store.sqlite"), b"these bytes are no database").unwrap();
+
+    let help = profile.output(&["folder", "unlink", "--help"]);
+    assert!(!String::from_utf8(help.stdout).unwrap().contains("--space"));
+    let status = String::from_utf8(profile.output(&["status"]).stdout).unwrap();
+    assert!(
+        status.contains(&format!("(path unknown)  space  ({SPACE})  Halted")),
+        "{status}"
+    );
+    let (code, envelope) = profile.json(&["folder", "unlink", "--space", "../x", "--json"]);
+    assert_ne!(code, 0, "{envelope:#}");
+    assert_eq!(envelope["error"]["code"], "usage");
+    assert!(dir.exists());
+
+    let (code, envelope) = profile.json(&["folder", "unlink", "--space", SPACE, "--json"]);
+    assert_eq!(code, 0, "{envelope:#}");
+    let mut data = envelope["data"].clone();
+    data.as_object_mut().unwrap().remove("service");
+    assert_eq!(data, serde_json::json!({ "space_id": SPACE, "path": "" }));
+    assert!(!dir.exists());
+
+    let (code, envelope) = profile.json(&["folder", "unlink", "--space", SPACE, "--json"]);
+    assert_ne!(code, 0, "{envelope:#}");
+    assert_eq!(envelope["error"]["code"], "usage");
+}
+
+#[test]
 fn unlinking_a_folder_that_is_not_linked_is_unchanged() {
     let profile = Profile::new();
     let (code, envelope) = profile.json(&["folder", "unlink", "Docs", "--json"]);

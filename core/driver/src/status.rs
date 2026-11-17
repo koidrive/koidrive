@@ -48,7 +48,7 @@ pub struct Account {
 pub struct FolderStatus {
     pub space_id: String,
     pub space_name: String,
-    /// The folder's absolute path.
+    /// The folder's absolute path, or empty when neither its sync database nor the copy of its link can be read.
     pub path: String,
     pub state: FolderState,
     /// The server history and the last seq whose changes are in the store.

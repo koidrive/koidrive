@@ -32,6 +32,7 @@ mod health;
 pub mod ignore;
 mod leave;
 mod lifecycle;
+mod link_copy;
 mod observe;
 mod paths;
 mod pending_claim;

@@ -310,6 +310,32 @@ impl Lifecycle {
         result
     }
 
+    pub(crate) fn store_unopened(&self, problem: String) {
+        let mut checkpoint = self.checkpoint.lock().unwrap();
+        if let Some(halt) = &checkpoint.halt
+            && (halt.recovery == Recovery::Unlink
+                || (halt.why == Some(Halted::Store) && !self.unreadable.load(Ordering::Relaxed)))
+        {
+            return;
+        }
+        let since =
+            (checkpoint.halt.as_ref()).map_or_else(koidrive_telemetry::now, |halt| halt.since);
+        checkpoint.halt = Some(Halt {
+            problem: problem.clone(),
+            recovery: Recovery::Restart,
+            why: Some(Halted::Store),
+            since,
+        });
+        self.unreadable.store(true, Ordering::Relaxed);
+        let mut status = self.status.lock().unwrap();
+        status.state = FolderState::Halted;
+        status.problem = Some(problem);
+    }
+
+    pub(crate) fn halted_by(&self) -> Option<Halted> {
+        (self.checkpoint.lock().unwrap().halt.as_ref()).and_then(|halt| halt.why)
+    }
+
     pub(crate) fn set_pending(&self, nodes: u64) {
         self.pending.store(nodes, Ordering::Relaxed);
     }
@@ -347,6 +373,24 @@ impl Lifecycle {
             lasted: Age::of(at.saturating_sub(since)),
         });
     }
+}
+
+pub(crate) fn unopened(store: &Path, error: &koidrive_store::Error) -> String {
+    format!(
+        "the folder's sync database {} can't be opened ({error}); run koi folder restart to try again, or unlink the folder and link it again",
+        koidrive_fs::quoted(store)
+    )
+}
+
+pub(crate) fn unopened_unplaced(
+    store: &Path,
+    error: &koidrive_store::Error,
+    space_id: &str,
+) -> String {
+    format!(
+        "the folder's sync database {} can't be opened ({error}), and the folder's path is unknown; run koi folder unlink --space {space_id}, then link the folder again",
+        koidrive_fs::quoted(store)
+    )
 }
 
 #[cfg(test)]

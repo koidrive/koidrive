@@ -2617,6 +2617,12 @@ impl FolderTask {
                     self.changed.send_replace(());
                     tokio::time::sleep(ROOT_RECHECK).await;
                 }
+                Err(Stop::Store(error)) => {
+                    return Err(Halt::Person(
+                        Halted::Store,
+                        crate::lifecycle::unopened(&self.store, &error),
+                    ));
+                }
                 Err(stop) => return Err(stop.into()),
             }
         }
