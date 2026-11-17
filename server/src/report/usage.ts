@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { errorText } from "../errors";
+
 export const LATENCY_BUCKETS = 16;
-export const FLUSH_MS = 60_000;
+export const FLUSH_MS = 20_000;
 const HOUR_MS = 3_600_000;
 
 export interface Usage {
@@ -30,9 +32,10 @@ export function mergeUsage(into: Usage, from: Usage): Usage {
 }
 
 export class UsageTally {
+  static windowMs = FLUSH_MS;
   private hours: UsageHours = {};
   private empty = true;
-  private flushedAtMs = 0;
+  private batchOpen = false;
   private reportingNow: boolean | undefined;
 
   get reporting(): boolean | undefined {
@@ -46,21 +49,37 @@ export class UsageTally {
     this.empty = true;
   }
 
-  count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
-    if (this.reporting === false) return;
+  count(route: string, outcome: string, latencyMs: number, nowMs: number): boolean {
+    if (this.reporting === false) return false;
     const usage = (this.hours[Math.floor(nowMs / HOUR_MS)] ??= emptyUsage());
     const key = route + "." + outcome;
     usage.counts[key] = (usage.counts[key] ?? 0) + 1;
     (usage.latency[route] ??= new Array<number>(LATENCY_BUCKETS).fill(0))[latencyBucket(latencyMs)]! += 1;
     this.empty = false;
+    if (this.batchOpen) return false;
+    this.batchOpen = true;
+    return true;
   }
 
-  take(nowMs: number): UsageHours | undefined {
-    if (this.empty || this.reporting === false || nowMs - this.flushedAtMs < FLUSH_MS) return undefined;
+  private take(): UsageHours | undefined {
+    this.batchOpen = false;
+    if (this.empty) return undefined;
     const hours = this.hours;
     this.hours = {};
     this.empty = true;
-    this.flushedAtMs = nowMs;
     return hours;
+  }
+
+  async handOver(record: (hours: UsageHours) => Promise<boolean>): Promise<void> {
+    const hours = this.take();
+    if (!hours) return;
+    try {
+      this.reporting = await record(hours);
+    } catch (error) {
+      console.error("usage flush failed", errorText(error));
+      if (this.reporting === false) return;
+      for (const [hour, usage] of Object.entries(hours)) mergeUsage((this.hours[Number(hour)] ??= emptyUsage()), usage);
+      this.empty = false;
+    }
   }
 }

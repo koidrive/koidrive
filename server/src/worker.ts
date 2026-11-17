@@ -33,7 +33,7 @@ import { causeOf } from "./cause";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
-import { UsageTally, type UsageHours } from "./report/usage";
+import { UsageTally } from "./report/usage";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
@@ -75,14 +75,6 @@ function routeOf(request: Request): string {
   const path = new URL(request.url).pathname;
   const name = ROUTES.find(([, pattern]) => pattern.test(path))?.[0] ?? "other";
   return (METHODS.has(request.method) ? request.method.toLowerCase() : "other") + "_" + name;
-}
-
-async function flushUsage(env: Env, hours: UsageHours): Promise<void> {
-  try {
-    traffic.reporting = await account(env).recordUsage(hours);
-  } catch (error) {
-    console.error("usage flush failed", errorText(error));
-  }
 }
 
 function account(env: Env) {
@@ -436,9 +428,9 @@ export default {
     const startedMs = Date.now();
     const response = await answer(request, env);
     const nowMs = Date.now();
-    traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
-    const hours = traffic.take(nowMs);
-    if (hours) ctx.waitUntil(flushUsage(env, hours));
+    if (traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs)) {
+      ctx.waitUntil(scheduler.wait(UsageTally.windowMs).then(() => traffic.handOver((hours) => account(env).recordUsage(hours))));
+    }
     return response;
   },
 } satisfies ExportedHandler<Env>;

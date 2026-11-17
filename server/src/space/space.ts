@@ -66,7 +66,7 @@ import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
-import { UsageTally, type UsageHours } from "../report/usage";
+import { UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -723,18 +723,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const nowMs = this.clock();
       const result = answered.response.result;
       const outcome = result.case === "error" ? refusalOutcome(result.value.code, result.value.cause) : "ok";
-      this.traffic.count("rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase()), outcome, nowMs - startedMs, nowMs);
-      const hours = this.traffic.take(nowMs);
-      if (hours) void this.flushUsage(hours);
-      return answered;
-    }
-
-    private async flushUsage(hours: UsageHours): Promise<void> {
-      try {
-        this.traffic.reporting = await this.account().recordUsage(hours);
-      } catch (error) {
-        console.error("usage flush failed", errorText(error));
+      if (this.traffic.count("rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase()), outcome, nowMs - startedMs, nowMs)) {
+        setTimeout(() => void this.traffic.handOver((hours) => this.account().recordUsage(hours)), UsageTally.windowMs);
       }
+      return answered;
     }
 
     private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {

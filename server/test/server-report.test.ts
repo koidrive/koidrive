@@ -18,7 +18,7 @@ import {
 } from "../src/gen/koidrive/v1/auth_pb";
 import { RpcRequestSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { reportBatch } from "../src/report/payload";
-import { emptyUsage, FLUSH_MS, LATENCY_BUCKETS, latencyBucket, UsageTally } from "../src/report/usage";
+import { emptyUsage, FLUSH_MS, LATENCY_BUCKETS, latencyBucket, mergeUsage, type Usage, type UsageHours, UsageTally } from "../src/report/usage";
 
 const BASE = "https://koidrive.test";
 const HOUR_MS = 3_600_000;
@@ -64,6 +64,7 @@ const ownerOnce = async () => (claimed ??= await claim());
 const countVotes = (instance: AccountDO) => (instance as unknown as { countVotes(): void }).countVotes();
 const reporting = () => runInDurableObject(account(), (instance: AccountDO) => instance.reporting());
 const storedHours = () => runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT hour, usage FROM usage_hours").toArray());
+const storedCounts = async () => (await storedHours()).map((row) => JSON.parse(String(row.usage)) as Usage).reduce((sum, usage) => mergeUsage(sum, usage), emptyUsage()).counts;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -74,25 +75,53 @@ describe("usage tally", () => {
     expect([0, 0.5, 1, 2, 3, 4, 1000, 16_384, 1e9].map(latencyBucket)).toEqual([0, 0, 1, 2, 2, 3, 10, 15, 15]);
   });
 
-  it("hands over its hours at most once a minute and counts nothing once the server said it does not report", () => {
+  it("opens a batch with the first count after a hand-over, hands the batch over whole, and counts nothing once the server said it does not report", async () => {
     const tally = new UsageTally();
-    tally.count("get_server", "200", 3, 10 * HOUR_MS);
-    const first = tally.take(10 * HOUR_MS);
-    expect(first).toEqual({ 10: { counts: { "get_server.200": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } });
-    tally.count("get_server", "200", 3, 10 * HOUR_MS + 1);
-    expect(tally.take(10 * HOUR_MS + 1)).toBeUndefined();
-    expect(Object.keys(tally.take(10 * HOUR_MS + FLUSH_MS)!)).toEqual(["10"]);
-    tally.reporting = false;
-    tally.count("get_server", "200", 3, 11 * HOUR_MS);
-    expect(tally.take(12 * HOUR_MS)).toBeUndefined();
+    const handed: UsageHours[] = [];
+    const record = async (hours: UsageHours) => {
+      handed.push(hours);
+      return true;
+    };
+    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS)).toBe(true);
+    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS + FLUSH_MS - 1)).toBe(false);
+    await tally.handOver(record);
+    expect(handed).toEqual([{ 10: { counts: { "get_server.200": 2 }, latency: { get_server: [0, 0, 2, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]);
+    await tally.handOver(record);
+    expect(handed).toHaveLength(1);
+    expect(tally.count("get_server", "200", 3, 11 * HOUR_MS)).toBe(true);
+    await tally.handOver(async () => false);
+    expect(tally.count("get_server", "200", 3, 11 * HOUR_MS)).toBe(false);
+    await tally.handOver(record);
+    expect(handed).toHaveLength(1);
   });
 
-  it("drops the counts it holds once the server says it stopped reporting", () => {
+  it("drops the counts it holds once the server says it stopped reporting", async () => {
     const tally = new UsageTally();
+    const handed: UsageHours[] = [];
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     tally.reporting = false;
     tally.reporting = true;
-    expect(tally.take(10 * HOUR_MS + FLUSH_MS)).toBeUndefined();
+    await tally.handOver(async (hours) => {
+      handed.push(hours);
+      return true;
+    });
+    expect(handed).toEqual([]);
+  });
+
+  it("carries the counts of a failed hand-over, and those made while it ran, in the next hand-over", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const tally = new UsageTally();
+    const handed: UsageHours[] = [];
+    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS)).toBe(true);
+    await tally.handOver(async () => {
+      expect(tally.count("get_server", "503", 3, 10 * HOUR_MS)).toBe(true);
+      throw new Error("account unreachable");
+    });
+    await tally.handOver(async (hours) => {
+      handed.push(hours);
+      return true;
+    });
+    expect(handed.map((hours) => hours[10]!.counts)).toEqual([{ "get_server.200": 1, "get_server.503": 1 }]);
   });
 });
 
@@ -143,7 +172,6 @@ describe("hourly server report", () => {
     expect(await reporting()).toBe(true);
 
     const startMs = Date.now();
-    vi.spyOn(Date, "now").mockImplementation(() => startMs + 2 * FLUSH_MS);
     const created = await post("/v1/spaces", body(CreateSpaceRequestSchema, { name: "Holiday photos" }), owner.access!.token, SpaceInfoSchema);
     const spaceId = created.message!.spaceId;
     const listed = await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }), owner.access!.token);
@@ -170,6 +198,23 @@ describe("hourly server report", () => {
     const properties = (sent[0] as { batch: { properties: Record<string, unknown> }[] }).batch.flatMap((event) => Object.keys(event.properties));
     for (const key of properties) expect(key).toMatch(/^(?:\$geoip_disable|\$process_person_profile|distinct_id|schema|server_version|proto_min|proto_max|c\.[a-z_]+\.[a-z0-9_.]+|h\.[a-z_]+)$/);
     expect(await storedHours()).toEqual([]);
+  });
+
+  it("hands over what a Space DO counted by its own timer when no request follows", async () => {
+    const owner = await ownerOnce();
+    await runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => Date.now();
+    });
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    expect(await reporting()).toBe(true);
+    const created = await post("/v1/spaces", body(CreateSpaceRequestSchema, { name: "Quiet" }), owner.access!.token, SpaceInfoSchema);
+    const spaceId = created.message!.spaceId;
+    UsageTally.windowMs = 200;
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+    for (let reqId = 1n; reqId <= 5n; reqId++) {
+      expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
+    }
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(5), { timeout: 3000 });
   });
 
   it("drops the stored hours without sending them once a device turns reports off", async () => {
