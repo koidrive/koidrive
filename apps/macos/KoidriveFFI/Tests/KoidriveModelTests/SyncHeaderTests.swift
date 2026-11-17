@@ -129,6 +129,13 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
         #expect(three.foldersWaitingForAnswers == .several(3))
     }
 
+    @Test func aQuestionDoesNotHideAFolderThatSyncsWithoutSayingHow() {
+        let model = syncing([folder("Documents", nil), folder("Photos", .awaitingAnswers(questions: 1))], scenario: .massDelete)
+        #expect(model.headline == .status(.syncing))
+        #expect(model.syncHeader.meter == Meter(fill: .sliding))
+        #expect(model.syncHeader.note == .waitingForAnswer(.one("Photos")))
+    }
+
     @Test func aSyncingFolderThatReportsNothingStillSlides() {
         let model = syncing([folder("Photos", nil)])
         #expect(model.headline == .status(.syncing))

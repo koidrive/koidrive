@@ -389,6 +389,7 @@ private struct ProgressBar: View {
                                 .frame(width: segment)
                                 .offset(x: geometry.size.width * phase)
                         }
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
                         .clipShape(Capsule())
                     }
                 }

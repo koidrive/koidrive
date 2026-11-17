@@ -211,7 +211,7 @@ public final class AppModel {
     }
 
     private var syncMoves: Bool {
-        state.status == .syncing && (state.progress != nil || state.folders.contains { $0.isBusy && $0.activity != nil })
+        state.status == .syncing && (state.progress != nil || state.folders.contains(where: \.isBusy))
     }
 
     /// What the header shows under a Syncing title.
