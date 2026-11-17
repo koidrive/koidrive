@@ -184,28 +184,34 @@ struct Retry {
 
 #[derive(Debug, Default)]
 struct Unread {
-    files: BTreeMap<PathBuf, Retry>,
+    files: BTreeMap<PathBuf, (Retry, u64)>,
     due: BTreeSet<(Instant, PathBuf)>,
+    bytes: u64,
 }
 
 impl Unread {
-    fn insert(&mut self, path: PathBuf, retry: Retry) -> Option<Retry> {
-        let old = self.files.insert(path.clone(), retry);
-        if let Some(old) = old {
+    fn insert(&mut self, path: PathBuf, retry: Retry, size: u64) {
+        if let Some((old, old_size)) = self.files.insert(path.clone(), (retry, size)) {
             self.due.remove(&(old.due, path.clone()));
+            self.bytes -= old_size;
         }
+        self.bytes += size;
         self.due.insert((retry.due, path));
-        old
     }
 
     fn remove(&mut self, path: &Path) -> Option<Retry> {
-        let old = self.files.remove(path)?;
+        let (old, size) = self.files.remove(path)?;
         self.due.remove(&(old.due, path.to_path_buf()));
+        self.bytes -= size;
         Some(old)
     }
 
     fn get(&self, path: &Path) -> Option<&Retry> {
-        self.files.get(path)
+        self.files.get(path).map(|(retry, _)| retry)
+    }
+
+    fn totals(&self) -> (u64, u64) {
+        (self.files.len() as u64, self.bytes)
     }
 
     fn contains_key(&self, path: &Path) -> bool {
@@ -224,7 +230,7 @@ impl Unread {
 
     #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = (&PathBuf, &Retry)> {
-        self.files.iter()
+        self.files.iter().map(|(path, (retry, _))| (path, retry))
     }
 
     #[cfg(test)]
@@ -234,7 +240,7 @@ impl Unread {
 
     #[cfg(test)]
     fn values(&self) -> impl Iterator<Item = &Retry> {
-        self.files.values()
+        self.files.values().map(|(retry, _)| retry)
     }
 
     fn below(&self, dir: &Path) -> impl Iterator<Item = &PathBuf> {
@@ -361,12 +367,15 @@ impl FsObserver {
     /// The files whose content is still to be read, left to a later observation or busy and read again later, and
     /// their bytes.
     pub fn unread(&self) -> (u64, u64) {
-        let entries = &self.watcher.snapshot().entries;
-        let bytes = (self.unread.files.keys())
-            .filter_map(|path| entries.get(path))
-            .map(|entry| entry.size)
-            .sum();
-        (self.unread.files.len() as u64, bytes)
+        self.unread.totals()
+    }
+
+    fn size(&self, path: &Path) -> u64 {
+        self.watcher
+            .snapshot()
+            .entries
+            .get(path)
+            .map_or(0, |entry| entry.size)
     }
 
     /// The root folder the latest scan opened, `None` until a scan has opened it. A folder with nothing to report
@@ -500,7 +509,8 @@ impl FsObserver {
             };
             let kept = !placed.contains(&moved) && self.unread.contains_key(&moved) && moved > path;
             if !kept {
-                self.unread.insert(moved.clone(), retry);
+                let size = self.size(&moved);
+                self.unread.insert(moved.clone(), retry, size);
                 placed.insert(moved);
             }
         }
@@ -544,7 +554,8 @@ impl FsObserver {
                 Err(_) if (self.stopped)() => break,
                 _ => {
                     let failures = self.unread.get(&path).expect("an unread file").failures + 1;
-                    self.unread.insert(path, Retry::after(failures, now));
+                    self.unread
+                        .insert(path, Retry::after(failures, now), entry.size);
                 }
             }
         }
@@ -665,19 +676,19 @@ impl Observer for FsObserver {
         let observed = !poll.changes.is_empty();
         self.supersede(&poll.changes);
         let entries = &self.watcher.snapshot().entries;
-        let to_read = (poll.changes.iter())
+        (reads.left_files, reads.left_bytes) = self.unread.totals();
+        let changed = (poll.changes.iter())
             .filter_map(|change| match change {
                 Change::Created { path, .. } | Change::Modified { path } => Some(path),
                 _ => None,
             })
-            .filter(|path| !self.unread.files.contains_key(*path))
-            .chain(self.unread.files.keys())
+            .filter(|path| !self.unread.contains_key(path))
             .filter_map(|path| {
                 entries
                     .get(path)
                     .filter(|entry| entry.kind == EntryKind::File)
             });
-        for entry in to_read {
+        for entry in changed {
             reads.left_files += 1;
             reads.left_bytes += entry.size;
         }
@@ -700,16 +711,16 @@ impl Observer for FsObserver {
             return Ok(None);
         }
         for path in &reads.busy {
-            self.unread.insert(path.clone(), Retry::after(0, now));
+            let size = self.size(path);
+            self.unread.insert(path.clone(), Retry::after(0, now), size);
         }
         for path in reads.deferred {
-            self.unread.insert(
-                path,
-                Retry {
-                    failures: 0,
-                    due: now,
-                },
-            );
+            let size = self.size(&path);
+            let retry = Retry {
+                failures: 0,
+                due: now,
+            };
+            self.unread.insert(path, retry, size);
         }
         let rules: Vec<RulesChange> = (poll.rules.into_iter())
             .map(|(dir, bytes)| RulesChange {
@@ -1207,6 +1218,7 @@ mod tests {
             [Path::new("1000.txt")],
             "one file is past the budget"
         );
+        assert_eq!(observer.unread(), (1, 4));
 
         let (later, _) = observe_until(&mut observer, |seen| !seen.is_empty());
         assert!(
@@ -1218,6 +1230,7 @@ mod tests {
             "{later:?}"
         );
         assert!(observer.unread.is_empty());
+        assert_eq!(observer.unread(), (0, 0));
     }
 
     #[test]
@@ -1268,7 +1281,7 @@ mod tests {
                 failures: 0,
                 due: later,
             };
-            observer.unread.insert(format!("{file}").into(), retry);
+            observer.unread.insert(format!("{file}").into(), retry, 0);
         }
         let before = crate::counting::allocations();
         for _ in 0..20 {
@@ -1303,6 +1316,7 @@ mod tests {
                 failures: 0,
                 due: now,
             },
+            0,
         );
         observer.unread.insert(
             "b.txt".into(),
@@ -1310,6 +1324,7 @@ mod tests {
                 failures: 3,
                 due: now - Duration::from_secs(1),
             },
+            0,
         );
         let mut reads = Reads {
             files: READ_FILES - 1,
@@ -1359,6 +1374,7 @@ mod tests {
                     failures: 0,
                     due: now,
                 },
+                0,
             );
         }
         stop.store(true, Ordering::SeqCst);
@@ -1391,6 +1407,7 @@ mod tests {
                     failures: 0,
                     due: now,
                 },
+                0,
             );
         }
         INTERRUPTED_OPEN.set(Some("0000.txt".into()));
@@ -1735,13 +1752,18 @@ mod tests {
         }
         let mut observer = observer(dir.path());
         observe_until(&mut observer, |seen| !seen.is_empty());
-        assert_eq!(observer.unread.len(), 1);
+        assert_eq!(observer.unread(), (1, 7));
 
         fs::rename(&file, dir.path().join("moved")).unwrap();
         observe_until(&mut observer, |seen| {
             seen.iter()
                 .any(|change| matches!(change, Observed::Renamed { .. }))
         });
+        assert_eq!(
+            observer.unread(),
+            (1, 7),
+            "a moved file keeps its bytes counted once"
+        );
         fs::set_permissions(dir.path().join("moved"), fs::Permissions::from_mode(0o600)).unwrap();
         let (seen, _) = observe_until(&mut observer, |seen| {
             seen.iter()

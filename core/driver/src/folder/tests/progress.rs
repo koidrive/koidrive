@@ -576,3 +576,12 @@ fn the_shown_numbers_change_at_most_once_an_interval_except_when_the_walk_ends()
     }
     assert!(!marked(), "the rescans of a scanned folder stay quiet");
 }
+
+#[test]
+fn a_question_that_holds_no_change_is_not_waited_on() {
+    let mut remote = Remote::new();
+    let (_, (site_b, mut b)) = edited_on_both(&mut remote);
+    assert_eq!(shown(&site_b).len(), 1);
+    b.folder.track_progress(FolderState::CatchingUp);
+    assert_eq!(b.folder.activity(FolderState::CatchingUp), Some(Activity::CatchingUp));
+}

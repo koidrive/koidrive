@@ -156,6 +156,7 @@ pub(crate) struct Folder {
     recount_waits: bool,
     unread: (u64, u64),
     other_changes: u64,
+    questions_holding_changes: u64,
     /// When the [`Work::RetryAfter`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
@@ -384,6 +385,7 @@ impl Folder {
             recount_waits: false,
             unread: (0, 0),
             other_changes: 0,
+            questions_holding_changes: 0,
             retry_at: None,
             #[cfg(test)]
             crash_after: None,
@@ -1420,6 +1422,7 @@ impl Folder {
             .flat_map(|question| question.holds())
             .collect();
         let mut other_changes = 0;
+        let mut waiting = BTreeSet::new();
         for id in (trees.dirty().iter()).filter(|id| !stays_out(id) && !trees.held(id)) {
             let local = file(trees.local().live(id));
             let synced = file(trees.synced().live(id));
@@ -1442,8 +1445,17 @@ impl Folder {
                 want(Direction::Download, id, remote);
                 moves = true;
             }
-            other_changes += u64::from(!moves && !asked.contains(id));
+            match (moves, asked.contains(id)) {
+                (true, _) => {}
+                (false, true) => {
+                    waiting.insert(id);
+                }
+                (false, false) => other_changes += 1,
+            }
         }
+        let questions_holding_changes = (self.engine.commits.questions().iter())
+            .filter(|question| question.holds().any(|id| waiting.contains(id)))
+            .count() as u64;
         drop(stays_out);
         let synced = |item: &Item| {
             let holds = match item.direction {
@@ -1454,6 +1466,7 @@ impl Folder {
         };
         let began_or_ended = self.progress.lock().unwrap().track(wanted, synced);
         self.other_changes = other_changes;
+        self.questions_holding_changes = questions_holding_changes;
         began_or_ended
     }
 
@@ -1473,7 +1486,7 @@ impl Folder {
         if self.progress.lock().unwrap().progress().is_some() {
             return None;
         }
-        match (self.other_changes, self.questions) {
+        match (self.other_changes, self.questions_holding_changes) {
             (0, 0) => Some(Activity::CatchingUp),
             (0, questions) => Some(Activity::AwaitingAnswers { questions }),
             (changes, _) => Some(Activity::Applying { changes }),

@@ -60,7 +60,7 @@ A folder that bootstraps or catches up reports an `activity` beside its transfer
 - `listing`: the folder reads the space's tree from the server.
 - `checking { files, bytes }`: the walk is done, and `files` files of `bytes` bytes are still to be read to learn what changed. Both fall chunk by chunk while a file is read, so a large video moves the numbers too.
 - `applying { changes }`: changes left to sync that move no content, such as new folders, renames, moves and removals. Changes an unanswered question holds don't count. Reported only while the folder has no transfers.
-- `awaiting_answers { questions }`: nothing is left to sync but what `questions` unanswered questions hold, such as removals behind a mass-delete question.
+- `awaiting_answers { questions }`: nothing is left to sync but changes that `questions` unanswered questions hold, such as removals behind a mass-delete question. A question that holds no change, such as a conflict notice, doesn't count.
 - `catching_up`: none of the above and no transfers, while the folder waits for the rest of the server's log or for the server to take its own commit. A sync that ends with transfers left, such as one that reconnects, reports it until the next sync publishes.
 
 `status()` reads the numbers of the observation in progress live. The observer marks `changes()` at once when its walk ends and otherwise at most once every `PROGRESS_INTERVAL`. Once the first scan is done, the walks of later rescans mark nothing, so an up-to-date folder stays quiet.
