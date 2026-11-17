@@ -219,8 +219,7 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     let question = if terminal.setup_guided() {
         terminal.separator();
         terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.");
-        terminal
-            .message("No file names, paths or contents.");
+        terminal.message("No file names, paths or contents.");
         terminal.message("Reports carry your IP address, which estimates your country and city.");
         terminal
             .message("Yes also sends the reports of this setup. Preview: koi telemetry preview.");
