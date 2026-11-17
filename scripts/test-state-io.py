@@ -62,6 +62,7 @@ class ChangedIo(unittest.TestCase):
         call = "fs::write(path, bytes);"
         self.assertFalse(self.introduced(call, "use std::path::PathBuf;\n" + call, start=2))
         self.assertFalse(self.introduced(call, "use std::{collections::HashMap, path::{self as paths, Path}};\n" + call, start=2))
+        self.assertFalse(self.introduced(call, "use std::collections::HashMap /* cache * type */;\n" + call, start=2))
 
     def test_an_import_that_shadows_fs_or_tempfile_still_fails(self):
         call = "fs::write(path, bytes);"
@@ -87,6 +88,14 @@ class ChangedIo(unittest.TestCase):
         raw = "std::fs::write(r#TARGET, bytes);"
         before = "use crate::paths::LOG as r#TARGET;\n" + raw
         self.assertTrue(self.introduced(before, "use crate::paths::STATE as r#TARGET;\n" + raw, start=2))
+        nested = "mod storage { use crate::log_paths::TARGET;\n" + call + "\n}"
+        self.assertTrue(self.introduced(nested, nested.replace("log_paths", "state_paths"), start=2))
+        crate_alias = "std::fs::write(std::TARGET, bytes);"
+        before = "use crate::log_backend as std;\n" + crate_alias
+        self.assertTrue(self.introduced(before, "use crate::state_backend as std;\n" + crate_alias, start=2))
+        method = "std::fs::write(target.path(), bytes);"
+        before = "use crate::paths::LogPath as _;\n" + method
+        self.assertTrue(self.introduced(before, "use crate::paths::StatePath as _;\n" + method, start=2))
 
     def test_an_import_without_a_terminator_is_compared_not_fatal(self):
         call = "fs::write(path, bytes);\n"

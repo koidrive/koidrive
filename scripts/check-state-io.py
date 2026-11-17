@@ -20,12 +20,9 @@ HELPER = "core/state-file/src/lib.rs"
 LOCK_LINTS = {"clippy::await_holding_lock", "clippy::await_holding_refcell_ref"}
 IO_LINT = "clippy::disallowed_methods"
 FORCED_LINTS = [IO_LINT, *sorted(LOCK_LINTS)]
-IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
 IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
-USE_TOKEN = re.compile(r"::|[{},*]|(?:r#)?[A-Za-z_]\w*")
-VISIBILITY = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?")
 SHADOWABLE = {"fs", "tempfile"}
-ROOTS = {"std", "core", "alloc", "crate", "self", "super"}
+ROOTS = {"crate", "self", "super", "Self"}
 CONDITIONAL = re.compile(r"#\s*!?\s*\[\s*cfg(?:_attr)?\s*\([^]]*\)\s*\]", re.S)
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
@@ -96,12 +93,24 @@ def call_tokens(text, line, column):
     return None
 
 
-def imports(text):
-    return [text[match.start():text.find(";", match.start()) + 1] for match in IMPORT.finditer(text)]
+def import_items(text):
+    tokens = []
+    LEXER.comment_spans(text, "rust", tokens)
+    words = []
+    for token, _, _ in tokens:
+        if len(words) > 1 and words[-2:] == ["r", "#"]:
+            words[-2:] = [token]
+        else:
+            words.append(token)
+    for index, word in enumerate(words):
+        if word == "mod":
+            yield tuple(words[index:index + 2])
+        elif word == "use" or word == "extern" and words[index + 1:index + 2] == ["crate"]:
+            end = words.index(";", index) if ";" in words[index:] else len(words)
+            yield tuple(words[index:end])
 
 
 def import_bindings(item):
-    tokens = [token.removeprefix("r#") for token in USE_TOKEN.findall(VISIBILITY.sub("", item, count=1).rstrip(";"))]
     bound, roots = set(), set()
 
     def tree(i, prefix):
@@ -118,7 +127,7 @@ def import_bindings(item):
                     i = tree(i, path)
                     i += rest[i] == ","
                 return i + 1
-            if token != "::":
+            if token != ":":
                 path.append(token)
         if i < len(rest) and rest[i] == "as":
             bound.add(rest[i + 1])
@@ -129,7 +138,7 @@ def import_bindings(item):
         return i
 
     try:
-        kind, rest = tokens[0], tokens[1:]
+        kind, rest = item[0], item[1:]
         if kind == "mod":
             return {rest[0]}, set()
         if kind == "extern":
@@ -137,7 +146,9 @@ def import_bindings(item):
         tree(0, [])
     except IndexError:
         return {"*"}, set()
-    return bound - {"_"}, roots
+    if "_" in bound:
+        bound.add("*")
+    return bound, roots
 
 
 def local_root(path):
@@ -146,7 +157,7 @@ def local_root(path):
 
 def shadowing_imports(text, call):
     names = SHADOWABLE | {token for token in call if IDENTIFIER.fullmatch(token)} - ROOTS
-    items = [(item, *import_bindings(item)) for item in imports(text)]
+    items = [(item, *import_bindings(item)) for item in import_items(text)]
     selected = set()
     while True:
         found = {index for index, (_, bound, _) in enumerate(items)
