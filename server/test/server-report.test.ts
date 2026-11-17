@@ -196,7 +196,7 @@ describe("usage tally", () => {
     expect(handed).toHaveLength(1);
   });
 
-  it("hands a busy process's counts over once every 10 minutes and when an hour ends, and an idle one's 20 seconds after its last count", async () => {
+  it("hands a busy process's counts over once every 10 minutes and when an hour ends, and an idle one's 25 seconds after its last count, and never more than once per request", async () => {
     UsageTally.quietMs = QUIET_MS;
     let nowMs = 10 * HOUR_MS;
     const timers: { atMs: number; fire: () => void }[] = [];
@@ -243,6 +243,18 @@ describe("usage tally", () => {
     }
     await runUntil(14 * HOUR_MS);
     expect(handed.map((one) => one.counts)).toEqual([10, 10, 10, 10, 10]);
+
+    handed.length = 0;
+    for (let n = 0; n < 120; n++) await request(14 * HOUR_MS + n * 30_000);
+    await runUntil(15 * HOUR_MS);
+    expect(handed).toHaveLength(120);
+    expect(handed.every((one) => one.counts === 1)).toBe(true);
+
+    handed.length = 0;
+    for (let n = 0; n < 180; n++) await request(15 * HOUR_MS + n * 20_000);
+    await runUntil(16 * HOUR_MS + HOUR_MS);
+    expect(handed.reduce((sum, one) => sum + one.counts, 0)).toBe(180);
+    expect(handed.length).toBeLessThanOrEqual(7);
   });
 
   it("counts nothing until it knows the server reports, and nothing once it knows it doesn't", async () => {

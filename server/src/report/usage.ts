@@ -3,7 +3,7 @@
 import { errorText } from "../errors";
 
 export const LATENCY_BUCKETS = 16;
-export const QUIET_MS = 20_000;
+export const QUIET_MS = 25_000;
 export const BATCH_MS = 600_000;
 const HOUR_MS = 3_600_000;
 
