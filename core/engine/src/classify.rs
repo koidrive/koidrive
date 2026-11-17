@@ -1383,14 +1383,20 @@ impl Trees {
                 (Some(_), None) => true,
                 (None, synced) => synced.is_none() && self.l.get(other).is_none(),
             };
+        let source = self.source_version_id(id);
+        let descends_from =
+            |version: &str| source == Some(version) || made_over.iter().any(|base| base == version);
+        let same_lineage = |node: &RemoteNode| {
+            descends_from(&node.version_id)
+                || (!made_over.is_empty() && !node.made_over.is_empty())
+                    && (within(&made_over, &node.made_over) || within(&node.made_over, &made_over))
+        };
         self.r.get(id).is_none()
-            && !made_over.is_empty()
             && write.mtime_ns % 10_000_000 != 0
             && (self.r.iter()).any(|(other, node)| {
                 other != id
                     && node.is_live()
-                    && !node.made_over.is_empty()
-                    && (within(&made_over, &node.made_over) || within(&node.made_over, &made_over))
+                    && same_lineage(node)
                     && (node.shape.content.as_ref())
                         .is_some_and(|held| same_write(held, write) && kept_here(other, held))
             })

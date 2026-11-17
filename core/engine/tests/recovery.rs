@@ -3784,3 +3784,46 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert!(trees.local().get("new").is_none());
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
 }
+
+#[test]
+fn a_copy_created_after_the_restore_point_is_certain_once_the_server_holds_its_source_with_the_same_write()
+ {
+    use koidrive_engine::state::{ContentProvenance, ContentVersion};
+    let written = |name: &str| Shape {
+        content: Some(Content {
+            mtime_ns: 1_794_268_740_123_456_789,
+            ..content(1)
+        }),
+        ..file(ROOT, name, 1)
+    };
+    let source = |version: &str| {
+        let mut trees = trees(
+            &[("copy", written("b")), ("original", written("a"))],
+            &[("copy", written("b")), ("original", written("a"))],
+            &[live("original", written("a"))],
+        );
+        let mut node = trees.remote().get("original").expect("a node of R").clone();
+        node.version_id = "v0".into();
+        trees.set_remote("original".into(), node);
+        let mut state = trees.state();
+        let provenance = ContentProvenance {
+            synced: None,
+            local: Some(ContentVersion {
+                version_id: version.into(),
+                made_over: Vec::new(),
+                own: false,
+            }),
+            edit_bases: Vec::new(),
+            unversioned_bases: Vec::new(),
+        };
+        state.content_provenance.insert("copy".into(), provenance);
+        state.dirty.insert("copy".into());
+        trees.restore(state).unwrap();
+        trees.rules_scanned();
+        trees.settle();
+        let (commits, _) = recovered(&mut trees, 1);
+        groups(&commits)
+    };
+    assert_eq!(source("v0"), []);
+    assert_eq!(source("v9"), [RecoveryGroup::CreatedAfterRestorePoint]);
+}

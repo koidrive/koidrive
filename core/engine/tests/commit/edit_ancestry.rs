@@ -368,3 +368,23 @@ fn a_lost_write_is_sent_again_when_this_device_holds_an_unsent_edit_of_the_file_
     assert!(resent_create(&sent), "{sent:?}");
 }
 
+
+#[test]
+fn a_lost_copy_is_not_sent_again_once_the_server_holds_its_source_version_with_the_same_write() {
+    for version in ["v1", "v0"] {
+        let trees = a_lost_write(true, |trees| {
+            copied(trees, held_by(version, written(ROOT, "b", 1), &[]))
+        });
+        assert_eq!(sent_f(&trees), [], "{version}");
+    }
+}
+
+#[test]
+fn a_lost_copy_is_sent_again_beside_a_server_file_of_an_unrelated_version_with_the_same_write() {
+    let trees = a_lost_write(true, |trees| {
+        copied(trees, held_by("v9", written(ROOT, "b", 1), &[]))
+    });
+    let sent = sent_f(&trees);
+    assert!(resent_create(&sent), "{sent:?}");
+}
+
