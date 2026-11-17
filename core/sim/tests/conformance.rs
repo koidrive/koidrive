@@ -175,8 +175,14 @@ fn run_file(path: &str, doc: &Value) -> usize {
     }
     let scenarios = doc["scenarios"].as_array().expect("checked above");
     let mut failed = 0;
+    let mut skipped = 0;
     for scenario in scenarios {
         let name = scenario["name"].as_str().unwrap_or("?");
+        if covers_intents(scenario) {
+            skipped += 1;
+            println!("scenario {name} ... skipped: the reference has no RFC 0028 intents");
+            continue;
+        }
         let tag = if scenario.get("reference_only").is_some() {
             " (reference only)"
         } else {
@@ -191,10 +197,18 @@ fn run_file(path: &str, doc: &Value) -> usize {
         }
     }
     println!(
-        "{path}: {} passed; {failed} failed",
-        scenarios.len() - failed
+        "{path}: {} passed; {failed} failed; {skipped} skipped",
+        scenarios.len() - failed - skipped
     );
     failed
+}
+
+fn covers_intents(scenario: &Value) -> bool {
+    scenario["covers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|cover| cover == "RFC0028" || cover == "RFC0028-6")
 }
 
 const SEEDS: u64 = 16;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { create, type DescMessage, fromBinary, type MessageInitShape, toBinary } from "@bufbuild/protobuf";
+import { create, type DescMessage, equals, fromBinary, type MessageInitShape, toBinary, toJson } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -25,9 +25,16 @@ import {
   ChangeRecordSchema,
   type ChunkRef,
   ChunkRefSchema,
+  CommitRecordSchema,
   type Content,
   ContentSchema,
+  type FieldIntents,
+  FieldIntentsSchema,
+  type Intent,
+  IntentSchema,
   NodeKind,
+  type NodePurged,
+  NodePurgedSchema,
   type NodeState,
   NodeStateSchema,
   NodeStatus,
@@ -35,10 +42,12 @@ import {
   VersionInfoSchema,
 } from "../src/gen/koidrive/v1/model_pb";
 import { ChunkPlan_Action, Error_Code, type Error as RpcError } from "../src/gen/koidrive/v1/rpc_pb";
-import { toHex, uuidv7 } from "../src/ids";
+import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { GRANT_MS, type Role, type Session, type SpaceDO } from "../src/space-do";
 import { chunkKey, encodeChunkList, getMeta, getNode, nodeState } from "../src/space/store";
+import { restoreFromR2, serverState } from "./export-reader";
 import { OWNER, targetIncarnation } from "./helpers";
+import { type Dump, dump, load } from "./pitr";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Obj = { [key: string]: Json };
@@ -206,6 +215,18 @@ interface SpaceUnderTest {
 
 type Stub = DurableObjectStub<SpaceDO>;
 
+type Rule = "A" | "B";
+
+type RuledSpace = SpaceDO & { lostChangeRule: Rule };
+
+interface Stored {
+  dump: Dump;
+  topSeq: bigint | undefined;
+  slots: [string, bigint][];
+}
+
+const INTENT_FIELDS = ["place", "content", "status"] as const;
+
 class Run {
   private readonly nowMs: number;
   private readonly mtimeNs: bigint;
@@ -220,22 +241,29 @@ class Run {
   private readonly slots = new Map<string, bigint>();
   private readonly sentSlots = new Map<string, bigint>();
   private readonly topSeq = new Map<string, bigint>();
+  private readonly stored = new Map<string, Stored>();
+  private readonly tombstones = new Map<string, Map<string, NodePurged>>();
   private reqId = 0n;
 
-  private constructor(nowMs: number, mtimeNs: bigint) {
+  private readonly rule: Rule;
+
+  private constructor(nowMs: number, mtimeNs: bigint, rule: Rule) {
     this.nowMs = nowMs;
     this.mtimeNs = mtimeNs;
+    this.rule = rule;
   }
 
   static async start(scenario: Obj, file: Obj): Promise<Run> {
-    keys(scenario, "a scenario", ["name", "covers", "reference_only", "devices", "spaces", "contents", "steps"]);
+    keys(scenario, "a scenario", ["name", "covers", "reference_only", "rule", "devices", "spaces", "contents", "steps"]);
     req(optStr(scenario, "name"), "name");
     optStr(scenario, "reference_only");
     optList(scenario, "covers");
+    const rule = optStr(scenario, "rule") ?? "A";
+    if (rule !== "A" && rule !== "B") fail(`rule must be A or B, got ${show(rule)}`);
     const nowMs = req(optInt(file, "now_ms"), "now_ms");
     const mtimeText = req(optStr(file, "mtime_ns"), "mtime_ns");
     if (!/^-?\d+$/.test(mtimeText) || BigInt.asIntN(64, BigInt(mtimeText)) !== BigInt(mtimeText)) fail("mtime_ns must be an int64 written as a string");
-    const run = new Run(nowMs, BigInt(mtimeText));
+    const run = new Run(nowMs, BigInt(mtimeText), rule);
     const names = "spaces" in scenario ? strings(req(optList(scenario, "spaces"), "spaces"), "spaces") : ["main"];
     for (const name of names) {
       const spaceId = uuidv7();
@@ -244,6 +272,7 @@ class Run {
       await stub.init({ spaceId, name, ownerUserId: OWNER, spaceKey: key });
       const historyId = await runInDurableObject(stub, (_instance, state) => String(getMeta(state.storage.sql, "history_id")));
       run.spaces.set(name, { spaceId, key, historyId });
+      await run.enter(name, nowMs);
     }
     for (const [symbol, value] of Object.entries(object(scenario.devices, "devices"))) {
       const device = keys(value, "a device", ["name", "role", "max_format"]);
@@ -281,13 +310,98 @@ class Run {
   }
 
   async steps(scenario: Obj): Promise<void> {
-    for (const [i, step] of req(optList(scenario, "steps"), "steps").entries()) {
+    const steps = req(optList(scenario, "steps"), "steps").map((step) => object(step, "a step"));
+    const restores = new Set<string>();
+    for (const [i, step] of steps.entries()) {
+      if (!("restore_storage" in step)) continue;
+      within(`step ${i + 1}`, () => {
+        const to = req(optUint(keys(step.restore_storage, "restore_storage", ["to_step"]), "to_step"), "to_step");
+        if (to < 1 || to > i) fail(`restore_storage must name an earlier step, got ${to}`);
+        restores.add(`${to}/${optStr(step, "space") ?? "main"}`);
+      });
+    }
+    for (const [i, step] of steps.entries()) {
+      if (step.reference_only !== undefined) continue;
       try {
-        await this.step(object(step, "a step"));
+        await this.step(step);
+        for (const space of this.spaces.keys()) if (restores.has(`${i + 1}/${space}`)) this.stored.set(`${i + 1}/${space}`, await this.store(space));
       } catch (error) {
         if (error instanceof Failure) fail(`step ${i + 1}: ${error.message}`);
         throw error;
       }
+    }
+  }
+
+  private enter(space: string, atMs: number): Promise<void> {
+    return runInDurableObject(this.stub(space), (instance: SpaceDO) => {
+      instance.clock = () => atMs;
+      (instance as RuledSpace).lostChangeRule = this.rule;
+    });
+  }
+
+  private async store(space: string): Promise<Stored> {
+    return {
+      dump: await this.read(space, (sql) => dump(sql)),
+      topSeq: this.topSeq.get(space),
+      slots: [...this.slots].filter(([device]) => device.endsWith(`/${space}`)),
+    };
+  }
+
+  private async restoreStorage(space: string, toStep: number): Promise<void> {
+    const saved = this.stored.get(`${toStep}/${space}`) ?? fail(`no storage was kept after step ${toStep}`);
+    await runInDurableObject(this.stub(space), (_instance, state) => state.storage.transactionSync(() => load(state.storage.sql, saved.dump)));
+    if (saved.topSeq === undefined) this.topSeq.delete(space);
+    else this.topSeq.set(space, saved.topSeq);
+    for (const device of [...this.slots.keys()]) if (device.endsWith(`/${space}`)) this.slots.delete(device);
+    for (const [device, slot] of saved.slots) this.slots.set(device, slot);
+  }
+
+  private async purge(space: string, atMs: number): Promise<void> {
+    await this.enter(space, atMs);
+    const records = await runInDurableObject(this.stub(space), async (instance: SpaceDO, state) => {
+      const before = Number(getMeta(state.storage.sql, "head_seq"));
+      await instance.collectGarbage(atMs);
+      return state.storage.sql
+        .exec("SELECT record FROM commits WHERE seq > ? ORDER BY seq", before)
+        .toArray()
+        .map((row) => fromBinary(CommitRecordSchema, new Uint8Array(row.record as ArrayBuffer)));
+    });
+    const tombstones = this.tombstones.get(space) ?? new Map<string, NodePurged>();
+    for (const { change } of records.flatMap((record) => record.changes)) if (change.case === "purged") tombstones.set(change.value.nodeId, change.value);
+    this.tombstones.set(space, tombstones);
+  }
+
+  private async rebuild(space: string, atMs: number): Promise<void> {
+    await this.enter(space, atMs);
+    await runInDurableObject(this.stub(space), (instance: SpaceDO) => (instance as unknown as { runExport(): Promise<void> }).runExport());
+    const rebuilt = await restoreFromR2(this.space(space).spaceId);
+    const live = await serverState(this.stub(space));
+    if (rebuilt.headSeq !== live.headSeq) fail(`the export ends at seq ${rebuilt.headSeq} and the head is ${live.headSeq}; rebuild at_ms must be five minutes or more after the first commit the export lacks`);
+    const differ = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+      [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((key) => JSON.stringify(a[key]) !== JSON.stringify(b[key]));
+    const nodeFields = (a: NodeState, b: NodeState) => differ(toJson(NodeStateSchema, a) as Record<string, unknown>, toJson(NodeStateSchema, b) as Record<string, unknown>);
+    const sameVersion = (a: VersionInfo, b: VersionInfo) => equals(VersionInfoSchema, a, b);
+    for (const id of new Set([...rebuilt.nodes.keys(), ...live.nodes.keys()])) {
+      const name = this.values.get(id) ?? id;
+      const got = rebuilt.nodes.get(id);
+      const want = live.nodes.get(id);
+      if (!want) fail(`the rebuild holds ${name}, which the server does not`);
+      if (!got) fail(`the rebuild lacks ${name}`);
+      const fields = nodeFields(got.state, want.state);
+      if (fields.length > 0) fail(`the rebuilt ${name} differs in ${fields.join(", ")}`);
+      if (got.trashedAtMs !== want.trashedAtMs) fail(`the rebuilt ${name} was trashed at ${got.trashedAtMs}, the server's at ${want.trashedAtMs}`);
+      if (got.previous.size !== want.previous.size) fail(`the rebuilt ${name} keeps ${got.previous.size} earlier versions, the server ${want.previous.size}`);
+      for (const [versionId, kept] of want.previous) {
+        const found = got.previous.get(versionId);
+        if (!found || found.supersededAtMs !== kept.supersededAtMs || !sameVersion(found.version, kept.version)) {
+          fail(`the rebuilt ${name} differs in its earlier version ${this.values.get(versionId) ?? versionId}`);
+        }
+      }
+    }
+    for (const [id, tombstone] of this.tombstones.get(space) ?? []) {
+      const name = this.values.get(id) ?? id;
+      const exported = rebuilt.tombstones.get(id) ?? fail(`the export holds no tombstone of ${name}`);
+      if (!equals(NodePurgedSchema, exported, tombstone)) fail(`the exported tombstone of ${name} differs from the one the purge wrote`);
     }
   }
 
@@ -320,14 +434,53 @@ class Run {
     return this.fixed(space, symbol) ?? this.symbols.get(symbol) ?? fail(`unbound symbol ${symbol}`);
   }
 
+  private intentId(space: string, symbol: string): Uint8Array {
+    const value = this.fixed(space, symbol) ?? this.symbols.get(symbol);
+    if (value !== undefined) return fromHex(value) ?? fail(`${symbol} is not an intent`);
+    const minted = uuidv7(this.nowMs).replaceAll("-", "");
+    this.bind(symbol, minted);
+    return fromHex(minted)!;
+  }
+
+  private author(symbol: string): string {
+    return symbol === "" ? "" : this.device(symbol).deviceId;
+  }
+
+  private authorName(deviceId: string): string {
+    if (deviceId === "") return "empty";
+    return [...this.devices].find(([, session]) => session.deviceId === deviceId)?.[0] ?? deviceId;
+  }
+
+  private intent(space: string, value: Json | undefined, what: string): Intent {
+    const body = keys(value, what, ["id", "author", "replay", "over", "applied_at_ms"]);
+    const over = optStr(body, "over");
+    return create(IntentSchema, {
+      id: this.intentId(space, req(optStr(body, "id"), "id")),
+      authorDeviceId: this.author(req(optStr(body, "author"), "author")),
+      replay: optBool(body, "replay") ?? false,
+      over: over === undefined ? new Uint8Array() : this.intentId(space, over),
+      appliedAtMs: BigInt(optInt(body, "applied_at_ms") ?? 0),
+    });
+  }
+
   private expectId(space: string, symbol: string, value: string): void {
     const fixed = this.fixed(space, symbol);
     if (fixed === undefined) return this.bind(symbol, value);
     if (fixed !== value) fail(`expected ${fixed}, got ${value}`);
   }
 
-  private knownSet(space: string, list: Json[], what: string): Set<string> {
-    return new Set(strings(list, what).map((symbol) => this.known(space, symbol)));
+  private expectSet(space: string, list: Json[], got: Set<string>, what: string): void {
+    const symbols = strings(list, what);
+    const unbound = symbols.filter((symbol) => this.fixed(space, symbol) === undefined && !this.symbols.has(symbol));
+    if (unbound.length > 1) fail(`${what} may name only one symbol that is not bound yet, got ${show(unbound)}`);
+    const want = new Set(symbols.filter((symbol) => !unbound.includes(symbol)).map((symbol) => this.known(space, symbol)));
+    const left = [...got].filter((id) => !want.has(id));
+    if (unbound.length === 1 && left.length === 1) {
+      this.bind(unbound[0]!, left[0]!);
+      want.add(left[0]!);
+    }
+    const pending = unbound.filter((symbol) => !this.symbols.has(symbol));
+    if (!sameSet(got, want) || pending.length > 0) fail(`${what} ${show(this.names(got))}, expected ${show([...this.names(want), ...pending].sort())}`);
   }
 
   private names(ids: Set<string>): string[] {
@@ -362,9 +515,7 @@ class Run {
     call: MessageInitShape<typeof RpcRequestSchema>["call"],
   ): Promise<RpcResponse["result"]> {
     const stub = this.stub(space);
-    await runInDurableObject(stub, (instance: SpaceDO) => {
-      instance.clock = () => atMs;
-    });
+    await this.enter(space, atMs);
     const request = create(RpcRequestSchema, { reqId: ++this.reqId, call });
     const response = fromBinary(RpcResponseSchema, await stub.rpc(session, toBinary(RpcRequestSchema, request)));
     if (response.result.case === undefined) fail("empty response");
@@ -405,6 +556,24 @@ class Run {
     if ("list_versions" in step) {
       keys(step, "a step", [...call, "list_versions"]);
       return this.listVersions(space, atMs, step);
+    }
+    if ("revoke" in step) {
+      keys(step, "a step", ["space", "at_ms", "reference_only", "revoke"]);
+      const device = this.device(req(optStr(keys(step.revoke, "revoke", ["device"]), "device"), "device"));
+      await this.enter(space, atMs);
+      return this.stub(space).closeDevice(device.deviceId);
+    }
+    if ("purge" in step) {
+      keys(step, "a step", ["space", "reference_only", "purge"]);
+      return this.purge(space, req(optInt(keys(step.purge, "purge", ["at_ms"]), "at_ms"), "at_ms"));
+    }
+    if ("restore_storage" in step) {
+      keys(step, "a step", ["space", "reference_only", "restore_storage"]);
+      return this.restoreStorage(space, req(optUint(object(step.restore_storage, "restore_storage"), "to_step"), "to_step"));
+    }
+    if ("rebuild" in step) {
+      keys(step, "a step", ["space", "reference_only", "rebuild"]);
+      return this.rebuild(space, req(optInt(keys(step.rebuild, "rebuild", ["at_ms"]), "at_ms"), "at_ms"));
     }
     keys(step, "a step", ["space", "reference_only", "head", "nodes", "live"]);
     return this.checkState(space, step);
@@ -483,18 +652,27 @@ class Run {
         continue;
       }
       const allowed: Record<string, string[]> = {
-        create_dir: ["node", "parent", "name", "pending_for"],
+        create_dir: ["node", "parent", "name", "pending_for", "fields"],
         move: ["node", "parent", "name", "pending_for", "from"],
-        create_file: ["node", "parent", "name", "content"],
-        update_content: ["node", "content", "resend"],
-        delete: ["node", "requires"],
+        create_file: ["node", "parent", "name", "content", "pending_for", "made_over", "source_version_id", "fields"],
+        update_content: ["node", "content", "resend", "made_over", "source_version_id"],
+        delete: ["node", "requires", "unseen", "held"],
         restore: ["node", "version", "parent", "name"],
         empty: [],
       };
       if (!(kind in allowed)) fail(`unknown op ${kind}`);
-      const body = keys(fields[kind], kind, allowed[kind]!);
+      const body = keys(fields[kind], kind, [...allowed[kind]!, "intent"]);
+      const intents = (op: Op): Op => {
+        if ("intent" in body) op.intent = this.intent(space, body.intent, "intent");
+        if ("fields" in body) {
+          const given = keys(body.fields, "fields", [...INTENT_FIELDS]);
+          op.fields = create(FieldIntentsSchema);
+          for (const field of INTENT_FIELDS) if (field in given) op.fields[field] = this.intent(space, given[field], `fields.${field}`);
+        }
+        return op;
+      };
       if (kind === "empty") {
-        ops.push(create(OpSchema, {}));
+        ops.push(intents(create(OpSchema, {})));
         continue;
       }
       const nodeId = this.id(space, req(optStr(body, "node"), "node"));
@@ -507,10 +685,17 @@ class Run {
         used.push(symbol);
         return this.content(symbol).content;
       };
+      const madeOver = strings(optList(body, "made_over") ?? [], "made_over").map((symbol) => this.id(space, symbol));
+      const source = optStr(body, "source_version_id");
+      const sourceVersionId = source === undefined ? "" : this.id(space, source);
+      const intentIds = (field: string) => strings(optList(body, field) ?? [], field).map((symbol) => this.intentId(space, symbol));
       let op: Op;
       if (kind === "create_dir") op = create(OpSchema, { op: { case: "createDir", value: { nodeId, parentId, name, pendingFor } } });
-      else if (kind === "create_file") op = create(OpSchema, { op: { case: "createFile", value: { nodeId, parentId, name, content: content() } } });
-      else if (kind === "update_content") op = create(OpSchema, { op: { case: "updateContent", value: { nodeId, content: content(), resend: optBool(body, "resend") ?? false } } });
+      else if (kind === "create_file") {
+        op = create(OpSchema, { op: { case: "createFile", value: { nodeId, parentId, name, content: content(), madeOver, sourceVersionId, pendingFor } } });
+      } else if (kind === "update_content") {
+        op = create(OpSchema, { op: { case: "updateContent", value: { nodeId, content: content(), resend: optBool(body, "resend") ?? false, madeOver, sourceVersionId } } });
+      }
       else if (kind === "move") {
         const from = body.from === undefined ? undefined : keys(body.from, "from", ["parent", "name"]);
         const place = from && { parentId: this.id(space, req(optStr(from, "parent"), "parent")), name: req(optStr(from, "name"), "name") };
@@ -523,14 +708,14 @@ class Run {
           contentRev: BigInt(req(optUint(found, "content_rev"), "content_rev")),
           metaRev: BigInt(req(optUint(found, "meta_rev"), "meta_rev")),
         };
-        op = create(OpSchema, { op: { case: "delete", value: { nodeId, requires } } });
+        op = create(OpSchema, { op: { case: "delete", value: { nodeId, requires, unseen: intentIds("unseen"), held: intentIds("held") } } });
       }
       else {
         const version = optStr(body, "version");
         const versionId = version === undefined ? "" : this.id(space, version);
         op = create(OpSchema, { op: { case: "restore", value: { nodeId, versionId, targetParentId: parentId, name } } });
       }
-      ops.push(op);
+      ops.push(intents(op));
     }
     return { ops, used };
   }
@@ -639,9 +824,7 @@ class Run {
     }
     const changed = optList(expect, "changed");
     if (changed !== undefined) {
-      const want = this.knownSet(space, changed, "changed");
-      const got = new Set(committed.changes.flatMap((change) => (change.change.case === "node" ? [change.change.value.nodeId] : [])));
-      if (!sameSet(got, want)) fail(`changed ${show(this.names(got))}, expected ${show(this.names(want))}`);
+      this.expectSet(space, changed, new Set(committed.changes.flatMap((change) => (change.change.case === "node" ? [change.change.value.nodeId] : []))), "changed");
     }
   }
 
@@ -829,8 +1012,7 @@ class Run {
             .map((row) => String(row.node_id)),
         ),
       );
-      const want = this.knownSet(space, live, "live");
-      if (!sameSet(got, want)) fail(`live nodes ${show(this.names(got))}, expected ${show(this.names(want))}`);
+      this.expectSet(space, live, got, "live nodes");
     }
     if (!known) fail(`a step does nothing: ${show(step)}`);
   }
@@ -855,7 +1037,8 @@ class Run {
   }
 
   private checkNodeState(space: string, wanted: Json, got: NodeState, complete: boolean): void {
-    const want = keys(wanted, "a node", complete ? [...NODE_FIELDS, "edit_rev", "meta_edit_rev"] : [...NODE_FIELDS, "absent", "content", "edit_rev", "meta_edit_rev"]);
+    const optional = ["edit_rev", "meta_edit_rev", "intents", "trash_held"];
+    const want = keys(wanted, "a node", complete ? [...NODE_FIELDS, ...optional] : [...NODE_FIELDS, ...optional, "absent", "content"]);
     if (complete) every(want, NODE_FIELDS);
     covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev", "intents", "trashHeld"]);
     const symbol = req(optStr(want, "node"), "node");
@@ -924,6 +1107,43 @@ class Run {
       } else if (!got.current) fail(`${symbol} has no current version, expected one`);
       else within(`${symbol}.current`, () => this.checkCurrent(space, current!, got.current!));
     }
+    if ("intents" in want) within(`${symbol}.intents`, () => this.checkIntents(space, want.intents!, got.intents));
+    const held = optList(want, "trash_held");
+    if (held !== undefined) {
+      const wanted = new Set(strings(held, "trash_held").map((intent) => this.known(space, intent)));
+      const found = new Set(got.trashHeld.map(toHex));
+      if (!sameSet(found, wanted)) fail(`${symbol}.trash_held is ${show(this.names(found))}, expected ${show(this.names(wanted))}`);
+    }
+  }
+
+  private checkIntents(space: string, wanted: Json, got: FieldIntents | undefined): void {
+    const want = keys(wanted, "intents", [...INTENT_FIELDS]);
+    covered(FieldIntentsSchema, [...INTENT_FIELDS]);
+    covered(IntentSchema, ["id", "authorDeviceId", "replay", "over", "appliedAtMs"]);
+    for (const field of INTENT_FIELDS) {
+      if (!(field in want)) continue;
+      within(field, () => {
+        const intent = got?.[field];
+        if (want[field] === null) {
+          if (intent) fail(`an intent ${toHex(intent.id)}, expected none`);
+          return;
+        }
+        const one = keys(want[field], "an intent", ["id", "author", "replay", "applied_at_ms"]);
+        if (!intent) fail("no intent");
+        if (intent.id.length === 0) fail("an intent with an empty id");
+        if (intent.over.length > 0) fail(`over ${toHex(intent.over)}, expected none on a NodeState`);
+        const id = optStr(one, "id");
+        if (id !== undefined) within("id", () => this.expectId(space, id, toHex(intent.id)));
+        const author = optStr(one, "author");
+        if (author !== undefined && intent.authorDeviceId !== this.author(author)) {
+          fail(`author ${this.authorName(intent.authorDeviceId)}, expected ${author === "" ? "empty" : author}`);
+        }
+        const replay = optBool(one, "replay");
+        if (replay !== undefined && intent.replay !== replay) fail(`replay ${intent.replay}, expected ${replay}`);
+        const at = optInt(one, "applied_at_ms");
+        if (at !== undefined && intent.appliedAtMs !== BigInt(at)) fail(`applied_at_ms ${intent.appliedAtMs}, expected ${at}`);
+      });
+    }
   }
 }
 
@@ -931,10 +1151,7 @@ async function run(scenario: Json, file: Obj = doc): Promise<string | undefined>
   try {
     const found = object(scenario, "a scenario");
     const runner = await Run.start(found, file);
-    await runner.steps({
-      ...found,
-      steps: req(optList(found, "steps"), "steps").filter((step) => !(object(step, "a step").reference_only !== undefined)),
-    });
+    await runner.steps(found);
     return undefined;
   } catch (error) {
     if (error instanceof Failure) return error.message;
@@ -950,8 +1167,9 @@ for (const [path, file] of files) {
     });
 
     for (const scenario of req(optList(file, "scenarios"), "scenarios")) {
-      const { name, reference_only } = object(scenario, "a scenario");
-      const test = reference_only === undefined ? it : it.skip;
+      const { name, reference_only, covers } = object(scenario, "a scenario");
+      const later = Array.isArray(covers) && covers.includes("RFC0028-6");
+      const test = reference_only === undefined && !later ? it : it.skip;
       test(String(name), { timeout: 120_000 }, async () => {
         expect(await run(scenario, file)).toBeUndefined();
       });
@@ -1021,6 +1239,20 @@ describe("conformance runner self-tests", () => {
       "step 1: result 1: unknown field nmae in a result",
     ],
     ["an unknown node field fails", base, (s) => void (object((s.steps[2]!.nodes as Json[])[0], "node").stauts = "LIVE"), "step 3: unknown field stauts in a node"],
+    [
+      "an unknown intent field fails",
+      base,
+      (s) => void (object(object((object(s.steps[0]!.commit, "commit").ops as Json[])[0], "op").create_file, "create_file").intent = { id: "i", author: "a", replya: true }),
+      "step 1: unknown field replya in intent",
+    ],
+    [
+      "an unknown field in a node's intents fails",
+      base,
+      (s) => void (object((s.steps[2]!.nodes as Json[])[0], "node").intents = { plcae: {} }),
+      "step 3: f1.intents: unknown field plcae in intents",
+    ],
+    ["a rule other than A or B fails", base, (s) => void ((s as unknown as Obj).rule = "C"), "rule must be A or B"],
+    ["a rebuild before the export is due fails", base, (s) => void s.steps.push({ rebuild: { at_ms: doc.now_ms! } }), "rebuild at_ms must be five minutes or more"],
   ];
   for (const [name, scenario, edit, reason] of cases) {
     it(name, async () => {
