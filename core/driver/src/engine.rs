@@ -8,12 +8,13 @@
 //! tree. [`Engine::observe`] puts an observation batch into L: each change goes to the node with the entry's
 //! identity, or to the node at the change's path, and a change that leaves a node as L has it changes nothing.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees, temp_name};
+use koidrive_engine::classify::{CHECK_EVERY, Pending, Rescope, Trees, temp_name};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::Log;
@@ -64,6 +65,15 @@ pub(crate) struct Engine {
     backup_gone: BTreeMap<NodeId, bool>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
+    pub touched: RefCell<Touched>,
+}
+
+#[derive(Default)]
+pub(crate) struct Touched {
+    pub stepped: bool,
+    pub nodes: BTreeSet<NodeId>,
+    pub rescope: Rescope,
+    pub questions: bool,
 }
 
 struct SlotTaker {
@@ -165,6 +175,19 @@ impl Engine {
         };
         self.local_written_since_load |= !changes.trees.outside.is_empty();
         tx.write_engine_changes(&changes)?;
+        let touched = self.touched.get_mut();
+        touched.stepped = true;
+        touched.nodes.extend(changed.local);
+        touched.nodes.extend(changed.synced);
+        touched.nodes.extend(changed.remote);
+        touched.nodes.extend(changes.trees.nodes().cloned());
+        (touched.nodes).extend(changes.commits.problems.iter().map(|(id, _)| id.clone()));
+        (touched.nodes).extend(changes.effects.failed.iter().map(|(id, _)| id.clone()));
+        let moved_out = changes.trees.outside.iter().map(|(id, _)| id);
+        let displaced = changes.trees.displaced.iter().map(|(id, _)| id);
+        (touched.rescope.local).extend(moved_out.chain(displaced).cloned());
+        touched.rescope.add(self.trees.take_rescope());
+        touched.questions |= changes.commits.questions.is_some();
         if let Some(questions) = changes.commits.questions {
             self.stored_questions = questions;
         }
@@ -2066,6 +2089,7 @@ impl Stored {
             return Ok(None);
         }
         trees.take_changed();
+        trees.take_rescope();
         let stored_questions = state.commits.questions.clone();
         let commits =
             Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
@@ -2105,6 +2129,15 @@ impl Stored {
             backup_gone: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
+            touched: RefCell::new(Touched {
+                stepped: true,
+                rescope: Rescope {
+                    all: true,
+                    ..Rescope::default()
+                },
+                questions: true,
+                ..Touched::default()
+            }),
         }))
     }
 }
@@ -3033,6 +3066,7 @@ mod tests {
             backup_gone: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
+            touched: RefCell::default(),
         };
         Case {
             name,
