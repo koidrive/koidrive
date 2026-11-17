@@ -133,7 +133,7 @@ class PropertyBattery(unittest.TestCase):
 class Selection(unittest.TestCase):
     def setUp(self):
         workflow = WORKFLOW.read_text()
-        self.split = next(line.strip() for line in workflow.splitlines() if "names[$0]; next" in line)
+        self.split = next(line.strip() for line in workflow.splitlines() if "print > every" in line)
         self.spread = next(line.strip() for line in workflow.splitlines() if "% shards == shard" in line)
         self.packages = next(line.strip() for line in workflow.splitlines() if "then spread=1" in line)
 
@@ -160,6 +160,20 @@ class Selection(unittest.TestCase):
         for package in ("koidrive-driver", "koidrive-sim-extra", "koidrive"):
             with self.subTest(package=package):
                 self.assertEqual(self.split_tests(["grows"], listed, package), (listed, []))
+
+    def test_a_property_name_that_ends_another_test_is_ambiguous(self):
+        line = next(line.strip() for line in WORKFLOW.read_text().splitlines() if line.strip().startswith("ambiguous=$(awk"))
+        for listed, expected in ((["a::same", "b::same", "c::other"], "same"),
+                                 (["b::same", "c::other", "same_more"], ""),
+                                 (["same", "deep::mod::same"], "same")):
+            with self.subTest(listed=listed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "names.txt").write_text("same\nother\n")
+                (root / "listed.txt").write_text("".join(test + "\n" for test in listed))
+                output = subprocess.check_output(["bash", "-euo", "pipefail", "-c",
+                                                  'RUNNER_TEMP=.\n' + line + '\necho "$ambiguous"'],
+                                                 cwd=root, text=True)
+                self.assertEqual(output.strip(), expected)
 
     def test_once_packages_hold_no_driver_or_net_tests(self):
         once = re.search(r"^  ONCE_PACKAGES: (.*)$", WORKFLOW.read_text(), re.M).group(1).split()

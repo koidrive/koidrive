@@ -127,6 +127,11 @@ jobs:
             : > "$once"
             awk -F'\t' 'FILENAME == ARGV[1] { files[$0]; next } $1 in files { print $2 }' <(echo "$properties") "$RUNNER_TEMP/properties.tsv" | sort -u > "$RUNNER_TEMP/names.txt"
             sed -n 's/: test$//p' <<< "$listing" > "$RUNNER_TEMP/listed.txt"
+            ambiguous=$(awk -F'::' 'FILENAME == ARGV[1] { names[$0]; next } $NF in names { seen[$NF]++ } END { for (name in seen) if (seen[name] > 1) print name }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt" | sort)
+            if [ -n "$ambiguous" ]; then
+              echo "::error::$package $selector has several tests whose names end like these properties, so the battery cannot tell which one is the property: ${ambiguous//$'\n'/ }. Give each property a name that no other test in the binary ends with."
+              exit 1
+            fi
             unlisted=$(awk -F'::' '{ print $NF }' "$RUNNER_TEMP/listed.txt" | sort -u | comm -23 "$RUNNER_TEMP/names.txt" -)
             if [ -z "$FILTER" ] && [ -n "$unlisted" ]; then
               echo "::error::$package $selector compiles these properties but does not list them, so no shard would run them: ${unlisted//$'\n'/ }"
