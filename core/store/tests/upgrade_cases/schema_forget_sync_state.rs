@@ -63,7 +63,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
         "restore_requests",
         "volume_mounts",
     ];
-    let forgotten = "commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \
+    let forgotten = "answer_moves commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \
          commit_in_flight_restore_members commit_slot_given_up commit_slots commit_state content_provenance cycle_reverted \
          discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
          forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \

@@ -89,6 +89,7 @@ fn migrations_apply_from_empty() {
     assert_eq!(
         tables,
         [
+            "answer_moves",
             "chunk_cache",
             "commit_in_flight",
             "commit_in_flight_delete_members",
@@ -1551,6 +1552,7 @@ fn engine_state() -> EngineState {
                     held_here: false,
                 },
             )]),
+            answer_moves: nodes(["moved for an answer"]),
             guard: GuardState {
                 ledger: BTreeMap::from([
                     ("held".into(), Counted { at_ms: 5, files: 2 }),
@@ -1656,7 +1658,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 51] = [
+const ENGINE_TABLES: [&str; 52] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1696,6 +1698,7 @@ const ENGINE_TABLES: [&str; 51] = [
     "dropped_edits",
     "cycle_reverted",
     "given_up",
+    "answer_moves",
     "unsent_moves",
     "unsent_creates",
     "removed_here",
@@ -4786,7 +4789,9 @@ fn a_store_from_before_given_up_nodes_were_recorded_opens_with_none_recorded() {
     assert_eq!(applied(&path), all_migrations());
     let after = before.clone();
     before.commits.given_up_nodes.clear();
+    before.commits.answer_moves.clear();
     assert!(!after.commits.given_up_nodes.is_empty());
+    assert!(!after.commits.answer_moves.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

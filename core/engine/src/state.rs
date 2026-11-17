@@ -377,6 +377,9 @@ pub struct CommitsState {
     /// The nodes of a trash group an answer gave up (section 6.4) that a commit brought back from
     /// the trash without trashing them again, until a later commit trashes them.
     pub given_up_nodes: BTreeMap<NodeId, GivenUp>,
+    /// The nodes the commits of an answer in progress moved (section 6.4), so that a node L keeps
+    /// below one of them still rides that move after the commit that sent it.
+    pub answer_moves: BTreeSet<NodeId>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -546,6 +549,7 @@ pub struct CommitsChanges {
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
     pub given_up_nodes: MapChanges<NodeId, GivenUp>,
+    pub answer_moves: SetChanges<NodeId>,
     pub guard: GuardChanges,
 }
 
@@ -567,6 +571,7 @@ impl CommitsChanges {
             questions,
             published,
             given_up_nodes,
+            answer_moves,
             guard,
         } = after;
         Self {
@@ -584,6 +589,7 @@ impl CommitsChanges {
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
             given_up_nodes: map_changes(&before.given_up_nodes, given_up_nodes),
+            answer_moves: set_changes(&before.answer_moves, answer_moves),
             guard: GuardChanges::between(&before.guard, guard),
         }
     }

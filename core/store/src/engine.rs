@@ -220,6 +220,11 @@ impl Tx<'_> {
             };
             state.commits.given_up_nodes.insert(row.get(0)?, given);
         }
+        let mut stmt = (self.0).prepare_cached("SELECT node_id FROM answer_moves")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.commits.answer_moves.insert(row.get(0)?);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, ino, ino_high, birth_ns, lost FROM recorded_nodes")?;
@@ -530,6 +535,7 @@ impl Tx<'_> {
             "lost_shapes",
             "published_nodes",
             "given_up",
+            "answer_moves",
             "recorded_nodes",
             "edited_here",
             "moved_here",
@@ -643,6 +649,7 @@ impl Tx<'_> {
             questions,
             published,
             given_up_nodes,
+            answer_moves,
             guard,
         } = commits;
         let EffectsChanges {
@@ -1080,6 +1087,11 @@ impl Tx<'_> {
                 let revisions = given.revisions;
                 insert.execute(params![node, revisions.content_rev, revisions.meta_rev, given.held_here])
             },
+        )?;
+        self.write_set(
+            answer_moves,
+            "DELETE FROM answer_moves WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO answer_moves (node_id) VALUES (?1)",
         )?;
         self.write_guard(guard)?;
 
