@@ -2183,16 +2183,12 @@ impl Trees {
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
             }
-            let moved_out = (self.discarded.get(id))
-                .filter(|shape| !old.parked && shape.parent != old.shape.parent)
-                .filter(|_| self.r.get(id).is_some())
-                .map(|shape| Shape {
-                    parent: old.shape.parent.clone(),
-                    ..shape.clone()
-                });
-            if let Some(shape) = moved_out {
+            let deleted_in_place = (self.discarded.get(id))
+                .is_some_and(|shape| old.parked || shape.parent == old.shape.parent)
+                && self.r.get(id).is_some();
+            if deleted_in_place {
                 self.forget_reclaims();
-                self.discarded.insert(id.to_owned(), shape);
+                self.discarded.remove(id);
             }
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
@@ -2474,7 +2470,7 @@ impl Trees {
         unchanged
             && (self.discarded.children(id)).all(|child| {
                 self.is_discarded(child)
-                    || (self.l.get(child)).is_some_and(|local| local.shape.parent != id)
+                    || (self.l.get(child)).is_none_or(|local| local.shape.parent != id)
                     || self.as_the_server_holds(child, &mut seen)
             })
             && (self.local_children_placed_or_parked(id)).all(|child| {
@@ -2590,7 +2586,7 @@ impl Trees {
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
         (self.synced_children(id).chain(self.waiting.children(id))).all(|child| {
             self.l.get(child).is_some()
-                || (self.discarded.get(child)).is_some_and(|shape| shape.parent != id)
+                || self.discarded.contains_key(child)
                 || self.as_the_server_holds(child, seen)
         })
     }
@@ -2718,11 +2714,17 @@ impl Trees {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
                 self.keeps_the_synced_children(id, &mut BTreeSet::new())
                     && children.into_iter().all(|child| {
-                        shown.contains_key(child) || self.server_copy(child, shown, kept)
+                        shown.contains_key(child)
+                            || self.is_discarded(child)
+                            || self.server_copy(child, shown, kept)
                     })
             }
         };
         if copy {
+            let left_out = (self.synced_children(id))
+                .filter(|child| self.l.get(*child).is_none() && self.ignored_in_remote(child))
+                .filter_map(|child| Some((child.clone(), self.r.live(child)?.clone())));
+            kept.extend(left_out);
             kept.push((id.clone(), local.shape.clone()));
         } else {
             kept.truncate(start);
