@@ -3593,6 +3593,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_unlink_leaves_no_marker_to_block_a_later_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        eventually("the folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        let blocked = record.with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(driver.unlink(&root).await.is_err());
+        fs::remove_dir(&blocked).unwrap();
+        driver.stop().await;
+        drop(driver);
+        assert!(!record.with_file_name("unlinking").exists());
+
+        fs::write(&record, br#"{"halt":"#).unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_ne!(
+            driver.status().folders[0].problem.as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await.unwrap();
+        assert_ne!(restarted.state, FolderState::Halted);
+        eventually("the restarted folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        driver.stop().await;
+    }
+
+    #[tokio::test]
     async fn an_unreadable_lifecycle_record_halts_only_its_folder_until_a_restart() {
         use crate::health::tests::{named, posthog, with_prefix};
 
