@@ -692,6 +692,14 @@ impl Engine {
         }
     }
 
+    /// Gives the trees the folders a scan listed, each at the path where it listed it.
+    pub fn listed(&mut self, listed: &[PathBuf]) {
+        let listed: Vec<NodeId> = (listed.iter())
+            .filter_map(|dir| local_at(&self.trees, dir))
+            .collect();
+        self.trees.listed(&listed);
+    }
+
     /// Puts `changes` into L and returns the nodes whose L entry changed. Paths a change names in the previous state
     /// (`Removed::path`, `Renamed::from`) are resolved before any change applies. The changes apply in batch order,
     /// except that a change waits for the change of the batch that creates or moves the nearest folder above it into
@@ -1138,10 +1146,12 @@ impl Engine {
                 Kind::Dir => None,
             },
         };
-        let node = node.filter(|id| {
-            !(self.trees.recorded_local(id)
-                && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
-        });
+        let node = node
+            .filter(|id| {
+                !(self.trees.recorded_local(id)
+                    && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
+            })
+            .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
         let unchanged = existing.is_some_and(|old| {
             !old.parked
@@ -1189,7 +1199,7 @@ impl Engine {
                 id = holder;
             } else if kind == Kind::Dir
                 && replaced == Some(Kind::Dir)
-                && kept
+                && (kept || self.trees.unobserved(&holder))
                 && !synced
                 && self.trees.local().get(&id).is_none()
             {

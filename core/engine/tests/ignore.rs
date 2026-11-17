@@ -559,9 +559,7 @@ fn a_folder_deleted_here_that_another_device_moved_comes_back_there_and_frees_it
     assert_eq!(trees.synced().live("new"), Some(&file(ROOT, "d", 2)));
     assert_eq!(trees.check(), Ok(()));
     trees.set_rules(&AT_ROOT, None);
-    assert_eq!(ops(&mut trees), []);
-    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
-    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), [delete("log")]);
 }
 
 #[test]
@@ -1220,8 +1218,10 @@ fn a_kept_folder_another_device_renames_comes_back_with_the_child_the_rules_let_
     assert!(trees.kept_for_excluded()("d"));
     assert_eq!(ops(&mut trees), []);
     let done: Vec<String> = effects(&mut trees).into_iter().map(|(id, _)| id).collect();
-    assert_eq!(done, ["d", "log"]);
+    assert_eq!(done, ["d"]);
     assert_eq!(trees.check(), Ok(()));
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
     assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
     assert_eq!(ops(&mut trees), []);
 }
@@ -1286,6 +1286,7 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
     trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into(), "dist".into()]);
     for id in ["app", "dist", "log"] {
         trees.remove_local(id);
     }

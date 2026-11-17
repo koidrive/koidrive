@@ -1152,6 +1152,10 @@ proptest! {
             for (id, shape) in trees.synced().iter() {
                 everything.set_synced(id.clone(), Some(shape.clone()));
             }
+            let mut state = everything.state();
+            state.unobserved = trees.state().unobserved;
+            everything.restore(state).unwrap();
+            everything.rules_scanned();
             trees.settle(&Default::default());
             everything.settle(&Default::default());
             prop_assert_eq!(trees.work(), everything.work());

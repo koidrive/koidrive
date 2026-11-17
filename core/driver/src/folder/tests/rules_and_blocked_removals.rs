@@ -1102,3 +1102,101 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted_and_an_edit_made_wh
     assert!(remote.names().is_empty());
     assert!(files(&site.root).is_empty());
 }
+
+fn changed_while_left_out(
+    change: impl FnOnce(&Site),
+    stopped: bool,
+) -> (Device, Site, Vec<(String, String)>) {
+    let (mut remote, site, synced) = excluded_dist(3);
+    let server = remote.tree();
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    if stopped {
+        drop(b);
+        change(&site);
+    } else {
+        change(&site);
+        b.rescan();
+        b.rest(&mut remote);
+        assert!(b.sent.is_empty(), "nothing is sent while dist is left out");
+        drop(b);
+    }
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "sent {sent:?}");
+    assert!(shown(&site).is_empty(), "no question opens");
+    assert_eq!(remote.tree(), server, "every node keeps its place on the server");
+    assert_eq!(b.state(), FolderState::UpToDate);
+    (b, site, synced)
+}
+
+fn rebuild_dist(site: &Site, text: impl Fn(usize) -> String) {
+    fs::remove_dir_all(site.root.join("dist")).unwrap();
+    fs::create_dir_all(site.root.join("dist/sub")).unwrap();
+    for n in 0..3 {
+        let dir = if n % 2 == 0 { "dist" } else { "dist/sub" };
+        fs::write(site.root.join(format!("{dir}/f{n}.docx")), text(n)).unwrap();
+    }
+}
+
+#[test]
+fn a_file_removed_inside_an_excluded_folder_downloads_again_when_the_rules_let_it_in() {
+    let (b, site, synced) = changed_while_left_out(
+        |site| fs::remove_file(site.root.join("dist/f2.docx")).unwrap(),
+        false,
+    );
+    assert!(b.sent.is_empty(), "sent {:?}", b.sent);
+    assert_eq!(files(&site.root), synced);
+    assert!(trashed(&site.root).is_empty());
+}
+
+#[test]
+fn an_excluded_folder_removed_while_koidrive_is_stopped_downloads_again_when_the_rules_let_it_in() {
+    let (b, site, synced) = changed_while_left_out(
+        |site| fs::remove_dir_all(site.root.join("dist")).unwrap(),
+        true,
+    );
+    assert!(b.sent.is_empty(), "sent {:?}", b.sent);
+    assert_eq!(files(&site.root), synced);
+}
+
+#[test]
+fn an_excluded_folder_cleaned_and_partly_rebuilt_uploads_the_rebuilt_file_and_downloads_the_rest() {
+    let (b, site, synced) = changed_while_left_out(
+        |site| {
+            fs::remove_dir_all(site.root.join("dist")).unwrap();
+            fs::create_dir_all(site.root.join("dist/sub")).unwrap();
+            fs::write(site.root.join("dist/f0.docx"), "rebuilt").unwrap();
+        },
+        false,
+    );
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content"]);
+    let wanted: Vec<(String, String)> = (synced.into_iter())
+        .map(|(path, text)| match path.as_str() {
+            "dist/f0.docx" => (path, "rebuilt".into()),
+            _ => (path, text),
+        })
+        .collect();
+    assert_eq!(files(&site.root), wanted);
+}
+
+#[test]
+fn a_build_folder_rebuilt_while_excluded_replaces_the_server_copy_when_the_rules_let_it_in() {
+    let (b, site, _) = changed_while_left_out(|site| rebuild_dist(site, |n| format!("rebuilt {n}")), false);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content"; 3]);
+    let local = files(&site.root);
+    assert_eq!(local.len(), 3);
+    assert!(
+        (local.iter()).all(|(path, text)| !path.contains("conflict") && text.starts_with("rebuilt")),
+        "{local:?}"
+    );
+}
+
+#[test]
+fn a_build_folder_rebuilt_with_the_same_files_while_excluded_sends_nothing_when_the_rules_let_it_in() {
+    let (b, site, synced) = changed_while_left_out(|site| rebuild_dist(site, |n| format!("report {n}")), false);
+    assert!(b.sent.is_empty(), "sent {:?}", b.sent);
+    assert_eq!(files(&site.root), synced);
+}
