@@ -216,7 +216,7 @@ impl Disks {
                 .unwrap_or_else(|failure| panic!("{} attached: {failure}", image.display()));
             self.mounted.push(Mounted {
                 at: at.to_path_buf(),
-                image: fs::canonicalize(image).unwrap(),
+                image: std::path::absolute(image).unwrap(),
                 device,
             });
         }
@@ -560,6 +560,26 @@ mod tests {
         );
         assert_eq!(image_on(&info, "/dev/disk7"), Ok(None));
         assert!(image_on(&plist::Value::String("bad".into()), "/dev/disk5").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_busy_image_attached_through_a_symlinked_path_is_still_ejected() {
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Spelled");
+        let spelled = Path::new("/var").join(image.strip_prefix("/private/var").unwrap());
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&spelled, &at);
+        let device = disks.mounted[0].device.clone();
+        let held = fs::File::open(&device).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(held);
+        });
+        disks.detach(&at);
+        release.join().unwrap();
+        assert!(!Path::new(&device).exists(), "{device}");
     }
 
     #[cfg(target_os = "macos")]
