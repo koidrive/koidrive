@@ -106,6 +106,8 @@ pub(crate) struct Intent {
     pub resume: bool,
     #[serde(default)]
     pub resume_updates: bool,
+    #[serde(default)]
+    pub unplaced: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -251,6 +253,7 @@ mod tests {
                             device_id: "device".into(),
                         },
                     }],
+                    unplaced: vec!["lost".into()],
                     resume,
                     resume_updates,
                 };

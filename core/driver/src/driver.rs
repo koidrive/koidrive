@@ -893,6 +893,11 @@ impl Driver {
                         intent.links.push(current);
                     }
                 }
+                for space_id in self.inner.unplaced.lock().unwrap().keys() {
+                    if !intent.unplaced.contains(space_id) {
+                        intent.unplaced.push(space_id.clone());
+                    }
+                }
                 Leaving::begin(state, intent).map_err(io_error(&path))
             })();
             match prepared {
@@ -994,17 +999,9 @@ impl Driver {
                 folder.progress.lock().unwrap().clear();
             }
         }
-        let unplaced: Vec<_> = self
-            .inner
-            .unplaced
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        for space_id in unplaced {
-            match self.remove_space_state(&space_id) {
-                Ok(()) => drop(self.inner.unplaced.lock().unwrap().remove(&space_id)),
+        for space_id in &leaving.intent.unplaced {
+            match self.remove_space_state(space_id) {
+                Ok(()) => drop(self.inner.unplaced.lock().unwrap().remove(space_id)),
                 Err(failure) => failed.push(failure),
             }
         }
@@ -1128,6 +1125,9 @@ impl Driver {
                 }
             }
             dirs.extend(paths.store(&link.space_id)?.parent().map(Path::to_path_buf));
+        }
+        for space_id in self.inner.unplaced.lock().unwrap().keys() {
+            dirs.extend(paths.store(space_id)?.parent().map(Path::to_path_buf));
         }
         for dir in dirs {
             let access = rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK;
@@ -4154,6 +4154,59 @@ mod tests {
         assert_eq!(driver.status().folders.len(), 1);
         assert!(lost.join("store.sqlite").exists());
         assert_eq!(claim::owner(&root).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_committed_sign_out_forgets_a_folder_whose_path_is_unknown_after_a_restart() {
+        const LOST: &str = "0190f0a0-0000-7000-8000-0000000000f3";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let lost = unplaced(&paths, LOST);
+        let mut leaving = Leaving::begin(
+            &paths.state_dir,
+            Intent {
+                unplaced: vec![LOST.into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        leaving.set_phase(Phase::Committed).unwrap();
+
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert!(!lost.exists());
+        assert!(!paths.state_dir.join("leaving").exists());
+    }
+
+    #[tokio::test]
+    async fn signing_out_changes_nothing_while_a_folder_whose_path_is_unknown_cannot_be_forgotten()
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block writes");
+            return;
+        }
+        const LOST: &str = "0190f0a0-0000-7000-8000-0000000000f4";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let lost = unplaced(&paths, LOST);
+        let driver = Driver::open(paths.clone()).unwrap();
+        fs::set_permissions(&lost, fs::Permissions::from_mode(0o500)).unwrap();
+        let refused = driver.sign_out(true).await;
+        fs::set_permissions(&lost, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(
+            matches!(&refused, Err(DriverError::UnlinkBlocked { path, .. }) if *path == lost),
+            "{refused:?}"
+        );
+        assert!(paths.credential().exists());
+        assert!(!paths.state_dir.join("leaving").exists());
+        assert_eq!(driver.status().folders.len(), 2);
     }
 
     fn garble(paths: &Paths, space_id: &str) {
