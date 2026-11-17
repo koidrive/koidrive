@@ -1989,6 +1989,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
             parent_id: space.space_id.clone(),
             name: "Slides.pptx".into(),
             content: Some(file_content(b"written on another device")),
+            ..Default::default()
         })],
     )
     .await;

@@ -12,9 +12,16 @@
     {
       "node_id": "0190f5c2-0000-7000-8000-000000000001",
       "field": "place",
-      "key": "7\u0000\u0000a.txt",
-      "id": "38b8f670-d612-5996-acb2-92597d37f649",
-      "note": "place at the root: meta_rev 7, parent \"\", name a.txt"
+      "key": "7\u00000190f5c2-0000-7000-8000-0000000000ff\u0000a.txt",
+      "id": "13f050d4-d16a-5d76-ab59-f51db416fb90",
+      "note": "child of the root: meta_rev 7, parent is the space id 0190f5c2-0000-7000-8000-0000000000ff, name a.txt"
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "place",
+      "key": "1\u0000\u0000",
+      "id": "bfcbb3da-9b1b-5247-81c1-a987fe5b9ceb",
+      "note": "the root itself: meta_rev 1, parent \"\", name \"\""
     },
     {
       "node_id": "0190f5c2-0000-7000-8000-000000000001",

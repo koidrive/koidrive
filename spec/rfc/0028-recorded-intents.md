@@ -107,7 +107,7 @@ The trash keeps each trashed node's field intents and the status intent it repla
 
 When a delete trashes a node, or adds `held` to its trash, the server also trashes, in the same trash group, every conflict copy that §3.5 made from an intent in the delete's view whose fields still hold the intents the copy got. §3.6's index finds them. A carried copy that landed before the deleting device reconnected thus goes once its user's view arrives.
 
-Purging a node keeps a tombstone: its id, its last parent, its field intents and its `held` list. `NodePurged` carries them in the log, and a snapshot page holds one `NodeSnapshot.tombstone` record per tombstone, in node id order with the node records, so an RFC 0004 §5 rebuild keeps every tombstone. A replay or a carried op (§3.2) that names a purged node is `SUPERSEDED` for place and status, and so is a create that names it; another op that names it is answered as today. Its content lands as a conflict copy under the nearest live ancestor of the node's last parent, unless the tombstone holds or lists the content intent.
+Purging a node keeps a tombstone: its id, its last parent, its field intents and its `held` list. `NodePurged` carries them in the log, and a snapshot page holds one `NodeSnapshot.tombstone` record per tombstone, in node id order with the node records, so an RFC 0004 §5 rebuild keeps every tombstone. A replay or a carried op (§3.2) that names a purged node is `SUPERSEDED` for place and status, and so is a create that names it; another op that names it is answered as today. Its content lands as a conflict copy under the nearest live ancestor of the node's last parent, unless the tombstone holds or lists the content intent. A create or move into a purged folder places the node under the nearest live ancestor of that folder's last parent, so a user's new file there still uploads (GUN-769).
 
 ### 3.4 Replays reaching the trash
 
@@ -276,14 +276,14 @@ id = UUIDv5(701471d0-f5ea-47eb-936a-485a91d0891e, utf8(node_id) || 0x00 || utf8(
 UUIDv5 is RFC 9562 §5.5. `field` is `place`, `content` or `status`. The key is:
 
 - content: the version id;
-- place: `decimal(meta_rev) || 0x00 || parent_id || 0x00 || name`, with `""` as the root's parent and the stored NFC name;
+- place: `decimal(meta_rev) || 0x00 || parent_id || 0x00 || name`, with the parent id as `NodeState` reports it (the space id for a child of the root, `""` for the root itself) and the stored NFC name;
 - status: `trashed:` followed by the trash group, or `live:` followed by the decimal seq of the commit that last made the node live.
 
 `spec/vectors/legacy-intents.json` lists vectors that both implementations test against. A client that can't know that seq uses the earliest `meta_rev` it holds for the live node, until the first-contact listing replaces the id. A server migration gives every existing node these ids. A client computes the same ids for a field that a server without `field_intents` sends with no intent. A legacy intent's applied time is the `committed_at_ms` of the commit at the field's revision, or 0 when the server no longer holds that commit, so a backfill rerun after a restore never stamps it later than a lost commit.
 
 ## 8. Mixed versions
 
-- **Old client, new server.** The client sends no intents and no delete view. The server mints intents (§3.1), carried for a resend, applies R3 and R7 by seqs and revisions as before, and keeps no `held` on the trash. The old client's loss rules keep running, with their known faults. One of them reaches new devices: an old client's `CreateDir` that re-creates another device's folder carries no resend marker, so its intent is not carried.
+- **Old client, new server.** The client sends no intents and no delete view. The server mints intents (§3.1), carried for a resend, applies R3 and R7 by seqs and revisions as before, and keeps no `held` on the trash. The old client's loss rules keep running, with their known faults. One of them reaches new devices: an old client's `CreateDir` that re-creates another device's folder carries no resend marker, so its intent is not carried. An old client's edit has no `made_over`, so a bystander also carries a lost value that edit was made over (§5.4 case 4). That costs an extra conflict copy, not a write.
 - **Before `field_intents` is announced.** A server records and reports intents from the deploy that adds them. A client sends no intents and reads none until the server announces the feature. A store that migrated in between lists again on first contact (§7.1).
 - **New client, old server.** The server sends no intents. The client keeps its journal and computes legacy intents for R. It does not recover from a loss automatically: it halts and asks, as design §6.4 does for a store rollback, because without server intents case 4 of §5.4 can't tell a lost value from a later one. It sets `UpdateContent.resend` and `Move.from` on carried replays, so an old server applies RFC 0018 and RFC 0019 to them.
 - **Mixed devices on a new server.** A field an old client sets has a server-minted intent, which new devices compare like any other.
