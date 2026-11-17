@@ -29,6 +29,8 @@ mod restore_back_to_back;
 mod restore_deleted_folder;
 #[path = "devices/restore_kept_merge.rs"]
 mod restore_kept_merge;
+#[path = "devices/restore_twice.rs"]
+mod restore_twice;
 #[path = "devices/restore_unsent_nodes.rs"]
 mod restore_unsent_nodes;
 #[path = "devices/restore_write_history.rs"]
@@ -3696,7 +3698,7 @@ fn a_second_restore_keeps_an_edit_another_device_never_downloaded() {
 }
 
 #[test]
-fn a_restore_that_brings_back_a_commit_its_device_saw_lost_recovers_without_losing_or_resending_it()
+fn a_restore_that_brings_back_a_commit_its_device_saw_lost_is_a_loss_that_loses_or_resends_nothing()
 {
     let lost = vec![
         (0, BACKUP),
@@ -3705,16 +3707,14 @@ fn a_restore_that_brings_back_a_commit_its_device_saw_lost_recovers_without_losi
         (0, RESTORE),
     ];
     let world = converge(2, &[vec![(0, BACKUP), (0, file("a"))], lost]).unwrap();
-    assert_eq!(
-        world.seen["recovery starts after a restore brings back commits the device saw lost"],
-        1
-    );
+    assert_eq!(world.seen["reconnect finds the server lost commits"], 2);
+    assert!(!(world.seen.keys()).any(|seen| seen.starts_with("recovery starts")));
     assert_eq!(world.space().head_seq(), 1);
     assert_eq!(copies_of(&world, 1), 1);
 }
 
 #[test]
-fn a_restore_that_brings_back_a_create_another_device_saw_lost_recovers() {
+fn a_restore_that_brings_back_a_create_another_device_saw_lost_converges() {
     let u = |kind, name| {
         Step::User(Action {
             kind,
