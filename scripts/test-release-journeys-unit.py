@@ -4,6 +4,7 @@
 import argparse
 import copy
 import errno
+import http.server
 import importlib.util
 import json
 import os
@@ -16,7 +17,10 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 
@@ -328,16 +332,88 @@ class ReleaseJourneys(unittest.TestCase):
     def test_homebrew_update_runs_with_the_worker_and_in_the_full_matrix(self):
         journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
         self.assertEqual(journeys.count("if: contains(fromJSON('[\"installer\", \"homebrew-update\", \"uninstall\"]'), matrix.scenario)"), 3)
-        self.assertLessEqual(DRIVER.release_order("0.1.0-alpha.5"), DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE))
 
-    def test_a_cask_that_self_updates_runs_koi_update_without_ci_so_the_app_updater_runs(self):
-        self.assertLess(DRIVER.release_order(DRIVER.HOMEBREW_UPDATE_SINCE), DRIVER.release_order(DRIVER.CASK_SELF_UPDATE_SINCE))
+    def test_koi_update_runs_without_ci_so_the_app_updater_runs(self):
         env = {"CI": "true", "PATH": "/opt/homebrew/bin:/usr/bin", "HOME": "/Users/runner"}
-        older = DRIVER.update_env(env, DRIVER.HOMEBREW_UPDATE_SINCE)
-        self.assertEqual(older, {**env, "PATH": DRIVER.SYSTEM_PATH})
-        newer = DRIVER.update_env(env, DRIVER.CASK_SELF_UPDATE_SINCE)
-        self.assertEqual(newer, {"PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner"})
+        self.assertEqual(DRIVER.update_env(env, "http://127.0.0.1:1/"), {
+            "PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner", "KOIDRIVE_UPDATE_CHECK_URL": "http://127.0.0.1:1/"})
         self.assertEqual(env["CI"], "true")
+
+    def test_journey_token_reaches_no_child_process_and_is_redacted(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"JOURNEY_GITHUB_TOKEN": "ghs_journey"}):
+            evidence = DRIVER.Evidence(Path(directory) / "evidence", "v0.1.0-alpha.7", "homebrew-update")
+        self.assertNotIn("JOURNEY_GITHUB_TOKEN", evidence.env)
+        self.assertEqual(evidence.github_token, "ghs_journey")
+        self.assertNotIn("ghs_journey", DRIVER.sanitized("sent ghs_journey to GitHub", evidence.secrets))
+
+    def test_release_relay_answers_with_github_through_the_journey_token(self):
+        seen = []
+
+        class GitHub(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append({"path": self.path, "authorization": self.headers.get("Authorization"),
+                             "if_none_match": self.headers.get("If-None-Match")})
+                limited = "limited" in self.path
+                self.send_response(403 if limited else 200)
+                self.send_header("X-RateLimit-Remaining", "0" if limited else "999")
+                self.send_header("X-RateLimit-Reset", "1800000000")
+                self.send_header("ETag", '"list"')
+                self.send_header("Link", f'<{DRIVER.GITHUB_API}/repositories/1/releases?per_page=20&page=2>; rel="next", '
+                                         f'<{DRIVER.GITHUB_API}/repositories/1/releases?per_page=20&page=3>; rel="last"')
+                body = b"[]"
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        github = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GitHub)
+        threading.Thread(target=github.serve_forever, daemon=True).start()
+        answers = []
+        with patch.object(DRIVER, "GITHUB_API", f"http://127.0.0.1:{github.server_port}"):
+            relay = DRIVER.release_relay("ghs_journey", answers)
+            base = f"http://127.0.0.1:{relay.server_port}"
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                request = urllib.request.Request(base + DRIVER.RELEASE_LIST + "?per_page=20",
+                                                 headers={"If-None-Match": '"old"'})
+                with opener.open(request, timeout=5) as response:
+                    self.assertEqual((response.status, response.read()), (200, b"[]"))
+                    self.assertEqual(response.headers["ETag"], '"list"')
+                    link = response.headers["Link"]
+                self.assertEqual(link, f'<{base}/repositories/1/releases?per_page=20&page=2>; rel="next", '
+                                       f'<{base}/repositories/1/releases?per_page=20&page=3>; rel="last"')
+                with opener.open(re.match(r"<([^>]+)>", link)[1], timeout=5) as response:
+                    self.assertEqual((response.status, response.read()), (200, b"[]"))
+                with self.assertRaises(urllib.error.HTTPError) as limited:
+                    opener.open(base + DRIVER.RELEASE_LIST + "?limited=1", timeout=5)
+                with limited.exception as refused:
+                    self.assertEqual((refused.code, refused.headers["X-RateLimit-Remaining"]), (403, "0"))
+                with self.assertRaises(urllib.error.HTTPError) as other:
+                    opener.open(base + "/user", timeout=5)
+                with other.exception as missing:
+                    self.assertEqual(missing.code, 404)
+            finally:
+                relay.shutdown()
+                relay.server_close()
+                github.shutdown()
+                github.server_close()
+        self.assertEqual([entry["authorization"] for entry in seen], ["Bearer ghs_journey"] * 3)
+        self.assertEqual(seen[0]["if_none_match"], '"old"')
+        self.assertEqual(seen[1]["path"], "/repositories/1/releases?per_page=20&page=2")
+        self.assertEqual([(a["status"], a["ratelimit_remaining"]) for a in answers], [(200, "999"), (200, "999"), (403, "0")])
+
+    def test_homebrew_update_passes_only_after_the_updated_service_syncs_and_zap_cleans_up(self):
+        printed_only = {"release assets verified", "clean account", "tap cask matches release",
+                        "previous release installed", "previous release syncs", "koi update through Homebrew"}
+        for observed in (printed_only, DRIVER.REQUIRED["homebrew-update"] - {"updated service syncs"},
+                         DRIVER.REQUIRED["homebrew-update"] - {"zap removes the self-updated app"}):
+            report = {"scenario": "homebrew-update", "assertions": [{"name": name, "passed": True} for name in observed],
+                      "cleanup": [{"name": "owned state", "passed": True}], "errors": []}
+            with self.subTest(missing=sorted(DRIVER.REQUIRED["homebrew-update"] - observed)):
+                self.assertFalse(DRIVER.passed(report))
 
     def test_checksums_allow_standard_text_and_binary_markers(self):
         result = DRIVER.checksums("a" * 64 + "  koi.tar.gz\n" + "b" * 64 + " *Koidrive.dmg\n")
@@ -379,6 +455,18 @@ class ReleaseJourneys(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, "overrides"):
                 DRIVER.hosted_guard(env={"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", key: "fake"},
                                     system="Darwin", machine="arm64", home=self.root, account_home=self.root)
+
+    def test_hosted_guard_accepts_every_variable_the_guarded_jobs_set(self):
+        journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
+        guarded = journeys.split("\n  verify:\n", 1)[1]
+        self.assertIn("\n  runtime:\n", guarded)
+        keys = set(re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*):", guarded))
+        keys |= set(re.findall(r"(?m)^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=", guarded))
+        keys |= set(re.findall(r"\bexport\s+([A-Z][A-Z0-9_]*)", guarded))
+        DRIVER.hosted_guard(env={**{key: "set" for key in keys}, "GITHUB_ACTIONS": "true",
+                                 "RUNNER_ENVIRONMENT": "github-hosted"},
+                            system="Darwin", machine="arm64", home=self.root, account_home=self.root)
+        self.assertLessEqual({"RELEASE_TAG", "SCENARIO", "JOURNEY_GITHUB_TOKEN"}, keys)
 
     def test_main_refuses_local_runtime_before_starting_any_command(self):
         destination = self.root / "evidence"
