@@ -12,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke: test HTTPS. upgrade: check earlier data. e2e: sync Linux and macOS. bench: measure Rust chunk uploads."
+        description: "smoke: test HTTPS. upgrade: check earlier data. e2e: sync Linux and macOS. bench: measure Rust chunk uploads. first-sync: time a first sync of a large node_modules folder."
         type: choice
-        options: [smoke, upgrade, e2e, bench]
+        options: [smoke, upgrade, e2e, bench, first-sync]
         default: smoke
       from_ref:
         description: "upgrade only: the commit or tag to upgrade from. Empty means the newest tag before this commit."
@@ -102,7 +102,7 @@ jobs:
     needs: trusted
     runs-on: ubuntu-latest
     environment: deploy-test
-    timeout-minutes: ${{ (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
+    timeout-minutes: ${{ (inputs.mode == 'e2e' || inputs.mode == 'bench' || inputs.mode == 'first-sync') && 90 || 60 }}
     permissions:
       contents: read
       actions: read
@@ -144,7 +144,7 @@ jobs:
           cache-dependency-path: server/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Install the pinned Rust toolchain
-        if: inputs.mode == 'e2e' || inputs.mode == 'bench'
+        if: inputs.mode == 'e2e' || inputs.mode == 'bench' || inputs.mode == 'first-sync'
         working-directory: .
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -159,6 +159,13 @@ jobs:
         if: inputs.mode == 'bench'
         working-directory: .
         run: cargo test -p koidrive-net --release --locked --test upload_bench --no-run
+      - name: Build the release first-sync benchmark
+        if: inputs.mode == 'first-sync'
+        working-directory: .
+        run: cargo test -p koidrive-driver --release --locked --test first_sync_bench --no-run
+      - name: Install the first-sync folder
+        if: inputs.mode == 'first-sync'
+        run: node scripts/deploy-test/bench.ts tree "$RUNNER_TEMP/first-sync"
 
       - name: Resolve the release to upgrade from
         id: from
@@ -196,6 +203,12 @@ jobs:
           KOIDRIVE_BENCH_NS: ${{ inputs.bench_ns }}
           KOIDRIVE_BENCH_REPETITIONS: ${{ inputs.bench_repetitions }}
         run: node scripts/deploy-test/bench.ts
+      - name: Benchmark a first sync
+        if: inputs.mode == 'first-sync'
+        timeout-minutes: 40
+        env:
+          KOIDRIVE_BENCH_TREE: ${{ runner.temp }}/first-sync
+        run: node scripts/deploy-test/bench.ts first-sync
 
       - name: Write data on the earlier release
         if: inputs.mode == 'upgrade'

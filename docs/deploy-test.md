@@ -18,11 +18,13 @@ In the browser, open **Actions**, **Deploy test**, **Run workflow**, keep `main`
 | `upgrade` | Data written by an earlier release survives an upgrade to this commit |
 | `e2e` | A macOS and a Linux device sync one space with `koi` |
 | `bench` | Rust chunk upload speed at several concurrency values |
+| `first-sync` | How long a first sync of a large `node_modules` folder takes |
 
 ```sh
 gh workflow run deploy-test.yml --ref main -f mode=upgrade -f from_ref=<commit or tag>
 gh workflow run deploy-test.yml --ref main -f mode=e2e
 gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f bench_repetitions=3
+gh workflow run deploy-test.yml --ref main -f mode=first-sync
 ```
 
 **smoke** runs `smoke.ts`, a Vitest suite that stops at the first failure. It checks that:
@@ -50,6 +52,8 @@ gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f 
 A job moves on only when its folder holds exactly the expected tree. The last step fails unless the macOS and Linux trees match. Each job's summary gives every scenario's tree hash, the SHA-256 of a `sha256sum`-style listing of the tree. Approve an e2e run within about 45 minutes. The macOS job builds `koi` in the meantime and fails if it gets no pairing code by then.
 
 **bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. The test times only `Transfer::upload`, with its hashing, planning, PUTs and retry waits. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
+
+**first-sync** installs a pinned `node_modules` folder with `npm ci --ignore-scripts` from `server/scripts/deploy-test/first-sync-tree.json`, a lockfile for 13 common packages such as Next.js, Angular, the AWS SDK and TypeScript. The folder holds about 43,000 entries and 700 MB. The run then deploys, claims the server, and runs the Rust release test `first_sync_of_a_large_folder` (`core/driver/tests/first_sync_bench.rs`). The test links a copy of the folder to a new space and polls the driver's status each second until the folder is up to date. The log prints each poll's node count and progress, and the summary gives the seconds, nodes and nodes per second. The step fails if the folder halts or is not up to date after 30 minutes.
 
 ## Each run deploys, tests and deletes one server
 

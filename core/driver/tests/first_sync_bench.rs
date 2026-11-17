@@ -1,25 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Driver, FolderState, Paths};
+use koidrive_driver::{Driver, FolderState, Paths, api_for};
 use koidrive_net::{Api, Auth, Credentials};
 use koidrive_proto::v1::{ClaimRequest, CreateSpaceRequest};
+use serde::Deserialize;
 use url::Url;
 
 fn server_url() -> Url {
-    std::env::var("KOIDRIVE_TEST_SERVER")
-        .expect("KOIDRIVE_TEST_SERVER is not set")
+    std::env::var("KOIDRIVE_BENCH_URL")
+        .or_else(|_| std::env::var("KOIDRIVE_TEST_SERVER"))
+        .expect("neither KOIDRIVE_BENCH_URL nor KOIDRIVE_TEST_SERVER is set")
         .parse()
         .unwrap()
 }
 
 fn api() -> Api {
-    Api::local_development(server_url()).unwrap()
+    api_for(server_url().as_str()).unwrap()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Owner {
+    user_id: String,
+    device_id: String,
+    refresh_credential: String,
+}
+
+async fn owner() -> Credentials {
+    let Ok(raw) = std::env::var("KOIDRIVE_BENCH_OWNER") else {
+        return claim().await;
+    };
+    let owner: Owner =
+        serde_json::from_str(&raw).unwrap_or_else(|_| panic!("invalid claimed owner credentials"));
+    Credentials {
+        user_id: owner.user_id,
+        device_id: owner.device_id,
+        refresh_credential: owner.refresh_credential,
+    }
 }
 
 async fn claim() -> Credentials {
@@ -62,7 +86,7 @@ fn claim_code(line: &str) -> Option<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the Worker under wrangler dev and KOIDRIVE_BENCH_TREE"]
+#[ignore = "needs a Worker and KOIDRIVE_BENCH_TREE"]
 async fn first_sync_of_a_large_folder() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -72,7 +96,7 @@ async fn first_sync_of_a_large_folder() {
     let limit = Duration::from_secs(
         std::env::var("KOIDRIVE_BENCH_SECONDS").map_or(1800, |s| s.parse().unwrap()),
     );
-    let owner = Arc::new(Auth::new(api(), claim().await));
+    let owner = Arc::new(Auth::new(api(), owner().await));
     let space = (owner.api())
         .create_space(
             &owner,
@@ -127,15 +151,37 @@ async fn first_sync_of_a_large_folder() {
     };
     let elapsed = started.elapsed().as_secs_f64();
     let status = done.or(last).unwrap();
+    let finished = status.state == FolderState::UpToDate;
     println!(
         "{}",
         serde_json::json!({
             "summary": true,
-            "finished": status.state == FolderState::UpToDate,
+            "finished": finished,
             "seconds": elapsed,
             "remote_nodes": status.remote_nodes,
             "nodes_per_second": status.remote_nodes as f64 / elapsed,
         })
     );
+    if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
+        let mut summary = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .expect("open job summary");
+        writeln!(
+            summary,
+            "| First sync finished | Seconds | Nodes | Nodes/s |\n|---|---|---|---|\n| {} | {:.0} | {} | {:.0} |",
+            if finished { "yes" } else { "no" },
+            elapsed,
+            status.remote_nodes,
+            status.remote_nodes as f64 / elapsed,
+        )
+        .expect("write job summary");
+    }
     driver.stop().await;
+    assert!(
+        finished,
+        "the first sync did not finish: {:?}",
+        status.problem
+    );
 }

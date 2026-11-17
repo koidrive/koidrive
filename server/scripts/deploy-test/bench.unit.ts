@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,20 +25,20 @@ function writeState(extra: Partial<State>): void {
   writeFileSync(join(work, "state.json"), JSON.stringify(state));
 }
 
-function fakeCargo(status = 0): void {
-  writeFileSync(join(work, "bin", "cargo"), `#!${process.execPath}
+function fakeCargo(status = 0, name = "cargo"): void {
+  writeFileSync(join(work, "bin", name), `#!${process.execPath}
 const { writeFileSync } = require("node:fs");
 const { join } = require("node:path");
-writeFileSync(join(process.env.HOME, "cargo.json"), JSON.stringify({ args: process.argv.slice(2), env: process.env, cwd: process.cwd() }));
+writeFileSync(join(process.env.HOME, "${name}.json"), JSON.stringify({ args: process.argv.slice(2), env: process.env, cwd: process.cwd() }));
 console.log("| Benchmark | MiB/s | tailed by Rust |");
 process.exit(${status});
 `, { mode: 0o755 });
 }
 
-function run({ command, env = {} }: { command?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ status: number | null; output: string }> {
+function run({ command, args = [], env = {} }: { command?: string; args?: string[]; env?: NodeJS.ProcessEnv } = {}): Promise<{ status: number | null; output: string }> {
   const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...flags, join(here, "bench.ts"), ...(command ? [command] : [])], {
+    const child = spawn(process.execPath, [...flags, join(here, "bench.ts"), ...(command ? [command] : []), ...args], {
       cwd: join(here, "..", ".."),
       env: {
         PATH: join(work, "bin") + delimiter + process.env.PATH,
@@ -147,5 +147,53 @@ describe("Rust benchmark child", () => {
     fakeCargo();
     expect((await run({ env: { GITHUB_ACTIONS: actions, KOIDRIVE_BENCH_MIB: "8" } })).status).toBe(0);
     expect(JSON.parse(readFileSync(join(work, "cargo.json"), "utf8")).env.KOIDRIVE_BENCH_MIB).toBe(actions ? undefined : "8");
+  });
+});
+
+describe("first-sync benchmark", () => {
+  it("runs the exact release driver test on the tree with private state credentials and an allowlisted environment", async () => {
+    fakeCargo();
+    const tree = join(work, "tree");
+    const result = await run({ command: "first-sync", env: { KOIDRIVE_BENCH_TREE: tree, CARGO_TARGET_DIR: join(work, "target") } });
+    expect(result.status).toBe(0);
+    const child = JSON.parse(readFileSync(join(work, "cargo.json"), "utf8"));
+    expect(child.args).toEqual(["test", "-p", "koidrive-driver", "--release", "--locked", "--test", "first_sync_bench", "first_sync_of_a_large_folder", "--", "--ignored", "--exact", "--nocapture"]);
+    expect(child.cwd).toBe(join(here, "..", "..", ".."));
+    expect(child.env).toMatchObject({ KOIDRIVE_BENCH_URL: "https://koidrive-test.example.workers.dev", KOIDRIVE_BENCH_OWNER: JSON.stringify(owner), KOIDRIVE_BENCH_TREE: tree, CARGO_TARGET_DIR: join(work, "target") });
+    for (const key of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "GH_TOKEN", "KOIDRIVE_DEPLOY_TEST_STATE", "KOIDRIVE_BENCH_NS"]) expect(child.env).not.toHaveProperty(key);
+    expect(result.output).not.toContain(owner.refreshCredential);
+  });
+
+  it("refuses to start without a tree", async () => {
+    fakeCargo();
+    const result = await run({ command: "first-sync" });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("KOIDRIVE_BENCH_TREE");
+    expect(existsSync(join(work, "cargo.json"))).toBe(false);
+  });
+
+  it("installs the pinned tree with npm ci and no install scripts, without reading the state", async () => {
+    fakeCargo(0, "npm");
+    writeFileSync(join(work, "state.json"), "invalid private state");
+    const dir = join(work, "first-sync");
+    const result = await run({ command: "tree", args: [dir] });
+    expect(result).toEqual({ status: 0, output: "| Benchmark | MiB/s | tailed by Rust |\n" });
+    const child = JSON.parse(readFileSync(join(work, "npm.json"), "utf8"));
+    expect(child.args).toEqual(["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
+    expect(child.cwd).toBe(realpathSync(dir));
+    for (const key of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "GH_TOKEN", "KOIDRIVE_DEPLOY_TEST_STATE", "KOIDRIVE_BENCH_OWNER", "KOIDRIVE_BENCH_URL"]) expect(child.env).not.toHaveProperty(key);
+    const lock = readFileSync(join(here, "first-sync-tree.json"), "utf8");
+    expect(readFileSync(join(dir, "package-lock.json"), "utf8")).toBe(lock);
+    const root = JSON.parse(lock).packages[""];
+    expect(JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))).toEqual({ name: root.name, version: root.version, private: true, dependencies: root.dependencies });
+  });
+
+  it.each([[["tree"]], [["first-sync", "extra"]], [["upload"]], [["tree", "a", "b"]]])("rejects the arguments %j", async (argv) => {
+    fakeCargo();
+    const [command, ...args] = argv;
+    const result = await run({ command, args });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("usage: bench.ts");
+    expect(existsSync(join(work, "cargo.json"))).toBe(false);
   });
 });
