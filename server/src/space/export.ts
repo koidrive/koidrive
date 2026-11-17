@@ -7,7 +7,7 @@ import type { CommitRecord } from "../gen/koidrive/v1/model_pb";
 import { sha256 } from "../crypto";
 import type { Database, ObjectStore, Sql } from "../host";
 import { toHex, uuidv7Ms } from "../ids";
-import { getMeta, INLINE_CHUNKS, type NodeRow, nodeState, rows, setMeta, type VersionRow, versionInfo } from "./store";
+import { getMeta, getNode, INLINE_CHUNKS, type NodeRow, nodeState, rows, setMeta, tombstoneRecord, type VersionRow, versionInfo } from "./store";
 
 const DAY_MS = 24 * 3_600_000;
 const SEGMENT_COMMITS = 1000;
@@ -276,13 +276,23 @@ export class Exporter {
   private async writePage(): Promise<void> {
     const running = readState(this.sql).running!;
     const head = this.headSeq;
-    const found = rows<NodeRow>(this.sql.exec("SELECT * FROM nodes WHERE node_id > ? ORDER BY node_id LIMIT ?", running.cursor, this.pageNodes));
+    const found = rows<{ node_id: string; purged: number }>(
+      this.sql.exec(
+        `SELECT node_id, 0 AS purged FROM nodes WHERE node_id > ? UNION ALL SELECT node_id, 1 AS purged FROM tombstones WHERE node_id > ?
+         ORDER BY node_id LIMIT ?`,
+        running.cursor,
+        running.cursor,
+        this.pageNodes,
+      ),
+    );
     const writer = new BinaryWriter();
     writer.bytes(this.header("koidrive.snapshot"));
     let records = 0;
     let bytes = 0;
-    for (const node of found) {
-      const record = this.nodeSnapshot(node);
+    for (const entry of found) {
+      const record = entry.purged
+        ? toBinary(NodeSnapshotSchema, create(NodeSnapshotSchema, { tombstone: tombstoneRecord(this.sql, entry.node_id) }))
+        : this.nodeSnapshot(getNode(this.sql, entry.node_id)!);
       if (records > 0 && bytes + record.length > PAGE_BYTES) break;
       writer.bytes(record);
       records++;

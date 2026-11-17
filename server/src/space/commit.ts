@@ -470,6 +470,7 @@ export class CommitApplier {
       this.dev,
       versionId,
     );
+    this.sql.exec("DELETE FROM tombstones WHERE node_id = ?", nodeId);
     this.touch(nodeId);
     this.created.add(nodeId);
   }
