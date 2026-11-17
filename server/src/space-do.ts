@@ -2,9 +2,10 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { Error_Code } from "./gen/koidrive/v1/rpc_pb";
-import type { Database, Sql } from "./host";
+import type { Database, ObjectState, Sql } from "./host";
 import { errorReply } from "./http";
 import { uuidv7 } from "./ids";
+import { countedBucket, countedState, meteredObject } from "./report/meter";
 import { bootstrapExport, requestSnapshot } from "./space/export";
 import { backfillMigratedIntents } from "./space/intents";
 import { type Pitr, pitrBackend } from "./space/pitr";
@@ -15,14 +16,16 @@ export { Close, CONNECT_HEADER, GRANT_MS, HOLD_MS, MAX_HEAD_CHECKS } from "./spa
 export type { Role, Session } from "./space/space";
 
 export class SpaceDO extends spaceLogic(DurableObject<Env>) {
+  protected readonly state: ObjectState;
   protected readonly db: Database;
   protected readonly sql: Sql;
   protected readonly pitr: Pitr;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = ctx.storage;
-    this.sql = ctx.storage.sql;
+    this.state = countedState(ctx, this.traffic);
+    this.db = this.state.storage;
+    this.sql = this.db.sql;
     this.pitr = pitrBackend.open(ctx);
     this.db.transactionSync(() => {
       migrate(this.sql);
@@ -31,14 +34,11 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
     });
     void ctx.blockConcurrencyWhile(() => this.armAlarm());
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
-  }
-
-  protected get state(): DurableObjectState {
-    return this.ctx;
+    return meteredObject(this, "space", this.traffic, () => this.parkCounted());
   }
 
   protected get objects(): R2Bucket {
-    return this.env.BUCKET;
+    return countedBucket(this.env.BUCKET, this.traffic);
   }
 
   protected account() {

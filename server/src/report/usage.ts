@@ -7,9 +7,36 @@ export const QUIET_MS = 25_000;
 export const BATCH_MS = 600_000;
 const HOUR_MS = 3_600_000;
 
+export const COUNTERS = [
+  "worker_requests",
+  "egress_bytes",
+  "do_account_requests",
+  "do_account_active_ms",
+  "do_space_requests",
+  "do_space_active_ms",
+  "do_ws_messages",
+  "do_rows_read",
+  "do_rows_written",
+  "r2_class_a",
+  "r2_class_b",
+] as const;
+export type Counter = (typeof COUNTERS)[number];
+
+export const GAUGES = ["do_stored_bytes", "r2_stored_bytes", "r2_objects"] as const;
+export type Gauge = (typeof GAUGES)[number];
+export type Stored = Record<Gauge, number>;
+
+export interface ObjectStored {
+  object: string;
+  sqlBytes: number;
+  r2Bytes: number;
+  r2Objects: number;
+}
+
 export interface Usage {
   counts: Record<string, number>;
   latency: Record<string, number[]>;
+  billing: Partial<Record<Counter, number>>;
 }
 
 export type UsageHours = Record<number, Usage>;
@@ -31,7 +58,11 @@ export function latencyBucket(ms: number): number {
 }
 
 export function emptyUsage(): Usage {
-  return { counts: {}, latency: {} };
+  return { counts: {}, latency: {}, billing: {} };
+}
+
+export function storedUsage(text: string): Usage {
+  return { ...emptyUsage(), ...(JSON.parse(text) as Partial<Usage>) };
 }
 
 export function mergeUsage(into: Usage, from: Usage): Usage {
@@ -39,6 +70,11 @@ export function mergeUsage(into: Usage, from: Usage): Usage {
   for (const [route, buckets] of Object.entries(from.latency)) {
     const sum = (into.latency[route] ??= new Array<number>(LATENCY_BUCKETS).fill(0));
     buckets.forEach((count, index) => (sum[index]! += count));
+  }
+  const billing = (into.billing ??= {});
+  for (const counter of COUNTERS) {
+    const amount = from.billing?.[counter];
+    if (amount !== undefined) billing[counter] = (billing[counter] ?? 0) + amount;
   }
   return into;
 }
@@ -66,6 +102,8 @@ export class UsageTally {
   private reportingNow: boolean | undefined;
   private stops = 0;
 
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
   get reporting(): boolean | undefined {
     return this.reportingNow;
   }
@@ -77,14 +115,25 @@ export class UsageTally {
     this.stops++;
   }
 
-  count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
-    if (this.reporting !== true) return;
+  private usage(nowMs: number): Usage | undefined {
+    if (this.reporting !== true) return undefined;
     this.batch ??= { openedMs: nowMs, hours: {} };
-    const usage = (this.batch.hours[Math.floor(nowMs / HOUR_MS)] ??= emptyUsage());
+    return (this.batch.hours[Math.floor(nowMs / HOUR_MS)] ??= emptyUsage());
+  }
+
+  count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
+    const usage = this.usage(nowMs);
+    if (!usage) return;
     const key = route + "." + outcome;
     usage.counts[key] = (usage.counts[key] ?? 0) + 1;
     (usage.latency[route] ??= new Array<number>(LATENCY_BUCKETS).fill(0))[latencyBucket(latencyMs)]! += 1;
     this.lastMs = Math.max(this.lastMs, nowMs);
+  }
+
+  add(counter: Counter, amount: number): void {
+    if (amount <= 0) return;
+    const usage = this.usage(this.now());
+    if (usage) usage.billing[counter] = (usage.billing[counter] ?? 0) + amount;
   }
 
   async settle(record: (batch: UsageBatch) => Promise<boolean>, now: () => number, wait: (ms: number) => Promise<unknown>): Promise<void> {

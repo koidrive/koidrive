@@ -27,10 +27,44 @@ No field is removed or renumbered.
    - A Space DO counts the RPCs that arrive over its WebSockets and sets no timer: a pending timer keeps a Durable Object from hibernating ([Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)), and an object that can't hibernate is billed for its time in memory ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)). After each RPC it parks its counts in the attachment of the socket that carried the RPC, which survives hibernation ([WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)). When the batch is due, when that socket is gone, or when the attachment would pass 8 KiB, it hands over its own counts and those parked on every socket in one call.
    - When counts are first parked, the Space DO sets its alarm for one minute past the next UTC hour if it hasn't already, and the alarm hands over what is still parked before the Account DO drops that hour (rule 7). A socket that closes passes its parked counts to another open socket, or hands them over when no other socket is open.
    - A shutdown loses counts. A deploy, a runtime update or a crash drops the Worker's open batch: up to 10 minutes of one isolate's counts. A Space DO's parked counts survive hibernation, and a code update that the object adopts after hibernating, because both keep its sockets connected. A crash, or a code update that resets an object still active when the update's delay runs out, disconnects its sockets and drops what was parked on them: up to 10 minutes of that object's counts ([Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)). Only a storage write per request could prevent that, and the server doesn't make one.
-6. About five minutes after each UTC hour ends, the server posts the hour's counts as one `server_report` event in a PostHog `/batch/` body to `https://tel.koidrive.com/batch/`. The event has a fresh random id, used as both `uuid` and `distinct_id`. Its other properties are `$process_person_profile: false`, `$geoip_disable: true`, `schema`, `server_version`, `proto_min`, `proto_max`, the counts as `c.<route>.<outcome>` and the buckets as `h.<route>`. Nothing else is sent. Cloudflare adds a `CF-Worker` header naming the zone that owns the Worker to every subrequest ([HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-worker)), so the endpoint receives that zone.
+6. About five minutes after each UTC hour ends, the server posts the hour's counts as one `server_report` event in a PostHog `/batch/` body to `https://tel.koidrive.com/batch/`. The event has a fresh random id, used as both `uuid` and `distinct_id`. Its other properties are `$process_person_profile: false`, `$geoip_disable: true`, `schema`, `server_version`, `proto_min`, `proto_max`, the counts as `c.<route>.<outcome>`, the buckets as `h.<route>` and the billing figures of section 4 as `b.<name>`. Nothing else is sent. Cloudflare adds a `CF-Worker` header naming the zone that owns the Worker to every subrequest ([HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-worker)), so the endpoint receives that zone.
 7. Counts for an hour whose post is already due are dropped, so each hour is posted once.
 8. A failed post is tried again an hour later. Counts older than 24 hours are deleted unsent.
 
-## 4. Alternatives
+## 4. Billing figures
+
+While it reports, the server also counts what Cloudflare bills for, so the project can see what a Koidrive server costs to run. These counters go into the same batches as the counts in section 3 and add no timer, call or alarm of their own:
+
+- The Worker adds its counters to its batch.
+- A Space DO returns the counters of an HTTP RPC to the Worker with the answer, and the Worker adds them to its batch. After any other event, while the server reports and a socket is open, it parks its counters on that socket the way it parks RPC counts. An alarm that runs with no socket open hands them over before it ends. A hand-over runs inside the event that makes it, so the time the object waits for the Account DO counts as active time.
+- The Account DO adds its own counters to the row it already writes for the same hour when another process's batch arrives, and to the hours it sends in its alarm. It writes no row for them alone.
+- A process counts nothing until a session check says the server reports, as for the counts in section 3.
+- Counters that wait in memory are lost when the process ends first: a Space DO's counters from an event with no open socket other than an HTTP RPC or an alarm, such as a call from the Account DO or a share link, until its next hand-over, and the Account DO's own counters since the last batch it stored or its last alarm. Response bytes that stream out after the Worker handed over its batch go with the isolate's next batch.
+
+| Name | What it counts |
+| --- | --- |
+| `worker_requests` | Requests the Worker handled. |
+| `egress_bytes` | Response body bytes the Worker sent: the `Content-Length` when the response has one, otherwise the bytes as the body streams out. WebSocket messages aren't counted. Cloudflare doesn't bill egress. |
+| `do_account_requests`, `do_space_requests` | Fetches, RPC calls and alarms the Account DO and the Space DOs handled. A call an object makes on itself isn't counted. |
+| `do_ws_messages` | WebSocket messages the Space DOs received. Pings the runtime answers for the object don't reach it. |
+| `do_account_active_ms`, `do_space_active_ms` | Milliseconds in which an object ran at least one event, summed over objects. Events that overlap in one object count once. |
+| `do_rows_read`, `do_rows_written` | The `rowsRead` and `rowsWritten` of every SQL statement either class ran, and one row written for each `setAlarm` call, which Cloudflare bills as one row written ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)). |
+| `r2_class_a` | R2 `put`, `list`, `createMultipartUpload`, `uploadPart` and `complete` calls. |
+| `r2_class_b` | R2 `get` and `head` calls. Deletes and aborts are free and aren't counted. |
+
+The report also holds three gauges, each a sum over objects when the Account DO builds the report:
+
+| Name | What it holds |
+| --- | --- |
+| `do_stored_bytes` | The latest `ctx.storage.sql.databaseSize` of each object. |
+| `r2_stored_bytes`, `r2_objects` | The size and number of the chunks each Space DO holds as live or being deleted. Each Space DO recounts them once per UTC day. |
+
+1. While a Space DO knows the server reports, it sends its object id, database size and chunk totals once an hour, with its first hand-over or HTTP RPC answer of the hour. The Account DO keeps the latest values per object and puts only the sums in the report. No object id leaves the Account DO.
+2. When reporting stops, the Account DO deletes the per-object values with the unsent hours.
+3. R2 objects the server doesn't track by size aren't in the R2 gauges: chunks whose upload isn't confirmed, and the export of each space (log segments, snapshot pages, manifests and `space.json`). Counting them would need an R2 list.
+4. `estimateMonthlyCost` in `server/src/report/cost.ts` turns an hour's or a day's figures into an estimated monthly cost on Workers Paid and the share of each Workers Free daily limit they use. Its price table names the Cloudflare page each price comes from. Duration is estimated as active seconds × 0.125 GB, because Cloudflare bills each object for 128 MB.
+5. The report holds no Worker CPU time, and the estimate leaves Workers CPU out. Cloudflare bills a Worker's CPU time and doesn't charge for its duration ([Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)), and a Worker can't read its own CPU time.
+
+## 5. Alternatives
 
 - Workers Analytics Engine: a `writeDataPoint()` per request is durable and costs no storage write, but the hourly report would have to read the points back through the SQL API, which needs an account API token stored as a secret on every server ([Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/), [SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/#authentication)). That is a new credential and a new setup step.

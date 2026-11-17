@@ -65,7 +65,7 @@ import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
-import { batchDue, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
+import { batchDue, type Counted, mergeBatch, nextHourMs, type ObjectStored, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -341,8 +341,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     lostChangeRule: LostChangeRule = LOST_CHANGE_RULE;
     snapshotPageNodes = 1000;
-    private readonly traffic = new UsageTally();
+    protected readonly traffic = new UsageTally(() => this.clock());
     private usageArmed = false;
+    private storedHour: number | undefined;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private bookmarking: Promise<void> = Promise.resolve();
@@ -391,13 +392,15 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return toBinary(RpcResponseSchema, response);
     }
 
-    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted }> {
+    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted; usage?: UsageBatch; stored: ObjectStored[] }> {
       const startedMs = this.clock();
       const req = fromBinary(RpcRequestSchema, request);
       const role = this.memberRole(connect.identity.userId);
       const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) => ({
         response: toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } })),
         counted: { route: rpcRoute(req), outcome: refusalOutcome(code, cause), latencyMs: this.clock() - startedMs },
+        usage: this.carried(),
+        stored: this.storedThisHour(),
       });
       if (!role) return refuse(Error_Code.FORBIDDEN, "not a member of this space");
       const check = await this.checkDevice(connect.identity.deviceId);
@@ -409,7 +412,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const session = this.sessionOf(connect, role, device ? Number(device.max_format) : FORMAT_VERSION, check);
       const { response, record, counted } = await this.call(session, req);
       if (record) await this.broadcast(record);
-      return { response: toBinary(RpcResponseSchema, response), counted };
+      return { response: toBinary(RpcResponseSchema, response), counted, usage: this.carried(), stored: this.storedThisHour() };
     }
 
     async webSocketMessage(ws: Socket, message: string | ArrayBuffer): Promise<void> {
@@ -794,6 +797,17 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       await this.handOverUsage();
     }
 
+    private carried(): UsageBatch | undefined {
+      return this.traffic.take();
+    }
+
+    protected parkCounted(): void {
+      if (this.traffic.reporting !== true) return;
+      const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
+      const batch = target && this.traffic.take();
+      if (batch && !this.park(target, batch)) this.traffic.put(batch);
+    }
+
     private park(ws: Socket, batch: UsageBatch): boolean {
       const attachment = ws.deserializeAttachment() as Attachment;
       attachment.usage = mergeBatch(attachment.usage, batch);
@@ -837,13 +851,29 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const usage = this.unpark(ws);
         if (usage) this.traffic.put(usage);
       }
-      await this.traffic.handOver((batch) => this.account().recordUsage(batch));
+      await this.traffic.handOver((batch) => this.account().recordUsage(batch, this.storedThisHour()));
       if (this.traffic.reporting === false) return this.dropParked();
       const kept = this.traffic.take();
       if (!kept) return;
       const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
       if (target && this.park(target, kept)) return this.armUsage();
       this.traffic.put(kept);
+    }
+
+    private storedThisHour(): ObjectStored[] {
+      const nowMs = this.clock();
+      const hour = Math.floor(nowMs / HOUR_MS);
+      if (this.traffic.reporting !== true || this.storedHour === hour) return [];
+      this.storedHour = hour;
+      const day = Math.floor(nowMs / DAY_MS);
+      const cached = getMeta(this.sql, "r2_stored");
+      let counted = cached === undefined ? undefined : (JSON.parse(String(cached)) as { day: number; bytes: number; objects: number });
+      if (counted?.day !== day) {
+        const row = this.sql.exec("SELECT COUNT(*) AS objects, COALESCE(SUM(size), 0) AS bytes FROM chunks WHERE state != ?", ChunkState.PENDING).one();
+        counted = { day, bytes: Number(row.bytes), objects: Number(row.objects) };
+        setMeta(this.sql, "r2_stored", JSON.stringify(counted));
+      }
+      return [{ object: this.state.id.toString(), sqlBytes: this.sql.databaseSize, r2Bytes: counted.bytes, r2Objects: counted.objects }];
     }
 
     private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
@@ -1683,6 +1713,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
       }
       await this.armAlarm();
+      if (this.traffic.reporting === true && !this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN)) await this.handOverUsage();
     }
   }
   return Space;

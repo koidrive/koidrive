@@ -33,7 +33,8 @@ import { causeOf } from "./cause";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
-import { UsageTally } from "./report/usage";
+import { countedBucket, countedEgress } from "./report/meter";
+import { type ObjectStored, UsageTally } from "./report/usage";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
@@ -49,6 +50,13 @@ export { SpaceDO } from "./space-do";
 
 const serverKeys = new WeakMap<object, Promise<ServerKey>>();
 const traffic = new UsageTally();
+const objectsStored = new Map<string, ObjectStored>();
+
+function handOverStored(): ObjectStored[] {
+  const stored = [...objectsStored.values()];
+  objectsStored.clear();
+  return stored;
+}
 
 const ROUTES: [string, RegExp][] = [
   ["chunk", /^\/v1\/spaces\/[^/]+\/chunks\/[^/]+$/],
@@ -405,9 +413,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (Number(request.headers.get("Content-Length") ?? 0) > MAX_CLIENT_FRAME) return tooLarge();
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.length > MAX_CLIENT_FRAME) return tooLarge();
-      const { response, counted } = await stub.httpRpc(connect, body);
+      const { response, counted, usage, stored } = await stub.httpRpc(connect, body);
       traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
-      return new Response(response, { headers: { "Content-Type": "application/x-protobuf" } });
+      if (usage) traffic.put(usage);
+      for (const object of stored) objectsStored.set(object.object, object);
+      return new Response(response, { headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(response.byteLength) } });
     }
   }
 
@@ -429,10 +439,11 @@ async function answer(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const startedMs = Date.now();
-    const response = await answer(request, env);
+    const response = await answer(request, { ...env, BUCKET: countedBucket(env.BUCKET, traffic) });
     const nowMs = Date.now();
     traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
-    if (traffic.reporting) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
-    return response;
+    traffic.add("worker_requests", 1);
+    if (traffic.reporting) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch, handOverStored()), Date.now, (ms) => scheduler.wait(ms)));
+    return countedEgress(response, traffic);
   },
 } satisfies ExportedHandler<Env>;

@@ -3,30 +3,30 @@
 import { DurableObject } from "cloudflare:workers";
 import { accountLogic } from "./account/account";
 import { migrate } from "./account/schema";
-import type { Database, Sql } from "./host";
+import type { Database, ObjectState, Sql } from "./host";
+import { countedState, meteredObject } from "./report/meter";
 import { ShareLinks } from "./share/links";
 
 export type { Outcome } from "./share/links";
 
 export class AccountDO extends accountLogic(DurableObject<Env>) {
+  protected readonly state: ObjectState;
   protected readonly db: Database;
   protected readonly sql: Sql;
   protected readonly shares: ShareLinks;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = ctx.storage;
-    this.sql = ctx.storage.sql;
+    this.state = countedState(ctx, this.tally);
+    this.db = this.state.storage;
+    this.sql = this.db.sql;
     this.db.transactionSync(() => migrate(this.sql));
     this.shares = new ShareLinks(this.sql, {
       clock: () => this.clock(),
       serverSecret: async () => (await this.serverKey()).secret,
       spaceClosed: (spaceId) => this.spaceClosed(spaceId),
     });
-  }
-
-  protected get state(): DurableObjectState {
-    return this.ctx;
+    return meteredObject(this, "account", this.tally);
   }
 
   protected spaceStub(spaceId: string) {

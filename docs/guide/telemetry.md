@@ -85,6 +85,8 @@ While reports are on, your Koidrive server sends one report an hour to `tel.koid
 
 - How many requests each kind of call got in the hour, such as a file upload, a sign-in or a sync call, by HTTP status, refusal code and what failed inside the server.
 - How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
+- What Cloudflare bills for in the hour, as totals: requests to the Worker, requests to the server's Durable Objects and the time they were active, the database rows they read and wrote, R2 operations by billing class, and the bytes of the server's responses.
+- How much the server stores: the total size of its Durable Object databases, and the total size and number of the file chunks it keeps in R2.
 - The server's version and the protocol versions it speaks.
 
 Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds at most one small request and one storage write per request your server answers. A failed send is retried each hour for up to a day. Your Worker logs stay in your Cloudflare account.
