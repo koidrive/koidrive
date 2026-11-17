@@ -819,20 +819,22 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     for i in 0..8 {
-        fs::write(site.root.join(format!("{i}.txt")), format!("file {i}")).unwrap();
+        let mut bytes = format!("file {i}").into_bytes();
+        bytes.resize(koidrive_net::FULL_CHUNK_BYTES as usize - 64, 0);
+        fs::write(site.root.join(format!("{i}.txt")), bytes).unwrap();
     }
     a.scan_until(|a| !a.work.is_empty());
     let Some(Work::Upload(upload)) = a.work.pop_front() else {
         panic!("the content is uploaded first");
     };
     assert_eq!(upload.chunks.len(), 8);
-    let changed = b"written again after it was chunked";
+    let changed = vec![b'x'; koidrive_net::FULL_CHUNK_BYTES as usize - 32];
     let last = upload.chunks.last().unwrap();
     let name = (0..8)
         .map(|i| format!("{i}.txt"))
         .find(|name| koidrive_net::matches(last, &fs::read(site.root.join(name)).unwrap()))
         .unwrap();
-    fs::write(site.root.join(name), changed).unwrap();
+    fs::write(site.root.join(name), &changed).unwrap();
     let stale = (upload.chunks.iter())
         .find(|chunk| !koidrive_net::matches(chunk, &upload.read(chunk).unwrap()))
         .unwrap()

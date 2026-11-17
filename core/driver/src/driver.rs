@@ -3684,9 +3684,10 @@ mod tests {
             let (session, _events, _) = crate::scripted::session(relay).await;
             let chunks: Vec<_> = (0..6)
                 .map(|i| {
-                    let bytes = format!("chunk {i} of folder {folder}");
+                    let mut bytes = format!("chunk {i} of folder {folder}").into_bytes();
+                    bytes.resize(koidrive_net::FULL_CHUNK_BYTES as usize - 64, 0);
                     let chunk = ChunkRef {
-                        hash: koidrive_chunk::chunk_hash(bytes.as_bytes()).to_vec(),
+                        hash: koidrive_chunk::chunk_hash(&bytes).to_vec(),
                         size: bytes.len() as u32,
                         ..Default::default()
                     };

@@ -30,7 +30,8 @@ pub use auth::{
 };
 pub use backoff::Backoff;
 pub use chunks::{
-    ChunkError, DEFAULT_UPLOAD_CONCURRENCY, MAX_CHUNKS_PER_CALL, Transfer, UploadGate, matches,
+    ChunkError, DEFAULT_UPLOAD_CONCURRENCY, FULL_CHUNK_BYTES, MAX_CHUNKS_PER_CALL, Transfer,
+    UploadGate, matches,
 };
 pub use create::{request_id, resend_lost};
 pub use error::{ApiError, CallError, NotResent, Resend, ServerError, StopReason};

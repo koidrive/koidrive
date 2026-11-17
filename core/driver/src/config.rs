@@ -89,14 +89,15 @@ impl LocalTrash {
 }
 
 /// How the profile uploads chunks. Every folder the profile links shares the limit, so all of them together have at
-/// most `concurrency` chunk uploads in flight.
+/// most `concurrency` full chunks of content in flight.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Uploads {
     pub concurrency: UploadConcurrency,
 }
 
-/// How many chunk uploads may be in flight at once, from 1 to 16. 1 sends one chunk at a time.
+/// How many full 4 MiB chunks of content may be in flight at once, from 1 to 16. Smaller chunks share that room, so
+/// many small files go at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "i64")]
 pub struct UploadConcurrency(usize);

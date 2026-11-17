@@ -88,25 +88,27 @@ enum Attempt<T> {
     Fail(ChunkError),
 }
 
-/// Limits how many chunk uploads are in flight at once. Clones share the limit, so every [`Transfer`] given a clone of
-/// one gate counts against the same number. A chunk takes its place before it is read and gives it back when its
-/// upload ends, so the limit also bounds the chunk bytes held in memory.
+/// Limits the chunk bytes uploads have in flight at once to `concurrency` chunks of [`FULL_CHUNK_BYTES`], so
+/// small chunks go many at a time. Clones share the limit, so every [`Transfer`] given a clone of one gate counts
+/// against the same bytes. A chunk takes its place before it is read and gives it back when its upload ends, so the
+/// limit also bounds the chunk bytes held in memory. A chunk larger than the whole limit waits until it can go alone.
 #[derive(Clone, Debug)]
 pub struct UploadGate {
     permits: Arc<Semaphore>,
     concurrency: usize,
 }
 
+pub const FULL_CHUNK_BYTES: u32 = 4 << 20;
+const PERMIT_BYTES: u32 = 256 << 10;
+
 impl UploadGate {
-    /// A gate that lets `concurrency` chunks be in flight at once.
-    ///
     /// # Panics
     ///
     /// If `concurrency` is 0, since no upload could ever start.
     pub fn new(concurrency: usize) -> Self {
         assert!(concurrency > 0, "an upload gate needs at least one place");
         UploadGate {
-            permits: Arc::new(Semaphore::new(concurrency)),
+            permits: Arc::new(Semaphore::new(concurrency * Self::per_full_chunk())),
             concurrency,
         }
     }
@@ -115,10 +117,16 @@ impl UploadGate {
         self.concurrency
     }
 
-    async fn enter(&self) -> OwnedSemaphorePermit {
+    fn per_full_chunk() -> usize {
+        FULL_CHUNK_BYTES.div_ceil(PERMIT_BYTES) as usize
+    }
+
+    async fn enter(&self, size: u32) -> OwnedSemaphorePermit {
+        let whole = self.concurrency * Self::per_full_chunk();
+        let wanted = (size.div_ceil(PERMIT_BYTES) as usize).clamp(1, whole);
         self.permits
             .clone()
-            .acquire_owned()
+            .acquire_many_owned(wanted as u32)
             .await
             .expect("the semaphore is never closed")
     }
@@ -232,7 +240,7 @@ impl Transfer {
                             }
                             (index, None) => deferred.push(index),
                         },
-                        permit = self.gate.enter(), if started < uploads.len() => {
+                        permit = self.gate.enter(uploads.get(started).map_or(0, |upload| upload.1.size)), if started < uploads.len() => {
                             let (index, chunk, target) = uploads[started];
                             started += 1;
                             if expiring(target) && !expiring_at(target, prepared) {
