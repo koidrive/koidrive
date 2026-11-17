@@ -56,7 +56,7 @@ Koidrive leaves every `.git` folder out, whatever the `.gitignore` setting, beca
 
 A file that git already tracks stays on this device when a `.gitignore` pattern matches it, even though git keeps tracking it.
 
-Each device has its own setting. To sync what `.gitignore` files exclude on this device:
+Each device has its own setting. On a Mac, turn off **Follow .gitignore files** in **Settings**, **Advanced**. To sync what `.gitignore` files exclude on this device from a terminal:
 
 ```sh
 koi gitignore off

@@ -21,6 +21,8 @@ public final class AppModel {
     @ObservationIgnored public var telemetryChanged: ((TelemetrySetting) -> Void)?
     /// Whether an environment variable such as `DO_NOT_TRACK` keeps usage reports off.
     public var usageReportsTurnedOffByVariable: Bool { telemetry.locked && !telemetry.enabled }
+    /// Whether this device leaves out what `.gitignore` files exclude, read again after every session call.
+    public private(set) var followsGitignore: Bool
     /// The version this Mac updated to since the person last acknowledged an update, shown once until
     /// `acknowledgeUpdate()`. Nil on the first launch, which is an install rather than an update.
     public private(set) var justUpdated: String?
@@ -62,6 +64,7 @@ public final class AppModel {
         self.state = state
         unseenQuestionIDs = Set(state.questions.map(\.id))
         telemetry = session.telemetry()
+        followsGitignore = session.gitignore()
         self.version = version
         self.defaults = defaults
         let acknowledged = defaults?.string(forKey: Self.acknowledgedVersion)
@@ -187,6 +190,7 @@ public final class AppModel {
         apply(.notices(notices: latest.notices))
         apply(.update(update: latest.update))
         telemetry = session.telemetry()
+        followsGitignore = session.gitignore()
     }
 
     private func run<T: Sendable>(_ call: @escaping @Sendable (SyncSession) throws -> T) async throws -> T {
@@ -335,6 +339,25 @@ public final class AppModel {
         }
         telemetryStoring = Task { _ = await storing.result }
         try await storing.value
+    }
+
+    public func setGitignore(follow: Bool) async throws {
+        try await run { try $0.setGitignore(follow: follow) }
+    }
+
+    /// The files that only `.gitignore` files leave out of the linked folders, counted on disk, whichever way the
+    /// setting is. Nil when a folder can't be counted.
+    public func gitignoreOnly() async -> GitignoreCount? {
+        let folders = state.folders
+        return try? await run { session in
+            let counts = try folders.map { ($0.spaceName, try session.gitignoreOnly(spaceId: $0.spaceId)) }
+            return GitignoreCount(
+                files: counts.reduce(0) { $0 + $1.1.files },
+                bytes: counts.reduce(0) { $0 + $1.1.bytes },
+                folderNames: counts.filter { $0.1.files > 0 }.map(\.0),
+                countedAtMs: counts.map(\.1.countedAtMs).min() ?? 0
+            )
+        }
     }
 
     /// Updates Koidrive to the newest release. When the update replaces this app, the updater quits it and opens the

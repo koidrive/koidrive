@@ -49,6 +49,7 @@ Open **Settings** from the menu bar:
 - In **Storage**, check each space's storage use and choose **Refresh** to reload it.
 - In **Problems**, read what stopped or failed and follow the advice for the affected folder or file.
 - In **General**, choose whether Koidrive opens at login and sends usage reports, and see whether Koidrive is up to date.
+- In **Advanced**, turn off **Follow .gitignore files** to sync what `.gitignore` files exclude. Koidrive shows how many files will start syncing and asks first. See [Files that .gitignore files exclude](folders.md#files-that-gitignore-files-exclude).
 
 ## Update Koidrive
 

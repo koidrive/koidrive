@@ -1,6 +1,7 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%@ (%@) in %@ will upload." : {},
     "%@ Check the address." : {},
     "%@ changed on two devices" : {},
     "%@ is kept" : {},
@@ -250,6 +251,28 @@
         }
       }
     },
+    "%llu files no longer sync from this Mac. They stay on this Mac and on the server." : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu file no longer syncs from this Mac. It stays on this Mac and on the server."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu files no longer sync from this Mac. They stay on this Mac and on the server."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "(this Mac)" : {},
     "A disk is mounted over a synced folder" : {},
     "A file can't be read" : {},
@@ -311,6 +334,7 @@
     "Add a Device…" : {},
     "Add a folder to start syncing." : {},
     "Added %@" : {},
+    "Advanced" : {},
     "All folders" : {},
     "Allow Koidrive in Login Items." : {},
     "Already dismissed." : {},
@@ -387,6 +411,8 @@
         }
       }
     },
+    "Applying to %@…" : {},
+    "Applying…" : {},
     "Asked %@" : {},
     "At least 8 characters." : {},
     "Both files are kept" : {},
@@ -613,16 +639,19 @@
     "Expired" : {},
     "Expires" : {},
     "Files" : {},
+    "Files a .gitignore excludes don’t sync from this Mac." : {},
     "Files and folders in %@" : {},
     "Files deleted in %@ show up here." : {},
     "Files disappeared" : {},
     "Files stay in the folder and on the server." : {},
+    "Files your .gitignore files exclude will start syncing from this Mac." : {},
     "Finishing up %@" : {},
     "Finishing up %@…" : {},
     "Fix or remove line %u of .koiignore." : {},
     "Folder" : {},
     "Folder recovered" : {},
     "Folders" : {},
+    "Follow .gitignore files" : {},
     "For example, https://koidrive.alice.workers.dev." : {},
     "Free up disk space. %@" : {},
     "General" : {},
@@ -877,7 +906,10 @@
     "Status" : {},
     "Stopped" : {},
     "Storage" : {},
+    "Sync" : {},
+    "Sync Files" : {},
     "Sync for this folder stopped" : {},
+    "Sync ignored files?" : {},
     "Sync is paused" : {},
     "Sync is stopped" : {},
     "Sync resumes when it's back." : {},

@@ -731,6 +731,33 @@ enum Snapshots {
             )),
             ("5a-storage-one-space", AnyView(StorageSettings().environment(AppModel.previewWithOneSpace()))),
             ("5b-storage-two-spaces", AnyView(StorageSettings().environment(AppModel.preview(.upToDate)))),
+        ] + (await advancedStates())
+    }
+
+    private static func advancedStates() async -> [(String, AnyView)] {
+        func make(following: Bool, held: Bool = false) -> (AppModel, GitignoreSettingModel) {
+            let base = AppModel.fake(scenario: .upToDate).session
+            try? base.setGitignore(follow: following)
+            let app = AppModel(session: held ? HeldGitignoreSession(base: base) : base, events: AsyncStream { $0.finish() })
+            return (app, GitignoreSettingModel(app: app))
+        }
+        func view(_ made: (AppModel, GitignoreSettingModel)) -> AnyView {
+            AnyView(AdvancedSettings(app: made.0, gitignore: made.1).environment(made.0))
+        }
+        let turningOff = make(following: true, held: true)
+        await turningOff.1.set(follow: false)
+        Task { await turningOff.1.confirmOff() }
+        let turningOn = make(following: false, held: true)
+        Task { await turningOn.1.set(follow: true) }
+        let turnedOn = make(following: false)
+        await turnedOn.1.set(follow: true)
+        try? await Task.sleep(for: .milliseconds(100))
+        return [
+            ("6a-advanced-on", view(make(following: true))),
+            ("6b-advanced-turned-off-applying", view(turningOff)),
+            ("6c-advanced-off", view(make(following: false))),
+            ("6d-advanced-turned-on-applying", view(turningOn)),
+            ("6e-advanced-turned-on", view(turnedOn)),
         ]
     }
 
@@ -782,6 +809,23 @@ enum Snapshots {
             fatalError("screencapture failed for \(url.lastPathComponent) with status \(screencapture.terminationStatus)")
         }
     }
+}
+
+private final class HeldGitignoreSession: SyncSession, @unchecked Sendable {
+    private let base: SyncSession
+
+    init(base: SyncSession) {
+        self.base = base
+        super.init(noHandle: .init())
+    }
+
+    required init(unsafeFromHandle handle: UInt64) { fatalError("unused") }
+
+    override func state() -> SessionState { base.state() }
+    override func telemetry() -> TelemetrySetting { base.telemetry() }
+    override func gitignore() -> Bool { base.gitignore() }
+    override func gitignoreOnly(spaceId: String) throws -> GitignoreOnly { try base.gitignoreOnly(spaceId: spaceId) }
+    override func setGitignore(follow: Bool) throws { DispatchSemaphore(value: 0).wait() }
 }
 
 private struct ButtonGallery: View {

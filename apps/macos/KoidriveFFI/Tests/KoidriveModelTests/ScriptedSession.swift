@@ -16,6 +16,8 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         case pause
         case resume
         case setTelemetry
+        case setGitignore
+        case gitignoreOnly
     }
 
     let base: SyncSession
@@ -46,6 +48,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     override func resume() throws { try run(.resume) { try base.resume() } }
     override func setTelemetry(enabled: Bool) throws { try run(.setTelemetry) { try base.setTelemetry(enabled: enabled) } }
     override func telemetry() -> TelemetrySetting { base.telemetry() }
+    override func gitignore() -> Bool { base.gitignore() }
     override func fakeCore() -> FakeCore? { base.fakeCore() }
     override func unlinkFolder(spaceId: String) throws { try base.unlinkFolder(spaceId: spaceId) }
 
@@ -88,6 +91,14 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
 
     override func answer(questionId: String, answer: Answer) throws {
         try run(.answer) { try base.answer(questionId: questionId, answer: answer) }
+    }
+
+    override func setGitignore(follow: Bool) throws {
+        try run(.setGitignore) { try base.setGitignore(follow: follow) }
+    }
+
+    override func gitignoreOnly(spaceId: String) throws -> GitignoreOnly {
+        try run(.gitignoreOnly) { try base.gitignoreOnly(spaceId: spaceId) }
     }
 
     private func run<T>(_ read: Read, _ call: () throws -> T) throws -> T {
