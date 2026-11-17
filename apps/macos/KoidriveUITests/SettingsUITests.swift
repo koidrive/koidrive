@@ -23,7 +23,8 @@ final class SettingsUITests: XCTestCase {
         app.launchArguments = ["-FakeScenario", scenario, "-settingsTab", "storage"]
         app.launch()
         addTeardownBlock { app.terminate() }
-        app.menuBarItems["Koidrive"].menuItems["Settings…"].click()
+        app.activate()
+        app.typeKey(",", modifierFlags: .command)
         let window = app.windows["Storage"]
         XCTAssert(window.waitForExistence(timeout: 20), file: file, line: line)
         let toolbar = window.toolbars.firstMatch
