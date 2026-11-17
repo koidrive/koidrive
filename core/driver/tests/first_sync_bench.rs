@@ -116,6 +116,7 @@ async fn first_sync_of_a_large_folder() {
         .status()
         .unwrap();
     assert!(copied.success());
+    let nodes = 1 + entries(&folder);
     let driver = Driver::open(Paths::under(&home.path().join("profile"))).unwrap();
     let pairing = owner.api().pair_start(&owner).await.unwrap();
     driver
@@ -125,8 +126,7 @@ async fn first_sync_of_a_large_folder() {
     let started = Instant::now();
     driver.link(&folder, &space.space_id).await.unwrap();
     driver.start();
-    let mut last = None;
-    let done = loop {
+    let (finished, status) = loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let status = driver.status().folders.remove(0);
         let line = serde_json::json!({
@@ -138,20 +138,14 @@ async fn first_sync_of_a_large_folder() {
             "problem": status.problem,
         });
         println!("{line}");
-        if status.state == FolderState::UpToDate
+        let finished = status.state == FolderState::UpToDate
             && status.progress.is_none()
-            && status.remote_nodes > 1
-        {
-            break Some(status);
-        }
-        if status.state == FolderState::Halted || started.elapsed() > limit {
-            last = Some(status);
-            break None;
+            && status.remote_nodes == nodes;
+        if finished || status.state == FolderState::Halted || started.elapsed() > limit {
+            break (finished, status);
         }
     };
     let elapsed = started.elapsed().as_secs_f64();
-    let status = done.or(last).unwrap();
-    let finished = status.state == FolderState::UpToDate;
     println!(
         "{}",
         serde_json::json!({
@@ -159,6 +153,7 @@ async fn first_sync_of_a_large_folder() {
             "finished": finished,
             "seconds": elapsed,
             "remote_nodes": status.remote_nodes,
+            "folder_nodes": nodes,
             "nodes_per_second": status.remote_nodes as f64 / elapsed,
         })
     );
@@ -170,10 +165,11 @@ async fn first_sync_of_a_large_folder() {
             .expect("open job summary");
         writeln!(
             summary,
-            "| First sync finished | Seconds | Nodes | Nodes/s |\n|---|---|---|---|\n| {} | {:.0} | {} | {:.0} |",
+            "| First sync finished | Seconds | Nodes on the server | Nodes in the folder | Nodes/s |\n|---|---|---|---|---|\n| {} | {:.0} | {} | {} | {:.0} |",
             if finished { "yes" } else { "no" },
             elapsed,
             status.remote_nodes,
+            nodes,
             status.remote_nodes as f64 / elapsed,
         )
         .expect("write job summary");
@@ -181,7 +177,21 @@ async fn first_sync_of_a_large_folder() {
     driver.stop().await;
     assert!(
         finished,
-        "the first sync did not finish: {:?}",
-        status.problem
+        "the first sync did not finish: {} of {nodes} nodes on the server, {:?}",
+        status.remote_nodes, status.problem
     );
+}
+
+fn entries(dir: &Path) -> u64 {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            match kind.is_dir() {
+                true => 1 + entries(&entry.path()),
+                false => u64::from(kind.is_file()),
+            }
+        })
+        .sum()
 }
