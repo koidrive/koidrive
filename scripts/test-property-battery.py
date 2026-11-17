@@ -32,7 +32,7 @@ def commands(workflow):
     if "cases per property test" in workflow or "each property test ran" in workflow:
         raise ValueError("Summary must not apply the stress budget to every property")
     for text in ("Cases per opted-in stress property", "Bounded properties keep their own",
-                 "unit tests run once per shard", "saved regressions also replay"):
+                 "tests outside property blocks run once per battery", "saved regressions also replay"):
         if text not in workflow:
             raise ValueError("Input and summary must distinguish stress budgets, bounded properties and unit tests")
     return execution, repro
@@ -96,7 +96,8 @@ class PropertyBattery(unittest.TestCase):
             text=True)
         self.assertIn("2 generated cases per selected, opted-in stress property on each passing shard, 6 in total", output)
         self.assertIn("saved regressions also replay", output)
-        self.assertIn("Bounded properties keep their own case budgets; unit tests run once per shard", output)
+        self.assertIn("Bounded properties keep their own case budgets; tests outside property blocks run once per battery",
+                      output)
         self.assertIn("Tests: 8 passed and 1 failed, summed over shards", output)
 
     def test_execution_and_repro_pass_isolated_budgets_and_same_selection(self):
@@ -114,13 +115,68 @@ class PropertyBattery(unittest.TestCase):
                 path.chmod(0o755)
             environment = dict(os.environ, PROPTEST_CASES="8192", GITHUB_WORKSPACE=str(root),
                                PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
-            setup = 'dir=tests; binary=bin/probe; CASES=2; seed=17; SHA=abc; package=koidrive-sim; selector="--test engine_sync"; filter_args=("a filter"); repro_filter=" -- a\\ filter"; log="$GITHUB_WORKSPACE/log"\n'
-            for command in (execution, repro + '\neval "$repro"'):
-                output = subprocess.check_output(["bash", "-euo", "pipefail", "-c", setup + command],
-                                                 cwd=root, env=environment, text=True)
+            setup = 'dir=tests; binary=bin/probe; CASES=2; seed=17; SHA=abc; package=koidrive-sim; selector="--test engine_sync"; tests=(mod::red other); log="$GITHUB_WORKSPACE/log"\n'
+            failed_tests = "\n".join(line.strip() for line in self.workflow.splitlines()
+                                     if line.strip().startswith("red=") or "repro_tests=" in line)
+            outputs = []
+            for command in (execution, failed_tests + "\n" + repro + '\neval "$repro"'):
+                outputs.append(subprocess.check_output(["bash", "-euo", "pipefail", "-c", setup + command],
+                                                       cwd=root, env=environment, text=True))
+                (root / "log").write_text("test mod::red ... FAILED\ntest other ... ok\n")
+            for output in outputs:
                 self.assertIn("ordinary=unset stress=2 seed=17", output)
-                self.assertIn("arg=a filter", output)
-            self.assertIn("arg=--test\narg=engine_sync", output)
+            self.assertIn("arg=--exact\narg=mod::red\narg=other\n", outputs[0])
+            self.assertIn("arg=--test\narg=engine_sync\narg=--\narg=--exact\narg=mod::red\n", outputs[1])
+            self.assertNotIn("arg=other", outputs[1])
+
+
+class Selection(unittest.TestCase):
+    def setUp(self):
+        workflow = WORKFLOW.read_text()
+        self.split = next(line.strip() for line in workflow.splitlines() if "names[$0]; next" in line)
+        self.spread = next(line.strip() for line in workflow.splitlines() if "% shards == shard" in line)
+
+    def split_tests(self, names, listed):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "names.txt").write_text("".join(name + "\n" for name in names))
+            (root / "listed.txt").write_text("".join(test + "\n" for test in listed))
+            script = ('RUNNER_TEMP=.; seeded=seeded.txt; once=once.txt; : > "$seeded"; : > "$once"\n'
+                      + self.split)
+            subprocess.check_call(["bash", "-euo", "pipefail", "-c", script], cwd=root)
+            return (root / "seeded.txt").read_text().split(), (root / "once.txt").read_text().split()
+
+    def test_property_tests_go_to_every_shard_and_other_tests_once(self):
+        listed = ["tests::a_unit", "tests::grows", "grows_more", "deep::mod::shrinks", "shrinks_not"]
+        seeded, once = self.split_tests(["grows", "shrinks"], listed)
+        self.assertEqual(seeded, ["tests::grows", "deep::mod::shrinks"])
+        self.assertEqual(once, ["tests::a_unit", "grows_more", "shrinks_not"])
+        self.assertEqual(self.split_tests([], listed), ([], listed))
+
+    def test_each_other_test_runs_on_exactly_one_shard(self):
+        for shards, binaries in ((1, [3]), (4, [3, 0, 6]), (48, [700, 115, 2])):
+            with self.subTest(shards=shards), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runs = []
+                per_shard = []
+                for shard in range(shards):
+                    before = len(runs)
+                    offset = 0
+                    for binary, count in enumerate(binaries):
+                        tests = [f"{binary}::{index}" for index in range(count)]
+                        (root / "once.txt").write_text("".join(test + "\n" for test in tests))
+                        script = (f"SHARD={shard}; SHARDS={shards}; offset={offset}; name=x; out=.; "
+                                  "mkdir -p battery/once battery/seeded; mv once.txt battery/once/x.txt; "
+                                  "echo seeded > battery/seeded/x.txt\n" + self.spread)
+                        subprocess.check_call(["bash", "-euo", "pipefail", "-c", script], cwd=root)
+                        ran = (root / "tests-x.txt").read_text().split()
+                        self.assertEqual(ran[0], "seeded")
+                        runs.extend(ran[1:])
+                        offset += count
+                    per_shard.append(len(runs) - before)
+                self.assertLessEqual(max(per_shard) - min(per_shard), 1, per_shard)
+                expected = [f"{binary}::{index}" for binary, count in enumerate(binaries) for index in range(count)]
+                self.assertEqual(sorted(runs), sorted(expected))
 
 
 class RuntimeChecks(unittest.TestCase):
