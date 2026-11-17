@@ -1253,8 +1253,20 @@ fn position(shape: &koidrive_engine::tree::Shape) -> Position {
 fn sent_move_check(
     moved: &Move,
     local: &Shape,
+    synced: Option<&Shape>,
+    remote: Option<&RemoteNode>,
     merged_into: &BTreeMap<String, String>,
 ) -> Result<(), TestCaseError> {
+    let held = position(local);
+    let owed_rename = moved.pending_for.is_empty()
+        && moved.new_parent_id == local.parent
+        && synced.map(position).as_ref() == Some(&held)
+        && remote.is_some_and(|node| {
+            position(&node.shape) == held && node.pending_for.as_ref() == Some(&moved.new_name)
+        });
+    if owed_rename {
+        return Ok(());
+    }
     let parent = (merged_into.get(&local.parent)).unwrap_or(&local.parent);
     let name = Some(&moved.pending_for)
         .filter(|name| !name.is_empty())
@@ -1849,7 +1861,9 @@ fn run_ignoring_answering_after(
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
-                sent_move_check(moved, &local.shape, &merged_into)?;
+                let synced = device.trees.synced().get(id);
+                let remote = device.trees.remote().get(id);
+                sent_move_check(moved, &local.shape, synced, remote, &merged_into)?;
             }
             if matches!(
                 op.op,
