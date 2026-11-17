@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use koidrive_proto::v1::Error as ProtoError;
@@ -1326,32 +1327,28 @@ async fn one_chunk_at_a_time_reads_and_sends_in_the_order_of_the_chunks() {
 }
 
 #[tokio::test]
-async fn four_chunks_at_once_take_at_most_a_third_of_the_time_of_one_at_a_time() {
+async fn the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency() {
     let parts = full_named(8);
-    let (instant, _) = busy_relay(|_, _| ok_after(Duration::ZERO)).await;
-    let (relay, _) = busy_relay(|_, _| ok_after(Duration::from_millis(250))).await;
-    let mut took = Vec::new();
-    for (relay, concurrency) in [(instant, 1), (relay, 1), (relay, 4)] {
+    for concurrency in [1, 4] {
+        let arrived = AtomicUsize::new(0);
+        let (relay, seen) = busy_relay(move |_, _| {
+            let first_wave = arrived.fetch_add(1, Ordering::SeqCst) < concurrency;
+            ok_after(Duration::from_secs(if first_wave { 2 } else { 0 }))
+        })
+        .await;
         let (session, _events, _) = uploads_through(relay, &parts).await;
-        let transfer = Transfer {
+
+        let receipts = Transfer {
             gate: UploadGate::new(concurrency),
             ..transfer()
-        };
-        let started = Instant::now();
-        let receipts = transfer
-            .upload(&session, &refs(&parts), source(&parts))
-            .await
-            .unwrap();
-        took.push(started.elapsed());
+        }
+        .upload(&session, &refs(&parts), source(&parts))
+        .await
+        .unwrap();
+
         assert_eq!(receipts.len(), 8);
+        assert_eq!(seen.lock().unwrap().peak, concurrency);
     }
-    let [local, one, four] = took[..] else {
-        unreachable!()
-    };
-    assert!(
-        four.saturating_sub(local) * 3 <= one.saturating_sub(local),
-        "without waits {local:?}, one at a time {one:?}, four at once {four:?}"
-    );
 }
 
 #[derive(Default)]
