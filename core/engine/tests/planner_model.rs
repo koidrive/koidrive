@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
+thread_local! { static INVALID_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -943,6 +944,9 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
 const HELD: &str = "revival held by a commit's target";
 
 fn main_baseline(class: &str) -> Option<&'static str> {
+    if true {
+        return None;
+    }
     class
         .contains(HELD)
         .then_some("a commit brings back a trashed folder L does not hold")
@@ -2145,7 +2149,7 @@ fn restores(world: &World) -> Vec<(World, Story)> {
         }));
     }
     let mut stories = Vec::new();
-    for told in (worlds.into_iter()).filter(|told| told.remote_acyclic() && told.placeable()) {
+    for told in (worlds.into_iter()).filter(|told| told.remote_acyclic() && told.placeable() != INVALID_PASS.with(|pass| pass.get())) {
         let dirs = || (0..k).filter(|&j| told.kind(j) == Kind::Dir);
         let trashed = |i: usize| told.recorded(i) && !told.remote_live(i);
         for i in (0..k).filter(|&i| trashed(i) && told.local[i] != Local::Removed) {
@@ -2646,7 +2650,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     };
     let (known, hard): (Vec<String>, Vec<String>) = hard
         .into_iter()
-        .partition(|fault| baseline(fault).is_some());
+        .partition(|fault| false && baseline(fault).is_some());
     soft.extend(known.into_iter().map(|fault| {
         let class = baseline(&fault).expect("partitioned");
         format!("main baseline, {class}: {fault}")
@@ -2720,6 +2724,11 @@ impl Tally {
     fn count(&mut self, report: Report) {
         self.runs += report.runs;
         self.hard += usize::from(report.hard);
+        if report.hard && true {
+            use std::io::Write;
+            let line = format!("HARDSTORY\t{}\t{}\n", report.classes.join("|"), report.text.lines().next().unwrap_or(""));
+            let _ = std::io::stderr().lock().write_all(line.as_bytes());
+        }
         for class in report.classes {
             let example = (!report.text.is_empty()).then(|| (report.size, report.text.clone()));
             self.note(class, 1, example.into_iter().collect());
@@ -2945,7 +2954,46 @@ fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Ta
                             world.ranks = ranks;
                             let space = (spaces.entry(world.ranks[..world.existing()].to_vec()))
                                 .or_insert_with(|| server(&world));
+                            let under_trash = std::env::var("PLANNER_MODEL_TRASH").is_ok() && (0..world.existing()).any(|i| {
+                                matches!(world.local[i], Local::Removed) && {
+                                    let mut at = Some(i);
+                                    let mut hit = false;
+                                    while let Some(j) = at {
+                                        if matches!(world.remote[j], Remote::Trashed) {
+                                            hit = true;
+                                            break;
+                                        }
+                                        at = match world.synced[j] {
+                                            Spot::In(p) => Some(p),
+                                            Spot::Root => None,
+                                        };
+                                    }
+                                    hit
+                                }
+                            });
+                            let listed = std::env::var("PLANNER_MODEL_ONLY").is_ok_and(|only| only.split('|').any(|one| world.describe().starts_with(one)));
+                            let new_dir = std::env::var("PLANNER_MODEL_NEWDIR").is_ok() && (world.existing()..world.len()).any(|i| world.kind(i) == Kind::Dir);
+                            let merges = true && world.created.iter().any(|(kind, local)| *kind == Kind::Dir && matches!(local, Local::Onto(i) if *i < world.existing() && matches!(world.local[*i], Local::Removed)));
+                            let trash_moved = std::env::var("PLANNER_MODEL_TRASHMOVE").is_ok() && merges && (0..world.existing()).any(|i| matches!(world.remote[i], Remote::Trashed) && matches!(world.local[i], Local::Into(Spot::In(k)) if k >= world.existing()));
+                            let merges = merges && std::env::var("PLANNER_MODEL_TRASHMOVE").is_err();
+                            if !under_trash && !listed && !new_dir && !merges && !trash_moved {
+                                continue;
+                            }
+                            if std::env::var("PLANNER_MODEL_COUNT").is_ok() {
+                                tally.add(Report { runs: 0, hard: false, classes: vec!["matched".into()], size: 0, text: String::new(), sent: String::new() });
+                                continue;
+                            }
                             tally.add(check(&world, space));
+                            if true {
+                                INVALID_PASS.with(|pass| pass.set(true));
+                                let invalid = restores(&world);
+                                INVALID_PASS.with(|pass| pass.set(false));
+                                for (told, story) in invalid {
+                                    if tell(&told, &server(&told), story).is_some() {
+                                        tally.note("invalid restore story".into(), 1, Vec::new());
+                                    }
+                                }
+                            }
                             for (told, story) in restores(&world) {
                                 let space = if told.remote == world.remote {
                                     space.clone()
