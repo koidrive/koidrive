@@ -123,6 +123,14 @@ globs = [
 globs = ["core/{chunk,driver,engine,ffi,fs,ignore,net,proto,store,telemetry}/src/**"]
 by = ["koidrive-fs"]
 
+[[read]]
+globs = [
+  "core/engine/tests/attribution.rs",
+  "core/engine/tests/attribution/model.rs",
+  "core/engine/tests/attribution/authors.rs",
+]
+by = ["koidrive-engine"]
+
 [job.rust]
 packages = "any"
 except = ["koidrive-driver", "koidrive-engine", "koidrive-sim"]
