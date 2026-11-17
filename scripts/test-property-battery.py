@@ -459,9 +459,10 @@ class KnownFailures(unittest.TestCase):
                         found = triage.matches(entries, test, example)
                         self.assertEqual([entries.index(other) for other in found], [index], (test, example))
 
-
     def test_every_registry_test_name_is_a_test_in_core(self):
-        source = "".join(path.read_text(errors="replace") for path in (ROOT / "core").rglob("*.rs"))
+        files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
+                               stdout=subprocess.PIPE, text=True).stdout.split("\0")
+        source = "".join((ROOT / path).read_text(errors="replace") for path in files if path)
         for entry in triage.known_failures(triage.KNOWN_FAILURES.read_text()):
             for test in entry["tests"]:
                 with self.subTest(failure=entry["class"], test=test):
@@ -474,6 +475,9 @@ class KnownFailures(unittest.TestCase):
             "a missing field": KNOWN.replace('examples = ["no convergence within 400 steps"]\n', "", 1),
             "tests as a string": KNOWN.replace('tests = ["devices_converge"]', 'tests = "devices_converge"'),
             "a regex that doesn't compile": KNOWN.replace("'''write <n> is lost'''", "'''write (<n> is lost'''"),
+            "a message that isn't a string": KNOWN.replace("'''write <n> is lost'''", "1"),
+            "a class that isn't a string": KNOWN.replace('class = "A"', "class = 1"),
+            "an entry that isn't a table": "failure = [1]\n",
         }
         for name, text in broken.items():
             with self.subTest(name), self.assertRaises(ValueError):

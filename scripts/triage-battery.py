@@ -74,8 +74,13 @@ def known_failures(text):
     if not isinstance(entries, list) or not entries:
         raise ValueError("it has no [[failure]] entries")
     for number, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"[[failure]] {number} is not a table")
         if set(entry) != FIELDS:
             raise ValueError(f"[[failure]] {number} has the fields {sorted(entry)}, not {sorted(FIELDS)}")
+        for field in ("class", "issue", "message"):
+            if not isinstance(entry[field], str) or not entry[field]:
+                raise ValueError(f"[[failure]] {number} needs {field} as a non-empty string")
         for field in ("tests", "examples"):
             values = entry[field]
             if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
