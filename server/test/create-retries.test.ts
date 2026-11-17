@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create, type DescMessage, fromBinary, type MessageInitShape, type MessageShape, toBinary } from "@bufbuild/protobuf";
-import { exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
   AccessTokenSchema,
@@ -96,6 +97,22 @@ describe("RFC 0024 create retries", () => {
     expect((await refresh(again.message!)).status).toBe(200);
     expect((await pair("pair-1")).status).toBe(403);
     expect(await deviceNames(owner)).toEqual(["Laptop", "Desk"]);
+  });
+
+  it("answers a retried pairing for 25 hours after the pairing, long after its code would have expired", async () => {
+    const owner = await getOwner();
+    const started = await call("/v1/pair/start", { token: owner.access!.token }, PairStartResponseSchema);
+    const pair = (requestId: string) =>
+      call("/v1/pair/complete", { body: body(PairCompleteRequestSchema, { code: started.message!.code, deviceName: "Tablet", platform: "linux", requestId }) }, DeviceCredentialsSchema);
+    const passed = (ms: number) =>
+      runInDurableObject(env.ACCOUNT.get(env.ACCOUNT.idFromName("account")), (_instance, state) => state.storage.sql.exec("UPDATE pairing_codes SET expires_at_ms = expires_at_ms - ?", ms));
+    const first = await pair("late-1");
+    await passed(24 * 3_600_000);
+    const again = await pair("late-1");
+    expect(again.status).toBe(200);
+    expect(again.message!.deviceId).toBe(first.message!.deviceId);
+    await passed(2 * 3_600_000);
+    expect((await pair("late-1")).status).toBe(403);
   });
 
   it("answers a retried space create with the space the first request made", async () => {
