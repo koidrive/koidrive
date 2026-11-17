@@ -2291,14 +2291,7 @@ impl World {
         let mut deletes = tokens.clone().filter(|&gone| {
             let delete = self.values[gone.0 as usize];
             let old_wire = rules == Rules::OldDeleter && delete.author == Some(1);
-            !old_wire
-                && delete.field == Field::Existence
-                && delete.author.is_some()
-                && !self
-                    .server
-                    .log
-                    .iter()
-                    .any(|record| record.node.trashed == Some(gone))
+            !old_wire && delete.field == Field::Existence && delete.author.is_some()
         });
         deletes
             .find(|&gone| {
