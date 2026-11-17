@@ -110,7 +110,7 @@ The **Restores** tab of Deleted Files lists every restore you asked for in each 
 | Restores tab shows | Meaning |
 |---|---|
 | Waiting for Documents to sync | The request goes out with the folder's next sync. |
-| Waiting until a refused change to it is fixed | The server refused an earlier change to the same item. Fix the problem in Settings, Problems, and the restore goes out after it. |
+| Waiting until a refused change to it is fixed | The server refused an earlier change to the same item. Fix the problem in Settings, Problems, and the restore goes out once the problem is fixed. |
 | Restored | The file or folder is back where it was. |
 | Restored as <name>. The name was taken. | Something else has its name now, so it came back under a new name. |
 | Restored as a copy. Another device changed it. | Another device changed the file meanwhile, so the earlier version came back as a separate file next to it. |

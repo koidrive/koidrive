@@ -36,7 +36,7 @@ The script upload sets `KOIDRIVE_RECOVERY_KEY` to 32 random bytes, so the Worker
 
 ### 4.5 An existing server gets a new device the same way
 
-On a claimed server the key takes the recovery path and adds a device for the owner. The CLI stops if `KOIDRIVE_RECOVERY_KEY` is already set, because the owner set it for recovery. It claims only when `ServerInfo.setup_attempts` is true, and offers to upgrade an older server first.
+On a claimed server the key adds a device for the owner. That is the recovery path. The CLI stops if `KOIDRIVE_RECOVERY_KEY` is already set, because the owner set it for recovery. It claims only when `ServerInfo.setup_attempts` is true, and offers to upgrade an older server first.
 
 ### 4.6 An interrupted run resumes from a state file
 

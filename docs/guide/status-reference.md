@@ -31,7 +31,7 @@ A pause holds until `koi resume`. Without a running daemon, it takes effect when
 
 ## The server can put calls off
 
-Sometimes the server asks the device to wait, or a call keeps failing for a while. The folder keeps retrying. The status shows the failure and the time of the next try once a call has failed for a minute. When the server asks for a wait of a minute or more, the status shows it at once:
+Sometimes the server asks the device to wait, or a call keeps failing for a while. The folder keeps retrying. The status shows the failure and the time of the next try once a call has failed for a minute. When the server asks for a wait of a minute or more, the status shows the wait and the time of the next try at once:
 
 ```
   uploading a file's content failed: ...; trying again at 14:05 UTC
@@ -79,7 +79,7 @@ Sync applies deletions from your other devices here without asking, and moves th
 
 ### The first link can hold files
 
-Sync also asks after the first link of a folder if it holds some of the folder's files. It holds files at a name the space's trash holds. If the folder synced with the space before, it also holds the folder's other files. [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes the comparison. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
+Sync also asks after the first link of a folder when the comparison holds some of the folder's files. The comparison holds a file at a name the space's trash holds. If the folder synced with the space before, the comparison also holds the folder's other files. [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes the comparison. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
 
 ### A conflict opens a decision
 
