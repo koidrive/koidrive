@@ -3762,6 +3762,9 @@ impl Trees {
                 synced.contains(&id) || taken_late.contains(&id) || self.resends.contains(&id);
             if unchanged && !resent && !moved_here.contains(&id) && self.r.get(&id).is_none() {
                 self.lost_creates.insert(id.clone());
+                if (records.get(&id)).is_some_and(|record| record.moved_in_lost_commit) {
+                    self.local_changes.insert(id.clone());
+                }
             }
             if unchanged && resent {
                 self.resends.insert(id.clone());
