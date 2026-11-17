@@ -655,6 +655,43 @@ fn a_result_applied_after_a_welcome_with_another_token_bounds_by_its_own_slot() 
 }
 
 #[test]
+fn a_welcome_that_holds_another_commit_at_the_slot_of_a_held_result_is_a_loss() {
+    let held = || {
+        let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        commits
+            .received(CommitResult {
+                committed_at_ms: 90,
+                ..result(9, vec![outcome(op_result::Code::Applied)])
+            })
+            .unwrap();
+        (trees, commits, commit.commit_id)
+    };
+    let (_, mut commits, _) = held();
+    let another = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 90,
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&another), Reconnect::AheadOfServer);
+    assert!(commits.in_flight().is_none());
+    assert_eq!((commits.accepted(), commits.held_through()), (1, 0));
+
+    for token in [None, Some(90)] {
+        let (mut trees, mut commits, commit_id) = held();
+        let holding = Welcome {
+            device_commit_id: token.map_or(String::new(), |_| commit_id),
+            device_committed_at_ms: token.unwrap_or(0),
+            ..welcome(1)
+        };
+        assert_eq!(commits.connected(&holding), Reconnect::Idle);
+        assert!(commits.acknowledge(&mut trees, 9));
+        assert_eq!((commits.accepted(), commits.held_through()), (1, 9));
+    }
+}
+
+#[test]
 fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));

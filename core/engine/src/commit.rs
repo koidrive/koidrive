@@ -2446,7 +2446,8 @@ impl Commits {
     /// the server answers an accepted one with its stored result. *w* < *a* means the server lost
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
     /// result. So does *w* = *a* while the result of the commit in flight is held, since the
-    /// server sent that result. Either way *a* takes *w*, and the commit in flight is dropped, its
+    /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
+    /// another commit's token for that slot, since the server gave the slot to that commit. Either way *a* takes *w*, and the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
     /// built in another history, starts recovery. A read-only device resends nothing. A device
     /// under a policy halt resends nothing whatever the `Welcome` says, but *w* < *a* is a loss
@@ -2480,6 +2481,13 @@ impl Commits {
                 (self.slots.range(..w).next_back()).map_or(0, |(below, _)| *below)
             }
         });
+        let held_elsewhere = |flight: &InFlight| {
+            (flight.result.as_ref()).is_some_and(|result| {
+                !welcome.device_commit_id.is_empty()
+                    && (welcome.device_commit_id != flight.commit.commit_id
+                        || welcome.device_committed_at_ms != result.committed_at_ms)
+            })
+        };
         let policy = matches!(*self.halted, Some(Halt::Policy { .. }));
         let reconnect = match &*self.in_flight {
             _ if policy && w >= a => return Reconnect::Idle,
@@ -2488,6 +2496,7 @@ impl Commits {
             Some(flight) if flight.commit.history_id != welcome.history_id => Reconnect::Recovery,
             None if w == a => Reconnect::Idle,
             Some(flight) if flight.result.is_none() && (w == a || w == a + 1) => Reconnect::Resend,
+            Some(flight) if w == a + 1 && held_elsewhere(flight) => Reconnect::AheadOfServer,
             Some(_) if w == a + 1 => Reconnect::Idle,
             Some(_) if w == a => Reconnect::AheadOfServer,
             _ if w < a || self.slots.contains_key(&w) => Reconnect::AheadOfServer,
