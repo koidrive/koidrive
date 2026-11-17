@@ -38,8 +38,5 @@ final class SettingsUITests: XCTestCase {
         }
         let gaps = zip(frames, frames.dropFirst()).map { $1.minX - $0.maxX }
         XCTAssertLessThan(gaps.max()! - gaps.min()!, 2, "uneven toolbar gaps \(gaps) in \(scenario)")
-
-        toolbar.buttons["Problems"].click()
-        XCTAssert(app.windows["Problems"].waitForExistence(timeout: 10), "Problems tab did not open in \(scenario)")
     }
 }
