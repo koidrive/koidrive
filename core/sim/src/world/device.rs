@@ -143,9 +143,19 @@ impl Engine {
             .collect();
         while let Some(ino) = queue.pop_front() {
             let entry = &disk.entries()[&ino];
+            let marked = (entry.mark.as_ref())
+                .filter(|_| !matches!(self.commits.halted(), Some(Halt::Recovery(_))))
+                .filter(|mark| mark.ino == ino)
+                .map(|mark| mark.node.clone())
+                .filter(|node| {
+                    self.trees.local().get(node).is_none()
+                        && self.trees.synced().get(node).is_none()
+                        && self.trees.remote().get(node).is_none()
+                        && !nodes.values().any(|taken| taken == node)
+                });
             let id = match known.get(&ino) {
                 Some(id) => id.clone(),
-                None => self.ids.uuid_v7(NOW as u64),
+                None => marked.unwrap_or_else(|| self.ids.uuid_v7(NOW as u64)),
             };
             nodes.insert(ino, id.clone());
             queue.extend(disk.children(&Place::In(ino)));

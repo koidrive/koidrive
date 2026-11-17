@@ -2734,6 +2734,7 @@ pub use effect::{
 };
 pub use ignore::{Ignore, Ignored, RULES_FILE, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
+pub use mark::node_mark;
 pub use recovered::{recovered_name, utc_date};
 pub use resolve::{Base, Dir, Folder, Location, PARKED_DIR, Space, Unresolved};
 pub use root::{

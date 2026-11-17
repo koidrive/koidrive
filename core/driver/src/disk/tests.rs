@@ -1732,9 +1732,11 @@ fn a_stale_batch_does_not_undo_an_effect_and_the_rescan_reports_its_result() {
         "the effect and the dropped creation each reset report.txt to L"
     );
     let fresh = observe_until(&mut watching, sections.stamp(), |seen| !seen.is_empty());
+    let written_file = fs::File::open(folder.root.join("report.txt")).unwrap();
     assert_eq!(
         fresh.observation.changes,
         vec![Observed::Modified {
+            marked_node: koidrive_fs::node_mark(written_file.as_fd()).unwrap(),
             path: "report.txt".into(),
             id: known.id,
             linked: false,
