@@ -1774,11 +1774,11 @@ fn a_file_this_device_made_follows_a_delete_after_another_device_edited_it_past_
     let mut trees = trees(&[("a", held.clone(), held, Some(made))]);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 2,
-        slots: [(1, Base::from(2)), (2, Base::from(4))].into(),
+        slots: [(1, slot(2)), (2, slot(4))].into(),
         ..Default::default()
     })
     .unwrap();
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let edited = RemoteNode {
         meta_rev: 2,
@@ -2125,7 +2125,7 @@ fn content_l_went_back_to_while_an_acknowledged_edit_waits_is_sent_after_a_loss(
     assert!(trees.waiting().contains_key("n"));
     trees.set_local("n".into(), local(file(ROOT, "x", 0), 3));
     trees.settle(commits.aliases());
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));

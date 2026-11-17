@@ -31,8 +31,7 @@ use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
-/// How many of this device's acknowledged commits [`Commits::held_through`] remembers. A server
-/// restored from a backup older than all of them gives 0, so no lost delete is sent again.
+/// How many of this device's acknowledged commits [`Commits::held_through`] remembers.
 pub const SLOTS_KEPT: usize = 1000;
 
 /// The most bytes of change records a commit is planned to make, as estimated. Its records and
@@ -196,6 +195,7 @@ pub struct Commits {
     published: TrackedSet<NodeId>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
+    confirmed: Unstored<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -244,6 +244,7 @@ impl Commits {
             published,
             guard,
             granted: _,
+            confirmed: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -340,15 +341,21 @@ impl Commits {
             published: published.into(),
             guard: guard.into(),
             granted: Unstored::default(),
+            confirmed: Unstored::default(),
         })
     }
 
-    /// The seq of the newest commit of this device that the server counts, or 0 when none is
-    /// known. A server that lost commits keeps every seq up to the backup it was restored from, and
-    /// this commit is among them, so a node state of a seq at or below it is from before the loss
-    /// (section 4.4).
+    /// The seq of the newest commit of this device that the server's current history is known to
+    /// hold, or 0 when none is. A slot number alone names no commit, since a restored server gives
+    /// slots again, so a commit counts only once the server confirms its commit token (RFC 0013):
+    /// the `Welcome` token of the commit at the server's count ([`Commits::connected`]), or a
+    /// result applied since. Every seq up to that commit's is one the server holds as this device
+    /// saw it, so a node state of a seq at or below it is from before a loss (section 4.4).
     pub fn held_through(&self) -> u64 {
-        (self.slots.range(..=*self.accepted).next_back()).map_or(0, |(_, slot)| slot.seq)
+        let confirmed = self.confirmed.0;
+        (self.slots.get(&confirmed))
+            .filter(|_| confirmed <= *self.accepted)
+            .map_or(0, |slot| slot.seq)
     }
 
     /// Whether one of this device's commits has seq `seq`: one of the last [`SLOTS_KEPT`]
@@ -2255,6 +2262,7 @@ impl Commits {
             committed_at_ms: result.committed_at_ms,
         };
         self.slots.insert(flight.commit.device_seq, token);
+        self.confirmed.0 = flight.commit.device_seq;
         while self.slots.len() > SLOTS_KEPT {
             self.slots.pop_first();
         }
@@ -2444,7 +2452,9 @@ impl Commits {
     /// loss is handled once. A later `Welcome` whose *w* is above *a* but one of those slots, as
     /// from a second restore of the server before R is listed again, is handled as a loss too: *a*
     /// takes *w* and R is listed again. Whether R
-    /// itself belongs to the `Welcome`'s history is checked where R is kept.
+    /// itself belongs to the `Welcome`'s history is checked where R is kept. Every `Welcome` also
+    /// decides what [`Commits::held_through`] counts: the kept slot *w*, when the `Welcome` carries
+    /// the commit token this device kept for it, and otherwise none until a result is applied.
     ///
     /// Recovery keeps the queued restores with the commit in flight: nothing is built under that
     /// halt, so none is sent again or planned again, and each stays as the request it was
@@ -2452,6 +2462,12 @@ impl Commits {
     /// rejected.
     pub fn connected(&mut self, welcome: &proto::Welcome) -> Reconnect {
         let (a, w) = (*self.accepted, welcome.device_seq);
+        let confirmed = (self.slots.get(&w)).is_some_and(|slot| {
+            !slot.commit_id.is_empty()
+                && slot.commit_id == welcome.device_commit_id
+                && slot.committed_at_ms == welcome.device_committed_at_ms
+        });
+        self.confirmed.0 = if confirmed { w } else { 0 };
         let policy = matches!(*self.halted, Some(Halt::Policy { .. }));
         let reconnect = match &*self.in_flight {
             _ if policy && w >= a => return Reconnect::Idle,

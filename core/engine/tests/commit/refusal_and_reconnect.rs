@@ -165,7 +165,7 @@ fn a_policy_halt_takes_a_server_loss_once() {
         code: error::Code::Forbidden as i32,
     });
     assert_eq!(commits.held_through(), 4);
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::Idle);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 4);
     assert_eq!(commits.in_flight().unwrap().commit, refused);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
@@ -279,10 +279,19 @@ fn a_server_count_above_the_accepted_one_at_a_slot_an_earlier_loss_took_is_a_los
     let mut twice = commits.clone();
     assert_eq!(twice.connected(&welcome(0)), Reconnect::AheadOfServer);
     assert_eq!((twice.accepted(), twice.held_through()), (0, 0));
-    assert_eq!(twice.connected(&welcome(1)), Reconnect::AheadOfServer);
+    let mut reissued = twice.clone();
+    assert_eq!(twice.connected(&welcome_holding(&twice, 1)), Reconnect::AheadOfServer);
     assert_eq!((twice.accepted(), twice.held_through()), (1, 3));
     assert!(twice.lost_here(7) && !twice.lost_here(3));
     assert_eq!(twice.halted(), None);
+    let another = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 3,
+        ..welcome(1)
+    };
+    assert_eq!(reissued.connected(&another), Reconnect::AheadOfServer);
+    assert_eq!((reissued.accepted(), reissued.held_through()), (1, 0));
+    assert!(reissued.lost_here(7) && reissued.lost_here(3));
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     assert_eq!(commits.connected(&welcome(3)), Reconnect::Recovery);
     assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
@@ -527,4 +536,94 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
     assert!(commits.clear_problem("b"));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("b", 2)]);
+}
+
+fn kept_slots() -> Commits {
+    Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, slot(3)), (2, slot(7))].into(),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[test]
+fn only_the_kept_token_of_the_servers_slot_bounds_what_the_server_holds() {
+    let mut commits = kept_slots();
+    assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 7);
+    assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 0);
+    let reissued = Welcome {
+        device_commit_id: "commit-at-7".into(),
+        device_committed_at_ms: 8,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&reissued), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 7);
+
+    let mut lost = kept_slots();
+    assert_eq!(lost.connected(&welcome_holding(&lost, 1)), Reconnect::AheadOfServer);
+    assert_eq!((lost.accepted(), lost.held_through()), (1, 3));
+    assert!(lost.lost_here(7) && !lost.lost_here(3));
+
+    let mut elsewhere = kept_slots();
+    let another = Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 3,
+        ..welcome(1)
+    };
+    assert_eq!(elsewhere.connected(&another), Reconnect::AheadOfServer);
+    assert_eq!((elsewhere.accepted(), elsewhere.held_through()), (1, 0));
+    assert!(elsewhere.lost_here(7) && elsewhere.lost_here(3));
+}
+
+#[test]
+fn a_store_copied_before_the_listing_bounds_nothing_by_a_slot_the_server_gave_out_again() {
+    let mut copy = kept_slots();
+    assert_eq!(copy.connected(&welcome_holding(&copy, 1)), Reconnect::AheadOfServer);
+    assert_eq!((copy.accepted(), copy.held_through()), (1, 3));
+    let given_again = Welcome {
+        device_commit_id: "sent-again".into(),
+        device_committed_at_ms: 9,
+        ..welcome(2)
+    };
+    assert_eq!(copy.connected(&given_again), Reconnect::AheadOfServer);
+    assert_eq!((copy.accepted(), copy.held_through()), (2, 0));
+    assert!(copy.lost_here(7) && copy.lost_here(3));
+    assert_eq!(copy.halted(), None);
+}
+
+#[test]
+fn a_slot_kept_without_a_token_bounds_nothing_until_a_result_is_applied() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, Base::from(3))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut ids = IdGen::new(1);
+    let empty = Welcome {
+        device_commit_id: String::new(),
+        device_committed_at_ms: 0,
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&empty), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 0);
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    commits
+        .received(CommitResult {
+            committed_at_ms: 50,
+            ..result(5, vec![outcome(op_result::Code::Applied)])
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 5));
+    assert_eq!((commits.accepted(), commits.held_through()), (2, 5));
+    assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 5);
 }

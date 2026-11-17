@@ -7,6 +7,17 @@ upgrade_case!(commit_slot_tokens, |store| {
             let kept: Vec<(u64, koidrive_engine::commit::Base)> =
                 (1..=3).map(|slot| (slot, slot.into())).collect();
             assert_eq!(state.commits.slots, kept.into_iter().collect());
+            let mut commits =
+                koidrive_engine::commit::Commits::from_state(state.commits.clone()).unwrap();
+            let welcome = koidrive_proto::v1::Welcome {
+                history_id: tx.cursor()?.unwrap().history_id,
+                device_seq: 3,
+                device_commit_id: tx.cursor()?.unwrap().commit_id,
+                device_committed_at_ms: 3,
+                ..Default::default()
+            };
+            commits.connected(&welcome);
+            assert_eq!(commits.held_through(), 0);
             let token = koidrive_engine::commit::Base {
                 seq: 3,
                 commit_id: "commit-3".into(),

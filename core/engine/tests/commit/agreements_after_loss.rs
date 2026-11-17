@@ -19,7 +19,7 @@ fn an_edit_the_server_took_first_from_another_device_is_sent_again_as_an_edit_af
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
     trees.settle(commits.aliases());
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     trees.set_remote("n".into(), remote_at(file(ROOT, "n", 7), 1));

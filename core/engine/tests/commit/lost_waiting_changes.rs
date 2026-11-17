@@ -383,7 +383,7 @@ fn an_edit_the_server_kept_is_not_sent_again_after_a_loss() {
     assert!(commits.acknowledge(&mut trees, 2));
     trees.settle(commits.aliases());
     commit_file(&mut trees, &mut commits, &mut ids, "p", 3);
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     assert_eq!(commits.held_through(), 2);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
     trees.remove_remote("p");
@@ -524,7 +524,7 @@ fn a_kept_move_that_another_device_reverses_before_a_loss_is_not_sent_again() {
     trees.settle(commits.aliases());
     commit_file(&mut trees, &mut commits, &mut ids, "p", 3);
     commit_file(&mut trees, &mut commits, &mut ids, "q", 4);
-    assert_eq!(commits.connected(&welcome(2)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 2)), Reconnect::AheadOfServer);
     assert_eq!(commits.held_through(), 3);
     let (gone, edited) = (trees.trashed_here(), trees.edited_here());
     trees.remove_remote("q");
@@ -583,7 +583,7 @@ fn a_kept_create_that_another_device_deletes_after_a_loss_stays_deleted() {
     );
     assert!(trees.waiting().contains_key("n"));
     commit_file(&mut trees, &mut commits, &mut ids, "p", 2);
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (gone, edited) = (trees.trashed_here(), trees.edited_here());
     trees.remove_remote("n");
     trees.remove_remote("p");
@@ -692,7 +692,7 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
             .map(|waiting| (&waiting.shape, waiting.origin)),
         Some((&Some(file(ROOT, "z", 1)), Origin::Commit(2)))
     );
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (gone, edited) = (trees.trashed_here(), trees.edited_here());
     trees.set_remote("n".into(), remote(file(ROOT, "old", 0)));
     trees.set_remote("k".into(), remote(file(ROOT, "z", 8)));

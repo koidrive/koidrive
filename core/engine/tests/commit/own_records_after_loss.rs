@@ -39,7 +39,7 @@ fn served_at_5_then_lost(
         trees.restore(trees.state()).unwrap();
         trees.rules_scanned();
     }
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (trashed, edited, moved) = (
         trees.trashed_here(),
         trees.edited_here(),

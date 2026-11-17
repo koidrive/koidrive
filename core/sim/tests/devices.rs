@@ -23,6 +23,8 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{RngSeed, TestRunner};
 
+#[path = "devices/reissued_slots.rs"]
+mod reissued_slots;
 #[path = "devices/restore_adopted_writes.rs"]
 mod restore_adopted_writes;
 #[path = "devices/restore_back_to_back.rs"]
