@@ -1,6 +1,6 @@
 # Testing
 
-[CI](../.github/workflows/ci.yml) runs every test suite on each pull request, in the merge queue and on `main`. The [property battery](#the-property-battery-runs-nightly-and-on-demand) runs opted-in stress properties at high case counts every night and when you start it. The [heavy tests workflow](#heavy-tests-run-on-github-actions) runs one package's tests on Ubuntu and macOS as many times as you ask. To run the Rust checks that CI runs:
+[CI](../.github/workflows/ci.yml) runs the test suites a change can reach on each pull request and in the merge queue, and every Linux suite on `main`. The [property battery](#the-property-battery-runs-nightly-and-on-demand) runs opted-in stress properties at high case counts every night and when you start it. The [heavy tests workflow](#heavy-tests-run-on-github-actions) runs one package's tests on Ubuntu and macOS as many times as you ask. To run the Rust checks that CI runs:
 
 ```sh
 cargo fmt --all --check
@@ -10,7 +10,7 @@ cargo test --workspace --locked --features koidrive-cli/test-install-inventory
 
 ## CI runs these jobs
 
-Each job runs on Ubuntu, and the jobs marked macOS run on macOS. A change whose files are all under `site/` skips the build and test jobs.
+Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` job picks the build and test jobs a change can reach. `scripts/ci-select` runs [determinator](https://docs.rs/determinator) on the Cargo graphs of the base and the change, which finds the packages whose files, dependencies or features changed and every package that builds or tests them. [`.github/ci-select.toml`](../.github/ci-select.toml) maps those packages and the files outside Rust packages to jobs. A file that no rule covers and no package holds runs every job, and so does a change to `ci.yml`, the selector, the toolchain or the root `Cargo.toml`. The merge queue selects against the queue's base, which holds every pull request ahead in the queue. The `changes` log names each job with the file or package that selects it.
 
 | Job | What it checks | Run it locally |
 |---|---|---|
@@ -23,7 +23,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. A change whose 
 | `macos app` (macOS) | The app builds, the Swift bindings' tests pass, and an unsigned disk image packages and verifies | In `apps/macos/`: `scripts/build-ffi.sh`, then `swift test --package-path KoidriveFFI` |
 | `runner hook` (macOS) | The self-hosted runners' job-started hook and its installer | `.github/runner/test-job-started.sh` and `.github/runner/test-install-hook.sh` |
 
-On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. `runner hook` runs when it touches `.github/runner/`. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs every macOS job, and a push to `main` runs each one the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners unless the `MACOS_RUNS_ON` variable selects the [self-hosted runners](../.github/runner/README.md).
+On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. `runner hook` runs when it touches `.github/runner/`. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` runs each macOS job unless a passing merge queue run on the same commit passed it or did not select it. The macOS jobs run on GitHub-hosted runners unless the `MACOS_RUNS_ON` variable selects the [self-hosted runners](../.github/runner/README.md).
 
 One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test is skipped unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
 
