@@ -1356,7 +1356,7 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, reverts, cycle_reverts, given_up) = loop {
+        let (planned, deletes, reverts, cycle_reverts, given_up, retrashed) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1551,6 +1551,7 @@ impl Commits {
             trees.pending_finishes()[id].origin == FinishOrigin::Legacy
                 || (trees.remote().get(id)).is_none_or(|remote| remote.pending_for.is_none())
         }) || !released.is_empty()
+            || retrashed
             || (ops.iter().filter_map(|op| op.op.as_ref()))
                 .any(|op| trees.resends().contains(op_node(op)));
         let restores = (ops.iter().enumerate())
@@ -3773,6 +3774,7 @@ type Planned = (
     Vec<NodeId>,
     Vec<NodeId>,
     BTreeSet<NodeId>,
+    bool,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -4108,6 +4110,7 @@ fn plan(
     let mut wants: Vec<Option<Want>> = wants.into_iter().map(Some).collect();
     let mut ops = Vec::new();
     let mut deletes = BTreeMap::new();
+    let mut retrashed = false;
     let removed = |id: &NodeId| {
         trees.local().get(id).is_none()
             && (trees.synced().get(id).is_some() || trees.is_removed_here(id))
@@ -4219,6 +4222,7 @@ fn plan(
                 })
             }
             Want::Retrash { id, members } => {
+                retrashed = true;
                 for node in &members {
                     let shape = &trees.remote().get(node).expect("revived from R").shape;
                     let placed = op::Op::Move(proto::Move {
@@ -4626,7 +4630,14 @@ fn plan(
                 && filled_at.is_some_and(|filled| filled < (last, within))
         });
     (
-        (ops, deletes, reverts, cycle_reverts, deferred_retrash),
+        (
+            ops,
+            deletes,
+            reverts,
+            cycle_reverts,
+            deferred_retrash,
+            retrashed,
+        ),
         exact,
     )
 }
@@ -5591,6 +5602,12 @@ impl<'a> Scratch<'a> {
             }
             false
         };
+        let clear = |node: &str| {
+            removed(node)
+                && (scratch.subtree(node).iter())
+                    .filter(|below| revived.contains(*below) && trees.local().get(below).is_none())
+                    .all(|below| removed(below))
+        };
         let outside: BTreeSet<NodeId> = (revived.iter())
             .filter(|node| {
                 !answers.contains(*node)
@@ -5598,7 +5615,7 @@ impl<'a> Scratch<'a> {
                     && !self.sending.contains(*node)
                     && !(riding(node) && trees.local().get(node).is_some())
                     && !restored.contains(*node)
-                    && (answered.is_some() || trees.local().get(node).is_none())
+                    && (answered.is_some() || clear(node))
             })
             .cloned()
             .collect();
@@ -5608,7 +5625,6 @@ impl<'a> Scratch<'a> {
             if scratch
                 .parent(top)
                 .is_some_and(|parent| outside.contains(parent))
-                || (answered.is_none() && !removed(top))
             {
                 continue;
             }

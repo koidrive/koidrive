@@ -453,6 +453,27 @@ describe("conflict rules", () => {
     }
   });
 
+  it("R8: a commit that trashes a member again under require_head is refused when another device restored the member after its base", async () => {
+    const { a, b, root } = await setup();
+    const [outer, inner, keep] = [uuidv7(), uuidv7(), uuidv7()];
+    await a.commit([op.mkdir(outer, root, "Outer"), op.mkdir(inner, outer, "Inner"), op.mkdir(keep, root, "Keep")]);
+    const { nodeId: file } = await createFile(a, inner, "notes.txt", "1");
+    b.baseSeq = a.baseSeq;
+    await b.commit([op.delete(outer)]);
+    const planned = b.baseSeq;
+    await b.commit([op.restore(file, { targetParentId: keep })]);
+    a.baseSeq = planned;
+    const refused = await a.commitRaw(
+      [op.move(outer, root, "Outer 2"), op.move(inner, outer, "Inner"), op.move(file, inner, "notes.txt"), op.delete(inner)],
+      { requireHead: true },
+    );
+    expect(refused.case === "error" && refused.value.code).toBe(Error_Code.HEAD_MOVED);
+    const tree = await b.tree();
+    expect(tree.get(file)?.status).toBe(NodeStatus.LIVE);
+    expect(tree.get(file)?.parentId).toBe(keep);
+    expect(tree.get(outer)?.status ?? NodeStatus.TRASHED).toBe(NodeStatus.TRASHED);
+  });
+
   it("R9 and R10: restores from the trash and restores an old version", async () => {
     const { a, root } = await setup();
     const dir = uuidv7();

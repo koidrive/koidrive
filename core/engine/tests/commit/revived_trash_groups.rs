@@ -349,6 +349,106 @@ fn a_rename_out_of_the_trash_trashes_again_only_the_members_its_user_removed() {
 }
 
 #[test]
+fn a_rename_out_of_the_trash_leaves_a_member_another_device_restored_after_its_plan_where_it_was_put()
+ {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        (
+            "g",
+            None,
+            Some(file("t", "g", 1)),
+            Some(trashed(file("t", "g", 1))),
+        ),
+        (
+            "k",
+            Some(dir(ROOT, "K")),
+            Some(dir(ROOT, "K")),
+            Some(remote(dir(ROOT, "K"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "t", "g"), delete("g")]
+    );
+    assert!(commit.require_head);
+
+    commits
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .unwrap();
+    trees.set_remote("g".into(), remote_at(file("k", "g", 1), 3));
+    trees.settle(commits.aliases());
+    let again = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&again), [mv("t", ROOT, "T2")]);
+}
+
+#[test]
+fn a_rename_out_of_the_trash_keeps_a_folder_its_user_removed_live_while_it_holds_a_member_another_device_edited()
+ {
+    let edited = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 3,
+        ..trashed(file("s", "g", 2))
+    };
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        ("s", None, Some(dir("t", "s")), Some(trashed(dir("t", "s")))),
+        ("g", None, Some(file("s", "g", 1)), Some(edited)),
+        (
+            "h",
+            None,
+            Some(file("s", "h", 1)),
+            Some(trashed(file("s", "h", 1))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("h", "s", "h"), delete("h")]
+    );
+}
+
+#[test]
+fn a_rename_out_of_the_trash_keeps_a_folder_its_user_removed_live_while_it_holds_a_member_this_device_never_held()
+ {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        ("s", None, Some(dir("t", "s")), Some(trashed(dir("t", "s")))),
+        (
+            "g",
+            None,
+            Some(file("s", "g", 1)),
+            Some(trashed(file("s", "g", 1))),
+        ),
+        ("n", None, None, Some(trashed(file("s", "n", 3)))),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "s", "g"), delete("g")]
+    );
+}
+
+#[test]
 fn a_rename_out_of_the_trash_keeps_a_member_another_device_edited_before_trashing_it() {
     let edited = RemoteNode {
         content_rev: 2,
