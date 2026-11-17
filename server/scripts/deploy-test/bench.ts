@@ -131,8 +131,8 @@ async function workerCpu(script: string, path: string): Promise<void> {
   }
   const rows: string[] = [];
   let unavailable: string | undefined;
+  const deadline = Date.now() + ANALYTICS_MS;
   for (const window of windows) {
-    const deadline = Date.now() + ANALYTICS_MS;
     let seen: Invocations | undefined;
     try {
       for (;;) {
@@ -147,7 +147,7 @@ async function workerCpu(script: string, path: string): Promise<void> {
     }
     const n = seen?.sum.requests ?? 0;
     const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
-    rows.push("| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial after " + ANALYTICS_MS / 60_000 + " min)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |");
+    rows.push("| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |");
   }
   if (unavailable) emit(unavailable);
   if (rows.length === 0) return;

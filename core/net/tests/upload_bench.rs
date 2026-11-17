@@ -605,7 +605,7 @@ async fn small_file_benchmark() {
             .create_space(
                 &auth,
                 &CreateSpaceRequest {
-                    name: format!("Small-file benchmark {side}"),
+                    name: format!("Small-file benchmark {side} run {run}"),
                     request_id: String::new(),
                 },
             )
