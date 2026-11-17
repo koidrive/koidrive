@@ -152,6 +152,7 @@ impl Lifecycle {
         {
             return Err(io::Error::other("the folder's unlink is unfinished"));
         }
+        self.forget_unlink()?;
         if checkpoint.root != Some(root) || checkpoint.halt.is_some() {
             let next = Checkpoint {
                 root: Some(root),
@@ -178,10 +179,7 @@ impl Lifecycle {
             synced: checkpoint.synced,
             ..Checkpoint::default()
         };
-        koidrive_state_file::remove_with_legacy_matching(
-            &self.path.with_file_name(UNLINKING),
-            |_| false,
-        )?;
+        self.forget_unlink()?;
         self.save(&next)?;
         self.cleared(checkpoint.halt.as_ref());
         *checkpoint = next;
@@ -207,9 +205,20 @@ impl Lifecycle {
             synced: checkpoint.synced,
         };
         koidrive_state_file::write(&self.path.with_file_name(UNLINKING), b"")?;
-        self.save(&next)?;
+        if let Err(error) = self.save(&next) {
+            let _ = self.forget_unlink();
+            return Err(error);
+        }
         *checkpoint = next;
         Ok(())
+    }
+
+    fn forget_unlink(&self) -> io::Result<()> {
+        let marker = self.path.with_file_name(UNLINKING);
+        match marker.exists() {
+            true => koidrive_state_file::remove_with_legacy_matching(&marker, |_| false),
+            false => Ok(()),
+        }
     }
 
     pub(crate) fn settle_unreadable(&self) {
@@ -507,6 +516,22 @@ mod tests {
         let reopened = Lifecycle::open(&store, status(), Recorder::off());
         let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
         assert_eq!(halt.why, Some(Halted::Store));
+    }
+
+    #[test]
+    fn an_unlink_that_failed_to_begin_or_a_later_claim_leaves_no_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let identity = Identity::of(&fs::metadata(dir.path()).unwrap());
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        let blocked = store.with_file_name("lifecycle.json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(lifecycle.begin_unlink().is_err());
+        assert!(!store.with_file_name(UNLINKING).exists());
+        fs::remove_dir(&blocked).unwrap();
+        fs::write(store.with_file_name(UNLINKING), b"").unwrap();
+        lifecycle.claimed(identity).unwrap();
+        assert!(!store.with_file_name(UNLINKING).exists());
     }
 
     #[test]
