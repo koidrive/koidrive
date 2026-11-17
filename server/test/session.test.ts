@@ -45,6 +45,7 @@ import { CallFailure } from "../src/space/commit";
 import { MIGRATIONS as SPACE_MIGRATIONS } from "../src/space/schema";
 import { chunkKey, encodeChunkList } from "../src/space/store";
 import worker from "../src/worker";
+import { decodeChunkBundle } from "../src/chunk-bundle";
 import { type AccountDO } from "../src/account-do";
 import { SESSION_LEASE_MS } from "../src/account/account";
 import { content, op, storedObjects, targetIncarnation } from "./helpers";
@@ -2458,6 +2459,33 @@ describe("chunk bundles", () => {
     expect(await post(undecodable)).toEqual([413, Error_Code.LIMIT_EXCEEDED]);
     expect(await post(new Uint8Array([0x0a, 0x05, 0x00]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
     expect(await post(new Uint8Array([0x0b]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
+  });
+
+  it("keeps no unknown fields of a bundle, at the top level or inside a chunk, when it decodes one", async () => {
+    const { spaceId } = await planned("unknown fields");
+    const varint = (n: number) => {
+      const out: number[] = [];
+      for (; n >= 0x80; n = Math.floor(n / 0x80)) out.push((n & 0x7f) | 0x80);
+      return [...out, n];
+    };
+    const n = 2097150;
+    const topLevel = new Uint8Array(2 + n * 2);
+    topLevel[0] = 0x0a;
+    for (let i = 0; i < n; i++) topLevel[2 + 2 * i] = 0x12;
+    const m = n - 3;
+    const inner = new Uint8Array(m * 2 + 3);
+    for (let i = 0; i < m; i++) inner[2 * i] = 0x1a;
+    inner.set([0x12, 0x01, 0x41], m * 2);
+    const inChunk = new Uint8Array([0x0a, ...varint(inner.length), ...inner]);
+    for (const bytes of [topLevel, inChunk]) {
+      expect(bytes.length).toBeLessThanOrEqual(4 << 20);
+      const decoded = decodeChunkBundle(bytes);
+      expect(decoded.chunks).toHaveLength(1);
+      expect([decoded.$unknown, decoded.chunks[0]!.$unknown]).toEqual([undefined, undefined]);
+      const response = await exports.default.fetch(new Request(bundlePath(spaceId), { method: "POST", body: bytes, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(bytes.length) } }));
+      expect(response.status).not.toBe(200);
+      expect(fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer())).code).not.toBe(Error_Code.INTERNAL);
+    }
   });
 
   it("exports from the Worker module only entrypoints the runtime accepts", async () => {

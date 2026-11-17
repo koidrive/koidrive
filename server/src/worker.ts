@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { create, fromBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import { type Identity, type ServerKey, bearerToken, verifyAccessToken } from "./auth";
 import {
   AccessTokenSchema,
@@ -21,14 +21,13 @@ import {
 } from "./gen/koidrive/v1/auth_pb";
 import { UploadReceiptSchema } from "./gen/koidrive/v1/commit_pb";
 import {
-  type BundledChunk,
   type BundledChunkResult,
   BundledChunkResultSchema,
   ChunkBundleResultSchema,
-  ChunkBundleSchema,
   Error_Code,
   ErrorSchema,
 } from "./gen/koidrive/v1/rpc_pb";
+import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chunk-bundle";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply } from "./http";
@@ -201,7 +200,6 @@ async function storeChunk(
   return create(BundledChunkResultSchema, { hash, status: 200, receipt: create(UploadReceiptSchema, { hash, size, token }) });
 }
 
-const MAX_BUNDLE_CHUNKS = 32;
 const MAX_BUNDLED_CHUNK_BYTES = 1 << 20;
 const MAX_BUNDLE_BYTES = 4 << 20;
 const BUNDLE_WRITES_AT_ONCE = 6;
@@ -217,12 +215,7 @@ async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId:
   if (bytes.length > MAX_BUNDLE_BYTES) return tooLarge();
   const entries = countBundledChunks(bytes);
   if (entries < 1 || entries > MAX_BUNDLE_CHUNKS) return errorReply(request, Error_Code.LIMIT_EXCEEDED, `a bundle holds 1 to ${MAX_BUNDLE_CHUNKS} chunks`);
-  let chunks: BundledChunk[];
-  try {
-    chunks = fromBinary(ChunkBundleSchema, bytes).chunks;
-  } catch {
-    throw new BadRequest("body is not a valid koidrive.v1.ChunkBundle");
-  }
+  const { chunks } = decodeChunkBundle(bytes);
   const seen = new Set<string>();
   const uploads = chunks.map((chunk) => {
     let target: URL;
@@ -253,38 +246,6 @@ async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId:
   };
   await Promise.all(Array.from({ length: Math.min(BUNDLE_WRITES_AT_ONCE, uploads.length) }, writer));
   return reply(request, ChunkBundleResultSchema, create(ChunkBundleResultSchema, { results }));
-}
-
-function countBundledChunks(bytes: Uint8Array): number {
-  const malformed = () => new BadRequest("body is not a valid koidrive.v1.ChunkBundle");
-  let at = 0;
-  const varint = () => {
-    let value = 0;
-    for (let shift = 0; ; shift += 7) {
-      if (at >= bytes.length || shift > 49) throw malformed();
-      const byte = bytes[at++]!;
-      value += (byte & 0x7f) * 2 ** shift;
-      if (byte < 0x80) return value;
-    }
-  };
-  const skip = (length: number) => {
-    if (length > bytes.length - at) throw malformed();
-    at += length;
-  };
-  let count = 0;
-  while (at < bytes.length) {
-    const tag = varint();
-    const field = Math.floor(tag / 8);
-    const wire = tag % 8;
-    if (field === 0) throw malformed();
-    if (wire === 0) varint();
-    else if (wire === 1) skip(8);
-    else if (wire === 2) skip(varint());
-    else if (wire === 5) skip(4);
-    else throw malformed();
-    if (field === 1 && ++count > MAX_BUNDLE_CHUNKS) return count;
-  }
-  return count;
 }
 
 class LimitExceeded extends Error {}
