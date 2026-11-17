@@ -3099,6 +3099,33 @@ fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_
 }
 
 #[test]
+fn a_marked_folder_named_like_its_pending_name_in_another_normal_form_is_adopted_and_moved() {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "cafe\u{301}"))],
+        &[],
+        &[live("p", dir(ROOT, "caf\u{e9} (pending)"))],
+    );
+    mark(&mut trees, "p", "caf\u{e9}");
+    let mut logged = History::new();
+    logged
+        .entry("p".into())
+        .or_default()
+        .push(dir(ROOT, "caf\u{e9} (pending)"));
+    let marks: Marks = [("f".to_owned(), "p".to_owned())].into_iter().collect();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    trees.settle();
+    assert_eq!(groups(&commits), []);
+    assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "cafe\u{301}")));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "p".to_owned())]
+    );
+}
+
+#[test]
 fn a_waiting_marked_entry_takes_no_other_node_at_its_place() {
     let (trees, _, _) = followed(
         &[
@@ -3335,21 +3362,56 @@ proptest! {
     fn a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history(
         genes in proptest::collection::vec(any::<u8>(), 64),
     ) {
-        let drawn = drawn(&genes);
-        let remote: Vec<Remote> = (drawn.remote.iter())
-            .map(|(id, shape, trashed)| Remote(id, shape.clone(), *trashed, 1))
-            .collect();
-        let marks: Vec<(&str, &str)> = (drawn.marks.iter())
-            .map(|(local, node)| (local.as_str(), node.as_str()))
-            .collect();
-        followed(
-            &as_str(&drawn.local),
-            &as_str(&drawn.synced),
-            &remote,
-            &as_str(&drawn.history),
-            &marks,
-        );
+        follows_drawn_marks(&genes);
     }
+}
+
+fn follows_drawn_marks(genes: &[u8]) {
+    let drawn = drawn(genes);
+    let remote: Vec<Remote> = (drawn.remote.iter())
+        .map(|(id, shape, trashed)| Remote(id, shape.clone(), *trashed, 1))
+        .collect();
+    let marks: Vec<(&str, &str)> = (drawn.marks.iter())
+        .map(|(local, node)| (local.as_str(), node.as_str()))
+        .collect();
+    followed(
+        &as_str(&drawn.local),
+        &as_str(&drawn.synced),
+        &remote,
+        &as_str(&drawn.history),
+        &marks,
+    );
+}
+
+#[test]
+fn a_mark_whose_node_an_entry_later_in_the_walk_frees_follows_before_its_place_is_adopted() {
+    let (trees, _, _) = followed(
+        &[("n0", file(ROOT, "c", 2)), ("n1", file(ROOT, "b", 1))],
+        &[],
+        &[
+            live("n0", file(ROOT, "b", 1)),
+            Remote("n1", file(ROOT, "c", 1), true, 1),
+            Remote("n2", file(ROOT, "a", 2), true, 1),
+        ],
+        &[
+            ("n0", file(ROOT, "b", 1)),
+            ("n1", file(ROOT, "b", 1)),
+            ("n2", file(ROOT, "c", 2)),
+        ],
+        &[("n0", "n1"), ("n1", "n0")],
+    );
+    assert_eq!(local_shape(&trees, "n0"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.synced().live("n0"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.synced().live("n1"), None);
+}
+
+#[test]
+fn a_mark_claims_its_node_from_an_entry_named_like_it_in_another_normal_form() {
+    follows_drawn_marks(&[
+        129, 53, 0, 4, 13, 0, 0, 104, 0, 188, 0, 0, 0, 125, 166, 0, 0, 0, 0, 44, 0, 136, 20, 0, 0,
+        0, 0, 29, 0, 221, 109, 0, 0, 0, 0, 38, 1, 0, 14, 52, 234, 103, 21, 0, 103, 20, 110, 92, 1,
+        0, 4, 17, 0, 1, 43, 133, 133, 7, 255, 0, 0, 0, 0, 0,
+    ]);
 }
 
 #[test]

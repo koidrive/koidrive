@@ -66,7 +66,14 @@ pub enum PriorSync {
 /// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
-    adopt_around(trees, history, &BTreeMap::new(), &BTreeSet::new()).0
+    adopt_around(
+        trees,
+        history,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    )
+    .0
 }
 
 pub(crate) fn adopt_around(
@@ -74,7 +81,15 @@ pub(crate) fn adopt_around(
     history: Option<&History>,
     claimed: &BTreeMap<NodeId, NodeId>,
     named: &BTreeSet<NodeId>,
+    blocked_by: &BTreeMap<NodeId, NodeId>,
 ) -> (Vec<NodeId>, bool) {
+    let blocked = |trees: &Trees, id: &NodeId| {
+        blocked_by.get(id).is_some_and(|node| {
+            trees.local().get(node).is_some()
+                && trees.synced().get(node).is_none()
+                && !trees.excluded(node)
+        })
+    };
     let claimants: BTreeSet<&NodeId> = claimed.values().collect();
     let remote: BTreeMap<(NodeId, String), NodeId> = (trees.remote().iter())
         .filter(|(_, node)| !node.trashed)
@@ -113,9 +128,21 @@ pub(crate) fn adopt_around(
     }
     let mut held = Vec::new();
     let mut pending = vec![trees.local().root.clone()];
-    while let Some(parent) = pending.pop() {
-        let mut children: Vec<(String, NodeId)> = (trees.local_children(&parent))
-            .filter_map(|id| Some((trees.local().get(id)?.shape.name.clone(), id.clone())))
+    let mut deferred: Vec<NodeId> = Vec::new();
+    loop {
+        let ids: Vec<NodeId> = match pending.pop() {
+            Some(parent) => trees.local_children(&parent).cloned().collect(),
+            None => {
+                let ready: Vec<NodeId> =
+                    (deferred.extract_if(.., |id| !blocked(trees, id))).collect();
+                if ready.is_empty() {
+                    break;
+                }
+                ready
+            }
+        };
+        let mut children: Vec<(String, NodeId)> = (ids.into_iter())
+            .filter_map(|id| Some((trees.local().get(&id)?.shape.name.clone(), id)))
             .collect();
         children.sort();
         for (name, id) in children {
@@ -129,6 +156,11 @@ pub(crate) fn adopt_around(
                 }
                 continue;
             }
+            if blocked(trees, &id) {
+                deferred.push(id);
+                continue;
+            }
+            let parent = local.parent.clone();
             let key = (parent.clone(), nfc(&name));
             let matches = |remote_id: &NodeId, shape: &Shape| {
                 (*remote_id == id || trees.local().get(remote_id).is_none())
@@ -192,6 +224,7 @@ pub(crate) fn adopt_around(
             }
         }
     }
+    held.extend(deferred);
     (held, false)
 }
 
@@ -214,9 +247,10 @@ pub(crate) fn adopt_by_marks_first(
     let folders = folder_places(trees, history);
     give_up_claimed_ids(trees, history, &mut marks, ids, now_ms);
     loop {
+        let blocked_by = claims_to_follow(trees, history, &marks);
         let (_, mut waiting) = follow_marks(trees, history, &marks, &folders, Pass::Latest);
         'adopt: loop {
-            let (_, stopped) = adopt_around(trees, Some(history), &waiting, &named);
+            let (_, stopped) = adopt_around(trees, Some(history), &waiting, &named, &blocked_by);
             for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
                 let (followed, left) = follow_marks(trees, history, &marks, &folders, pass);
                 waiting = left;
@@ -353,7 +387,8 @@ fn follow_marks(
             let pending = (trees.remote().get(&node)).is_some_and(|remote| {
                 entry.kind == Kind::Dir
                     && remote.shape.parent == entry.parent
-                    && remote.pending_for.as_deref() == Some(entry.name.as_str())
+                    && (remote.pending_for.as_deref())
+                        .is_some_and(|stem| same_name(stem, &entry.name))
             });
             let same_bytes = entry.kind == Kind::File && same_bytes(&entry.content, &shape.content);
             if pending {
@@ -430,6 +465,23 @@ fn claimed_once<'a>(trees: &Trees, marks: &'a Marks) -> Vec<(&'a NodeId, &'a Nod
                 && trees.synced().get(local).is_none()
                 && (local == node || trees.local().get(node).is_none())
         })
+        .collect()
+}
+
+fn claims_to_follow(trees: &Trees, history: &History, marks: &Marks) -> BTreeMap<NodeId, NodeId> {
+    let mut claims: BTreeMap<&NodeId, usize> = BTreeMap::new();
+    for node in marks.values() {
+        *claims.entry(node).or_default() += 1;
+    }
+    (marks.iter())
+        .filter(|(local, node)| {
+            local != node
+                && claims[node] == 1
+                && (trees.local().get(local)).is_some_and(|entry| {
+                    !shapes_to_follow(trees, history, node, &entry.shape).is_empty()
+                })
+        })
+        .map(|(local, node)| (local.clone(), node.clone()))
         .collect()
 }
 
