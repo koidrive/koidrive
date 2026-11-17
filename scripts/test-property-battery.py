@@ -447,19 +447,30 @@ class Triage(unittest.TestCase):
                          {"PROPTEST_CASES": "0", "PROPTEST_RNG_SEED": None, "KOIDRIVE_BATTERY_CASES": None,
                           "KOIDRIVE_PROPTEST_DETERMINISTIC": None})
 
-    def test_a_build_with_weakened_runtime_checks_is_an_error(self):
-        def unit(name, kind, overflow_checks=True):
+    def test_a_replay_build_must_pass_the_runtime_checks_and_their_probe(self):
+        def unit(name, kind, overflow_checks=True, executable=None):
             return {"reason": "compiler-artifact", "package_id": name, "target": {"name": name, "kind": [kind]},
-                    "profile": {"debug_assertions": True, "overflow_checks": overflow_checks},
-                    "executable": "/bin/devices" if kind == "test" else None}
-        for units, expected in (([unit("koidrive_engine", "lib"), unit("devices", "test")], ("/bin/devices", None)),
-                                ([unit("koidrive_engine", "lib", False), unit("devices", "test")], None)):
-            with self.subTest(units=units), tempfile.TemporaryDirectory() as directory:
+                    "profile": {"debug_assertions": True, "overflow_checks": overflow_checks, "test": True},
+                    "executable": executable}
+        cases = (("checked", True, True, 0, None),
+                 ("weakened unit", False, True, 0, "koidrive_engine"),
+                 ("failing probe", True, True, 1, "the_build_keeps_debug_assertions_and_overflow_checks"),
+                 ("no probe binary", True, False, 0, "the_build_keeps_debug_assertions_and_overflow_checks"))
+        for name, overflow_checks, probe_built, probe_exit, problem_names in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
+                probe = root / "probe"
+                probe.write_text(f"#!/bin/sh\necho 'test result: ok. 1 passed;'\nexit {probe_exit}\n"
+                                 if probe_exit == 0 else "#!/bin/sh\necho 'test result: FAILED. 0 passed; 1 failed;'\n")
+                probe.chmod(0o755)
+                (root / "target.json").write_text(json.dumps(unit("koidrive_engine", "lib", overflow_checks)) + "\n"
+                                                  + json.dumps(unit("devices", "test", executable="/bin/devices")) + "\n")
+                (root / "probe.json").write_text(json.dumps(unit("koidrive_test_support", "lib",
+                                                                 executable=str(probe) if probe_built else None)) + "\n")
                 cargo = root / "cargo"
-                cargo.write_text("#!/bin/sh\ncat " + str(root / "build.json") + "\n")
+                cargo.write_text("#!/bin/sh\ncase \"$*\" in *koidrive-test-support*) cat " + str(root / "probe.json")
+                                 + " ;; *) cat " + str(root / "target.json") + " ;; esac\n")
                 cargo.chmod(0o755)
-                (root / "build.json").write_text("".join(json.dumps(item) + "\n" for item in units))
                 saved = os.environ["PATH"]
                 os.environ["PATH"] = str(root) + os.pathsep + saved
                 try:
@@ -467,14 +478,14 @@ class Triage(unittest.TestCase):
                         executable, problem = triage.build(root, "koidrive-sim", ["--test", "devices"])
                 finally:
                     os.environ["PATH"] = saved
-                if expected:
-                    self.assertEqual((executable, problem), expected)
-                else:
-                    self.assertIsNone(executable)
-                    self.assertIn("require-runtime-checks.sh", problem)
-                    self.assertIn("koidrive_engine", problem)
-                    self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2,
-                                                    [{"result": "error", "message": problem}]), "unknown")
+                if problem_names is None:
+                    self.assertEqual((executable, problem), ("/bin/devices", None))
+                    continue
+                self.assertIsNone(executable)
+                self.assertIn("require-runtime-checks.sh", problem)
+                self.assertIn(problem_names, problem)
+                self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2,
+                                                [{"result": "error", "message": problem}]), "unknown")
 
     def test_checked_profile_is_copied_whole(self):
         manifest = (ROOT / "Cargo.toml").read_text()

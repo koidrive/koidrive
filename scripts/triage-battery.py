@@ -181,25 +181,34 @@ def replay_one(executable, package_dir, test, timeout):
     return outcome(run.returncode, run.stdout)
 
 
-def build(checkout, package, selector):
+def cargo_no_run(checkout, package, selector):
     command = ["cargo", "test", "--locked", "--profile", "checked", "--no-run",
                "--message-format=json-render-diagnostics", "-p", package, *selector]
     print("::group::" + " ".join(command), flush=True)
     run = subprocess.run(command, cwd=checkout, stdout=subprocess.PIPE, text=True)
     print("::endgroup::", flush=True)
+    return run.stdout if run.returncode == 0 else None
+
+
+def build(checkout, package, selector):
     target = " ".join([package, *selector])
-    if run.returncode != 0:
+    output = cargo_no_run(checkout, package, selector)
+    if output is None:
         return None, f"cargo test --no-run for {target} failed"
-    with tempfile.NamedTemporaryFile("w", suffix=".json") as build_json:
-        build_json.write(run.stdout)
-        build_json.flush()
-        checks = subprocess.run(["bash", str(RUNTIME_CHECKS), build_json.name],
+    probe = cargo_no_run(checkout, "koidrive-test-support", ["--lib"])
+    if probe is None:
+        return None, "cargo test --no-run for koidrive-test-support --lib, the runtime-check probe, failed"
+    with tempfile.TemporaryDirectory() as directory:
+        files = [Path(directory) / "target.json", Path(directory) / "probe.json"]
+        for path, text in zip(files, (output, probe)):
+            path.write_text(text)
+        checks = subprocess.run(["bash", str(RUNTIME_CHECKS), *map(str, files)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     print(checks.stdout, end="", flush=True)
     if checks.returncode != 0:
         return None, f"the build of {target} fails require-runtime-checks.sh: " + " ".join(
             line.removeprefix("::error::") for line in checks.stdout.splitlines())
-    executable = next((message["executable"] for message in map(json.loads, run.stdout.splitlines())
+    executable = next((message["executable"] for message in map(json.loads, output.splitlines())
                        if message.get("reason") == "compiler-artifact" and message.get("executable")), None)
     return (executable, None) if executable else (None, f"cargo test --no-run for {target} built no test binary")
 
