@@ -4,6 +4,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { type ClaimAttempt, MAX_SETUP_ATTEMPT_LENGTH, MIN_RECOVERY_KEY_LENGTH, ownerOf, redeemClaim, stillUnused, storeClaimCode, wrongCode } from "./claim";
 import { ACCESS_TOKEN_MS, type ServerKey, signAccessToken } from "../auth";
 import { base64url, deriveSpaceKey, sha256 } from "../crypto";
+import { causeOf } from "../cause";
 import { errorText } from "../errors";
 import {
   type AccessToken,
@@ -609,7 +610,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
           info = await this.spaceStub(args.spaceId).rewindInfo(point);
         } catch (error) {
           console.error("rewind admission failed", errorText(error));
-          return failure(Error_Code.RETRY_LATER, "the space could not be read; retry the rewind");
+          return { ok: false, code: Error_Code.RETRY_LATER, message: "the space could not be read; retry the rewind", cause: causeOf(error) };
         }
         if (info.bookmark === undefined) return failure(Error_Code.INVALID_ARGUMENT, "restore_point_ms is before the space's point-in-time history begins");
         if (info.historyId !== args.expectedHistoryId) return failure(Error_Code.HISTORY_MISMATCH, "expected_history_id is not the space's current history");

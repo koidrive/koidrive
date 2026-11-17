@@ -2,7 +2,7 @@
 
 import { create } from "@bufbuild/protobuf";
 import { base64url, fromBase64url, hmac, hmacVerify } from "../crypto";
-import { Error_Code } from "../gen/koidrive/v1/rpc_pb";
+import { type Error_Cause, Error_Code } from "../gen/koidrive/v1/rpc_pb";
 import { type ShareLink, type ShareLinkList, ShareLinkListSchema, ShareLinkSchema } from "../gen/koidrive/v1/share_pb";
 import type { Sql } from "../host";
 import { isUuidV7 } from "../ids";
@@ -44,8 +44,8 @@ export interface ShareLinkRow {
   locked_until_ms: number | null;
 }
 
-export type Outcome<T> = { ok: true; value: T } | { ok: false; code: Error_Code; message: string };
-export type ShareOutcome<T> = { ok: true; value: T } | { ok: false; code: Error_Code; message: string; status: number; retryAfterMs?: number };
+export type Outcome<T> = { ok: true; value: T } | { ok: false; code: Error_Code; message: string; cause?: Error_Cause };
+export type ShareOutcome<T> = { ok: true; value: T } | { ok: false; code: Error_Code; message: string; status: number; retryAfterMs?: number; cause?: Error_Cause };
 
 function ok<T>(value: T): { ok: true; value: T } {
   return { ok: true, value };

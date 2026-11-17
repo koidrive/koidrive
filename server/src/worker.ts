@@ -36,7 +36,7 @@ import { BadRequest, errorReply, readMessage, reply } from "./http";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
-import { quotaRefusal } from "./quota";
+import { platformFailure } from "./quota";
 import { shareRoute } from "./share/routes";
 import { CONNECT_HEADER, type Connect, GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/space";
 import { chunkKey, INCARNATION } from "./space/store";
@@ -128,7 +128,7 @@ async function rewind(request: Request, env: Env, spaceId: string): Promise<Resp
     restorePointMs: Number(body.restorePointMs),
     expectedHistoryId: body.expectedHistoryId,
   });
-  if (!outcome.ok) return errorReply(request, outcome.code, outcome.message, REWIND_STATUS[outcome.code]);
+  if (!outcome.ok) return errorReply(request, outcome.code, outcome.message, REWIND_STATUS[outcome.code], outcome.cause);
   return reply(request, RewindResultSchema, create(RewindResultSchema, outcome.value));
 }
 
@@ -388,13 +388,9 @@ export default {
     } catch (error) {
       if (error instanceof BadRequest) return errorReply(request, Error_Code.INVALID_ARGUMENT, error.message);
       if (error instanceof LimitExceeded) return errorReply(request, Error_Code.LIMIT_EXCEEDED, error.message);
-      const quota = quotaRefusal(error, Date.now());
-      if (!quota) {
-        console.error("request failed", errorText(error));
-        return errorReply(request, Error_Code.INTERNAL, "internal error", 500, causeOf(error));
-      }
-      console.error("request stopped at a platform limit", errorText(error));
-      return reply(request, ErrorSchema, create(ErrorSchema, { code: Error_Code.QUOTA_EXCEEDED, message: quota.message, retryAfterMs: BigInt(quota.retryAfterMs), cause: quota.cause }), 429);
+      const failure = platformFailure(error, Date.now());
+      console.error(failure.code === Error_Code.QUOTA_EXCEEDED ? "request stopped at a platform limit" : "request failed", errorText(error));
+      return reply(request, ErrorSchema, create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs), cause: failure.cause }), failure.status);
     }
   },
 } satisfies ExportedHandler<Env>;

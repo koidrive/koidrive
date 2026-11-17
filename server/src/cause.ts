@@ -17,7 +17,7 @@ const MESSAGES: [RegExp, Error_Cause][] = [
   [/\bexceeded (?:its )?memory limit\b|\bMemory limit would be exceeded\b/i, Error_Cause.MEMORY_EXCEEDED],
 ];
 
-const R2_CODE = /\((1\d{4,5})\)\s*$/;
+const R2_CODE = /^[a-zA-Z]+: .*\((1\d{4})\)\s*$/s;
 
 function r2Cause(code: number): Error_Cause {
   if (code === 10058) return Error_Cause.R2_RATE_LIMITED;

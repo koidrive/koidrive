@@ -29,12 +29,21 @@ No field is removed or renumbered.
    | `CAUSE_DO_UNAVAILABLE` | a Durable Object error with `retryable` set |
    | `CAUSE_EXCEPTION` | anything else |
 
-3. The cause never changes the code or the HTTP status a failure would have without it. A Worker that catches an error at its top level answers `CODE_INTERNAL` with HTTP 500 and the cause, unless the error is a platform limit that §13 answers with `CODE_QUOTA_EXCEEDED`.
+3. A route that catches a platform failure itself keeps the code and HTTP status it answers and adds the cause. An error that no route catches is answered by its cause:
+
+   | Cause | Code | HTTP status |
+   |---|---|---|
+   | a platform limit that §13 covers | `CODE_QUOTA_EXCEEDED` | 429 |
+   | `CAUSE_R2_RATE_LIMITED` | `CODE_RETRY_LATER` | 429 |
+   | `CAUSE_R2_UNAVAILABLE`, `CAUSE_DO_OVERLOADED`, `CAUSE_DO_UNAVAILABLE`, `CAUSE_CPU_EXCEEDED`, `CAUSE_MEMORY_EXCEEDED` | `CODE_RETRY_LATER` | 503 |
+   | any other | `CODE_INTERNAL` | 500 |
+
+   A Space DO RPC that throws follows the same table.
 4. `message` stays free text for people. The cause is the only part of a failure meant for counting.
 
 ## 3. Client rules
 
-1. A client treats a refusal by its code alone. It never retries, waits or stops differently because of the cause.
+1. A client treats a refusal by its code, with one exception: when it may send the request again, it treats `CODE_INTERNAL` with a cause other than `CAUSE_UNSPECIFIED` and `CAUSE_EXCEPTION` like `CODE_RETRY_LATER`, because the platform failed and not the request.
 2. A client may count causes. A value it does not know counts as an unknown cause.
 3. A server without this RFC sends no cause. The client reads that as `CAUSE_UNSPECIFIED`.
 4. When the Worker gives no answer, Cloudflare's edge answers in its place with a non-protobuf body that holds `error code: ` and a number ([error codes](https://developers.cloudflare.com/workers/observability/errors/)): 1101 for an exception the Worker did not catch, 1102 for a Worker past its CPU time or memory limit, and 1027 for the Workers Free daily request limit. A client may read that number from an error body of at most 64 KiB with a known length, and count it like a cause.

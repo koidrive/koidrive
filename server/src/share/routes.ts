@@ -3,6 +3,7 @@
 import { create, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import type { Identity } from "../auth";
 import { Error_Code, ErrorSchema } from "../gen/koidrive/v1/rpc_pb";
+import { causeOf } from "../cause";
 import { errorText } from "../errors";
 import { CreateShareLinkRequestSchema, ShareInfoSchema, ShareLinkListSchema, ShareLinkSchema, ShareListingSchema, ShareUnlockRequestSchema } from "../gen/koidrive/v1/share_pb";
 import { BadRequest, errorReply, readMessage, reply } from "../http";
@@ -48,7 +49,7 @@ export function withHeaders(response: Response, headers: Record<string, string>)
 }
 
 function refusal(request: Request, failure: Failure): Response {
-  const error = create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs ?? 0) });
+  const error = create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs ?? 0), cause: failure.cause });
   const response = reply(request, ErrorSchema, error, failure.status);
   if (failure.retryAfterMs !== undefined) response.headers.set("Retry-After", String(Math.ceil(failure.retryAfterMs / 1000)));
   return response;
@@ -206,7 +207,8 @@ async function publicApi(request: Request, env: Env, linkId: string, rest: strin
       const checked = await space(env, spaceId).shareContinue({ linkId, client, session }, fence);
       return checked.ok ? undefined : checked;
     } catch (error) {
-      return { ok: false, code: Error_Code.RETRY_LATER, message: `the fence check failed: ${error instanceof Error ? error.message : String(error)}`, status: 503 };
+      console.error("share fence check failed", errorText(error));
+      return { ok: false, code: Error_Code.RETRY_LATER, message: "this link is temporarily unavailable; retry later", status: 503, cause: causeOf(error) };
     }
   });
 }
