@@ -254,6 +254,8 @@ fn keep(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure>
 
 const REWIND_SEED: u64 = 501;
 
+include!("corpus-replay/harness.rs");
+
 macro_rules! test_name {
     ($test:ident) => {
         concat!(module_path!(), "::", stringify!($test))
