@@ -411,11 +411,6 @@ export function parseListing(text: string): Map<string, string> {
   }));
 }
 
-export function removedByRewind(before: Map<string, string>, rewound: Map<string, string>): string[] {
-  const kept = new Set(rewound.values());
-  return [...before].filter(([path, hash]) => !rewound.has(path) && !kept.has(hash)).map(([path]) => path);
-}
-
 async function answerRewind(on: Device, token: "keep" | "discard", expected?: string[]): Promise<void> {
   let decision: Decision;
   try {
@@ -443,7 +438,11 @@ async function settled(on: Device, expected?: string): Promise<Map<string, strin
   let files = new Map<string, string>();
   try {
     await until("the folder on " + on.name + " to settle after the rewind", SYNC_MS, () => {
-      files = listing(on.folder);
+      try {
+        files = listing(on.folder);
+      } catch {
+        return undefined;
+      }
       const status = folder(on);
       return status.state === "up_to_date" && status.questions === 0 && (expected === undefined || format(files) === expected) ? true : undefined;
     });
@@ -639,15 +638,19 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     console.log("Rewound the space to " + new Date(point).toISOString() + ": " + JSON.stringify(result));
     checkRewind({ REWIND_CHECK: "after", SPACE_ID: space_id, HISTORY_ID: String(result.historyId), RESTORE_SEQ: String(result.restoreSeq) });
     const expected = readFileSync(temp("rewound-server-listing.txt"), "utf8");
-    const rewound = parseListing(expected);
-    const removed = removedByRewind(before, rewound);
+    const removed = JSON.parse(readFileSync(temp("removed-by-rewind.json"), "utf8")) as { items: string[]; files: string[] };
     console.log("The rewind removed from the server: " + JSON.stringify(removed));
-    writeFileSync(keptListingFile(), format(new Map([...rewound, ...removed.map((path) => [path, before.get(path)!] as [string, string])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))));
-    await answerRewind(linux, "discard", removed);
+    const kept = removed.files.map((path) => [path, before.get(path) ?? fail("linux does not hold " + path + ", which the log held at its head")] as [string, string]);
+    writeFileSync(keptListingFile(), format(new Map([...parseListing(expected), ...kept].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))));
+    await answerRewind(linux, "discard", removed.items);
     let files = new Map<string, string>();
     try {
       await until("the folder on linux to follow the rewound space", SYNC_MS, () => {
-        files = listing(linux.folder);
+        try {
+          files = listing(linux.folder);
+        } catch {
+          return undefined;
+        }
         const status = folder(linux);
         return status.state === "up_to_date" && status.questions === 0 && status.history_id === String(result.historyId) && format(files) === expected ? true : undefined;
       });
