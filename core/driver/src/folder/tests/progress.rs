@@ -585,3 +585,22 @@ fn a_question_that_holds_no_change_is_not_waited_on() {
     b.folder.track_progress(FolderState::CatchingUp);
     assert_eq!(b.folder.activity(FolderState::CatchingUp), Some(Activity::CatchingUp));
 }
+
+#[test]
+fn a_first_link_whose_files_wait_for_the_person_says_so() {
+    let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("theirs.txt"), b"written on a");
+    fs::write(site.root.join("mine.txt"), b"mine").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(b.folder.view().questions, 1);
+    b.folder.track_progress(b.state());
+    assert_eq!((b.state(), counts(&b)), (FolderState::CatchingUp, None));
+    assert_eq!(activity(&b), Some(Activity::AwaitingAnswers { questions: 1 }));
+}

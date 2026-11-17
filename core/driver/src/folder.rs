@@ -1423,7 +1423,13 @@ impl Folder {
             .collect();
         let mut other_changes = 0;
         let mut waiting = BTreeSet::new();
-        for id in (trees.dirty().iter()).filter(|id| !stays_out(id) && !trees.held(id)) {
+        for id in (trees.dirty().iter()).filter(|id| !stays_out(id)) {
+            if trees.held(id) {
+                if asked.contains(id) {
+                    waiting.insert(id);
+                }
+                continue;
+            }
             let local = file(trees.local().live(id));
             let synced = file(trees.synced().live(id));
             let remote = file(trees.remote().live(id));
