@@ -363,4 +363,14 @@ mod tests {
         .unwrap();
         cases.load();
     }
+
+    #[test]
+    fn the_build_keeps_debug_assertions_and_overflow_checks() {
+        let debug_assertion =
+            std::panic::catch_unwind(|| debug_assert!(std::hint::black_box(false)));
+        let overflow =
+            std::panic::catch_unwind(|| std::hint::black_box(u8::MAX) + std::hint::black_box(1));
+        assert!(debug_assertion.is_err(), "debug_assert! did not fire");
+        assert!(overflow.is_err(), "an integer overflow did not panic");
+    }
 }

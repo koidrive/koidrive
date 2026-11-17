@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
@@ -12,6 +13,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/property-battery.yml"
 HEAVY_WORKFLOW = ROOT / ".github/workflows/heavy-tests.yml"
+CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
+RUNTIME_CHECKS = ROOT / "scripts/require-runtime-checks.sh"
 
 
 def commands(workflow):
@@ -115,6 +118,78 @@ class PropertyBattery(unittest.TestCase):
                 self.assertIn("ordinary=unset stress=2 seed=17", output)
                 self.assertIn("arg=a filter", output)
             self.assertIn("arg=--test\narg=engine_sync", output)
+
+
+class RuntimeChecks(unittest.TestCase):
+    def check(self, *units, probe="test result: ok. 1 passed; 0 failed"):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "probe"
+            executable.write_text(f"#!/bin/sh\necho '{probe}'\n")
+            executable.chmod(0o755)
+            support = self.unit("koidrive_test_support")
+            support["profile"]["test"] = True
+            support["executable"] = str(executable)
+            build = Path(directory) / "build.json"
+            build.write_text("".join(json.dumps(unit) + "\n" for unit in (*units, support) if probe is not None or unit is not support))
+            return subprocess.run([str(RUNTIME_CHECKS), str(build)], capture_output=True, text=True)
+
+    @staticmethod
+    def unit(name, kind="lib", debug_assertions=True, overflow_checks=True):
+        return {"reason": "compiler-artifact", "package_id": name, "target": {"name": name, "kind": [kind]},
+                "profile": {"debug_assertions": debug_assertions, "overflow_checks": overflow_checks}}
+
+    def test_units_with_both_checks_pass(self):
+        result = self.check(self.unit("koidrive_engine"), self.unit("devices", "test"), {"reason": "build-finished"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("3 units build with debug assertions and overflow checks, and the runtime probe passed", result.stdout)
+
+    def test_a_failing_or_missing_probe_fails(self):
+        for probe in ("test result: FAILED. 0 passed; 1 failed", "test result: ok. 0 passed; 0 failed", None):
+            with self.subTest(probe=probe):
+                result = self.check(self.unit("devices", "test"), probe=probe)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RUSTFLAGS", result.stdout)
+
+    def test_a_unit_without_a_check_fails(self):
+        for weakened in ({"debug_assertions": False}, {"overflow_checks": False}, {"overflow_checks": None}):
+            with self.subTest(weakened=weakened):
+                result = self.check(self.unit("devices", "test"), self.unit("koidrive_engine", **weakened))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("koidrive_engine", result.stdout)
+
+    def test_build_scripts_and_proc_macros_run_only_at_build_time(self):
+        result = self.check(self.unit("devices", "test"),
+                            self.unit("build_script_build", "custom-build", False, False),
+                            self.unit("prost_derive", "proc-macro", False, False))
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_build_without_units_fails(self):
+        result = self.check({"reason": "build-finished"}, probe=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no compiled unit", result.stdout)
+
+    def test_every_test_build_checks_its_units(self):
+        battery = WORKFLOW.read_text()
+        self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"', battery)
+        ci = CI_WORKFLOW.read_text()
+        self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"', ci)
+        self.assertIn('cargo test --locked --profile "$PROFILE" -p koidrive-test-support --lib --no-run', ci)
+
+    def test_battery_builds_and_reproduces_with_the_checked_profile(self):
+        workflow = WORKFLOW.read_text()
+        _, repro = commands(workflow)
+        build = next(line for line in workflow.splitlines() if "--no-run --tests" in line)
+        for command in (build, repro):
+            self.assertIn("cargo test --locked --profile checked ", command)
+
+    def test_ci_selects_only_dev_or_checked(self):
+        for workflow in (WORKFLOW.read_text(), CI_WORKFLOW.read_text()):
+            for profile in re.findall(r"--profile (\S+)", workflow):
+                self.assertIn(profile, ("checked", '"$PROFILE"'))
+        expressions = re.findall(r"(?m)^ +PROFILE: (.+)$", CI_WORKFLOW.read_text())
+        self.assertTrue(expressions)
+        for expression in expressions:
+            self.assertEqual(set(re.findall(r"'([^']*)'", expression)) - {"sim"}, {"checked", "dev"})
 
 
 class HeavyTests(unittest.TestCase):

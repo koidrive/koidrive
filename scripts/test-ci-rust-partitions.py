@@ -19,6 +19,8 @@ def job(workflow, name):
 
 def test_arguments(body, marker):
     commands = [shlex.split(line) for line in re.findall(r"cargo test[^\n]+", body) if marker in line]
+    builds = [command[:command.index(">")] if ">" in command else command for command in commands if "--no-run" in command]
+    commands = [command for command in commands if "--no-run" not in command]
     if len(commands) != 2:
         raise ValueError("Each partition must have one listing and one execution command")
     listing, execution = commands
@@ -26,6 +28,9 @@ def test_arguments(body, marker):
         raise ValueError("The inventory must list the executed tests")
     if listing[:listing.index("--")] != execution:
         raise ValueError("Inventory and execution must use identical Cargo arguments")
+    for build in builds:
+        if [arg for arg in build if arg != "--no-run" and not arg.startswith("--message-format=")] != execution:
+            raise ValueError("The checked build must use the execution's Cargo arguments")
     return execution
 
 
@@ -54,6 +59,8 @@ def check_partitions(workflow):
     parser.add_argument("-p", "--package", action="append", default=[])
     parser.add_argument("--features", action="append", default=[])
     parser.add_argument("--locked", action="store_true")
+    parser.add_argument("--profile", choices=["$PROFILE"])
+    parser.add_argument("--no-fail-fast", action="store_true")
     remaining, unknown = parser.parse_known_args(remainder[2:])
     if unknown:
         raise ValueError("The remainder must not filter default test targets")
@@ -78,11 +85,15 @@ def check_partitions(workflow):
     features = re.findall(r"(?m)^          FEATURES: (.+)$", shards)
     if len(features) != 2 or features[0] != features[1]:
         raise ValueError("Inventory and execution must use identical feature expressions")
+    profiles = re.findall(r"(?m)^          PROFILE: (.+)$", shards)
+    if len(profiles) != 2 or profiles[0] != profiles[1]:
+        raise ValueError("Inventory and execution must use identical profile expressions")
+    resolve = ["cargo", "test", *(arg for arg in command[2:] if arg not in ("--profile", "$PROFILE", "--no-fail-fast"))]
     partitions = {"remainder": remainder}
     for package in packages:
         suite = package.removeprefix("koidrive-")
         values = {"koidrive-$SUITE": package, "$FEATURES": suite_features(features[0], suite)}
-        partitions[suite] = [values.get(arg, arg) for arg in command]
+        partitions[suite] = [values.get(arg, arg) for arg in resolve]
     return partitions
 
 
@@ -144,6 +155,11 @@ class RustPartitions(unittest.TestCase):
     def test_additional_shard_package_is_rejected(self):
         changed = self.workflow.replace('-p "koidrive-$SUITE"', '-p "koidrive-$SUITE" -p koidrive-cli')
         with self.assertRaisesRegex(ValueError, "execute its matrix package"):
+            check_partitions(changed)
+
+    def test_checked_build_with_other_arguments_is_rejected(self):
+        changed = self.workflow.replace('--features "$FEATURES" --no-run', '--features "$FEATURES" --release --no-run', 1)
+        with self.assertRaisesRegex(ValueError, "checked build must use the execution's Cargo arguments"):
             check_partitions(changed)
 
     def test_shard_target_filter_is_rejected(self):

@@ -31,3 +31,10 @@ publish = false
 
 [workspace.dependencies]
 prost = "0.14"
+
+[profile.checked]
+inherits = "dev"
+opt-level = 1
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
