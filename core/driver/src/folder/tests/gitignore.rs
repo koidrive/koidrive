@@ -144,3 +144,55 @@ fn a_link_whose_configuration_has_no_gitignore_key_follows_gitignore_files() {
     b.rest(&mut remote);
     assert_eq!(remote.names(), [".gitignore", "index.js"]);
 }
+
+fn a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(
+    count: usize,
+) {
+    let mut remote = Remote::new();
+    let site = Site::new(&remote, "b");
+    let mut b = started_with(&site, &mut remote, &not_following_gitignore());
+    fs::create_dir_all(site.root.join("dist/sub")).unwrap();
+    fs::write(site.root.join(".gitignore"), "dist/\n").unwrap();
+    for n in 0..count {
+        let dir = if n % 2 == 0 { "dist" } else { "dist/sub" };
+        fs::write(
+            site.root.join(format!("{dir}/f{n}.docx")),
+            format!("report {n}"),
+        )
+        .unwrap();
+    }
+    b.rescan();
+    b.rest(&mut remote);
+    let synced = files(&site.root);
+    assert_eq!(synced.len(), count + 1);
+    let server = remote.tree();
+    drop(b);
+
+    let mut b = started_with(&site, &mut remote, &SyncRules::default());
+    fs::remove_dir_all(site.root.join("dist")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent while dist is left out");
+    drop(b);
+
+    let b = started_with(&site, &mut remote, &not_following_gitignore());
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "sent {sent:?}");
+    assert_eq!(remote.tree(), server);
+    assert_eq!(files(&site.root), synced);
+    assert!(trashed(&site.root).is_empty());
+    assert!(shown(&site).is_empty(), "no question opens");
+    assert_eq!(b.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_folder_of_three_files_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them()
+ {
+    a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(3);
+}
+
+#[test]
+fn a_folder_of_2000_files_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them()
+ {
+    a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(2000);
+}

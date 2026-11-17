@@ -1139,7 +1139,6 @@ fn started(site: &Site, remote: &mut Remote, sync: &SyncRules) -> Device {
 
 fn dist_left_out() -> SyncRules {
     SyncRules {
-        include: Vec::new(),
         exclude: vec!["dist/".into()],
         ..SyncRules::default()
     }
