@@ -906,7 +906,10 @@ export class CommitApplier {
     const held = op.held.map(toHex);
     const trashed = node.status === NodeStatusValue.TRASHED;
     if (this.client) {
-      if (trashed && this.holdsIntents(node, ["status"])) return this.same(node, ["status"]);
+      if (trashed && this.holdsIntents(node, ["status"])) {
+        this.mergeHeld(node, held);
+        return this.same(node, ["status"]);
+      }
       if (trashed && this.intents.over !== undefined && node.status_before === this.intents.over) {
         this.mergeHeld(node, held);
         return result(OpResult_Code.APPLIED);

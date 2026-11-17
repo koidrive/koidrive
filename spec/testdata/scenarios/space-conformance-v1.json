@@ -19368,6 +19368,245 @@
           }
         }
       ]
+    },
+    {
+      "name": "rfc0028-a-delete-sent-again-with-its-intent-and-a-larger-held-adds-the-held-to-the-trash-and-a-plain-retry-changes-nothing",
+      "covers": [
+        "RFC0028",
+        "RFC0028-3.1",
+        "RFC0028-3.3",
+        "RFC0028-5.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "f",
+                  "held": [
+                    "h1"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "status": "TRASHED",
+              "trash_held": [
+                "h1"
+              ],
+              "meta_rev": 2,
+              "intents": {
+                "status": {
+                  "id": "i2",
+                  "author": "a",
+                  "over": "i1"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "delete": {
+                  "node": "f",
+                  "held": [
+                    "h1",
+                    "h2"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "status": "TRASHED",
+              "trash_held": [
+                "h1",
+                "h2"
+              ],
+              "meta_rev": 3,
+              "content_rev": 1,
+              "intents": {
+                "status": {
+                  "id": "i2",
+                  "author": "a",
+                  "over": "i1"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "device": "a",
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "delete": {
+                  "node": "f",
+                  "held": [
+                    "h1",
+                    "h2"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "status": "TRASHED",
+              "trash_held": [
+                "h1",
+                "h2"
+              ],
+              "meta_rev": 3,
+              "content_rev": 1,
+              "intents": {
+                "status": {
+                  "id": "i2",
+                  "author": "a",
+                  "over": "i1"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794269340000
+          }
+        }
+      ]
     }
   ]
 }
