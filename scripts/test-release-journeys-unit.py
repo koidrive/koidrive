@@ -341,9 +341,9 @@ class ReleaseJourneys(unittest.TestCase):
 
     def test_journey_token_reaches_no_child_process_and_is_redacted(self):
         with tempfile.TemporaryDirectory() as directory, \
-                patch.dict(os.environ, {"KOIDRIVE_JOURNEY_GITHUB_TOKEN": "ghs_journey"}):
+                patch.dict(os.environ, {"JOURNEY_GITHUB_TOKEN": "ghs_journey"}):
             evidence = DRIVER.Evidence(Path(directory) / "evidence", "v0.1.0-alpha.7", "homebrew-update")
-        self.assertNotIn("KOIDRIVE_JOURNEY_GITHUB_TOKEN", evidence.env)
+        self.assertNotIn("JOURNEY_GITHUB_TOKEN", evidence.env)
         self.assertEqual(evidence.github_token, "ghs_journey")
         self.assertNotIn("ghs_journey", DRIVER.sanitized("sent ghs_journey to GitHub", evidence.secrets))
 
@@ -447,6 +447,15 @@ class ReleaseJourneys(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, "overrides"):
                 DRIVER.hosted_guard(env={"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", key: "fake"},
                                     system="Darwin", machine="arm64", home=self.root, account_home=self.root)
+
+    def test_hosted_guard_accepts_every_variable_the_runtime_job_sets(self):
+        journeys = (DRIVER.REPO / ".github/workflows/release-journeys.yml").read_text()
+        runtime = journeys.split("\n  runtime:\n", 1)[1]
+        keys = set(re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*):", runtime))
+        DRIVER.hosted_guard(env={**{key: "set" for key in keys}, "GITHUB_ACTIONS": "true",
+                                 "RUNNER_ENVIRONMENT": "github-hosted"},
+                            system="Darwin", machine="arm64", home=self.root, account_home=self.root)
+        self.assertIn("JOURNEY_GITHUB_TOKEN", keys)
 
     def test_main_refuses_local_runtime_before_starting_any_command(self):
         destination = self.root / "evidence"

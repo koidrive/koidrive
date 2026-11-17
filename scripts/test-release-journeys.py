@@ -274,7 +274,7 @@ class Evidence:
         self.processes = []
         self.env = {**os.environ, "DO_NOT_TRACK": "1", "WRANGLER_SEND_METRICS": "false",
                     "HOMEBREW_NO_AUTO_UPDATE": "1", "NO_COLOR": "1"}
-        self.github_token = self.env.pop("KOIDRIVE_JOURNEY_GITHUB_TOKEN", "")
+        self.github_token = self.env.pop("JOURNEY_GITHUB_TOKEN", "")
         self.secrets.append(self.github_token)
 
     def check(self, name, condition, detail=""):
