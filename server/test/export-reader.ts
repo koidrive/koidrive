@@ -74,12 +74,12 @@ async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function frames(bytes: Uint8Array, format: string, spaceId: string, historyId: string): Promise<Uint8Array[]> {
+async function frames(bytes: Uint8Array, format: string, formatVersion: number, spaceId: string, historyId: string): Promise<Uint8Array[]> {
   const reader = new BinaryReader(await gunzip(bytes));
   const out: Uint8Array[] = [];
   while (reader.pos < reader.len) out.push(reader.bytes());
   const header = fromBinary(ExportHeaderSchema, out.shift()!);
-  if (header.format !== format || header.formatVersion !== 1 || header.spaceId !== spaceId || header.historyId !== historyId) {
+  if (header.format !== format || header.formatVersion !== formatVersion || header.spaceId !== spaceId || header.historyId !== historyId) {
     throw new Error(`unexpected header ${JSON.stringify(header)}`);
   }
   return out;
@@ -163,7 +163,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
     const tombstones = new Map<string, NodePurged>();
     const liveSince = new Map<string, bigint>();
     if (manifest) {
-      if (manifest.format !== "koidrive.snapshot" || manifest.format_version !== 1 || manifest.history_id !== historyId) throw new Error("unexpected manifest");
+      if (manifest.format !== "koidrive.snapshot" || ![1, 2].includes(manifest.format_version) || manifest.history_id !== historyId) throw new Error("unexpected manifest");
       let missing = false;
       for (const page of manifest.pages) {
         const object = await env.BUCKET.get(`${prefix}snap/${String(manifest.start_seq).padStart(20, "0")}/pages/${page.name}`);
@@ -173,11 +173,12 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
         }
         const bytes = new Uint8Array(await object.arrayBuffer());
         if (bytes.length !== page.bytes || toHex(await sha256(bytes)) !== page.sha256) throw new Error(`page ${page.name} does not match the manifest`);
-        const records = await frames(bytes, "koidrive.snapshot", spaceId, historyId);
+        const records = await frames(bytes, "koidrive.snapshot", manifest.format_version, spaceId, historyId);
         if (records.length !== page.records) throw new Error(`page ${page.name} holds ${records.length} records`);
         for (const record of records) {
           const snapshot = fromBinary(NodeSnapshotSchema, record);
           if (snapshot.tombstone) {
+            if (manifest.format_version < 2) throw new Error(`page ${page.name} holds a tombstone at format_version 1`);
             tombstones.set(snapshot.tombstone.nodeId, snapshot.tombstone);
             continue;
           }
@@ -211,7 +212,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       if (i === 0 ? segment.first > next : segment.first !== next) throw new Error(`the log does not chain at ${segment.key}`);
       const object = (await env.BUCKET.get(segment.key))!;
       let seq = segment.first;
-      for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", spaceId, historyId)) {
+      for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", 1, spaceId, historyId)) {
         const record = fromBinary(CommitRecordSchema, frame);
         if (Number(record.seq) !== seq++) throw new Error(`${segment.key} skips a seq`);
         if (record.seq > BigInt(startSeq)) replay(nodes, tombstones, liveSince, record);

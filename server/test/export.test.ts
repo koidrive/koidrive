@@ -173,7 +173,7 @@ describe("R2 metadata export (spec v0 section 11, RFC 0004)", () => {
     pause.released = true;
     await running;
     const [manifest] = await manifests(prefix);
-    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 1, space_id: spaceId, start_seq: 5, end_seq: Number(during) });
+    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 2, space_id: spaceId, start_seq: 5, end_seq: Number(during) });
     expect(manifest!.pages.map((page) => page.name)).toEqual(["0.fbsnap", "1.fbsnap", "2.fbsnap", "3.fbsnap"]);
     expect(manifest!.pages.reduce((sum, page) => sum + page.records, 0)).toBe(7);
     expect(await listKeys(prefix + "log/")).toEqual([segmentKey(prefix, 1, 4), segmentKey(prefix, 5, 5), segmentKey(prefix, 6, 6)]);

@@ -16,6 +16,7 @@ const SEGMENT_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_COMMITS = 50_000;
 const PAGE_BYTES = 8 * 1024 * 1024;
 const KEPT_SNAPSHOTS = 2;
+const SNAPSHOT_FORMAT_VERSION = 2;
 const STEPS_PER_RUN = 25;
 const LIST_LIMIT = 1000;
 
@@ -235,8 +236,8 @@ export class Exporter {
     }
   }
 
-  private header(format: string): Uint8Array {
-    return toBinary(ExportHeaderSchema, create(ExportHeaderSchema, { format, formatVersion: 1, spaceId: this.spaceId, historyId: this.historyId }));
+  private header(format: string, formatVersion: number): Uint8Array {
+    return toBinary(ExportHeaderSchema, create(ExportHeaderSchema, { format, formatVersion, spaceId: this.spaceId, historyId: this.historyId }));
   }
 
   private cutSegment(): void {
@@ -258,7 +259,7 @@ export class Exporter {
   private async writeSegment(): Promise<void> {
     const { first, last } = readState(this.sql).segment!;
     const writer = new BinaryWriter();
-    writer.bytes(this.header("koidrive.log"));
+    writer.bytes(this.header("koidrive.log", 1));
     let expected = first;
     for (const row of this.sql.exec("SELECT seq, record FROM commits WHERE seq BETWEEN ? AND ? ORDER BY seq", first, last)) {
       if (Number(row.seq) !== expected++) throw new Error(`commit ${expected - 1} is missing from the log`);
@@ -295,7 +296,7 @@ export class Exporter {
       ),
     );
     const writer = new BinaryWriter();
-    writer.bytes(this.header("koidrive.snapshot"));
+    writer.bytes(this.header("koidrive.snapshot", SNAPSHOT_FORMAT_VERSION));
     let records = 0;
     let bytes = 0;
     for (const entry of found) {
@@ -333,7 +334,7 @@ export class Exporter {
     if (running.manifest === undefined) {
       const manifest = JSON.stringify({
         format: "koidrive.snapshot",
-        format_version: 1,
+        format_version: SNAPSHOT_FORMAT_VERSION,
         space_id: this.spaceId,
         history_id: this.historyId,
         start_seq: running.startSeq,
