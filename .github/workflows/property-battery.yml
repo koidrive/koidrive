@@ -549,9 +549,12 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.triage_run || github.run_id }}
         run: |
           shopt -s nullglob
-          python3 scripts/triage-battery.py report --cases triage/cases.json --replays triage/replay-*.json --run-url "$RUN_URL" --out battery-triage
+          status=0
+          python3 scripts/triage-battery.py report --cases triage/cases.json --replays triage/replay-*.json --run-url "$RUN_URL" --out battery-triage || status=$?
           cat battery-triage/triage.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: battery-triage
           path: battery-triage
