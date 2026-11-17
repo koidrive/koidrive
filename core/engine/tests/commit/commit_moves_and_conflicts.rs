@@ -1343,19 +1343,31 @@ fn a_create_into_a_trashed_folder_waits_for_its_move_out_of_a_live_one() {
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&first), [mv("t", ROOT, "T2")]);
+    assert!(
+        matches!(&ops(&first)[..], [moved, placed, deleted, op::Op::CreateFile(create)]
+            if *moved == mv("t", ROOT, "T2")
+                && *placed == mv("g", "t", "g")
+                && *deleted == delete("g")
+                && create.node_id == "h"
+                && create.parent_id == "t"
+                && create.name == "g"),
+        "{first:?}"
+    );
+    trees.set_remote_made_here("t".into(), remote(dir(ROOT, "T2")));
+    trees.set_remote_made_here(
+        "g".into(),
+        RemoteNode {
+            trash_group: "1:2".into(),
+            ..trashed(file("t", "g", 1))
+        },
+    );
+    trees.set_remote_made_here("h".into(), remote(file("t", "g", 2)));
     acknowledge(
         &mut commits,
         &mut trees,
-        vec![outcome(op_result::Code::Applied)],
+        vec![outcome(op_result::Code::Applied); 4],
     );
-    trees.set_remote_made_here("t".into(), remote(dir(ROOT, "T2")));
-    trees.set_remote_made_here("g".into(), remote(file("t", "g", 1)));
-    let second = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(
-        matches!(&ops(&second)[..], [deleted, op::Op::CreateFile(create)] if *deleted == delete("g") && create.node_id == "h" && create.parent_id == "t"),
-        "{second:?}"
-    );
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
 #[test]

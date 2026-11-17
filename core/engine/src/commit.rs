@@ -5522,13 +5522,36 @@ impl<'a> Scratch<'a> {
         else {
             return Some(Default::default());
         };
-        let Some(group) = self.answered_group(id, answers, trees) else {
+        let answered = self.answered_group(id, answers, trees);
+        let Some(group) = answered.or_else(|| self.group(id)) else {
             return Some(Default::default());
         };
+        let unfit = || answered.is_none().then(Default::default);
         let mut scratch = self.clone();
         let kind = scratch.kind(id).expect("moved nodes are in R");
         scratch.place(id, parent, name, kind);
         let revived: BTreeSet<NodeId> = scratch.revive_group(id, group).into_iter().collect();
+        let restored: BTreeSet<NodeId> = (wants.iter().flatten())
+            .filter_map(|want| match want {
+                Want::Restore { op, .. } => {
+                    Some(trees.removed_restored(&op.node_id, &op.target_parent_id))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let removed = |node: &str| {
+            trees.local().get(node).is_none()
+                && (trees.is_removed_here(node)
+                    || (trees.synced().get(node)).is_some_and(|synced| {
+                        (trees.remote().get(node)).is_some_and(|remote| {
+                            match (&synced.content, &remote.shape.content) {
+                                (Some(held), Some(now)) => same_content(held, now),
+                                (held, now) => held.is_none() && now.is_none(),
+                            }
+                        })
+                    }))
+        };
         let placed = |node: &str| match answers.contains(node) {
             true => trees
                 .local()
@@ -5573,6 +5596,8 @@ impl<'a> Scratch<'a> {
                     && !needed.contains(*node)
                     && !self.sending.contains(*node)
                     && !(riding(node) && trees.local().get(node).is_some())
+                    && !restored.contains(*node)
+                    && (answered.is_some() || trees.local().get(node).is_none())
             })
             .cloned()
             .collect();
@@ -5582,6 +5607,7 @@ impl<'a> Scratch<'a> {
             if scratch
                 .parent(top)
                 .is_some_and(|parent| outside.contains(parent))
+                || (answered.is_none() && !removed(top))
             {
                 continue;
             }
@@ -5609,7 +5635,10 @@ impl<'a> Scratch<'a> {
                 };
                 let kind = scratch.kind(id).expect("moved nodes are in R");
                 let pending_at = match scratch.kind(parent) {
-                    None => Some(scratch.parent(top)?.to_owned()),
+                    None => match scratch.parent(top) {
+                        Some(at) => Some(at.to_owned()),
+                        None => return unfit(),
+                    },
                     Some(_) => match scratch.fit(moved, &BTreeSet::new()) {
                         Fit::Valid => None,
                         Fit::NameTaken
@@ -5618,7 +5647,7 @@ impl<'a> Scratch<'a> {
                         {
                             Some(parent.clone())
                         }
-                        _ => return None,
+                        _ => return unfit(),
                     },
                 };
                 let aside = pending_at.map(|at| Want::Move {
@@ -5648,7 +5677,7 @@ impl<'a> Scratch<'a> {
                 members,
             };
             if scratch.fit(&retrash, &BTreeSet::new()) != Fit::Valid {
-                return None;
+                return unfit();
             }
             scratch.trash(top);
             bundle.push(retrash);

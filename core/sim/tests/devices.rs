@@ -11896,3 +11896,53 @@ mod planned_against_the_server {
         rename_onto_the_name_of_a_folder_moving_into_a_moved_folder(2);
     }
 }
+
+#[test]
+fn a_folder_renamed_out_of_the_trash_takes_along_no_folder_its_user_removed() {
+    use koidrive_proto::v1::{NodeStatus, Resume};
+    use koidrive_sim::space::node_states;
+    let synced = vec![
+        (0, folder("a")),
+        (0, user(0, 1, 1, "b")),
+        (0, user(0, 2, 2, "ss")),
+        (0, user(1, 3, 3, "c.txt")),
+    ];
+    let mut racing = vec![(0, delete(1))];
+    racing.extend(commit(0));
+    racing.extend([
+        (1, delete(2)),
+        (1, SCAN),
+        (1, DELIVER),
+        (1, rename(1, 1, "A")),
+    ]);
+    racing.extend(commit(1));
+    let world = converge(2, &[synced, racing]).unwrap();
+    let space = world.space();
+    let records = (space.resume(&Resume {
+        history_id: space.history_id().into(),
+        ..Default::default()
+    }))
+    .unwrap();
+    let removed: Vec<(u64, String, i32)> = (records.iter())
+        .flat_map(|record| {
+            node_states(&record.changes).map(|node| (record.seq, node.name.clone(), node.status))
+        })
+        .filter(|(_, name, _)| ["ss", "c.txt"].contains(&name.as_str()))
+        .collect();
+    let trashed = NodeStatus::Trashed as i32;
+    let trashed_at = (removed.iter())
+        .find(|(_, _, status)| *status == trashed)
+        .map(|(seq, _, _)| *seq)
+        .expect("another device trashes the folder");
+    assert!(
+        (removed.iter()).all(|(seq, _, status)| *seq <= trashed_at || *status == trashed),
+        "{removed:?}"
+    );
+    for device in 0..2 {
+        assert_eq!(
+            files_on(&world, device),
+            [("A".into(), None), ("a".into(), None)],
+            "device {device}"
+        );
+    }
+}
