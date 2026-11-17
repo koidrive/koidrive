@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use camino::Utf8Path;
+use camino::{Utf8Component, Utf8Path};
 use determinator::Determinator;
 use determinator::rules::{
     DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathMatch, PathRule,
@@ -204,6 +204,21 @@ fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
         .split('\0')
         .filter(|path| !path.is_empty())
         .collect();
+    let in_a_checkout = |path: &Utf8Path| {
+        path.components()
+            .all(|component| matches!(component, Utf8Component::Normal(_)))
+            && [base_dir, head_dir]
+                .iter()
+                .any(|dir| Utf8Path::new(dir).join(path).symlink_metadata().is_ok())
+    };
+    if let Some(path) = changed
+        .iter()
+        .find(|path| !in_a_checkout(Utf8Path::new(path)))
+    {
+        return Err(format!(
+            "{changed_path} lists {path:?}, which is no file in either checkout. Pass the NUL-separated output of git diff -z --name-only --no-renames BASE HEAD."
+        ));
+    }
     compute(&config, &graph(base_dir)?, &graph(head_dir)?, &changed)
 }
 
@@ -418,6 +433,102 @@ mod tests {
                 "macos_app"
             ])
         );
+    }
+
+    fn select_from_list(
+        name: &str,
+        list: &str,
+    ) -> Result<BTreeMap<String, Option<String>>, String> {
+        let file = env::temp_dir().join(format!("ci-select-{}-{name}", std::process::id()));
+        fs::write(&file, list).unwrap();
+        let selection = run(&[
+            format!("{ROOT}/.github/ci-select.toml"),
+            ROOT.to_string(),
+            ROOT.to_string(),
+            file.to_str().unwrap().to_string(),
+        ]);
+        fs::remove_file(&file).unwrap();
+        selection
+    }
+
+    #[test]
+    fn a_change_list_that_is_not_nul_separated_paths_fails_instead_of_skipping_jobs() {
+        let modified_by_595 = [
+            "core/driver/src/disk/tests.rs",
+            "core/driver/src/engine.rs",
+            "core/driver/src/observe.rs",
+            "core/fs/src/lib.rs",
+            "core/fs/src/mark.rs",
+            "core/sim/src/world/device.rs",
+            "core/sim/tests/devices.rs",
+        ];
+        let selection = select_from_list("nul", &(modified_by_595.join("\0") + "\0")).unwrap();
+        assert!(selection["rust_sim"].is_some(), "{selection:?}");
+        for (name, list) in [
+            ("newline", modified_by_595.join("\n") + "\n"),
+            ("absolute", format!("{ROOT}/core/sim/tests/devices.rs\0")),
+            (
+                "parent",
+                "core/driver/../sim/tests/devices.rs\0".to_string(),
+            ),
+            ("missing", "core/sim/tests/no-such-file.rs\0".to_string()),
+        ] {
+            let error = select_from_list(name, &list).unwrap_err();
+            assert!(error.contains("git diff -z"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_change_under_each_package_runs_every_job_that_builds_it() {
+        let workspace = GRAPH.workspace();
+        let builds = |tested: &guppy::graph::PackageMetadata,
+                      changed: &guppy::graph::PackageMetadata| {
+            GRAPH
+                .query_forward([tested.id()])
+                .unwrap()
+                .resolve_with_fn(|_, link| link.from().id() == tested.id() || !link.dev_only())
+                .contains(changed.id())
+                .unwrap()
+        };
+        for changed in workspace.iter() {
+            let dir = changed.source().workspace_path().unwrap();
+            let expected: BTreeSet<String> = CONFIG
+                .job
+                .iter()
+                .filter(|(_, job)| {
+                    workspace.iter().any(|tested| {
+                        let selects = match &job.packages {
+                            Packages::Any(_) => {
+                                !job.except.iter().any(|name| name == tested.name())
+                            }
+                            Packages::Named(names) => {
+                                names.iter().any(|name| name == tested.name())
+                            }
+                            Packages::None => false,
+                        };
+                        selects && builds(&tested, &changed)
+                    })
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            assert!(!expected.is_empty(), "no job builds {}", changed.name());
+            for file in [
+                "src/lib.rs",
+                "tests/new.rs",
+                "README.md",
+                "LICENSE",
+                "Cargo.toml",
+                "nested dir/new file.txt",
+            ] {
+                let path = dir.join(file);
+                let running = running(&[path.as_str()]);
+                let missing: Vec<_> = expected.difference(&running).collect();
+                assert!(
+                    missing.is_empty(),
+                    "{path} must run {missing:?}, ran {running:?}"
+                );
+            }
+        }
     }
 
     fn built(text: &str) -> BTreeSet<String> {
