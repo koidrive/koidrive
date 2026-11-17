@@ -51,6 +51,7 @@ const REWIND_RETRY_MIN_MS = 1000;
 const HOUR_MS = 3_600_000;
 const REPORT_DELAY_MS = 5 * 60_000;
 const REPORT_KEEP_HOURS = 24;
+const REPORT_TIMEOUT_MS = 10_000;
 const NOTICE_RETRY_MS = 30_000;
 export const SESSION_LEASE_MS = 5000;
 const REWIND_RETRY_MAX_MS = 10 * 60_000;
@@ -175,7 +176,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     sessionLeaseMs = SESSION_LEASE_MS;
     clock: () => number = () => Date.now();
     sendReport = async (body: unknown): Promise<boolean> => {
-      const response = await fetch(REPORT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await fetch(REPORT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(REPORT_TIMEOUT_MS) });
       await response.body?.cancel();
       return response.ok;
     };
