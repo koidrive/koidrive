@@ -281,12 +281,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/deploy-test/e2e.ts linux-7-point "e2e 5: macOS holds the conflict's tree"
-      - name: "e2e 7: write after the restore point, rewind and recover"
+      - name: "e2e 7: write after the restore point, rewind and discard"
         if: inputs.mode == 'e2e'
-        timeout-minutes: 25
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/deploy-test/e2e.ts linux-7
+        run: |
+          node scripts/deploy-test/e2e.ts linux-7 "e2e 7: write after the restore point"
       - name: "e2e: compare the macOS and Linux trees"
         if: inputs.mode == 'e2e'
         timeout-minutes: 20
@@ -369,14 +370,18 @@ jobs:
       - name: "e2e 5: macOS holds the conflict's tree"
         timeout-minutes: 20
         run: node scripts/deploy-test/e2e.ts mac-5-check
-      - name: "e2e 7: write after the restore point and recover from the rewind"
+      - name: "e2e 7: write after the restore point"
         timeout-minutes: 40
         run: |
           node scripts/deploy-test/e2e.ts mac-7 "e2e 7: record the restore point"
+      - name: "e2e 7: keep what the rewind removed"
+        timeout-minutes: 60
+        run: |
+          node scripts/deploy-test/e2e.ts mac-7-keep "e2e 7: write after the restore point, rewind and discard"
       - name: "e2e: record the macOS tree"
         timeout-minutes: 20
         run: |
-          node scripts/deploy-test/e2e.ts mac-final "e2e 7: write after the restore point, rewind and recover"
+          node scripts/deploy-test/e2e.ts mac-final
       - name: "e2e: upload the macOS tree"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
