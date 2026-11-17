@@ -996,6 +996,99 @@ fn a_finish_on_a_server_that_keeps_no_marks_requires_the_head() {
 }
 
 #[test]
+fn a_folder_created_under_a_pending_name_for_a_decomposed_name_keeps_its_finish_once_the_server_composes_the_mark()
+ {
+    let (name, decomposed) = ("\u{e9}", "e\u{301}");
+    let mut trees = trees(&[
+        (
+            "h",
+            Some(file("n", "child", 1)),
+            Some(file(ROOT, name, 1)),
+            Some(remote(file(ROOT, name, 1))),
+        ),
+        ("n", Some(dir(ROOT, decomposed)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let created = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        matches!(ops(&created).first(), Some(op::Op::CreateDir(create)) if create.pending_for == decomposed)
+    );
+    let marked = RemoteNode {
+        pending_for: Some(name.into()),
+        pending_by: Some("me".into()),
+        ..remote_at(dir(ROOT, "\u{e9} (pending)"), 8)
+    };
+    trees.set_remote("n".into(), marked);
+    trees.set_remote("h".into(), remote_at(file("n", "child", 1), 8));
+    commits
+        .received(result(
+            8,
+            vec![outcome(op_result::Code::Applied); created.ops.len()],
+        ))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 8));
+    trees.settle();
+    let finish = trees.state().pending_finishes.get("n").cloned();
+    assert!(finish.as_ref().is_some_and(|finish| finish.disk_first), "{finish:?}");
+    effects_for(&mut trees, &mut ids, "n");
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(trees.state().pending_finishes["n"].sending);
+}
+
+#[test]
+fn a_finish_to_a_decomposed_name_that_ends_while_its_move_is_on_disk_starts_again_from_the_mark() {
+    let (name, decomposed, pending) = ("\u{e9}", "e\u{301}", "\u{e9} (pending)");
+    let mut trees = trees(&[(
+        "a",
+        Some(dir(ROOT, pending)),
+        Some(dir(ROOT, pending)),
+        Some(remote(dir(ROOT, pending))),
+    )]);
+    let marked = RemoteNode {
+        pending_for: Some(name.into()),
+        pending_by: Some("me".into()),
+        ..remote(dir(ROOT, pending))
+    };
+    trees.set_remote("a".into(), marked.clone());
+    let mut state = trees.state();
+    state.pending_finishes.insert("a".into(), PendingFinish {
+        parent: ROOT.into(),
+        pending: pending.into(),
+        name: decomposed.into(),
+        origin: FinishOrigin::Mark {
+            meta_rev: marked.meta_rev,
+        },
+        disk_first: false,
+        base: None,
+        sending: false,
+    });
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let record = effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(record.after, Some(dir(ROOT, decomposed)));
+    trees.set_remote(
+        "a".into(),
+        RemoteNode {
+            meta_rev: marked.meta_rev + 1,
+            ..marked
+        },
+    );
+    trees.settle();
+    assert!(!trees.state().pending_finishes.contains_key("a"));
+    effects
+        .done(&mut trees, None, &record.effect_id, None)
+        .unwrap();
+    trees.settle();
+    assert!(trees.state().pending_finishes.contains_key("a"));
+}
+
+#[test]
 fn a_rename_the_setter_finishes_beside_a_node_holding_its_name_keeps_the_mark_in_s_until_the_disk_follows()
  {
     let (mut commits, mut trees, mut ids) = owing_its_name(&[
