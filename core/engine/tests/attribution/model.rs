@@ -387,6 +387,7 @@ pub enum Rules {
     DeleteSeesOnlyView,
     BoundOnlyResendsSeen,
     TrashCoversView,
+    EditSeesOnlyBase,
     LostCreateResends,
     NoLostPosition,
     AbsentDeleteResent,
@@ -433,6 +434,10 @@ impl Rules {
             _ => return true,
         };
         fixes.contains(&fix)
+    }
+
+    fn edits_see(self) -> bool {
+        !self.main_rules() && !self.old_server() && self != Rules::EditSeesOnlyBase
     }
 
     fn bound_only(self) -> bool {
@@ -585,6 +590,23 @@ impl World {
                     .get(seq - 1)
                     .is_some_and(|&token| self.server.authors[token as usize] == Some(d))
         })
+    }
+
+    fn ancestors(&self, edit: Tok, known: impl Fn(Tok) -> bool) -> u32 {
+        let mut ancestors = 0;
+        let mut at = edit;
+        for _ in 0..self.values.len() {
+            let value = self.values[at.0 as usize];
+            if value.author.is_none() || value.field != Field::Content || value.content == at {
+                break;
+            }
+            ancestors |= 1 << value.content.0;
+            if !known(value.content) {
+                break;
+            }
+            at = value.content;
+        }
+        ancestors
     }
 
     fn author(&self, value: Tok) -> Option<Dev> {
@@ -752,13 +774,14 @@ impl World {
                     w.budget.moves[d] -= 1;
                 }
                 let seen = [pos, content];
+                let held = w.devices[d].held;
                 let value = w.mint(Value {
                     field,
                     author: Some(d),
                     pos,
                     content,
                     seen,
-                    held: [0; 2],
+                    held,
                     renamed_from: None,
                     lost_position: None,
                 });
@@ -981,6 +1004,27 @@ impl World {
             .collect();
         let saw = |gone: Tok| saws[gone.0 as usize];
         let helds: Vec<[u32; 2]> = self.values.iter().map(|value| value.held).collect();
+        let logged = (self.server.log.iter())
+            .filter(|record| record.node.created)
+            .fold(0u32, |logged, record| logged | 1 << record.node.content.0);
+        let ancestors: Vec<u32> = (0..self.values.len())
+            .map(|index| {
+                let author = self.values[index].author;
+                self.ancestors(Tok(index as u8), |at| {
+                    logged & (1 << at.0) != 0 || self.values[at.0 as usize].author == author
+                })
+            })
+            .collect();
+        let authors: Vec<Option<Dev>> = self.values.iter().map(|value| value.author).collect();
+        let saw_content = |edit: Tok, value: Tok| {
+            rules.edits_see() && ancestors[edit.0 as usize] & (1 << value.0) != 0
+        };
+        let replaces_own = |edit: Tok, value: Tok| {
+            rules.edits_see()
+                && authors[edit.0 as usize].is_some()
+                && authors[edit.0 as usize] == authors[value.0 as usize]
+                && helds[edit.0 as usize][slot(Field::Content)] & (1 << value.0) != 0
+        };
         let saw_value = |gone: Tok, field: Field, value: Tok| {
             saw(gone).is_some_and(|seen| {
                 seen[slot(field)] == value
@@ -1111,9 +1155,12 @@ impl World {
                     resend: true,
                     base,
                 } => {
-                    if node.trashed.is_some() {
+                    if node.trashed.is_some() || saw_content(node.content, content) {
                         Code::Superseded
-                    } else if node.content != content && node.content_rev > base {
+                    } else if node.content != content
+                        && node.content_rev > base
+                        && !saw_content(content, node.content)
+                    {
                         self.server.copies.push((content, seq));
                         Code::Copied
                     } else {
@@ -1157,10 +1204,20 @@ impl World {
                             node.editor = Some(d);
                         }
                         Code::Applied
-                    } else if node.content_rev > base {
+                    } else if saw_content(node.content, content) {
+                        Code::Superseded
+                    } else if node.content_rev > base
+                        && !saw_content(content, node.content)
+                        && !replaces_own(content, node.content)
+                    {
                         self.server.copies.push((content, seq));
                         Code::Copied
                     } else {
+                        if replaces_own(content, node.content)
+                            && !saw_content(content, node.content)
+                        {
+                            self.server.overwritten.push(node.content);
+                        }
                         node.content = content;
                         node.content_rev = seq;
                         node.edit_rev = seq;
@@ -1485,6 +1542,19 @@ impl World {
     }
 
     fn classify(&mut self, d: Dev, rules: Rules) -> Result<(), Broken> {
+        let held = self.devices[d].held[slot(Field::Content)];
+        let ancestors: Vec<u32> = (0..self.values.len())
+            .map(|index| {
+                let author = self.values[index].author;
+                self.ancestors(Tok(index as u8), |at| {
+                    held & (1 << at.0) != 0 || self.values[at.0 as usize].author == author
+                })
+            })
+            .collect();
+        let authors: Vec<Option<Dev>> = self.values.iter().map(|value| value.author).collect();
+        let saw = |edit: Tok, value: Tok| {
+            rules.edits_see() && ancestors[edit.0 as usize] & (1 << value.0) != 0
+        };
         let covered = self.covers(d, rules);
         let edited_here = self.edited_here(d, &self.devices[d].r, &self.devices[d].seen, rules);
         let dev = &mut self.devices[d];
@@ -1537,8 +1607,17 @@ impl World {
                 None => {
                     dev.unsent.existence = None;
                     dev.lost_position = None;
-                    if content != r.content {
-                        dev.copies.push((content, None));
+                    if content != r.content && saw(content, r.content) {
+                        let made_here = authors[content.0 as usize] == Some(d);
+                        dev.unsent.content.get_or_insert(if made_here {
+                            Author::Own
+                        } else {
+                            Author::Other
+                        });
+                    } else if content != r.content {
+                        if !saw(r.content, content) {
+                            dev.copies.push((content, None));
+                        }
                         dev.take(Field::Content, r.content);
                         dev.unsent.content = None;
                     }
@@ -1707,6 +1786,14 @@ impl World {
                                 based
                             } =>
                         {
+                            dev.s.set(field, agreed)
+                        }
+                        Some(_) if field == Field::Content && saw(remote, local) => {
+                            dev.take(field, remote);
+                            dev.s.set(field, agreed);
+                            dev.unsent.set(field, None);
+                        }
+                        Some(Author::Own) if field == Field::Content && saw(local, remote) => {
                             dev.s.set(field, agreed)
                         }
                         Some(Author::Own) if field == Field::Content => {
@@ -2099,8 +2186,7 @@ impl World {
                     Tok(index as u8)
                 )
             });
-        static COPIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let copies = *COPIES.get_or_init(|| std::env::var("MODEL_COPIES").is_ok());
+        let copies = !rules.main_rules() && !rules.old_server();
         lost.or_else(|| copies.then(|| self.spurious_copy()).flatten())
             .or_else(|| {
                 if rules.old_server() {

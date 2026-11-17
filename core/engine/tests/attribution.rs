@@ -93,6 +93,7 @@ fn rules(name: &str) -> Rules {
         "DeleteSeesOnlyView" => Rules::DeleteSeesOnlyView,
         "BoundOnlyResendsSeen" => Rules::BoundOnlyResendsSeen,
         "TrashCoversView" => Rules::TrashCoversView,
+        "EditSeesOnlyBase" => Rules::EditSeesOnlyBase,
         "ListedRemovalsInRecovery" => Rules::ListedRemovalsInRecovery,
         "LostCreateResends" => Rules::LostCreateResends,
         "NoLostPosition" => Rules::NoLostPosition,
