@@ -27,6 +27,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 mod restore_back_to_back;
 #[path = "devices/restore_deleted_folder.rs"]
 mod restore_deleted_folder;
+#[path = "devices/restore_lost_folders.rs"]
+mod restore_lost_folders;
 #[path = "devices/restore_write_history.rs"]
 mod restore_write_history;
 #[path = "devices/restore_yielded_resend.rs"]
