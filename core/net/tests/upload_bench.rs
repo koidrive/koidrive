@@ -573,6 +573,7 @@ fn trace_observer_counts_retries_and_only_active_upload_handshakes() {
             hash: vec![0xab; 32],
             status: 429,
             error: None,
+            cloudflare_error_code: None,
         };
         tracing::debug!(target: "koidrive_net::chunks", %error, "koidrive chunk transfer will be retried");
     });

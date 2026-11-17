@@ -1904,6 +1904,7 @@ async fn each_chunk_of_a_bundle_gets_the_outcome_a_put_with_the_same_answer_gets
                 StatusCode::from_u16(status).unwrap(),
                 receipt,
                 error.map(ServerError),
+                None,
             ))
         })
         .collect();
@@ -2358,4 +2359,79 @@ async fn a_bundle_waiting_to_be_resent_goes_as_puts_once_another_bundle_gets_a_4
         run.posts()
     );
     assert!(!run.session.bundles_offered());
+}
+
+#[tokio::test]
+async fn a_refusal_keeps_the_server_cause_and_the_code_of_an_edge_error_page() {
+    let sent = chunk(b"payload");
+    let overloaded = ProtoError {
+        code: Code::RetryLater as i32,
+        cause: koidrive_proto::v1::error::Cause::DoOverloaded as i32,
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (target, server) = serve(vec![
+        (503, "application/x-protobuf", overloaded),
+        (
+            503,
+            "text/plain; charset=UTF-8",
+            b"error code: 1102".to_vec(),
+        ),
+        (
+            500,
+            "text/plain; charset=UTF-8",
+            b"error code: 1101".to_vec(),
+        ),
+        (
+            502,
+            "text/html",
+            b"<html><body>Bad gateway</body></html>".to_vec(),
+        ),
+    ])
+    .await;
+    let transfer = transfer();
+    let Attempt::Retry(ChunkError::Refused {
+        error: Some(error),
+        cloudflare_error_code: None,
+        ..
+    }) = transfer
+        .put(&target, &sent, Bytes::from_static(b"payload"))
+        .await
+    else {
+        panic!("a RETRY_LATER refusal is retried with its error");
+    };
+    assert_eq!(
+        error.0.cause,
+        koidrive_proto::v1::error::Cause::DoOverloaded as i32
+    );
+    assert!(matches!(
+        transfer
+            .put(&target, &sent, Bytes::from_static(b"payload"))
+            .await,
+        Attempt::Retry(ChunkError::Refused {
+            status: 503,
+            error: None,
+            cloudflare_error_code: Some(1102),
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer.get(&target, &sent).await,
+        Attempt::Retry(ChunkError::Refused {
+            status: 500,
+            error: None,
+            cloudflare_error_code: Some(1101),
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer.get(&target, &sent).await,
+        Attempt::Retry(ChunkError::Refused {
+            status: 502,
+            error: None,
+            cloudflare_error_code: None,
+            ..
+        })
+    ));
+    server.await.unwrap();
 }

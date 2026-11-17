@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA: u16 = 4;
+pub const SCHEMA: u16 = 5;
 
 /// What one install recorded in one UTC hour. Its keys are always those of a [`Counter`], a [`Level`] or a [`Measure`]: only a
 /// [`Recorder`](crate::Recorder) fills it, and reading one from JSON keeps only the keys of the closed set.
@@ -373,6 +373,8 @@ pub enum Failure {
     Download(Transfer),
     /// The server refused a call.
     Refused(Refusal),
+    /// The server said what failed inside it, or Cloudflare's edge answered for it.
+    Server(ServerCause),
     /// The server refused an op of a commit, and the folder shows its node as a problem.
     ProblemNode(Refusal),
     /// A commit was larger than a message may hold, so this device did not send it.
@@ -389,6 +391,7 @@ impl Failure {
             .chain(Transfer::ALL.iter().copied().map(Failure::Upload))
             .chain(Transfer::ALL.iter().copied().map(Failure::Download))
             .chain(Refusal::ALL.iter().copied().map(Failure::Refused))
+            .chain(ServerCause::ALL.iter().copied().map(Failure::Server))
             .chain(Refusal::ALL.iter().copied().map(Failure::ProblemNode))
             .chain(TooLarge::ALL.iter().copied().map(Failure::TooLarge))
             .chain(Asked::ALL.iter().copied().map(Failure::Asked))
@@ -401,6 +404,7 @@ impl Failure {
             Failure::Upload(why) => ("upload_failed", why.name()),
             Failure::Download(why) => ("download_failed", why.name()),
             Failure::Refused(code) => ("refused", code.name()),
+            Failure::Server(cause) => ("server_cause", cause.name()),
             Failure::ProblemNode(code) => ("problem_node", code.name()),
             Failure::TooLarge(what) => ("too_large", what.name()),
             Failure::Asked(kind) => ("asked", kind.name()),
@@ -528,6 +532,33 @@ labels! {
         ConfirmationRequired => "confirmation_required",
         /// A code this build does not know, or none.
         Unknown => "unknown",
+    }
+}
+
+labels! {
+    /// What failed inside the server (RFC 0028), or the error page Cloudflare's edge sent when the Worker gave no answer.
+    pub enum ServerCause {
+        Exception => "exception",
+        R2RateLimited => "r2_rate_limited",
+        R2Unavailable => "r2_unavailable",
+        R2Error => "r2_error",
+        DoOverloaded => "do_overloaded",
+        DoUnavailable => "do_unavailable",
+        CpuExceeded => "cpu_exceeded",
+        MemoryExceeded => "memory_exceeded",
+        SubrequestLimit => "subrequest_limit",
+        StorageFull => "storage_full",
+        DailyLimit => "daily_limit",
+        /// A cause this build does not know.
+        Unknown => "unknown",
+        /// Edge error 1101: the Worker threw an exception it did not answer.
+        EdgeException => "edge_exception",
+        /// Edge error 1102: the Worker exceeded its CPU time or memory limit.
+        EdgeResourceLimit => "edge_resource_limit",
+        /// Edge error 1027: the account reached the Workers Free daily request limit.
+        EdgeDailyRequests => "edge_daily_requests",
+        /// Another edge error code.
+        EdgeOther => "edge_other",
     }
 }
 
@@ -1727,6 +1758,27 @@ mod tests {
                 ("upload_failed", transfer.clone()),
                 ("download_failed", transfer),
                 ("refused", refusal.clone()),
+                (
+                    "server_cause",
+                    vec![
+                        "exception",
+                        "r2_rate_limited",
+                        "r2_unavailable",
+                        "r2_error",
+                        "do_overloaded",
+                        "do_unavailable",
+                        "cpu_exceeded",
+                        "memory_exceeded",
+                        "subrequest_limit",
+                        "storage_full",
+                        "daily_limit",
+                        "unknown",
+                        "edge_exception",
+                        "edge_resource_limit",
+                        "edge_daily_requests",
+                        "edge_other",
+                    ],
+                ),
                 ("problem_node", refusal),
                 ("too_large", vec!["commit", "problem_node"]),
                 (

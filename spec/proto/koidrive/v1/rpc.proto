@@ -37,11 +37,38 @@ message Error {
     // revokes itself without confirming it (RFC 0009 section 5).
     CODE_CONFIRMATION_REQUIRED = 16;
   }
+  // What failed inside the server, when the call failed for a reason other than the request (RFC 0028).
+  enum Cause {
+    CAUSE_UNSPECIFIED = 0;
+    // An exception the server does not recognize.
+    CAUSE_EXCEPTION = 1;
+    // R2 refused a write for its rate limit, such as more than one write a second to one key.
+    CAUSE_R2_RATE_LIMITED = 2;
+    // R2 answered with an internal error or as unavailable.
+    CAUSE_R2_UNAVAILABLE = 3;
+    // R2 failed with another error.
+    CAUSE_R2_ERROR = 4;
+    // A Durable Object had more requests queued than it accepts.
+    CAUSE_DO_OVERLOADED = 5;
+    // A Durable Object failed with a transient error, such as a reset for a code update or a lost connection.
+    CAUSE_DO_UNAVAILABLE = 6;
+    // A Durable Object ran past its CPU time limit.
+    CAUSE_CPU_EXCEEDED = 7;
+    // A Durable Object ran past its memory limit.
+    CAUSE_MEMORY_EXCEEDED = 8;
+    // The invocation made more subrequests than its plan allows.
+    CAUSE_SUBREQUEST_LIMIT = 9;
+    // A Durable Object's storage is full.
+    CAUSE_STORAGE_FULL = 10;
+    // The account reached a Workers Free daily limit for Durable Objects.
+    CAUSE_DAILY_LIMIT = 11;
+  }
   Code code = 1;
   string message = 2;
   // Set with CODE_MISSING_CHUNKS: the chunk hashes that are not ready, at most 1,000 (RFC 0002 section 11).
   repeated bytes missing_chunks = 3;
   uint64 retry_after_ms = 4;
+  Cause cause = 5;
 }
 
 // Where and how to send or fetch one chunk.

@@ -34,7 +34,7 @@ import {
   type Welcome,
 } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkRefSchema, type CommitRecord, ContentSchema } from "../src/gen/koidrive/v1/model_pb";
-import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
+import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
 import { type Identity, type ServerKey, signAccessToken, verifyAccessToken } from "../src/auth";
 import { fromBase64url, sha256 } from "../src/crypto";
 import { ShareLinkListSchema } from "../src/gen/koidrive/v1/share_pb";
@@ -1629,7 +1629,8 @@ describe("RFC 0007 name limits and space list pages", () => {
         () => ({ init: () => Promise.reject(new Error("the Space DO is unavailable")) }) as unknown as ReturnType<typeof spaces.get>,
       );
     });
-    await expect(send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).rejects.toThrow("the Space DO is unavailable");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).toEqual({ status: 500, code: Error_Code.INTERNAL });
     const listed = (await spacePages(token)).flatMap((page) => page.spaces);
     expect(listed.some((space) => space.name === name)).toBe(false);
     const created = await call("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) }, SpaceInfoSchema);
@@ -2278,10 +2279,10 @@ describe("chunk relay", () => {
     expect((await decode(mismatch)).code).toBe(Error_Code.INVALID_ARGUMENT);
     const throttled = await fail("put: Reduce your concurrent request rate for the same object. (10058)");
     expect(throttled.status).toBe(429);
-    expect((await decode(throttled)).code).toBe(Error_Code.RETRY_LATER);
+    expect(await decode(throttled)).toMatchObject({ code: Error_Code.RETRY_LATER, cause: Error_Cause.R2_RATE_LIMITED });
     const outage = await fail("put: We encountered an internal error. Please try again. (10001)");
     expect(outage.status).toBe(503);
-    expect((await decode(outage)).code).toBe(Error_Code.RETRY_LATER);
+    expect(await decode(outage)).toMatchObject({ code: Error_Code.RETRY_LATER, cause: Error_Cause.R2_UNAVAILABLE });
     expect(await env.BUCKET.head(key)).toBeNull();
   });
 
@@ -2298,7 +2299,10 @@ describe("chunk relay", () => {
       return account().serverKey();
     });
     const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, {} as ExecutionContext);
-    await expect(send()).rejects.toThrow("injected Account DO failure");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failed = await send();
+    expect(failed.status).toBe(500);
+    expect(fromBinary(ErrorSchema, new Uint8Array(await failed.arrayBuffer()))).toMatchObject({ code: Error_Code.INTERNAL, cause: Error_Cause.EXCEPTION });
     expect((await send()).status).toBe(200);
     expect(calls).toBe(2);
     expect(await env.BUCKET.head(key)).not.toBeNull();
@@ -2675,15 +2679,17 @@ describe("platform limits", () => {
     expect(await socket.rpc({ case: "listTree", value: {} })).toMatchObject({ case: "error", value: { code: Error_Code.QUOTA_EXCEEDED, retryAfterMs } });
   });
 
-  it("keeps any other error of an RPC an INTERNAL error without a wait", async () => {
+  it("keeps any other error of an RPC an INTERNAL error without a wait, with its cause", async () => {
     const { spaceId, stub, socket } = await connected();
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const others = [
-      new Error("disk I/O error: SQLITE_IOERR"),
-      new Error("Durable Object reset because its code was updated."),
-      new TypeError("Cannot read properties of undefined (reading 'nodeId')"),
+    const others: [Error, Error_Cause][] = [
+      [new Error("disk I/O error: SQLITE_IOERR"), Error_Cause.EXCEPTION],
+      [Object.assign(new Error("Durable Object reset because its code was updated."), { retryable: true }), Error_Cause.DO_UNAVAILABLE],
+      [Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true }), Error_Cause.DO_OVERLOADED],
+      [new Error("get: We encountered an internal error. Please try again. (10001)"), Error_Cause.R2_UNAVAILABLE],
+      [new TypeError("Cannot read properties of undefined (reading 'nodeId')"), Error_Cause.EXCEPTION],
     ];
-    for (const error of others) {
+    for (const [error, cause] of others) {
       await runInDurableObject(stub, (instance: SpaceDO) => {
         (instance as unknown as { listTree: () => never }).listTree = () => {
           throw error;
@@ -2691,7 +2697,7 @@ describe("platform limits", () => {
       });
       expect(await socket.rpc({ case: "listTree", value: {} }), error.message).toMatchObject({
         case: "error",
-        value: { code: Error_Code.INTERNAL, message: "internal error", retryAfterMs: 0n },
+        value: { code: Error_Code.INTERNAL, message: "internal error", retryAfterMs: 0n, cause },
       });
     }
     expect(spaceId).toBeTruthy();
@@ -2756,7 +2762,7 @@ describe("platform limits", () => {
     expect(logged.mock.calls.filter(([what]) => what === "request stopped at a platform limit").map(([, error]) => error)).toEqual(["Error: " + text, "Error: " + text]);
   });
 
-  it("lets any other error of the Account DO escape the Worker as before", async () => {
+  it("answers any other error of the Account DO with INTERNAL and its cause", async () => {
     const a = await getOwner();
     const exec = await runInDurableObject(account(), (_instance, state) =>
       vi.spyOn(state.storage.sql, "exec").mockImplementation(() => {
@@ -2769,7 +2775,10 @@ describe("platform limits", () => {
         headers: { "Content-Type": "application/x-protobuf" },
         body: body(TokenRequestSchema, { deviceId: a.deviceId, refreshCredential: a.refreshCredential }),
       });
-      await expect(request).rejects.toThrow("disk I/O error: SQLITE_IOERR");
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const response = await request;
+      expect(response.status).toBe(500);
+      expect(fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer()))).toMatchObject({ code: Error_Code.INTERNAL, cause: Error_Cause.EXCEPTION });
     } finally {
       exec.mockRestore();
     }

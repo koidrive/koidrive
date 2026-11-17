@@ -38,6 +38,7 @@ import {
   ChunkPlanSchema,
   ChunkTargetSchema,
   DownloadTargetsSchema,
+  Error_Cause,
   Error_Code,
   ErrorSchema,
   type GetDownloadTargets,
@@ -62,6 +63,7 @@ import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
 import { policy } from "../policy";
+import { causeOf } from "../cause";
 import { quotaRefusal } from "../quota";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { type DigestVersion, type Digests, commitDigests } from "./digest";
@@ -728,6 +730,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             return fail(Error_Code.INVALID_ARGUMENT, "empty request");
         }
       } catch (error) {
+        const cause = error instanceof CallFailure ? Error_Cause.UNSPECIFIED : causeOf(error);
         if (!(error instanceof CallFailure)) {
           console.error("space rpc failed", errorText(error));
           const quota = quotaRefusal(error, this.clock());
@@ -739,6 +742,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           message: failure.message,
           missingChunks: failure.missingChunks,
           retryAfterMs: BigInt(failure.retryAfterMs),
+          cause,
         });
         const response = create(RpcResponseSchema, { reqId, result: { case: "error", value } });
         if (frameBytes(response) <= MAX_SERVER_FRAME) return { response };

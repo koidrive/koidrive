@@ -434,7 +434,7 @@ impl Fetch for Server {
                     code: koidrive_proto::v1::error::Code::MissingChunks as i32,
                     message: "some chunks are not stored".into(),
                     missing_chunks: missing,
-                    retry_after_ms: 0,
+                    ..Default::default()
                 },
             ))));
         }
@@ -443,6 +443,7 @@ impl Fetch for Server {
                 hash: chunks[0].hash.clone(),
                 status: 429,
                 error: Some(error),
+                cloudflare_error_code: None,
             });
         }
         {

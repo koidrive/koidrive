@@ -67,8 +67,8 @@ mod tests {
         ServerError(ProtoError {
             code,
             message: "m".into(),
-            missing_chunks: Vec::new(),
             retry_after_ms,
+            ..Default::default()
         })
     }
 
