@@ -553,7 +553,7 @@ impl RecoveryCopy {
 /// A copy of the server's storage, with what the server had held up to that time.
 struct Backup {
     space: SpaceDo,
-    held_commits: Vec<BTreeSet<u64>>,
+    held_commits: Vec<BTreeSet<(u64, String)>>,
     in_history: Held,
     spent: Vec<Spent>,
     placements: Vec<BTreeSet<Placement>>,
@@ -566,11 +566,11 @@ struct Placement {
     name: String,
 }
 
-fn copy_bound(held: &BTreeSet<u64>, restored_to: Option<u64>) -> u64 {
+fn copy_bound(held: &BTreeSet<(u64, String)>, restored_to: Option<u64>) -> u64 {
     (held.iter())
+        .map(|(seq, _)| *seq)
         .rev()
-        .find(|seq| restored_to.is_none_or(|point| **seq <= point))
-        .copied()
+        .find(|seq| restored_to.is_none_or(|point| *seq <= point))
         .unwrap_or(0)
 }
 
@@ -632,7 +632,7 @@ pub struct World {
     /// The writes that a restore took from the server while a device still held them, each with
     /// the files the server may hold it in.
     exposed: BTreeMap<i64, Exposure>,
-    held_commits: Vec<BTreeSet<u64>>,
+    held_commits: Vec<BTreeSet<(u64, String)>>,
     restored_to: Option<u64>,
     planned_copies: Vec<BTreeMap<NodeId, RecoveryCopy>>,
     recovery_copies: BTreeMap<NodeId, RecoveryCopy>,
@@ -2389,7 +2389,7 @@ impl World {
                                         name: state.name.clone(),
                                     }),
                             );
-                            self.held_commits[d].insert(record.seq);
+                            self.held_commits[d].insert((record.seq, record.commit_id.clone()));
                             let built = self.built[d];
                             let nodes = self.space.nodes();
                             let parents: BTreeMap<&str, &str> = (nodes.iter())
@@ -3835,7 +3835,7 @@ mod tests {
 
     #[test]
     fn a_copy_bound_counts_only_commits_from_before_the_last_restore() {
-        let held = BTreeSet::from([2, 5]);
+        let held = BTreeSet::from([(2, "b".to_owned()), (5, "e".to_owned())]);
         assert_eq!(copy_bound(&held, None), 5);
         assert_eq!(copy_bound(&held, Some(3)), 2);
         assert_eq!(copy_bound(&held, Some(1)), 0);
@@ -3852,7 +3852,7 @@ mod tests {
         world.phase(1, &[]).unwrap();
         let held = world.held_commits[0].clone();
         assert_eq!(held.len(), 2, "{held:?}");
-        let before = *held.first().unwrap();
+        let before = held.first().unwrap().0;
         assert_eq!(copy_bound(&held, world.restored_to), before);
     }
 
