@@ -1537,3 +1537,49 @@ fn a_folder_another_device_renamed_before_a_loss_is_created_without_the_name_it_
         ops(&commit)
     );
 }
+
+
+#[test]
+fn a_held_resend_the_server_lost_is_kept_as_a_copy_that_is_still_a_resend() {
+    let (mut trees, mut commits, mut ids) = renamed_elsewhere_then_lost();
+    assert!(trees.state().resends.contains("f"));
+    trees.revert("f".into());
+    trees.settle(&Default::default());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let [op::Op::CreateFile(create)] = &ops(&commit)[..] else {
+        panic!("{:?}", ops(&commit));
+    };
+    assert_ne!(create.node_id, "f");
+    assert!(commit.require_head);
+    let state = trees.state();
+    assert!(state.resends.contains(&create.node_id));
+    assert!(!state.local_changes.contains(&create.node_id));
+}
+
+#[test]
+fn a_copy_of_a_resend_beside_another_devices_later_edit_is_no_change_of_this_devices_user() {
+    let (mut commits, mut trees, mut ids) = downloaded_at_5();
+    list_after_a_loss(
+        &mut trees,
+        &commits,
+        version(remote(file(ROOT, "a", 1)), "v1"),
+    );
+    assert!(trees.state().resends.contains("a"));
+    let edited = RemoteNode {
+        content_rev: 6,
+        edit_rev: 6,
+        ..version(remote(file(ROOT, "a", 3)), "v3")
+    };
+    trees.set_remote("a".into(), edited);
+    trees.settle(&Default::default());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let [op::Op::CreateFile(create)] = &ops(&commit)[..] else {
+        panic!("{:?}", ops(&commit));
+    };
+    assert_ne!(create.node_id, "a");
+    assert_eq!(create.content, Some(content(2)));
+    assert!(commit.require_head);
+    let state = trees.state();
+    assert!(state.resends.contains(&create.node_id));
+    assert!(!state.local_changes.contains(&create.node_id));
+}
