@@ -139,6 +139,10 @@ pub enum DriverError {
     #[error("the space is already linked to {} on this device", koidrive_fs::quoted(.0))]
     SpaceAlreadyLinked(PathBuf),
     #[error(
+        "the space is already linked on this device, but its folder's path is unknown; run koi folder unlink --space {0}, then link the folder again"
+    )]
+    SpaceUnplaced(String),
+    #[error(
         "the folder is marked for space {0}; unlink it there first, or remove its .koidrive folder"
     )]
     MarkerOfOtherSpace(String),
@@ -985,27 +989,23 @@ impl Driver {
                     error: error.to_string(),
                 });
             }
-            match self.inner.paths.store(&link.space_id) {
-                Ok(store) => {
-                    let dir = store.parent().expect("a store has a parent");
-                    let removed = fs::remove_dir_all(dir).or_else(|error| match error.kind() {
-                        io::ErrorKind::NotFound => Ok(()),
-                        _ => Err(error),
-                    });
-                    if let Err(error) = removed.and_then(|()| crate::leave::sync_parent(dir)) {
-                        failed.push(CleanupFailure {
-                            path: dir.to_path_buf(),
-                            error: error.to_string(),
-                        });
-                    }
-                }
-                Err(error) => failed.push(CleanupFailure {
-                    path: self.inner.paths.spaces(),
-                    error: error.to_string(),
-                }),
-            }
+            failed.extend(self.remove_space_state(&link.space_id).err());
             if let Some(folder) = self.inner.folders.lock().unwrap().remove(&link.space_id) {
                 folder.progress.lock().unwrap().clear();
+            }
+        }
+        let unplaced: Vec<_> = self
+            .inner
+            .unplaced
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for space_id in unplaced {
+            match self.remove_space_state(&space_id) {
+                Ok(()) => drop(self.inner.unplaced.lock().unwrap().remove(&space_id)),
+                Err(failure) => failed.push(failure),
             }
         }
         if failed.is_empty()
@@ -1018,6 +1018,28 @@ impl Driver {
         }
         self.changed();
         Ok(failed)
+    }
+
+    fn remove_space_state(&self, space_id: &str) -> Result<(), CleanupFailure> {
+        let store = self
+            .inner
+            .paths
+            .store(space_id)
+            .map_err(|error| CleanupFailure {
+                path: self.inner.paths.spaces(),
+                error: error.to_string(),
+            })?;
+        let dir = store.parent().expect("a store has a parent");
+        fs::remove_dir_all(dir)
+            .or_else(|error| match error.kind() {
+                io::ErrorKind::NotFound => Ok(()),
+                _ => Err(error),
+            })
+            .and_then(|()| crate::leave::sync_parent(dir))
+            .map_err(|error| CleanupFailure {
+                path: dir.to_path_buf(),
+                error: error.to_string(),
+            })
     }
 
     async fn revocation_auth(
@@ -1138,6 +1160,17 @@ impl Driver {
         let roots = roots(&self.inner.folders.lock().unwrap());
         for root in roots {
             self.unlink_folder(&root).await?;
+        }
+        let unplaced: Vec<_> = self
+            .inner
+            .unplaced
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for space_id in unplaced {
+            self.forget_unplaced(&space_id)?;
         }
         Ok(())
     }
@@ -1302,6 +1335,15 @@ impl Driver {
         }
         let auth = self.auth(&credential)?;
         let space = resolve_space(auth.api().list_spaces(&auth).await?.spaces, space)?;
+        if self
+            .inner
+            .unplaced
+            .lock()
+            .unwrap()
+            .contains_key(&space.space_id)
+        {
+            return Err(DriverError::SpaceUnplaced(space.space_id));
+        }
 
         let mut folders = self.inner.folders.lock().unwrap();
         self.check_placement(&root, &folders)?;
@@ -1462,7 +1504,7 @@ impl Driver {
     /// this returns `None`.
     pub async fn unlink_space(&self, space_id: &str) -> Result<Option<Link>, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
-        let store = self.inner.paths.store(space_id)?;
+        self.inner.paths.store(space_id)?;
         let root = (self.inner.folders.lock().unwrap().get(space_id))
             .map(|folder| folder.link.root.clone());
         if let Some(root) = root {
@@ -1471,16 +1513,17 @@ impl Driver {
         if !self.inner.unplaced.lock().unwrap().contains_key(space_id) {
             return Err(DriverError::SpaceNotLinked(space_id.to_owned()));
         }
-        let dir = store.parent().expect("a store path has a parent");
-        match fs::remove_dir_all(dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error(dir)(error)),
-        }
-        self.inner.unplaced.lock().unwrap().remove(space_id);
-        tracing::info!(space_id, "unlinked a folder whose path is unknown");
+        self.forget_unplaced(space_id)?;
         self.changed();
         Ok(None)
+    }
+
+    fn forget_unplaced(&self, space_id: &str) -> Result<(), DriverError> {
+        self.remove_space_state(space_id)
+            .map_err(|failure| io_error(&failure.path)(io::Error::other(failure.error)))?;
+        self.inner.unplaced.lock().unwrap().remove(space_id);
+        tracing::info!(space_id, "unlinked a folder whose path is unknown");
+        Ok(())
     }
 
     /// Removes the folder's owner record, then its store. The store records the link, so it goes last: until both are
@@ -4029,6 +4072,88 @@ mod tests {
         let listed = listed.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, FolderState::Halted);
+    }
+
+    fn unplaced(paths: &Paths, space_id: &str) -> PathBuf {
+        let store = paths.store(space_id).unwrap();
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        fs::write(&store, b"these bytes are no database").unwrap();
+        store.parent().unwrap().to_path_buf()
+    }
+
+    #[tokio::test]
+    async fn signing_out_also_forgets_a_folder_whose_path_is_unknown() {
+        const LOST: &str = "0190f0a0-0000-7000-8000-0000000000f1";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let lost = unplaced(&paths, LOST);
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert_eq!(driver.status().folders.len(), 2);
+
+        driver.sign_out(true).await.unwrap();
+
+        assert!(driver.status().folders.is_empty());
+        assert!(!lost.exists());
+        drop(driver);
+        assert!(Driver::linked_folders(&paths).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn saving_another_credential_forgets_a_folder_whose_path_is_unknown() {
+        const LOST: &str = "0190f0a0-0000-7000-8000-0000000000f2";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let lost = unplaced(&paths, LOST);
+        fs::remove_file(paths.credential()).unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+
+        driver.save_credential(credential("d2")).await.unwrap();
+
+        assert!(driver.status().folders.is_empty());
+        assert!(!lost.exists());
+    }
+
+    #[tokio::test]
+    async fn linking_a_space_whose_folder_path_is_unknown_asks_to_unlink_it_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        fs::create_dir(&root).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let lost = unplaced(&paths, SPACE);
+        let spaces = prost::Message::encode_to_vec(&koidrive_proto::v1::SpaceList {
+            spaces: vec![SpaceInfo {
+                space_id: SPACE.into(),
+                name: "Projects".into(),
+                format_version: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let (server, served) =
+            serve_each(vec![access_token(), (200, spaces)], paths.credential()).await;
+        Credential {
+            server,
+            ..credential("d1")
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+
+        let refused = driver.link(&root, SPACE).await.unwrap_err();
+
+        assert!(
+            matches!(&refused, DriverError::SpaceUnplaced(space_id) if space_id == SPACE),
+            "{refused}"
+        );
+        served.await.unwrap();
+        assert_eq!(driver.status().folders.len(), 1);
+        assert!(lost.join("store.sqlite").exists());
+        assert_eq!(claim::owner(&root).unwrap(), None);
     }
 
     fn garble(paths: &Paths, space_id: &str) {
