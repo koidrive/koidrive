@@ -49,7 +49,7 @@ import { countBundledChunks, decodeChunkBundle } from "../src/chunk-bundle";
 import { BadRequest } from "../src/http";
 import { type AccountDO } from "../src/account-do";
 import { SESSION_LEASE_MS } from "../src/account/account";
-import { content, op, storedObjects, targetIncarnation } from "./helpers";
+import { content, freezeClock, op, storedObjects, targetIncarnation } from "./helpers";
 
 const BASE = "https://koidrive.test";
 
@@ -1044,8 +1044,7 @@ describe("RFC 0014 session leases", () => {
 
   function ageLeases(spaceId: string, byMs: number) {
     return runInDurableObject(env.SPACE.get(env.SPACE.idFromName(spaceId)), (instance: SpaceDO) => {
-      const atMs = instance.clock() + byMs;
-      instance.clock = () => atMs;
+      freezeClock(instance, instance.clock() + byMs);
     });
   }
 

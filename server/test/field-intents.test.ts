@@ -14,7 +14,7 @@ import { MIGRATIONS } from "../src/space/schema";
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
 import { restoreFromR2, serverState } from "./export-reader";
-import { client, content, newSpace, op, runSpaceAlarm, type TestClient } from "./helpers";
+import { client, content, freezeClock, newSpace, op, runSpaceAlarm, type TestClient } from "./helpers";
 
 type Space = Awaited<ReturnType<typeof newSpace>>;
 type IntentInit = { id?: Uint8Array; author?: string; replay?: boolean; over?: Uint8Array; appliedAtMs?: bigint };
@@ -64,7 +64,7 @@ async function setRule(space: Space, rule: LostChangeRule): Promise<void> {
 
 async function setClock(space: Space, atMs: number): Promise<void> {
   await runInDurableObject(space.stub, (instance: SpaceDO) => {
-    instance.clock = () => atMs;
+    freezeClock(instance, atMs);
   });
 }
 

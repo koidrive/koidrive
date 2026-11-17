@@ -11,7 +11,7 @@ import { toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { conflictName, nameKey } from "../src/space/names";
 import { chunkKey } from "../src/space/store";
-import { client, content, newSpace, op, storedObjects, type TestClient } from "./helpers";
+import { client, content, freezeClock, newSpace, op, storedObjects, type TestClient } from "./helpers";
 
 const DAY = 24 * 3_600_000;
 
@@ -476,7 +476,7 @@ describe("conflict rules", () => {
 describe("RFC 0023 deletion time and device in ListTrash", () => {
   function setClock(space: { stub: Awaited<ReturnType<typeof newSpace>>["stub"] }, atMs: number) {
     return runInDurableObject(space.stub, (instance: SpaceDO) => {
-      instance.clock = () => atMs;
+      freezeClock(instance, atMs);
     });
   }
 

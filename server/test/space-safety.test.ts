@@ -11,7 +11,7 @@ import { sha256 } from "../src/crypto";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { chunkKey, encodeChunkList, rows, type VersionRow, versionChunks } from "../src/space/store";
-import { client, content, newSpace, op, storedObjects, type TestClient } from "./helpers";
+import { client, content, freezeClock, newSpace, op, storedObjects, type TestClient } from "./helpers";
 
 const DAY = 24 * 3_600_000;
 const HOUR = 3_600_000;
@@ -26,7 +26,7 @@ async function setup() {
 
 function setClock(space: Space, atMs: number) {
   return runInDurableObject(space.stub, (instance: SpaceDO) => {
-    instance.clock = () => atMs;
+    freezeClock(instance, atMs);
   });
 }
 
