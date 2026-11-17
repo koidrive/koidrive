@@ -433,8 +433,14 @@ mod tests {
     #[test]
     fn every_package_a_job_builds_selects_that_job() {
         let workflow = fs::read_to_string(format!("{ROOT}/.github/workflows/ci.yml")).unwrap();
-        let shards = workflow.split("\n  rust-tests:\n").nth(1).unwrap();
-        let shards = shards.split("\n\n  ").next().unwrap();
+        let shards: String = workflow
+            .split("\n  rust-tests:\n")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .take_while(|line| !line.starts_with("  ") || line.starts_with("   "))
+            .map(|line| format!("{line}\n"))
+            .collect();
         let steps: Vec<_> = shards.split("\n      - ").skip(1).collect();
         let suite = |name: &str| {
             steps
