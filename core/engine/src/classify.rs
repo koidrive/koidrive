@@ -9,7 +9,7 @@ use koidrive_ignore::Status;
 
 use crate::first_link;
 use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
-use crate::names::{name_key, nfc};
+use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, LostPosition, MovedHere,
     PendingFinish, StateError, TreesChanges, TreesState,
@@ -1621,7 +1621,7 @@ impl Trees {
                                 FinishOrigin::Mark { meta_rev } => {
                                     remote.meta_rev == meta_rev
                                         && (remote.pending_for.as_ref())
-                                            .is_none_or(|mark| *mark == finish.name)
+                                            .is_none_or(|mark| same_name(mark, &finish.name))
                                 }
                                 FinishOrigin::Legacy => true,
                             }

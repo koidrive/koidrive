@@ -12,7 +12,7 @@ use crate::guard::RemoteRemoval;
 use crate::ids::IdGen;
 use crate::ignore::is_rules_file;
 
-use crate::names::name_key;
+use crate::names::{name_key, same_name};
 use crate::state::{EffectsChanges, EffectsState, StateError};
 use crate::tracked::{Marked, TrackedMap};
 use crate::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same, same_content};
@@ -701,11 +701,14 @@ fn finishing_move(trees: &Trees, record: &EffectRecord) -> bool {
     matches!(record.effect, Effect::Move { .. })
         && (record.after.as_ref()).is_some_and(|after| {
             match trees.pending_finishes().get(&record.node) {
-                Some(finish) => finish.parent == after.parent && finish.name == after.name,
+                Some(finish) => {
+                    finish.parent == after.parent && same_name(&finish.name, &after.name)
+                }
                 None => (trees.remote().get(&record.node)).is_some_and(|remote| {
                     !remote.trashed
                         && remote.shape.parent == after.parent
-                        && remote.pending_for.as_ref() == Some(&after.name)
+                        && (remote.pending_for.as_deref())
+                            .is_some_and(|mark| same_name(mark, &after.name))
                         && base.is_some_and(|base| base.same_position(&remote.shape))
                 }),
             }

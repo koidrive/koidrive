@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::Trees;
 use crate::ids::IdGen;
+use crate::names::same_name;
 use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, Revisions,
 };
@@ -50,7 +51,7 @@ pub(crate) fn group(trees: &Trees, id: &str) -> Option<RecoveryGroup> {
             !r.trashed
                 && local.kind == Kind::Dir
                 && local.parent == r.shape.parent
-                && r.pending_for.as_deref() == Some(local.name.as_str())
+                && (r.pending_for.as_deref()).is_some_and(|stem| same_name(stem, &local.name))
         })
     };
     match (local, synced) {
