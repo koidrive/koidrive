@@ -214,7 +214,7 @@ jobs:
             log="$out/logs/$(basename "$binary").log"
             echo "::group::$package $selector"
             set +e
-            (cd "$dir" && env -u PROPTEST_CASES CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" KOIDRIVE_BATTERY_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" "${filter_args[@]}") 2>&1 | tee "$log"
+            (cd "$dir" && env -u PROPTEST_CASES RUSTC_BOOTSTRAP=1 CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" KOIDRIVE_BATTERY_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" "${filter_args[@]}" -Z unstable-options --report-time) 2>&1 | tee "$log"
             code=${PIPESTATUS[0]}
             set -e
             echo "::endgroup::"
