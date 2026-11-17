@@ -575,8 +575,9 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
         device_committed_at_ms: 3,
         ..welcome(1)
     };
-    assert_eq!(elsewhere.connected(&another), Reconnect::AheadOfServer);
-    assert_eq!((elsewhere.accepted(), elsewhere.held_through()), (1, 0));
+    assert_eq!(elsewhere.connected(&another), Reconnect::Recovery);
+    assert!(matches!(elsewhere.halted(), Some(Halt::Recovery(_))));
+    assert_eq!(elsewhere.accepted(), 2);
     assert!(elsewhere.lost_here(7) && elsewhere.lost_here(3));
 }
 
@@ -864,4 +865,39 @@ fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
         Vec::<&op::Op>::new(),
         "the copy sends the edit of n again over the delete"
     );
+}
+
+#[test]
+fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_another_commit() {
+    let kept = |commit_id: &str| Slot {
+        seq: 3,
+        commit_id: commit_id.into(),
+        committed_at_ms: 30,
+    };
+    let at_slot_1 = |commit_id: &str, committed_at_ms: i64| Welcome {
+        device_commit_id: commit_id.into(),
+        device_committed_at_ms: committed_at_ms,
+        ..welcome(1)
+    };
+    let cases = [
+        (kept("one"), at_slot_1("one", 30), Reconnect::AheadOfServer),
+        (kept("one"), at_slot_1("", 0), Reconnect::AheadOfServer),
+        (kept(""), at_slot_1("another", 30), Reconnect::AheadOfServer),
+        (kept("one"), at_slot_1("another", 30), Reconnect::Recovery),
+        (kept("one"), at_slot_1("one", 31), Reconnect::Recovery),
+    ];
+    for (slot_1, welcome, reconnect) in cases {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 2,
+            slots: [(1, slot_1), (2, slot(7))].into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(commits.connected(&welcome), reconnect, "{welcome:?}");
+        let restarted = Commits::from_state(commits.state()).unwrap();
+        for commits in [&commits, &restarted] {
+            let recovering = matches!(commits.halted(), Some(Halt::Recovery(_)));
+            assert_eq!(recovering, reconnect == Reconnect::Recovery, "{welcome:?}");
+        }
+    }
 }
