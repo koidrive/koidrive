@@ -21,9 +21,8 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. A change whose 
 | `spec` | `buf lint`, generated code that matches `spec/proto`, and no breaking change against the base | In `spec/`: `buf lint`, then `buf generate` and check that `git status` shows no change |
 | `comments` | The change adds no code comments outside the allowed kinds | `python3 scripts/check-new-comments.py origin/main HEAD` |
 | `macos app` (macOS) | The app builds, the Swift bindings' tests pass, and an unsigned disk image packages and verifies | In `apps/macos/`: `scripts/build-ffi.sh`, then `swift test --package-path KoidriveFFI` |
-| `runner hook` (macOS) | The self-hosted runners' job-started hook and its installer | `.github/runner/test-job-started.sh` and `.github/runner/test-install-hook.sh` |
 
-On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. `runner hook` runs when it touches `.github/runner/`. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs every macOS job, and a push to `main` runs each one the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners unless the `MACOS_RUNS_ON` variable selects the [self-hosted runners](../.github/runner/README.md).
+On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs every macOS job, and a push to `main` runs each one the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners.
 
 One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test is skipped unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
 

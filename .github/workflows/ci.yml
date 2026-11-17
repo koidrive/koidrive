@@ -31,13 +31,16 @@ jobs:
       server_macos: ${{ steps.paths.outputs.server_macos }}
       spec_macos: ${{ steps.paths.outputs.spec_macos }}
       macos_app: ${{ steps.paths.outputs.macos_app }}
-      runner_hook: ${{ steps.paths.outputs.runner_hook }}
       site_only: ${{ steps.paths.outputs.site_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 2
+      - name: Test the CI workflow
+        run: python3 scripts/test-ci-workflow.py -v
+      - name: Test Rust partition coverage
+        run: python3 scripts/test-ci-rust-partitions.py RustPartitions -v
       - name: Decide which jobs the change needs
         id: paths
         env:
@@ -62,7 +65,7 @@ jobs:
               echo "Merge queue run $(jq -r .html_url <<<"$run") passed CI on $GITHUB_SHA."
               echo "Merge queue run $(jq -r .html_url <<<"$run") tested this commit. macOS jobs it passed are skipped here." >> "$GITHUB_STEP_SUMMARY"
             fi
-            for pair in "rust_macos:rust (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app" "runner_hook:runner hook"; do
+            for pair in "rust_macos:rust (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app"; do
               covered=true
               if [ "${pair%%:*}" = rust_macos ]; then
                 for suite in driver engine sim; do
@@ -93,7 +96,7 @@ jobs:
           printf '%s\n' "$changed"
           if [ -n "$changed" ] && ! grep -qv '^site/' <<<"$changed"; then
             echo "site_only: true, because every changed file is under site/, so the build and test jobs skip."
-            printf '%s=false\n' rust_macos server_macos spec_macos macos_app runner_hook >> "$GITHUB_OUTPUT"
+            printf '%s=false\n' rust_macos server_macos spec_macos macos_app >> "$GITHUB_OUTPUT"
             echo "site_only=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -101,7 +104,7 @@ jobs:
           echo "site_only=false" >> "$GITHUB_OUTPUT"
           if [ "$EVENT" = merge_group ]; then
             echo "Merge queue run: every macOS job runs."
-            printf '%s=true\n' rust_macos server_macos spec_macos macos_app runner_hook >> "$GITHUB_OUTPUT"
+            printf '%s=true\n' rust_macos server_macos spec_macos macos_app >> "$GITHUB_OUTPUT"
             exit 0
           fi
           bash scripts/test-macos-changes.sh
@@ -120,10 +123,9 @@ jobs:
               echo "$1=false" >> "$GITHUB_OUTPUT"
             fi
           }
-          workflow="$(grep -E '^(\.github/workflows/ci\.yml$|\.github/actions/self-hosted-rust/|scripts/(test-)?macos-changes\.sh$)' <<<"$changed" || true)"
+          workflow="$(grep -E '^(\.github/workflows/ci\.yml$|scripts/(test-)?macos-changes\.sh$)' <<<"$changed" || true)"
           decide rust_macos "no macOS-specific Rust input changed" "$(cut -f1 <<<"$macos" | grep -v '^apps/macos/' || true)"$'\n'"$workflow"
           decide macos_app "neither the app nor a macOS-specific input of the core changed" "$(cut -f1 <<<"$macos" | grep -v '^cli/' || true)"$'\n'"$workflow"
-          decide runner_hook "neither the runner hook nor ci.yml changed" "$(grep -E '^\.github/(runner/|workflows/ci\.yml$)' <<<"$changed" || true)"
           for job in server_macos spec_macos; do
             decide "$job" "ci.yml did not change" "$(grep -Fx '.github/workflows/ci.yml' <<<"$changed" || true)"
           done
@@ -162,197 +164,23 @@ jobs:
           fi
           echo "No merged store migration changed."
 
-  pick-macos:
-    name: pick-macos
-    needs: changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      macos_app: ${{ steps.pick.outputs.macos_app }}
-      rust: ${{ steps.pick.outputs.rust }}
-      rust_driver: ${{ steps.pick.outputs.rust_driver }}
-      rust_engine: ${{ steps.pick.outputs.rust_engine }}
-      rust_sim: ${{ steps.pick.outputs.rust_sim }}
-      server: ${{ steps.pick.outputs.server }}
-      spec: ${{ steps.pick.outputs.spec }}
-      runner_hook: ${{ steps.pick.outputs.runner_hook }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Test the macOS runner picker
-        run: python3 scripts/test-pick-macos.py -v
-      - name: Test Rust partition coverage
-        run: python3 scripts/test-ci-rust-partitions.py RustPartitions -v
-      - name: Pick a runner for each macOS job
-        id: pick
-        env:
-          EVENT: ${{ github.event_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          REPO: ${{ github.repository }}
-          RUNS_ON: ${{ vars.MACOS_RUNS_ON || '["self-hosted","flarebox-mini"]' }}
-          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          WANTED: macos_app=${{ needs.changes.outputs.macos_app }} rust=${{ needs.changes.outputs.rust_macos }} rust_driver=${{ needs.changes.outputs.rust_macos }} rust_engine=${{ needs.changes.outputs.rust_macos }} rust_sim=${{ needs.changes.outputs.rust_macos }} server=${{ needs.changes.outputs.server_macos }} spec=${{ needs.changes.outputs.spec_macos }} runner_hook=${{ needs.changes.outputs.runner_hook }}
-        run: |
-          hosted='["macos-15"]'
-          api() {
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "Counting the hosted macOS jobs took more than 90 seconds." >&2
-              return 1
-            fi
-            curl -fsS --max-time 15 -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$GITHUB_API_URL/repos/$REPO/actions/$1"
-          }
-          count_hosted() {
-            local deadline=$((SECONDS + 90)) status p page got c ids="" id n=0
-            for status in queued in_progress; do
-              p=1
-              while :; do
-                page="$(api "runs?status=$status&per_page=100&page=$p")" || return 1
-                got="$(jq -er '.workflow_runs | if type == "array" then length else error("no workflow_runs") end' <<<"$page")" || return 1
-                ids="$ids $(jq -r '.workflow_runs[].id' <<<"$page")"
-                [ "$got" = 100 ] || break
-                p=$((p + 1))
-              done
-            done
-            for id in $(tr -s ' ' '\n' <<<"$ids" | sort -un); do
-              p=1
-              while :; do
-                page="$(api "runs/$id/jobs?filter=latest&per_page=100&page=$p")" || return 1
-                got="$(jq -er '.jobs | if type != "array" then error("no jobs") else "\(length) \([.[] | select(.status != "completed") | [.labels[] | ascii_downcase] | select((index("self-hosted") | not) and any(.[]; startswith("macos-") or . == "xcode-27"))] | length)" end' <<<"$page")" || return 1
-                read -r got c <<<"$got"
-                n=$((n + c))
-                [ "$got" = 100 ] || break
-                p=$((p + 1))
-              done
-            done
-            echo "$n"
-          }
-          pool=false
-          idle=n/a
-          online=n/a
-          total=n/a
-          if [ "$EVENT" = pull_request ] && { [ "$REPO" != koidrive/koidrive ] || [ "$HEAD_REPO" != "$REPO" ]; }; then
-            reason="Pull request in $REPO from ${HEAD_REPO:-a deleted repository}: its macOS jobs run on GitHub-hosted runners."
-            RUNS_ON=$hosted
-          elif ! jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' <<<"$RUNS_ON" >/dev/null 2>&1; then
-            echo "::error::The MACOS_RUNS_ON variable must be a JSON array of runner labels, such as [\"xcode-27\"], but it is: $RUNS_ON"
-            exit 1
-          elif [ "$EVENT" != pull_request ]; then
-            reason="A $EVENT run keeps the configured macOS runners."
-          elif ! jq -e 'map(ascii_downcase) | index("self-hosted")' <<<"$RUNS_ON" >/dev/null; then
-            reason="MACOS_RUNS_ON is $RUNS_ON, which names no self-hosted runner, so there is nothing to pool."
-          elif [ -z "$RUNNER_STATUS_TOKEN" ]; then
-            reason="The RUNNER_STATUS_TOKEN secret is not set, so the self-hosted runners cannot be checked and every macOS job runs on GitHub-hosted runners."
-            RUNS_ON=$hosted
-          elif ! runners="$(curl -fsS --max-time 15 -H "Authorization: Bearer $RUNNER_STATUS_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$GITHUB_API_URL/repos/$REPO/actions/runners?per_page=100")"; then
-            reason="Listing the self-hosted runners failed (see the curl error above), so every macOS job runs on GitHub-hosted runners."
-            RUNS_ON=$hosted
-          elif ! counts="$(jq -er --argjson want "$RUNS_ON" '[.runners[] | select(($want | map(ascii_downcase)) - [.labels[].name | ascii_downcase] == [])] | "\(map(select(.status == "online" and .busy == false)) | length) \(map(select(.status == "online")) | length) \(length)"' <<<"$runners" 2>&1)"; then
-            reason="The runner list is not in the expected shape ($counts), so every macOS job runs on GitHub-hosted runners."
-            RUNS_ON=$hosted
-          else
-            read -r idle online total <<<"$counts"
-            if [ "$online" = 0 ]; then
-              reason="None of the $total self-hosted runners labelled $RUNS_ON is online, so every macOS job runs on GitHub-hosted runners."
-              RUNS_ON=$hosted
-            else
-              pool=true
-              reason="$idle of the $total self-hosted runners labelled $RUNS_ON are online and idle, and $online are online."
-            fi
-          fi
-          RUNS_ON="$(jq -c . <<<"$RUNS_ON")"
-          wanted_jobs=0
-          for job in macos_app rust rust_driver rust_engine rust_sim server spec runner_hook; do
-            case " $WANTED " in *" $job=true "*) wanted_jobs=$((wanted_jobs + 1)) ;; esac
-          done
-          hosted_cap=5
-          hosted_load=n/a
-          if [ "$pool" = true ] && [ "$wanted_jobs" -gt "$idle" ]; then
-            if hosted_load="$(count_hosted)"; then
-              reason="$reason $hosted_load hosted macOS jobs of this repository are queued or running. A job without an idle self-hosted runner runs on GitHub-hosted runners while that count is below $hosted_cap, and queues for a self-hosted runner otherwise."
-            else
-              hosted_load=unknown
-              reason="$reason Counting the hosted macOS jobs failed (see the error above), so every job without an idle self-hosted runner runs on GitHub-hosted runners."
-            fi
-          fi
-          echo "$reason"
-          {
-            echo "### macOS runners"
-            echo
-            echo "$reason"
-            echo
-            echo "| Job | Runs | Runner labels | DEVELOPER_DIR |"
-            echo "| --- | --- | --- | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          to_self_hosted=0
-          to_hosted=0
-          idle_left=$idle
-          hosted_busy=$hosted_load
-          for job in macos_app rust rust_driver rust_engine rust_sim server spec runner_hook; do
-            case " $WANTED " in
-              *" $job=true "*) wanted=true ;;
-              *) wanted=false ;;
-            esac
-            runs_on=$RUNS_ON
-            if [ "$pool" = true ]; then
-              if [ "$wanted" != true ]; then
-                runs_on=$hosted
-              elif [ "$idle_left" -gt 0 ]; then
-                idle_left=$((idle_left - 1))
-              elif [ "$hosted_busy" = unknown ]; then
-                runs_on=$hosted
-              elif [ "$hosted_busy" -lt "$hosted_cap" ]; then
-                runs_on=$hosted
-                hosted_busy=$((hosted_busy + 1))
-              fi
-            fi
-            if jq -e 'map(ascii_downcase) | index("self-hosted")' <<<"$runs_on" >/dev/null; then
-              developer_dir=/Applications/Xcode.app/Contents/Developer
-              if [ "$wanted" = true ]; then to_self_hosted=$((to_self_hosted + 1)); fi
-            else
-              runs_on=$hosted
-              developer_dir=""
-              if [ "$job" = macos_app ]; then
-                runs_on='["xcode-27"]'
-                developer_dir=/Applications/Xcode_27.2.app/Contents/Developer
-              fi
-              if [ "$wanted" = true ]; then to_hosted=$((to_hosted + 1)); fi
-            fi
-            echo "$job: runs $wanted, on $runs_on with DEVELOPER_DIR=$developer_dir"
-            echo "| $job | $wanted | \`$runs_on\` | \`$developer_dir\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "$job=$(jq -nc --argjson runs_on "$runs_on" --arg developer_dir "$developer_dir" '{runs_on: $runs_on, developer_dir: $developer_dir}')" >> "$GITHUB_OUTPUT"
-          done
-          decision="pick-macos: event=$EVENT pooled=$pool idle=$idle online=$online total=$total hosted_load=$hosted_load hosted_cap=$hosted_cap to_self_hosted=$to_self_hosted to_hosted=$to_hosted"
-          echo "$decision"
-          printf '\n%s\n' "$decision" >> "$GITHUB_STEP_SUMMARY"
-
   rust:
     name: rust (${{ matrix.os }})
-    needs: [changes, pick-macos]
+    needs: [changes]
     if: needs.changes.outputs.site_only != 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.rust).runs_on || matrix.os }}
+    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
     timeout-minutes: 60
-    env:
-      DEVELOPER_DIR: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.rust).developer_dir || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Use Homebrew's rustup with rustup and Cargo homes and a target directory private to this self-hosted runner
-        if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/self-hosted-rust
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        if: runner.environment != 'self-hosted'
       - name: Verify Rust workspace feature parity
         run: python3 scripts/test-ci-rust-partitions.py FeatureParity -v
       - name: List the remaining test inventory
@@ -406,28 +234,22 @@ jobs:
 
   rust-tests:
     name: rust tests (${{ matrix.os }}, ${{ matrix.suite }})
-    needs: [changes, pick-macos]
+    needs: [changes]
     if: needs.changes.outputs.site_only != 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
         suite: [driver, engine, sim]
-    runs-on: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs[format('rust_{0}', matrix.suite)]).runs_on || matrix.os }}
+    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
     timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs[format('rust_{0}', matrix.suite)]).developer_dir || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Use Homebrew's rustup with rustup and Cargo homes and a target directory private to this self-hosted runner
-        if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/self-hosted-rust
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
-        if: runner.environment != 'self-hosted'
         with:
           key: ${{ matrix.suite }}
       - if: ${{ !cancelled() && matrix.suite == 'engine' }}
@@ -510,15 +332,13 @@ jobs:
 
   server:
     name: server (${{ matrix.os }})
-    needs: [changes, pick-macos]
+    needs: [changes]
     if: needs.changes.outputs.site_only != 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.server_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.server).runs_on || matrix.os }}
-    env:
-      DEVELOPER_DIR: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.server).developer_dir || '' }}
+    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
     defaults:
       run:
         working-directory: server
@@ -690,15 +510,13 @@ jobs:
 
   spec:
     name: spec (${{ matrix.os }})
-    needs: [changes, pick-macos]
+    needs: [changes]
     if: needs.changes.outputs.site_only != 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.spec_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.spec).runs_on || matrix.os }}
-    env:
-      DEVELOPER_DIR: ${{ matrix.os == 'macos' && fromJSON(needs.pick-macos.outputs.spec).developer_dir || '' }}
+    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
     defaults:
       run:
         working-directory: spec
@@ -738,12 +556,12 @@ jobs:
 
   macos-app:
     name: macos app
-    needs: [changes, pick-macos]
+    needs: [changes]
     if: needs.changes.outputs.macos_app == 'true'
-    runs-on: ${{ fromJSON(needs.pick-macos.outputs.macos_app).runs_on }}
+    runs-on: xcode-27
     timeout-minutes: 45
     env:
-      DEVELOPER_DIR: ${{ fromJSON(needs.pick-macos.outputs.macos_app).developer_dir }}
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     defaults:
       run:
         working-directory: apps/macos
@@ -751,9 +569,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Use Homebrew's rustup with rustup and Cargo homes and a target directory private to this self-hosted runner
-        if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/self-hosted-rust
       - name: Test notarize.sh against a stub notarytool
         run: scripts/test-notarize.sh
       - name: Test release verification rejects missing tickets and unnotarized artifacts
@@ -761,7 +576,6 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        if: runner.environment != 'self-hosted'
       - name: Show Xcode and Swift versions
         run: xcodebuild -version && swift --version
       - name: Build the Rust core, the Swift bindings and the app (unsigned)
@@ -778,12 +592,7 @@ jobs:
             echo "::error::UI tests need Automation Mode without authentication on this runner. Run 'sudo automationmodetool enable-automationmode-without-authentication' on it once, or run this job on a hosted runner."
             exit 1
           fi
-          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
-            defaults write -g AppleKeyboardUIMode -int 2
-          elif [ "$(defaults read -g AppleKeyboardUIMode 2>/dev/null)" != 2 ]; then
-            echo "::error::UI tests need keyboard navigation on this runner. Turn on Keyboard navigation in System Settings for the runner user, or run 'defaults write -g AppleKeyboardUIMode -int 2' as that user once."
-            exit 1
-          fi
+          defaults write -g AppleKeyboardUIMode -int 2
           xcodebuild test -project Koidrive.xcodeproj -scheme Koidrive -configuration Debug \
             -derivedDataPath build/DerivedData -destination "platform=macOS,arch=$(uname -m)" \
             -resultBundlePath build/UITests.xcresult CODE_SIGN_IDENTITY=- 2>&1 | tee build/uitests.log
@@ -816,21 +625,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-
-  runner-hook:
-    name: runner hook
-    needs: [changes, pick-macos]
-    if: needs.changes.outputs.runner_hook == 'true'
-    runs-on: ${{ fromJSON(needs.pick-macos.outputs.runner_hook).runs_on }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Test the job-started hook of the self-hosted runners
-        run: .github/runner/test-job-started.sh
-      - name: Test the hook's installer without root
-        run: .github/runner/test-install-hook.sh
 
   installer:
     name: installer (${{ matrix.os }})
@@ -947,13 +741,12 @@ jobs:
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, pick-macos, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, runner-hook, installer, comments, store-upgrade, state-io]
+    needs: [changes, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled
         env:
           CHANGES: ${{ needs.changes.result }}
-          PICK_MACOS: ${{ needs.pick-macos.result }}
           SITE_ONLY: ${{ needs.changes.outputs.site_only }}
           RUST: ${{ needs.rust.result }}
           RUST_TESTS: ${{ needs.rust-tests.result }}
@@ -965,25 +758,24 @@ jobs:
           FFI_INTEGRATION: ${{ needs.ffi-integration.result }}
           SPEC: ${{ needs.spec.result }}
           MACOS_APP: ${{ needs.macos-app.result }}
-          RUNNER_HOOK: ${{ needs.runner-hook.result }}
           INSTALLER: ${{ needs.installer.result }}
           COMMENTS: ${{ needs.comments.result }}
           FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
           echo "site-only change: ${SITE_ONLY:-unknown}. Build and test jobs that skip for a site-only change report skipped."
-          echo "changes: $CHANGES, pick-macos: $PICK_MACOS, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, runner-hook: $RUNNER_HOOK, installer: $INSTALLER, comments: $COMMENTS"
+          echo "changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS"
           if [ "$FAILED" = "true" ]; then
-            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, pick-macos: $PICK_MACOS, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, runner-hook: $RUNNER_HOOK, installer: $INSTALLER, comments: $COMMENTS). Open that job's log for the cause."
+            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS). Open that job's log for the cause."
             exit 1
           fi
       - name: Fail unless the build and test jobs ran for a change outside site/
         if: needs.changes.outputs.site_only != 'true'
         env:
-          RESULTS: rust=${{ needs.rust.result }} rust-tests=${{ needs.rust-tests.result }} server=${{ needs.server.result }} server-deploy=${{ needs.server-deploy.result }} net-integration=${{ needs.net-integration.result }} driver-integration=${{ needs.driver-integration.result }} cli-integration=${{ needs.cli-integration.result }} ffi-integration=${{ needs.ffi-integration.result }} spec=${{ needs.spec.result }} runner-hook=${{ needs.changes.outputs.runner_hook == 'true' && needs.runner-hook.result || 'not-needed' }} installer=${{ needs.installer.result }}
+          RESULTS: rust=${{ needs.rust.result }} rust-tests=${{ needs.rust-tests.result }} server=${{ needs.server.result }} server-deploy=${{ needs.server-deploy.result }} net-integration=${{ needs.net-integration.result }} driver-integration=${{ needs.driver-integration.result }} cli-integration=${{ needs.cli-integration.result }} ffi-integration=${{ needs.ffi-integration.result }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }}
         run: |
           echo "Build and test jobs for a change outside site/: $RESULTS"
           for r in $RESULTS; do
-            if [ "${r#*=}" != success ] && [ "${r#*=}" != not-needed ]; then
+            if [ "${r#*=}" != success ]; then
               echo "::error::A change outside site/ must run and pass every build and test job, but ${r%%=*} is ${r#*=}. Only a change whose files are all under site/ may skip them."
               exit 1
             fi
@@ -991,7 +783,7 @@ jobs:
       - name: Fail unless every macOS job ran on this push or passed in the merge queue on the same commit
         if: github.event_name == 'push'
         env:
-          WANTED: rust=${{ needs.changes.outputs.rust_macos }} server=${{ needs.changes.outputs.server_macos }} spec=${{ needs.changes.outputs.spec_macos }} macos-app=${{ needs.changes.outputs.macos_app }} runner-hook=${{ needs.changes.outputs.runner_hook }}
+          WANTED: rust=${{ needs.changes.outputs.rust_macos }} server=${{ needs.changes.outputs.server_macos }} spec=${{ needs.changes.outputs.spec_macos }} macos-app=${{ needs.changes.outputs.macos_app }}
           MACOS_APP: ${{ needs.macos-app.result }}
         run: |
           echo "macOS jobs on this push (true runs here, covered passed in the merge queue on this commit): $WANTED, macos app result $MACOS_APP"
