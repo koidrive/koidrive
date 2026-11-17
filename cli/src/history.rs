@@ -961,8 +961,8 @@ fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String
     for restore in restores {
         let path = restore
             .path
-            .as_deref()
-            .map(printable)
+            .as_ref()
+            .map(|path| printable(path.unquoted()))
             .unwrap_or_else(|| "Item with an unknown path".to_owned());
         let state = match &restore.state {
             RestoreState::Pending {
@@ -1984,7 +1984,7 @@ mod tests {
     fn a_request_names_its_path_when_it_was_asked_for_and_when_its_version_was_saved() {
         let restore = |path: Option<&str>| RestoreStatus {
             id: "0194f8a2-0000-7000-8000-000000000001".into(),
-            path: path.map(String::from),
+            path: path.map(Into::into),
             asked_at_ms: 1_738_000_000_000,
             request: RestoreRequest::Version {
                 node_id: "note".into(),

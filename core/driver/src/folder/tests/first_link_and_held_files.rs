@@ -45,7 +45,7 @@ fn a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of
             }
         );
         let held: Vec<_> = (question.items.iter())
-            .map(|item| (item.path.as_str(), item.files))
+            .map(|item| (item.path.unquoted(), item.files))
             .collect();
         let mut expected = [(mine, 1), ("mine.txt", 1)];
         expected.sort();
@@ -267,7 +267,7 @@ fn a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the
 
     let question = answer(&site, Answer::Publish);
     let held: Vec<_> = (question.items.iter())
-        .map(|item| item.path.as_str())
+        .map(|item| item.path.unquoted())
         .collect();
     assert_eq!(held, ["mine.txt"]);
     let step = b.folder.requested();
@@ -319,7 +319,7 @@ fn a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_as
 
     let question = answer(&site, Answer::Publish);
     let held: Vec<_> = (question.items.iter())
-        .map(|item| (item.path.as_str(), item.files))
+        .map(|item| (item.path.unquoted(), item.files))
         .collect();
     assert_eq!(held, [("mine.txt", 1), ("shared/draft.txt", 1)]);
     let step = b.folder.requested();

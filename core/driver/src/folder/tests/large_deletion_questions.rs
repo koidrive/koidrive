@@ -16,7 +16,7 @@ fn a_removed_folder_that_holds_most_of_the_space_comes_back_when_the_person_rest
         }
     );
     let held: Vec<_> = (question.items.iter())
-        .map(|item| (item.path.as_str(), item.files))
+        .map(|item| (item.path.unquoted(), item.files))
         .collect();
     assert_eq!(held, [("d", 15)]);
     let step = a.folder.requested();
@@ -492,7 +492,7 @@ fn a_held_folder_that_takes_the_place_of_its_held_children_continues_their_quest
         panic!("one question");
     };
     let held: Vec<_> = (second.items.iter())
-        .map(|item| (item.path.as_str(), item.files))
+        .map(|item| (item.path.unquoted(), item.files))
         .collect();
     assert_eq!(held, [("d", 20)]);
     assert_ne!(second.id, first.id);
@@ -539,7 +539,7 @@ fn a_question_asked_again_about_the_same_files_after_an_answer_starts_its_own_li
         question
             .items
             .iter()
-            .map(|item| item.path.clone())
+            .map(|item| item.path.clone().into())
             .collect()
     };
     assert_eq!(paths(second), paths(&first));

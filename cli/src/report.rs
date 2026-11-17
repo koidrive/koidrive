@@ -472,7 +472,7 @@ impl Decision {
             items: (question.items.iter())
                 .map(|item| Item {
                     node_id: item.node_id.clone(),
-                    path: item.path.clone(),
+                    path: item.path.clone().into(),
                     files: item.files,
                     device_id: item.device_id.clone(),
                     device_name: item.device_name.clone(),
@@ -1151,7 +1151,7 @@ impl RequestData {
     pub fn of(restore: &RestoreStatus) -> Self {
         RequestData {
             id: restore.id.clone(),
-            path: restore.path.clone(),
+            path: restore.path.clone().map(String::from),
             asked_at_ms: restore.asked_at_ms,
             request: match &restore.request {
                 RestoreRequest::FromTrash {

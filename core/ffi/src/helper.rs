@@ -536,7 +536,7 @@ impl DecisionData {
             items: (self.items.iter())
                 .map(|item| driver::HeldItem {
                     node_id: item.node_id.clone(),
-                    path: item.path.clone(),
+                    path: item.path.clone().into(),
                     files: item.files,
                     device_id: None,
                     device_name: None,

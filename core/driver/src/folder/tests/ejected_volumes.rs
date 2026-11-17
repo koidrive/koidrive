@@ -21,7 +21,7 @@ fn user_files(remote: &Remote) -> BTreeMap<String, String> {
 
 fn held(device: &Device) -> Vec<(String, HeldDiskKind)> {
     (device.folder.view().held_disks.into_iter())
-        .map(|disk| (disk.path, disk.kind))
+        .map(|disk| (disk.path.into(), disk.kind))
         .collect()
 }
 

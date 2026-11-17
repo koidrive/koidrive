@@ -312,7 +312,7 @@ impl Engine {
                 .map(|file| {
                     let mut item = HeldItem {
                         node_id: file.node_id.clone(),
-                        path: path(self.trees.remote(), &file.node_id),
+                        path: path(self.trees.remote(), &file.node_id).into(),
                         files: 1,
                         device_id: None,
                         device_name: None,
@@ -326,7 +326,7 @@ impl Engine {
             _ => (asked.held.iter())
                 .map(|(id, held)| HeldItem {
                     node_id: id.clone(),
-                    path: self.path(id),
+                    path: self.path(id).into(),
                     files: held.files,
                     device_id: None,
                     device_name: None,

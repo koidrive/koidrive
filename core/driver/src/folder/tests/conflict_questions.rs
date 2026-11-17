@@ -30,7 +30,7 @@ fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
     let items: Vec<_> = (question.items.iter())
         .map(|item| {
             (
-                item.path.as_str(),
+                item.path.unquoted(),
                 item.node_id.as_str(),
                 item.device_id.as_deref(),
                 item.size,
@@ -280,7 +280,7 @@ fn a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed()
     };
     let paths = |question: &crate::question::Question| {
         let mut paths: Vec<String> = (question.items.iter())
-            .map(|item| item.path.clone())
+            .map(|item| item.path.clone().into())
             .collect();
         paths.sort();
         paths

@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
 use koidrive_engine::tree::{RemoteNode, same_content};
-use koidrive_fs::{EntryKind, RootAt, Snapshot, check_root};
+use koidrive_fs::{EntryKind, ItemPath, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
     CreateShareLinkRequest, ListTree, NodeKind, NodeState, NodeStatus, ShareLink, SpaceInfo,
@@ -72,7 +72,7 @@ pub enum TargetKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     /// The names from the space's root down to it, joined with `/`; empty for the root.
-    pub path: String,
+    pub path: koidrive_fs::ItemPath,
     pub kind: TargetKind,
 }
 
@@ -302,7 +302,7 @@ fn verified(
     let Some(target) = tree.target(node_id) else {
         return Ok(false);
     };
-    let scope = Path::new(&target.path);
+    let scope = target.path.as_ref();
     let local_scope = if node_id == tree.root {
         PathBuf::new()
     } else {
@@ -331,7 +331,7 @@ fn verified(
         let Some(target) = tree.target(id) else {
             continue;
         };
-        let remote_path = Path::new(&target.path);
+        let remote_path = target.path.as_ref();
         if !remote_path.starts_with(scope) && !scope.starts_with(remote_path) {
             continue;
         }
@@ -490,7 +490,7 @@ impl<'a> Tree<'a> {
     fn target(&self, node_id: &str) -> Option<Target> {
         if node_id == self.root {
             return Some(Target {
-                path: String::new(),
+                path: ItemPath::default(),
                 kind: TargetKind::Folder,
             });
         }
@@ -507,7 +507,7 @@ impl<'a> Tree<'a> {
         }
         names.reverse();
         Some(Target {
-            path: names.join("/"),
+            path: names.join("/").into(),
             kind: match node.kind() {
                 NodeKind::Dir => TargetKind::Folder,
                 _ => TargetKind::File,
@@ -862,7 +862,7 @@ mod tests {
         assert_eq!(
             tree.target(SPACE),
             Some(Target {
-                path: String::new(),
+                path: ItemPath::default(),
                 kind: TargetKind::Folder
             })
         );

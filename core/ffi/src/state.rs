@@ -164,7 +164,7 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 Problem {
                     id: String::new(),
                     space_id: space_id.clone(),
-                    path: Some(disk.path.clone()),
+                    path: Some(disk.path.clone().into()),
                     kind,
                     since_ms: 0,
                 },
@@ -275,7 +275,7 @@ fn question(question: driver::Question) -> Option<Question> {
                 let item = question.items.iter().find(|item| item.node_id == node_id)?;
                 Some(ConflictSide {
                     node_id: item.node_id.clone(),
-                    path: item.path.clone(),
+                    path: item.path.clone().into(),
                     size: item.size?,
                     modified_at_ms: item.modified_at_ms?,
                 })
@@ -302,7 +302,7 @@ fn question(question: driver::Question) -> Option<Question> {
             .into_iter()
             .map(|item| HeldItem {
                 node_id: item.node_id,
-                path: item.path,
+                path: item.path.into(),
                 kind: match item.files {
                     1 => NodeKind::File,
                     _ => NodeKind::Folder,

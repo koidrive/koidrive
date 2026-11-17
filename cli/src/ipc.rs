@@ -82,6 +82,15 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
         Request::Status => Ok(Response::Status {
             status: driver.status(),
         }),
+        Request::Questions => driver
+            .questions()
+            .map(|questions| Response::Questions { questions }),
+        Request::AnsweredQuestion { question_id } => driver
+            .answered_question(&question_id)
+            .map(|question| Response::AnsweredQuestion { question }),
+        Request::Restores { space_id } => driver
+            .restores(&space_id)
+            .map(|restores| Response::Restores { restores }),
         Request::Pair { server, code, name } => match driver.pair(&server, &code, &name).await {
             Ok(account) => Ok(Response::Paired { account }),
             Err(error) => return Response::from(CliError::code_refused(error)),
@@ -145,12 +154,6 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             let lift = if replan { Lift::Replan } else { Lift::Resend };
             (driver.lift(&folder, lift).await).map(|folder| Response::Restarted { folder })
         }
-        Request::Questions => driver
-            .questions()
-            .map(|questions| Response::Questions { questions }),
-        Request::AnsweredQuestion { question_id } => driver
-            .answered_question(&question_id)
-            .map(|question| Response::AnsweredQuestion { question }),
         Request::Answer {
             question_id,
             answer,
@@ -173,9 +176,6 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 folder,
                 path,
             }),
-        Request::Restores { space_id } => driver
-            .restores(&space_id)
-            .map(|restores| Response::Restores { restores }),
         Request::Access => Ok(Response::Access {
             blocked: unreadable(driver.status().folders).await,
         }),
@@ -455,12 +455,13 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
         .await?
         {
             Reached::Daemon(response) => *response,
-            Reached::Profile(driver) => {
-                if matches!(request, Request::Questions) {
-                    driver.list_writers().await;
+            Reached::Profile(driver) if matches!(request, Request::Questions) => {
+                match driver.into_questions().await {
+                    Ok(questions) => Response::Questions { questions },
+                    Err(error) => Response::from(CliError::retry_safe(error)),
                 }
-                handle(&driver, request).await
             }
+            Reached::Profile(driver) => handle(&driver, request).await,
         },
     };
     match response {
@@ -707,6 +708,154 @@ pub(crate) mod tests {
                 paths.socket().display()
             )
         );
+    }
+
+    async fn conflict_with_a_hanging_device_list() -> (
+        tempfile::TempDir,
+        Paths,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use koidrive_driver::{HeldItem, QuestionKind};
+        use koidrive_engine::question::{ConflictFile, Revisions};
+        use koidrive_proto::v1::{AccessToken, NodeState, VersionInfo};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let (listed, listing) = tokio::sync::mpsc::unbounded_channel();
+        let served = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let read = socket.read(&mut request).await.unwrap();
+                let line = String::from_utf8_lossy(&request[..read])
+                    .lines()
+                    .next()
+                    .map(str::to_owned);
+                if line.is_some_and(|line| line.contains(" /v1/devices")) {
+                    held.push(socket);
+                    listed.send(()).unwrap();
+                    continue;
+                }
+                let body = prost::Message::encode_to_vec(&AccessToken {
+                    token: "token".into(),
+                    expires_at_ms: i64::MAX,
+                    ..Default::default()
+                });
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+        });
+        let (dir, paths, _root) = linked_profile();
+        koidrive_driver::Credential {
+            server,
+            user_id: "u1".into(),
+            user_name: None,
+            device_id: "d1".into(),
+            device_name: "Mac".into(),
+            refresh_credential: "not-a-secret".into(),
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let file = |node_id: &str| ConflictFile {
+            node_id: node_id.into(),
+            revisions: Revisions {
+                content_rev: 1,
+                meta_rev: 1,
+            },
+        };
+        let item = |node_id: &str, path: &str| HeldItem {
+            node_id: node_id.into(),
+            path: path.into(),
+            files: 1,
+            device_id: None,
+            device_name: None,
+            size: None,
+            modified_at_ms: None,
+        };
+        let conflict = Question {
+            id: "c1".into(),
+            lineage: "c1".into(),
+            space_id: SPACE.into(),
+            asked_at_ms: 20,
+            recovery_cause: None,
+            kind: QuestionKind::Conflict {
+                original: file("n-original"),
+                copy: file("n-copy"),
+                sent_in: None,
+            },
+            items: vec![
+                item("n-copy", "notes (conflict).txt"),
+                item("n-original", "notes.txt"),
+            ],
+        };
+        koidrive_store::Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                for (node_id, device_id) in [("n-copy", "d1"), ("n-original", "d2")] {
+                    tx.put_remote_node(&NodeState {
+                        node_id: node_id.into(),
+                        current: Some(VersionInfo {
+                            device_id: device_id.into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })?;
+                }
+                tx.put_question(&koidrive_store::StoredQuestion {
+                    question_id: "c1".into(),
+                    asked_at_ms: 20,
+                    body: serde_json::to_vec(&conflict).unwrap(),
+                    answer: None,
+                })
+            })
+            .unwrap();
+        (dir, paths, listing, served)
+    }
+
+    #[tokio::test]
+    async fn requests_for_this_devices_state_answer_while_the_server_hangs() {
+        let (_dir, paths, mut listing, served) = conflict_with_a_hanging_device_list().await;
+        let driver = Driver::open(paths).unwrap();
+        for request in [
+            Request::Questions,
+            Request::Status,
+            Request::AnsweredQuestion {
+                question_id: "c1".into(),
+            },
+            Request::Restores {
+                space_id: SPACE.into(),
+            },
+        ] {
+            let response = tokio::time::timeout(Duration::from_secs(1), handle(&driver, request))
+                .await
+                .expect("a request for this device's state waited for the server");
+            assert!(!matches!(response, Response::Error { .. }), "{response:?}");
+        }
+        listing.recv().await.unwrap();
+        served.abort();
+    }
+
+    #[tokio::test]
+    async fn questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs() {
+        let (_dir, paths, mut listing, served) = conflict_with_a_hanging_device_list().await;
+        let reading = tokio::spawn({
+            let paths = paths.clone();
+            async move { run(&paths, Request::Questions).await }
+        });
+        listing.recv().await.unwrap();
+        drop(Driver::open(paths).expect("the profile stayed held while the server was asked"));
+        let Response::Questions { questions } = reading.await.unwrap().unwrap() else {
+            panic!("the questions were not read");
+        };
+        assert_eq!(questions.len(), 2);
+        served.abort();
     }
 
     pub(crate) const SPACE: &str = "0190f0a0-0000-7000-8000-000000000001";
