@@ -20,7 +20,9 @@ HELPER = "core/state-file/src/lib.rs"
 LOCK_LINTS = {"clippy::await_holding_lock", "clippy::await_holding_refcell_ref"}
 IO_LINT = "clippy::disallowed_methods"
 FORCED_LINTS = [IO_LINT, *sorted(LOCK_LINTS)]
-IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
+IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
+SHADOWABLE = {"fs", "tempfile"}
+ROOTS = {"crate", "self", "super", "Self"}
 CONDITIONAL = re.compile(r"#\s*!?\s*\[\s*cfg(?:_attr)?\s*\([^]]*\)\s*\]", re.S)
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
@@ -91,8 +93,79 @@ def call_tokens(text, line, column):
     return None
 
 
-def imports(text):
-    return [text[match.start():text.find(";", match.start()) + 1] for match in IMPORT.finditer(text)]
+def import_items(text):
+    tokens = []
+    LEXER.comment_spans(text, "rust", tokens)
+    words = []
+    for token, _, _ in tokens:
+        if len(words) > 1 and words[-2:] == ["r", "#"]:
+            words[-2:] = [token]
+        else:
+            words.append(token)
+    for index, word in enumerate(words):
+        if word == "mod":
+            yield tuple(words[index:index + 2])
+        elif word == "use" or word == "extern" and words[index + 1:index + 2] == ["crate"]:
+            end = words.index(";", index) if ";" in words[index:] else len(words)
+            yield tuple(words[index:end])
+
+
+def import_bindings(item):
+    bound, roots = set(), set()
+
+    def tree(i, prefix):
+        path = list(prefix)
+        while i < len(rest) and rest[i] not in (",", "}", "as"):
+            token = rest[i]
+            i += 1
+            if token == "*":
+                roots.update(local_root(path))
+                bound.add("*")
+                return i
+            if token == "{":
+                while rest[i] != "}":
+                    i = tree(i, path)
+                    i += rest[i] == ","
+                return i + 1
+            if token != ":":
+                path.append(token)
+        if i < len(rest) and rest[i] == "as":
+            bound.add(rest[i + 1])
+            i += 2
+        elif path:
+            bound.add(path[-2] if path[-1] == "self" and len(path) > 1 else path[-1])
+        roots.update(local_root(path))
+        return i
+
+    try:
+        kind, rest = item[0], item[1:]
+        if kind == "mod":
+            return {rest[0]}, set()
+        if kind == "extern":
+            return {rest[-1]}, set()
+        tree(0, [])
+    except IndexError:
+        return {"*"}, set()
+    if "_" in bound:
+        bound.add("*")
+    return bound, roots
+
+
+def local_root(path):
+    return [segment for segment in path if segment not in ("self", "super")][:1]
+
+
+def shadowing_imports(text, call):
+    names = SHADOWABLE | {token for token in call if IDENTIFIER.fullmatch(token)} - ROOTS
+    items = [(item, *import_bindings(item)) for item in import_items(text)]
+    selected = set()
+    while True:
+        found = {index for index, (_, bound, _) in enumerate(items)
+                 if index not in selected and ("*" in bound or bound & names)}
+        if not found:
+            return sorted(items[index][0] for index in selected)
+        selected |= found
+        names |= set().union(*(items[index][2] for index in found)) - ROOTS
 
 
 def suppression_records(text):
@@ -195,7 +268,7 @@ def introduced(diagnostic, files, build_script=False):
         if path not in files:
             continue
         before, after = files[path]
-        if imports(before) != imports(after) or CONDITIONAL.findall(before) != CONDITIONAL.findall(after):
+        if CONDITIONAL.findall(before) != CONDITIONAL.findall(after):
             return True
         unchanged = unchanged_lines(before, after)
         if any(line not in unchanged for line in range(span["line_start"], span["line_end"] + 1)):
@@ -204,6 +277,8 @@ def introduced(diagnostic, files, build_script=False):
         old_call = call_tokens(before, unchanged[span["line_start"]], column)
         new_call = call_tokens(after, span["line_start"], column)
         if old_call is None or new_call is None or old_call != new_call:
+            return True
+        if shadowing_imports(before, new_call) != shadowing_imports(after, new_call):
             return True
     return False
 

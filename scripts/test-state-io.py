@@ -55,6 +55,54 @@ class ChangedIo(unittest.TestCase):
     def test_changed_aliases_cannot_grandfather_a_call(self):
         self.assertTrue(self.introduced("use safe as io;\nio::write(path, bytes);", "use std::fs as io;\nio::write(path, bytes);", start=2))
 
+    def test_an_unrelated_import_does_not_make_an_existing_call_new(self):
+        before = "use tokio::sync::Mutex;\nfs::write(path, b\"paused\\n\");"
+        after = "use tokio::sync::Mutex;\nuse tokio::io::AsyncWriteExt;\nfs::write(path, b\"paused\\n\");"
+        self.assertFalse(self.introduced(before, after, start=3))
+        call = "fs::write(path, bytes);"
+        self.assertFalse(self.introduced(call, "use std::path::PathBuf;\n" + call, start=2))
+        self.assertFalse(self.introduced(call, "use std::{collections::HashMap, path::{self as paths, Path}};\n" + call, start=2))
+        self.assertFalse(self.introduced(call, "use std::collections::HashMap /* cache * type */;\n" + call, start=2))
+
+    def test_an_import_that_shadows_fs_or_tempfile_still_fails(self):
+        call = "fs::write(path, bytes);"
+        self.assertTrue(self.introduced("use std::fs;\n" + call, "use crate::io as fs;\n" + call, start=2))
+        call = "tempfile::NamedTempFile::new_in(dir);"
+        self.assertTrue(self.introduced(call, "use crate::scratch as tempfile;\n" + call, start=2))
+        self.assertTrue(self.introduced("fs::write(path, bytes);", "use crate::io::*;\nfs::write(path, bytes);", start=2))
+
+    def test_an_import_that_rebinds_a_name_in_the_call_still_fails(self):
+        call = "io::write(path, bytes);"
+        self.assertTrue(self.introduced("use crate::safe as io;\n" + call, "use crate::other as io;\n" + call, start=2))
+        call = "std::fs::write(TARGET, bytes);"
+        before = "use crate::paths::LOG as TARGET;\n" + call
+        self.assertTrue(self.introduced(before, "use crate::paths::STATE as TARGET;\n" + call, start=2))
+        chain = "use selected::TARGET;\n" + call
+        before = "use crate::log_paths as selected;\n" + chain
+        self.assertTrue(self.introduced(before, "use crate::state_paths as selected;\n" + chain, start=3))
+        self.assertTrue(self.introduced("use std::{io, path};\n" + call, "use std::{fs as TARGET, path};\n" + call, start=2))
+        for prefix in ("self::", "super::"):
+            chain = f"use {prefix}selected::TARGET;\n" + call
+            before = "use crate::log_paths as selected;\n" + chain
+            self.assertTrue(self.introduced(before, "use crate::state_paths as selected;\n" + chain, start=3))
+        raw = "std::fs::write(r#TARGET, bytes);"
+        before = "use crate::paths::LOG as r#TARGET;\n" + raw
+        self.assertTrue(self.introduced(before, "use crate::paths::STATE as r#TARGET;\n" + raw, start=2))
+        nested = "mod storage { use crate::log_paths::TARGET;\n" + call + "\n}"
+        self.assertTrue(self.introduced(nested, nested.replace("log_paths", "state_paths"), start=2))
+        crate_alias = "std::fs::write(std::TARGET, bytes);"
+        before = "use crate::log_backend as std;\n" + crate_alias
+        self.assertTrue(self.introduced(before, "use crate::state_backend as std;\n" + crate_alias, start=2))
+        method = "std::fs::write(target.path(), bytes);"
+        before = "use crate::paths::LogPath as _;\n" + method
+        self.assertTrue(self.introduced(before, "use crate::paths::StatePath as _;\n" + method, start=2))
+
+    def test_an_import_without_a_terminator_is_compared_not_fatal(self):
+        call = "fs::write(path, bytes);\n"
+        tests = "#[cfg(test)]\nmod tests { #[test] fn t() {} }"
+        self.assertFalse(self.introduced(call + tests, call + "pub fn g() {}\n" + tests))
+        self.assertTrue(self.introduced(call + "mod tests {}", call + "mod tests { use crate::io as fs; }"))
+
     def test_a_test_writer_cannot_become_production_code_unchecked(self):
         self.assertTrue(self.introduced("#[cfg(test)]\nfn save() {\nfs::write(path, bytes);\n}", "\nfn save() {\nfs::write(path, bytes);\n}", start=3))
 
