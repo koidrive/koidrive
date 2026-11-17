@@ -95,7 +95,7 @@ function sync(...devices: TestClient[]): void {
   for (const device of devices) device.baseSeq = top;
 }
 
-describe("RFC 0028 section 3.1: recording intents", () => {
+describe("RFC 0029 section 3.1: recording intents", () => {
   it("mints one intent for an op without one and reports all three fields with the commit's time", async () => {
     const { space, a, values, root } = await setup();
     const nodeId = uuidv7();
@@ -410,7 +410,7 @@ describe("RFC 0028 section 3.1: recording intents", () => {
   });
 });
 
-describe("RFC 0028 section 3.2: carried values", () => {
+describe("RFC 0029 section 3.2: carried values", () => {
   for (const [label, author, replay, rule, carried] of [
     ["another device's value", "other", false, "A", true],
     ["an empty author", "", false, "A", true],
@@ -429,7 +429,7 @@ describe("RFC 0028 section 3.2: carried values", () => {
   }
 });
 
-describe("RFC 0028 section 3.3: deletes with a view", () => {
+describe("RFC 0029 section 3.3: deletes with a view", () => {
   it("keeps a node whose intent the delete lists as unseen, with the folders above it", async () => {
     const { space, a, b, values, root } = await setup();
     const [dir, sub] = [uuidv7(), uuidv7()];
@@ -649,7 +649,7 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
   });
 });
 
-describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {
+describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
   it("lands a carried edit of a trashed file as a conflict copy under the nearest live folder, unless the trash lists it", async () => {
     const { space, a, b, values, root } = await setup();
     const dir = uuidv7();
@@ -783,7 +783,7 @@ describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {
   });
 });
 
-describe("RFC 0028 section 3.6: replays the server already holds", () => {
+describe("RFC 0029 section 3.6: replays the server already holds", () => {
   it("supersedes a replay whose intent another node holds, as a conflict copy does", async () => {
     const { space, a, b, c, values, root } = await setup();
     const nodeId = await file(a, root, "doc.txt", values[0]!);
@@ -799,7 +799,7 @@ describe("RFC 0028 section 3.6: replays the server already holds", () => {
   });
 });
 
-describe("RFC 0028 section 3.7: digest v5", () => {
+describe("RFC 0029 section 3.7: digest v5", () => {
   it("refuses a reused commit_id that differs only in an intent, and keeps v4's digest for a request without intents", async () => {
     const { a, root } = await setup();
     const commitId = uuidv7();
@@ -814,7 +814,7 @@ describe("RFC 0028 section 3.7: digest v5", () => {
   });
 });
 
-describe("RFC 0028 section 3.8: content conflicts by ancestry", () => {
+describe("RFC 0029 section 3.8: content conflicts by ancestry", () => {
   it("makes a conflict copy of an edit whose made_over lacks the current version, whatever its base_seq", async () => {
     const { space, a, b, values, root } = await setup();
     const nodeId = await file(a, root, "chain.txt", values[0]!);
@@ -839,7 +839,7 @@ describe("RFC 0028 section 3.8: content conflicts by ancestry", () => {
   });
 });
 
-describe("RFC 0028 section 7.2: legacy intents", () => {
+describe("RFC 0029 section 7.2: legacy intents", () => {
   it.each(legacyVectors.vectors)("computes the published vector for $note", (vector) => {
     expect(legacyIntentId(vector.node_id, vector.field as Field, vector.key)).toBe(vector.id.replaceAll("-", ""));
   });
@@ -923,7 +923,7 @@ describe("RFC 0028 section 7.2: legacy intents", () => {
   });
 });
 
-describe("RFC 0028 and RFC 0004 section 5: the export", () => {
+describe("RFC 0029 and RFC 0004 section 5: the export", () => {
   it("rebuilds intents, the trash's held list and tombstones from the R2 export", async () => {
     const { space, a, b, values, root } = await setup();
     const now = Date.now();
