@@ -3700,3 +3700,40 @@ fn a_publish_then_a_move_out_of_the_answered_folder_deletes_no_folder_l_keeps() 
         report.text
     );
 }
+
+#[test]
+fn a_publish_then_a_move_of_a_folder_below_the_answered_folder_keeps_no_folder_l_removed() {
+    use Local::{Into as To, Kept, Onto, Removed};
+    use Spot::{In, Root};
+    let smallest = (
+        world(
+            &[Root, In(0), In(0)],
+            &[Remote::Kept; 3],
+            &[To(In(1)), Kept, Removed],
+            &[],
+        ),
+        1,
+    );
+    let below = |removed_in| {
+        world(
+            &[Root, In(0), In(1), In(2), removed_in],
+            &[Remote::Kept; 5],
+            &[To(In(3)), Kept, To(In(6)), Kept, Removed],
+            &[(Kind::Dir, To(In(0))), (Kind::Dir, Onto(0))],
+        )
+    };
+    for (world, moved) in [smallest, (below(In(0)), 3), (below(In(1)), 3)] {
+        let story = Story::Answer(0, Answer::Publish, After::Move(moved, Root));
+        assert!(answers(&world).contains(&story));
+        let report = tell(&world, &server(&world), story).expect("a story");
+        assert!(
+            !report.classes.iter().any(|class| {
+                class.contains("a folder the answer gives up is live")
+                    || class.contains("deletes a node L keeps")
+            }),
+            "{:?}\n{}",
+            report.classes,
+            report.text
+        );
+    }
+}
