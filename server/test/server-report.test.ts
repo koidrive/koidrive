@@ -417,7 +417,7 @@ describe("hourly server report", () => {
   it("hands a busy socket's counts over about six times an hour, and every count arrives", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Date.now();
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     for (let minute = 0; minute < 120; minute++, nowMs += 60_000) {
@@ -453,7 +453,7 @@ describe("hourly server report", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Date.now();
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     await socket.listTree();
