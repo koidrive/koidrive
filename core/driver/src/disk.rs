@@ -1549,9 +1549,6 @@ fn settle(
     }
 }
 
-/// Lists each folder that kept entries after another device deleted it and that another device's folder then took over
-/// ([`Trees::unlisted_kept_folders`]), before the effects stop applying the deleted folder's rules there. Returns
-/// whether it listed any. A folder that is gone or replaced on disk holds none of the entries.
 fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
     let folders = trees.unlisted_kept_folders();
     for folder in &folders {

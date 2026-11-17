@@ -131,7 +131,7 @@ impl HeldDisk {
 /// What a person reads about the entries of a folder at `folder` that stay excluded under the rules of a deleted
 /// folder they were kept in ([`FolderStatus::kept_entries`]).
 pub fn describe_kept(folder: &str, entries: &[koidrive_fs::ItemPath]) -> String {
-    let paths: Vec<String> = (entries.iter())
+    let shown: Vec<String> = (entries.iter())
         .map(|entry| koidrive_fs::quoted(&std::path::Path::new(folder).join(entry)).to_string())
         .collect();
     let (count, stay, entry) = match entries.len() {
@@ -140,7 +140,7 @@ pub fn describe_kept(folder: &str, entries: &[koidrive_fs::ItemPath]) -> String 
     };
     format!(
         "{count} kept after another device deleted their folder {stay} out of sync under that folder's rules: {}. To sync {entry}, delete it and create it again.",
-        paths.join(", ")
+        shown.join(", ")
     )
 }
 
