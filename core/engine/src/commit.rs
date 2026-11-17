@@ -1878,7 +1878,7 @@ impl Commits {
                                 shape,
                                 Origin::Commit(flight.commit.device_seq),
                             );
-                        } else {
+                        } else if trees.local().get(into).is_some() {
                             synced.set(into, Some(shape));
                         }
                         merged.insert(create.node_id.clone(), into.clone());
@@ -1959,7 +1959,15 @@ impl Commits {
                     } else if (applied && edited.is_some()) || downloaded {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
-                        synced.set(&outcome.node_id, edited);
+                        let copied = edited.or_else(|| {
+                            (trees.local().get(id))
+                                .filter(|local| !local.parked)
+                                .map(|local| Shape {
+                                    content: update.content.clone(),
+                                    ..local.shape.clone()
+                                })
+                        });
+                        synced.set(&outcome.node_id, copied);
                         synced.set(id, None);
                         rekey(trees, id, &outcome.node_id);
                         trees.sent_edit(&outcome.node_id, update.content.as_ref());
