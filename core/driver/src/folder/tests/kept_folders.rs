@@ -991,3 +991,51 @@ fn a_save_that_renames_a_kept_entry_to_a_backup_uploads_neither_file() {
     );
 }
 
+
+#[test]
+fn a_kept_entry_moved_out_of_its_folder_stays_out_of_sync_after_the_folder_is_deleted() {
+    for deleted_by in ["this device", "another device"] {
+        let ignored = [".env", "node_modules/pkg/index.js"];
+        let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+            &[(".koiignore", ".env\nnode_modules/\n")],
+            &["README.md"],
+            &ignored,
+        );
+        fs::create_dir(site_a.root.join("app")).unwrap();
+        a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+
+        fs::rename(site.root.join("app/.env"), site.root.join(".env")).unwrap();
+        fs::remove_dir_all(site.root.join("app/node_modules")).unwrap();
+        for _ in 0..2 {
+            b.settle();
+            b.run(&mut remote);
+        }
+        match deleted_by {
+            "this device" => fs::remove_dir_all(site.root.join("app")).unwrap(),
+            _ => {
+                fs::remove_dir_all(site_a.root.join("app")).unwrap();
+                a.scan_until(|a| !a.work.is_empty());
+                a.run(&mut remote);
+            }
+        }
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+        fs::write(site.root.join(".env"), b"SECRET=edited").unwrap();
+        for _ in 0..2 {
+            b.settle();
+            b.run(&mut remote);
+        }
+
+        assert!(!site.root.join("app").exists(), "{deleted_by}");
+        assert!(!remote.tree().contains_key(".env"), "{deleted_by}: {:?}", remote.tree());
+        assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from(".env")], "{deleted_by}");
+    }
+}

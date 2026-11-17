@@ -1958,7 +1958,7 @@ impl Trees {
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
         self.kept_folders.remove(id);
-        self.kept_entries.remove(id);
+        self.end_kept_entries(id);
         self.release_kept_entry(id);
         if let Some(old) = self.l.remove(id) {
             match old.parked {
@@ -2987,9 +2987,14 @@ impl Trees {
                     })
                     .cloned(),
             );
-            if self.kept_entries.get(&folder).is_none() {
-                self.kept_entries.insert(folder, KeptEntries::default());
-            }
+            let kept = self.kept_entries.get(&folder).cloned().unwrap_or_default();
+            self.kept_entries.insert(
+                folder,
+                KeptEntries {
+                    listed: false,
+                    ..kept
+                },
+            );
         }
     }
 
@@ -3029,16 +3034,12 @@ impl Trees {
             })
             .map(|(name, _)| name)
             .collect();
-        match names.is_empty() {
+        let mut kept = self.kept_entries.get(folder).cloned().unwrap_or_default();
+        kept.names.extend(names);
+        kept.listed = true;
+        match kept.names.is_empty() && kept.nodes.is_empty() {
             true => self.kept_entries.remove(folder),
-            false => self.kept_entries.insert(
-                folder.to_owned(),
-                KeptEntries {
-                    names,
-                    listed: true,
-                    ..KeptEntries::default()
-                },
-            ),
+            false => self.kept_entries.insert(folder.to_owned(), kept),
         };
     }
 
@@ -3046,19 +3047,40 @@ impl Trees {
         if let Some(kept) = self.kept_entries.remove(from) {
             self.kept_entries.insert(to.to_owned(), kept);
         }
-        let holding: Vec<NodeId> = (self.kept_entries.iter())
-            .filter(|(_, kept)| kept.nodes.contains_key(from))
-            .map(|(folder, _)| folder.clone())
-            .collect();
-        for folder in holding {
-            let Some(mut kept) = self.kept_entries.get(&folder).cloned() else {
+    }
+
+    fn end_kept_entries(&mut self, folder: &str) {
+        let Some(kept) = self.kept_entries.remove(folder) else {
+            return;
+        };
+        for (node, name) in kept.nodes {
+            if self.below(&node, folder) {
+                continue;
+            }
+            let Some(parent) = self.l.get(&node).map(|node| node.shape.parent.clone()) else {
                 continue;
             };
-            if let Some(name) = kept.nodes.remove(from) {
-                kept.nodes.insert(to.to_owned(), name);
-            }
-            self.kept_entries.insert(folder, kept);
+            let mut home = (self.kept_entries.get(&parent).cloned()).unwrap_or(KeptEntries {
+                listed: true,
+                ..KeptEntries::default()
+            });
+            home.nodes.insert(node, name);
+            self.kept_entries.insert(parent, home);
         }
+    }
+
+    fn below(&self, id: &str, folder: &str) -> bool {
+        let mut current = id;
+        for _ in 0..=self.l.len() {
+            if current == folder {
+                return true;
+            }
+            match self.l.get(current) {
+                Some(node) if current != self.l.root => current = &node.shape.parent,
+                _ => return false,
+            }
+        }
+        false
     }
 
     fn kept_entry(&self, id: &str) -> bool {
