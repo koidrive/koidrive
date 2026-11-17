@@ -798,7 +798,9 @@ impl World {
             );
         }
         quiet.map_err(|failure| failure.at(format!("after phase {phase}")))?;
-        self.recovered();
+        if !self.space.refuses() {
+            self.recovered();
+        }
         Ok(())
     }
 
@@ -2298,7 +2300,7 @@ impl World {
                 let held = self.space.nodes();
                 let finishes = |moved: &Move| {
                     (self.space.node(&moved.node_id)).is_some_and(|node| {
-                        node.status == NodeStatus::Live as i32
+                        (node.status == NodeStatus::Live as i32 || moved.from.is_some())
                             && node.parent_id == moved.new_parent_id
                             && (node.pending_for == moved.new_name || node.name == moved.new_name)
                     })
