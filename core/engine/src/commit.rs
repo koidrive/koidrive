@@ -3602,6 +3602,7 @@ fn plan(
             _ => None,
         })
         .collect();
+    scratch.moved = scratch.moves.keys().cloned().collect();
     scratch.restores = (wants.iter())
         .filter_map(|want| match want {
             Want::Restore { op, .. } if !op.target_parent_id.is_empty() => {
@@ -4260,6 +4261,7 @@ struct Scratch<'a> {
     owed: BTreeSet<NodeId>,
     creating: BTreeMap<NodeId, NodeId>,
     moves: BTreeMap<NodeId, NodeId>,
+    moved: BTreeSet<NodeId>,
     finishing: BTreeSet<NodeId>,
     sending: BTreeSet<NodeId>,
     ends: Ends,
@@ -4281,6 +4283,7 @@ impl<'a> Scratch<'a> {
             owed: BTreeSet::new(),
             creating: BTreeMap::new(),
             moves: BTreeMap::new(),
+            moved: BTreeSet::new(),
             finishing: BTreeSet::new(),
             sending: BTreeSet::new(),
             ends: Ends::default(),
@@ -4989,14 +4992,15 @@ impl<'a> Scratch<'a> {
         }
         let riding = |node: &str| {
             let mut at = placed(node);
-            for _ in 0..=revived.len() + self.creating.len() {
-                let Some(up) =
-                    at.filter(|up| revived.contains(*up) || self.creating.contains_key(*up))
-                else {
+            for _ in 0..=revived.len() + self.creating.len() + 1 {
+                let Some(up) = at else {
                     return false;
                 };
-                if self.moves.contains_key(up) && !answers.contains(up) {
+                if self.moved.contains(up) && !answers.contains(up) {
                     return true;
+                }
+                if up != id && !revived.contains(up) && !self.creating.contains_key(up) {
+                    return false;
                 }
                 at = placed(up);
             }
