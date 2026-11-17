@@ -3058,9 +3058,6 @@ mod tests {
     #[tokio::test]
     async fn questions_read_once_never_rotate_the_credential_of_the_process_that_takes_the_profile()
     {
-        use koidrive_proto::v1::{AccessToken, TokenRequest};
-        use tokio::io::AsyncWriteExt;
-
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3079,7 +3076,7 @@ mod tests {
                     held.push(socket);
                     continue;
                 }
-                let request: TokenRequest = prost::Message::decode(body.as_slice()).unwrap();
+                let request = token_request(&body);
                 if first {
                     first = false;
                     asked.send(()).unwrap();
@@ -3097,7 +3094,7 @@ mod tests {
                     if rotated {
                         current = request.next_refresh_credential.clone();
                     }
-                    let token = AccessToken {
+                    let token = koidrive_proto::v1::AccessToken {
                         token: "token".into(),
                         expires_at_ms: i64::MAX,
                         server_time_ms: unix_ms_now(),
@@ -3109,8 +3106,10 @@ mod tests {
                     "HTTP/1.1 {status} Reply\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     reply.len()
                 );
-                socket.write_all(head.as_bytes()).await.unwrap();
-                socket.write_all(&reply).await.unwrap();
+                let response = [head.as_bytes(), &reply].concat();
+                tokio::io::AsyncWriteExt::write_all(&mut socket, &response)
+                    .await
+                    .unwrap();
             }
         });
         let paths = linked_with_server(&base, server);
