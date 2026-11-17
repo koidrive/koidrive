@@ -10821,3 +10821,72 @@ fn a_rename_across_a_restore_earlier_and_a_rollback_keeps_the_write_in_one_file_
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_delete_of_a_resent_edit_stays_after_a_restore_brings_back_the_value_it_was_made_over() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, name| {
+        User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, u(1, 0, 0)), (0, Backup)],
+        vec![
+            (0, u(0, 0, 1)),
+            (0, u(0, 0, 2)),
+            (0, Backup),
+            (0, u(2, 6307646474509524231, 0)),
+            (0, RestoreEarlier),
+        ],
+        vec![
+            (0, u(4, 3700173026859558585, 0)),
+            (0, RestoreEarlier),
+            (0, Restore),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_delete_of_a_file_whose_edit_a_restore_lost_stays_on_a_device_that_never_took_the_edit() {
+    use koidrive_sim::world::Step::*;
+    let u = |kind, target, name| {
+        User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![
+            (0, u(0, 0, 0)),
+            (0, u(1, 0, 1)),
+            (0, u(1, 0, 2)),
+            (0, u(4, 0, 0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Backup),
+            (1, u(0, 0, 0)),
+            (0, u(2, 43635376045345639, 0)),
+            (0, u(0, 0, 3)),
+        ],
+        vec![
+            (0, u(2, 2372553838036446217, 0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (0, Work(0)),
+            (1, Work(0)),
+            (0, Restore),
+            (0, u(4, 16828409463697550597, 0)),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}

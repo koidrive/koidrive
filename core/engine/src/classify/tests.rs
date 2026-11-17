@@ -224,6 +224,55 @@ fn ancestry_unknown_relationships_keep_sequence_based_survival() {
 }
 
 #[test]
+fn ancestry_of_an_own_synced_value_sends_a_later_change_over_the_older_base_a_restore_brought_back()
+{
+    for deleted in [true, false] {
+        let mut trees = ancestry_tree();
+        ancestry_write(&mut trees, 2);
+        trees.set_remote_edited_here("f".into(), ancestry_remote(2, "own-2", &["held"]));
+        trees.set_synced("f".into(), Some(ancestry_file(2)));
+        if deleted {
+            trees.remove_local("f");
+        } else {
+            ancestry_write(&mut trees, 3);
+        }
+        let records = trees.remote_records(|_| false);
+        let synced = trees.taken_from_others(|_| false);
+        trees.set_listed_remote("f".into(), ancestry_remote(1, "held", &["foreign-base"]));
+        trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 10, 0);
+        assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
+        assert!(!trees.resends.contains("f"));
+        trees.settle();
+        let mut commits = crate::commit::Commits::default();
+        let commit = commits.build(
+            &mut trees,
+            &mut crate::ids::IdGen::new(1),
+            1_794_268_740_000,
+            "history",
+            "device",
+            10,
+        );
+        let op = commit.and_then(|commit| match commit.ops.as_slice() {
+            [op] => op.op.clone(),
+            _ => None,
+        });
+        match op {
+            Some(koidrive_proto::v1::op::Op::Delete(delete)) => {
+                assert!(deleted);
+                assert_eq!(delete.node_id, "f");
+            }
+            Some(koidrive_proto::v1::op::Op::UpdateContent(update)) => {
+                assert!(!deleted);
+                assert!(!update.resend);
+                assert_eq!(update.content, ancestry_file(3).content);
+                assert_eq!(update.made_over, ["own-2", "held"]);
+            }
+            op => panic!("{op:?}"),
+        }
+    }
+}
+
+#[test]
 fn ancestry_old_store_without_provenance_does_not_guess_a_base() {
     let mut trees = ancestry_tree();
     let mut state = trees.state();
