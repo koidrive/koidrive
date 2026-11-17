@@ -67,7 +67,9 @@ async function uploads({ ns, repetitions }: ReturnType<typeof inputs>): Promise<
 async function firstSync(): Promise<void> {
   const tree = process.env.KOIDRIVE_BENCH_TREE;
   if (!tree) throw new Failed("KOIDRIVE_BENCH_TREE must name the folder to sync");
-  await run("cargo", rustTest("koidrive-driver", "first_sync_bench", "first_sync_of_a_large_folder"), { ...claimed(), KOIDRIVE_BENCH_TREE: tree });
+  const env: NodeJS.ProcessEnv = { ...claimed(), KOIDRIVE_BENCH_TREE: tree };
+  if (process.env.KOIDRIVE_BENCH_SECONDS !== undefined) env.KOIDRIVE_BENCH_SECONDS = process.env.KOIDRIVE_BENCH_SECONDS;
+  await run("cargo", rustTest("koidrive-driver", "first_sync_bench", "first_sync_of_a_large_folder"), env);
 }
 
 async function installTree(dir: string): Promise<void> {

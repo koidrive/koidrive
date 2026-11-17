@@ -164,6 +164,12 @@ describe("first-sync benchmark", () => {
     expect(result.output).not.toContain(owner.refreshCredential);
   });
 
+  it.each([undefined, "60"])("passes the deadline KOIDRIVE_BENCH_SECONDS=%s on to the driver test", async (seconds) => {
+    fakeCargo();
+    expect((await run({ command: "first-sync", env: { KOIDRIVE_BENCH_TREE: join(work, "tree"), KOIDRIVE_BENCH_SECONDS: seconds } })).status).toBe(0);
+    expect(JSON.parse(readFileSync(join(work, "cargo.json"), "utf8")).env.KOIDRIVE_BENCH_SECONDS).toBe(seconds);
+  });
+
   it("refuses to start without a tree", async () => {
     fakeCargo();
     const result = await run({ command: "first-sync" });
