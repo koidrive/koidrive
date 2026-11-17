@@ -63,7 +63,8 @@ pub enum PriorSync {
 /// With `history`, as in a recovery, the disk may hold what the server sent before the store lost
 /// track of it: an entry at a place no live node of R holds also matches the one node R holds in the
 /// trash there that it matches, and then the one node of R that `history` shows at that place
-/// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
+/// with the entry's content and, cut to the precision the entry's time shows, the entry's time, when
+/// R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     adopt_around(
@@ -612,6 +613,7 @@ fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
                 10_000_000,
                 1_000_000,
                 1_000,
+                100,
                 1,
             ]
             .into_iter()

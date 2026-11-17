@@ -141,6 +141,7 @@ fn a_new_file_on_a_coarse_disk_with_a_lost_nodes_bytes_is_not_adopted_by_the_nod
 fn a_download_whose_time_a_coarse_disk_cut_is_adopted_by_its_nodes_old_place() {
     for local_ns in [
         1_234_567_891,
+        1_234_567_800,
         1_234_567_000,
         1_230_000_000,
         1_000_000_000,
