@@ -224,7 +224,7 @@ pub(crate) fn store_error(path: &Path) -> impl FnOnce(koidrive_store::Error) -> 
 
 /// Lifts the policy halt the store at `path` holds (RFC 0006 section 1, point 5). No task may hold the store.
 pub(crate) fn lift_halt(path: &Path, lift: Lift) -> Result<(), DriverError> {
-    let lifted = Store::open(path)
+    let lifted = Store::open_existing(path)
         .and_then(|mut store| {
             store.transaction(|tx| {
                 let before = tx.engine_state()?;
@@ -2159,7 +2159,7 @@ impl Driver {
         };
         let _reading = store.read().unwrap_or_else(PoisonError::into_inner);
         drop(folders);
-        (Store::open(&path).and_then(|mut store| read(&mut store)))
+        (Store::open_existing(&path).and_then(|mut store| read(&mut store)))
             .map(Some)
             .map_err(store_error(&path))
     }
@@ -2301,7 +2301,7 @@ fn load_folders(
     telemetry: &koidrive_telemetry::Recorder,
 ) -> Result<Loaded, DriverError> {
     let mut loaded = Loaded::default();
-    for found in read_folders(paths, telemetry, |path| Store::open(path))? {
+    for found in read_folders(paths, telemetry, |path| Store::open_existing(path))? {
         found.status.settle_unreadable();
         let link = match found.place {
             Place::Store(link) => {
@@ -2397,8 +2397,16 @@ fn read_folders(
                 (Place::Store(link), status)
             }
             Ok((None, ..)) => {
-                tracing::warn!(path = %koidrive_fs::quoted(&store), "a store records no linked folder; ignoring it");
-                continue;
+                let Some(link) = crate::link_copy::read(&store, &space_id) else {
+                    tracing::warn!(path = %koidrive_fs::quoted(&store), "a store records no linked folder; ignoring it");
+                    continue;
+                };
+                let status = lifecycle(folder_status(&link, None, 0, 0));
+                status.store_unopened(crate::lifecycle::unopened_because(
+                    &store,
+                    "it records no linked folder",
+                ));
+                (Place::Copy(link), status)
             }
             Err(
                 error @ (koidrive_store::Error::SchemaTooOld { .. }
@@ -3955,11 +3963,12 @@ mod tests {
         const GARBLED: &str = "0190f0a0-0000-7000-8000-0000000000c1";
         const NEWER: &str = "0190f0a0-0000-7000-8000-0000000000c2";
         const HEALTHY: &str = "0190f0a0-0000-7000-8000-0000000000c3";
+        const EMPTIED: &str = "0190f0a0-0000-7000-8000-0000000000c4";
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let paths = Paths::under(&base.join("profile"));
         paired(&paths, "d1");
-        let roots = [GARBLED, NEWER, HEALTHY].map(|space_id| {
+        let roots = [GARBLED, NEWER, HEALTHY, EMPTIED].map(|space_id| {
             let root = base.join(space_id);
             linked_to(&paths, &root, "d1", space_id);
             root
@@ -3967,6 +3976,8 @@ mod tests {
         drop(Driver::open(paths.clone()).unwrap());
         garble(&paths, GARBLED);
         from_a_newer_build(&paths, NEWER);
+        let emptied = paths.store(EMPTIED).unwrap();
+        fs::write(&emptied, b"").unwrap();
         let halted = Failure::Halted(Halted::Store);
         let counted = || {
             (failures::take_counted_here().get(&halted))
@@ -3989,8 +4000,8 @@ mod tests {
             "a listing writes nothing"
         );
         assert_eq!(counted(), 0, "a listing counts no halt");
-        assert_eq!(listed.len(), 3);
-        for (space_id, root) in [GARBLED, NEWER].into_iter().zip(&roots) {
+        assert_eq!(listed.len(), 4);
+        for (space_id, root) in [(GARBLED, &roots[0]), (EMPTIED, &roots[3])] {
             let broken = folder(&listed, space_id);
             assert_eq!(broken.state, FolderState::Halted);
             assert_eq!(broken.path, root.display().to_string());
@@ -4004,10 +4015,16 @@ mod tests {
                 "{problem}"
             );
         }
+        assert_eq!(folder(&listed, NEWER).state, FolderState::Halted);
         assert_ne!(folder(&listed, HEALTHY).state, FolderState::Halted);
 
         drop(Driver::open(paths.clone()).unwrap());
-        assert_eq!(counted(), 2);
+        assert_eq!(counted(), 3);
+        assert_eq!(
+            fs::metadata(&emptied).unwrap().len(),
+            0,
+            "an emptied store stays as it is"
+        );
         let saved = records(&paths.spaces());
         let recorder = koidrive_telemetry::Recorder::on();
         let driver = Driver::open_with_telemetry(paths.clone(), recorder.clone()).unwrap();
@@ -4024,13 +4041,18 @@ mod tests {
         .await;
         assert!(claim::owner(&roots[0]).unwrap().is_none());
         assert!(claim::owner(&roots[1]).unwrap().is_none());
+        assert!(claim::owner(&roots[3]).unwrap().is_none());
         let newer = folder(&driver.status().folders, NEWER).problem.unwrap();
-        assert!(newer.contains("a newer Koidrive build"), "{newer}");
+        assert!(
+            newer.contains("was updated by a newer Koidrive build")
+                && newer.ends_with("install that build again to sync this folder"),
+            "{newer}"
+        );
         assert!(driver.questions().unwrap().is_empty());
         driver.record_health();
         let events = posthog(recorder.take());
         let report = named(&events, "hourly_report")[0];
-        assert_eq!(with_prefix(report, "l.halted."), [("l.halted.store", 2)]);
+        assert_eq!(with_prefix(report, "l.halted."), [("l.halted.store", 3)]);
         driver.stop().await;
     }
 

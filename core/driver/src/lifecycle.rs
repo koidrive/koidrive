@@ -376,8 +376,18 @@ impl Lifecycle {
 }
 
 pub(crate) fn unopened(store: &Path, error: &koidrive_store::Error) -> String {
+    match error {
+        koidrive_store::Error::UnknownMigration(_) => format!(
+            "the folder's sync database {} was updated by a newer Koidrive build ({error}); install that build again to sync this folder",
+            koidrive_fs::quoted(store)
+        ),
+        _ => unopened_because(store, error),
+    }
+}
+
+pub(crate) fn unopened_because(store: &Path, reason: impl std::fmt::Display) -> String {
     format!(
-        "the folder's sync database {} can't be opened ({error}); run koi folder restart to try again, or unlink the folder and link it again",
+        "the folder's sync database {} can't be opened ({reason}); run koi folder restart to try again, or unlink the folder and link it again",
         koidrive_fs::quoted(store)
     )
 }

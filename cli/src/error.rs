@@ -598,7 +598,9 @@ fn driver_human(error: &DriverError) -> Option<String> {
             koidrive_store::Error::NotDurable(_) => {
                 "The storage cannot safely save this folder's sync state. Keep its files in place and run koi diagnose before changing storage or local sync data."
             }
-            koidrive_store::Error::Decode(_) | koidrive_store::Error::InvalidEngineState(_) => {
+            koidrive_store::Error::Decode(_)
+            | koidrive_store::Error::InvalidEngineState(_)
+            | koidrive_store::Error::NotAStore => {
                 "Koidrive cannot use its saved sync state because the saved data cannot be read safely. Keep the folder's files in place and run koi diagnose before changing local sync data."
             }
             koidrive_store::Error::Sqlite(_) => return None,

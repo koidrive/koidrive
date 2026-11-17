@@ -331,7 +331,7 @@ impl Folder {
     /// before that (design §5.10).
     pub fn open(link: Link, lock: &File, store: &Path, local: LocalRules) -> Result<Folder, Stop> {
         let timing = Timing::open(store, link.linked_at_ms);
-        let mut store = Store::open(store)?;
+        let mut store = Store::open_existing(store)?;
         let mut engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
         engine.trees.set_local_rules(local);
         let disk = Disk::start(lock, &link, &mut engine, &mut store)?;
@@ -2602,7 +2602,7 @@ impl FolderTask {
     async fn admit_root(&self) -> Result<(Link, Option<Adopted>), Halt> {
         loop {
             let mut link = self.link.clone();
-            let admitted = Store::open(&self.store)
+            let admitted = Store::open_existing(&self.store)
                 .map_err(Stop::from)
                 .and_then(|mut store| disk::admit_root(&mut link, &mut store));
             match admitted {

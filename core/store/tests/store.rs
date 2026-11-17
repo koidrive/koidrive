@@ -4939,3 +4939,18 @@ fn a_store_from_before_placements_were_recorded_reads_every_local_node_as_placed
         [placed("a.txt", 1, false, false)]
     );
 }
+
+#[test]
+fn an_emptied_database_is_refused_and_left_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    std::fs::write(&path, b"").unwrap();
+    assert!(matches!(
+        Store::open_read_only(&path),
+        Err(Error::NotAStore)
+    ));
+    assert!(matches!(Store::open_existing(&path), Err(Error::NotAStore)));
+    assert_eq!(std::fs::read(&path).unwrap(), b"");
+    drop(Store::open(&path).unwrap());
+    drop(Store::open_existing(&path).unwrap());
+}
