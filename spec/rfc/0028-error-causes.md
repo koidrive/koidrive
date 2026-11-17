@@ -43,7 +43,7 @@ No field is removed or renumbered.
 
 ## 3. Client rules
 
-1. A client treats a refusal by its code and HTTP status alone. It never retries, waits or stops differently because of the cause. A client that keeps a request id so it can send a create again keeps it through any 5xx answer and forgets it only on a 4xx answer.
+1. A client treats a refusal by its code and HTTP status alone. It never retries, waits or stops differently because of the cause. A client that keeps a request id so it can send a create again forgets it only on a readable server refusal with a 4xx status other than 429 whose code forbids a resend. It keeps it through everything else: a 429, a code that allows a resend, an answer it can't read, such as an edge error page, and any 5xx.
 2. A client may count causes. A value it does not know counts as an unknown cause.
 3. A server without this RFC sends no cause. The client reads that as `CAUSE_UNSPECIFIED`.
 4. When the Worker gives no answer, Cloudflare's edge answers in its place with a non-protobuf body that holds `error code: ` and a number ([error codes](https://developers.cloudflare.com/workers/observability/errors/)): 1101 for an exception the Worker did not catch, 1102 for a Worker past its CPU time or memory limit, and 1027 for the Workers Free daily request limit. A client may read that number from an error body of at most 64 KiB with a known length, and count it like a cause.
