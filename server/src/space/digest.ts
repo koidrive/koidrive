@@ -18,11 +18,26 @@ function content(value: Content | undefined): Content | undefined {
   });
 }
 
-export type DigestVersion = 1 | 2 | 3 | 4;
+export type DigestVersion = 1 | 2 | 3 | 4 | 5;
+
+export const DIGEST_VERSION: DigestVersion = 5;
 
 export type Digests = Record<DigestVersion, Uint8Array>;
 
-function op({ op }: Op, version: DigestVersion): Op {
+function op(each: Op, version: DigestVersion): Op {
+  const projected = opBody(each, version);
+  if (version < 5) return projected;
+  projected.intent = each.intent;
+  projected.fields = each.fields;
+  if (projected.op.case === "delete" && each.op.case === "delete") {
+    projected.op.value.unseen = each.op.value.unseen;
+    projected.op.value.held = each.op.value.held;
+  }
+  if (projected.op.case === "createFile" && each.op.case === "createFile") projected.op.value.pendingFor = each.op.value.pendingFor;
+  return projected;
+}
+
+function opBody({ op }: Op, version: DigestVersion): Op {
   switch (op.case) {
     case "createDir": {
       const { nodeId, parentId, name } = op.value;
@@ -71,7 +86,7 @@ function op({ op }: Op, version: DigestVersion): Op {
   }
 }
 
-export async function commitDigest(commit: Commit, version: DigestVersion = 4): Promise<Uint8Array> {
+export async function commitDigest(commit: Commit, version: DigestVersion = DIGEST_VERSION): Promise<Uint8Array> {
   const projected = create(CommitSchema, {
     baseSeq: commit.baseSeq,
     ops: commit.ops.map((each) => op(each, version)),
@@ -82,5 +97,11 @@ export async function commitDigest(commit: Commit, version: DigestVersion = 4): 
 }
 
 export async function commitDigests(commit: Commit): Promise<Digests> {
-  return { 1: await commitDigest(commit, 1), 2: await commitDigest(commit, 2), 3: await commitDigest(commit, 3), 4: await commitDigest(commit, 4) };
+  return {
+    1: await commitDigest(commit, 1),
+    2: await commitDigest(commit, 2),
+    3: await commitDigest(commit, 3),
+    4: await commitDigest(commit, 4),
+    5: await commitDigest(commit, 5),
+  };
 }

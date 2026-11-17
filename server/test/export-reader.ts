@@ -9,7 +9,11 @@ import {
   type CommitRecord,
   CommitRecordSchema,
   ContentSchema,
+  FieldIntentsSchema,
+  type Intent,
+  IntentSchema,
   NodeKind,
+  type NodePurged,
   type NodeState,
   NodeStateSchema,
   NodeStatus,
@@ -18,6 +22,7 @@ import {
 } from "../src/gen/koidrive/v1/model_pb";
 import { sha256 } from "../src/crypto";
 import { toHex } from "../src/ids";
+import { type Field, intentBytes, legacyIntentId, legacyPlaceKey } from "../src/space/intents";
 import { boundMadeOver, nodeState, type NodeRow, rows, type VersionRow, versionInfo } from "../src/space/store";
 
 export interface RestoredNode {
@@ -42,6 +47,26 @@ export interface Restored {
   manifest?: Manifest;
   headSeq: number;
   nodes: Map<string, RestoredNode>;
+  tombstones: Map<string, NodePurged>;
+}
+
+function legacyIntent(nodeId: string, field: Field, key: string): Intent {
+  return create(IntentSchema, { id: intentBytes(legacyIntentId(nodeId, field, key)) });
+}
+
+function withLegacyIntents(state: NodeState, liveSeq: bigint): NodeState {
+  if (state.intents) return state;
+  const status = state.status === NodeStatus.LIVE ? `live:${liveSeq}` : `trashed:${state.trashGroup}`;
+  const intents = create(FieldIntentsSchema, {
+    place: legacyIntent(state.nodeId, "place", legacyPlaceKey(Number(state.metaRev), state.parentId === "" ? null : state.parentId, state.name)),
+    content: state.current ? legacyIntent(state.nodeId, "content", state.current.versionId) : undefined,
+    status: legacyIntent(state.nodeId, "status", status),
+  });
+  return create(NodeStateSchema, { ...state, intents });
+}
+
+function carriedFlags(state: NodeState): boolean[] {
+  return [state.intents?.place, state.intents?.content, state.intents?.status].map((intent) => intent?.replay ?? false);
 }
 
 async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
@@ -76,22 +101,25 @@ async function keys(prefix: string): Promise<string[]> {
   return out;
 }
 
-function replay(nodes: Map<string, RestoredNode>, record: CommitRecord): void {
+function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePurged>, liveSince: Map<string, bigint>, record: CommitRecord): void {
   for (const { change } of record.changes) {
     if (change.case === "purged") {
       nodes.delete(change.value.nodeId);
+      tombstones.set(change.value.nodeId, change.value);
       continue;
     }
     if (change.case !== "node") throw new Error(`unexpected change ${change.case}`);
-    const incoming = change.value;
-    const known = nodes.get(incoming.nodeId);
+    const known = nodes.get(change.value.nodeId);
+    const revived = change.value.status === NodeStatus.LIVE && known?.state.status !== NodeStatus.LIVE;
+    if (revived) liveSince.set(change.value.nodeId, record.seq);
+    const incoming = withLegacyIntents(change.value, liveSince.get(change.value.nodeId) ?? 0n);
     const version = incoming.current;
     const held = version && (known?.state.current?.versionId === version.versionId ? known.state.current : known?.previous.get(version.versionId)?.version);
     if (held && version) {
       held.madeOver = boundMadeOver(version.madeOver);
     }
     const rev = (state: NodeState) => [state.contentRev, state.metaRev, state.editRev, state.metaEditRev].reduce((a, b) => (a > b ? a : b));
-    if (known && rev(incoming) <= rev(known.state)) continue;
+    if (known && rev(incoming) <= rev(known.state) && carriedFlags(incoming).join() === carriedFlags(known.state).join()) continue;
     const previous = new Map(known?.previous);
     let current = incoming.current;
     if (current) {
@@ -131,6 +159,8 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
     }
     const manifest = manifests.sort((a, b) => b.start_seq - a.start_seq)[0];
     const nodes = new Map<string, RestoredNode>();
+    const tombstones = new Map<string, NodePurged>();
+    const liveSince = new Map<string, bigint>();
     if (manifest) {
       if (manifest.format !== "koidrive.snapshot" || manifest.format_version !== 1 || manifest.history_id !== historyId) throw new Error("unexpected manifest");
       let missing = false;
@@ -157,7 +187,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       }
     } else {
       nodes.set(spaceId, {
-        state: create(NodeStateSchema, { nodeId: spaceId, kind: NodeKind.DIR, status: NodeStatus.LIVE }),
+        state: withLegacyIntents(create(NodeStateSchema, { nodeId: spaceId, kind: NodeKind.DIR, status: NodeStatus.LIVE }), 0n),
         previous: new Map(),
         trashedAtMs: 0n,
       });
@@ -179,13 +209,13 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", spaceId, historyId)) {
         const record = fromBinary(CommitRecordSchema, frame);
         if (Number(record.seq) !== seq++) throw new Error(`${segment.key} skips a seq`);
-        if (record.seq > BigInt(startSeq)) replay(nodes, record);
+        if (record.seq > BigInt(startSeq)) replay(nodes, tombstones, liveSince, record);
       }
       if (seq !== segment.last + 1) throw new Error(`${segment.key} ends early`);
       next = seq;
     }
     if (manifest && next - 1 < manifest.end_seq) throw new Error("the log stops before the manifest's end_seq");
-    return { descriptor, manifest, headSeq: next - 1, nodes };
+    return { descriptor, manifest, headSeq: next - 1, nodes, tombstones };
   }
 }
 

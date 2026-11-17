@@ -282,8 +282,9 @@ describe("R2 metadata export (spec v0 section 11, RFC 0004)", () => {
 
     await runSpaceAlarm(space.stub, now);
     expect((await manifests(prefix)).map((manifest) => [manifest.start_seq, manifest.end_seq])).toEqual([[1, 1]]);
+    await setClock(space, a, now + 1);
     await a.commit([op.move(file, space.spaceId, "renamed.bin")]);
-    await runSpaceAlarm(space.stub, now + 5 * MINUTE);
+    await runSpaceAlarm(space.stub, now + 1 + 5 * MINUTE);
     const restored = await expectRestorable(space);
     expect(restored.nodes.get(file)!.state.current!.content!.chunks).toHaveLength(16_385);
   });
