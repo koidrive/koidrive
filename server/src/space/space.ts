@@ -320,6 +320,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     clock: () => number = () => Date.now();
     snapshotPageNodes = 1000;
     private readonly traffic = new UsageTally();
+    private usageArmed = false;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
@@ -777,6 +778,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private async armUsage(): Promise<void> {
+      if (this.usageArmed) return;
+      this.usageArmed = true;
       if (this.sql.exec("SELECT 1 FROM schedule WHERE task = 'usage'").toArray().length > 0) return;
       await this.schedule("usage", nextHourMs(this.clock()) + USAGE_GRACE_MS);
     }
@@ -1548,6 +1551,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           }
         }
         if (task === "usage") {
+          this.usageArmed = false;
           this.sql.exec("DELETE FROM schedule WHERE task = 'usage'");
           await this.handOverUsage();
         }
