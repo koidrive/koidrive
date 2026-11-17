@@ -22,6 +22,8 @@ IO_LINT = "clippy::disallowed_methods"
 FORCED_LINTS = [IO_LINT, *sorted(LOCK_LINTS)]
 IMPORT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate|mod)\b", re.M)
 IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
+USE_TOKEN = re.compile(r"::|[{},*]|[A-Za-z_]\w*")
+VISIBILITY = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?")
 SHADOWABLE = {"fs", "tempfile"}
 ROOTS = {"std", "core", "alloc", "crate", "self", "super"}
 CONDITIONAL = re.compile(r"#\s*!?\s*\[\s*cfg(?:_attr)?\s*\([^]]*\)\s*\]", re.S)
@@ -98,9 +100,58 @@ def imports(text):
     return [text[match.start():text.find(";", match.start()) + 1] for match in IMPORT.finditer(text)]
 
 
+def import_bindings(item):
+    tokens = USE_TOKEN.findall(VISIBILITY.sub("", item, count=1).rstrip(";"))
+    kind, rest = tokens[0], tokens[1:]
+    if kind == "mod":
+        return {rest[0]}, set()
+    if kind == "extern":
+        return {rest[-1]}, set()
+    bound, roots = set(), set()
+
+    def tree(i, prefix):
+        path = list(prefix)
+        while i < len(rest) and rest[i] not in (",", "}", "as"):
+            token = rest[i]
+            i += 1
+            if token == "*":
+                roots.update(path[:1])
+                bound.add("*")
+                return i
+            if token == "{":
+                while rest[i] != "}":
+                    i = tree(i, path)
+                    i += rest[i] == ","
+                return i + 1
+            if token != "::":
+                path.append(token)
+        if i < len(rest) and rest[i] == "as":
+            bound.add(rest[i + 1])
+            i += 2
+        elif path:
+            bound.add(path[-2] if path[-1] == "self" and len(path) > 1 else path[-1])
+        if path:
+            roots.add(path[0])
+        return i
+
+    try:
+        tree(0, [])
+    except IndexError:
+        return {"*"}, set()
+    return bound - {"_"}, roots
+
+
 def shadowing_imports(text, call):
     names = SHADOWABLE | {token for token in call if IDENTIFIER.fullmatch(token)} - ROOTS
-    return [item for item in imports(text) if "*" in item or names & set(IDENTIFIER.findall(item))]
+    items = [(item, *import_bindings(item)) for item in imports(text)]
+    selected = set()
+    while True:
+        found = {index for index, (_, bound, _) in enumerate(items)
+                 if index not in selected and ("*" in bound or bound & names)}
+        if not found:
+            return sorted(items[index][0] for index in selected)
+        selected |= found
+        names |= set().union(*(items[index][2] for index in found)) - ROOTS
 
 
 def suppression_records(text):

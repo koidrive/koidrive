@@ -59,6 +59,9 @@ class ChangedIo(unittest.TestCase):
         before = "use tokio::sync::Mutex;\nfs::write(path, b\"paused\\n\");"
         after = "use tokio::sync::Mutex;\nuse tokio::io::AsyncWriteExt;\nfs::write(path, b\"paused\\n\");"
         self.assertFalse(self.introduced(before, after, start=3))
+        call = "fs::write(path, bytes);"
+        self.assertFalse(self.introduced(call, "use std::path::PathBuf;\n" + call, start=2))
+        self.assertFalse(self.introduced(call, "use std::{collections::HashMap, path::{self as paths, Path}};\n" + call, start=2))
 
     def test_an_import_that_shadows_fs_or_tempfile_still_fails(self):
         call = "fs::write(path, bytes);"
@@ -73,6 +76,10 @@ class ChangedIo(unittest.TestCase):
         call = "std::fs::write(TARGET, bytes);"
         before = "use crate::paths::LOG as TARGET;\n" + call
         self.assertTrue(self.introduced(before, "use crate::paths::STATE as TARGET;\n" + call, start=2))
+        chain = "use selected::TARGET;\n" + call
+        before = "use crate::log_paths as selected;\n" + chain
+        self.assertTrue(self.introduced(before, "use crate::state_paths as selected;\n" + chain, start=3))
+        self.assertTrue(self.introduced("use std::{io, path};\n" + call, "use std::{fs as TARGET, path};\n" + call, start=2))
 
     def test_a_test_writer_cannot_become_production_code_unchecked(self):
         self.assertTrue(self.introduced("#[cfg(test)]\nfn save() {\nfs::write(path, bytes);\n}", "\nfn save() {\nfs::write(path, bytes);\n}", start=3))
