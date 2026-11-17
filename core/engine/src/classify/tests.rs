@@ -748,3 +748,247 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
     trees.others = BTreeSet::from(["f".into()]);
     assert!(trees.is_discarded("x0"));
 }
+
+#[test]
+fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_and_go() {
+    let identity = FileIdentity {
+        ino: 7,
+        birth_ns: Some(1),
+    };
+    let local = |name: &str| LocalNode {
+        shape: Shape {
+            parent: "root".into(),
+            name: name.into(),
+            kind: Kind::File,
+            content: Some(Content {
+                size: 1,
+                manifest_digest: vec![1; 32],
+                ..Content::default()
+            }),
+        },
+        identity,
+        parked: false,
+        left_out_when_placed: false,
+        content_from_server: false,
+    };
+    let mut trees = Trees::new("root");
+    for (id, name) in [
+        ("b", "Notes"),
+        ("c", "notes"),
+        ("a", "NOTES"),
+        ("b", "Notes"),
+    ] {
+        trees.set_local(id.into(), local(name));
+    }
+    let held =
+        |trees: &Trees| -> Vec<NodeId> { trees.locals_with_identity(&identity).cloned().collect() };
+    assert_eq!(held(&trees), ["a", "b", "c"]);
+    let reversed: Vec<NodeId> = trees
+        .locals_with_identity(&identity)
+        .rev()
+        .cloned()
+        .collect();
+    assert_eq!(reversed, ["c", "b", "a"]);
+    assert_eq!(
+        trees.local_with_identity(&identity).map(String::as_str),
+        Some("c")
+    );
+    assert_eq!(
+        trees.local_child("root", "notes").map(String::as_str),
+        Some("c")
+    );
+    assert_eq!(
+        trees.local_child("root", "Notes").map(String::as_str),
+        Some("b")
+    );
+    trees.remove_local("c");
+    trees.remove_local("a");
+    assert_eq!(held(&trees), ["b"]);
+    assert_eq!(trees.local_child("root", "notes"), None);
+    assert_eq!(
+        trees.local_child("root", "Notes").map(String::as_str),
+        Some("b")
+    );
+    trees.remove_local("b");
+    assert!(held(&trees).is_empty());
+    assert_eq!(trees.local_with_identity(&identity), None);
+    assert_eq!(trees.local_child("root", "Notes"), None);
+}
+
+mod holders_against_a_rebuild {
+    use super::*;
+    use proptest::prelude::*;
+
+    const NAMES: [&str; 4] = ["a", "A", "b", "B"];
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Set(u8, usize, u64, bool),
+        SetChanged(u8, usize, u64, bool),
+        Remove(u8),
+        Rekey(u8, u8, usize, u64),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0u8..6, 0usize..4, 0u64..3, any::<bool>())
+                .prop_map(|(i, n, k, p)| Op::Set(i, n, k, p)),
+            (0u8..6, 0usize..4, 0u64..3, any::<bool>())
+                .prop_map(|(i, n, k, p)| Op::SetChanged(i, n, k, p)),
+            (0u8..6).prop_map(Op::Remove),
+            (0u8..6, 0u8..6, 0usize..4, 0u64..3).prop_map(|(f, t, n, k)| Op::Rekey(f, t, n, k)),
+        ]
+    }
+
+    fn ident(k: u64) -> FileIdentity {
+        FileIdentity {
+            ino: u128::from(k),
+            birth_ns: Some(1),
+        }
+    }
+
+    fn node(n: usize, k: u64, parked: bool) -> LocalNode {
+        LocalNode {
+            shape: Shape {
+                parent: "root".into(),
+                name: NAMES[n].into(),
+                kind: Kind::File,
+                content: Some(Content {
+                    size: 1,
+                    manifest_digest: vec![1; 32],
+                    ..Content::default()
+                }),
+            },
+            identity: ident(k),
+            parked,
+            left_out_when_placed: false,
+            content_from_server: false,
+        }
+    }
+
+    fn id(i: u8) -> NodeId {
+        format!("n{i}")
+    }
+
+    fn check_index(index: &ByName, expected: &[(NodeId, &LocalNode)]) {
+        let mut keys: BTreeMap<(NodeId, String), Vec<NodeId>> = BTreeMap::new();
+        for (id, n) in expected {
+            keys.entry((n.shape.parent.clone(), name_key(&n.shape.name)))
+                .or_default()
+                .push(id.clone());
+        }
+        for ids in keys.values_mut() {
+            ids.sort();
+        }
+        assert_eq!(
+            index.0.len(),
+            keys.len(),
+            "stale or missing keys: {:?} vs {:?}",
+            index.0,
+            keys
+        );
+        for (key, holders) in &index.0 {
+            if let Holders::Many(set) = holders {
+                assert!(set.len() >= 2, "Many with {} holders", set.len());
+            }
+            let got: Vec<NodeId> = holders.iter().cloned().collect();
+            assert_eq!(Some(&got), keys.get(key));
+            let back: Vec<NodeId> = holders.iter().rev().cloned().collect();
+            let mut want = got.clone();
+            want.reverse();
+            assert_eq!(back, want);
+        }
+        for name in NAMES {
+            let got: Vec<NodeId> = index.holders("root", name).cloned().collect();
+            let want = keys
+                .get(&("root".to_owned(), name_key(name)))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(got, want);
+        }
+        let children: Vec<NodeId> = index.children("root").cloned().collect();
+        let want: Vec<NodeId> = keys.values().flatten().cloned().collect();
+        assert_eq!(children, want);
+    }
+
+    fn check(trees: &Trees) {
+        let all: Vec<(NodeId, &LocalNode)> = trees
+            .l
+            .iter()
+            .filter(|(id, _)| id.as_str() != "root")
+            .map(|(id, n)| (id.clone(), n))
+            .collect();
+        let placed: Vec<_> = all.iter().filter(|(_, n)| !n.parked).cloned().collect();
+        let parked: Vec<_> = all.iter().filter(|(_, n)| n.parked).cloned().collect();
+        check_index(&trees.l_names, &placed);
+        check_index(&trees.l_parked, &parked);
+        let mut live = 0;
+        for k in 0..3 {
+            let mut want: Vec<NodeId> = all
+                .iter()
+                .filter(|(_, n)| n.identity == ident(k))
+                .map(|(id, _)| id.clone())
+                .collect();
+            want.sort();
+            let got: Vec<NodeId> = trees.locals_with_identity(&ident(k)).cloned().collect();
+            assert_eq!(got, want);
+            let back: Vec<NodeId> = trees
+                .locals_with_identity(&ident(k))
+                .rev()
+                .cloned()
+                .collect();
+            let mut rev = want.clone();
+            rev.reverse();
+            assert_eq!(back, rev);
+            assert_eq!(trees.local_with_identity(&ident(k)), want.last());
+            live += usize::from(!want.is_empty());
+        }
+        let root_identities = trees
+            .l
+            .iter()
+            .filter(|(id, _)| id.as_str() == "root")
+            .count();
+        assert!(
+            trees.l_identities.len() <= live + root_identities,
+            "stale identities: {:?}",
+            trees.l_identities
+        );
+        for holders in trees.l_identities.values() {
+            if let Holders::Many(set) = holders {
+                assert!(set.len() >= 2);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(koidrive_test_support::battery_config(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/classify/tests.proptest-regressions"),
+            2_048,
+        ))]
+        #[test]
+        fn holders_match_a_rebuild_from_l(ops in proptest::collection::vec(op(), 1..40)) {
+            let mut trees = Trees::new("root");
+            for op in ops {
+                match op {
+                    Op::Set(i, n, k, p) => trees.set_local(id(i), node(n, k, p)),
+                    Op::SetChanged(i, n, k, p) => trees.set_local_changed(id(i), node(n, k, p)),
+                    Op::Remove(i) => trees.remove_local(&id(i)),
+                    Op::Rekey(f, t, n, k) => {
+                        if f != t && trees.l.get(&id(f)).is_some() {
+                            trees.rekey_local(&id(f), &id(t), node(n, k, false));
+                        }
+                    }
+                }
+                check(&trees);
+            }
+        }
+    }
+}
+
+#[test]
+fn holders_take_no_more_room_than_a_set() {
+    assert_eq!(
+        std::mem::size_of::<Holders>(),
+        std::mem::size_of::<BTreeSet<NodeId>>()
+    );
+}
