@@ -1064,6 +1064,200 @@ fn an_edit_found_after_the_bootstrap_keeps_a_rename_another_device_made_after_th
     );
 }
 
+fn written(parent: &str, name: &str, digest: u8) -> Shape {
+    let mut shape = file(parent, name, digest);
+    shape.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
+    shape
+}
+
+fn a_file_renamed_here_before_the_server_lost_it(name: &str, digest: u8) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[synced("f", written(ROOT, "f", 1))]);
+    trees.set_local_changed("f".into(), local(written(ROOT, name, digest), 1));
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    assert_eq!(trees.check(), Ok(()));
+    (trees, Commits::default(), IdGen::new(1))
+}
+
+fn created_again_by_another_device(trees: &mut Trees, shape: Shape) {
+    trees.set_remote("n".into(), remote_at(shape, 3));
+    trees.settle();
+}
+
+fn moves_of(sent: &[op::Op], node: &str) -> Vec<(String, String)> {
+    (sent.iter())
+        .filter_map(|op| match op {
+            op::Op::Move(moved) if moved.node_id == node => {
+                Some((moved.new_parent_id.clone(), moved.new_name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_renamed_here_before_a_loss_takes_the_copy_another_device_created_again_at_its_old_place() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let planned = Effects::default()
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .to_vec();
+    assert!(planned.iter().all(|record| record.node != "n"), "{planned:?}");
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert_eq!(moves_of(&sent, "n"), [(ROOT.to_owned(), "g".to_owned())], "{sent:?}");
+    assert!(!uploads(&sent, 1), "{sent:?}");
+    assert!(trees.local().get("f").is_none());
+    assert!(trees.state().lost_shapes.is_empty());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_moved_here_into_another_folder_before_a_loss_takes_the_copy_created_again_at_its_old_place() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", written(ROOT, "f", 1))]);
+    trees.set_local_changed("f".into(), local(written("d", "g", 1), 2));
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert_eq!(moves_of(&sent, "n"), [("d".to_owned(), "g".to_owned())], "{sent:?}");
+    assert!(!uploads(&sent, 1), "{sent:?}");
+}
+
+#[test]
+fn a_file_renamed_here_before_a_loss_is_created_again_beside_a_copy_with_other_bytes_at_its_old_place() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 2));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 1), "{sent:?}");
+    assert!(moves_of(&sent, "n").is_empty(), "{sent:?}");
+}
+
+#[test]
+fn a_file_edited_here_before_a_loss_keeps_no_lost_shape() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 2);
+    assert!(trees.state().lost_shapes.is_empty());
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 2), "{sent:?}");
+    assert!(moves_of(&sent, "n").is_empty(), "{sent:?}");
+}
+
+#[test]
+fn a_file_renamed_here_before_a_loss_and_edited_after_it_is_created_again_beside_the_copy_at_its_old_place() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    assert!(trees.state().lost_shapes.contains_key("f"));
+    trees.set_local_changed("f".into(), local(written(ROOT, "g", 2), 1));
+    trees.settle();
+    assert!(trees.state().lost_shapes.is_empty());
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 2), "{sent:?}");
+    assert!(moves_of(&sent, "n").is_empty(), "{sent:?}");
+}
+
+#[test]
+fn a_file_renamed_again_after_a_loss_keeps_its_lost_shape() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    trees.set_local_changed("f".into(), local(written(ROOT, "h", 1), 1));
+    trees.settle();
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert_eq!(moves_of(&sent, "n"), [(ROOT.to_owned(), "h".to_owned())], "{sent:?}");
+}
+
+#[test]
+fn a_file_renamed_here_before_a_loss_keeps_no_lost_shape_once_s_or_r_takes_it_or_l_no_longer_holds_it() {
+    let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    assert_eq!(trees.state().lost_shapes.get("f"), Some(&written(ROOT, "f", 1)));
+    trees.set_synced("f".into(), Some(written(ROOT, "f", 1)));
+    assert!(trees.state().lost_shapes.is_empty());
+    let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    trees.remove_local("f");
+    assert!(trees.state().lost_shapes.is_empty());
+    let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    trees.set_remote("f".into(), remote_at(written(ROOT, "g", 1), 3));
+    assert!(trees.state().lost_shapes.is_empty());
+    let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    trees.set_remote("f".into(), trashed(written(ROOT, "f", 1)));
+    assert!(trees.state().lost_shapes.is_empty());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_renamed_here_before_a_loss_is_created_again_once_the_server_takes_its_create() {
+    let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(uploads(&sent, 1), "{sent:?}");
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); sent.len()],
+    );
+    trees.settle();
+    assert!(trees.state().lost_shapes.is_empty());
+    created_again_by_another_device(&mut trees, written(ROOT, "f", 1));
+    let effects = effects_for(&mut trees, &mut ids, "n");
+    assert!(matches!(&effects[..], [Effect::WriteFile { .. }]), "{effects:?}");
+}
+
+#[test]
+fn a_file_in_a_folder_linked_after_a_loss_takes_the_copy_created_again_at_its_old_place_in_it() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", written("d", "f", 1))]);
+    trees.set_local_changed("f".into(), local(written("d", "g", 1), 2));
+    trees.settle();
+    let synced = trees.taken_from_others(|_| false);
+    trees.remove_remote("f");
+    trees.remove_remote("d");
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    assert_eq!(trees.state().lost_shapes.get("f").map(|shape| shape.parent.as_str()), Some("d"));
+    trees.set_remote("e".into(), remote_at(dir(ROOT, "d"), 3));
+    trees.set_remote("n".into(), remote_at(written("e", "f", 1), 3));
+    trees.settle();
+    koidrive_engine::first_link::adopt(&mut trees, None);
+    trees.settle();
+    assert!(trees.local().get("f").is_none());
+    assert!(trees.state().lost_shapes.is_empty());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert_eq!(moves_of(&sent, "n"), [("e".to_owned(), "g".to_owned())], "{sent:?}");
+    assert!(!uploads(&sent, 1), "{sent:?}");
+}
+
 #[test]
 fn a_move_of_this_device_the_server_lost_is_sent_again() {
     let (mut trees, mut commits, mut ids) = n_at_x();

@@ -80,6 +80,12 @@ pub struct TreesState {
     /// The files S forgot after a server loss while L, S and R held their content alike, each with
     /// the shape S held, until L's content changes, S takes the node again or L no longer holds it.
     pub forgotten_shapes: BTreeMap<NodeId, Shape>,
+    /// The files S forgot after a server loss while R lacked them and L held S's content, each
+    /// with the shape S held, so that a file another device created again there with that content
+    /// is taken as this node. The record ends when this device links the node to such a file, when
+    /// S takes the node again, when L's content changes or L no longer holds the node, and when R
+    /// holds the node again.
+    pub lost_shapes: BTreeMap<NodeId, Shape>,
     /// The nodes whose local copy the user moved into an ignored folder that is no node, and the folders L keeps
     /// for them. L holds each at the position it had before.
     pub outside: BTreeSet<NodeId>,
@@ -263,6 +269,7 @@ pub struct TreesChanges {
     pub removed_here: MapChanges<NodeId, u64>,
     pub discarded: MapChanges<NodeId, Shape>,
     pub forgotten_shapes: MapChanges<NodeId, Shape>,
+    pub lost_shapes: MapChanges<NodeId, Shape>,
     pub outside: SetChanges<NodeId>,
     pub lost: SetChanges<NodeId>,
     pub displaced: MapChanges<NodeId, FileIdentity>,
@@ -299,6 +306,7 @@ impl TreesChanges {
             removed_here,
             discarded,
             forgotten_shapes,
+            lost_shapes,
             outside,
             lost,
             displaced,
@@ -331,6 +339,7 @@ impl TreesChanges {
             removed_here: map_changes(&before.removed_here, removed_here),
             discarded: map_changes(&before.discarded, discarded),
             forgotten_shapes: map_changes(&before.forgotten_shapes, forgotten_shapes),
+            lost_shapes: map_changes(&before.lost_shapes, lost_shapes),
             outside: set_changes(&before.outside, outside),
             lost: set_changes(&before.lost, lost),
             displaced: map_changes(&before.displaced, displaced),

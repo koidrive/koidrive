@@ -188,6 +188,19 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, parent_id, name, kind, content FROM lost_shapes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let shape = Shape {
+                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                name: row.get(2)?,
+                kind: kind(row.get(3)?)?,
+                content: decode(row.get(4)?)?,
+            };
+            state.trees.lost_shapes.insert(row.get(0)?, shape);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id FROM published_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -440,6 +453,7 @@ impl Tx<'_> {
             "removed_here",
             "discarded_nodes",
             "forgotten_shapes",
+            "lost_shapes",
             "published_nodes",
             "recorded_nodes",
             "edited_here",
@@ -506,6 +520,7 @@ impl Tx<'_> {
             removed_here,
             discarded,
             forgotten_shapes,
+            lost_shapes,
             outside,
             lost,
             displaced,
@@ -656,6 +671,21 @@ impl Tx<'_> {
             forgotten_shapes,
             "DELETE FROM forgotten_shapes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO forgotten_shapes (node_id, parent_id, name, kind, content)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            |put, node, shape| {
+                put.execute(params![
+                    node,
+                    non_empty(&shape.parent),
+                    shape.name,
+                    node_kind(shape.kind),
+                    shape.content.as_ref().map(Content::encode_to_vec),
+                ])
+            },
+        )?;
+        self.write_map(
+            lost_shapes,
+            "DELETE FROM lost_shapes WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO lost_shapes (node_id, parent_id, name, kind, content)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             |put, node, shape| {
                 put.execute(params![
