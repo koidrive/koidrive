@@ -3654,15 +3654,6 @@ impl Trees {
             })
             .collect();
         let resendable = &synced;
-        let survived = |id: &str| {
-            !older_bases.contains(id)
-                && (records.get(id).map(|record| &record.node))
-                    .zip(self.r.get(id))
-                    .is_some_and(|(old, remote)| {
-                        old.content_rev <= held_through
-                            || (!old.version_id.is_empty() && old.version_id == remote.version_id)
-                    })
-        };
         let mut lost: BTreeSet<&str> = (self.s.iter())
             .filter(|(id, _)| !deleted.contains(*id))
             .filter(|(id, synced)| {
@@ -3678,6 +3669,14 @@ impl Trees {
                     };
                     at.same(remote)
                 };
+                let survived = !older_bases.contains(*id)
+                    && (records.get(*id).map(|record| &record.node))
+                        .zip(self.r.get(id))
+                        .is_some_and(|(old, remote)| {
+                            old.content_rev <= held_through
+                                || (!old.version_id.is_empty()
+                                    && old.version_id == remote.version_id)
+                        });
                 let changed_after_loss = resendable.contains(*id)
                     && !lost_edits.contains(*id)
                     && self.l.get(id).is_some_and(|local| local.shape.same(synced))
@@ -3693,27 +3692,19 @@ impl Trees {
                         });
                 self.r.get(id).is_none()
                     || (!untaken.contains_key(*id)
-                        && !survived(id)
+                        && !survived
                         && !changed_after_loss
                         && (self.r.live(id))
                             .is_some_and(|remote| !remote.same(synced) && !moved(remote)))
             })
             .map(|(id, _)| id.as_str())
             .collect();
-        let mut kept_below: Vec<(NodeId, Shape)> = Vec::new();
         let mut below: Vec<&str> = lost.iter().copied().collect();
         while let Some(id) = below.pop() {
             for &child in children.get(id).into_iter().flatten() {
                 let trashed = self.r.get(child).is_some_and(|remote| remote.trashed);
                 if trashed || deleted.contains(child) || !lost.insert(child) {
                     continue;
-                }
-                if survived(child) {
-                    kept_below.extend(
-                        self.s
-                            .get(child)
-                            .map(|shape| (child.to_owned(), shape.clone())),
-                    );
                 }
                 below.push(child);
             }
@@ -3762,9 +3753,6 @@ impl Trees {
                 synced.contains(&id) || taken_late.contains(&id) || self.resends.contains(&id);
             if unchanged && !resent && !moved_here.contains(&id) && self.r.get(&id).is_none() {
                 self.lost_creates.insert(id.clone());
-                if (records.get(&id)).is_some_and(|record| record.moved_in_lost_commit) {
-                    self.local_changes.insert(id.clone());
-                }
             }
             if unchanged && resent {
                 self.resends.insert(id.clone());
@@ -3812,11 +3800,6 @@ impl Trees {
             } else {
                 self.remember_lost_shape(&id);
                 self.set_synced(id, None);
-            }
-        }
-        for (id, shape) in kept_below {
-            if !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
-                self.wait(id, Some(shape), Origin::Other);
             }
         }
         let gone: Vec<NodeId> = (self.forgotten_shapes.iter())
