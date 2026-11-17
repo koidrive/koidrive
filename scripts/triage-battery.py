@@ -25,6 +25,7 @@ POSITION = re.compile(r"\.rs:\d+(?::\d+)?")
 NUMBER = re.compile(r"\d+")
 UNCLASSIFIED = "unclassified"
 FIELDS = {"class", "issue", "tests", "message", "examples"}
+CASE_PREFIX = re.compile(r"[0-9a-f]{12,64}")
 PROBE_TEST = "the_build_keeps_debug_assertions_and_overflow_checks"
 TRIAGE_PROBE = f"triage_runtime_probe::{PROBE_TEST}"
 DISPLAY_LIMIT = 300
@@ -76,8 +77,8 @@ def known_failures(text):
     for number, entry in enumerate(entries, 1):
         if not isinstance(entry, dict):
             raise ValueError(f"[[failure]] {number} is not a table")
-        if set(entry) != FIELDS:
-            raise ValueError(f"[[failure]] {number} has the fields {sorted(entry)}, not {sorted(FIELDS)}")
+        if not FIELDS <= set(entry) <= FIELDS | {"cases"}:
+            raise ValueError(f"[[failure]] {number} has the fields {sorted(entry)}, not {sorted(FIELDS)} and optionally cases")
         for field in ("class", "issue", "message"):
             if not isinstance(entry[field], str) or not entry[field]:
                 raise ValueError(f"[[failure]] {number} needs {field} as a non-empty string")
@@ -85,6 +86,10 @@ def known_failures(text):
             values = entry[field]
             if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
                 raise ValueError(f"[[failure]] {number} needs {field} as a non-empty list of strings")
+        cases = entry.get("cases")
+        if "cases" in entry and not (isinstance(cases, list) and cases and all(
+                isinstance(case, str) and CASE_PREFIX.fullmatch(case) for case in cases)):
+            raise ValueError(f"[[failure]] {number} needs cases as a non-empty list of 12 to 64 lowercase hex digits")
         try:
             entry["pattern"] = re.compile(entry["message"])
         except re.error as error:
@@ -92,9 +97,11 @@ def known_failures(text):
     return entries
 
 
-def matches(entries, test, message):
+def matches(entries, test, message, case=""):
     text = normalized(message)
-    return [entry for entry in entries if test in entry["tests"] and entry["pattern"].match(text)]
+    found = [entry for entry in entries if test in entry["tests"] and entry["pattern"].match(text)
+             and case.startswith(tuple(entry.get("cases", [""])))]
+    return [entry for entry in found if "cases" in entry] or found
 
 
 def classify(rows, entries):
@@ -103,7 +110,7 @@ def classify(rows, entries):
         row["class"] = row["issue"] = None
         if entries is None or row["verdict"] != SAME:
             continue
-        found = matches(entries, row["test"], settle(row["head"])["message"])
+        found = matches(entries, row["test"], settle(row["head"])["message"], row["case"])
         if len(found) > 1:
             ambiguous.append(row)
         row["class"] = ", ".join(entry["class"] for entry in found) or UNCLASSIFIED
@@ -459,7 +466,8 @@ anything of its own, so the two failures can't be compared. "
         f"No row has a class: {problem}" if problem else
         f"Class and issue name the known failure on main, from `.github/battery-known-failures.toml`, \
 that a row which {SAME} matches by its test name and its message with ids, numbers and `file.rs:line` positions \
-masked. {len(same) - unclassified} of the {len(same)} such rows match one; {unclassified} {UNCLASSIFIED} match none.",
+masked, and for an entry that lists cases, only by those cases, which come before the entries that list none. \
+{len(same) - unclassified} of the {len(same)} such rows match one; {unclassified} {UNCLASSIFIED} match none.",
         "",
         "| Case | Binary and test | Head | Base | Head message | Base message | Verdict | Class | Issue |",
         "|---|---|---|---|---|---|---|---|---|",
