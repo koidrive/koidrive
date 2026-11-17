@@ -288,3 +288,25 @@ fn an_offline_folder_keeps_its_progress_until_it_connects_again() {
         assert_eq!(counts(&a), Some((1, 0, stored, size)), "{state:?}");
     }
 }
+
+#[test]
+fn a_recount_right_after_another_waits_for_a_wake_and_an_end_of_sync_clears_at_once() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::write(site.root.join("one.txt"), b"one").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    assert_eq!(counts(&a), Some((1, 0, 0, 3)));
+
+    a.folder.recount_progress(FolderState::CatchingUp);
+    assert_eq!(a.folder.next_change(), None);
+    assert!(!a.folder.recount_progress(FolderState::CatchingUp));
+    let wake = a.folder.next_change().expect("the folder wakes for the recount it put off");
+    assert!(wake <= crate::PROGRESS_INTERVAL, "{wake:?}");
+    std::thread::sleep(wake);
+    a.folder.recount_progress(FolderState::CatchingUp);
+    assert_eq!(a.folder.next_change(), None);
+
+    assert!(a.folder.recount_progress(FolderState::UpToDate));
+    assert_eq!(progress(&a), None);
+}
+
