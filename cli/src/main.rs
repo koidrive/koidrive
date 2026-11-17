@@ -18,6 +18,7 @@ mod dispatch;
 mod error;
 mod folder;
 mod formatting;
+mod gitignore;
 mod history;
 mod ipc;
 mod lifecycle;

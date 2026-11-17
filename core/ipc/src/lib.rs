@@ -132,6 +132,16 @@ pub enum Request {
     },
     /// `Driver::check_for_updates_now`.
     CheckForUpdates,
+    /// `Driver::follows_gitignore`.
+    Gitignore,
+    /// `Driver::set_gitignore`.
+    SetGitignore {
+        follow: bool,
+    },
+    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder at `folder` leave out.
+    GitignoreOnly {
+        folder: PathBuf,
+    },
     /// Runs `run` once for `request_id`: a later request with the same ID and key gets the first response, and one
     /// with another key fails as stale.
     Once {
@@ -243,6 +253,18 @@ pub enum Response {
     UpdateChecked {
         update: Update,
         version: String,
+    },
+    Gitignore {
+        follows: bool,
+    },
+    /// The setting after [`Request::SetGitignore`], and whether it held already.
+    GitignoreSet {
+        follows: bool,
+        already: bool,
+    },
+    GitignoreOnly {
+        files: u64,
+        bytes: u64,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
@@ -992,6 +1014,35 @@ mod tests {
         pinned(Request::Pause, r#"{"request":"pause"}"#);
         pinned(Request::Resume, r#"{"request":"resume"}"#);
         pinned(Request::Watch, r#"{"request":"watch"}"#);
+        pinned(Request::Gitignore, r#"{"request":"gitignore"}"#);
+        pinned(
+            Request::SetGitignore { follow: false },
+            r#"{"request":"set_gitignore","follow":false}"#,
+        );
+        pinned(
+            Request::GitignoreOnly {
+                folder: "/home/ada/Code".into(),
+            },
+            r#"{"request":"gitignore_only","folder":"/home/ada/Code"}"#,
+        );
+        pinned(
+            Response::Gitignore { follows: true },
+            r#"{"response":"gitignore","follows":true}"#,
+        );
+        pinned(
+            Response::GitignoreSet {
+                follows: false,
+                already: true,
+            },
+            r#"{"response":"gitignore_set","follows":false,"already":true}"#,
+        );
+        pinned(
+            Response::GitignoreOnly {
+                files: 18_342,
+                bytes: 412_000_000,
+            },
+            r#"{"response":"gitignore_only","files":18342,"bytes":412000000}"#,
+        );
         pinned(
             Request::Leave {
                 confirm_last_device: false,
