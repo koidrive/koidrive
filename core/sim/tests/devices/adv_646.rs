@@ -237,3 +237,42 @@ fn adv_diff_lost_folder() {
 fn adv_diff_lost_folder_mixed() {
     adv_differential("lost-folder-mixed", adv_after_lost_folder(true));
 }
+
+#[test]
+fn adv_shrink() {
+    let Some(seed) = std::env::var("KOIDRIVE_ADV_SHRINK").ok().and_then(|v| v.parse::<u64>().ok()) else {
+        return;
+    };
+    let mut runner = TestRunner::new(ProptestConfig {
+        rng_seed: RngSeed::Fixed(seed),
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    });
+    let fails = |(devices, phases): &(usize, Vec<Vec<(usize, Step)>>)| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| converge(*devices, phases)))
+            .map_or_else(|_| Some("panic".to_owned()), |result| result.err().map(|failure| failure.to_string()))
+    };
+    let mut tree = (2..=3usize, adv_after_lost_folder(true)).new_tree(&mut runner).unwrap();
+    let mut best = tree.current();
+    let first = fails(&best).expect("the seed fails");
+    let prefix: String = first.chars().take(60).collect();
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        if steps > 20_000 {
+            break;
+        }
+        let candidate = tree.current();
+        let same = fails(&candidate).is_some_and(|message| message.starts_with(&prefix));
+        if same {
+            best = candidate;
+            if !tree.simplify() {
+                break;
+            }
+        } else if !tree.complicate() {
+            break;
+        }
+    }
+    let message = fails(&best).unwrap_or_default();
+    panic!("SHRUNK {message}\nINPUT {:?}", best);
+}
