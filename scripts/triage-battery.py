@@ -56,6 +56,22 @@ def shard_number(directory):
 def collect(failures):
     cases = {}
     others = {}
+
+    def add(path, test, binary, shard, message, shared):
+        case = cases.setdefault((path, test), {
+            "case": CASE.match(Path(path).name)[1],
+            "path": path,
+            "binary": binary,
+            "test": test,
+            "text": files[path].read_text(),
+            "battery_message": message,
+            "shared": shared,
+            "shards": [],
+        })
+        case["shared"] = case["shared"] and shared
+        if shard not in case["shards"]:
+            case["shards"].append(shard)
+
     for shard_dir in sorted((path for path in failures.glob("failure-shard-*") if path.is_dir()), key=shard_number):
         shard = shard_number(shard_dir)
         regressions = shard_dir / "regressions"
@@ -64,37 +80,28 @@ def collect(failures):
         mapped = set()
         for log in sorted((shard_dir / "logs").glob("*.log")):
             binary = log.stem.rsplit("-", 1)[0]
+            saved_here = []
+            unsaved = []
             for test, body in sections(log.read_text(errors="replace")):
                 saved = [(match, path) for match in SAVED.finditer(body)
                          for path in files if match[1].endswith("/" + path)]
                 if not saved:
-                    others.setdefault((binary, test), set()).add(shard)
+                    unsaved.append((test, failure_message(body)))
                 for match, path in saved:
-                    mapped.add(path)
-                    case = cases.setdefault((path, test), {
-                        "case": match[2],
-                        "path": path,
-                        "binary": binary,
-                        "test": test,
-                        "text": files[path].read_text(),
-                        "battery_message": failure_message(body[match.end():]),
-                        "shards": [],
-                    })
-                    case["shards"].append(shard)
+                    saved_here.append(path)
+                    add(path, test, binary, shard, failure_message(body[match.end():]), False)
+            mapped.update(saved_here)
+            for test, message in unsaved:
+                other = others.setdefault((binary, test), {"shards": set(), "cases": set()})
+                other["shards"].add(shard)
+                other["cases"].update(saved_here)
+                for path in saved_here:
+                    add(path, test, binary, shard, message, True)
         for path in sorted(set(files) - mapped):
-            case = cases.setdefault((path, None), {
-                "case": CASE.match(Path(path).name)[1],
-                "path": path,
-                "binary": None,
-                "test": None,
-                "text": files[path].read_text(),
-                "battery_message": None,
-                "shards": [],
-            })
-            case["shards"].append(shard)
+            add(path, None, None, shard, None, False)
     return (sorted(cases.values(), key=lambda case: (case["path"], case["test"] or "")),
-            [{"binary": binary, "test": test, "shards": sorted(shards)}
-             for (binary, test), shards in sorted(others.items())])
+            [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"])}
+             for (binary, test), other in sorted(others.items())])
 
 
 def checked_profile(manifest):
@@ -258,11 +265,14 @@ def combine(spec, replays):
         sides = {side: replays[side]["results"][index] if side in replays
                  else {"runs": [{"result": "error", "message": f"the {side} replay left no result"}], "target": None}
                  for side in ("head", "base")}
+        if case["shared"] and settle(sides["head"]["runs"])["result"] != "fail":
+            continue
         rows.append({
             "case": case["case"],
             "path": case["path"],
             "target": sides["head"]["target"] or sides["base"]["target"] or case["binary"],
             "test": case["test"],
+            "shared": case["shared"],
             "shards": case["shards"],
             "head": sides["head"]["runs"],
             "base": sides["base"]["runs"],
@@ -270,6 +280,12 @@ def combine(spec, replays):
         })
     rows.sort(key=lambda row: (VERDICTS.index(row["verdict"]), row["target"] or "", row["test"] or "", row["case"]))
     return rows
+
+
+def caseless(spec, rows):
+    reproduced = {(row["path"], row["test"]) for row in rows}
+    return [other for other in spec["others"]
+            if not any((path, other["test"]) in reproduced for path in other["cases"])]
 
 
 def cell(text):
@@ -293,12 +309,13 @@ def messages_cell(runs):
     return " / ".join(f"run {number}: {cell(message) or '(none)'}" for number, message in enumerate(messages, 1))
 
 
-def markdown(spec, rows, run_url):
+def markdown(spec, rows, others, run_url):
     counts = ", ".join(f"{sum(row['verdict'] == name for row in rows)} {name}" for name in VERDICTS)
     lines = [
         "## Battery triage",
         "",
-        f"[Run {spec['run']}]({run_url}) saved {len(rows)} new cases: {counts}. "
+        f"[Run {spec['run']}]({run_url}) saved {len({row['path'] for row in rows if not row['shared']})} new cases; "
+        f"the table has {len(rows)} rows: {counts}. "
         f"Each case replayed alone {REPLAYS} times on each side, without the committed cases, with "
         f"`PROPTEST_CASES=0` and the checked profile, on the head `{spec['head']}` and on its merge base with main "
         f"`{spec['base']}`.",
@@ -310,19 +327,24 @@ def markdown(spec, rows, run_url):
         "are ignored, so they may come from different assertions. "
         "Unstable means the runs on one side disagree on the result or the message, and the table shows each run. "
         "Messages are compared as they are, with nothing normalised. "
+        "Proptest saves a seed once, so when two tests of one binary fail on the same seed in a shard, only the first "
+        "saves it. The other test gets a row, marked as saved by another test, for each case that shard saved in the "
+        "same binary and that fails it on the head. "
         f"This table cuts messages at {DISPLAY_LIMIT} characters; triage.json holds them in full.",
         "",
         "| Case | Binary and test | Head | Base | Head message | Base message | Verdict |",
         "|---|---|---|---|---|---|---|",
     ]
-    lines += [f"| `{row['case'][:12]}` | {cell(row['target'])} `{row['test'] or '?'}` | {results_cell(row['head'])} | "
+    lines += [f"| `{row['case'][:12]}`{' (saved by another test)' if row['shared'] else ''} | "
+              f"{cell(row['target'])} `{row['test'] or '?'}` | {results_cell(row['head'])} | "
               f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
               f"{row['verdict']} |"
               for row in rows]
-    if spec["others"]:
-        lines += ["", "These tests failed without saving a new case, so they are not in the table:", ""]
+    if others:
+        lines += ["", "These tests failed without saving a new case, and no case their shards saved in the same binary "
+                  "fails them on the head, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
-                  for other in spec["others"]]
+                  for other in others]
     return "\n".join(lines) + "\n"
 
 
@@ -368,11 +390,12 @@ def main():
         spec = json.loads(arguments.cases.read_text())
         replays = {replayed["side"]: replayed for replayed in (json.loads(path.read_text()) for path in arguments.replays)}
         rows = combine(spec, replays)
+        others = caseless(spec, rows)
         arguments.out.mkdir(parents=True, exist_ok=True)
         (arguments.out / "triage.json").write_text(json.dumps(
-            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": spec["others"]},
+            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others},
             indent=2) + "\n")
-        (arguments.out / "triage.md").write_text(markdown(spec, rows, arguments.run_url))
+        (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url))
 
 
 if __name__ == "__main__":

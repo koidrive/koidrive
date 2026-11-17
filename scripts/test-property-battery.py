@@ -283,16 +283,41 @@ class Triage(unittest.TestCase):
             self.shard(root, 10, ["a" * 64, "b" * 64], extra=["c" * 64])
             (root / "failure-shard-11.zip").write_text("")
             cases, others = triage.collect(root)
-        self.assertEqual([(case["case"][0], case["binary"], case["test"], case["shards"]) for case in cases],
-                         [("a", "devices", "devices_converge", [4, 10]),
-                          ("b", "devices", "devices_converge", [10]),
-                          ("c", None, None, [10])])
+        self.assertEqual([(case["case"][0], case["test"], case["shards"], case["shared"]) for case in cases],
+                         [("a", "devices_converge", [4, 10], False),
+                          ("a", "devices_lose_no_write", [4, 10], True),
+                          ("b", "devices_converge", [10], False),
+                          ("b", "devices_lose_no_write", [10], True),
+                          ("c", None, [10], False)])
         self.assertEqual(cases[0]["path"], f"core/sim/tests/devices.cases/cc-{'a' * 64}.txt")
         self.assertEqual(cases[0]["text"], f"cc {'a' * 64} # shrinks to devices = 2\n")
         self.assertEqual(cases[0]["battery_message"],
                          "assertion failed: §(left == right)§\n  left: §1§,\n"
                          " right: §2§: write 1 is lost at core/sim/tests/devices/common.rs:120.".replace("§", chr(96)))
-        self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10]}])
+        self.assertEqual(cases[1]["battery_message"], "a committed case fails.")
+        self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10],
+                                   "cases": [cases[0]["path"], cases[2]["path"]]}])
+
+    def test_a_test_that_saved_nothing_gets_rows_for_its_shards_cases_that_fail_it(self):
+        path = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
+        spec = {"run": "7", "head": "h" * 40, "base": "b" * 40,
+                "cases": [{"case": "a" * 64, "path": path, "binary": "devices", "test": test, "shards": [2],
+                           "shared": shared} for test, shared in (("converge", False), ("lose_no_write", True))],
+                "others": [{"binary": "devices", "test": "lose_no_write", "shards": [2], "cases": [path]}]}
+        def side(result, message):
+            return {"runs": [{"result": result, "message": message}] * 2, "target": "sim --test devices"}
+        for head, kept, listed in ((side("fail", "lost"), ["converge", "lose_no_write"], []),
+                                   (side("pass", None), ["converge"], ["lose_no_write"])):
+            with self.subTest(head=head["runs"][0]["result"]):
+                replays = {"head": {"results": [side("fail", "lost"), head]},
+                           "base": {"results": [side("fail", "lost"), side("fail", "lost")]}}
+                rows = triage.combine(spec, replays)
+                others = triage.caseless(spec, rows)
+                self.assertEqual(sorted(row["test"] for row in rows), kept)
+                self.assertEqual([other["test"] for other in others], listed)
+                text = triage.markdown(spec, rows, others, "https://example.com/runs/7")
+                self.assertEqual("(saved by another test)" in text, bool(listed) is False)
+                self.assertEqual("- devices §lose_no_write§ on shards 2".replace("§", chr(96)) in text, bool(listed))
 
     def test_failure_message_falls_back_to_the_panic(self):
         self.assertEqual(triage.failure_message("thread 'x' panicked at src/lib.rs:3:5:\nboom\nnote: run with"), "boom")
@@ -346,7 +371,7 @@ class Triage(unittest.TestCase):
     def test_report_orders_by_verdict_and_shows_each_run(self):
         spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "others": [],
                 "cases": [{"case": c * 64, "path": f"t.cases/cc-{c * 64}.txt", "binary": "devices", "test": "t",
-                           "shards": [1]} for c in "abc"]}
+                           "shards": [1], "shared": False} for c in "abc"]}
         def side(*runs):
             return {"runs": [{"result": result, "message": message} for result, message in runs],
                     "target": "sim --test devices"}
@@ -359,7 +384,7 @@ class Triage(unittest.TestCase):
         rows = triage.combine(spec, replays)
         self.assertEqual([(row["case"][0], row["verdict"]) for row in rows],
                          [("b", "PR-caused"), ("c", "unstable"), ("a", triage.SAME)])
-        text = triage.markdown(spec, rows, "https://example.com/runs/7")
+        text = triage.markdown(spec, rows, [], "https://example.com/runs/7")
         self.assertIn(f"1 PR-caused, 1 unstable, 0 unknown, 0 {triage.MOVED}, 0 flaky or fixed, 1 {triage.SAME}", text)
         self.assertIn("with nothing normalised", text)
         self.assertIn("| fail / pass | w | run 1: w / run 2: (none) | unstable |", text)
