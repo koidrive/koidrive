@@ -4013,6 +4013,10 @@ mod tests {
     fn a_folder_whose_state_cannot_be_read_is_listed_as_halted() {
         use std::os::unix::fs::PermissionsExt;
 
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let paths = Paths::under(&base.join("profile"));
