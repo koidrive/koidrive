@@ -606,7 +606,18 @@ fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
 fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
     match (remote, local) {
         (Some(remote), Some(local)) => {
-            local.mtime_ns % 10_000_000 == 0 || remote.mtime_ns == local.mtime_ns
+            let unit = [
+                2_000_000_000,
+                1_000_000_000,
+                10_000_000,
+                1_000_000,
+                1_000,
+                1,
+            ]
+            .into_iter()
+            .find(|unit| local.mtime_ns % unit == 0)
+            .expect("every time is a whole nanosecond");
+            remote.mtime_ns - remote.mtime_ns.rem_euclid(unit) == local.mtime_ns
         }
         (remote, local) => remote.is_none() && local.is_none(),
     }

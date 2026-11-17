@@ -115,6 +115,51 @@ fn an_entry_a_store_lost_track_of_is_adopted_by_a_place_the_log_shows_its_node_l
     assert_eq!(trees.synced().live("r-a"), Some(&file(ROOT, "a", 1)));
 }
 
+fn written_at(name: &str, mtime_ns: i64) -> Shape {
+    Shape {
+        content: Some(Content {
+            mtime_ns,
+            ..content(1)
+        }),
+        ..file(ROOT, name, 1)
+    }
+}
+
+#[test]
+fn a_new_file_on_a_coarse_disk_with_a_lost_nodes_bytes_is_not_adopted_by_the_nodes_old_place() {
+    for local_ns in [5_000_000_000, 4_000_000_000, 1_240_000_000] {
+        let mut trees = trees(
+            &[("l-a", written_at("a", local_ns))],
+            &[("r-a", written_at("b", 1_234_567_891))],
+        );
+        let history = History::from([("r-a".into(), vec![written_at("a", 1_234_567_891)])]);
+        assert_eq!(adopt(&mut trees, Some(&history)), ["l-a"], "{local_ns}");
+    }
+}
+
+#[test]
+fn a_download_whose_time_a_coarse_disk_cut_is_adopted_by_its_nodes_old_place() {
+    for local_ns in [
+        1_234_567_891,
+        1_234_567_000,
+        1_230_000_000,
+        1_000_000_000,
+        0,
+    ] {
+        let mut trees = trees(
+            &[("l-a", written_at("a", local_ns))],
+            &[("r-a", written_at("b", 1_234_567_891))],
+        );
+        let history = History::from([("r-a".into(), vec![written_at("a", 1_234_567_891)])]);
+        assert_eq!(
+            adopt(&mut trees, Some(&history)),
+            Vec::<String>::new(),
+            "{local_ns}"
+        );
+        assert_eq!(local(&trees), [("r-a".into(), ROOT.into(), "a".into())]);
+    }
+}
+
 #[test]
 fn a_place_the_log_shows_two_nodes_left_with_the_same_bytes_adopts_neither() {
     for remote in [
