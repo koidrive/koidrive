@@ -2767,12 +2767,25 @@ impl Trees {
     }
 
     fn vanished(&self, id: &str) -> bool {
-        self.l.get(id).is_none() && !self.displaced.contains_key(id)
+        if self.l.get(id).is_some() || self.displaced.contains_key(id) {
+            return false;
+        }
+        let mut folder = self.s.live(id).map(|synced| synced.parent.as_str());
+        for _ in 0..=self.l.len() {
+            let Some(at) = folder.filter(|at| *at != self.l.root) else {
+                return true;
+            };
+            if self.discarded.contains_key(at) || self.asked.contains(at) {
+                return false;
+            }
+            folder = self.l.get(at).map(|node| node.shape.parent.as_str());
+        }
+        true
     }
 
     /// What S may become for an excluded node whose S position neither L nor R holds any more, or
-    /// whose local copy L lost, in order of preference, or `None` when the node is not one. A parked node holds no
-    /// position in L, so one that the rules now leave out gives up its S position too, also
+    /// whose local copy L lost outside a folder a question holds or the person discarded, in
+    /// order of preference, or `None` when the node is not one. A parked node holds no position in L, so one that the rules now leave out gives up its S position too, also
     /// while its old name is taken and it cannot be moved back. Nothing is planned for the node,
     /// so no op would ever move its S entry, and the name it holds in S would keep every other
     /// node from being acknowledged there. With the node in L and live in R, S takes R's
