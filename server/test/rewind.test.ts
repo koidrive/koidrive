@@ -493,7 +493,7 @@ describe("space rewind (RFC 0003)", () => {
         identity: { userId: creds.userId, deviceId: creds.deviceId, deviceName: "Laptop A", expiresAtMs: Date.now() + MINUTE, kind: "device", scope: null },
         origin: BASE,
       };
-      const direct = fromBinary(RpcResponseSchema, await space(spaceId).httpRpc(connect, commit));
+      const direct = fromBinary(RpcResponseSchema, (await space(spaceId).httpRpc(connect, commit)).response);
       expect(direct.result).toMatchObject({ case: "error", value: { code: Error_Code.RETRY_LATER } });
       const upgrade = await space(spaceId).fetch(
         new Request(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Upgrade: "websocket", [CONNECT_HEADER]: JSON.stringify(connect) } }),

@@ -404,7 +404,9 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (Number(request.headers.get("Content-Length") ?? 0) > MAX_CLIENT_FRAME) return tooLarge();
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.length > MAX_CLIENT_FRAME) return tooLarge();
-      return new Response(await stub.httpRpc(connect, body), { headers: { "Content-Type": "application/x-protobuf" } });
+      const { response, counted } = await stub.httpRpc(connect, body);
+      if (counted) traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
+      return new Response(response, { headers: { "Content-Type": "application/x-protobuf" } });
     }
   }
 
@@ -428,9 +430,8 @@ export default {
     const startedMs = Date.now();
     const response = await answer(request, env);
     const nowMs = Date.now();
-    if (traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs)) {
-      ctx.waitUntil(scheduler.wait(UsageTally.windowMs).then(() => traffic.handOver((hours) => account(env).recordUsage(hours))));
-    }
+    traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
+    if (traffic.reporting) ctx.waitUntil(traffic.settle((hours) => account(env).recordUsage(hours), Date.now, (ms) => scheduler.wait(ms)));
     return response;
   },
 } satisfies ExportedHandler<Env>;

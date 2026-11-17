@@ -74,7 +74,7 @@ A completed duration or rate counts in the hour it completes. Spans can cross an
 
 - File and folder names, paths, contents, or hashes of any of them. Koidrive sends sizes only as hourly totals or throughput distributions.
 - Space, device, user and node ids, and the names of spaces, devices and users.
-- Your server's address, Worker and bucket names, and your Cloudflare account id.
+- Worker and bucket names, and your Cloudflare account id.
 - Pairing codes, claim codes, recovery keys, tokens or credentials.
 - Error messages, log lines, `.koiignore` rules and configuration values, and from a stack trace anything other than the names of Koidrive's own functions.
 - Your host name or user name.
@@ -87,7 +87,7 @@ While reports are on, your Koidrive server sends one report an hour to `tel.koid
 - How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
 - The server's version and the protocol versions it speaks.
 
-Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds a few small requests and storage writes a minute while your server is busy, and nothing while it's idle. Your Worker logs stay in your Cloudflare account.
+Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds a few small requests and storage writes an hour while your server is busy, and nothing while it's idle. Your Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 

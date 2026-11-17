@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create, type DescMessage, fromBinary, type MessageInitShape, toBinary } from "@bufbuild/protobuf";
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountDO } from "../src/account-do";
@@ -16,9 +16,11 @@ import {
   TokenRequest_Telemetry,
   TokenRequestSchema,
 } from "../src/gen/koidrive/v1/auth_pb";
-import { RpcRequestSchema } from "../src/gen/koidrive/v1/messages_pb";
+import { ClientMessageSchema, RpcRequestSchema, type ServerMessage, ServerMessageSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { reportBatch } from "../src/report/payload";
-import { emptyUsage, FLUSH_MS, LATENCY_BUCKETS, latencyBucket, mergeUsage, type Usage, type UsageHours, UsageTally } from "../src/report/usage";
+import type { SpaceDO } from "../src/space-do";
+import { client, newSpace } from "./helpers";
+import { emptyUsage, LATENCY_BUCKETS, latencyBucket, mergeUsage, QUIET_MS, type Usage, type UsageHours, UsageTally } from "../src/report/usage";
 
 const BASE = "https://koidrive.test";
 const HOUR_MS = 3_600_000;
@@ -66,7 +68,105 @@ const reporting = () => runInDurableObject(account(), (instance: AccountDO) => i
 const storedHours = () => runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT hour, usage FROM usage_hours").toArray());
 const storedCounts = async () => (await storedHours()).map((row) => JSON.parse(String(row.usage)) as Usage).reduce((sum, usage) => mergeUsage(sum, usage), emptyUsage()).counts;
 
-afterEach(() => {
+const restorers: (() => unknown)[] = [];
+const spaceStub = (spaceId: string) => env.SPACE.get(env.SPACE.idFromName(spaceId));
+type SpaceStub = ReturnType<typeof spaceStub>;
+const nextHour = (ms: number) => (Math.floor(ms / HOUR_MS) + 1) * HOUR_MS;
+const spaceCalls = (calls: UsageHours[]) => calls.filter((hours) => Object.values(hours).some((usage) => Object.keys(usage.counts).some((key) => key.startsWith("rpc_"))));
+const listed = (calls: UsageHours[]) => calls.flatMap((hours) => Object.values(hours)).reduce((sum, usage) => sum + (usage.counts["rpc_list_tree.ok"] ?? 0), 0);
+const usageDueMs = (stub: SpaceStub) =>
+  runInDurableObject(stub, (_instance, state) => {
+    const row = state.storage.sql.exec("SELECT due_ms FROM schedule WHERE task = 'usage'").toArray()[0];
+    return row ? Number(row.due_ms) : undefined;
+  });
+const attachments = (stub: SpaceStub) => runInDurableObject(stub, (_instance, state) => state.getWebSockets().map((ws) => ws.deserializeAttachment() as Record<string, unknown>));
+const parkedCounts = async (stub: SpaceStub) =>
+  (await attachments(stub)).map((attachment) => listed([((attachment.usage as { hours: UsageHours } | undefined) ?? { hours: {} }).hours]));
+
+async function reportingSpace(telemetry = TokenRequest_Telemetry.ON) {
+  const owner = await ownerOnce();
+  await runInDurableObject(account(), (instance: AccountDO, state) => {
+    instance.clock = () => Date.now();
+    state.storage.sql.exec("DELETE FROM usage_hours");
+  });
+  await refresh(owner, telemetry);
+  expect(await reporting()).toBe(telemetry === TokenRequest_Telemetry.ON);
+  const created = await post("/v1/spaces", body(CreateSpaceRequestSchema, { name: "Usage " + crypto.randomUUID() }), owner.access!.token, SpaceInfoSchema);
+  const spaceId = created.message!.spaceId;
+  return { owner, spaceId, stub: spaceStub(spaceId) };
+}
+
+async function watchUsage() {
+  const prototype = await runInDurableObject(account(), (instance: AccountDO) => Object.getPrototypeOf(instance) as AccountDO);
+  const original = prototype.recordUsage;
+  const calls: UsageHours[] = [];
+  const failures = { left: 0 };
+  prototype.recordUsage = async function (this: AccountDO, hours: UsageHours) {
+    calls.push(hours);
+    if (failures.left > 0) {
+      failures.left--;
+      throw new Error("account unreachable");
+    }
+    return original.call(this, hours);
+  };
+  restorers.push(() => {
+    prototype.recordUsage = original;
+  });
+  return { calls, failures };
+}
+
+async function useClock(stub: SpaceStub, now: () => number) {
+  await runInDurableObject(account(), (instance: AccountDO) => {
+    instance.clock = now;
+    instance.sendReport = async () => false;
+  });
+  await runInDurableObject(stub, (instance: SpaceDO) => {
+    instance.clock = now;
+  });
+  restorers.push(() =>
+    runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => Date.now();
+    }),
+  );
+}
+
+async function connect(spaceId: string, device: DeviceCredentials, stub: SpaceStub) {
+  const response = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Upgrade: "websocket", Authorization: "Bearer " + device.access!.token } });
+  const ws = response.webSocket!;
+  ws.binaryType = "arraybuffer";
+  const inbox: ServerMessage["msg"][] = [];
+  const waiting: ((msg: ServerMessage["msg"]) => void)[] = [];
+  ws.addEventListener("message", (event) => {
+    const msg = fromBinary(ServerMessageSchema, new Uint8Array(event.data as ArrayBuffer)).msg;
+    const take = waiting.shift();
+    if (take) take(msg);
+    else inbox.push(msg);
+  });
+  ws.accept();
+  const send = (msg: MessageInitShape<typeof ClientMessageSchema>["msg"]) => ws.send(toBinary(ClientMessageSchema, create(ClientMessageSchema, { msg } as MessageInitShape<typeof ClientMessageSchema>)));
+  const next = () => (inbox.length > 0 ? Promise.resolve(inbox.shift()!) : new Promise<ServerMessage["msg"]>((resolve) => waiting.push(resolve)));
+  send({ case: "hello", value: { clientName: "test", clientVersion: "0", protoMin: 1, protoMax: 1, maxFormat: 1 } });
+  expect((await next()).case).toBe("welcome");
+  await runInDurableObject(stub, (_instance, state) => {
+    for (const socket of state.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as { identity: { expiresAtMs: number } };
+      attachment.identity.expiresAtMs = Date.now() + 365 * 24 * HOUR_MS;
+      socket.serializeAttachment(attachment);
+    }
+  });
+  let reqId = 0n;
+  return {
+    ws,
+    async listTree() {
+      send({ case: "rpc", value: { reqId: ++reqId, call: { case: "listTree", value: {} } } });
+      const msg = await next();
+      expect(msg.case === "rpc" && msg.value.result.case).toBe("tree");
+    },
+  };
+}
+
+afterEach(async () => {
+  for (const restore of restorers.splice(0)) await restore();
   vi.restoreAllMocks();
 });
 
@@ -75,24 +175,91 @@ describe("usage tally", () => {
     expect([0, 0.5, 1, 2, 3, 4, 1000, 16_384, 1e9].map(latencyBucket)).toEqual([0, 0, 1, 2, 2, 3, 10, 15, 15]);
   });
 
-  it("opens a batch with the first count after a hand-over, hands the batch over whole, and counts nothing once the server said it does not report", async () => {
+  it("hands the counts over whole, once, and counts nothing once the server said it does not report", async () => {
     const tally = new UsageTally();
     const handed: UsageHours[] = [];
     const record = async (hours: UsageHours) => {
       handed.push(hours);
       return true;
     };
-    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS)).toBe(true);
-    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS + FLUSH_MS - 1)).toBe(false);
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    tally.count("get_server", "200", 3, 10 * HOUR_MS + 1);
     await tally.handOver(record);
     expect(handed).toEqual([{ 10: { counts: { "get_server.200": 2 }, latency: { get_server: [0, 0, 2, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]);
     await tally.handOver(record);
     expect(handed).toHaveLength(1);
-    expect(tally.count("get_server", "200", 3, 11 * HOUR_MS)).toBe(true);
+    tally.count("get_server", "200", 3, 11 * HOUR_MS);
     await tally.handOver(async () => false);
-    expect(tally.count("get_server", "200", 3, 11 * HOUR_MS)).toBe(false);
+    tally.count("get_server", "200", 3, 11 * HOUR_MS);
     await tally.handOver(record);
     expect(handed).toHaveLength(1);
+  });
+
+  it("hands a busy process's counts over once every 10 minutes and when an hour ends, and an idle one's 20 seconds after its last count", async () => {
+    UsageTally.quietMs = QUIET_MS;
+    let nowMs = 10 * HOUR_MS;
+    const timers: { atMs: number; fire: () => void }[] = [];
+    const wait = (ms: number) => new Promise<void>((fire) => timers.push({ atMs: nowMs + ms, fire }));
+    const flush = async () => {
+      for (let tick = 0; tick < 20; tick++) await Promise.resolve();
+    };
+    const runUntil = async (endMs: number) => {
+      for (;;) {
+        timers.sort((one, two) => one.atMs - two.atMs);
+        const next = timers[0];
+        if (!next || next.atMs > endMs) break;
+        timers.shift();
+        nowMs = next.atMs;
+        next.fire();
+        await flush();
+      }
+      nowMs = endMs;
+    };
+    const tally = new UsageTally();
+    tally.reporting = true;
+    const handed: { atMs: number; counts: number }[] = [];
+    const record = async (hours: UsageHours) => {
+      handed.push({ atMs: nowMs, counts: Object.values(hours).reduce((sum, usage) => sum + (usage.counts["get_server.200"] ?? 0), 0) });
+      return true;
+    };
+    const request = async (atMs: number) => {
+      await runUntil(atMs);
+      tally.count("get_server", "200", 3, nowMs);
+      void tally.settle(record, () => nowMs, wait);
+      await flush();
+    };
+
+    for (let second = 0; second < 2 * 3600; second++) await request(10 * HOUR_MS + second * 1000);
+    await runUntil(13 * HOUR_MS);
+    expect(handed.reduce((sum, one) => sum + one.counts, 0)).toBe(2 * 3600);
+    expect(handed).toHaveLength(12);
+    expect(handed.at(-1)!.atMs).toBeLessThanOrEqual(12 * HOUR_MS - 1000 + QUIET_MS);
+    expect(handed.filter((one) => one.atMs <= 11 * HOUR_MS).reduce((sum, one) => sum + one.counts, 0)).toBe(3600);
+
+    handed.length = 0;
+    for (let burst = 0; burst < 5; burst++) {
+      for (let second = 0; second < 10; second++) await request(13 * HOUR_MS + burst * 5 * 60_000 + second * 1000);
+    }
+    await runUntil(14 * HOUR_MS);
+    expect(handed.map((one) => one.counts)).toEqual([10, 10, 10, 10, 10]);
+  });
+
+  it("keeps its counts without waiting or calling while it doesn't know whether the server reports, and keeps none once it knows it doesn't", async () => {
+    const tally = new UsageTally();
+    const record = vi.fn(async () => true);
+    const wait = vi.fn(async () => {});
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    await tally.settle(record, () => 11 * HOUR_MS, wait);
+    expect(record).not.toHaveBeenCalled();
+    expect(wait).not.toHaveBeenCalled();
+    tally.reporting = true;
+    await tally.settle(record, () => 11 * HOUR_MS, wait);
+    expect(record.mock.calls).toEqual([[{ 10: { counts: { "get_server.200": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]]);
+    tally.reporting = false;
+    tally.count("get_server", "200", 3, 11 * HOUR_MS);
+    tally.reporting = true;
+    await tally.settle(record, () => 13 * HOUR_MS, wait);
+    expect(record).toHaveBeenCalledTimes(1);
   });
 
   it("drops the counts it holds once the server says it stopped reporting", async () => {
@@ -112,9 +279,9 @@ describe("usage tally", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const tally = new UsageTally();
     const handed: UsageHours[] = [];
-    expect(tally.count("get_server", "200", 3, 10 * HOUR_MS)).toBe(true);
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
     await tally.handOver(async () => {
-      expect(tally.count("get_server", "503", 3, 10 * HOUR_MS)).toBe(true);
+      tally.count("get_server", "503", 3, 10 * HOUR_MS);
       throw new Error("account unreachable");
     });
     await tally.handOver(async (hours) => {
@@ -200,21 +367,157 @@ describe("hourly server report", () => {
     expect(await storedHours()).toEqual([]);
   });
 
-  it("hands over what a Space DO counted by its own timer when no request follows", async () => {
-    const owner = await ownerOnce();
-    await runInDurableObject(account(), (instance: AccountDO) => {
-      instance.clock = () => Date.now();
+  it("parks a Space DO's counts on its socket across a lost memory and hands each count over once, when its batch is due and when the hour alarm runs", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    let nowMs = Date.now();
+    await useClock(stub, () => nowMs);
+    const socket = await connect(spaceId, owner, stub);
+    const openedMs = nowMs;
+    for (let n = 0; n < 3; n++, nowMs += 60_000) await socket.listTree();
+    await vi.waitFor(async () => expect(await usageDueMs(stub)).toBe(nextHour(openedMs) + 60_000));
+    expect(spaceCalls(usage.calls)).toEqual([]);
+
+    await evictDurableObject(stub);
+    await useClock(stub, () => nowMs);
+    for (let n = 0; n < 2; n++, nowMs += 60_000) await socket.listTree();
+    nowMs = openedMs + 10 * 60_000;
+    await socket.listTree();
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(6));
+    expect(spaceCalls(usage.calls)).toHaveLength(1);
+
+    for (let n = 0; n < 4; n++, nowMs += 60_000) await socket.listTree();
+    await evictDurableObject(stub);
+    nowMs = (await usageDueMs(stub))!;
+    await useClock(stub, () => nowMs);
+    await runInDurableObject(stub, (instance: SpaceDO) => instance.alarm());
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(10));
+    expect(spaceCalls(usage.calls)).toHaveLength(2);
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBe(10);
+    expect(await usageDueMs(stub)).toBeUndefined();
+  });
+
+  it("hands a busy socket's counts over about six times an hour, and every count arrives", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    let nowMs = Date.now();
+    await useClock(stub, () => nowMs);
+    const socket = await connect(spaceId, owner, stub);
+    for (let minute = 0; minute < 120; minute++, nowMs += 60_000) {
+      const dueMs = await usageDueMs(stub);
+      if (dueMs !== undefined && dueMs <= nowMs) await runInDurableObject(stub, (instance: SpaceDO) => instance.alarm());
+      await socket.listTree();
+    }
+    nowMs = (await usageDueMs(stub))!;
+    await runInDurableObject(stub, (instance: SpaceDO) => instance.alarm());
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(120));
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBe(120);
+    expect(spaceCalls(usage.calls).length).toBeLessThanOrEqual(2 * 7 + 1);
+  });
+
+  it("passes a closing socket's parked counts to another open socket, and hands them over when the last one closes", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const first = await connect(spaceId, owner, stub);
+    const second = await connect(spaceId, owner, stub);
+    await first.listTree();
+    await first.listTree();
+    await second.listTree();
+    first.ws.close(1000, "done");
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([3]));
+    expect(spaceCalls(usage.calls)).toEqual([]);
+    second.ws.close(1000, "done");
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(3));
+    expect(spaceCalls(usage.calls)).toHaveLength(1);
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBe(3);
+  });
+
+  it("parks the counts of a failed hand-over again and hands them over once with the next one", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    let nowMs = Date.now();
+    await useClock(stub, () => nowMs);
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    usage.failures.left = 1;
+    nowMs += 10 * 60_000;
+    await socket.listTree();
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([2]));
+    await socket.listTree();
+    await vi.waitFor(() => expect(spaceCalls(usage.calls)).toHaveLength(2));
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBe(3);
+    expect(await parkedCounts(stub)).toEqual([0]);
+  });
+
+  it("hands everything over instead of parking past 8 KiB on one socket", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    await runInDurableObject(stub, (_instance, state) => {
+      const ws = state.getWebSockets()[0]!;
+      const attachment = ws.deserializeAttachment() as { usage?: { openedMs: number; hours: UsageHours } };
+      const counts: Record<string, number> = {};
+      for (let n = 0; JSON.stringify({ ...attachment, usage: { openedMs: Date.now(), hours: { [Math.floor(Date.now() / HOUR_MS)]: { counts, latency: {} } } } }).length < 8150; n++) counts["rpc_pad_" + n + ".ok"] = 1;
+      ws.serializeAttachment({ ...attachment, usage: { openedMs: Date.now(), hours: { [Math.floor(Date.now() / HOUR_MS)]: { counts, latency: {} } } } });
     });
-    await refresh(owner, TokenRequest_Telemetry.ON);
-    expect(await reporting()).toBe(true);
-    const created = await post("/v1/spaces", body(CreateSpaceRequestSchema, { name: "Quiet" }), owner.access!.token, SpaceInfoSchema);
-    const spaceId = created.message!.spaceId;
-    UsageTally.windowMs = 200;
-    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
-    for (let reqId = 1n; reqId <= 5n; reqId++) {
+    await socket.listTree();
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(1));
+    expect(Object.keys(spaceCalls(usage.calls)[0]![Math.floor(Date.now() / HOUR_MS)]!.counts).length).toBeGreaterThan(100);
+    expect(await parkedCounts(stub)).toEqual([0]);
+    await socket.listTree();
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([1]));
+    expect(spaceCalls(usage.calls)).toHaveLength(1);
+  });
+
+  it("counts an HTTP RPC in the Worker's batch, so a Space DO with no socket open neither calls nor arms anything for it", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    for (let reqId = 1n; reqId <= 3n; reqId++) {
       expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(5), { timeout: 3000 });
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(3));
+    expect(await usageDueMs(stub)).toBeUndefined();
+  });
+
+  it("arms nothing and calls nothing while a Space DO doesn't know whether the server reports", async () => {
+    const usage = await watchUsage();
+    const space = await newSpace();
+    const laptop = await client(space, "Laptop");
+    for (let n = 0; n < 3; n++) expect((await laptop.call({ case: "listTree", value: {} })).case).toBe("tree");
+    expect(await usageDueMs(space.stub)).toBeUndefined();
+    expect(spaceCalls(usage.calls)).toEqual([]);
+  });
+
+  it("drops what a Space DO parked once the Account DO answers that the server stopped reporting, and parks nothing after", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    UsageTally.batchMs = 0;
+    await socket.listTree();
+    await vi.waitFor(() => expect(spaceCalls(usage.calls)).toHaveLength(1));
+    await socket.listTree();
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([0]));
+    expect(spaceCalls(usage.calls)).toHaveLength(1);
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBeUndefined();
+  });
+
+  it("calls nothing, arms nothing and leaves the sockets as they were while reports are off, in the Worker and in a Space DO", async () => {
+    const { owner, spaceId, stub } = await reportingSpace(TokenRequest_Telemetry.OFF);
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    const before = await attachments(stub);
+    await socket.listTree();
+    await evictDurableObject(stub);
+    await socket.listTree();
+    expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId: 9n, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
+    expect(await attachments(stub)).toEqual(before);
+    socket.ws.close(1000, "done");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(usage.calls).toEqual([]);
+    expect(await usageDueMs(stub)).toBeUndefined();
+    expect(before[0]).not.toHaveProperty("usage");
   });
 
   it("drops the stored hours without sending them once a device turns reports off", async () => {
