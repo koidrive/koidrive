@@ -3693,6 +3693,23 @@ fn a_publish_answer_keeps_a_folder_below_a_new_folder_in_a_folder_renamed_after_
 }
 
 #[test]
+fn a_publish_answer_keeps_a_folder_below_a_folder_moved_after_the_answer_and_sent_first() {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(0), In(1)],
+        &[Remote::Kept; 4],
+        &[To(In(3)), To(Root), Kept, Kept],
+        &[],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Move(3, Root));
+    assert!(answers(&world).contains(&story));
+    let report = tell(&world, &server(&world), story).expect("no question holds the moved folder");
+    assert_eq!(report.classes, ["answer: clean"], "{}", report.text);
+    assert!(!report.sent.contains("Delete"), "{}", report.sent);
+}
+
+#[test]
 fn a_folder_create_onto_a_name_its_holder_leaves_waits_for_the_holder_instead_of_a_pending_name() {
     use Local::{Into as To, Kept, Onto};
     use Spot::{In, Root};
