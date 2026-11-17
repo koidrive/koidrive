@@ -300,7 +300,7 @@ struct Device {
     work: VecDeque<Work>,
     /// Every commit handed to `Session::commit`, in order.
     sent: Vec<Commit>,
-    _lock: claim::Flock,
+    _lock: koidrive_state_file::Flock,
 }
 
 impl Device {

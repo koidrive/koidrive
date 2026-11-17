@@ -40,12 +40,13 @@ use koidrive_proto::v1::{
     ChunkRef, Commit, CommitRecord, CommitResult, Error as ProtoError, Resume, TrashPage, TreePage,
     UploadReceipt, Welcome, op, op_result,
 };
+use koidrive_state_file::Flock;
 use koidrive_store::{Cursor, Link, Store, Tx};
 use koidrive_telemetry::RootProof;
 use koidrive_telemetry::schema::magnitude;
 use tokio::sync::{Notify, mpsc, watch};
 
-use crate::claim::{self, Flock, Identity, Owner};
+use crate::claim::{self, Identity, Owner};
 use crate::credential::SET_UP_AGAIN;
 use crate::disk::{
     self, Adopted, Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload,

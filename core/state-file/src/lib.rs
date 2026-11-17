@@ -8,6 +8,9 @@ use std::path::Path;
 
 use rustix::fs::{self, AtFlags, Dir, FileType, FlockOperation, Mode, OFlags, flock};
 
+mod flock;
+pub use flock::Flock;
+
 const PREFIX: &str = ".koi-state-";
 const SUFFIX: &str = ".tmp";
 const RANDOM_BYTES: usize = 16;
@@ -22,7 +25,7 @@ pub enum Publish {
 /// A private, same-directory stage whose inode lock distinguishes live writes from abandoned writes.
 /// Dropping it removes the stage. After a process dies, [`recover`] removes its abandoned stages.
 pub struct AtomicFile {
-    file: File,
+    file: Flock,
     directory: File,
     stage: Option<OsString>,
     destination: OsString,
@@ -68,10 +71,13 @@ impl AtomicFile {
                 Err(rustix::io::Errno::EXIST) => continue,
                 Err(error) => return Err(error.into()),
             };
-            if let Err(error) = flock(&file, FlockOperation::LockExclusive) {
-                let _ = fs::unlinkat(&directory, &stage, AtFlags::empty());
-                return Err(error.into());
-            }
+            let file = match Flock::wait(file) {
+                Ok(file) => file,
+                Err(error) => {
+                    let _ = fs::unlinkat(&directory, &stage, AtFlags::empty());
+                    return Err(error);
+                }
+            };
             drop(lock);
             return Ok(Self {
                 file,
@@ -169,7 +175,6 @@ impl AtomicFile {
             unlink_obsolete(&self.directory, name)?;
         }
         self.directory.sync_all()?;
-        flock(&self.file, FlockOperation::Unlock)?;
         self.file.try_clone()
     }
 }
@@ -436,14 +441,10 @@ fn recover_locked(directory: &File) -> io::Result<usize> {
         {
             continue;
         }
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => {
-                if same_inode(directory, name, &file)? {
-                    recovered += usize::from(unlink_obsolete(directory, name)?);
-                }
-            }
-            Err(rustix::io::Errno::WOULDBLOCK) => {}
-            Err(error) => return Err(error.into()),
+        if let Some(abandoned) = Flock::take(file)?
+            && same_inode(directory, name, &abandoned)?
+        {
+            recovered += usize::from(unlink_obsolete(directory, name)?);
         }
     }
     Ok(recovered)

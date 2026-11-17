@@ -11,5 +11,6 @@ publish.workspace = true
 
 [dependencies]
 proptest = "1.12.0"
+rustix = "1.1.6"
 socket2 = "0.6.5"
 tempfile = "3.27.0"

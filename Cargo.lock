@@ -1558,8 +1558,10 @@ name = "koidrive-state-file"
 version = "0.0.0-dev"
 dependencies = [
  "getrandom 0.4.3",
+ "koidrive-test-support",
  "rustix",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1600,6 +1602,7 @@ name = "koidrive-test-support"
 version = "0.0.0-dev"
 dependencies = [
  "proptest",
+ "rustix",
  "socket2",
  "tempfile",
 ]

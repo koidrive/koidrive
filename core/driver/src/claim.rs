@@ -2,14 +2,14 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::ops::Deref;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use koidrive_fs::PRIVATE_DIR;
-use rustix::fs::{FlockOperation, Mode, OFlags};
+use koidrive_state_file::Flock;
+use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
@@ -31,48 +31,6 @@ fn private_dir(root: &Path) -> io::Result<OwnedFd> {
         flags | OFlags::NOFOLLOW,
         Mode::empty(),
     )?)
-}
-
-/// An exclusive or shared `flock` on an open file or folder, unlocked when it is dropped. Closing the descriptor is not
-/// enough. A close releases the lock only once no copy of the descriptor is left, and a child process holds a copy
-/// of every descriptor of its parent from its fork to its exec, close-on-exec or not.
-#[derive(Debug)]
-pub struct Flock(File);
-
-impl Flock {
-    /// Takes the lock on `file` without waiting. Returns `None` while another open of the file holds it, in this
-    /// process or another.
-    pub fn take(file: File) -> io::Result<Option<Self>> {
-        Self::lock(file, FlockOperation::NonBlockingLockExclusive)
-    }
-
-    pub fn share(file: File) -> io::Result<Option<Self>> {
-        Self::lock(file, FlockOperation::NonBlockingLockShared)
-    }
-
-    fn lock(file: File, operation: FlockOperation) -> io::Result<Option<Self>> {
-        match rustix::fs::flock(&file, operation) {
-            Ok(()) => Ok(Some(Self(file))),
-            Err(Errno::WOULDBLOCK) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
-}
-
-impl Deref for Flock {
-    type Target = File;
-
-    fn deref(&self) -> &File {
-        &self.0
-    }
-}
-
-impl Drop for Flock {
-    fn drop(&mut self) {
-        if let Err(error) = rustix::fs::flock(&self.0, FlockOperation::Unlock) {
-            tracing::warn!(%error, "a lock was not unlocked; it is released when its last descriptor closes");
-        }
-    }
 }
 
 pub(crate) fn lock(root: &Path) -> io::Result<Option<Flock>> {
