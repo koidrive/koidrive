@@ -215,7 +215,7 @@ class HeavyTests(unittest.TestCase):
         budget, execution, repro = heavy_commands(self.workflow)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            probe = '#!/bin/sh\nprintf "ordinary=%s stress=%s seed=%s\\n" "${PROPTEST_CASES-unset}" "${KOIDRIVE_BATTERY_CASES-unset}" "$PROPTEST_RNG_SEED"\nprintf "arg=%s\\n" "$@"\n'
+            probe = '#!/bin/sh\nprintf "ordinary=%s stress=%s seed=%s\\n" "${PROPTEST_CASES-unset}" "${KOIDRIVE_BATTERY_CASES-unset}" "$PROPTEST_RNG_SEED"\nprintf "pair=%s\\n" "${MODEL_PAIR-unset}"\nprintf "arg=%s\\n" "$@"\n'
             for name, content in (("cargo", probe), ("git", "#!/bin/sh\nexit 0\n")):
                 path = root / name
                 path.write_text(content)
@@ -223,12 +223,13 @@ class HeavyTests(unittest.TestCase):
             environment = dict(os.environ, PROPTEST_CASES="8192", KOIDRIVE_BATTERY_CASES="999",
                                PATH=str(root) + os.pathsep + os.environ["PATH"])
             for cases, expected in (("", "unset"), ("2", "2"), ("0", "0")):
-                setup = f'CASES="{cases}"; SHA=abc; seed=17; cargo_args=(--locked -p koidrive-sim); test_args=("a filter"); log="{root}/log"; repro_args=" --locked -p koidrive-sim -- a\\ filter"\n'
-                for command in (budget + "\n" + execution,
-                                repro + '\neval "${repro/<seed>/$seed}"'):
+                setup = f'CASES="{cases}"; SHA=abc; seed=17; cargo_args=(--locked -p koidrive-sim); test_args=("a filter"); log="{root}/log"; repro_args=" --locked -p koidrive-sim -- a\\ filter"; repro_env=" MODEL_PAIR=a\\*b"\n'
+                for command, pair in ((budget + "\n" + execution, "unset"),
+                                      (repro + '\neval "${repro/<seed>/$seed}"', "a*b")):
                     output = subprocess.check_output(["bash", "-euo", "pipefail", "-c", setup + command],
                                                      env=environment, text=True)
                     self.assertIn(f"ordinary=unset stress={expected} seed=17", output)
+                    self.assertIn(f"pair={pair}", output)
                     self.assertIn("arg=a filter", output)
                     self.assertIn("arg=koidrive-sim", output)
 

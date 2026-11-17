@@ -52,6 +52,14 @@ on:
         description: Also run the tests marked #[ignore]
         type: boolean
         default: false
+      release:
+        description: Build the tests with the release profile
+        type: boolean
+        default: false
+      env:
+        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
+        type: string
+        default: ''
       os:
         description: Operating systems to run on
         type: choice
@@ -72,6 +80,8 @@ env:
   IGNORED: ${{ inputs.ignored }}
   PARALLEL: ${{ inputs.parallel || '1' }}
   MODE: ${{ inputs.mode || 'cargo' }}
+  RELEASE: ${{ inputs.release }}
+  EXTRA_ENV: ${{ inputs.env }}
 
 defaults:
   run:
@@ -111,6 +121,18 @@ jobs:
           fi
           [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
           [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
+          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK)$'
+          reserved='^(KOIDRIVE_BATTERY_CASES|KOIDRIVE_PROPTEST_DETERMINISTIC)$'
+          [[ "$EXTRA_ENV" != *$'\n'* ]] || errors+=("env must be one line of NAME=value pairs.")
+          [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1.")
+          read -ra pairs <<< "$EXTRA_ENV"
+          for pair in ${pairs[@]+"${pairs[@]}"}; do
+            if [[ ! "$pair" =~ ^([A-Z_][A-Z0-9_]*)=[^[:space:]]*$ ]]; then
+              errors+=("env takes NAME=value pairs, not '$pair'.")
+            elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
+              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS or RUST_MIN_STACK, and the cases input sets the case budget.")
+            fi
+          done
           for error in "${errors[@]}"; do echo "::error::$error"; done
           [ "${#errors[@]}" -eq 0 ]
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +206,9 @@ jobs:
               koidrive-driver) TEST=sync ;;
             esac
           fi
-          cargo test --locked --no-run -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+          profile=()
+          [ "$RELEASE" != "true" ] || profile=(--release)
+          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
       - name: Run parallel or Worker repetitions
         if: env.MODE == 'worker' || env.PARALLEL != '1'
         run: |
@@ -196,9 +220,14 @@ jobs:
       - name: Run the tests
         if: env.MODE == 'cargo' && env.PARALLEL == '1'
         run: |
+          read -ra pairs <<< "$EXTRA_ENV"
+          for pair in ${pairs[@]+"${pairs[@]}"}; do
+            export "${pair?}"
+          done
           out="$RUNNER_TEMP/heavy-tests"
           mkdir -p "$out/logs" "$out/regressions"
           cargo_args=(--locked --no-fail-fast -p "$CRATE")
+          [ "$RELEASE" != "true" ] || cargo_args+=(--release)
           [ -z "$FEATURES" ] || cargo_args+=(--features "$FEATURES")
           [ -z "$TEST" ] || cargo_args+=(--test "$TEST")
           test_args=()
@@ -207,8 +236,10 @@ jobs:
           unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
           [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
+          repro_env=""
+          [ "${#pairs[@]}" -eq 0 ] || repro_env=$(printf ' %q' "${pairs[@]}")
           [ "${#test_args[@]}" -eq 0 ] || repro_args+=" --$(printf ' %q' "${test_args[@]}")"
-          repro="git checkout $SHA && env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES PROPTEST_RNG_SEED=<seed>${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES} cargo test$repro_args"
+          repro="git checkout $SHA && env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES PROPTEST_RNG_SEED=<seed>${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES}$repro_env cargo test$repro_args"
           {
             echo "### $RUNNER_OS: cargo test$repro_args"
             echo
