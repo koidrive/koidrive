@@ -25,6 +25,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 
 #[path = "devices/reissued_slots.rs"]
 mod reissued_slots;
+#[path = "devices/resends_and_deletes.rs"]
+mod resends_and_deletes;
 #[path = "devices/restore_adopted_writes.rs"]
 mod restore_adopted_writes;
 #[path = "devices/restore_back_to_back.rs"]

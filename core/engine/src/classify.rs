@@ -3228,8 +3228,8 @@ impl Trees {
     }
 
     /// The nodes whose content L and S hold as R holds it, live or in the trash, a folder's as any
-    /// folder's, where no commit of this device that the server lost set R's content and L holds no
-    /// unsent edit ([`Trees::unsent_edits`]), each with the shape R holds when it holds the node
+    /// folder's, where no commit of this device that the server lost set R's edit revision and L
+    /// holds no unsent edit ([`Trees::unsent_edits`]), each with the shape R holds when it holds the node
     /// live at a position no such lost commit set: `lost_here` tells whether a seq is one of those
     /// commits. For [`Trees::forget_lost`] once a bootstrap has replaced R.
     pub fn taken_from_others(
@@ -3245,8 +3245,7 @@ impl Trees {
                         (held, synced) => held.is_none() && synced.is_none(),
                     })
                 };
-                let remote = (self.r.get(id))
-                    .filter(|remote| !lost_here(remote.content_rev.max(remote.edit_rev)));
+                let remote = (self.r.get(id)).filter(|remote| !lost_here(remote.edit_rev));
                 holds(remote.map(|remote| &remote.shape)) && holds(self.l.live(id))
             })
             .map(|(id, _)| {
