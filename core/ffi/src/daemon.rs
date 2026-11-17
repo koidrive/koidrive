@@ -15,17 +15,17 @@ use tokio::sync::{Notify, watch};
 
 use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::helper::{
-    AccountData, DevicesData, Done, FolderData, Helper, InvitationData, Outcome, Refusal,
-    RequestsData, RestoreAskedData, ShareLinkData, ShareLinksData, SharedData, SpaceData,
-    SpacesData, TrashData, UpdateCheckData, UpdatedData, UsagesData, VersionsData,
+    AccountData, DevicesData, Done, FolderData, GitignoreStatusData, Helper, InvitationData,
+    Outcome, Refusal, RequestsData, RestoreAskedData, ShareLinkData, ShareLinksData, SharedData,
+    SpaceData, SpacesData, TrashData, UpdateCheckData, UpdatedData, UsagesData, VersionsData,
 };
 use crate::profile::Profile;
 use crate::state::{self, Seen};
 use crate::types::{
-    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
-    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
-    ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus, TelemetrySetting, Trash, UpdateResult,
-    UpdateStatus,
+    Account, Answer, AppCrashStamp, Device, FileVersions, GitignoreOnly, LinkedFolder,
+    NewShareLink, PairingCode, RestoreAsked, RestoreRequest, ServerInfo, SessionError,
+    SessionEvent, SessionState, ShareExpiry, ShareLink, Space, SpaceUsage, SyncStatus,
+    TelemetrySetting, Trash, UpdateResult, UpdateStatus,
 };
 
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
@@ -818,6 +818,33 @@ impl Core for DaemonCore {
             .map_err(|refusal| SessionError::NotSaved {
                 reason: refusal.message,
             })
+    }
+
+    fn gitignore(&self) -> bool {
+        (driver::Config::load(&self.paths.config_file))
+            .inspect_err(|error| tracing::warn!(%error, "the configuration file cannot be read"))
+            .map_or(true, |config| config.sync.gitignore)
+    }
+
+    fn set_gitignore(&self, follow: bool) -> Result<(), SessionError> {
+        let args: &[&str] = match follow {
+            true => &["gitignore", "on"],
+            false => &["gitignore", "off", "--yes"],
+        };
+        self.change(args).map(drop).map_err(SessionError::from)
+    }
+
+    fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, SessionError> {
+        let path = (self.lock().sent.folders.iter())
+            .find(|folder| folder.space_id == space_id)
+            .map(|folder| folder.path.clone())
+            .ok_or(SessionError::FolderNotLinked)?;
+        let counted_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64);
+        let done = self.helper.run(&["gitignore", "status", "--", &path])?;
+        done.data::<GitignoreStatusData>()?
+            .of(space_id, counted_at_ms)
     }
 
     fn update(&self) -> Result<UpdateResult, SessionError> {

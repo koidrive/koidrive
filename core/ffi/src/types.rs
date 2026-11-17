@@ -769,6 +769,16 @@ pub struct TelemetrySetting {
     pub locked: bool,
 }
 
+/// The regular files of a linked folder that only its `.gitignore` files exclude: what syncs once this device stops
+/// following them. Counted on this device's disk, whatever the setting is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GitignoreOnly {
+    pub files: u64,
+    pub bytes: u64,
+    /// When the folder was counted, in Unix milliseconds.
+    pub counted_at_ms: u64,
+}
+
 /// Whether a newer Koidrive release is out than the one this Mac runs, from the daemon's last check.
 #[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Enum)]
 pub enum UpdateStatus {

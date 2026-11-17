@@ -7,9 +7,10 @@ use crate::daemon::DaemonCore;
 use crate::fake::FakeCore;
 use crate::profile::Profile;
 use crate::types::{
-    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
-    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionState, ShareExpiry, ShareLink,
-    Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
+    Account, Answer, AppCrashStamp, Device, FileVersions, GitignoreOnly, LinkedFolder,
+    NewShareLink, PairingCode, RestoreAsked, RestoreRequest, ServerInfo, SessionError,
+    SessionState, ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult,
+    UpdateStatus,
 };
 
 /// A sync session: the one object the app talks to. Each method forwards to the session's
@@ -203,6 +204,18 @@ impl SyncSession {
 
     pub fn set_telemetry(&self, enabled: bool) -> Result<(), SessionError> {
         self.core.set_telemetry(enabled)
+    }
+
+    pub fn gitignore(&self) -> bool {
+        self.core.gitignore()
+    }
+
+    pub fn set_gitignore(&self, follow: bool) -> Result<(), SessionError> {
+        self.core.set_gitignore(follow)
+    }
+
+    pub fn gitignore_only(&self, space_id: String) -> Result<GitignoreOnly, SessionError> {
+        self.core.gitignore_only(&space_id)
     }
 
     pub fn app_crash_stamp(&self) -> AppCrashStamp {
