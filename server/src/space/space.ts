@@ -818,9 +818,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const stored = this.storedResult(commit.commitId);
       if (stored) {
         if (stored.deviceId !== deviceId) fail(Error_Code.INVALID_ARGUMENT, "commit_id belongs to a commit of another device");
-        if (stored.digestVersion < 4 && commit.ops.some(({ op }) =>
-          (op.case === "updateContent" || op.case === "createFile") && (op.value.madeOver.length > 0 || op.value.sourceVersionId !== ""),
-        )) fail(Error_Code.INVALID_ARGUMENT, "commit_id predates edit ancestry");
         if (stored.digest && !sameBytes(stored.digest, digests[stored.digestVersion])) fail(Error_Code.INVALID_ARGUMENT, "commit_id belongs to a different commit");
         return stored.result;
       }

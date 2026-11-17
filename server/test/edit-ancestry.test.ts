@@ -32,6 +32,16 @@ async function setup() {
   return { ...space, a, b, file, first, values: values.map((value) => value.content) };
 }
 
+async function commitState(a: Awaited<ReturnType<typeof client>>) {
+  return runInDurableObject(a.stub, (_instance, state) => ({
+    head: state.storage.sql.exec("SELECT value FROM meta WHERE key = 'head_seq'").one().value,
+    nodes: state.storage.sql.exec("SELECT * FROM nodes ORDER BY node_id").toArray(),
+    versions: state.storage.sql.exec("SELECT * FROM versions ORDER BY version_id").toArray(),
+    commits: state.storage.sql.exec("SELECT * FROM commits ORDER BY seq").toArray(),
+    deviceCommits: state.storage.sql.exec("SELECT * FROM device_commits ORDER BY device_id").toArray(),
+  }));
+}
+
 describe("RFC 0026 edit ancestry", () => {
   it("creates a user's edit made over a lost W2 and supersedes a later resend of W2", async () => {
     const { a, b, values, spaceId } = await setup();
@@ -405,7 +415,7 @@ describe("RFC 0026 edit ancestry", () => {
   for (const version of [1, 2, 3, 4] satisfies DigestVersion[]) {
     it(`checks ancestry-only commit reuse with stored digest v${version}, including after log compaction`, async () => {
       const { a, file, first, values } = await setup();
-      const original = update(file, values[1]!, version === 4 ? { madeOver: [first.versionId], sourceVersionId: first.versionId } : {});
+      const original = update(file, values[1]!, { madeOver: version >= 3 ? [first.versionId] : [], sourceVersionId: version === 4 ? first.versionId : "" });
       const commitId = uuidv7();
       const result = await a.commit([original], { commitId });
       const digest = await commitDigest(create(CommitSchema, { baseSeq: 1n, deviceSeq: 2n, ops: [original] }), version);
@@ -416,16 +426,23 @@ describe("RFC 0026 edit ancestry", () => {
       });
       for (const compacted of [false, true]) {
         if (compacted) await runInDurableObject(a.stub, (_instance, state) => state.storage.sql.exec("DELETE FROM commits WHERE commit_id = ?", commitId));
-        for (const ancestry of [{ madeOver: [uuidv7()] }, { sourceVersionId: uuidv7() }]) {
+        const before = await commitState(a);
+        for (const ancestry of [{ madeOver: [uuidv7()] }, { sourceVersionId: uuidv7() }, { madeOver: [uuidv7()], sourceVersionId: uuidv7() }]) {
           const retry = await a.commitRaw([update(file, values[1]!, ancestry)], { commitId });
-          expect(retry.case).toBe("error");
-          if (retry.case === "error") expect(retry.value.code).toBe(Error_Code.INVALID_ARGUMENT);
+          if (version === 4) {
+            expect(retry.case).toBe("error");
+            if (retry.case === "error") expect(retry.value).toMatchObject({ code: Error_Code.INVALID_ARGUMENT, message: "commit_id belongs to a different commit" });
+          } else {
+            expect(retry).toEqual({ case: "commit", value: result });
+          }
+          expect(await commitState(a)).toEqual(before);
         }
         expect(await a.commit([original], { commitId })).toEqual(result);
+        expect(await commitState(a)).toEqual(before);
       }
     });
 
-    it(`rejects new CreateFile ancestry on a reused commit with stored digest v${version}`, async () => {
+    it(`checks ancestry-only CreateFile commit reuse with stored digest v${version}, including after log compaction`, async () => {
       const { a, values, spaceId } = await setup();
       const file = uuidv7();
       const original = createFile(file, spaceId, "created.txt", values[1]!);
@@ -439,12 +456,19 @@ describe("RFC 0026 edit ancestry", () => {
       });
       for (const compacted of [false, true]) {
         if (compacted) await runInDurableObject(a.stub, (_instance, state) => state.storage.sql.exec("DELETE FROM commits WHERE commit_id = ?", commitId));
-        for (const ancestry of [{ madeOver: [uuidv7()] }, { sourceVersionId: uuidv7() }]) {
+        const before = await commitState(a);
+        for (const ancestry of [{ madeOver: [uuidv7()] }, { sourceVersionId: uuidv7() }, { madeOver: [uuidv7()], sourceVersionId: uuidv7() }]) {
           const retry = await a.commitRaw([createFile(file, spaceId, "created.txt", values[1]!, ancestry)], { commitId });
-          expect(retry.case).toBe("error");
-          if (retry.case === "error") expect(retry.value.code).toBe(Error_Code.INVALID_ARGUMENT);
+          if (version === 4) {
+            expect(retry.case).toBe("error");
+            if (retry.case === "error") expect(retry.value).toMatchObject({ code: Error_Code.INVALID_ARGUMENT, message: "commit_id belongs to a different commit" });
+          } else {
+            expect(retry).toEqual({ case: "commit", value: result });
+          }
+          expect(await commitState(a)).toEqual(before);
         }
         expect(await a.commit([original], { commitId })).toEqual(result);
+        expect(await commitState(a)).toEqual(before);
       }
     });
   }

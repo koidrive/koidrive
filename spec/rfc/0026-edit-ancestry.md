@@ -36,7 +36,7 @@ An alias-only record can update a version's chain without advancing the node's c
 
 ## 5. Digest compatibility
 
-Commit request digest v4 is v3's projection plus both new fields on `UpdateContent` and `CreateFile`, preserving the request's order and duplicates before expansion. The server MUST store v4 with new commit results. A reused `commit_id` with different ancestry fields MUST be `INVALID_ARGUMENT` when its stored digest is v4. For a stored v1, v2, or v3 result, the server MUST reject a retry with any nonempty ancestry or source field rather than hash those fields away. Retries with empty new fields MUST continue to use their original digest projections. This applies to both the commit log and the device's retained result after log compaction. Empty ancestry fields do not change the original projections' encoded bytes.
+Commit request digest v4 is v3's projection plus both new fields on `UpdateContent` and `CreateFile`, preserving the request's order and duplicates before expansion. The server MUST store v4 with new commit results. A reused `commit_id` with different ancestry fields MUST be `INVALID_ARGUMENT` when its stored digest is v4. For a stored v1, v2, or v3 result, the server MUST compare the retry using the stored digest version's projection, which omits the new fields. If the device and digest match, it MUST return the stored result without applying any operation, including when the retry carries nonempty ancestry or source fields. These fields cannot authorize an overwrite on this path. This applies to both the commit log and the device's retained result after log compaction. Empty ancestry fields do not change the original projections' encoded bytes.
 
 ## 6. Mixed versions
 
