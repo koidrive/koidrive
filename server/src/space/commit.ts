@@ -19,6 +19,19 @@ import { Error_Code } from "../gen/koidrive/v1/rpc_pb";
 import type { Sql } from "../host";
 import { toHex, uuidv7 } from "../ids";
 import type { OpEffect } from "../policy";
+import {
+  FIELDS,
+  type FieldIntent,
+  holdersOf,
+  type Incoming,
+  type LostChangeRule,
+  mintIntentId,
+  type OpIntents,
+  readIntents,
+  resolveIntents,
+  type Field,
+  writeIntent,
+} from "./intents";
 import { conflictName, isReservedAtRoot, nameKey, normalizeName } from "./names";
 import { NodeKindValue, NodeStatusValue } from "./schema";
 import {
@@ -33,6 +46,7 @@ import {
   nodeState,
   PAGE_CHUNKS,
   rows,
+  tombstoneOf,
   versionChunks,
   versionContent,
   versionMadeOver,
@@ -63,10 +77,24 @@ export interface ApplyContext {
   baseSeq: number;
   nowMs: number;
   committer: Committer;
+  rule: LostChangeRule;
   authorize(op: Op, effect: OpEffect): boolean;
 }
 
 type Reject = "CYCLE" | "NOT_FOUND" | "INVALID_NAME" | "PARENT_NOT_DIR" | "ID_EXISTS" | "ROOT" | "NOT_FILE";
+
+interface DeleteView {
+  baseSeq: number;
+  unseen: Set<string>;
+  held: Set<string>;
+  seenContent: Set<string>;
+}
+
+interface LostContent {
+  node: NodeRow;
+  content: FieldIntent;
+  placeAuthor: string | undefined;
+}
 
 function result(code: OpResult_Code, nodeId = "", name = ""): OpResult {
   return create(OpResultSchema, { code, nodeId, name });
@@ -76,6 +104,10 @@ function rejected(reason: Reject): OpResult {
   return create(OpResultSchema, { code: OpResult_Code.REJECTED, rejectReason: reason });
 }
 
+function superseded(): OpResult {
+  return result(OpResult_Code.SUPERSEDED);
+}
+
 export class CommitApplier {
   private readonly remap = new Map<string, string>();
   private readonly touched = new Set<string>();
@@ -83,6 +115,7 @@ export class CommitApplier {
   private created = new Set<string>();
   private parentBefore = new Map<string, string | null>();
   private readonly trashed = new Set<string>();
+  private intents!: OpIntents;
 
   constructor(
     private readonly sql: Sql,
@@ -94,6 +127,7 @@ export class CommitApplier {
       this.changed = new Set();
       this.created = new Set();
       this.parentBefore = new Map();
+      this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs, rule: this.ctx.rule });
       const outcome = this.applyOp(op, index);
       if (!this.ctx.authorize(op, this.effect(op))) throw new CallFailure(Error_Code.FORBIDDEN, `op ${index} is not allowed for this device`);
       return outcome;
@@ -187,6 +221,87 @@ export class CommitApplier {
     return this.ctx.committer.deviceId;
   }
 
+  private get client(): boolean {
+    return this.intents.client;
+  }
+
+  private incoming(field: Field): Incoming {
+    return this.intents.fields[field];
+  }
+
+  private setIntent(nodeId: string, field: Field, intent: FieldIntent = this.incoming(field)): void {
+    writeIntent(this.sql, nodeId, field, { id: intent.id, author: intent.author, carried: intent.carried, appliedAtMs: intent.appliedAtMs, seq: this.ctx.seq });
+  }
+
+  private minted(author: string, carried: boolean): FieldIntent {
+    return { id: mintIntentId(this.ctx.nowMs), author, carried, appliedAtMs: this.ctx.nowMs, seq: this.ctx.seq };
+  }
+
+  private authorsReplayUnderB(intent: Incoming): boolean {
+    return this.client && this.ctx.rule === "B" && intent.replay && !intent.carried;
+  }
+
+  private holdsIntents(node: NodeRow, fields: readonly Field[]): boolean {
+    const held = readIntents(this.sql, node.node_id);
+    return fields.every((field) => held[field]?.id === this.incoming(field).id);
+  }
+
+  private same(node: NodeRow, fields: readonly Field[]): OpResult {
+    if (this.ctx.rule === "B") this.claim(node, fields);
+    return result(OpResult_Code.APPLIED, "", node.name);
+  }
+
+  private claim(node: NodeRow, fields: readonly Field[]): void {
+    const held = readIntents(this.sql, node.node_id);
+    const claimed = fields.filter((field) => held[field]?.carried && this.incoming(field).author === this.dev);
+    if (claimed.length === 0) return;
+    for (const field of claimed) writeIntent(this.sql, node.node_id, field, { ...held[field]!, carried: false });
+    if (claimed.includes("content")) this.sql.exec("UPDATE nodes SET edit_rev = ?, edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
+    if (claimed.some((field) => field !== "content")) {
+      this.sql.exec("UPDATE nodes SET meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
+    }
+    this.touch(node.node_id);
+  }
+
+  private heldElsewhere(nodeId: string, fields: readonly Field[]): boolean {
+    if (!this.client) return false;
+    return fields.some((field) => {
+      const intent = this.incoming(field);
+      return intent.replay && holdersOf(this.sql, intent.id).some((holder) => holder.node_id !== nodeId);
+    });
+  }
+
+  private overHeld(node: NodeRow): boolean {
+    const over = this.intents.over;
+    if (over === undefined) return true;
+    const held = readIntents(this.sql, node.node_id);
+    return held.place?.id === over || held.status?.id === over;
+  }
+
+  private trashKnows(node: NodeRow, intentId: string): boolean {
+    const held = readIntents(this.sql, node.node_id);
+    if (FIELDS.some((field) => held[field]?.id === intentId) || node.status_before === intentId) return true;
+    return this.sql.exec("SELECT 1 FROM trash_held WHERE trash_group = ? AND intent_id = ?", node.trash_group, intentId).toArray().length > 0;
+  }
+
+  private purgedReplay(nodeId: string): ReturnType<typeof tombstoneOf> {
+    if (!this.client || !FIELDS.some((field) => this.incoming(field).replay)) return undefined;
+    return tombstoneOf(this.sql, nodeId);
+  }
+
+  private root(): NodeRow {
+    return rows<NodeRow>(this.sql.exec("SELECT * FROM nodes WHERE parent_id IS NULL LIMIT 1"))[0]!;
+  }
+
+  private nearestLive(nodeId: string | null): NodeRow {
+    for (let cur = nodeId, steps = 0; cur && steps <= MAX_DEPTH; steps++) {
+      const node = getNode(this.sql, cur);
+      if (node?.status === NodeStatusValue.LIVE) return node;
+      cur = node ? node.parent_id : (tombstoneOf(this.sql, cur)?.parent_id ?? null);
+    }
+    return this.root();
+  }
+
   private holds(node: NodeRow, content: Content): boolean {
     const current = node.cur_version_id ? getVersion(this.sql, node.cur_version_id) : undefined;
     return (
@@ -275,7 +390,7 @@ export class CommitApplier {
     const picked = this.pickName(parentId, desiredName, node.node_id);
     this.sql.exec(
       `UPDATE nodes SET status = 1, parent_id = ?, parent_rev = ?, parent_dev = ?, name = ?, name_key = ?, trash_group = NULL,
-         trashed_at_ms = NULL, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?`,
+         trashed_at_ms = NULL, status_before = NULL, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?`,
       parentId,
       this.ctx.seq,
       parentDev,
@@ -287,6 +402,8 @@ export class CommitApplier {
       this.dev,
       node.node_id,
     );
+    this.setIntent(node.node_id, "status");
+    if (parentId !== node.parent_id || picked.name !== node.name) this.setIntent(node.node_id, "place");
     this.touch(node.node_id, node.parent_id);
     return picked;
   }
@@ -318,12 +435,17 @@ export class CommitApplier {
     return { node: getNode(this.sql, node.node_id)!, renamed };
   }
 
-  private parentFor(parentId: string): NodeRow | Reject {
+  private parentRow(parentId: string): NodeRow | Reject {
     const parent = this.node(parentId);
     if (!parent) return "NOT_FOUND";
     if (parent.kind !== NodeKindValue.DIR) return "PARENT_NOT_DIR";
     this.checkDepth(parent);
-    if (parent.status === NodeStatusValue.TRASHED) this.reviveChain(parent.node_id);
+    return parent;
+  }
+
+  private parentFor(parentId: string): NodeRow | Reject {
+    const parent = this.parentRow(parentId);
+    if (typeof parent !== "string" && parent.status === NodeStatusValue.TRASHED) this.reviveChain(parent.node_id);
     return parent;
   }
 
@@ -388,6 +510,24 @@ export class CommitApplier {
     return versionId;
   }
 
+  private conflictCopy(parent: NodeRow, original: string, content: Content, chunks: readonly ChunkRef[], madeOver: readonly string[], intent: FieldIntent): OpResult {
+    const copyId = uuidv7(this.ctx.nowMs);
+    const name = this.pickConflictCopyName(parent.node_id, original);
+    const versionId = this.insertVersion(copyId, content, chunks, madeOver);
+    this.insertNode(copyId, parent.node_id, name, NodeKindValue.FILE, versionId, "");
+    const [place, status] = intent.carried ? [this.minted(intent.author, true), this.minted(intent.author, true)] : [this.minted(this.dev, false), this.minted(this.dev, false)];
+    this.setIntent(copyId, "content", intent);
+    this.setIntent(copyId, "place", place);
+    this.setIntent(copyId, "status", status);
+    if (intent.carried) this.sql.exec("UPDATE nodes SET copy_mark = ? WHERE node_id = ?", place.id + status.id, copyId);
+    return result(OpResult_Code.CONFLICT_COPY, copyId, name);
+  }
+
+  private copyOf(node: NodeRow, parent: NodeRow, intent: FieldIntent): void {
+    const version = getVersion(this.sql, node.cur_version_id!)!;
+    this.conflictCopy(parent, node.name, versionContent(this.sql, version, false), versionChunks(this.sql, version), versionMadeOver(version), intent);
+  }
+
   private mark(nodeId: string, pendingFor: string | null): void {
     const key = pendingFor === null ? null : nameKey(pendingFor);
     this.sql.exec(
@@ -400,22 +540,53 @@ export class CommitApplier {
     );
   }
 
+  private sameCreate(existing: NodeRow, parentId: string, name: string, content: Content | undefined): boolean {
+    const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
+    return (
+      this.client &&
+      existing.status === NodeStatusValue.LIVE &&
+      existing.parent_id === this.id(parentId) &&
+      existing.name === name &&
+      (content === undefined || this.holds(existing, content)) &&
+      this.holdsIntents(existing, fields)
+    );
+  }
+
+  private createIntoTrash(parent: NodeRow, name: string, content: { value: Content; madeOver: string[] } | undefined): OpResult | undefined {
+    if (!this.client || parent.status !== NodeStatusValue.TRASHED) return undefined;
+    const place = this.incoming("place");
+    const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
+    if (this.authorsReplayUnderB(place) && fields.some((field) => this.trashKnows(parent, this.incoming(field).id))) return superseded();
+    if (!place.carried) return undefined;
+    const intent = this.incoming("content");
+    if (!content || this.trashKnows(parent, intent.id)) return superseded();
+    return this.conflictCopy(this.nearestLive(parent.node_id), name, content.value, content.value.chunks, content.madeOver, intent);
+  }
+
   private createDir(op: CreateDir): OpResult {
     const name = normalizeName(op.name);
     if (!name) return rejected("INVALID_NAME");
     const pendingFor = pendingName(op.pendingFor);
     if (pendingFor === undefined) return rejected("INVALID_NAME");
-    if (getNode(this.sql, op.nodeId)) return rejected("ID_EXISTS");
-    const parent = this.parentFor(op.parentId);
-    if (typeof parent === "string") return rejected(parent);
-    if (!parent.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
-    const existing = this.liveWithName(parent.node_id, nameKey(name), "");
-    if (existing?.kind === NodeKindValue.DIR) {
-      this.remap.set(op.nodeId, existing.node_id);
-      return result(OpResult_Code.MERGED_INTO, existing.node_id, existing.name);
+    const existing = getNode(this.sql, op.nodeId);
+    if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? this.same(existing, ["place", "status"]) : rejected("ID_EXISTS");
+    if (this.purgedReplay(op.nodeId)) return superseded();
+    if (this.heldElsewhere(op.nodeId, ["place", "status"])) return superseded();
+    const found = this.parentRow(op.parentId);
+    if (typeof found === "string") return rejected(found);
+    if (!found.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
+    const trashed = this.createIntoTrash(found, name, undefined);
+    if (trashed) return trashed;
+    const parent = this.parentFor(op.parentId) as NodeRow;
+    const existingDir = this.liveWithName(parent.node_id, nameKey(name), "");
+    if (existingDir?.kind === NodeKindValue.DIR) {
+      this.remap.set(op.nodeId, existingDir.node_id);
+      return result(OpResult_Code.MERGED_INTO, existingDir.node_id, existingDir.name);
     }
     const picked = this.pickName(parent.node_id, name, "");
     this.insertNode(op.nodeId, parent.node_id, picked.name, NodeKindValue.DIR, null, this.dev);
+    this.setIntent(op.nodeId, "place");
+    this.setIntent(op.nodeId, "status");
     this.mark(op.nodeId, pendingFor);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
@@ -423,54 +594,83 @@ export class CommitApplier {
   private createFile(op: CreateFile): OpResult {
     const name = normalizeName(op.name);
     if (!name) return rejected("INVALID_NAME");
-    if (getNode(this.sql, op.nodeId)) return rejected("ID_EXISTS");
-    const parent = this.parentFor(op.parentId);
-    if (typeof parent === "string") return rejected(parent);
-    if (!parent.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
-    const picked = this.pickName(parent.node_id, name, "");
+    const existing = getNode(this.sql, op.nodeId);
+    if (existing) return this.sameCreate(existing, op.parentId, name, op.content!) ? this.same(existing, ["place", "content", "status"]) : rejected("ID_EXISTS");
     const bases = expandMadeOver(this.sql, op.nodeId, op.madeOver);
     const madeOver = boundMadeOver(op.sourceVersionId ? [op.sourceVersionId, ...bases] : bases);
+    const tombstone = this.purgedReplay(op.nodeId);
+    if (tombstone) {
+      const intent = this.incoming("content");
+      if (tombstone.knows.has(intent.id)) return superseded();
+      return this.conflictCopy(this.nearestLive(tombstone.parent_id), name, op.content!, op.content!.chunks, madeOver, intent);
+    }
+    if (this.heldElsewhere(op.nodeId, ["place", "content", "status"])) return superseded();
+    const found = this.parentRow(op.parentId);
+    if (typeof found === "string") return rejected(found);
+    if (!found.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
+    const trashed = this.createIntoTrash(found, name, { value: op.content!, madeOver });
+    if (trashed) return trashed;
+    const parent = this.parentFor(op.parentId) as NodeRow;
+    const picked = this.pickName(parent.node_id, name, "");
     const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks, madeOver);
     this.insertNode(op.nodeId, parent.node_id, picked.name, NodeKindValue.FILE, versionId, this.dev);
+    for (const field of FIELDS) this.setIntent(op.nodeId, field);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
   }
 
   private updateContent(nodeId: string, content: Content, chunks: readonly ChunkRef[], ancestry?: UpdateContent): OpResult {
     const found = this.node(nodeId);
-    if (!found) return rejected("NOT_FOUND");
+    const intent = this.incoming("content");
+    const sourceVersionId = ancestry?.sourceVersionId ?? "";
+    if (!found) {
+      const tombstone = this.purgedReplay(this.id(nodeId));
+      if (!tombstone) return rejected("NOT_FOUND");
+      if (tombstone.knows.has(intent.id)) return superseded();
+      const parent = this.nearestLive(tombstone.parent_id);
+      return this.conflictCopy(parent, tombstone.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+    }
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
+    if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return this.same(found, ["content"]);
+    if (this.heldElsewhere(found.node_id, ["content"])) return superseded();
     const resend = ancestry?.resend ?? false;
-    if (resend && found.status === NodeStatusValue.TRASHED) return result(OpResult_Code.SUPERSEDED);
+    const replay = resend || (this.client && intent.replay);
+    const yields = resend || (this.client && intent.carried);
+    if (found.status === NodeStatusValue.TRASHED) {
+      if (this.client && (intent.carried || this.authorsReplayUnderB(intent))) {
+        if (this.trashKnows(found, intent.id) || !intent.carried) return superseded();
+        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+      }
+      if (resend) return superseded();
+    }
     const current = found.cur_version_id ? getVersion(this.sql, found.cur_version_id) : undefined;
-    if (resend && ancestry?.sourceVersionId && current && versionMadeOver(current).includes(ancestry.sourceVersionId)) {
-      return result(OpResult_Code.SUPERSEDED);
+    if (replay && sourceVersionId && current && versionMadeOver(current).includes(sourceVersionId)) {
+      return superseded();
     }
     const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
     const overCurrent = current !== undefined && bases.includes(current.version_id);
-    if (this.unseenContent(found) && this.holds(found, content)) {
-      if (resend && ancestry?.sourceVersionId && current) {
-        const madeOver = boundMadeOver([ancestry.sourceVersionId, ...versionMadeOver(current)]);
+    const byAncestry = this.client && bases.length > 0;
+    const stale = (node: NodeRow) => (byAncestry ? !overCurrent : this.unseenContent(node) && !overCurrent);
+    if ((byAncestry ? !overCurrent : this.unseenContent(found)) && this.holds(found, content)) {
+      if (replay && sourceVersionId && current) {
+        const madeOver = boundMadeOver([sourceVersionId, ...versionMadeOver(current)]);
         this.sql.exec("UPDATE versions SET made_over = ? WHERE version_id = ?", madeOver.join(","), current.version_id);
         this.touch(found.node_id);
       }
-      if (resend || found.edit_rev >= found.content_rev) return result(OpResult_Code.APPLIED, "", found.name);
+      if (yields || found.edit_rev >= found.content_rev) {
+        if (this.client) this.touch(found.node_id);
+        return result(OpResult_Code.APPLIED, "", found.name);
+      }
       const { node, renamed } = this.reviveTarget(found);
       this.sql.exec("UPDATE nodes SET edit_rev = ?, edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
       this.touch(node.node_id);
       return result(renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", node.name);
     }
-    const madeOver = boundMadeOver(resend && ancestry?.sourceVersionId ? [ancestry.sourceVersionId, ...bases] : bases);
+    const madeOver = boundMadeOver(replay && sourceVersionId ? [sourceVersionId, ...bases] : bases);
     const { node, renamed } = this.reviveTarget(found);
-    if (this.unseenContent(node) && !overCurrent) {
-      const copyId = uuidv7(this.ctx.nowMs);
-      const name = this.pickConflictCopyName(node.parent_id!, node.name);
-      const versionId = this.insertVersion(copyId, content, chunks, madeOver);
-      this.insertNode(copyId, node.parent_id!, name, NodeKindValue.FILE, versionId, "");
-      return result(OpResult_Code.CONFLICT_COPY, copyId, name);
-    }
+    if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, madeOver, intent);
     this.sql.exec("UPDATE versions SET superseded_at_ms = ? WHERE version_id = ?", this.ctx.nowMs, node.cur_version_id);
     const versionId = this.insertVersion(node.node_id, content, chunks, madeOver);
-    const [editRev, editDev] = resend ? [node.edit_rev, node.edit_dev] : [this.ctx.seq, this.dev];
+    const [editRev, editDev] = yields ? [node.edit_rev, node.edit_dev] : [this.ctx.seq, this.dev];
     this.sql.exec(
       "UPDATE nodes SET cur_version_id = ?, content_rev = ?, content_dev = ?, edit_rev = ?, edit_dev = ? WHERE node_id = ?",
       versionId,
@@ -480,6 +680,7 @@ export class CommitApplier {
       editDev,
       node.node_id,
     );
+    this.setIntent(node.node_id, "content");
     this.touch(node.node_id);
     return result(renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", node.name);
   }
@@ -493,7 +694,7 @@ export class CommitApplier {
 
   private move(op: Move): OpResult {
     const found = this.node(op.nodeId);
-    if (!found) return rejected("NOT_FOUND");
+    if (!found) return this.purgedReplay(this.id(op.nodeId)) ? superseded() : rejected("NOT_FOUND");
     if (!found.parent_id) return rejected("ROOT");
     const name = normalizeName(op.newName);
     if (!name) return rejected("INVALID_NAME");
@@ -504,9 +705,19 @@ export class CommitApplier {
     if (target.kind !== NodeKindValue.DIR) return rejected("PARENT_NOT_DIR");
     if (this.isSelfOrDescendant(target, found.node_id)) return rejected("CYCLE");
     if (!target.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
-    if (op.from && !this.isAt(found, op.from, target)) return result(OpResult_Code.SUPERSEDED);
-    if (found.status === NodeStatusValue.LIVE && found.parent_id === target.node_id && found.name === name) {
-      if (op.from) return result(OpResult_Code.APPLIED, "", name);
+    const place = this.incoming("place");
+    const live = found.status === NodeStatusValue.LIVE;
+    if (this.client) {
+      if (live && found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return this.same(found, ["place"]);
+      if (this.heldElsewhere(found.node_id, ["place"])) return superseded();
+      if (!this.overHeld(found)) return superseded();
+      const trash = !live ? found : target.status === NodeStatusValue.TRASHED ? target : undefined;
+      if (trash && (place.carried || (this.authorsReplayUnderB(place) && this.trashKnows(trash, place.id)))) return superseded();
+    }
+    if (op.from && !this.isAt(found, op.from, target)) return superseded();
+    const yields = op.from !== undefined || (this.client && place.carried);
+    if (live && found.parent_id === target.node_id && found.name === name) {
+      if (yields) return result(OpResult_Code.APPLIED, "", name);
       if (metaEditRev(found) < found.meta_rev) {
         this.sql.exec(
           "UPDATE nodes SET parent_rev = ?, parent_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?",
@@ -516,6 +727,7 @@ export class CommitApplier {
           this.dev,
           found.node_id,
         );
+        this.setIntent(found.node_id, "place");
         this.touch(found.node_id);
       } else if (this.unseenParent(found)) {
         this.sql.exec("UPDATE nodes SET parent_rev = ?, parent_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, found.node_id);
@@ -524,15 +736,16 @@ export class CommitApplier {
     }
     const parent = this.parentFor(target.node_id) as NodeRow;
     this.checkSubtreeDepth(found, parent);
-    if (found.status === NodeStatusValue.TRASHED) {
+    if (!live) {
       const group = found.trash_group!;
       const picked = this.reviveOne(found, parent.node_id, name, this.dev);
+      this.setIntent(found.node_id, "place");
       this.reviveGroup(found.node_id, group);
       this.mark(found.node_id, pendingFor);
       return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
     }
     const picked = this.pickName(parent.node_id, name, found.node_id);
-    const placed = found.parent_id !== parent.node_id || (!op.from && this.unseenParent(found));
+    const placed = found.parent_id !== parent.node_id || (!yields && this.unseenParent(found));
     this.sql.exec(
       `UPDATE nodes SET parent_id = ?, parent_rev = ?, parent_dev = ?, name = ?, name_key = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?,
          meta_edit_dev = ? WHERE node_id = ?`,
@@ -543,10 +756,11 @@ export class CommitApplier {
       nameKey(picked.name),
       this.ctx.seq,
       this.dev,
-      op.from ? metaEditRev(found) : this.ctx.seq,
-      op.from ? metaEditDev(found) : this.dev,
+      yields ? metaEditRev(found) : this.ctx.seq,
+      yields ? metaEditDev(found) : this.dev,
       found.node_id,
     );
+    this.setIntent(found.node_id, "place");
     this.mark(found.node_id, pendingFor);
     this.touch(found.node_id, found.parent_id);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
@@ -561,32 +775,137 @@ export class CommitApplier {
     );
   }
 
-  private trashSubtree(node: NodeRow, group: string): boolean {
-    if (this.unseenParent(node)) return true;
-    let keep = this.unseenEdit(node) || this.unseenMeta(node);
-    const children = rows<NodeRow>(this.sql.exec("SELECT * FROM nodes WHERE parent_id = ? AND status = 1", node.node_id));
-    for (const child of children) keep = this.trashSubtree(child, group) || keep;
-    if (keep) return true;
+  private liveChildren(node: NodeRow): NodeRow[] {
+    return rows<NodeRow>(this.sql.exec("SELECT * FROM nodes WHERE parent_id = ? AND status = 1", node.node_id));
+  }
+
+  private trashNode(node: NodeRow, group: string): void {
     this.sql.exec(
-      "UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?",
+      `UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ?,
+         status_before = ? WHERE node_id = ?`,
       group,
       this.ctx.nowMs,
       this.ctx.seq,
       this.dev,
       this.ctx.seq,
       this.dev,
+      readIntents(this.sql, node.node_id).status?.id ?? null,
       node.node_id,
     );
+    this.setIntent(node.node_id, "status");
     this.touch(node.node_id);
     if (node.kind === NodeKindValue.FILE) this.trashed.add(node.node_id);
+  }
+
+  private trashSubtree(node: NodeRow, group: string): boolean {
+    if (this.unseenParent(node)) return true;
+    let keep = this.unseenEdit(node) || this.unseenMeta(node);
+    for (const child of this.liveChildren(node)) keep = this.trashSubtree(child, group) || keep;
+    if (keep) return true;
+    this.trashNode(node, group);
     return false;
+  }
+
+  private inView(view: DeleteView, intent: FieldIntent): boolean {
+    return view.held.has(intent.id) || (intent.seq <= view.baseSeq && !view.unseen.has(intent.id));
+  }
+
+  private unseenBy(view: DeleteView, intent: FieldIntent | undefined): boolean {
+    return (
+      intent !== undefined &&
+      !intent.carried &&
+      !this.inView(view, intent) &&
+      (view.unseen.has(intent.id) || (intent.author !== this.dev && intent.seq > view.baseSeq))
+    );
+  }
+
+  private trashByView(target: NodeRow, group: string, view: DeleteView): boolean {
+    const lost: LostContent[] = [];
+    const walk = (node: NodeRow): boolean => {
+      const held = readIntents(this.sql, node.node_id);
+      if (this.unseenBy(view, held.place) && node.parent_rev >= held.place!.seq) return true;
+      let keep = FIELDS.some((field) => this.unseenBy(view, held[field]));
+      for (const child of this.liveChildren(node)) keep = walk(child) || keep;
+      if (keep) return true;
+      const content = held.content;
+      if (content && this.inView(view, content)) view.seenContent.add(content.id);
+      if (node.kind === NodeKindValue.FILE && content && !this.inView(view, content) && (held.place?.carried || content.carried)) {
+        lost.push({ node, content, placeAuthor: held.place?.carried ? held.place.author : undefined });
+        if (held.place?.carried) return node.node_id === target.node_id;
+      }
+      this.trashNode(node, group);
+      return false;
+    };
+    const kept = walk(target);
+    for (const { node, content, placeAuthor } of lost) {
+      if (placeAuthor === undefined) {
+        this.copyOf(node, this.nearestLive(node.parent_id), content);
+        continue;
+      }
+      if (node.node_id === target.node_id) continue;
+      const parent = this.nearestLive(target.parent_id);
+      const picked = this.pickName(parent.node_id, node.name, node.node_id);
+      this.sql.exec(
+        "UPDATE nodes SET parent_id = ?, parent_rev = ?, parent_dev = '', name = ?, name_key = ?, meta_rev = ?, meta_dev = ? WHERE node_id = ?",
+        parent.node_id,
+        this.ctx.seq,
+        picked.name,
+        nameKey(picked.name),
+        this.ctx.seq,
+        this.dev,
+        node.node_id,
+      );
+      this.setIntent(node.node_id, "place", this.minted(placeAuthor, true));
+      this.touch(node.node_id, node.parent_id);
+    }
+    return kept;
+  }
+
+  private trashCopies(intentIds: Iterable<string>, group: string): void {
+    for (const intentId of intentIds) {
+      for (const holder of holdersOf(this.sql, intentId)) {
+        if (holder.field !== "content") continue;
+        const copy = getNode(this.sql, holder.node_id);
+        if (copy?.status !== NodeStatusValue.LIVE || !copy.copy_mark) continue;
+        const held = readIntents(this.sql, copy.node_id);
+        if (copy.copy_mark === `${held.place?.id}${held.status?.id}`) this.trashNode(copy, group);
+      }
+    }
+  }
+
+  private mergeHeld(node: NodeRow, held: readonly string[]): void {
+    const group = node.trash_group!;
+    let added = false;
+    for (const intentId of held) {
+      added = this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING RETURNING intent_id", group, intentId).toArray().length > 0 || added;
+    }
+    if (added) {
+      for (const member of rows<{ node_id: string }>(this.sql.exec("SELECT node_id FROM nodes WHERE trash_group = ?", group))) {
+        this.sql.exec("UPDATE nodes SET meta_rev = ?, meta_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, member.node_id);
+        this.touch(member.node_id);
+      }
+    }
+    this.trashCopies(held, group);
   }
 
   private delete(op: Delete, index: number): OpResult {
     const node = this.node(op.nodeId);
-    if (!node) return rejected("NOT_FOUND");
+    if (!node) return this.purgedReplay(this.id(op.nodeId)) ? superseded() : rejected("NOT_FOUND");
     if (!node.parent_id) return rejected("ROOT");
-    if (node.status === NodeStatusValue.TRASHED) return result(OpResult_Code.APPLIED);
+    const held = op.held.map(toHex);
+    const trashed = node.status === NodeStatusValue.TRASHED;
+    if (this.client) {
+      if (trashed && this.holdsIntents(node, ["status"])) return this.same(node, ["status"]);
+      if (trashed && this.intents.over !== undefined && node.status_before === this.intents.over) {
+        this.mergeHeld(node, held);
+        return result(OpResult_Code.APPLIED);
+      }
+      if (!this.overHeld(node)) return superseded();
+    }
+    if (trashed) {
+      if (this.client) this.mergeHeld(node, held);
+      return result(OpResult_Code.APPLIED);
+    }
     const required = op.requires && this.node(op.requires.nodeId);
     if (
       op.requires &&
@@ -596,9 +915,16 @@ export class CommitApplier {
         BigInt(required.meta_rev) === op.requires.metaRev
       )
     ) {
-      return result(OpResult_Code.SUPERSEDED);
+      return superseded();
     }
-    if (this.trashSubtree(node, `${this.ctx.commitId}:${index}`)) return result(OpResult_Code.SUPERSEDED);
+    const group = `${this.ctx.commitId}:${index}`;
+    if (this.client) {
+      const view: DeleteView = { baseSeq: this.ctx.baseSeq, unseen: new Set(op.unseen.map(toHex)), held: new Set(held), seenContent: new Set() };
+      const kept = this.trashByView(node, group, view);
+      for (const intentId of held) this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING", group, intentId);
+      this.trashCopies([...view.held, ...view.seenContent], group);
+      if (kept) return superseded();
+    } else if (this.trashSubtree(node, group)) return superseded();
     if (required) {
       this.sql.exec("UPDATE nodes SET parent_rev = ?, parent_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, required.node_id);
     }
@@ -607,7 +933,7 @@ export class CommitApplier {
 
   private restore(op: Restore): OpResult {
     const node = this.node(op.nodeId);
-    if (!node) return rejected("NOT_FOUND");
+    if (!node) return this.purgedReplay(this.id(op.nodeId)) ? superseded() : rejected("NOT_FOUND");
     if (op.versionId) {
       const version = getVersion(this.sql, op.versionId);
       if (!version || version.node_id !== node.node_id) return rejected("NOT_FOUND");
@@ -615,6 +941,8 @@ export class CommitApplier {
     }
     if (!node.parent_id) return rejected("ROOT");
     if (node.status !== NodeStatusValue.TRASHED) return result(OpResult_Code.APPLIED, "", node.name);
+    const status = this.incoming("status");
+    if (this.client && (status.carried || (this.authorsReplayUnderB(status) && this.trashKnows(node, status.id)))) return superseded();
     const name = op.name ? normalizeName(op.name) : node.name;
     if (!name) return rejected("INVALID_NAME");
     const target = this.node(op.targetParentId || node.parent_id);

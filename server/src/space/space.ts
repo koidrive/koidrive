@@ -68,13 +68,14 @@ import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
 import { batchDue, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
-import { type DigestVersion, type Digests, commitDigests } from "./digest";
+import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
 import type { ShareInfo, ShareListing } from "../gen/koidrive/v1/share_pb";
 import type { ShareOutcome } from "../share/links";
 import { checkFence, checkLinkRoot, type DownloadFence, type ShareFile, shareFile, shareInfo, shareListing } from "../share/space";
 import type { Pitr } from "./pitr";
 import { ChunkState } from "./schema";
+import { backfillLegacyIntents, intentBytes, intentsValid, LOST_CHANGE_RULE, type LostChangeRule, readIntents, trashHeld, wireIntents } from "./intents";
 import { readUsage } from "./usage";
 import {
   chunkKey,
@@ -280,6 +281,7 @@ function checkIds(op: Op, index: number): void {
     default:
       fail(Error_Code.INVALID_ARGUMENT, `op ${index} is empty`);
   }
+  if (!intentsValid(op)) fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed intent`);
   if (!required.every(isUuidV7) || !optional.every((id) => id === "" || isUuidV7(id))) {
     fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed id`);
   }
@@ -328,6 +330,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract account(): Directory;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
+    lostChangeRule: LostChangeRule = LOST_CHANGE_RULE;
     snapshotPageNodes = 1000;
     private readonly traffic = new UsageTally();
     private usageArmed = false;
@@ -361,6 +364,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
            VALUES (?, NULL, '', '', 1, 1, 0, '', 0, '')`,
           args.spaceId,
         );
+        backfillLegacyIntents(this.sql);
         startExport(this.sql, 0, this.clock(), false);
       });
       try {
@@ -919,8 +923,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         result,
         deviceId: String(row.device_id ?? ""),
         digest: row.request_digest === null ? null : new Uint8Array(row.request_digest as ArrayBuffer),
-        digestVersion: version === 1 || version === 2 || version === 3 ? version : 4,
+        digestVersion: version === 1 || version === 2 || version === 3 || version === 4 ? version : 5,
       };
+    }
+
+    private commitTime(nowMs: number): number {
+      return Math.max(nowMs, Number(this.tokenAt(this.headSeq).committedAtMs) + 1);
     }
 
     private tokenAt(seq: number): { commitId: string; committedAtMs: bigint } {
@@ -974,7 +982,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         fail(Error_Code.LIMIT_EXCEEDED, "the commit's change records do not fit in one 1 MiB message; split the commit");
       }
       this.sql.exec(
-        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 4)",
+        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         Number(record.seq),
         record.commitId,
         record.deviceId,
@@ -983,6 +991,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         recordBytes,
         resultBytes,
         digest,
+        DIGEST_VERSION,
       );
       setMeta(this.sql, "head_seq", Number(record.seq));
       this.bookmarkHead(Number(record.seq), Number(record.committedAtMs));
@@ -1032,6 +1041,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const again = this.checkCommitOrder(session.deviceId, commit, digests);
         if (again) return { result: again };
         const head = this.headSeq;
+        const committedAtMs = this.commitTime(nowMs);
 
         const missing: Uint8Array[] = [];
         for (const [hex, chunk] of referenced) {
@@ -1051,8 +1061,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           seq: head + 1,
           commitId: commit.commitId,
           baseSeq: Number(commit.baseSeq),
-          nowMs,
+          nowMs: committedAtMs,
           committer: { deviceId: session.deviceId, userId: session.userId, deviceName: session.deviceName },
+          rule: this.lostChangeRule,
           authorize: (op, effect) => policy.authorize(session, op, effect),
         };
         const applier = new CommitApplier(this.sql, ctx);
@@ -1065,20 +1076,21 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           commitId: commit.commitId,
           deviceId: session.deviceId,
           userId: session.userId,
-          committedAtMs: BigInt(nowMs),
+          committedAtMs: BigInt(committedAtMs),
           changes,
         });
-        const result = create(CommitResultSchema, { seq: BigInt(ctx.seq), results, changes, committedAtMs: BigInt(nowMs) });
-        this.appendCommit(record, result, digests[4]);
+        const result = create(CommitResultSchema, { seq: BigInt(ctx.seq), results, changes, committedAtMs: BigInt(committedAtMs) });
+        this.appendCommit(record, result, digests[DIGEST_VERSION]);
         this.sql.exec(
-          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, 4)
+          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (device_id) DO UPDATE SET device_seq = excluded.device_seq, commit_id = excluded.commit_id, results = excluded.results,
              request_digest = excluded.request_digest, digest_version = excluded.digest_version`,
           session.deviceId,
           Number(commit.deviceSeq),
           commit.commitId,
           toBinary(CommitResultSchema, result),
-          digests[4],
+          digests[DIGEST_VERSION],
+          DIGEST_VERSION,
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
       });
@@ -1339,15 +1351,34 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             for (const version of rows<VersionRow>(this.sql.exec("SELECT * FROM versions WHERE node_id = ?", node.node_id))) {
               this.dropVersion(version, nowMs);
             }
+            const intents = readIntents(this.sql, node.node_id);
+            const held = trashHeld(this.sql, node.trash_group);
+            this.sql.exec(
+              "INSERT OR REPLACE INTO tombstones (node_id, parent_id, name, intents, held) VALUES (?, ?, ?, ?, ?)",
+              node.node_id,
+              node.parent_id,
+              node.name,
+              JSON.stringify(intents),
+              JSON.stringify(held),
+            );
+            this.sql.exec("DELETE FROM field_intents WHERE node_id = ?", node.node_id);
             this.sql.exec("DELETE FROM nodes WHERE node_id = ?", node.node_id);
-            changes.push(create(ChangeRecordSchema, { change: { case: "purged", value: create(NodePurgedSchema, { nodeId: node.node_id }) } }));
+            const purged = create(NodePurgedSchema, {
+              nodeId: node.node_id,
+              lastParentId: node.parent_id ?? "",
+              intents: wireIntents(intents),
+              held: held.map(intentBytes),
+            });
+            changes.push(create(ChangeRecordSchema, { change: { case: "purged", value: purged } }));
           }
         }
+        this.sql.exec("DELETE FROM trash_held WHERE trash_group NOT IN (SELECT trash_group FROM nodes WHERE trash_group IS NOT NULL)");
         let record: CommitRecord | undefined;
         if (changes.length > 0) {
           const seq = BigInt(this.headSeq + 1);
-          record = create(CommitRecordSchema, { seq, commitId: uuidv7(nowMs), committedAtMs: BigInt(nowMs), changes });
-          this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(nowMs) }), null);
+          const committedAtMs = this.commitTime(nowMs);
+          record = create(CommitRecordSchema, { seq, commitId: uuidv7(committedAtMs), committedAtMs: BigInt(committedAtMs), changes });
+          this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(committedAtMs) }), null);
           noteCommitted(this.sql, record);
         }
         return { expiredVersions: expired.length, purgedNodes: changes.length, record };
