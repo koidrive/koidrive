@@ -95,7 +95,7 @@ test "$(/tmp/koidrive-version-check/release/koi --version)" = 'koi 9.8.7-rc.6'
 
 ## CI builds an unsigned DMG
 
-The `macos app` job of [CI](../.github/workflows/ci.yml) builds the app, tests its Swift bindings, signs it ad hoc and verifies an unsigned DMG, so a change that breaks packaging fails before a release. It runs on a pull request that changes a file that builds or behaves differently on macOS, in the merge queue, and on a push to `main` that the merge queue did not already cover. It runs on a GitHub-hosted `xcode-27` runner, or on the self-hosted Mac runners when `MACOS_RUNS_ON` selects them ([runner README](../.github/runner/README.md)). These runs never see the signing secrets.
+The `macos app` job of [CI](../.github/workflows/ci.yml) builds the app, tests its Swift bindings, signs it ad hoc and verifies an unsigned DMG, so a change that breaks packaging fails before a release. It runs on a pull request that changes a file that builds or behaves differently on macOS, in the merge queue, and on a push to `main` that the merge queue did not already cover. It runs on a GitHub-hosted `xcode-27` runner. These runs never see the signing secrets.
 
 ## The app needs no entitlements
 
