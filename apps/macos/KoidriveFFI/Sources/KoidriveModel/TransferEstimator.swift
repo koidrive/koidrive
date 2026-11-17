@@ -28,9 +28,6 @@ public enum RemainingTime: Equatable, Comparable, Sendable {
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.minutes < rhs.minutes }
 }
 
-/// Estimates the time left from the bytes the folders moved over the network. It shows an estimate
-/// only when the rate over the last 30 seconds is within 20% of the 30 seconds before, and starts
-/// over when the daemon restarts or the backlog grows by more than 10%.
 public struct TransferEstimator: Sendable {
     static let window: TimeInterval = 30
     static let steadiness = 0.2
@@ -51,8 +48,6 @@ public struct TransferEstimator: Sendable {
 
     public init() {}
 
-    /// Records the folders' `bytesMoved` sum and the transfers' totals at `now`, and returns the
-    /// estimate to show.
     public mutating func update(at now: Date, moved: UInt64, done: UInt64, total: UInt64) -> RemainingTime? {
         record(at: now, moved: moved, total: total)
         let estimate = estimate(at: now, left: total - min(done, total))

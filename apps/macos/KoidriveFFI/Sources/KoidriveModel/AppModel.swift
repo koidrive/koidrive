@@ -32,7 +32,6 @@ public final class AppModel {
     public private(set) var checkedUpdate: UpdateStatus?
     public private(set) var failedUpdateCheck: FailedUpdateCheck?
     public private(set) var showsUpdateCheck = false
-    /// About how long the transfers have left, once their rate has held steady.
     public private(set) var remainingTime: RemainingTime?
     /// The clock the time-left estimate samples; previews and tests set their own.
     @ObservationIgnored public var clock: @MainActor () -> Date = { .now }

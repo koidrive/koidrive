@@ -2,8 +2,7 @@
 
 import KoidriveFFI
 
-/// What the popover shows under a Syncing title, top to bottom. Every header has a meter, so
-/// something under the title always moves.
+/// What the popover shows under a Syncing title, top to bottom.
 public struct SyncHeader: Equatable, Sendable {
     /// The number of folders the title counts: syncing folders that do more than wait for answers.
     public var folders: Int
@@ -79,10 +78,8 @@ extension LinkedFolder {
 }
 
 extension SyncHeader {
-    /// From this many bytes left, the meter counts what is left instead of what is done.
     public static let backlogFrom: UInt64 = 1_000_000_000
 
-    /// `checkingTotals` holds the largest `checking.bytes` each folder reported in its current pass.
     init(state: SessionState, checkingTotals: [String: UInt64], remaining: RemainingTime?) {
         let busy = state.folders.filter(\.isBusy)
         let progress = state.progress
