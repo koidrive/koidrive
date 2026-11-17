@@ -33,6 +33,7 @@ publish = false
 prost = "0.14"
 
 [profile.dev]
+opt-level = 2
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
