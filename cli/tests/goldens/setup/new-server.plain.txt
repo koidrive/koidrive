@@ -20,7 +20,7 @@ Preparing ~/Koidrive...
 Starting background sync...
 Background sync is running.
 
-Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.
+Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.
 No file names, paths, contents, error messages, server address, or account.
 Reports carry your IP address, which estimates your country and city.
 Yes also sends the reports of this setup. Preview: koi telemetry preview.
