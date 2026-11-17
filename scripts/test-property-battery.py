@@ -487,6 +487,23 @@ class Triage(unittest.TestCase):
                 self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2,
                                                 [{"result": "error", "message": problem}]), "unknown")
 
+    def test_a_checkout_without_the_runtime_probe_gets_this_one(self):
+        source = (ROOT / "core/test-support/src/lib.rs").read_text()
+        probe = re.search(r"(?ms)^    #\[test\]\n    fn the_build_keeps_debug_assertions_and_overflow_checks\(\).*?^    \}\n", source)[0]
+        for name, before, after in (
+                ("existing tests module", "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn b() {}\n}\n",
+                 "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "\n    #[test]\n    fn b() {}\n}\n"),
+                ("no tests module", "pub fn a() {}\n", "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "}\n")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                checkout = Path(directory)
+                lib = checkout / "core/test-support/src/lib.rs"
+                lib.parent.mkdir(parents=True)
+                lib.write_text(before)
+                self.assertTrue(triage.ensure_probe(checkout, source))
+                self.assertEqual(lib.read_text(), after)
+                self.assertFalse(triage.ensure_probe(checkout, source))
+                self.assertEqual(lib.read_text(), after)
+
     def test_checked_profile_is_copied_whole(self):
         manifest = (ROOT / "Cargo.toml").read_text()
         profile = triage.checked_profile(manifest)

@@ -17,6 +17,8 @@ CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
 LOCATION = re.compile(r"\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
 RUNTIME_CHECKS = Path(__file__).resolve().parent / "require-runtime-checks.sh"
+PROBE_SOURCE = Path(__file__).resolve().parent.parent / "core/test-support/src/lib.rs"
+PROBE_TEST = "the_build_keeps_debug_assertions_and_overflow_checks"
 DISPLAY_LIMIT = 300
 REPLAYS = 2
 SAME = "fails on base with the same message"
@@ -130,6 +132,21 @@ def isolate(checkout, case):
     (directory / Path(case["path"]).name).write_text(case["text"])
 
 
+def ensure_probe(checkout, source):
+    target = checkout / "core/test-support/src/lib.rs"
+    text = target.read_text()
+    if f"fn {PROBE_TEST}(" in text:
+        return False
+    probe = re.search(rf"(?ms)^    #\[test\]\n    fn {PROBE_TEST}\(\) \{{\n.*?^    \}}\n", source)[0]
+    tests = re.search(r"(?m)^mod tests \{\n", text)
+    if tests:
+        text = text[:tests.end()] + probe + "\n" + text[tests.end():]
+    else:
+        text = text.rstrip("\n") + "\n\n#[cfg(test)]\nmod tests {\n" + probe + "}\n"
+    target.write_text(text)
+    return True
+
+
 def resolve(metadata, checkout, case):
     packages = sorted(metadata["packages"], key=lambda package: -len(package["manifest_path"]))
     for package in packages:
@@ -219,6 +236,8 @@ def replay(spec, side, checkout, timeout):
     if checked_profile(text) is None:
         manifest.write_text(text.rstrip("\n") + "\n\n" + spec["checked_profile"])
         print(f"{side}: Cargo.toml has no [profile.checked], so the triage added the one from cases.json.", flush=True)
+    if ensure_probe(checkout, PROBE_SOURCE.read_text()):
+        print(f"{side}: koidrive-test-support has no tests::{PROBE_TEST}, so the triage added this checkout's.", flush=True)
     metadata = json.loads(subprocess.run(["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
                                          cwd=checkout, check=True, stdout=subprocess.PIPE, text=True).stdout)
     executables = {}
