@@ -1,0 +1,1 @@
+cc 5abd5275ae2c0d9ddcb2e25c8d437f98ce6cc59732d97004151788ea2887dbb5 # shrinks to devices = 2, a restore brings back a device's commit at a slot it filled again after an earlier loss (GUN-984)
