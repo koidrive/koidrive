@@ -211,8 +211,8 @@ impl Lifecycle {
         };
         let marker = self.path.with_file_name(UNLINKING);
         let unfinished = marker.exists();
-        koidrive_state_file::write(&marker, b"")?;
-        if let Err(error) = self.save(&next) {
+        let written = koidrive_state_file::write(&marker, b"").and_then(|()| self.save(&next));
+        if let Err(error) = written {
             if !unfinished {
                 let _ = self.forget_unlink();
             }
