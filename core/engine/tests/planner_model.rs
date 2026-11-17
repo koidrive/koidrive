@@ -3466,3 +3466,28 @@ fn a_new_folder_takes_the_place_of_a_folder_moving_into_it_after_a_publish_answe
         .collect();
     assert!(uncapped.is_empty(), "{uncapped:?}\n{}", report.text);
 }
+
+#[test]
+fn a_create_under_a_cap_waits_for_the_move_of_a_trashed_folder_an_answer_holds_back() {
+    use Local::{Into as To, Kept, Onto};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, Root, In(0), In(2)],
+        &[Remote::Kept; 4],
+        &[Kept, To(In(2)), Onto(1), Kept],
+        &[(Kind::Dir, To(In(2)))],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Nothing);
+    assert!(answers(&world).contains(&story));
+    let report = tell(&world, &server(&world), story).expect("an answer story");
+    let live: Vec<&String> = (report.classes.iter())
+        .filter(|class| class.contains("gives up is live"))
+        .collect();
+    assert!(live.is_empty(), "{live:?}\n{}", report.text);
+    let capped = report
+        .text
+        .split("under a cap of 1:")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(!capped.contains("CreateDir n→c/n"), "{}", report.text);
+}
