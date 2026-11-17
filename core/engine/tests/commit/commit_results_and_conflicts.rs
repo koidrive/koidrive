@@ -101,7 +101,7 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
         effects
             .done(&mut trees, commits.in_flight(), &record.effect_id, None)
             .unwrap();
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert_eq!(trees.local().get("a"), None);
     assert_eq!(trees.local().get("c").unwrap().shape, file("b", "f", 1));
@@ -109,7 +109,7 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
     let b = trees.local().get("b").unwrap();
     assert_eq!((&b.shape, b.identity.ino), (&dir(ROOT, "e"), 2));
     assert!(trees.reverted().is_empty());
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
 }
 
@@ -139,11 +139,11 @@ fn a_new_folder_takes_the_name_of_a_left_out_file_placed_by_a_merged_folder() {
     );
     trees.set_remote("c".into(), remote(file("b", "f", 1)));
     trees.set_local("c".into(), local(file("a", "f", 2), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(commits.leave_out("c"));
     trees.set_local("n".into(), local(dir("b", "f"), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     let created = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
         matches!(&ops(&created)[..], [op::Op::CreateDir(create)] if create.name == "f" && create.pending_for.is_empty()),
@@ -244,7 +244,7 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("f".into(), remote(file(ROOT, "f", 3)));
     trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut effects = Effects::default();
     let identity = |ino| FileIdentity {
         ino,
@@ -264,7 +264,7 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
             Some(identity(9)),
         )
         .unwrap();
-    trees.settle();
+    trees.settle(commits.aliases());
     let copy = OpResult {
         node_id: "y".into(),
         ..outcome(op_result::Code::ConflictCopy)
@@ -285,7 +285,7 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
             )
             .unwrap();
         ino += 1;
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let y = trees.local().get("y").unwrap();
     assert_eq!(
@@ -294,7 +294,7 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
     );
     assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "f", 3));
     assert_eq!(trees.local().iter().count(), 2);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -314,7 +314,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("f".into(), remote(file(ROOT, "f", 3)));
     trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut effects = Effects::default();
     let identity = |ino| FileIdentity {
         ino,
@@ -344,7 +344,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
     );
     effects.failed(&mut trees, &download.effect_id).unwrap();
     effects.unblock("y");
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut ino = 10;
     while let Some(record) = effects
         .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
@@ -360,7 +360,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
             )
             .unwrap();
         ino += 1;
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let y = trees.local().get("y").unwrap();
     assert_eq!(
@@ -369,7 +369,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
     );
     assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "f", 3));
     assert_eq!(trees.local().iter().count(), 2);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -428,7 +428,7 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
             )
             .unwrap();
         ino += 1;
-        trees.settle();
+        trees.settle(commits.aliases());
         assert!(ino < 20, "the effects do not end");
     }
     assert_eq!(
@@ -437,7 +437,7 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
     );
     assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "b", 3));
     assert!(trees.waiting().is_empty());
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -472,7 +472,7 @@ fn keep_the_copy_deletes_the_copy_only_while_the_original_holds_the_content_it_t
     );
     trees.set_local("f".into(), local(took.clone(), 1));
     trees.set_synced("f".into(), Some(took));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [delete_copy_requiring(6, 3)]);
 }
@@ -534,7 +534,7 @@ fn a_resent_answer_delete_keeps_its_precondition_when_another_device_removed_the
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     trees.set_local("f".into(), local(file(ROOT, "f", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "f", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let held = trees.remote().get("f").unwrap();
     let required = delete_copy_requiring(held.content_rev, held.meta_rev);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -632,7 +632,7 @@ fn moved_into_the_folder_merged_into_it(renamed: bool) -> (Trees, Commits, IdGen
     let mut moved = trees.local().get("b").unwrap().clone();
     moved.shape = dir("a", "e");
     trees.set_local_changed("b".into(), moved);
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.reverted().contains("b"));
     if renamed {
@@ -647,14 +647,14 @@ fn moved_into_the_folder_merged_into_it(renamed: bool) -> (Trees, Commits, IdGen
 fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere() {
     let (mut trees, commits, _) = moved_into_the_folder_merged_into_it(false);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     assert!(trees.reverted().contains("b"));
 }
 
 #[test]
 fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it() {
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
     assert!(!trees.reverted().contains("b"));
@@ -664,7 +664,7 @@ fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it() 
 fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_while_the_server_changes_elsewhere() {
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
     assert!(!trees.reverted().contains("b"));
@@ -695,12 +695,12 @@ fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the
     let mut moved = trees.local().get("b").unwrap().clone();
     moved.shape = dir("c", "e");
     trees.set_local_changed("b".into(), moved);
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.reverted().contains("b"));
     for (i, name) in ["z1", "z2", "z3", "z4"].into_iter().enumerate() {
         trees.set_remote(name.into(), remote(file(ROOT, name, i as u8)));
-        trees.settle_with_merges(commits.aliases());
+        trees.settle(commits.aliases());
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
         assert!(trees.reverted().contains("b"));
     }
@@ -712,8 +712,36 @@ fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forge
     let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
     commits.enter_recovery(cause);
     commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
-    trees.settle_with_merges(commits.aliases());
+    trees.settle(commits.aliases());
     assert!(commits.aliases().is_empty());
     assert!(!trees.reverted().contains("b"));
+}
+
+#[test]
+fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by_another_device_is_counted() {
+    let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(false);
+    trees.set_remote("z".into(), trashed(file(ROOT, "z", 1)));
+    let removal = koidrive_engine::guard::RemoteRemoval {
+        within: vec!["z".into()],
+        files: 1,
+    };
+    commits.count_remote(removal, &mut trees, 2, &mut ids, NOW);
+    let mut effects = Effects::default();
+    let mut planned = Vec::new();
+    while let Some(record) = (effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+    {
+        planned.push((record.node.clone(), record.effect.clone()));
+        effects.done(&mut trees, None, &record.effect_id, None).unwrap();
+        trees.settle(commits.aliases());
+        assert!(planned.len() < 8, "{planned:?}");
+    }
+    assert!(
+        planned.iter().any(|(node, effect)| node == "b"
+            && matches!(effect, Effect::Move { to: Location::At { name, .. }, .. } if name == "d")),
+        "{planned:?}"
+    );
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 

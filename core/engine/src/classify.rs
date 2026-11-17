@@ -1919,7 +1919,6 @@ impl Trees {
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
-        self.cycles_may_end = true;
         if let Some(old) = self.l.remove(id) {
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
@@ -4105,11 +4104,7 @@ impl Trees {
     /// [`Trees::unsearched`] lists them. A [`Class::Same`] node whose update is left still takes R's
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
-    pub fn settle(&mut self) {
-        self.settle_with_merges(&BTreeMap::new());
-    }
-
-    pub fn settle_with_merges(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+    pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         self.check_finishes();
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts(merged);
@@ -4380,7 +4375,6 @@ impl Trees {
 
     pub(crate) fn end_revert(&mut self, id: &str) {
         if self.reverted.remove(id) {
-            self.cycles_may_end = true;
             self.mark(id);
         }
     }

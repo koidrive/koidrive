@@ -15,12 +15,12 @@ fn ancestry_resend() -> Trees {
     trees.set_remote("f".into(), ancestry_node(1, "v1", &[]));
     trees.set_local("f".into(), local(file(ROOT, "a", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "a", 1)));
-    trees.settle();
+    trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -28,7 +28,7 @@ fn ancestry_resend() -> Trees {
 fn a_resend_gives_way_to_a_version_made_over_the_value_it_carries() {
     let mut trees = ancestry_resend();
     trees.set_remote("f".into(), ancestry_node(2, "v2", &["v1"]));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("f"), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
@@ -38,7 +38,7 @@ fn a_resend_gives_way_to_a_version_made_over_the_value_it_carries() {
 fn a_resend_keeps_its_value_beside_a_version_made_over_another_value() {
     let mut trees = ancestry_resend();
     trees.set_remote("f".into(), ancestry_node(2, "v2", &["other"]));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("f"), Class::Concurrent);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -50,12 +50,12 @@ fn ancestry_lost_create() -> Trees {
     trees.set_remote_made_here("f".into(), ancestry_node(1, "v1", &[]));
     trees.set_local("f".into(), local(file(ROOT, "a", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "a", 1)));
-    trees.settle();
+    trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| true);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -63,7 +63,7 @@ fn ancestry_lost_create() -> Trees {
 fn a_lost_create_gives_way_to_a_version_made_over_the_value_it_carries() {
     let mut trees = ancestry_lost_create();
     trees.set_remote("f".into(), ancestry_node(2, "v2", &["v1"]));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("f"), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
@@ -73,7 +73,7 @@ fn a_lost_create_gives_way_to_a_version_made_over_the_value_it_carries() {
 fn a_lost_create_keeps_its_value_beside_a_version_made_over_another_value() {
     let mut trees = ancestry_lost_create();
     trees.set_remote("f".into(), ancestry_node(2, "v2", &["other"]));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("f"), Class::Concurrent);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -103,7 +103,7 @@ fn a_new_client_on_an_old_server_resends_a_lost_value_when_no_ancestry_comes_bac
     let (id, node) = RemoteNode::from_state(&decoded).unwrap();
     assert!(node.made_over.is_empty());
     trees.set_remote(id, node);
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("f"), Class::Concurrent);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -116,9 +116,9 @@ fn an_edit_carries_the_server_version_its_local_value_was_made_over() {
     trees.set_remote("f".into(), ancestry_node(1, "v1", &[]));
     trees.set_local("f".into(), local(file(ROOT, "a", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "a", 1)));
-    trees.settle();
+    trees.settle(&Default::default());
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 2), 1));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let sent = ops(&commit);
@@ -132,7 +132,7 @@ fn an_edit_carries_the_server_version_its_local_value_was_made_over() {
 fn a_users_create_after_a_loss_names_the_value_it_was_made_over() {
     let mut trees = ancestry_resend();
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 2), 1));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let sent = ops(&commit);

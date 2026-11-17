@@ -5,7 +5,7 @@ fn commit_served(space: &mut SpaceDo, trees: &mut Trees, commits: &mut Commits, 
     apply(trees, &result.changes);
     commits.received(result).unwrap();
     assert!(commits.acknowledge(trees, space.head_seq()));
-    trees.settle();
+    trees.settle(commits.aliases());
 }
 
 fn sync_until_quiet(
@@ -16,7 +16,7 @@ fn sync_until_quiet(
 ) {
     let mut effects = Effects::default();
     for _ in 0..20 {
-        trees.settle();
+        trees.settle(commits.aliases());
         if let Some(record) = effects
             .plan(trees, commits.in_flight(), ids, NOW as u64, BatchLimit::ONE)
             .first()
@@ -82,7 +82,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
         );
         trees.set_remote(id, node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trees.rules_scanned();
     let all = nodes_with(&space, 1, None);
     let target = all.iter().position(|id| *id == holder).unwrap();
@@ -109,7 +109,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
             parked: false,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.held(&holder));
     assert!(commits.problems().is_empty());
     assert_eq!(space.node(&holder).unwrap().name, "b");
@@ -148,13 +148,13 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
         },
     );
     trees.set_remote(holder.clone(), old);
-    trees.settle();
+    trees.settle(&Default::default());
     trees.rules_scanned();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(55));
     let mut renamed = trees.local().get(&holder).unwrap().clone();
     renamed.shape.name = "b".into();
     trees.set_local(holder.clone(), renamed);
-    trees.settle();
+    trees.settle(commits.aliases());
     commits
         .build(
             &mut trees,
@@ -191,7 +191,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
             parked: false,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent = commits
         .build(
             &mut trees,

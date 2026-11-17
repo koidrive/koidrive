@@ -2221,7 +2221,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         },
     );
     trees.set_synced("f".into(), Some(shape.clone()));
-    trees.settle();
+    trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(
@@ -2235,7 +2235,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         0,
         0,
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     Store::open(&path)
@@ -2277,7 +2277,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     edited.content_rev = 2;
     edited.edit_rev = 2;
     trees.set_remote("f".into(), edited);
-    trees.settle();
+    trees.settle(&Default::default());
     let sent = Commits::default()
         .build(
             &mut trees,
@@ -2335,7 +2335,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         },
     );
     trees.set_synced("f".into(), Some(shape.clone()));
-    trees.settle();
+    trees.settle(&Default::default());
     trees.set_local_changed(
         "f".into(),
         EngineLocalNode {
@@ -2346,7 +2346,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
             parked: false,
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(
@@ -2360,7 +2360,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         0,
         0,
     );
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.state().lost_shapes.contains_key("f"));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
@@ -2406,7 +2406,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
             ..remote
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let sent = Commits::default()
         .build(
             &mut trees,
@@ -2904,7 +2904,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
     trees.set_local("n".into(), local("x"));
     trees.set_synced("n".into(), Some(engine_shape("root", "x")));
     trees.set_local("n".into(), local("y"));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = commits.build(&mut trees, &mut ids, 1_794_268_740_000, "history", "me", 1);
     assert!(sent.is_some_and(|commit| matches!(
@@ -2927,7 +2927,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         })
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
@@ -2989,7 +2989,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let resent = commits.build(&mut trees, &mut ids, 1_794_268_740_001, "history", "me", 1);
     let moved_to_y = |op: &Op| matches!(&op.op, Some(op::Op::Move(moved)) if moved.new_name == "y");
     assert!(resent.is_some_and(|commit| commit.ops.iter().any(moved_to_y)));
@@ -3336,7 +3336,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
             let state = tx.engine_state()?;
             trees.restore(state.trees).unwrap();
             trees.rules_scanned();
-            trees.settle();
+            trees.settle(&Default::default());
             Ok::<_, Error>((trees, Commits::from_state(state.commits).unwrap()))
         })
         .unwrap();
@@ -3344,7 +3344,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
         let (id, remote) = RemoteNode::from_state(&listed).unwrap();
         trees.set_remote(id, remote);
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent = commits
         .build(
             &mut trees,
@@ -3731,7 +3731,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let mut commits = Commits::default();
     let mut ids = IdGen::new(333);
     commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
@@ -3753,7 +3753,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
         0,
         0,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.synced().get("secret").is_none());
     assert!(!trees.waiting().contains_key("secret"));
     let mut now = file_shape("root", "secret.txt");
@@ -3814,7 +3814,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
                 Some(made),
             )
             .unwrap();
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert!(trees.held("secret"));
     let asked = commits.questions().last().unwrap();
@@ -4275,7 +4275,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 pending_by: None,
             },
         );
-        trees.settle();
+        trees.settle(&Default::default());
         let mut commits = Commits::default();
         let mut ids = IdGen::new(335);
         commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
@@ -4287,7 +4287,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 .is_none()
         );
         trees.set_synced("c".into(), None);
-        trees.settle();
+        trees.settle(commits.aliases());
         assert!(trees.synced().get("dir").is_some());
         assert!(trees.synced().get("c").is_none());
         let before = EngineState {
@@ -4784,10 +4784,10 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         trees.set_local(id.into(), local(shape(id, 1), ino));
         trees.set_synced(id.into(), Some(shape(id, 1)));
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trees.set_local("p".into(), local(shape("p", 2), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(
         commits
             .build(&mut trees, &mut ids, 1_794_268_740_000, "history", "me", 1)
@@ -4808,9 +4808,9 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     assert!(commits.acknowledge(&mut trees, 2));
     trees.set_remote("n".into(), remote(shape("b", 2), 3, "v2"));
     trees.set_local("n".into(), local(shape("b", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("n".into(), local(shape("b", 3), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let edit = |op: &Op| {
         matches!(&op.op, Some(op::Op::UpdateContent(update))
             if update.node_id == "n" && update.content == Some(content(3)) && !update.resend)
@@ -4885,7 +4885,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let copy = |op: &Op| matches!(&op.op, Some(op::Op::CreateFile(create)) if create.content == Some(content(3)));
     let resent = commits.build(&mut trees, &mut ids, 1_794_268_740_002, "history", "me", 1);
     assert!(

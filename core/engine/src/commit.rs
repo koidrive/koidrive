@@ -724,7 +724,7 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
     ) {
-        trees.settle_with_merges(&self.aliases);
+        trees.settle(&self.aliases);
         let open = (self.questions.iter())
             .position(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         let noticed = open.is_some();
@@ -4775,7 +4775,7 @@ mod ancestry_size_tests {
             local.shape.content.as_mut().unwrap().manifest_digest = vec![2; 32];
             trees.set_local_changed(id, local);
         }
-        trees.settle();
+        trees.settle(&Default::default());
         let mut commits = Commits::default();
         let commit = commits
             .build(

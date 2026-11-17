@@ -41,7 +41,7 @@ fn a_commit_holds_at_most_the_op_limit_with_parents_first() {
     for (i, (id, shape)) in rows.into_iter().enumerate() {
         trees.set_local(id, local(shape, i as u128 + 1));
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(commit.ops.len(), MAX_OPS);
@@ -69,7 +69,7 @@ fn finishes_sent_on_their_own_stop_before_their_change_records_outgrow_one_messa
         };
         trees.set_remote(id.into(), node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(commit.ops.len(), 3, "{commit:?}");
@@ -81,7 +81,7 @@ fn a_commit_stops_before_its_change_records_outgrow_one_message() {
     for i in 0..8 {
         trees.set_local(format!("f{i}"), local(large(ROOT, &format!("{i}")), i + 1));
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(commit.ops.len(), 3);
@@ -128,7 +128,7 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
     for i in 0..4 {
         trees.set_local(format!("g{i}"), local(large(ROOT, &format!("{i}")), i + 3));
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     let question = commits.questions()[0].id.clone();
     assert!(commits.decide(&question, Answer::KeepCopy));
 
@@ -189,7 +189,7 @@ fn a_commit_that_does_not_fit_is_planned_again_in_halves_and_grows_back() {
             local(file(ROOT, &format!("{i}"), 1), i + 1),
         );
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let mut sizes = vec![build(&mut commits, &mut trees, &mut ids).unwrap().ops.len()];
     for _ in 0..2 {
@@ -387,7 +387,7 @@ fn a_trashed_folder_moved_into_a_new_folder_comes_back_with_its_trash_group_afte
     );
     trees.set_remote_made_here("b".into(), remote_at(dir("a", "b"), 2));
     trees.set_remote_made_here("d".into(), remote_at(dir("b", "d"), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(trees.synced().live("b"), Some(&dir("a", "b")));
     assert_eq!(trees.synced().live("d"), Some(&dir("b", "d")));
@@ -505,7 +505,7 @@ fn an_edited_file_another_device_deleted_comes_back_once_after_a_split_commit_th
         vec![outcome(op_result::Code::Applied)],
     );
     trees.set_remote_made_here("c".into(), remote_at(file("a", "c", 1), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let third = split(&mut commits, &mut trees, &mut ids);
     assert_eq!(third, [update("c", 2)]);
 }
@@ -554,7 +554,7 @@ fn split_ends_like_the_whole_commit(a: Row) -> Class {
         vec![merged(), outcome(op_result::Code::Applied)],
     );
     whole.set_remote_made_here("c".into(), remote_at(file("a", "c", 2), 2));
-    whole.settle();
+    whole.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut whole, &mut ids), None);
     let mut split = rows();
     let state = CommitsState {
@@ -573,7 +573,7 @@ fn split_ends_like_the_whole_commit(a: Row) -> Class {
         vec![outcome(op_result::Code::Applied)],
     );
     split.set_remote_made_here("c".into(), remote_at(file("a", "c", 2), 2));
-    split.settle();
+    split.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut split, &mut ids), None);
     assert_eq!(split.synced().live("c"), whole.synced().live("c"));
     assert_eq!(split.class("c"), whole.class("c"));
@@ -719,7 +719,7 @@ fn a_trashed_file_moved_into_a_new_folder_comes_back_when_the_commit_after_its_m
             .received(result(seq, vec![outcome(op_result::Code::Applied); commit.ops.len()]))
             .unwrap();
         assert!(commits.acknowledge(&mut trees, seq));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert!(sent.contains(&mv("c", "a", "c")), "{sent:?}");
     assert_eq!(trees.remote().live("c"), Some(&file("a", "c", 1)));

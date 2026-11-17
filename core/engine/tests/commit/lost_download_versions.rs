@@ -23,7 +23,7 @@ fn an_edit_of_a_resend_back_to_the_restored_bytes_through_another_edit_is_sent()
     );
     for digest in [3, 1] {
         trees.set_local_changed("a".into(), local(file(ROOT, "a", digest), 1));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert_eq!(trees.class("a"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -45,7 +45,7 @@ fn an_edit_of_a_renamed_resend_to_the_restored_bytes_is_sent() {
     );
     for digest in [2, 1] {
         trees.set_local_changed("a".into(), local(file(ROOT, "b", digest), 1));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(uploads(&ops(&commit), 1), "{:?}", ops(&commit));
@@ -76,7 +76,7 @@ fn a_download_the_server_lost_with_the_delete_after_it_yields_to_the_delete_sent
         ..version(trashed(file(ROOT, "a", 1)), "v1")
     };
     trees.set_remote("a".into(), sent_again);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("a"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
@@ -140,7 +140,7 @@ fn a_moved_download_the_server_lost_takes_the_position_another_device_sends_it_a
     };
     trees.set_remote("a".into(), moved);
     trees.set_local("a".into(), local(file(ROOT, "b", 2), 1));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("a"), Class::InSync);
     let mut commits = Commits::default();
     list_after_a_loss(
@@ -155,7 +155,7 @@ fn a_moved_download_the_server_lost_takes_the_position_another_device_sends_it_a
         ..version(remote(file(ROOT, "c", 2)), "v2-resent")
     };
     trees.set_remote("a".into(), resent);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("a"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut IdGen::new(1)).is_none());
 }
@@ -171,7 +171,7 @@ fn a_download_this_device_moved_in_a_lost_commit_is_listed_as_synced() {
         ..version(remote(file(ROOT, "b", 2)), "v2")
     };
     trees.set_remote("a".into(), moved);
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("a"), Class::InSync);
     let taken: Vec<String> = (trees.taken_from_others(|seq| seq == 6).into_iter())
         .map(|(id, _)| id)
@@ -184,7 +184,7 @@ fn a_download_this_device_moved_in_a_lost_commit_is_listed_as_synced() {
 fn a_download_edited_since_is_not_listed_as_synced() {
     let (_, mut trees, _) = downloaded_at_5();
     trees.set_local("a".into(), local(file(ROOT, "a", 4), 1));
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(!(trees.taken_from_others(|_| false).iter()).any(|(id, _)| id == "a"));
 }
 
@@ -193,7 +193,7 @@ fn a_download_the_server_lost_is_not_sent_again_without_a_recorded_version() {
     let (commits, mut trees, _) = edited_at_5_then_lost();
     trees.set_local("b".into(), local(file(ROOT, "b", 1), 2));
     trees.set_remote("b".into(), remote(file(ROOT, "b", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let edited = RemoteNode {
         content_rev: 4,
         edit_rev: 4,
@@ -201,7 +201,7 @@ fn a_download_the_server_lost_is_not_sent_again_without_a_recorded_version() {
     };
     trees.set_remote("b".into(), edited);
     trees.set_local("b".into(), local(file(ROOT, "b", 2), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("b"), Class::InSync);
     let synced = trees.taken_from_others(|_| false);
     trees.set_remote("a".into(), remote(file(ROOT, "a", 1)));
@@ -217,7 +217,7 @@ fn a_download_the_server_lost_is_not_sent_again_without_a_recorded_version() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("b"), Class::Concurrent);
 }
 
@@ -277,7 +277,7 @@ fn an_unsent_edit_with_the_bytes_of_a_download_the_server_lost_beats_a_later_del
     state.unsent_edits.insert("a".into());
     state.dirty.insert("a".into());
     trees.restore(state).unwrap();
-    trees.settle();
+    trees.settle(commits.aliases());
     list_after_a_loss(
         &mut trees,
         &commits,
@@ -289,7 +289,7 @@ fn an_unsent_edit_with_the_bytes_of_a_download_the_server_lost_beats_a_later_del
         ..trashed(file(ROOT, "a", 1))
     };
     trees.set_remote("a".into(), deleted);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.unsent_edits().iter().collect::<Vec<_>>(), ["a"]);
     assert_eq!(trees.class("a"), Class::Local);
 }
@@ -317,7 +317,7 @@ fn a_lost_create_under_a_folder_deleted_after_the_loss_is_not_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("c"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
@@ -339,7 +339,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
             ..edited.clone()
         };
         trees.set_remote("a".into(), deleted);
-        trees.settle();
+        trees.settle(&Default::default());
         let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         trees.set_listed_remote("a".into(), edited);
@@ -354,7 +354,7 @@ fn a_change_another_device_made_to_a_version_the_server_kept_is_taken_after_a_lo
             0,
             0,
         );
-        trees.settle();
+        trees.settle(&Default::default());
         assert_eq!(trees.class("a"), Class::Remote, "at {name}");
         assert!(trees.unsent_edits().is_empty(), "at {name}");
     }
@@ -366,7 +366,7 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
     for name in ["a", "b"] {
         let mut trees = trees(&[synced("a", file(ROOT, "a", 1))]);
         trees.set_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
-        trees.settle();
+        trees.settle(&Default::default());
         let records = trees.remote_records(|_| false);
         let synced = trees.taken_from_others(|_| false);
         let edited = RemoteNode {
@@ -387,7 +387,7 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
             1,
             1,
         );
-        trees.settle();
+        trees.settle(&Default::default());
         assert_eq!(trees.class("a"), Class::Remote, "at {name}");
         assert!(trees.unsent_edits().is_empty(), "at {name}");
     }

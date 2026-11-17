@@ -87,7 +87,7 @@ fn trees(nodes: &[Row]) -> Trees {
             trees.set_remote((*id).into(), remote(shape.clone()));
         }
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -104,7 +104,7 @@ fn rules(text: &str) -> Option<RuleFile> {
 }
 
 fn ops(trees: &mut Trees) -> Vec<op::Op> {
-    trees.settle();
+    trees.settle(&Default::default());
     let commit = Commits::default()
         .build(trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
         .cloned();
@@ -115,7 +115,7 @@ fn ops(trees: &mut Trees) -> Vec<op::Op> {
 fn effects(trees: &mut Trees) -> Vec<(String, Effect)> {
     let (mut effects, mut ids, mut done) = (Effects::default(), IdGen::new(2), Vec::new());
     loop {
-        trees.settle();
+        trees.settle(&Default::default());
         let Some(record) = effects
             .plan(trees, None, &mut ids, NOW, BatchLimit::ONE)
             .first()
@@ -736,7 +736,7 @@ fn a_child_settled_before_its_folder_leaves_s_is_classified_again() {
     for digest in [1, 2] {
         let (mut trees, _) = parked_excluded_folder();
         trees.set_local("child".into(), local(file("old", "build.log", digest), 2));
-        trees.settle();
+        trees.settle(&Default::default());
         let left = trees.work();
         assert_eq!(trees.synced().live("old"), None, "digest {digest}");
         assert_eq!(trees.synced().live("child"), None, "digest {digest}");
@@ -849,7 +849,7 @@ fn s_of_an_excluded_node_takes_what_l_and_r_both_hold() {
     trees.set_local("b".into(), local(file(ROOT, "b.log", 2), 2));
     trees.set_remote("b".into(), remote(file(ROOT, "b.log", 2)));
     assert!(trees.excluded("a") && trees.excluded("b"));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.work(), [], "settling alone takes both");
     assert_eq!(trees.synced().live("a"), Some(&file(ROOT, "a.log", 7)));
     assert_eq!(trees.synced().live("b"), Some(&file(ROOT, "b.log", 2)));
@@ -869,7 +869,7 @@ fn a_remote_rules_file_is_written_before_anything_else_below_its_folder() {
     ]);
     let (mut effects, mut ids, mut order) = (Effects::default(), IdGen::new(2), Vec::new());
     loop {
-        trees.settle();
+        trees.settle(&Default::default());
         let Some(record) = effects
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
             .first()
@@ -902,7 +902,7 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
     before.remove_local("log");
     before.remove_local("txt");
     trash(&mut before, "gone");
-    before.settle();
+    before.settle(&Default::default());
 
     let mut trees = Trees::new(ROOT);
     for (id, node) in before.remote().iter() {

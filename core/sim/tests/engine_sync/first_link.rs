@@ -859,7 +859,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
             parked: false,
         },
     );
-    device.trees.settle();
+    device.trees.settle(&Default::default());
     device.trees.remove_local("k");
     device.receive(&[change(if server_renames_it { "a" } else { "k" })], false);
     note_kept_back(&mut device);
@@ -912,7 +912,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
         };
         device.trees.set_local(id.into(), node);
     }
-    device.trees.settle();
+    device.trees.settle(&Default::default());
     device.trees.remove_local("c");
     device.removed_from.insert("c".into(), "k".into());
     device.acted.insert("c".into());

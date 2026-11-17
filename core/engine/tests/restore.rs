@@ -95,7 +95,7 @@ fn trees(nodes: &[Row]) -> Trees {
             trees.set_remote(id.clone(), node.clone());
         }
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -165,7 +165,7 @@ fn acknowledge(commits: &mut Commits, trees: &mut Trees, results: Vec<OpResult>)
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(trees, 1));
-    trees.settle();
+    trees.settle(commits.aliases());
 }
 
 fn refuse(commits: &mut Commits, trees: &mut Trees, code: error::Code) -> Failure {
@@ -378,7 +378,7 @@ fn an_edit_and_a_restore_of_one_file_in_one_commit_leave_the_restored_content_re
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().get(&n).unwrap().content, Some(content(3)));
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let trashed = trees.trashed_here();
@@ -398,7 +398,7 @@ fn an_edit_and_a_restore_of_one_file_in_one_commit_leave_the_restored_content_re
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let next = build(&mut commits, &mut trees, &mut ids);
     assert!(next.is_none(), "{:?}", next.as_ref().map(ops));
 }
@@ -500,7 +500,7 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
         parked,
     };
     trees.set_local(m.clone(), folder("g", true));
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.synced().live(&n), Some(&file(&root(), "f", 1)));
 
     // A restore sent now would leave L with content S does not show, and the engine would
@@ -512,7 +512,7 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
     assert_eq!(commits.restores().len(), 1);
 
     trees.set_local(m, folder("k", false));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live(&n), trees.remote().live(&n));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [restore_op(&intent)]);
@@ -1210,7 +1210,7 @@ fn an_explicit_restore_of_a_file_its_user_removed_is_downloaded() {
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&n), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -1253,7 +1253,7 @@ fn a_restore_of_a_folder_its_user_removed_downloads_the_files_in_it() {
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&d), Class::Remote);
     assert_eq!(trees.class(&f), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -1318,7 +1318,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let delete = op::Op::Delete(proto::Delete {
         node_id: g.clone(),
@@ -1377,7 +1377,7 @@ fn revived(
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
 }
 
 #[test]
@@ -1618,7 +1618,7 @@ fn a_restore_sent_with_the_delete_of_its_file_keeps_the_file_when_another_device
     };
     trees.set_remote(a.clone(), deleted_elsewhere(folder));
     trees.set_remote(g.clone(), deleted_elsewhere(inside.clone()));
-    trees.settle();
+    trees.settle(commits.aliases());
     for (node, shape) in [(&a, dir(&root(), "A")), (&g, inside)] {
         let back = RemoteNode {
             meta_rev: 3,
@@ -1638,7 +1638,7 @@ fn a_restore_sent_with_the_delete_of_its_file_keeps_the_file_when_another_device
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&g), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -1680,7 +1680,7 @@ fn a_restore_of_a_live_folder_leaves_a_file_deleted_below_it_deleted_when_a_move
     };
     trees.set_remote(a.clone(), deleted_elsewhere(folder));
     trees.set_remote(y.clone(), deleted_elsewhere(inside.clone()));
-    trees.settle();
+    trees.settle(commits.aliases());
     for (node, shape) in [(&a, dir(&z, "A")), (&y, inside)] {
         let back = RemoteNode {
             meta_rev: 3,
@@ -1702,7 +1702,7 @@ fn a_restore_of_a_live_folder_leaves_a_file_deleted_below_it_deleted_when_a_move
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     let delete = op::Op::Delete(proto::Delete {
         node_id: y.clone(),
@@ -1752,7 +1752,7 @@ fn a_restore_sent_with_the_delete_of_its_folder_keeps_the_files_in_it_when_anoth
     for (node, shape) in [(&a, parent), (&b, folder.clone()), (&c, inside.clone())] {
         trees.set_remote(node.clone(), deleted_elsewhere(shape));
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     for (node, shape) in [(&a, dir(&root(), "A")), (&b, folder), (&c, inside)] {
         let back = RemoteNode {
             meta_rev: 3,
@@ -1773,7 +1773,7 @@ fn a_restore_sent_with_the_delete_of_its_folder_keeps_the_files_in_it_when_anoth
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&b), Class::Remote);
     assert_eq!(trees.class(&c), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -1837,7 +1837,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_keeps_the_file_when_another_de
     for (node, shape) in nodes {
         trees.set_remote(node.clone(), deleted_elsewhere(shape));
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     let nodes = [
         (&p, dir(&root(), "P")),
         (&a, folder),
@@ -1864,7 +1864,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_keeps_the_file_when_another_de
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&b), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -1928,7 +1928,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_leaves_the_other_files_of_that
     for (node, shape) in nodes {
         trees.set_remote(node.clone(), deleted_elsewhere(shape));
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     let nodes = [
         (&p, dir(&root(), "P")),
         (&a, folder),
@@ -1956,7 +1956,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_leaves_the_other_files_of_that
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class(&b), Class::Remote);
     let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     let delete = op::Op::Delete(proto::Delete {
