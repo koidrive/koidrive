@@ -1128,10 +1128,12 @@ class Run {
           if (intent) fail(`an intent ${toHex(intent.id)}, expected none`);
           return;
         }
-        const one = keys(want[field], "an intent", ["id", "author", "replay", "applied_at_ms"]);
+        const one = keys(want[field], "an intent", ["id", "author", "replay", "over", "applied_at_ms"]);
         if (!intent) fail("no intent");
         if (intent.id.length === 0) fail("an intent with an empty id");
-        if (intent.over.length > 0) fail(`over ${toHex(intent.over)}, expected none on a NodeState`);
+        const over = optStr(one, "over");
+        if (over !== undefined) within("over", () => this.expectId(space, over, toHex(intent.over)));
+        else if (intent.over.length > 0) fail(`over ${toHex(intent.over)}, expected none`);
         const id = optStr(one, "id");
         if (id !== undefined) within("id", () => this.expectId(space, id, toHex(intent.id)));
         const author = optStr(one, "author");

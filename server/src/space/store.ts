@@ -235,7 +235,7 @@ export function nodeState(sql: Sql, node: NodeRow, complete = false): NodeState 
     current: version ? versionInfo(sql, version, complete) : undefined,
     pendingFor: node.pending_for ?? "",
     pendingBy: node.pending_by ?? "",
-    intents: wireIntents(readIntents(sql, node.node_id)),
+    intents: wireIntents(readIntents(sql, node.node_id), node.status === 2 ? node.status_before : null),
     trashHeld: node.status === 2 ? trashHeld(sql, node.trash_group).map(intentBytes) : [],
   });
 }

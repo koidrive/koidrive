@@ -265,10 +265,15 @@ export class CommitApplier {
 
   private heldElsewhere(nodeId: string, fields: readonly Field[]): boolean {
     if (!this.client) return false;
-    return fields.some((field) => {
+    for (const field of fields) {
       const intent = this.incoming(field);
-      return intent.replay && holdersOf(this.sql, intent.id).some((holder) => holder.node_id !== nodeId);
-    });
+      if (!intent.replay) continue;
+      const holder = holdersOf(this.sql, intent.id).find((found) => found.node_id !== nodeId);
+      if (!holder) continue;
+      this.touch(holder.node_id);
+      return true;
+    }
+    return false;
   }
 
   private overHeld(node: NodeRow, field: "place" | "status"): boolean {
