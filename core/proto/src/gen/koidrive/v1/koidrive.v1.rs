@@ -435,8 +435,8 @@ pub struct Intent {
     /// On an op: a send of an intent whose commit the server lost. On a NodeState: the value is carried.
     #[prost(bool, tag="3")]
     pub replay: bool,
-    /// The intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
-    /// CODE_SUPERSEDED.
+    /// On an op: the intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
+    /// CODE_SUPERSEDED. On a trashed NodeState's status: the status intent the trash replaced.
     #[prost(bytes="vec", tag="4")]
     pub over: ::prost::alloc::vec::Vec<u8>,
     /// The committed_at_ms of the commit that first applied this intent (RFC 0013). Set by the server on a NodeState;

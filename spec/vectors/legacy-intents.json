@@ -17,11 +17,11 @@
       "note": "child of the root: meta_rev 7, parent is the space id 0190f5c2-0000-7000-8000-0000000000ff, name a.txt"
     },
     {
-      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "node_id": "0190f5c2-0000-7000-8000-0000000000ff",
       "field": "place",
       "key": "1\u0000\u0000",
-      "id": "bfcbb3da-9b1b-5247-81c1-a987fe5b9ceb",
-      "note": "the root itself: meta_rev 1, parent \"\", name \"\""
+      "id": "eac73bee-779b-5928-86bb-539516caee66",
+      "note": "the root itself, whose node id is the space id: meta_rev 1, parent \"\", name \"\""
     },
     {
       "node_id": "0190f5c2-0000-7000-8000-000000000001",

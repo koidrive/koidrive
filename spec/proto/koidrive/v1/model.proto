@@ -86,8 +86,8 @@ message Intent {
   string author_device_id = 2;
   // On an op: a send of an intent whose commit the server lost. On a NodeState: the value is carried.
   bool replay = 3;
-  // The intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
-  // CODE_SUPERSEDED.
+  // On an op: the intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
+  // CODE_SUPERSEDED. On a trashed NodeState's status: the status intent the trash replaced.
   bytes over = 4;
   // The committed_at_ms of the commit that first applied this intent (RFC 0013). Set by the server on a NodeState;
   // a replay repeats the time its earlier result reported.

@@ -280,8 +280,8 @@ export type Intent = Message<"koidrive.v1.Intent"> & {
   replay: boolean;
 
   /**
-   * The intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
-   * CODE_SUPERSEDED.
+   * On an op: the intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
+   * CODE_SUPERSEDED. On a trashed NodeState's status: the status intent the trash replaced.
    *
    * @generated from field: bytes over = 4;
    */
