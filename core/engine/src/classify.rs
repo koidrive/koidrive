@@ -1368,13 +1368,19 @@ impl Trees {
         };
         let made_over = self.edit_bases(id);
         let within = |a: &[String], b: &[String]| a.iter().all(|id| b.contains(id));
-        let overwritten_here =
-            |other: &str, held: &Content| match (self.l.live(other), self.s.live(other)) {
+        let same_write = |a: &Content, b: &Content| same_content(a, b) && a.mtime_ns == b.mtime_ns;
+        let holds = |shape: &Shape, write: &Content| {
+            (shape.content.as_ref()).is_some_and(|content| same_write(content, write))
+        };
+        let kept_here =
+            |other: &str, held: &Content| match (self.l.live(other), self.acknowledged(other)) {
+                (Some(local), _) if holds(local, held) => true,
                 (Some(local), Some(synced)) => {
-                    (local.content.as_ref()).is_some_and(|kept| !same_content(kept, held))
-                        && (synced.content.as_ref()).is_some_and(|base| same_content(base, held))
+                    !self.unsent_edits.contains(other)
+                        && (synced.content.as_ref()).is_some_and(|base| holds(local, base))
                 }
-                _ => false,
+                (Some(_), None) => true,
+                (None, synced) => synced.is_none() && self.l.get(other).is_none(),
             };
         self.r.get(id).is_none()
             && !made_over.is_empty()
@@ -1384,11 +1390,8 @@ impl Trees {
                     && node.is_live()
                     && !node.made_over.is_empty()
                     && (within(&made_over, &node.made_over) || within(&node.made_over, &made_over))
-                    && (node.shape.content.as_ref()).is_some_and(|held| {
-                        same_content(held, write)
-                            && held.mtime_ns == write.mtime_ns
-                            && !overwritten_here(other, held)
-                    })
+                    && (node.shape.content.as_ref())
+                        .is_some_and(|held| same_write(held, write) && kept_here(other, held))
             })
     }
 

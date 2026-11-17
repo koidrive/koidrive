@@ -207,3 +207,150 @@ fn a_file_of_unknown_ancestry_beside_r_keeps_both_values_when_s_holds_no_base() 
         assert!(uploads(&sent, 1), "{sent:?}");
     }
 }
+
+fn held_by(id: &str, shape: Shape, made_over: &[&str]) -> RemoteNode {
+    RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        version_id: id.into(),
+        made_over: made_over.iter().map(|id| (*id).into()).collect(),
+        ..remote(shape)
+    }
+}
+
+fn a_lost_write(resent: bool, before: impl FnOnce(&mut Trees)) -> Trees {
+    let mut trees = trees(&[]);
+    trees.set_remote("f".into(), held_by("v1", written(ROOT, "a", 1), &["v0"]));
+    trees.set_local("f".into(), local(written(ROOT, "a", 1), 1));
+    trees.set_synced("f".into(), Some(written(ROOT, "a", 1)));
+    trees.settle();
+    before(&mut trees);
+    trees.settle();
+    let synced = (trees.taken_from_others(|_| false).into_iter())
+        .filter(|_| resent)
+        .collect();
+    let records = trees.remote_records(|_| false);
+    trees.remove_remote("f");
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
+    trees.settle();
+    trees
+}
+
+fn a_copy() -> RemoteNode {
+    held_by("c1", written(ROOT, "b", 1), &["v0"])
+}
+
+fn copied(trees: &mut Trees, copy: RemoteNode) {
+    trees.set_local("g".into(), local(copy.shape.clone(), 2));
+    trees.set_synced("g".into(), Some(copy.shape.clone()));
+    trees.set_remote("g".into(), copy);
+    trees.settle();
+}
+
+fn copied_late(mut trees: Trees) -> Trees {
+    trees.set_remote("g".into(), a_copy());
+    trees.settle();
+    trees
+}
+
+fn sent_f(trees: &Trees) -> Vec<op::Op> {
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let Some(commit) = build(&mut commits, &mut trees.clone(), &mut ids) else {
+        return Vec::new();
+    };
+    sent_for(&ops(&commit), "f").into_iter().cloned().collect()
+}
+
+fn resent_create(sent: &[op::Op]) -> bool {
+    matches!(sent, [op::Op::CreateFile(create)] if create.source_version_id == "v1")
+}
+
+#[test]
+fn a_lost_write_another_server_file_holds_is_not_sent_again() {
+    let trees = a_lost_write(true, |trees| copied(trees, a_copy()));
+    assert_eq!(sent_f(&trees), []);
+    assert_eq!(trees.class("f"), Class::Remote);
+}
+
+#[test]
+fn a_lost_write_is_sent_again_beside_a_server_file_of_other_ancestry() {
+    let copy = held_by("c1", written(ROOT, "b", 1), &["other"]);
+    let sent = sent_f(&a_lost_write(true, |trees| copied(trees, copy)));
+    assert!(resent_create(&sent), "{sent:?}");
+}
+
+#[test]
+fn a_lost_write_is_sent_again_when_this_device_deletes_the_file_holding_it() {
+    let trees = a_lost_write(true, |trees| {
+        copied(trees, a_copy());
+        trees.remove_local("g");
+    });
+    let sent = sent_f(&trees);
+    assert!(resent_create(&sent), "{sent:?}");
+}
+
+#[test]
+fn a_lost_write_is_sent_again_when_this_device_edits_the_file_holding_it() {
+    let trees = a_lost_write(true, |trees| {
+        copied(trees, a_copy());
+        trees.set_local_changed("g".into(), local(written(ROOT, "b", 2), 2));
+    });
+    let sent = sent_f(&trees);
+    assert!(resent_create(&sent), "{sent:?}");
+}
+
+#[test]
+fn a_lost_write_is_sent_again_when_this_device_writes_the_same_bytes_over_the_file_holding_it() {
+    let mut rewritten = written(ROOT, "b", 1);
+    rewritten.content.as_mut().expect("a file").mtime_ns += 1;
+    let trees = a_lost_write(true, |trees| {
+        copied(trees, a_copy());
+        trees.set_local_changed("g".into(), local(rewritten, 2));
+    });
+    let sent = sent_f(&trees);
+    assert!(resent_create(&sent), "{sent:?}");
+}
+
+#[test]
+fn a_lost_write_is_not_sent_again_once_a_server_file_this_device_never_held_holds_it() {
+    let trees = copied_late(a_lost_write(true, |_| {}));
+    assert_eq!(trees.state().resends, ["f".to_owned()].into());
+    assert_eq!(sent_f(&trees), []);
+}
+
+#[test]
+fn a_lost_create_is_not_sent_again_once_another_server_file_holds_its_write() {
+    let trees = a_lost_write(false, |_| {});
+    assert_eq!(trees.state().lost_creates, ["f".to_owned()].into());
+    assert_eq!(sent_f(&copied_late(trees)), []);
+}
+
+#[test]
+fn a_lost_write_is_sent_as_an_edit_once_the_server_holds_its_file_again() {
+    let mut trees = copied_late(a_lost_write(true, |_| {}));
+    trees.set_remote("f".into(), held_by("v0", written(ROOT, "a", 0), &[]));
+    trees.settle();
+    let sent = sent_f(&trees);
+    let [op::Op::UpdateContent(update)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(update.made_over, ["v0"]);
+    assert!(uploads(&sent, 1), "{sent:?}");
+}
+
+#[test]
+fn a_lost_write_is_sent_again_when_this_device_holds_an_unsent_edit_of_the_file_holding_it() {
+    let trees = a_lost_write(true, |trees| {
+        trees.set_local("g".into(), local(written(ROOT, "b", 3), 2));
+        trees.set_synced("g".into(), Some(written(ROOT, "b", 3)));
+        trees.set_remote("g".into(), a_copy());
+        let mut state = trees.state();
+        state.unsent_edits.insert("g".into());
+        state.dirty.insert("g".into());
+        trees.restore(state).unwrap();
+        trees.rules_scanned();
+    });
+    let sent = sent_f(&trees);
+    assert!(resent_create(&sent), "{sent:?}");
+}
+

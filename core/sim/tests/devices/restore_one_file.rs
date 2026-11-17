@@ -290,3 +290,59 @@ fn an_edit_resent_as_a_conflict_copy_stays_in_one_file_when_a_restore_brings_bac
     )
     .unwrap();
 }
+
+fn u(kind: u8, target: usize, name: usize, text: u8) -> Step {
+    Step::User(Action {
+        kind,
+        target,
+        parent: 0,
+        name,
+        text,
+    })
+}
+
+#[test]
+fn a_file_deleted_before_a_second_restore_loses_no_write() {
+    keep(
+        3,
+        &[
+            vec![(0, u(1, 0, 0, 0))],
+            vec![
+                (0, u(2, 0, 0, 0)),
+                (0, Step::Backup),
+                (2, u(2, 0, 0, 0)),
+                (2, Step::Work(0)),
+                (2, Step::Work(0)),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (0, Step::RestoreEarlier),
+            ],
+            vec![(0, Step::Backup), (0, Step::RestoreEarlier)],
+            vec![(0, u(4, 7189654988924490997, 9, 0)), (0, Step::Restore)],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_edit_made_offline_across_a_rewind_loses_no_write() {
+    keep(
+        3,
+        &[
+            vec![(0, u(1, 0, 0, 0))],
+            vec![
+                (2, u(2, 0, 0, 0)),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (2, Step::Work(0)),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (0, u(2, 0, 0, 0)),
+                (0, Step::RestoreEarlier),
+            ],
+            vec![(0, Step::Rewind), (2, u(2, 17200373593075710099, 1, 0))],
+            vec![(2, u(2, 10175757954459202047, 1, 2))],
+        ],
+    )
+    .unwrap();
+}
