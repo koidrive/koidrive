@@ -192,8 +192,9 @@ pub(crate) fn adopt_around(
                     (remote_id.clone(), shape.clone())
                 });
             let earlier = || {
-                let mut matching =
-                    (left.get(&key)?.iter()).filter(|(remote_id, shape)| matches(remote_id, shape));
+                let mut matching = (left.get(&key)?.iter()).filter(|(remote_id, shape)| {
+                    matches(remote_id, shape) && placed_here(&shape.content, &local.content)
+                });
                 let first = matching.next()?;
                 let unique = matching.all(|(other, _)| *other == first.0);
                 let held_now = (trees.remote().get(&first.0))
@@ -599,6 +600,15 @@ fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
             remote.mtime_ns % 10_000_000 != 0 && remote.mtime_ns == local.mtime_ns
         }
         _ => false,
+    }
+}
+
+fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
+    match (remote, local) {
+        (Some(remote), Some(local)) => {
+            local.mtime_ns % 10_000_000 == 0 || remote.mtime_ns == local.mtime_ns
+        }
+        (remote, local) => remote.is_none() && local.is_none(),
     }
 }
 
