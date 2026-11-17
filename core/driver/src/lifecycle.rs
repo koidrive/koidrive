@@ -29,17 +29,32 @@ pub(crate) enum Recovery {
 struct Halt {
     problem: String,
     recovery: Recovery,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     why: Option<Halted>,
-    #[serde(default = "koidrive_telemetry::now")]
+    #[serde(default = "koidrive_telemetry::now", deserialize_with = "since")]
     since: u64,
+}
+
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+fn since<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    Ok(lenient(deserializer)?.unwrap_or_else(koidrive_telemetry::now))
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Checkpoint {
     halt: Option<Halt>,
     root: Option<Identity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
     synced: Option<u64>,
 }
 
@@ -146,7 +161,9 @@ impl Lifecycle {
                 problem: "unlinking the folder did not finish; unlink it again to finish".into(),
                 recovery: Recovery::Unlink,
                 why: Some(Halted::Unlink),
-                since: koidrive_telemetry::now(),
+                since: (checkpoint.halt.as_ref())
+                    .filter(|halt| halt.recovery == Recovery::Unlink)
+                    .map_or_else(koidrive_telemetry::now, |halt| halt.since),
             }),
             synced: checkpoint.synced,
         };
@@ -202,6 +219,26 @@ impl Lifecycle {
         status.wait = None;
     }
 
+    fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
+        let temp = self.path.with_extension("json.tmp");
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&temp)?;
+            file.write_all(&serde_json::to_vec(checkpoint)?)?;
+            file.sync_all()?;
+            fs::rename(&temp, &self.path)?;
+            File::open(self.path.parent().unwrap())?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    }
+
     pub(crate) fn set_pending(&self, nodes: u64) {
         self.pending.store(nodes, Ordering::Relaxed);
     }
@@ -239,31 +276,13 @@ impl Lifecycle {
             lasted: Age::of(at.saturating_sub(since)),
         });
     }
-
-    fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
-        let temp = self.path.with_extension("json.tmp");
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temp)?;
-            file.write_all(&serde_json::to_vec(checkpoint)?)?;
-            file.sync_all()?;
-            fs::rename(&temp, &self.path)?;
-            File::open(self.path.parent().unwrap())?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koidrive_telemetry::Pending;
+    use serde_json::json;
 
     #[test]
     fn unlink_authority_survives_task_halts_and_claims_in_either_order() {
@@ -307,43 +326,6 @@ mod tests {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod unreachable_tests {
-    use super::*;
-
-    #[test]
-    fn a_halted_or_restarted_folder_no_longer_says_it_cannot_reach_the_server() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path().join("store.sqlite");
-        let status: FolderStatus = serde_json::from_value(serde_json::json!({
-            "space_id":"abc", "space_name":"Work", "path":"/Work",
-            "state":"offline", "history_id":null, "last_seq":null,
-            "head_seq":null, "remote_nodes":0, "local_entries":null,
-            "questions":0, "problem":"can't connect to the server: the server's address could not be found",
-            "wait": {"kind": "retry", "until_ms": 1, "unreachable": {"why": "the server's address could not be found"}},
-        }))
-        .unwrap();
-        let lifecycle = Lifecycle::open(&store, status, Recorder::off()).unwrap();
-        lifecycle.halt(Halted::Io, "the folder is missing".into(), Recovery::Root);
-        {
-            let status = lifecycle.lock().unwrap();
-            assert_eq!(status.state, FolderState::Halted);
-            assert_eq!(status.wait, None, "halted: {status:?}");
-        }
-        lifecycle.restart().unwrap();
-        let status = lifecycle.lock().unwrap();
-        assert_eq!(status.wait, None, "restarted: {status:?}");
-    }
-}
-
-#[cfg(test)]
-mod health_tests {
-    use koidrive_telemetry::Pending;
-    use serde_json::json;
-
-    use super::*;
 
     fn status() -> FolderStatus {
         serde_json::from_value(json!({
@@ -398,6 +380,43 @@ mod health_tests {
     }
 
     #[test]
+    fn a_record_with_values_this_build_cannot_read_still_opens_and_counts_as_halted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let record = json!({
+            "halt": { "problem": "x", "recovery": "Root", "why": "quota_full", "since": "yesterday" },
+            "root": null,
+            "synced": -5,
+        });
+        fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let now = koidrive_telemetry::now();
+        let health = lifecycle.health(now + 60);
+        let halt = health.halt.unwrap();
+        assert_eq!(halt.why, None);
+        assert!((60..120).contains(&halt.seconds), "{}", halt.seconds);
+        assert_eq!(health.synced_ago, None);
+        assert_eq!(lifecycle.lock().unwrap().state, FolderState::Halted);
+    }
+
+    #[test]
+    fn an_unlink_tried_again_keeps_when_its_halt_began() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let record = json!({
+            "halt": { "problem": "x", "recovery": "Unlink", "why": "unlink", "since": 1_000 },
+            "root": null,
+        });
+        fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        lifecycle.begin_unlink().unwrap();
+        drop(lifecycle);
+        let reopened = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let halt = reopened.health(1_000 + 7_200).halt.unwrap();
+        assert_eq!((halt.why, halt.seconds), (Some(Halted::Unlink), 7_200));
+    }
+
+    #[test]
     fn a_record_from_an_older_release_still_opens_and_counts_as_halted() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
@@ -436,5 +455,34 @@ mod health_tests {
                 (json!("halted.root"), json!("under_1h")),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::*;
+
+    #[test]
+    fn a_halted_or_restarted_folder_no_longer_says_it_cannot_reach_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let status: FolderStatus = serde_json::from_value(serde_json::json!({
+            "space_id":"abc", "space_name":"Work", "path":"/Work",
+            "state":"offline", "history_id":null, "last_seq":null,
+            "head_seq":null, "remote_nodes":0, "local_entries":null,
+            "questions":0, "problem":"can't connect to the server: the server's address could not be found",
+            "wait": {"kind": "retry", "until_ms": 1, "unreachable": {"why": "the server's address could not be found"}},
+        }))
+        .unwrap();
+        let lifecycle = Lifecycle::open(&store, status, Recorder::off()).unwrap();
+        lifecycle.halt(Halted::Io, "the folder is missing".into(), Recovery::Root);
+        {
+            let status = lifecycle.lock().unwrap();
+            assert_eq!(status.state, FolderState::Halted);
+            assert_eq!(status.wait, None, "halted: {status:?}");
+        }
+        lifecycle.restart().unwrap();
+        let status = lifecycle.lock().unwrap();
+        assert_eq!(status.wait, None, "restarted: {status:?}");
     }
 }
