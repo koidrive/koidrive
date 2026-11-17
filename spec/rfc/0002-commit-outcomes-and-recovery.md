@@ -10,7 +10,7 @@ The schema changes add fields and enum values only:
 |---|---|---|
 | `Commit` | `history_id = 5`, `device_seq = 6`, `require_head = 7` | 1, 2, 4 |
 | `Error.Code` | `HISTORY_MISMATCH = 11`, `STALE_DEVICE_STATE = 12`, `HEAD_MOVED = 13`, `AHEAD_OF_SERVER = 14` | 1, 2, 3, 4 |
-| `Welcome` | `device_seq = 10` | 2 |
+| `Welcome` | `device_seq = 10`, `device_commit_id = 13`, `device_committed_at_ms = 14` | 2 |
 | `ResyncRequired` | `restore_seq = 2`, `restore_point_ms = 3` | 8 |
 
 RFC 0001 covers part of what the design needs from the protocol: the Unicode 18.0.0 pin for NFC and case folding (RFC 0001 §1), the reserved `.koidrive` name (§2), the reject reason `NOT_FILE` (§3), `CreateDir` onto a live file (§4) and conflict names longer than 255 bytes (§5). This RFC does not repeat them. The other protocol rules the design depends on are in RFCs 0012, 0013, 0015, 0016 and 0018 ([sync-engine design §10](../../docs/design/sync-engine/protocol-rfcs.md#10-protocol-rules-this-design-depends-on)).
@@ -35,7 +35,7 @@ CREATE TABLE device_commits (device_id TEXT PRIMARY KEY, device_seq INTEGER NOT 
 
 The server keeps this row when log truncation removes the commit from `commits`. It may drop the results of a device's older commits with the log. The device acknowledges a commit by sending its next one. `device_commits` lives in the Space DO, so a point-in-time restore rewinds it along with the rest of the history.
 
-`Welcome.device_seq` reports the connecting device's highest accepted `device_seq` in the current history, or 0 if it has none.
+`Welcome.device_seq` reports the connecting device's highest accepted `device_seq` in the current history, or 0 if it has none. `Welcome.device_commit_id` and `Welcome.device_committed_at_ms` report that commit's token (RFC 0013): the `commit_id` the row keeps and the `committed_at_ms` of its stored `CommitResult`. Both are empty when `device_seq` is 0 or the stored result has no `committed_at_ms`.
 
 **Client.** The client stores an accepted counter *a*: the `device_seq` of the last commit whose result it applied. A new commit takes slot *a* + 1, and the client persists that slot with the commit before sending it. A retry keeps the slot and the `commit_id`. A commit refused with a call-level error leaves the slot free, so the re-planned commit gets a new `commit_id` and the same slot. Applying a result sets *a* to the commit's slot. When the client connects, it compares `Welcome.device_seq` (*w*) with *a*:
 
@@ -45,9 +45,11 @@ The server keeps this row when log truncation removes the commit from `commits`.
 | *w* = *a* + 1, and the commit in flight has slot *a* + 1 | The commit was accepted and its response was lost | Resend it unchanged; the server returns its stored result |
 | *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1, and the client keeps no result of slot *w* | The store is behind the server: it was restored from a backup or cloned | Plan nothing from this store and enter recovery (§6) |
 | *w* > *a* at a slot whose result the client keeps from before an earlier loss it has not listed the tree since | The server's counter moved past *a* before the client listed the tree after that loss, as when the server is restored a second time | Act as for *w* < *a* |
-| *w* < *a* | The server lost commits of this device that it had accepted: its counter only grows, and the store learns a slot only from its result | Take *a* := *w*, drop the commit in flight, and list the tree again as for `AHEAD_OF_SERVER`. What was lost is planned again from the difference between the new listing and the client's synced state, so a lost edit comes back as a conflict copy and a lost delete comes back as a download |
+| *w* < *a* | The server lost commits of this device that it had accepted: its counter only grows, and the store learns a slot only from its result | Take *a* := *w*, drop the commit in flight, and list the tree again as for `AHEAD_OF_SERVER`. The server is taken to hold every seq up to the seq the client kept for slot *w* only when the `Welcome`'s commit token is the one the client kept for that slot, and none otherwise (below). What was lost is planned again from the difference between the new listing and the client's synced state, so a lost edit comes back as a conflict copy and a lost delete comes back as a download |
 
 The client compares *w* with *a* before it applies any result it got on the same connection. A result applied first raises *a* past a current *w*, so a healthy server looks like one that lost commits. When *w* < *a*, the client also discards any tree listing or commit result from an earlier connection that arrives after the `Welcome`, because it may describe commits the server lost.
+
+A restored server gives seqs and slots out again, so a slot number does not name one commit across restores. The client keeps the commit token of each slot it keeps, from the commit's result or its own record. A `Welcome` whose token equals the one the client keeps for slot *w* shows that the current history holds that commit at the seq the client kept, and so holds every seq at or below it as the client saw them (RFC 0013). Any other `Welcome`, an empty token included, shows no seq held, until the client applies a result on that connection. This bound is what the client compares the new listing against after a loss, whichever way the loss showed: a `Welcome` with *w* < *a*, or `AHEAD_OF_SERVER` after a `Welcome` with *w* = *a*. It also covers a store copied after a loss and before the listing that comes back after the server gave a lost slot out again: *w* is a slot that store keeps from the loss, so the client acts as for *w* < *a*, but the token is another commit's, so no seq is held.
 
 ## 3. Check order (§8 step 4)
 

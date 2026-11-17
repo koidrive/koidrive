@@ -269,6 +269,8 @@ The server keeps, per device, the highest `device_seq` it accepted and that comm
 | *w* > *a* at a slot the store keeps from before a loss it has not listed since | the server's counter moved past *a* before R was listed again after that loss, as from a second restore of the server | as for *w* < *a* |
 | *w* < *a*, or *w* = *a* with the result of the commit in flight held | the server lost accepted commits of this device | *a* := *w*; drop the commit in flight and keep its restores queued; record R as ahead of the server and bootstrap as for `AHEAD_OF_SERVER` (§4.4) |
 
+The store keeps the seq and commit token (RFC 0013) of each of its last 1,000 acknowledged commits by slot, and `Welcome` carries the token of the commit at slot *w*. A restored server gives slots out again, so the seq kept for slot *w* bounds what the server holds (§4.4) only when the two tokens are equal. Then the current history holds that commit at that seq, and every seq at or below it as this device saw them. Otherwise no seq is known to be held until a result is applied on the connection.
+
 These ordering rules keep the counter comparison sound:
 
 - The root marker's counter (below) is checked when the task starts, and the history before the device counter.
