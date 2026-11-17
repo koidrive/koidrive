@@ -180,6 +180,7 @@ fn main() -> ExitCode {
     let pending_paths = paths.clone();
     let telemetry_paths = paths.clone();
     let telemetry = telemetry_of(&command_args);
+    telemetry::vote_with_each_token_refresh(&paths);
     let sets_up = matches!(
         command_args,
         Command::Setup { .. }

@@ -2,8 +2,7 @@
 
 use std::fmt;
 use std::io;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -21,11 +20,20 @@ pub const ROTATION_PERIOD: Duration = Duration::from_secs(24 * 3600);
 
 const ROTATION_DEADLINE_MS: i64 = 60_000;
 
-static TELEMETRY: AtomicI32 = AtomicI32::new(Telemetry::Unspecified as i32);
+type ReadTelemetry = Box<dyn Fn() -> Telemetry + Send + Sync>;
 
-/// Sets this device's usage-report choice, which every later `POST /v1/token` of this process carries.
-pub fn set_telemetry(choice: Telemetry) {
-    TELEMETRY.store(choice as i32, Ordering::Relaxed);
+static TELEMETRY: RwLock<Option<ReadTelemetry>> = RwLock::new(None);
+
+/// Sets how this process reads the device's usage-report choice. Each `POST /v1/token` calls `read` and carries what it
+/// returns. Until a process sets it, its refreshes carry `TELEMETRY_UNSPECIFIED`.
+pub fn set_telemetry_source(read: impl Fn() -> Telemetry + Send + Sync + 'static) {
+    *TELEMETRY.write().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(read));
+}
+
+fn telemetry() -> Telemetry {
+    (TELEMETRY.read().unwrap_or_else(PoisonError::into_inner))
+        .as_ref()
+        .map_or(Telemetry::Unspecified, |read| read())
 }
 
 /// A device's long-lived credentials from `POST /v1/claim` or `POST /v1/pair/complete`. The caller stores them.
@@ -355,7 +363,7 @@ impl Auth {
                 .map(|staged| staged.refresh_credential.clone())
                 .unwrap_or_default(),
             rotate_before_ms: proposal.map_or(0, |staged| staged.rotate_before_ms),
-            telemetry: TELEMETRY.load(Ordering::Relaxed),
+            telemetry: telemetry() as i32,
         };
         self.api.token(&request).await
     }
