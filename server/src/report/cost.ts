@@ -20,7 +20,6 @@ interface Price {
   free?: Free;
 }
 
-// Workers Paid, read 2026-11-17 from each source.
 export const PRICING = {
   subscription: { source: WORKERS, usdPerMonth: 5 },
   objectMemory: { source: DURABLE_OBJECTS, gb: 0.125 },
