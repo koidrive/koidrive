@@ -487,7 +487,10 @@ cases = ["{1:064}"]
         for entry in triage.known_failures(triage.KNOWN_FAILURES.read_text()):
             for test in entry["tests"]:
                 with self.subTest(failure=entry["class"], test=test):
-                    self.assertRegex(source, rf"\bfn {re.escape(test)}\(")
+                    *modules, name = test.split("::")
+                    self.assertRegex(source, rf"\bfn {re.escape(name)}\(")
+                    for module in modules:
+                        self.assertRegex(source, rf"\bmod {re.escape(module)}\b")
 
     def test_a_registry_that_cant_be_read_is_named_in_the_error(self):
         broken = {
