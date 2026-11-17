@@ -35,6 +35,10 @@ koi resolve <id> <answer>
 
 The first command lists every pending decision with the answers it accepts. The second gives one answer, such as `delete` or `restore`. [Decisions](status-reference.md#decisions) explains what each answer does.
 
+## After a rewind
+
+When the space is rewound on the server, each folder follows the rewound space on its own. Files the rewind would take from this device, such as files created after the restore point, wait in a decision until you answer `keep` or `discard`. `koi resolve` lists it, and on a Mac it appears in **Needs You**. [A rewind opens decisions](status-reference.md#a-rewind-opens-decisions) lists every decision a rewind can open.
+
 ## Restart a halted folder
 
 Fix what the problem line names, then:
@@ -44,8 +48,6 @@ koi folder restart ~/Koidrive
 ```
 
 This stops the folder and syncs it again from the start. A folder that was moved away, or whose root check fails, syncs again on its own once its path leads to the same folder again. If the daemon isn't running, run `koi service start`.
-
-A problem that ends with "this build cannot recover the folder yet" means the folder's sync state and the server disagree in a way this version can't resolve, for example after the space was rewound on the server. A restart doesn't fix it. Unlink the folder, link a new, empty folder to the space, and copy over any files you changed in the old folder.
 
 A folder whose sync database can't be opened halts, and its files stay as they are. Run `koi folder restart` to try again, or unlink the folder and link it again. If `koi status` can't name the folder's path, it shows `(path unknown)` and the space's id instead. Remove that folder's state with `koi folder unlink --space <space id>`, then link the folder again.
 
