@@ -29,6 +29,8 @@ mod restore_back_to_back;
 mod restore_deleted_folder;
 #[path = "devices/restore_kept_merge.rs"]
 mod restore_kept_merge;
+#[path = "devices/restore_lost_copy.rs"]
+mod restore_lost_copy;
 #[path = "devices/restore_stale_device.rs"]
 mod restore_stale_device;
 #[path = "devices/restore_twice.rs"]

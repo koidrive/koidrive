@@ -182,3 +182,71 @@ issue = "GUN-865"
 tests = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"]
 message = '''no convergence within <n> steps'''
 examples = ["no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:1599."]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_restores_and_rewinds"]
+message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
+examples = [
+  "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"b\"], [\"ß (conflict from device-1 2026-11-09)\"]].",
+  "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"ß\"], [\"é (conflict from device-1 2026-11-09)\", \"É\"]].",
+]
+cases = [
+  "08d9472289b5",
+  "133a58fb9157",
+  "2496cb05d6c5",
+  "2d265e3de74e",
+  "328a7ff3590d",
+  "33ea3d145468",
+  "37224f12833e",
+  "4cc8dfe3d26a",
+  "6de3b1e53b8a",
+  "809c43466f9b",
+  "84b71b95ab6d",
+  "890384be6d2f",
+  "907421237010",
+  "95de5fd243db",
+  "9e6239eac559",
+  "ab1ed2c991b5",
+  "c00dfff4ac45",
+  "c62f666ec651",
+  "ec20089a6b50",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: device <n> is quiet, but it still sends nodes again:'''
+examples = ["after phase 2: device 1 is quiet, but it still sends nodes again: {\"01a1c2c0-39a0-7ea7-93f8-3d888a182e12\"}, at {}, lost creates {\"01a1c2c0-39a0-7224-a2dd-41264c2feceb\"}."]
+cases = [
+  "5e0a61643769",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at'''
+examples = ["after phase 1: write 1 is in the recovery copy \"ß\" of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3, but device 1's own commit 1 shows the server kept it at [1]."]
+cases = [
+  "8c10769408c5",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: device <n> is quiet, but committing has problems \{.*\} or has stopped:'''
+examples = ["after phase 2: device 1 is quiet, but committing has problems {\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"} or has stopped: None."]
+cases = [
+  "de9c5cde7dfc",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["a_discarded_overwrite_across_a_rewind_keeps_the_rewound_write_in_one_file", "a_same_bytes_rewrite_across_a_rewind_keeps_the_rewound_write_in_one_file"]
+message = '''called `Result::unwrap\(\)` on an `Err` value: Diverged\("after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
+examples = ["called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 2: write 2 is in more than one file on the server, and no user copied it: [[\\\"a\\\"], [\\\"a (conflict from device-2 2026-11-09)\\\"]]\")"]
