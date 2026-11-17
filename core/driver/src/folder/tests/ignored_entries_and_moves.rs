@@ -1459,3 +1459,27 @@ fn delayed_backup_retry(late_arm: bool) {
         "the new bytes should keep the document's original node"
     );
 }
+
+#[test]
+fn a_file_moved_into_an_ignored_folder_after_its_folder_left_a_removed_one_keeps_the_removed_one_outstanding()
+ {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("g/p")).unwrap();
+    a.create(&mut remote, &site.root.join("g/p/x"), b"kept");
+    a.create(&mut remote, &site.root.join(".koiignore"), b"ig/\n");
+    a.settle();
+    fs::create_dir(site.root.join("ig")).unwrap();
+    fs::rename(site.root.join("g/p"), site.root.join("p")).unwrap();
+    fs::remove_dir(site.root.join("g")).unwrap();
+    a.scan_until(|a| {
+        let entries = &a.observer.snapshot().entries;
+        entries.contains_key(Path::new("p")) && !entries.contains_key(Path::new("g"))
+    });
+    fs::rename(site.root.join("p/x"), site.root.join("ig/x")).unwrap();
+    a.scan_until(|a| !a.folder.engine.trees.ignored_local().is_empty());
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(fs::read(site.root.join("ig/x")).unwrap(), b"kept");
+}

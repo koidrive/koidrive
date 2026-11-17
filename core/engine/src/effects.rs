@@ -231,7 +231,7 @@ impl BatchLimit {
     };
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub struct MergeResidue(pub(crate) BTreeMap<NodeId, NodeId>);
 
 impl MergeResidue {
