@@ -463,6 +463,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
       this.traffic.reporting = check.reporting;
+      if (check.reporting === false) this.dropParked();
     }
 
     private renewLeases(): void {

@@ -624,12 +624,14 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
           }
         }
       });
-      if (added) await this.armAlarm();
+      if (added) await this.armAlarm().catch((error: unknown) => console.error("usage alarm not armed", errorText(error)));
       return true;
     }
 
     private async sendUsage(): Promise<void> {
       const nowMs = this.clock();
+      const oldest = Math.floor(nowMs / HOUR_MS) - REPORT_KEEP_HOURS;
+      this.sql.exec("DELETE FROM usage_hours WHERE hour < ?", oldest);
       const ended = this.sql
         .exec("SELECT hour, report_id, usage, tried_at_ms FROM usage_hours WHERE (hour + 1) * ? + ? <= ? ORDER BY hour", HOUR_MS, REPORT_DELAY_MS, nowMs)
         .toArray()
@@ -646,9 +648,8 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
             return false;
           })
         : true;
-      const oldest = Math.floor(nowMs / HOUR_MS) - REPORT_KEEP_HOURS;
       for (const row of ended) {
-        if (sent || Number(row.hour) < oldest) this.sql.exec("DELETE FROM usage_hours WHERE hour = ?", row.hour);
+        if (sent) this.sql.exec("DELETE FROM usage_hours WHERE hour = ?", row.hour);
         else this.sql.exec("UPDATE usage_hours SET tried_at_ms = ? WHERE hour = ?", nowMs, row.hour);
       }
     }

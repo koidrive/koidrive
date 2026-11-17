@@ -387,7 +387,7 @@ describe("hourly server report", () => {
   it("parks a Space DO's counts on its socket across a lost memory and hands each count over once, when its batch is due and when the hour alarm runs", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Date.now();
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     const openedMs = nowMs;
@@ -520,6 +520,18 @@ describe("hourly server report", () => {
     expect((await storedCounts())["rpc_list_tree.ok"]).toBeUndefined();
   });
 
+  it("drops what a Space DO parked as soon as a session check says reports are off, with no RPC after it", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    expect(await parkedCounts(stub)).toEqual([1]);
+    await runInDurableObject(stub, (instance: object) => {
+      const space = instance as unknown as { leases: Map<string, { check: object }>; storeLease(deviceId: string, check: object, askedAtMs: number): void };
+      space.storeLease(owner.deviceId, { ...space.leases.get(owner.deviceId)!.check, reporting: false }, Date.now() + 1);
+    });
+    expect(await parkedCounts(stub)).toEqual([0]);
+  });
+
   it("calls nothing, arms nothing and leaves the sockets as they were while reports are off, in the Worker and in a Space DO", async () => {
     const { owner, spaceId, stub } = await reportingSpace(TokenRequest_Telemetry.OFF);
     const usage = await watchUsage();
@@ -636,6 +648,39 @@ describe("hourly server report", () => {
     expect(await rowsRead()).toBe(before);
   });
 
+  it("never sends an hour older than a day, even one a failed send kept", async () => {
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const sent: unknown[] = [];
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, hour * HOUR_MS);
+      countVotes(instance);
+      state.storage.sql.exec("INSERT INTO usage_hours (hour, report_id, usage, tried_at_ms) VALUES (?, ?, ?, ?)", hour - 30, crypto.randomUUID(), JSON.stringify({ counts: { "get_server.200": 1 }, latency: {} }), (hour - 2) * HOUR_MS);
+      instance.clock = () => hour * HOUR_MS + 60_000;
+      instance.sendReport = async (report) => {
+        sent.push(report);
+        return true;
+      };
+      await instance.alarm();
+    });
+    expect(sent).toEqual([]);
+    expect(await storedHours()).toEqual([]);
+  });
+
+  it("keeps a batch it stored once even when arming the report alarm fails", async () => {
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const stored = await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, hour * HOUR_MS);
+      countVotes(instance);
+      instance.clock = () => hour * HOUR_MS + 60_000;
+      vi.spyOn(state.storage, "setAlarm").mockRejectedValue(new Error("storage busy"));
+      return instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+    });
+    expect(stored).toBe(true);
+    expect(await storedCounts()).toEqual({ "get_server.200": 1 });
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+  });
+
   it("keeps an hour whose send failed for the next hour, and drops it after a day", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const tries: number[] = [];
@@ -657,6 +702,9 @@ describe("hourly server report", () => {
     nowMs += HOUR_MS / 2;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     expect(tries).toHaveLength(1);
+    nowMs = (hour + 3) * HOUR_MS;
+    await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
+    expect(tries).toHaveLength(2);
     nowMs = (hour + 25) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     expect(tries).toHaveLength(2);

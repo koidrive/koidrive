@@ -357,9 +357,11 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
 
 pub fn vote_with_each_token_refresh(paths: &Paths) {
     let store = Store::new(&paths.state_dir);
-    koidrive_net::set_telemetry_source(move || {
-        store.status(var).map_or(Telemetry::Unspecified, vote)
-    });
+    koidrive_net::set_telemetry_source(move || stored_vote(&store));
+}
+
+fn stored_vote(store: &Store) -> Telemetry {
+    store.status(var).map_or(Telemetry::Off, vote)
 }
 
 async fn send_vote(paths: &Paths) {
@@ -863,6 +865,15 @@ mod tests {
             Store::new(&paths.state_dir).settings().unwrap().enabled,
             Some(false)
         );
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_read_votes_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        std::fs::create_dir_all(dir.path().join("telemetry/settings.json")).unwrap();
+        assert!(store.settings().is_err());
+        assert_eq!(stored_vote(&store), Telemetry::Off);
     }
 
     #[test]
