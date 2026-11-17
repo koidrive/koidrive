@@ -17,7 +17,7 @@ For setup and everyday sync on a Mac, use the [Mac app guide](macos.md). The fol
 
 1. [Install](install.md): install or update the command, or build it from source.
 2. [Set up](setup.md): deploy a server and claim it, add devices, create spaces and upgrade the server.
-3. [Folders](folders.md): link a folder, and choose what syncs with `.koiignore` and `config.toml`.
+3. [Folders](folders.md): link a folder, and choose what syncs with `.koiignore`, `.gitignore` and `config.toml`.
 4. [Trash, versions and restore](history.md): get back a deleted file or an earlier version.
 5. [Share links](sharing.md): let anyone with a link open a file or folder, with an expiry and a password.
 6. [Status and problems](status.md): read `koi status`, pause sync, answer a decision, restart a folder, send refused changes again and write a file for a problem report.

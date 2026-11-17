@@ -38,6 +38,26 @@ build/
 
 `.koiignore` files sync like other files, so every device follows the same rules. Ignoring a path never deletes it. The files stay on this device's disk, on the server and on the other devices. [.koiignore rules](sync-rules.md#koiignore-rules) has the details.
 
+## Files that .gitignore files exclude
+
+Koidrive follows `.gitignore` files too, so `node_modules/`, build output and everything else a project's `.gitignore` excludes stay on this device. Each `.gitignore` file applies to its folder and everything below it, as in git.
+
+`.koiignore` files decide first. Koidrive reads the `.gitignore` files only for a path that no `.koiignore` pattern matches. To sync the `.env` files that a `.gitignore` file excludes, add this line to a `.koiignore` file:
+
+```gitignore
+!.env
+```
+
+Koidrive doesn't read `.git/info/exclude` or git's global excludes file. They hold one person's choices for one clone.
+
+Each device has its own setting. To sync what `.gitignore` files exclude on this device:
+
+```sh
+koi gitignore off
+```
+
+On a terminal, the command shows how many files would start syncing in each folder and asks first. Without a terminal, add `--yes`. The command writes `gitignore = false` under `[sync]` in `config.toml`. `koi gitignore status` shows the setting and counts the files, and `koi gitignore on` turns it back on. Switching it either way deletes nothing. Files that a `.gitignore` file starts to exclude stay on this device's disk, on the server and on the other devices.
+
 ## Sync only part of a space on this device
 
 Add rules for this device alone to `~/.config/koidrive/config.toml`, or `$XDG_CONFIG_HOME/koidrive/config.toml` when that variable is set. They apply to every folder this device links:
