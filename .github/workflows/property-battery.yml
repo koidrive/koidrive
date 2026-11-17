@@ -38,6 +38,7 @@ env:
   SHARDS: ${{ inputs.shards || '48' }}
   FILTER: ${{ inputs.filter }}
   ONCE_PACKAGES: koidrive-chunk koidrive-engine koidrive-ignore koidrive-sim koidrive-test-support
+  KOIDRIVE_SIM_REVIVED_DELETES: '1'
 
 defaults:
   run:

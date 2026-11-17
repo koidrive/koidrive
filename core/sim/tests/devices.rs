@@ -47,6 +47,8 @@ mod restore_write_history;
 mod restore_yielded_resend;
 #[path = "devices/unasked_names.rs"]
 mod unasked_names;
+#[path = "devices/undone_deletes.rs"]
+mod undone_deletes;
 
 fn action() -> impl Strategy<Value = Action> {
     (
@@ -256,6 +258,7 @@ fn on(volumes: &[Precision]) -> World {
     let mut world = World::on(volumes);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
+    world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
     world
 }
 

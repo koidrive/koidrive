@@ -45,6 +45,11 @@
 //!   took a write out of the server's live tree that the user
 //!   of its device never overwrote or deleted.
 //! - No node keeps a pending name that no user gave.
+//! - With [`World::revived_deletes`] set, a delete a user made while the server held the deleted
+//!   file reaches the server. Once the devices are quiet, the server holds neither the deleted
+//!   write nor one it was made over live, unless a restore took them from the server since, the
+//!   author resent a write the server lacked at the delete, the delete was only in a store that
+//!   rolled back, or another device changed the file or a folder above it after the delete.
 //! - No write is in two files of the server, except one a restore took from the server while a
 //!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
 //!   node that held it, or for each device that held it in a node the restore rolled back to
@@ -61,6 +66,7 @@
 //! - Every write was in the server's live tree at some time, unless the user who made it
 //!   overwrote or deleted it first.
 
+mod deletes;
 pub mod device;
 pub mod disk;
 
@@ -80,6 +86,7 @@ use koidrive_proto::v1::{
 };
 use sha2::{Digest, Sha256};
 
+use self::deletes::Deletion;
 use self::device::{Device, Engine, Link, Message};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
@@ -615,6 +622,9 @@ pub struct World {
     /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
     /// server from before RFC 0002's `device_commit_id` does.
     pub tokenless_welcome: bool,
+    /// Fails a phase when a file a user deleted is live on the server again with no restore that
+    /// took the delete.
+    pub revived_deletes: bool,
     /// The tag of the last write.
     writes: i64,
     /// The device whose user made each write.
@@ -672,6 +682,7 @@ pub struct World {
     /// The writes a person discarded in answer to a recovery question, which go to the local trash.
     discarded: BTreeSet<i64>,
     discards: Vec<BTreeSet<i64>>,
+    deletions: Vec<Deletion>,
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
@@ -777,6 +788,7 @@ impl World {
             seen: BTreeMap::new(),
             trace: false,
             tokenless_welcome: false,
+            revived_deletes: false,
             writes: 0,
             writers: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -809,6 +821,7 @@ impl World {
             discarded: BTreeSet::new(),
             discards: vec![BTreeSet::new(); count],
             binned_copies: BTreeSet::new(),
+            deletions: Vec::new(),
             answers: 0,
         }
     }
@@ -958,6 +971,7 @@ impl World {
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
+                    self.deletions.retain(|deletion| deletion.reached);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1094,6 +1108,7 @@ impl World {
             (Act::Delete, Some(ino)) => {
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(tag));
+                self.record_delete(d, ino, &deleted);
             }
             (Act::Copy, Some(ino)) => {
                 if let Some(new) = disk.copy(ino, place, name) {
@@ -1168,6 +1183,7 @@ impl World {
             .copied()
             .collect();
         self.space.rewind(&backup.space, self.server_now());
+        self.deletions.retain(|deletion| deletion.reached);
         self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.placements.clone_from(&backup.placements);
@@ -1416,6 +1432,10 @@ impl World {
         }
         self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
+        let live = live_writes(&self.space);
+        for deletion in &mut self.deletions {
+            deletion.gone = deletion.held(&live, |_| false).is_none();
+        }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
         self.rewound
@@ -2799,6 +2819,9 @@ impl World {
                                 };
                                 self.unasked.get_or_insert(why);
                             }
+                            for deletion in &mut self.deletions {
+                                deletion.reached |= deletion.held(&after, |_| false).is_none();
+                            }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
                                 if let Some(content) = node.current.and_then(|v| v.content) {
@@ -3423,6 +3446,7 @@ impl World {
             )));
         }
         let live = live_writes(&self.space);
+        self.revived_delete(&nodes, &live)?;
         let same_bytes_on_server = |write: i64, writer: usize| {
             (self.devices[writer].engine.trees.local().iter()).any(|(id, node)| {
                 let Some(local) = (node.shape.content.as_ref()).filter(|c| tag(c) == write) else {
