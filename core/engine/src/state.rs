@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::Waiting;
-use crate::commit::{Halt, InFlight};
+use crate::commit::{Base, Halt, InFlight};
 use crate::effects::{Effect, EffectRecord};
 use crate::guard::{Counted, GuardState, RemoteDeletion};
 use crate::question::{Held, Limit, Question};
@@ -324,9 +324,10 @@ pub struct CommitsState {
     /// The restores that ended, oldest first, at most
     /// [`RESOLVED_KEPT`](crate::restore::RESOLVED_KEPT).
     pub resolved: Vec<Resolved>,
-    /// The seq of each of this device's last [`SLOTS_KEPT`](crate::commit::SLOTS_KEPT)
-    /// acknowledged commits, by slot.
-    pub slots: BTreeMap<u64, u64>,
+    /// The seq and commit token of each of this device's last
+    /// [`SLOTS_KEPT`](crate::commit::SLOTS_KEPT) acknowledged commits, by slot. A slot kept from
+    /// before commit tokens has an empty token.
+    pub slots: BTreeMap<u64, Base>,
     /// The open questions, in the order they were asked.
     pub questions: Vec<Question>,
     /// The local entries a Publish answer to a first link's question released, until the server
@@ -481,7 +482,7 @@ pub struct CommitsChanges {
     pub aliases: MapChanges<NodeId, NodeId>,
     pub restores: Option<BTreeMap<RestoreId, RestoreIntent>>,
     pub resolved: Option<Vec<Resolved>>,
-    pub slots: MapChanges<u64, u64>,
+    pub slots: MapChanges<u64, Base>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
     pub guard: GuardChanges,

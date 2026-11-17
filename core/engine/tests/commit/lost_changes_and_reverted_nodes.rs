@@ -1409,7 +1409,7 @@ fn a_full_set_of_slots_forgets_only_the_positions_below_its_oldest_seq() {
     take_remote_move("z", 1600, &mut trees);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 999,
-        slots: (1..=999).map(|slot| (slot, slot + 1000)).collect(),
+        slots: (1..=999).map(|slot| (slot, Base::from(slot + 1000))).collect(),
         ..Default::default()
     })
     .unwrap();
@@ -1438,8 +1438,8 @@ fn a_lost_move_in_the_oldest_kept_commit_is_sent_again_over_the_position_it_repl
     move_n_to_y_at(2, &mut trees, &mut commits, &mut ids);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 999,
-        slots: std::iter::once((1, 2))
-            .chain((2..=999).map(|slot| (slot, slot + 1000)))
+        slots: std::iter::once((1, Base::from(2)))
+            .chain((2..=999).map(|slot| (slot, Base::from(slot + 1000))))
             .collect(),
         ..Default::default()
     })
@@ -1774,7 +1774,7 @@ fn a_file_this_device_made_follows_a_delete_after_another_device_edited_it_past_
     let mut trees = trees(&[("a", held.clone(), held, Some(made))]);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 2,
-        slots: [(1, 2), (2, 4)].into(),
+        slots: [(1, Base::from(2)), (2, Base::from(4))].into(),
         ..Default::default()
     })
     .unwrap();

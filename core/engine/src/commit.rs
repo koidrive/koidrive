@@ -46,9 +46,9 @@ const RECORD_BYTES: usize = 256;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 
-/// The seq a commit builds on and the commit token there (RFC 0013): the `commit_id` and
-/// `committed_at_ms` of the commit R applied at that seq. An empty token claims nothing, so a
-/// server checks only the seq.
+/// A seq and the commit token there (RFC 0013): the `commit_id` and `committed_at_ms` of the commit
+/// applied at that seq. It is the seq a commit builds on, where an empty token claims nothing, so a
+/// server checks only the seq, or the seq of one of this device's commits, by slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Base {
     pub seq: u64,
@@ -185,9 +185,9 @@ pub struct Commits {
     restores: Marked<BTreeMap<RestoreId, RestoreIntent>>,
     /// The last [`RESOLVED_KEPT`] restores that ended, oldest first.
     resolved: Marked<Vec<Resolved>>,
-    /// The seq of each of this device's last [`SLOTS_KEPT`] acknowledged commits, and of the commit
-    /// in flight once R holds its record, by slot.
-    slots: TrackedMap<u64, u64>,
+    /// The seq and commit token of each of this device's last [`SLOTS_KEPT`] acknowledged commits,
+    /// and of the commit in flight once R holds its record, by slot.
+    slots: TrackedMap<u64, Base>,
     /// The open questions, in the order they were asked.
     questions: Marked<Vec<Question>>,
     /// The local entries a [`Answer::Publish`] to a first link's question released (section 6.4),
@@ -348,28 +348,33 @@ impl Commits {
     /// this commit is among them, so a node state of a seq at or below it is from before the loss
     /// (section 4.4).
     pub fn held_through(&self) -> u64 {
-        (self.slots.range(..=*self.accepted).next_back()).map_or(0, |(_, &seq)| seq)
+        (self.slots.range(..=*self.accepted).next_back()).map_or(0, |(_, slot)| slot.seq)
     }
 
     /// Whether one of this device's commits has seq `seq`: one of the last [`SLOTS_KEPT`]
     /// acknowledged, or one whose record R held while it was in flight ([`Commits::own_record`]). A
     /// commit the server lost is included until R is listed again ([`Commits::forget_lost_slots`]).
     pub fn made_here(&self, seq: u64) -> bool {
-        self.slots.values().any(|&made| made == seq)
+        self.slots.values().any(|made| made.seq == seq)
     }
 
     /// Whether the record of the commit of `seq` and `commit_id` is this device's: one of an
     /// acknowledged commit, or one of the commit in flight, which can arrive before its result. The
     /// record of the commit in flight gives it slot `seq`, so a loss that drops the commit before its
     /// result still finds the commit made here.
-    pub fn own_record(&mut self, seq: u64, commit_id: &str) -> bool {
+    pub fn own_record(&mut self, seq: u64, commit_id: &str, committed_at_ms: i64) -> bool {
         let Some(slot) = (self.in_flight.as_ref())
             .filter(|flight| flight.commit.commit_id == commit_id)
             .map(|flight| flight.commit.device_seq)
         else {
             return self.made_here(seq);
         };
-        self.slots.insert(slot, seq);
+        let token = Base {
+            seq,
+            commit_id: commit_id.to_owned(),
+            committed_at_ms,
+        };
+        self.slots.insert(slot, token);
         true
     }
 
@@ -1676,9 +1681,11 @@ impl Commits {
         else {
             return;
         };
-        let Some(&seq) =
-            (self.slots.get(&flight.commit.device_seq)).filter(|&&seq| seq <= last_seq)
-        else {
+        let Some(&seq) = (self
+            .slots
+            .get(&flight.commit.device_seq)
+            .map(|slot| &slot.seq))
+        .filter(|&&seq| seq <= last_seq) else {
             return;
         };
         for op in flight.commit.ops.iter().filter_map(|op| op.op.as_ref()) {
@@ -2242,14 +2249,19 @@ impl Commits {
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
         self.keep_unsent(trees, sent);
         self.accepted.set(flight.commit.device_seq);
-        self.slots.insert(flight.commit.device_seq, result.seq);
+        let token = Base {
+            seq: result.seq,
+            commit_id: flight.commit.commit_id.clone(),
+            committed_at_ms: result.committed_at_ms,
+        };
+        self.slots.insert(flight.commit.device_seq, token);
         while self.slots.len() > SLOTS_KEPT {
             self.slots.pop_first();
         }
         if self.slots.len() == SLOTS_KEPT
-            && let Some((_, &oldest)) = self.slots.first_key_value()
+            && let Some((_, oldest)) = self.slots.first_key_value()
         {
-            trees.forget_past_positions_below(oldest);
+            trees.forget_past_positions_below(oldest.seq);
         }
         if cfg!(debug_assertions) {
             let away: Vec<&NodeId> = (lost.iter())
