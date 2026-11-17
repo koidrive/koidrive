@@ -1990,6 +1990,7 @@ impl World {
                         moved,
                         untaken,
                         records,
+                        commits.aliases(),
                         commits.held_through(),
                         commits.accepted(),
                     );

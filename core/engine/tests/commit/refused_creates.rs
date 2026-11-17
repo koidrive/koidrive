@@ -113,7 +113,7 @@ fn resent_where_another_device_renamed_it(edit: Option<u8>) -> (Trees, Commits, 
     let untaken = trees.untaken_changes(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, &Default::default(), 0, 0);
     trees.settle();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();

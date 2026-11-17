@@ -146,7 +146,17 @@ fn ancestry_listing_give_way_uses_the_snapshot_source() {
             vec!["foreign-base"]
         };
         trees.set_listed_remote("f".into(), ancestry_remote(2, "after-loss", &bases));
-        trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 0, 0);
+        trees.forget_lost(
+            vec![],
+            vec![],
+            synced,
+            vec![],
+            vec![],
+            records,
+            &Default::default(),
+            0,
+            0,
+        );
         assert_eq!(trees.s.get("f").is_some(), carries_source);
         assert_eq!(trees.source_version_id("f"), Some("held"));
     }
@@ -158,7 +168,17 @@ fn ancestry_a_reused_sequence_does_not_discard_a_known_later_value() {
     let records = trees.remote_records(|_| false);
     let synced = trees.taken_from_others(|_| false);
     trees.set_listed_remote("f".into(), ancestry_remote(0, "foreign-base", &[]));
-    trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 10, 0);
+    trees.forget_lost(
+        vec![],
+        vec![],
+        synced,
+        vec![],
+        vec![],
+        records,
+        &Default::default(),
+        10,
+        0,
+    );
     trees.settle();
     let mut commits = crate::commit::Commits::default();
     let commit = commits.build(
@@ -187,7 +207,17 @@ fn ancestry_unknown_relationships_keep_sequence_based_survival() {
             "foreign-base"
         };
         trees.set_listed_remote("f".into(), ancestry_remote(0, listed, &[]));
-        trees.forget_lost(vec![], vec![], synced, vec![], vec![], records, 10, 0);
+        trees.forget_lost(
+            vec![],
+            vec![],
+            synced,
+            vec![],
+            vec![],
+            records,
+            &Default::default(),
+            10,
+            0,
+        );
         assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
         assert!(!trees.resends.contains("f"));
     }
@@ -608,6 +638,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         Vec::new(),
         Vec::new(),
         BTreeMap::new(),
+        &Default::default(),
         0,
         0,
     );
@@ -651,6 +682,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         Vec::new(),
         Vec::new(),
         BTreeMap::new(),
+        &Default::default(),
         0,
         0,
     );

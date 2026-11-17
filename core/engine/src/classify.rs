@@ -3251,8 +3251,10 @@ impl Trees {
     /// this device applied (design §4.4). S forgets every node that R does not hold at all or holds
     /// live with another shape, and every node S holds below one. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
-    /// position L holds: a node R does not hold at all is no longer reverted, since the server's
-    /// rename or merge that reverted it was lost too. One whose content differs from
+    /// position L holds. A reverted node that S, a waiting S update or R held and R no longer holds at all stops being
+    /// reverted, since the server's rename that reverted it was lost too. A folder this device
+    /// merged into another (`merged`, by the folder it went into) stops being reverted only when R
+    /// no longer holds that folder, since the merge was lost too. One whose content differs from
     /// R's is kept beside R's as a conflict copy instead of being replaced by R's older content. A
     /// node R holds in the trash keeps S, so it stays a remote delete, also below a node S forgets,
     /// unless it is a file whose edit the server lost (see `edited` below).
@@ -3358,8 +3360,7 @@ impl Trees {
     /// 2.8). An S update that waits ([`Trees::waiting`]) from a commit above it came from a commit
     /// the server lost. The update is dropped, a removal as well as a shape, so S keeps what it held: L's change is
     /// compared with S and sent again when R holds the node as S does, and kept beside R's when R
-    /// holds it otherwise. A node R does not hold at all is then no longer reverted, as one S
-    /// forgets. An update from a kept commit, or from no commit, stays, so a change another device
+    /// holds it otherwise. An update from a kept commit, or from no commit, stays, so a change another device
     /// made since reads as a remote change once the update fits. That holds for a node R holds in
     /// the trash too: a lost update kept there would stand for S in the effects, which would then
     /// replace an edit only L holds with content another device restores, and later commits take
@@ -3401,6 +3402,7 @@ impl Trees {
         moved: Vec<(NodeId, MovedHere)>,
         untaken: Vec<(NodeId, Untaken)>,
         records: BTreeMap<NodeId, RemoteRecord>,
+        merged: &BTreeMap<NodeId, NodeId>,
         held_through: u64,
         accepted: u64,
     ) {
@@ -3418,6 +3420,15 @@ impl Trees {
                     && !same_content(local, listed))
                 .then(|| id.clone())
             })
+            .collect();
+        let held: Vec<NodeId> = (self.reverted.iter())
+            .filter(|id| {
+                merged.contains_key(*id)
+                    || self.s.get(id).is_some()
+                    || self.waiting.contains_key(*id)
+                    || records.contains_key(*id)
+            })
+            .cloned()
             .collect();
         let seen = |id: &NodeId, remote: &RemoteNode| {
             (self.past_positions.get(id).into_iter().flatten()).any(|past| {
@@ -3566,9 +3577,6 @@ impl Trees {
             .map(|(id, _)| id.clone())
             .collect();
         for id in dropped {
-            if self.r.get(&id).is_none() {
-                self.reverted.remove(&id);
-            }
             self.waiting.remove(&id);
             self.mark(&id);
         }
@@ -3779,9 +3787,6 @@ impl Trees {
                 };
                 self.lost_positions.insert(id.clone(), at);
             }
-            if self.r.get(&id).is_none() {
-                self.reverted.remove(&id);
-            }
             let held_alike = matches!(
                 (content(self.l.live(&id)), content(self.s.live(&id)), content(self.r.live(&id))),
                 (Some(local), Some(synced), Some(remote))
@@ -3819,6 +3824,11 @@ impl Trees {
                 && !self.set_synced_if_valid(id.clone(), Some(kept.clone()))
             {
                 self.wait(id, Some(kept), Origin::Other);
+            }
+        }
+        for id in held {
+            if self.r.get(merged.get(&id).unwrap_or(&id)).is_none() {
+                self.end_revert(&id);
             }
         }
         self.yield_resends();
@@ -4306,6 +4316,12 @@ impl Trees {
         self.mark(&id);
         self.cycle_reverted.remove(&id);
         self.reverted.insert(id);
+    }
+
+    pub(crate) fn end_revert(&mut self, id: &str) {
+        if self.reverted.remove(id) {
+            self.mark(id);
+        }
     }
 
     pub(crate) fn revert_for_cycle(&mut self, id: NodeId) {

@@ -1080,6 +1080,7 @@ fn a_parked_folder_the_server_lost_is_created_again_after_a_delete_empties_it() 
         Vec::new(),
         Vec::new(),
         Default::default(),
+        &Default::default(),
         0,
         0,
     );

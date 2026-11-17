@@ -1,0 +1,1 @@
+cc 103d1c4ddaca43011e49d912bc9cfb6609a1a9fbee50e13298960835795ac58b # shrinks to devices = 2, a device goes quiet after a server restore with its own nodes unsent (GUN-964)

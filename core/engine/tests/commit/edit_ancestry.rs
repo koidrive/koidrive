@@ -19,7 +19,7 @@ fn ancestry_resend() -> Trees {
     let synced = trees.taken_from_others(|_| false);
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, 0, 0);
+    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), records, &Default::default(), 0, 0);
     trees.settle();
     trees
 }

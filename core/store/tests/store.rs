@@ -2225,6 +2225,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         Vec::new(),
         Vec::new(),
         Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -2349,6 +2350,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         Vec::new(),
         Vec::new(),
         Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -2977,6 +2979,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         moved,
         Vec::new(),
         Default::default(),
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );
@@ -3083,6 +3086,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         moved,
         Vec::new(),
         Default::default(),
+        &Default::default(),
         1,
         1,
     );
@@ -3738,6 +3742,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
         Vec::new(),
         Vec::new(),
         Default::default(),
+        &Default::default(),
         0,
         0,
     );
@@ -4869,6 +4874,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         moved,
         untaken,
         records,
+        &Default::default(),
         commits.held_through(),
         commits.accepted(),
     );

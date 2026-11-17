@@ -552,6 +552,7 @@ impl Engine {
                 moved,
                 untaken,
                 records,
+                self.commits.aliases(),
                 self.commits.held_through(),
                 self.commits.accepted(),
             );

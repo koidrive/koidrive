@@ -446,6 +446,11 @@ impl Commits {
         *self.accepted
     }
 
+    /// Folders merged into one L holds elsewhere, by the folder they were merged into.
+    pub fn aliases(&self) -> &BTreeMap<NodeId, NodeId> {
+        &self.aliases
+    }
+
     pub fn in_flight(&self) -> Option<&InFlight> {
         self.in_flight.as_ref()
     }

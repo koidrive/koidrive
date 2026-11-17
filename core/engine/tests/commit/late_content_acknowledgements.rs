@@ -152,7 +152,7 @@ fn a_rename_returned_to_its_waiting_shape_stays_a_change_when_its_commit_is_lost
     trees.set_local_changed("n".into(), local(file(ROOT, "z", 1), 2));
     trees.set_local_changed("n".into(), local(file(ROOT, "x", 1), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "old", 0)));
-    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], Default::default(), 0, 0);
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], Default::default(), &Default::default(), 0, 0);
     assert!(trees.waiting().get("n").is_none());
     assert!(trees.state().local_changes.contains("n"));
 }
@@ -223,7 +223,7 @@ fn a_rename_back_to_s_is_no_change_once_a_listing_and_a_loss_take_its_acknowledg
     );
     trees.set_local_changed("n".into(), local(file(ROOT, "old", 0), 2));
     trees.set_listed_remote("n".into(), remote(file(ROOT, "old", 0)));
-    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], Default::default(), 0, 0);
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], Default::default(), &Default::default(), 0, 0);
     assert!(trees.waiting().get("n").is_none());
     assert_eq!(trees.check(), Ok(()));
     assert!(trees.state().local_changes.is_empty());
