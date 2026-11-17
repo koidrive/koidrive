@@ -581,6 +581,45 @@ mod tests {
     }
 
     #[test]
+    fn a_read_rule_alone_runs_the_jobs_that_test_the_reading_package() {
+        let config: Config = toml::from_str(
+            r#"
+            [[path]]
+            globs = ["notes/**"]
+
+            [[read]]
+            globs = ["notes/read-by-fs.txt"]
+            by = ["koidrive-fs"]
+
+            [job.tests_fs]
+            packages = ["koidrive-fs"]
+
+            [job.tests_cli]
+            packages = ["koidrive-cli"]
+            "#,
+        )
+        .unwrap();
+        let select = |path: &str| compute(&config, &GRAPH, &GRAPH, &[path]).unwrap();
+        assert_eq!(
+            select("notes/read-by-fs.txt"),
+            BTreeMap::from([
+                ("tests_cli".to_string(), None),
+                (
+                    "tests_fs".to_string(),
+                    Some("the tests of koidrive-fs read notes/read-by-fs.txt".to_string())
+                ),
+            ])
+        );
+        assert_eq!(
+            select("notes/read-by-nobody.txt"),
+            BTreeMap::from([
+                ("tests_cli".to_string(), None),
+                ("tests_fs".to_string(), None)
+            ])
+        );
+    }
+
+    #[test]
     fn a_change_to_a_crate_the_quoted_paths_test_reads_runs_the_jobs_that_test_koidrive_fs() {
         let quoted = fs::read_to_string(format!("{ROOT}/core/fs/tests/quoted.rs")).unwrap();
         let crates: Vec<_> = quoted
