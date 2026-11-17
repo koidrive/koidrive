@@ -3676,3 +3676,27 @@ fn a_baseline_fault_found_first_hides_no_later_fault() {
         "{over:?}"
     );
 }
+
+#[test]
+fn a_publish_then_a_move_out_of_the_answered_folder_deletes_no_folder_l_keeps() {
+    use Local::{Into as To, Kept, Onto};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(1), In(2)],
+        &[Remote::Kept; 4],
+        &[To(In(3)), Kept, To(In(5)), Kept],
+        &[(Kind::Dir, To(In(0))), (Kind::Dir, Onto(0))],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Move(3, Root));
+    assert!(answers(&world).contains(&story));
+    let report = tell(&world, &server(&world), story).expect("a story");
+    assert!(
+        !report
+            .classes
+            .iter()
+            .any(|class| class.contains("deletes a node L keeps")),
+        "{:?}\n{}",
+        report.classes,
+        report.text
+    );
+}
