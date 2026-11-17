@@ -15,7 +15,7 @@ use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
 use koidrive_proto::v1::{NodeStatus, error};
-use koidrive_sim::world::disk::Place;
+use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
     Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World, tag,
 };
@@ -132,6 +132,16 @@ fn step(losses: Losses) -> BoxedStrategy<Step> {
     }
 }
 
+fn volumes() -> impl Strategy<Value = Vec<Precision>> {
+    let precision = prop_oneof![
+        Just(Precision::Fine),
+        Just(Precision::Hundredths),
+        Just(Precision::Seconds),
+        Just(Precision::TwoSeconds),
+    ];
+    prop::collection::vec(precision, 2..=3)
+}
+
 fn phases(losses: Losses) -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
     phases_of(step(losses))
 }
@@ -237,9 +247,13 @@ thread_local! {
     static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn world(devices: usize) -> World {
-    let mut world = World::new(devices);
+    on(&vec![Precision::Fine; devices])
+}
+
+/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
+fn on(volumes: &[Precision]) -> World {
+    let mut world = World::on(volumes);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
     world
@@ -248,11 +262,11 @@ fn world(devices: usize) -> World {
 /// Runs every phase and stops at the first failure that `stops` names. A phase that fails in
 /// another way leaves the devices as they are for the next one.
 fn run(
-    devices: usize,
+    volumes: &[Precision],
     phases: &[Vec<(usize, Step)>],
     stops: fn(&Failure) -> bool,
 ) -> Result<World, Failure> {
-    let mut world = world(devices);
+    let mut world = on(volumes);
     for (phase, schedule) in phases.iter().enumerate() {
         match world.phase(phase, schedule) {
             Err(failure) if stops(&failure) => return Err(failure),
@@ -262,14 +276,22 @@ fn run(
     Ok(world)
 }
 
-/// Stops at the first failure of any kind.
 fn converge(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
-    run(devices, phases, |_| true)
+    converge_on(&vec![Precision::Fine; devices], phases)
+}
+
+/// Stops at the first failure of any kind.
+fn converge_on(volumes: &[Precision], phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    run(volumes, phases, |_| true)
+}
+
+fn keep(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    keep_on(&vec![Precision::Fine; devices], phases)
 }
 
 /// Stops only when a write is lost or a state is refused.
-fn keep(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
-    run(devices, phases, |failure| {
+fn keep_on(volumes: &[Precision], phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    run(volumes, phases, |failure| {
         matches!(failure, Failure::Broken(_))
     })
 }
@@ -399,6 +421,82 @@ proptest! {
     fn devices_converge_across_restores_and_rewinds(devices in 2..=3usize, phases in phases(Losses::RestoresAndRewinds)) {
         converge(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
     }
+}
+
+proptest! {
+    #![proptest_config(koidrive_test_support::battery_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices_on_coarse_volumes.proptest-regressions"),
+        256,
+    ))]
+
+    #[test]
+    fn devices_on_coarse_volumes_lose_no_write(volumes in volumes(), phases in phases(Losses::None)) {
+        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_converge_once_the_faults_stop(volumes in volumes(), phases in phases(Losses::None)) {
+        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
+        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_converge_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
+        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+}
+
+#[test]
+fn a_coarse_volume_rounds_the_times_it_keeps_while_the_server_keeps_the_time_it_was_sent() {
+    let mut world = on(&[Precision::Fine, Precision::TwoSeconds]);
+    let make = |name| {
+        Step::User(Action {
+            kind: 1,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    world.phase(0, &[(0, make(0)), (1, make(2))]).unwrap();
+    let on_server = |name: &str| {
+        (world.space().nodes().into_iter())
+            .find(|node| node.name == name)
+            .and_then(|node| node.current?.content)
+            .unwrap()
+    };
+    let (fine, coarse) = (on_server("a"), on_server("b"));
+    assert_ne!(fine.mtime_ns % 10_000_000, 0);
+    assert_eq!(content_on(&world, 0, "a"), fine);
+    assert_eq!(
+        content_on(&world, 1, "a").mtime_ns,
+        fine.mtime_ns - fine.mtime_ns.rem_euclid(2_000_000_000)
+    );
+    assert_eq!(tag(&content_on(&world, 1, "a")), tag(&fine));
+    assert_eq!(coarse.mtime_ns % 2_000_000_000, 0);
+    assert_eq!(content_on(&world, 1, "b"), coarse);
+    assert_eq!(content_on(&world, 0, "b"), coarse);
+}
+
+#[test]
+fn the_coarse_volume_schedules_keep_downloads_at_coarser_times() {
+    let mut runner = TestRunner::deterministic();
+    let strategy = (volumes(), phases(Losses::None));
+    let reached = (0..256).any(|_| {
+        let (volumes, phases) = strategy.new_tree(&mut runner).unwrap().current();
+        let world = keep_on(&volumes, &phases).unwrap();
+        world
+            .seen
+            .contains_key("a download keeps a coarser time on disk")
+    });
+    assert!(
+        reached,
+        "no schedule of the sample kept a download at a coarser time"
+    );
 }
 
 #[test]

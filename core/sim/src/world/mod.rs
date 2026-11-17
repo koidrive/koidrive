@@ -82,7 +82,7 @@ use sha2::{Digest, Sha256};
 
 use self::device::{Device, Engine, Link, Message};
 pub use self::disk::Cut;
-use self::disk::{Applied, Disk, Place, Refused};
+use self::disk::{Applied, Disk, Place, Precision, Refused};
 use crate::space::{Role, Session, SpaceDo};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -731,9 +731,14 @@ struct Spent {
 impl World {
     /// Devices with empty disks, connected to an empty space.
     pub fn new(devices: usize) -> Self {
+        Self::on(&vec![Precision::Fine; devices])
+    }
+
+    /// Devices with empty disks that keep file times as finely as `volumes` says, one disk each.
+    pub fn on(volumes: &[Precision]) -> Self {
         let space = SpaceDo::new(5, NOW);
-        let devices = (0..devices)
-            .map(|d| {
+        let devices = (volumes.iter().enumerate())
+            .map(|(d, precision)| {
                 let engine = Engine::new(space.space_id(), space.history_id(), 100 + d as u64);
                 Device {
                     session: Session {
@@ -743,7 +748,7 @@ impl World {
                         role: Role::Owner,
                         max_format: 1,
                     },
-                    disk: Disk::default(),
+                    disk: Disk::new(*precision),
                     store: engine.clone(),
                     engine,
                     down: false,
@@ -1589,6 +1594,14 @@ impl World {
                 _ => None,
             };
             let applied = device.disk.apply(record, until);
+            if let (Effect::WriteFile { content, .. }, Some(Ok(Some(written)))) = (
+                &record.effect,
+                applied.as_ref().map(|applied| &applied.outcome),
+            ) && (device.disk.entries()[&written.ino].content.as_ref())
+                .is_some_and(|kept| kept.mtime_ns != content.mtime_ns)
+            {
+                note(&mut self.seen, "a download keeps a coarser time on disk");
+            }
             if let Some(applied) = applied.as_ref().filter(|applied| {
                 !resent_over_revert(&self.exposed, &self.rolled_back, record, applied)
             }) {
