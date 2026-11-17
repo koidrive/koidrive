@@ -3,9 +3,11 @@
 import { execFileSync, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { releaseVersion } from "./release-version.mjs";
 
 const MIGRATION_TAGS = ["v1"];
@@ -22,6 +24,8 @@ const workspace = mkdtempSync(join(tmpdir(), "koidrive-deploy-"));
 const root = join(workspace, "server");
 const env = { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "true" };
 let dev;
+let devClosed;
+let devError;
 let devOutput = "";
 
 class CheckFailed extends Error {}
@@ -91,34 +95,56 @@ async function checkConfig() {
 async function waitFor(check, what, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    if (devError) fail("could not start wrangler dev: " + devError.message);
+    if (dev && (dev.exitCode !== null || dev.signalCode !== null)) fail("wrangler dev exited with " + (dev.exitCode ?? dev.signalCode) + " while waiting for " + what);
     const value = await check().catch(() => undefined);
     if (value) return value;
-    if (dev?.exitCode !== null && dev?.exitCode !== undefined) fail("wrangler dev exited with " + dev.exitCode + " while waiting for " + what);
     if (Date.now() > deadline) fail("timed out after " + timeoutMs / 1000 + " s waiting for " + what);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
-function stopDev() {
-  if (!dev || dev.exitCode !== null) return;
-  try {
-    process.kill(-dev.pid, "SIGKILL");
-  } catch {
-    dev.kill("SIGKILL");
+async function stopDev() {
+  if (!dev) return;
+  if (dev.pid) {
+    try {
+      process.kill(-dev.pid, "SIGKILL");
+    } catch {
+      dev.kill("SIGKILL");
+    }
+  }
+  await devClosed;
+}
+
+function readyUrl() {
+  for (const line of stripVTControlCharacters(devOutput).split(/(?<=\n)/)) {
+    if (!line.endsWith("\n")) continue;
+    const ready = /^\s*(?:\[wrangler:info\]\s*)?Ready on (\S+)\s*$/.exec(line);
+    if (!ready) {
+      if (/^\s*(?:\[wrangler:info\]\s*)?Ready on\b/.test(line)) fail("malformed Wrangler ready URL");
+      continue;
+    }
+    const address = /^http:\/\/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.]+):([0-9]{1,5})$/.exec(ready[1]);
+    if (!address || Number(address[2]) < 1 || Number(address[2]) > 65535) fail("malformed Wrangler ready URL");
+    const host = address[1].replace(/^\[|\]$/g, "");
+    if (host.toLowerCase() !== "localhost" && !(isIP(host) === 4 && host.startsWith("127.")) && !(isIP(host) === 6 && new URL(ready[1]).hostname === "[::1]")) {
+      fail("Wrangler ready URL must use a loopback host");
+    }
+    return ready[1];
   }
 }
 
 async function claimLocally() {
-  const port = String(20000 + Math.floor(Math.random() * 20000));
-  const base = "http://127.0.0.1:" + port;
-  dev = spawn(join(root, "node_modules", ".bin", "wrangler"), ["dev", "--ip", "127.0.0.1", "--port", port, "--persist-to", join(root, ".state")], {
+  dev = spawn(join(root, "node_modules", ".bin", "wrangler"), ["dev", "--ip", "127.0.0.1", "--port", "0", "--inspector-port", "0", "--persist-to", join(root, ".state")], {
     cwd: root,
     env,
     detached: true,
   });
+  devClosed = new Promise((resolve) => dev.once("close", resolve));
   dev.stdout.on("data", (chunk) => (devOutput += chunk));
   dev.stderr.on("data", (chunk) => (devOutput += chunk));
-  dev.on("error", (error) => (devOutput += "could not start wrangler dev: " + error.message + "\n"));
+  dev.on("error", (error) => { devError = error; });
+  const base = await waitFor(() => Promise.resolve(readyUrl()), "wrangler dev readiness", STARTUP_MS);
   const json = { "Content-Type": "application/json", Accept: "application/json" };
   const before = await waitFor(
     () => request(base + "/v1/server", { headers: json }).then((response) => (response.ok ? response.json() : undefined)),
@@ -151,14 +177,14 @@ async function claimLocally() {
   console.log("Served the bundle with wrangler dev, read the claim code from its log and claimed it (server " + after.serverVersion + ")");
 }
 
-function cleanUp() {
-  stopDev();
+async function cleanUp() {
+  await stopDev();
   rmSync(workspace, { recursive: true, force: true });
 }
 
-const watchdog = setTimeout(() => {
+const watchdog = setTimeout(async () => {
   console.error("::error::check-deploy: the whole check took longer than " + WHOLE_CHECK_MS / 60_000 + " minutes");
-  cleanUp();
+  await cleanUp();
   process.exit(1);
 }, WHOLE_CHECK_MS);
 watchdog.unref();
@@ -186,5 +212,5 @@ try {
   process.exitCode = 1;
 } finally {
   clearTimeout(watchdog);
-  cleanUp();
+  await cleanUp();
 }

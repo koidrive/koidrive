@@ -1042,11 +1042,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_share_listing_keeps_the_cursor_out_of_its_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base: Url = format!("http://{}", listener.local_addr().unwrap())
+        let base: Url = format!("http://{}", koidrive_test_support::reset_tcp_address())
             .parse()
             .unwrap();
-        drop(listener);
         let auth = signed_in(base);
         let link_id = "AAAAAAAAAAAAAAAAAAAAAA";
         let cursor = format!("1000.{link_id}");
@@ -1065,11 +1063,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_revoke_keeps_the_link_out_of_its_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base: Url = format!("http://{}", listener.local_addr().unwrap())
+        let base: Url = format!("http://{}", koidrive_test_support::reset_tcp_address())
             .parse()
             .unwrap();
-        drop(listener);
         let auth = signed_in(base);
         let link_id = "AAAAAAAAAAAAAAAAAAAAAA";
         let outcome = auth.api().revoke_share_link(&auth, "s1", link_id).await;

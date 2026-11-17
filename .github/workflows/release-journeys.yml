@@ -35,6 +35,7 @@ on:
       - .github/workflows/installer.yml
       - scripts/test-release-journeys.py
       - scripts/test-release-journeys-unit.py
+      - scripts/worker_ready.py
   merge_group:
 
 permissions:

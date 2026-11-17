@@ -273,9 +273,7 @@ fn joining_a_busy_server_offers_retry_without_a_saved_sign_in() {
 #[test]
 fn joining_an_unreachable_server_does_not_require_a_connected_device() {
     let profile = Profile::new();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let server = format!("http://{}/", listener.local_addr().unwrap());
-    drop(listener);
+    let server = format!("http://{}/", koidrive_test_support::reset_tcp_address());
     let output = profile.run(
         &["join", "ABCD-EFGH", "--server", &server, "--name", "Laptop"],
         true,
@@ -662,9 +660,7 @@ fn local_api_fixtures_keep_status_causes_and_unknown_outcome_guidance() {
 fn a_closed_local_server_has_a_connection_action_without_a_blind_mutation_retry() {
     for tty in [false, true] {
         let profile = Profile::new();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let server = format!("http://{}/", listener.local_addr().unwrap());
-        drop(listener);
+        let server = format!("http://{}/", koidrive_test_support::reset_tcp_address());
         profile.save_credential(&server);
         let output = profile.run(
             &["space", "list"],

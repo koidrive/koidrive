@@ -406,16 +406,40 @@ async fn loopback_ends_the_wait_on_a_denied_login() {
 
 #[tokio::test]
 async fn loopback_binds_the_given_port_on_127_0_0_1_only() {
-    let free = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let loopback = Loopback::bind(Some(free)).await.unwrap();
-    assert_eq!(loopback.port(), free);
+    let mut bound = None;
+    for _ in 0..32 {
+        let candidate = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let free = candidate.local_addr().unwrap().port();
+        let ipv6 = tokio::net::TcpSocket::new_v6().unwrap();
+        match ipv6.bind(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::LOCALHOST,
+            free,
+        ))) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(error) => panic!("{error}"),
+        }
+        drop(candidate);
+        match Loopback::bind(Some(free)).await {
+            Ok(loopback) => {
+                assert_eq!(loopback.port(), free);
+                bound = Some((loopback, ipv6));
+                break;
+            }
+            Err(OauthError::Listen { source, .. })
+                if source.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("{error}"),
+        }
+    }
+    let (loopback, _ipv6) =
+        bound.expect("an explicit loopback port could not be bound after 32 collisions");
+    let free = loopback.port();
     assert!(TcpStream::connect(("127.0.0.1", free)).await.is_ok());
     assert!(
-        TcpStream::connect(("::1", free)).await.is_err(),
+        !matches!(
+            tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(("::1", free))).await,
+            Ok(Ok(_))
+        ),
         "the listener must not answer on ::1"
     );
 

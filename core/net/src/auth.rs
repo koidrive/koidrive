@@ -399,7 +399,12 @@ mod tests {
     use super::*;
 
     fn auth(margin: Duration) -> Auth {
-        let api = Api::local_development("http://127.0.0.1:9".parse().unwrap()).unwrap();
+        let api = Api::local_development(
+            format!("http://{}", koidrive_test_support::reset_tcp_address())
+                .parse()
+                .unwrap(),
+        )
+        .unwrap();
         let credentials = Credentials {
             user_id: "u".into(),
             device_id: "d".into(),
@@ -430,7 +435,7 @@ mod tests {
             auth(Duration::from_secs(120)).with_token(token_expiring_in(Duration::from_secs(60)));
         assert!(
             matches!(auth.access_token().await, Err(ApiError::Transport(_))),
-            "port 9 refuses, so a refresh was attempted"
+            "the owned server resets the connection, so a refresh was attempted"
         );
     }
 

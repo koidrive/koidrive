@@ -22,6 +22,19 @@ globs = ["server/**"]
 jobs = ["server", "server_deploy", "net_integration", "driver_integration", "cli_integration", "ffi_integration"]
 
 [[path]]
+globs = ["scripts/worker_ready.py"]
+jobs = ["server_deploy", "net_integration", "driver_integration", "cli_integration", "ffi_integration"]
+
+[[path]]
+globs = [
+  "scripts/test-worker-launchers.py",
+  "scripts/test-check-deploy.py",
+  "scripts/stress-test-servers.py",
+  "scripts/test-stress-test-servers.py",
+]
+jobs = ["server_deploy"]
+
+[[path]]
 globs = ["docs/json-schema/**"]
 packages = ["koidrive-cli", "koidrive-ffi"]
 

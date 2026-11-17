@@ -68,6 +68,7 @@ zbus = { version = "6.2.1", default-features = false, features = ["tokio"] }
 serde_json = "1.0.154"
 
 [dev-dependencies]
+koidrive-test-support = { path = "../core/test-support" }
 bytes = "1.12.1"
 fastrand = "2"
 koidrive-chunk = { path = "../core/chunk" }

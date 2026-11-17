@@ -1486,7 +1486,10 @@ async fn a_folder_linked_with_reports_on_before_the_daemon_runs_waits_for_its_fi
             .env_remove("CI")
             .env_remove("DO_NOT_TRACK")
             .env_remove("KOIDRIVE_TELEMETRY")
-            .env("KOIDRIVE_TELEMETRY_URL", "http://127.0.0.1:9")
+            .env(
+                "KOIDRIVE_TELEMETRY_URL",
+                format!("http://{}", koidrive_test_support::reset_tcp_address()),
+            )
             .output()
             .unwrap();
         assert!(output.status.success(), "koi {args:?} failed: {output:?}");

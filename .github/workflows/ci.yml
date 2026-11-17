@@ -435,6 +435,11 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: server/pnpm-lock.yaml
+      - name: Check Worker launchers and deploy startup without a deployment
+        run: |
+          nice -n 10 python3 scripts/test-worker-launchers.py -v
+          nice -n 10 python3 scripts/test-check-deploy.py -v
+          nice -n 10 python3 scripts/test-stress-test-servers.py -v
       - name: Check the committed standalone release version before generating it
         run: node --test server/scripts/check-release-version.mjs
       - name: Keep KOIDRIVE_FEATURES out of the tracked Worker config

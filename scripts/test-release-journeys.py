@@ -15,7 +15,6 @@ import select
 import shlex
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tarfile
@@ -25,6 +24,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+from worker_ready import worker_ready_url
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -682,16 +683,13 @@ def worker(evidence, root):
     path = root / "wrangler.json"
     path.write_text(json.dumps(config, indent=2) + "\n")
     evidence.report["inputs"]["worker-config"] = {"sha256": sha256(path)}
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
     item = evidence.start(["node", wrangler, "dev", "--config", path, "--ip", "127.0.0.1",
-                           "--port", port, "--persist-to", root / "worker-state",
+                           "--port", "0", "--inspector-port", "0", "--persist-to", root / "worker-state",
                            "--show-interactive-dev-session=false"])
     process, _, out, err = item
-    if not until(lambda: "Ready on" in out.raw + err.raw or process.poll() is not None, 90) or process.poll() is not None:
+    if not until(lambda: process.poll() is not None or worker_ready_url(out.raw + err.raw) is not None, 90) or process.poll() is not None:
         raise RuntimeError("Real local Worker did not become ready")
-    url = f"http://127.0.0.1:{port}"
+    url = worker_ready_url(out.raw + err.raw)
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url + "/setup", timeout=15) as response:
         response.read()
     pattern = r"Koidrive claim code \(valid for 1 hour\): ([A-Z0-9-]+)"

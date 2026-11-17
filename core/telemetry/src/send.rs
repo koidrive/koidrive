@@ -899,9 +899,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_endpoint_keeps_the_batch() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        let address = format!("http://{}", koidrive_test_support::reset_tcp_address());
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
         queued(&store, HOUR);
