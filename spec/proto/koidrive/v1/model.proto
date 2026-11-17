@@ -75,6 +75,8 @@ message NodeState {
   uint64 meta_edit_rev = 13;
   // The intent that set each field (RFC 0028). Empty from a server without field_intents.
   FieldIntents intents = 14;
+  // On a trashed node: the intents the deleting users held that the trash had lost (RFC 0028).
+  repeated bytes trash_held = 15;
 }
 
 // One user change to one node (RFC 0028).
@@ -86,6 +88,8 @@ message Intent {
   bool replay = 3;
   // The intent a Move or Delete expects the node's place or status to hold; otherwise it is answered CODE_SUPERSEDED.
   bytes over = 4;
+  // Set by the server on a NodeState: the restore generation at which the field took this intent.
+  uint64 generation = 5;
 }
 
 message FieldIntents {

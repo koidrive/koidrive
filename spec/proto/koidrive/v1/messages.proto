@@ -63,6 +63,8 @@ message Welcome {
   // restored, in Unix milliseconds, as in ResyncRequired. Both 0 otherwise.
   uint64 restore_seq = 11;
   int64 restore_point_ms = 12;
+  // How many restores within the current history the space has gone through (RFC 0028).
+  uint64 restore_generation = 15;
 }
 
 message Resume {
