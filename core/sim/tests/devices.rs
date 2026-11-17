@@ -25,6 +25,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 
 #[path = "devices/adv_646.rs"]
 mod adv_646;
+#[path = "devices/adv_repro.rs"]
+mod adv_repro;
 #[path = "devices/restore_back_to_back.rs"]
 mod restore_back_to_back;
 #[path = "devices/restore_deleted_folder.rs"]
