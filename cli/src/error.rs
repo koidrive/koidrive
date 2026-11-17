@@ -383,6 +383,9 @@ impl From<DriverError> for CliError {
             DriverError::ShareLinkLimit => CliError::new(Code::Failed, message)
                 .because(Reason::ShareLinkLimit)
                 .then(&["koi", "share", "list"]),
+            DriverError::SpaceUnplaced(space_id) => {
+                CliError::usage(message).then(&["koi", "folder", "unlink", "--space", &space_id])
+            }
             DriverError::UnlinkUnfinished(folder) => CliError::usage(message).then(&[
                 "koi",
                 "folder",
@@ -522,6 +525,9 @@ fn driver_human(error: &DriverError) -> Option<String> {
         DriverError::SpaceAlreadyLinked(_) => {
             "That space is already linked on this device. Run koi status to find its folder."
         }
+        DriverError::SpaceUnplaced(_) => {
+            "That space is already linked on this device, but Koidrive can't tell where its folder is. Unlink it by its space ID, then link the folder again."
+        }
         DriverError::MarkerOfOtherSpace(_) => {
             "That folder belongs to a different space. Unlink it from that space before linking it here."
         }
@@ -598,7 +604,9 @@ fn driver_human(error: &DriverError) -> Option<String> {
             koidrive_store::Error::NotDurable(_) => {
                 "The storage cannot safely save this folder's sync state. Keep its files in place and run koi diagnose before changing storage or local sync data."
             }
-            koidrive_store::Error::Decode(_) | koidrive_store::Error::InvalidEngineState(_) => {
+            koidrive_store::Error::Decode(_)
+            | koidrive_store::Error::InvalidEngineState(_)
+            | koidrive_store::Error::NotAStore => {
                 "Koidrive cannot use its saved sync state because the saved data cannot be read safely. Keep the folder's files in place and run koi diagnose before changing local sync data."
             }
             koidrive_store::Error::Sqlite(_) => return None,
@@ -1322,6 +1330,7 @@ mod tests {
                 server: "https://files.example.com".into(),
             },
             DriverError::SpaceAlreadyLinked(PathBuf::from("/home/ada/Docs")),
+            DriverError::SpaceUnplaced("s1".into()),
             DriverError::MarkerOfOtherSpace("s2".into()),
             DriverError::UnsupportedFileSystem,
             DriverError::AlreadyPaired {

@@ -146,6 +146,15 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             Err(DriverError::NotLinked(path)) => Ok(Response::NotLinked { path }),
             Err(error) => Err(error),
         },
+        Request::UnlinkSpace { space_id } => {
+            (driver.unlink_space(&space_id).await).map(|link| match link {
+                Some(link) => Response::Unlinked {
+                    space_id: link.space_id,
+                    path: link.root,
+                },
+                None => Response::UnlinkedSpace { space_id },
+            })
+        }
         Request::Restart { folder } => driver
             .restart(&folder)
             .await

@@ -90,10 +90,11 @@ pub(crate) fn status_summary(
             FolderState::Offline => "Offline. Check your connection",
             FolderState::Halted => "Sync stopped",
         };
-        text.push_str(&format!(
-            "{}: {state}.\n",
-            output::path(Path::new(&folder.path))
-        ));
+        let name = match folder.path.is_empty() {
+            true => format!("The folder of space {}", printable(&folder.space_id)),
+            false => output::path(Path::new(&folder.path)),
+        };
+        text.push_str(&format!("{name}: {state}.\n"));
         if let Some(progress) = &folder.progress {
             text.push_str(&format!("  {}\n", progress_text(progress)));
         }
@@ -228,9 +229,12 @@ pub(crate) fn folder_text(folder: &FolderStatus) -> String {
         FolderState::Offline => "Offline",
         FolderState::Halted => "Halted",
     };
+    let path = match folder.path.is_empty() {
+        true => "(path unknown)".to_owned(),
+        false => printable(&folder.path),
+    };
     let mut text = format!(
-        "{}  space {} ({})  {state}  {seq}, {} remote nodes{}, {}\n",
-        printable(&folder.path),
+        "{path}  space {} ({})  {state}  {seq}, {} remote nodes{}, {}\n",
         printable(&folder.space_name),
         printable(&folder.space_id),
         folder.remote_nodes,

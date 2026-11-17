@@ -47,6 +47,8 @@ This stops the folder and syncs it again from the start. A folder that was moved
 
 A problem that ends with "this build cannot recover the folder yet" means the folder's sync state and the server disagree in a way this version can't resolve, for example after the space was rewound on the server. A restart doesn't fix it. Unlink the folder, link a new, empty folder to the space, and copy over any files you changed in the old folder.
 
+A folder whose sync database can't be opened halts, and its files stay as they are. Run `koi folder restart` to try again, or unlink the folder and link it again. If `koi status` can't name the folder's path, it shows `(path unknown)` and the space's id instead. Remove that folder's state with `koi folder unlink --space <space id>`, then link the folder again.
+
 ## Send refused changes again
 
 The folder halts when the server refuses its changes for a reason that retrying won't fix, such as a device without access to the space. The problem line names the cause and what to run once it is fixed. After the daemon restarts, the problem line gives only the server's numeric code, such as `code 2` when the device lacks access to the space or `code 3` when the server found the changes invalid. Run one of these two commands, not both.
