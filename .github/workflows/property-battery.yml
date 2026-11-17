@@ -37,6 +37,7 @@ env:
   CASES: ${{ inputs.cases || '4096' }}
   SHARDS: ${{ inputs.shards || '48' }}
   FILTER: ${{ inputs.filter }}
+  ONCE_PACKAGES: koidrive-chunk koidrive-engine koidrive-ignore koidrive-sim koidrive-test-support
 
 defaults:
   run:
@@ -87,6 +88,12 @@ jobs:
             exit 1
           fi
           echo "Packages with property tests: ${packages[*]}"
+          for package in $ONCE_PACKAGES; do
+            if [[ " ${packages[*]} " != *" $package "* ]]; then
+              echo "::error::ONCE_PACKAGES names $package, which has no property tests. Remove it from the list."
+              exit 1
+            fi
+          done
           args=()
           for package in "${packages[@]}"; do args+=(-p "$package"); done
           cargo test --locked --profile checked --no-run --tests --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/build.json"
@@ -94,7 +101,7 @@ jobs:
           filter_args=()
           if [ -n "$FILTER" ]; then filter_args=("$FILTER"); fi
           cargo run --quiet --locked --manifest-path scripts/check-proptest-persistence/Cargo.toml --target-dir target/check-proptest-persistence -- --list > "$RUNNER_TEMP/properties.tsv"
-          mkdir -p battery/bin battery/seeded battery/once
+          mkdir -p battery/bin battery/every battery/once
           : > battery/targets.tsv
           : > "$RUNNER_TEMP/covered.txt"
           while IFS=$'\t' read -r manifest selector executable; do
@@ -113,9 +120,10 @@ jobs:
               echo "::error::$package $selector: listing its tests with --list failed, so the battery cannot tell which tests it would run."
               exit 1
             fi
-            seeded="battery/seeded/$(basename "$executable").txt"
+            every="battery/every/$(basename "$executable").txt"
             once="battery/once/$(basename "$executable").txt"
-            : > "$seeded"
+            if [[ " $ONCE_PACKAGES " == *" $package "* ]]; then spread=1; else spread=0; fi
+            : > "$every"
             : > "$once"
             awk -F'\t' 'FILENAME == ARGV[1] { files[$0]; next } $1 in files { print $2 }' <(echo "$properties") "$RUNNER_TEMP/properties.tsv" | sort -u > "$RUNNER_TEMP/names.txt"
             sed -n 's/: test$//p' <<< "$listing" > "$RUNNER_TEMP/listed.txt"
@@ -124,11 +132,11 @@ jobs:
               echo "::error::$package $selector compiles these properties but does not list them, so no shard would run them: ${unlisted//$'\n'/ }"
               exit 1
             fi
-            awk -v seeded="$seeded" -v once="$once" 'FILENAME == ARGV[1] { names[$0]; next } { n = split($0, path, "::"); if (path[n] in names) print > seeded; else print > once }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt"
-            seeded_count=$(wc -l < "$seeded")
+            awk -v every="$every" -v once="$once" -v spread="$spread" 'FILENAME == ARGV[1] { names[$0]; next } { n = split($0, path, "::"); if (spread && !(path[n] in names)) print > once; else print > every }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt"
+            every_count=$(wc -l < "$every")
             once_count=$(wc -l < "$once")
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "$selector" "$dir" "$binary" "$seeded_count" "$once_count" >> battery/targets.tsv
-            echo "$package $selector: $seeded_count property tests on every shard, $once_count other tests once; property files: ${properties//$'\n'/ }"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "$selector" "$dir" "$binary" "$every_count" "$once_count" >> battery/targets.tsv
+            echo "$package $selector: $every_count tests on every shard, $once_count tests once; property files: ${properties//$'\n'/ }"
           done < <(jq -r 'select(.reason == "compiler-artifact" and .executable != null) | [.manifest_path, (if (.target.kind | any(. == "test")) then "--test " + .target.name elif (.target.kind | any(. == "bin")) then "--bin " + .target.name else "--lib" end), .executable] | @tsv' "$RUNNER_TEMP/build.json")
           missing=$(for package in "${packages[@]}"; do
             dir=$(jq -r --arg name "$package" '.packages[] | select(.name == $name) | .manifest_path' "$RUNNER_TEMP/metadata.json" | xargs dirname | xargs realpath --relative-to="$GITHUB_WORKSPACE")
@@ -142,7 +150,7 @@ jobs:
             echo "::error::No test binary in ${packages[*]} compiles a file with a proptest! block."
             exit 1
           fi
-          seeded=$(awk -F'\t' '{ n += $5 } END { print n + 0 }' battery/targets.tsv)
+          every=$(awk -F'\t' '{ n += $5 } END { print n + 0 }' battery/targets.tsv)
           selected=$(awk -F'\t' '{ n += $5 + $6 } END { print n + 0 }' battery/targets.tsv)
           if [ "$selected" -eq 0 ]; then
             echo "::error::The filter '$FILTER' selects no test in the property test binaries, so the battery would run nothing."
@@ -151,9 +159,9 @@ jobs:
           {
             echo "### Property test targets"
             echo
-            echo "$selected tests selected (filter: ${FILTER:-none}). Every shard runs the $seeded property tests with its own seed. The other $((selected - seeded)) tests do not use the shard's seed, so each runs once, on one of the shards."
+            echo "$selected tests selected (filter: ${FILTER:-none}). Every shard runs $every tests with its own seed: each property test, and every test of the packages that ONCE_PACKAGES leaves out. The other $((selected - every)) tests, outside property blocks in $ONCE_PACKAGES, do not use the shard's seed, so each runs once, on one of the shards."
             echo
-            awk -F'\t' '{ print "- " $1 " " $2 ": " $5 " property tests, " $6 " other tests" }' battery/targets.tsv
+            awk -F'\t' '{ print "- " $1 " " $2 ": " $5 " tests on every shard, " $6 " tests once" }' battery/targets.tsv
           } | tee -a "$GITHUB_STEP_SUMMARY"
           tar -cf battery.tar battery
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -221,7 +229,7 @@ jobs:
           passed=0 failed=0 failing='[]' offset=0 assigned=0
           while IFS=$'\t' read -r package selector dir binary _ once_count; do
             name=$(basename "$binary")
-            awk -v shard="$SHARD" -v shards="$SHARDS" -v offset="$offset" '(NR - 1 + offset) % shards == shard' "battery/once/$name.txt" | cat "battery/seeded/$name.txt" - > "$out/tests-$name.txt"
+            awk -v shard="$SHARD" -v shards="$SHARDS" -v offset="$offset" '(NR - 1 + offset) % shards == shard' "battery/once/$name.txt" | cat "battery/every/$name.txt" - > "$out/tests-$name.txt"
             offset=$((offset + once_count))
             mapfile -t tests < "$out/tests-$name.txt"
             expected=${#tests[@]}
@@ -264,7 +272,7 @@ jobs:
           jq -n --argjson shard "$SHARD" --argjson seed "$seed" --argjson cases "$CASES" --argjson passed "$passed" --argjson failed "$failed" --argjson failing "$failing" \
             '{shard: $shard, seed: $seed, cases: $cases, passed: $passed, failed: $failed, failing: $failing}' > "$out/result-$SHARD.json"
           if [ "$failing" = '[]' ]; then
-            echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; tests outside property blocks run once per battery." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           jq -r '.[] | .repro' <<< "$failing" > "$out/repro.txt"
@@ -272,7 +280,7 @@ jobs:
           {
             echo "### Shard $SHARD failed"
             echo
-            echo "Seed $seed, stress budget $CASES, commit \`$SHA\`. Other properties keep their own budgets; tests outside property blocks run once per battery. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
+            echo "Seed $seed, stress budget $CASES, commit \`$SHA\`. Other properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
             echo
             jq -r '.[] | "```sh\n\(.repro)\n```"' <<< "$failing"
           } | tee -a "$GITHUB_STEP_SUMMARY"
@@ -390,7 +398,7 @@ jobs:
             echo
             echo "- Shards passed: $passing of $SHARDS"
             echo "- Stress budget: $CASES generated cases per selected, opted-in stress property on each passing shard, $((CASES * passing)) in total; saved regressions also replay"
-            echo "- Bounded properties keep their own case budgets; tests outside property blocks run once per battery, spread over the shards"
+            echo "- Bounded properties keep their own case budgets; tests outside property blocks run once per battery, spread over the shards, in the packages ONCE_PACKAGES names, and on every shard in the others"
             echo "- Tests: $tests_passed passed and $tests_failed failed, summed over shards"
             echo
             echo "| Shard | Seed | Result | Tests passed | Tests failed | Job |"
@@ -415,7 +423,7 @@ jobs:
             echo "::error::Shards: $SHARD_RESULT (failed: ${failed_shards:-none recorded, see the table}), mutations: $MUTATIONS_RESULT. The job summary lists the seeds and repro commands."
             exit 1
           fi
-          echo "All $SHARDS shards passed, $((CASES * passing)) generated cases budgeted per selected, opted-in stress property. Bounded properties keep their own budgets; tests outside property blocks run once per battery."
+          echo "All $SHARDS shards passed, $((CASES * passing)) generated cases budgeted per selected, opted-in stress property. Bounded properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others."
 
   triage:
     name: triage

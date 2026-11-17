@@ -135,23 +135,36 @@ class Selection(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.split = next(line.strip() for line in workflow.splitlines() if "names[$0]; next" in line)
         self.spread = next(line.strip() for line in workflow.splitlines() if "% shards == shard" in line)
+        self.packages = next(line.strip() for line in workflow.splitlines() if "then spread=1" in line)
 
-    def split_tests(self, names, listed):
+    def split_tests(self, names, listed, package="koidrive-sim"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "names.txt").write_text("".join(name + "\n" for name in names))
             (root / "listed.txt").write_text("".join(test + "\n" for test in listed))
-            script = ('RUNNER_TEMP=.; seeded=seeded.txt; once=once.txt; : > "$seeded"; : > "$once"\n'
-                      + self.split)
+            script = (f'RUNNER_TEMP=.; ONCE_PACKAGES="koidrive-engine koidrive-sim"; package={package}; '
+                      'every=every.txt; once=once.txt; : > "$every"; : > "$once"\n'
+                      + self.packages + "\n" + self.split)
             subprocess.check_call(["bash", "-euo", "pipefail", "-c", script], cwd=root)
-            return (root / "seeded.txt").read_text().split(), (root / "once.txt").read_text().split()
+            return (root / "every.txt").read_text().split(), (root / "once.txt").read_text().split()
 
     def test_property_tests_go_to_every_shard_and_other_tests_once(self):
         listed = ["tests::a_unit", "tests::grows", "grows_more", "deep::mod::shrinks", "shrinks_not"]
-        seeded, once = self.split_tests(["grows", "shrinks"], listed)
-        self.assertEqual(seeded, ["tests::grows", "deep::mod::shrinks"])
+        every, once = self.split_tests(["grows", "shrinks"], listed)
+        self.assertEqual(every, ["tests::grows", "deep::mod::shrinks"])
         self.assertEqual(once, ["tests::a_unit", "grows_more", "shrinks_not"])
         self.assertEqual(self.split_tests([], listed), ([], listed))
+
+    def test_every_test_of_a_package_outside_the_once_list_goes_to_every_shard(self):
+        listed = ["tests::a_unit", "tests::grows"]
+        for package in ("koidrive-driver", "koidrive-sim-extra", "koidrive"):
+            with self.subTest(package=package):
+                self.assertEqual(self.split_tests(["grows"], listed, package), (listed, []))
+
+    def test_once_packages_hold_no_driver_or_net_tests(self):
+        once = re.search(r"^  ONCE_PACKAGES: (.*)$", WORKFLOW.read_text(), re.M).group(1).split()
+        self.assertEqual(once, ["koidrive-chunk", "koidrive-engine", "koidrive-ignore", "koidrive-sim",
+                                "koidrive-test-support"])
 
     def test_each_other_test_runs_on_exactly_one_shard(self):
         for shards, binaries in ((1, [3]), (4, [3, 0, 6]), (48, [700, 115, 2])):
@@ -166,11 +179,11 @@ class Selection(unittest.TestCase):
                         tests = [f"{binary}::{index}" for index in range(count)]
                         (root / "once.txt").write_text("".join(test + "\n" for test in tests))
                         script = (f"SHARD={shard}; SHARDS={shards}; offset={offset}; name=x; out=.; "
-                                  "mkdir -p battery/once battery/seeded; mv once.txt battery/once/x.txt; "
-                                  "echo seeded > battery/seeded/x.txt\n" + self.spread)
+                                  "mkdir -p battery/once battery/every; mv once.txt battery/once/x.txt; "
+                                  "echo every > battery/every/x.txt\n" + self.spread)
                         subprocess.check_call(["bash", "-euo", "pipefail", "-c", script], cwd=root)
                         ran = (root / "tests-x.txt").read_text().split()
-                        self.assertEqual(ran[0], "seeded")
+                        self.assertEqual(ran[0], "every")
                         runs.extend(ran[1:])
                         offset += count
                     per_shard.append(len(runs) - before)
