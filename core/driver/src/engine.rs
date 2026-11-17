@@ -1698,6 +1698,7 @@ mod tests {
                         vec![
                             change_record::Change::Purged(NodePurged {
                                 node_id: "b".into(),
+                                ..Default::default()
                             }),
                             change_record::Change::Node(node("c", "c")),
                             change_record::Change::Space(SpaceUpdated {}),
@@ -2100,7 +2101,10 @@ mod tests {
     fn sending(mut case: Case, op: op::Op) -> Case {
         let commit = proto::Commit {
             device_seq: 1,
-            ops: vec![proto::Op { op: Some(op) }],
+            ops: vec![proto::Op {
+                op: Some(op),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let in_flight = Some(InFlight {

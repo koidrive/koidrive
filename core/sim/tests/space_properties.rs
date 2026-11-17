@@ -141,6 +141,7 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
                 parent_id: pick(a.parent),
                 name,
                 content: Some(content(a.text)),
+                ..Default::default()
             }),
             Kind::Update => op::Op::UpdateContent(UpdateContent {
                 made_over: Vec::new(),
@@ -159,6 +160,7 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
             Kind::Delete => op::Op::Delete(Delete {
                 node_id: pick(a.target),
                 requires: None,
+                ..Default::default()
             }),
             Kind::Restore => op::Op::Restore(Restore {
                 node_id: pick(a.target),
@@ -183,7 +185,10 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
         let commit = Commit {
             commit_id: ids.uuid_v7(NOW as u64),
             base_seq: space.head_seq().saturating_sub(a.lag),
-            ops: vec![Op { op: Some(body) }],
+            ops: vec![Op {
+                op: Some(body),
+                ..Default::default()
+            }],
             receipts,
             history_id: space.history_id().into(),
             device_seq: space.device_seq(&s.device_id) + 1,

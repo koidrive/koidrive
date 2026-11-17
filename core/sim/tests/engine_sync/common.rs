@@ -181,6 +181,7 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             parent_id: parent,
             name,
             content: Some(content(device, action.text)),
+            ..Default::default()
         }),
         2 => match target(&files) {
             Some(node_id) => op::Op::UpdateContent(UpdateContent { made_over: Vec::new(), source_version_id: String::new(),
@@ -217,6 +218,7 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
                 Some(node_id) => op::Op::Delete(Delete {
                     node_id,
                     requires: None,
+                    ..Default::default()
                 }),
                 None => return,
             }
@@ -238,12 +240,13 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             Some(node_id) => op::Op::Delete(Delete {
                 node_id,
                 requires: None,
+                ..Default::default()
             }),
             None => return,
         },
     };
     let session = session("other");
-    let ops = vec![Op { op: Some(body) }];
+    let ops = vec![Op { op: Some(body), ..Default::default() }];
     let receipts = upload(space, &session, &ops);
     let commit = Commit {
         commit_id: ids.uuid_v7(NOW as u64),

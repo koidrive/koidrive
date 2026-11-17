@@ -22,6 +22,7 @@ fn local_changes_become_ops_with_parents_first() {
                 parent_id: "z".into(),
                 name: "f".into(),
                 content: Some(content(1)),
+                ..Default::default()
             }),
         ]
     );

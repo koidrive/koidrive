@@ -24,6 +24,7 @@ fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_i
         parent_id: "a".into(),
         name: "g".into(),
         content: Some(content(2)),
+        ..Default::default()
     });
     assert_eq!(ops(&commit), [delete("g"), create]);
 }
@@ -112,6 +113,7 @@ fn a_rename_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until
         parent_id: "t".into(),
         name: "g".into(),
         content: Some(content(2)),
+        ..Default::default()
     });
     assert_eq!(ops(&commit), [delete("g"), create]);
 }

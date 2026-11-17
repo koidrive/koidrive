@@ -3220,7 +3220,10 @@ fn a_waiting_marked_entry_takes_no_other_node_at_its_place() {
 fn a_result_gives_a_node_to_applied_creates_merged_folders_and_conflict_copies() {
     use koidrive_engine::commit::given_nodes;
     use koidrive_proto::v1::{Commit, CreateDir, CreateFile, Op, UpdateContent};
-    let sent = |op| Op { op: Some(op) };
+    let sent = |op| Op {
+        op: Some(op),
+        ..Default::default()
+    };
     let commit = Commit {
         ops: vec![
             sent(op::Op::CreateFile(CreateFile {

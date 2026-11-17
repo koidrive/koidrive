@@ -182,7 +182,10 @@ fn content_of(chunks: Vec<ChunkRef>) -> Content {
 }
 
 fn wrap(op: op::Op) -> Op {
-    Op { op: Some(op) }
+    Op {
+        op: Some(op),
+        ..Default::default()
+    }
 }
 
 fn mkdir(id: &str, parent: &str, name: &str) -> Op {
@@ -202,6 +205,7 @@ fn create_file(id: &str, parent: &str, name: &str, content: Content) -> Op {
         parent_id: parent.into(),
         name: name.into(),
         content: Some(content),
+        ..Default::default()
     }))
 }
 
@@ -229,6 +233,7 @@ fn delete(id: &str) -> Op {
     wrap(op::Op::Delete(Delete {
         node_id: id.into(),
         requires: None,
+        ..Default::default()
     }))
 }
 
@@ -453,7 +458,16 @@ fn rejects_malformed_content_and_ids() {
         error::Code::InvalidArgument
     );
     assert_eq!(
-        error_code(s.commit_raw(&a, vec![Op { op: None }], 0, vec![], None)),
+        error_code(s.commit_raw(
+            &a,
+            vec![Op {
+                op: None,
+                ..Default::default()
+            }],
+            0,
+            vec![],
+            None
+        )),
         error::Code::InvalidArgument
     );
     assert_eq!(

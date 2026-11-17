@@ -674,6 +674,7 @@ fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is
                 node_id: notes.clone(),
                 ..Default::default()
             })),
+            ..Default::default()
         }],
         history_id: remote.space.history_id().into(),
         device_seq: remote.space.welcome(&b.caller).device_seq + 1,
@@ -760,6 +761,7 @@ fn a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_o
                 node_id: notes.clone(),
                 ..Default::default()
             })),
+            ..Default::default()
         }],
         history_id: remote.space.history_id().into(),
         device_seq: remote.space.welcome(&b.caller).device_seq + 1,
@@ -826,6 +828,7 @@ fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_resto
                 node_id: notes.clone(),
                 ..Default::default()
             })),
+            ..Default::default()
         }],
         history_id: remote.space.history_id().into(),
         device_seq: remote.space.welcome(&b.caller).device_seq + 1,

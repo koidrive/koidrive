@@ -56,6 +56,7 @@ fn request(seq: u64) -> (RestoreId, RestoreIntent) {
 fn engine(seq: u64, taken: Vec<(RestoreId, RestoreIntent)>) -> EngineState {
     let ops = taken.iter().map(|(_, intent)| Op {
         op: Some(op::Op::Restore(intent.op().clone())),
+        ..Default::default()
     });
     EngineState {
         commits: CommitsState {

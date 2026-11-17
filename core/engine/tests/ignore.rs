@@ -139,6 +139,7 @@ fn delete(node: &str) -> op::Op {
     op::Op::Delete(proto::Delete {
         node_id: node.into(),
         requires: None,
+        ..Default::default()
     })
 }
 

@@ -531,6 +531,7 @@ fn a_restore_follows_the_delete_of_its_own_node() {
     let delete = op::Op::Delete(proto::Delete {
         node_id: n,
         requires: None,
+        ..Default::default()
     });
     assert_eq!(ops(&commit), [delete, restore_op(&intent)]);
 }
@@ -1322,6 +1323,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
     let delete = op::Op::Delete(proto::Delete {
         node_id: g.clone(),
         requires: None,
+        ..Default::default()
     });
     assert_eq!(ops(&commit), [delete]);
 }
@@ -1398,6 +1400,7 @@ fn a_rejected_restore_sent_with_a_move_that_brings_its_file_back_leaves_the_file
     let delete = op::Op::Delete(proto::Delete {
         node_id: g.clone(),
         requires: None,
+        ..Default::default()
     });
     assert_eq!(ops(&commit), [delete]);
 }
@@ -1602,6 +1605,7 @@ fn a_restore_sent_with_the_delete_of_its_file_keeps_the_file_when_another_device
     let delete = op::Op::Delete(proto::Delete {
         node_id: g.clone(),
         requires: None,
+        ..Default::default()
     });
     assert_eq!(
         ops(&commit),
@@ -1703,6 +1707,7 @@ fn a_restore_of_a_live_folder_leaves_a_file_deleted_below_it_deleted_when_a_move
     let delete = op::Op::Delete(proto::Delete {
         node_id: y.clone(),
         requires: None,
+        ..Default::default()
     });
     assert_eq!(next, Some(vec![delete]));
 }
@@ -1815,6 +1820,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_keeps_the_file_when_another_de
     let delete = op::Op::Delete(proto::Delete {
         node_id: a.clone(),
         requires: None,
+        ..Default::default()
     });
     let sent = ops(&commit);
     assert_eq!(sent, [moved(&p, &root(), "P"), delete, restore_op(&intent)]);
@@ -1956,6 +1962,7 @@ fn a_restore_of_a_file_its_folders_delete_planned_leaves_the_other_files_of_that
     let delete = op::Op::Delete(proto::Delete {
         node_id: e.clone(),
         requires: None,
+        ..Default::default()
     });
     assert_eq!(next, Some(vec![delete]));
 }

@@ -22,6 +22,7 @@ fn mkdir(parent_id: &str, name: &str) -> (String, Op) {
             name: name.into(),
             pending_for: String::new(),
         })),
+        ..Default::default()
     };
     (node_id, op)
 }
@@ -200,6 +201,7 @@ async fn a_commit_round_trips_to_another_device() {
             from: None,
             pending_for: String::new(),
         })),
+        ..Default::default()
     };
     let result = b
         .commit(commit(&history, 1, 1, vec![rename]))

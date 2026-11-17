@@ -484,6 +484,7 @@ impl Tx<'_> {
                     meta_edit_rev: row.get::<_, Option<u64>>(10)?.unwrap_or_default(),
                     pending_for: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
                     pending_by: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+                    ..Default::default()
                 },
                 row.get::<_, Option<Vec<u8>>>(8)?,
             ))

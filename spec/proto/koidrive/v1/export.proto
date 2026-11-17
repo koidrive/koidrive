@@ -22,6 +22,8 @@ message NodeSnapshot {
   repeated RetainedVersion previous = 2;
   // When the node was trashed; 0 when it is not trashed.
   int64 trashed_at_ms = 3;
+  // A purged node's tombstone (RFC 0028). Set on a record whose node is empty, in node id order with the node records.
+  NodePurged tombstone = 4;
 }
 
 message RetainedVersion {

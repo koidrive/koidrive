@@ -287,6 +287,7 @@ fn commits_state() -> CommitsState {
     let delete = Delete {
         node_id: "d".into(),
         requires: None,
+        ..Default::default()
     };
     let moved = Move {
         node_id: "m".into(),
@@ -298,12 +299,15 @@ fn commits_state() -> CommitsState {
     let ops = vec![
         Op {
             op: Some(op::Op::Delete(delete)),
+            ..Default::default()
         },
         Op {
             op: Some(op::Op::Move(moved)),
+            ..Default::default()
         },
         Op {
             op: Some(op::Op::Restore(restore(1).op().clone())),
+            ..Default::default()
         },
     ];
     CommitsState {

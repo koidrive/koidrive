@@ -3230,6 +3230,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
             base_seq: engine.cursor.seq,
             ops: vec![Op {
                 op: Some(op::Op::Move(moved)),
+                ..Default::default()
             }],
             ..Default::default()
         },

@@ -19,6 +19,7 @@ fn commit_round_trips_through_binary_encoding() {
                 }),
                 pending_for: String::new(),
             })),
+            ..Default::default()
         }],
         receipts: vec![],
         ..Default::default()
