@@ -374,8 +374,9 @@ pub struct LinkedFolder {
     /// know. Any other folder has none.
     pub activity: Option<FolderActivity>,
     /// Bytes the folder's transfers moved over the network since the daemon started: each chunk
-    /// uploaded or downloaded, once. Chunks the server already held and content found locally add
-    /// nothing. It never decreases while the daemon runs and starts from zero again when the daemon
+    /// uploaded or downloaded, once. A chunk the server refused and that is sent again counts once,
+    /// so the count is bytes delivered. Chunks the server already held and content found locally
+    /// add nothing. It never decreases while the daemon runs and starts from zero again when the daemon
     /// restarts, so treat a decrease as a new baseline.
     pub bytes_moved: u64,
 }

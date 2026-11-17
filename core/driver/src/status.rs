@@ -79,8 +79,9 @@ pub struct FolderStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<Activity>,
     /// Bytes the folder's transfers moved over the network since this process started: each chunk the server stored
-    /// from this device and each chunk fetched from the server, once. Chunks the server already held and content
-    /// found locally add nothing, and the count never decreases while the process runs. It starts from zero again
+    /// from this device and each chunk fetched from the server, once. A chunk the server refused and that is sent
+    /// again counts once, so the count is bytes delivered. Chunks the server already held and content found locally
+    /// add nothing, and the count never decreases while the process runs. It starts from zero again
     /// when the process restarts, so a reader treats a decrease as a new baseline.
     #[serde(default)]
     pub bytes_moved: u64,
