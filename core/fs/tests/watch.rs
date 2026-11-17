@@ -1155,3 +1155,23 @@ fn a_mark_on_a_folder_rescans_nothing_below_it() {
     fs::write(root.join("deps/p3/f2"), "changed").unwrap();
     expect(&mut watcher, &[modified("deps/p3/f2")]);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn folder_made_unreadable_while_watched_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let locked = root.join("d/locked");
+    fs::create_dir_all(locked.join("inner")).unwrap();
+    fs::write(locked.join("x"), "x").unwrap();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap()).unwrap();
+    watcher.poll(Duration::from_millis(300)).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut unreadable = vec![];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && unreadable.is_empty() {
+        unreadable = watcher.poll(Duration::from_millis(300)).unwrap().unreadable;
+    }
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(unreadable, vec![PathBuf::from("d/locked")]);
+}
