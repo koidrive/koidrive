@@ -654,6 +654,51 @@ fn a_folder_named_in_nfd_keeps_its_spelling_on_disk() {
 }
 
 #[test]
+fn a_store_rolled_back_past_a_file_keeps_its_node_when_a_server_restore_lost_the_file_too() {
+    let world = converge(
+        2,
+        &[
+            vec![
+                (0, folder("a")),
+                (0, Step::CopyStore),
+                (0, Step::Backup),
+                (0, file("b")),
+            ],
+            vec![
+                (0, Step::Restore),
+                (0, Step::RollBack),
+                (0, rename(1, 0, "c.txt")),
+            ],
+        ],
+    )
+    .unwrap();
+    for device in 0..2 {
+        let names: Vec<String> = (files_on(&world, device).into_iter())
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["a", "c.txt"], "device {device}");
+    }
+}
+
+#[test]
+fn a_store_rolled_back_past_a_file_keeps_its_node_when_another_device_renames_it_after_a_server_restore()
+ {
+    converge(
+        2,
+        &[
+            vec![(0, Step::Backup), (0, Step::CopyStore), (0, file("b"))],
+            vec![
+                (0, Step::Restore),
+                (0, folder("a")),
+                (1, rename(0, 0, "a")),
+                (0, Step::RollBack),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
 fn folders_named_in_nfc_and_nfd_on_two_devices_converge() {
     converge(2, &[vec![(0, folder("\u{c9}")), (1, folder("E\u{301}"))]]).unwrap();
 }

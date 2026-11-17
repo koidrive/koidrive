@@ -98,6 +98,7 @@ pub enum Observed {
         id: FileId,
         linked: bool,
         content: Option<Content>,
+        marked_node: Option<String>,
     },
     Modified {
         path: PathBuf,
@@ -376,12 +377,16 @@ impl FsObserver {
                 let content = (kind == EntryKind::File)
                     .then(|| self.content(&path, &entry, reads, must))
                     .flatten();
+                let marked_node = (kind == EntryKind::Dir || content.is_some())
+                    .then(|| self.marked_node(&path, &entry))
+                    .flatten();
                 out.push(Observed::Created {
                     linked: self.linked(&path, kind),
                     path,
                     kind,
                     id: entry.id,
                     content,
+                    marked_node,
                 });
             }
             Change::Modified { path } => {
@@ -538,6 +543,20 @@ impl FsObserver {
                 None
             }
         }
+    }
+
+    fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
+        let read = || -> io::Result<Option<String>> {
+            let opened = open_beneath(&self.root, path)?;
+            if koidrive_fs::id_of(opened.as_fd())? != entry.id {
+                return Ok(None);
+            }
+            koidrive_fs::node_mark(opened.as_fd())
+        };
+        read().unwrap_or_else(|error| {
+            tracing::debug!(path = %koidrive_fs::quoted(path), %error, "a node mark could not be read");
+            None
+        })
     }
 }
 
@@ -948,6 +967,45 @@ mod tests {
             matches!(last.root, Err(RootProblem::NoMarker)),
             "{:?}",
             last.root
+        );
+    }
+
+    #[test]
+    fn a_new_entry_reports_the_node_its_own_mark_names() {
+        let dir = marked();
+        fs::write(dir.path().join("a.txt"), b"one").unwrap();
+        fs::write(dir.path().join("b.txt"), b"two").unwrap();
+        fs::create_dir(dir.path().join("d")).unwrap();
+        let space =
+            koidrive_fs::Space::bind(fs::File::open(dir.path()).unwrap().into(), dir.path())
+                .unwrap();
+        for (name, node) in [("a.txt", "node-a"), ("d", "node-d")] {
+            let entry = fs::File::open(dir.path().join(name)).unwrap();
+            let at = koidrive_fs::Location::At {
+                base: koidrive_fs::Base::Root,
+                dirs: Vec::new(),
+                name: name.into(),
+            };
+            let id = koidrive_fs::id_of(entry.as_fd()).unwrap();
+            space.mark(&at, id, node).unwrap();
+        }
+        let mut observer = observer(dir.path());
+        let (seen, _) = observe_until(&mut observer, |seen| seen.len() >= 3);
+        let marks: BTreeMap<&Path, Option<&str>> = (seen.iter())
+            .filter_map(|change| match change {
+                Observed::Created {
+                    path, marked_node, ..
+                } => Some((path.as_path(), marked_node.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            marks,
+            BTreeMap::from([
+                (Path::new("a.txt"), Some("node-a")),
+                (Path::new("b.txt"), None),
+                (Path::new("d"), Some("node-d")),
+            ])
         );
     }
 

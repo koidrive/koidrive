@@ -34,7 +34,7 @@ impl Space {
     /// mark was written on this entry rather than copied with it.
     pub fn mark_of(&self, at: &Location, expected: FileId) -> io::Result<Option<String>> {
         match self.open_entry(at, expected)? {
-            Some(entry) => read(entry.as_fd()),
+            Some(entry) => node_mark(entry.as_fd()),
             None => Ok(None),
         }
     }
@@ -77,7 +77,9 @@ pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
     }
 }
 
-pub(crate) fn read(entry: BorrowedFd<'_>) -> io::Result<Option<String>> {
+/// The node the mark on the open entry `entry` names, when the mark was written on this entry rather than copied
+/// with it.
+pub fn node_mark(entry: BorrowedFd<'_>) -> io::Result<Option<String>> {
     let mut value = [0; 256];
     let len = match rustix::fs::fgetxattr(entry, NAME, &mut value) {
         Ok(len) => len,

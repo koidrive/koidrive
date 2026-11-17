@@ -932,6 +932,7 @@ impl Engine {
                     id,
                     linked,
                     content,
+                    marked_node,
                 } => {
                     if *kind == EntryKind::File && content.is_none() {
                         continue;
@@ -954,6 +955,15 @@ impl Engine {
                                     *held == identity && self.trees.local().get(node).is_none()
                                 })
                                 .map(|(node, _)| node.clone())
+                        })
+                        .or_else(|| {
+                            marked_node.clone().filter(|node| {
+                                !linked
+                                    && self.cursor.is_some()
+                                    && self.trees.local().get(node).is_none()
+                                    && self.trees.synced().get(node).is_none()
+                                    && self.trees.remote().get(node).is_none()
+                            })
                         });
                     self.place(
                         node,
@@ -2564,6 +2574,7 @@ mod tests {
             id,
             linked,
             content: Some(bytes(size)),
+            marked_node: None,
         }
     }
 
@@ -2615,6 +2626,7 @@ mod tests {
                     linked: false,
                     path,
                     kind,
+                    marked_node: None,
                 },
                 Change::Modified { path } => Observed::Modified {
                     content: Some(bytes(entry(&path).size)),
@@ -2848,6 +2860,79 @@ mod tests {
         }
     }
 
+    fn marked(path: &str, id: u64, mark: &str) -> Observed {
+        Observed::Created {
+            path: path.into(),
+            kind: EntryKind::File,
+            id: ino(id),
+            linked: false,
+            content: Some(bytes(1)),
+            marked_node: Some(mark.into()),
+        }
+    }
+
+    #[test]
+    fn a_new_entry_takes_the_node_its_own_mark_names_when_no_tree_holds_that_node() {
+        let (_dir, mut engine) = mapper();
+        engine.cursor = Some(cursor(1));
+        engine.observe(&[marked("a", 1, "lost")], 0);
+        assert_eq!(
+            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            Some("lost")
+        );
+    }
+
+    #[test]
+    fn a_new_entry_takes_a_new_node_when_its_mark_names_a_node_l_holds() {
+        let (_dir, mut engine) = mapper();
+        engine.cursor = Some(cursor(1));
+        engine.observe(&[created("b", ino(2), false, 1)], 0);
+        let (held, ..) = holding(&engine, "b").unwrap();
+        engine.observe(&[marked("a", 1, &held)], 0);
+        let (taken, ..) = holding(&engine, "a").unwrap();
+        assert_ne!(taken, held);
+        assert_eq!(holding(&engine, "b").map(|(id, ..)| id), Some(held));
+    }
+
+    #[test]
+    fn a_first_link_gives_a_marked_entry_a_new_node() {
+        let (_dir, mut engine) = mapper();
+        engine.observe(&[marked("a", 1, "lost")], 0);
+        assert_ne!(
+            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            Some("lost")
+        );
+    }
+
+    #[test]
+    fn a_hard_link_gives_a_marked_entry_a_new_node() {
+        let (_dir, mut engine) = mapper();
+        engine.cursor = Some(cursor(1));
+        let linked = match marked("a", 1, "lost") {
+            Observed::Created {
+                path,
+                kind,
+                id,
+                content,
+                marked_node,
+                ..
+            } => Observed::Created {
+                path,
+                kind,
+                id,
+                linked: true,
+                content,
+                marked_node,
+            },
+            other => other,
+        };
+        engine.observe(&[linked], 0);
+        assert_ne!(
+            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            Some("lost")
+        );
+    }
+
     #[test]
     fn a_file_renamed_to_its_own_path_out_of_a_replaced_folder_keeps_its_node() {
         let (_dir, mut engine) = mapper();
@@ -2857,6 +2942,7 @@ mod tests {
             id: ino(id),
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(&[folder("d", 1), created("d/x", ino(2), false, 1)], 0);
         let (before, _, _) = holding(&engine, "d/x").unwrap();
@@ -2887,6 +2973,7 @@ mod tests {
             id: ino(id),
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(
             &[
@@ -2944,6 +3031,7 @@ mod tests {
             id: ino(1),
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(&[drafts, created("drafts/one.txt", ino(2), false, 1)], 0);
         engine.observe(
@@ -2976,6 +3064,7 @@ mod tests {
             id: ino(1),
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(&[proj, created("proj/build.log", ino(2), false, 1)], 0);
         let (log_id, _, _) = holding(&engine, "proj/build.log").unwrap();
@@ -3002,6 +3091,7 @@ mod tests {
             id: snapshot.entries[Path::new("d")].id,
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(&[folder], 0);
         let stale = engine.resets([PathBuf::from("d")]);
@@ -3065,6 +3155,7 @@ mod tests {
                 id: snapshot.entries[Path::new(path)].id,
                 linked: false,
                 content: None,
+                marked_node: None,
             };
             engine.observe(&[folder], 0);
         }
@@ -3105,6 +3196,7 @@ mod tests {
                     path,
                     kind,
                     linked: false,
+                    marked_node: None,
                 },
                 other => panic!("unexpected {other:?}"),
             })
@@ -3143,6 +3235,7 @@ mod tests {
             id: ino(id),
             linked: false,
             content: None,
+            marked_node: None,
         };
         engine.observe(&[folder("a", 1)], 0);
         let (node, _, _) = holding(&engine, "a").unwrap();
@@ -3410,6 +3503,7 @@ mod tests {
                     linked: false,
                     path,
                     kind,
+                    marked_node: None,
                 }),
                 Change::Modified { path } => {
                     (entry(&path).kind == EntryKind::File).then(|| Observed::Modified {
