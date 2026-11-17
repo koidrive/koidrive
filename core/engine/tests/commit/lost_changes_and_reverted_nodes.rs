@@ -2526,3 +2526,61 @@ fn a_delete_of_another_device_stays_across_two_losses_before_the_device_takes_it
     assert_eq!(trees.class("a"), Class::Remote);
     assert_eq!(build(&mut Commits::default(), &mut trees, &mut IdGen::new(1)), None);
 }
+
+#[test]
+fn a_folder_merged_into_one_a_lost_commit_created_is_created_again_after_the_loss() {
+    let mut trees = trees(&[
+        ("m", Some(dir(ROOT, "x")), None, None),
+        ("n", Some(dir(ROOT, "y")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit).len(), 2);
+    trees.set_remote_made_here("m".into(), remote_at(dir(ROOT, "x"), 1));
+    let merged = OpResult {
+        node_id: "m".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    let results = match &ops(&commit)[0] {
+        op::Op::CreateDir(create) if create.node_id == "m" => {
+            vec![outcome(op_result::Code::Applied), merged]
+        }
+        _ => vec![merged, outcome(op_result::Code::Applied)],
+    };
+    acknowledge(&mut commits, &mut trees, results);
+    trees.set_local("m".into(), local(dir("n", "x"), 1));
+    trees.settle();
+    assert_eq!(
+        commits.connected(&welcome(0)),
+        Reconnect::AheadOfServer
+    );
+    let (trashed, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    trees.remove_remote("m");
+    trees.forget_lost(
+        trashed,
+        edited,
+        Vec::new(),
+        moved,
+        Vec::new(),
+        Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    commits.forget_lost_slots();
+    trees.settle();
+    let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    let created: Vec<(String, String)> = (sent.into_iter().flatten())
+        .filter_map(|op| match op {
+            op::Op::CreateDir(create) => Some((create.node_id, create.parent_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        created,
+        [("n".to_owned(), ROOT.to_owned()), ("m".to_owned(), "n".to_owned())]
+    );
+}
