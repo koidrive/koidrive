@@ -19,10 +19,50 @@ pub use net::reset_tcp_address;
 
 const DETERMINISTIC: &str = "KOIDRIVE_PROPTEST_DETERMINISTIC";
 const FIXED_SEED: u64 = 0;
+const REPLAY_ONLY: &str = "KOIDRIVE_REPLAY_ONLY";
+
+pub fn replay_each_case(list: &str) {
+    let exe = env::current_exe().expect("current test binary");
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let mut red = 0;
+    let mut total = 0;
+    for (index, line) in list.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).enumerate() {
+        let mut words = line.split_whitespace();
+        let (issue, property, cc, hash) = (words.next().unwrap(), words.next().unwrap(), words.next().unwrap(), words.next().unwrap());
+        assert_eq!(cc, "cc", "line {line} must read: ISSUE PROPERTY cc HASH");
+        let file = scratch.path().join(format!("{index}.txt"));
+        fs::write(&file, format!("cc {hash}\n")).unwrap();
+        let output = std::process::Command::new(&exe)
+            .args([property, "--exact", "--include-ignored", "--test-threads=1", "--nocapture"])
+            .env(REPLAY_ONLY, &file)
+            .output()
+            .expect("run the property");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let ran = stdout.contains("1 passed") || stdout.contains("1 failed");
+        let verdict = if !ran { "NOTRUN" } else if output.status.success() { "GREEN" } else { "RED" };
+        total += 1;
+        if verdict != "GREEN" {
+            red += 1;
+        }
+        let lines: Vec<&str> = stderr.lines().chain(stdout.lines()).collect();
+        let why = ["Test failed:", "Diverged", "Lost", "assertion", "panicked at"]
+            .iter()
+            .find_map(|key| lines.iter().find(|line| line.contains(key)))
+            .copied()
+            .unwrap_or("")
+            .chars()
+            .take(400)
+            .collect::<String>();
+        println!("TRIAGE\t{verdict}\t{issue}\t{property}\t{}\t{why}", &hash[..12]);
+    }
+    println!("TRIAGE-SUMMARY\t{total} cases\t{red} not green");
+}
 
 /// Replays saved regressions beside `legacy` and saves each new failure in its own file.
 /// With `KOIDRIVE_PROPTEST_DETERMINISTIC=true`, the generated cases come from seed 0.
 pub fn regression_config(legacy: &'static str, cases: u32) -> Config {
+    let cases = if env::var_os(REPLAY_ONLY).is_some() { 0 } else { cases };
     let default = Config::with_cases(cases);
     Config {
         failure_persistence: Some(Box::new(RegressionCases(PathBuf::from(legacy)))),
@@ -57,6 +97,9 @@ struct RegressionCases(PathBuf);
 
 impl RegressionCases {
     fn load(&self) -> Vec<PersistedSeed> {
+        if let Some(only) = env::var_os(REPLAY_ONLY) {
+            return read_seeds(Path::new(&only));
+        }
         let mut seeds = BTreeSet::new();
         seeds.extend(read_seeds(&self.0));
         let directory = self.0.with_extension("cases");

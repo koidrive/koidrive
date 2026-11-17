@@ -232,3 +232,9 @@ proptest! {
         )?;
     }
 }
+
+#[test]
+#[ignore]
+fn triage_replay() {
+    koidrive_test_support::replay_each_case(include_str!("triage/engine_sync.txt"));
+}

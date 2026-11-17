@@ -10809,3 +10809,9 @@ fn a_rename_across_a_restore_earlier_and_a_rollback_keeps_the_write_in_one_file_
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+#[ignore]
+fn triage_replay() {
+    koidrive_test_support::replay_each_case(include_str!("triage/devices.txt"));
+}
