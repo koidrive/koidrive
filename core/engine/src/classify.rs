@@ -3264,8 +3264,12 @@ impl Trees {
     /// that record survived: R now holds it at the same version, or its content revision is at or
     /// below `held_through`. The server then kept S's content, and what R holds otherwise is a
     /// remote change this device has not taken yet.
-    /// The actual local source's ancestry can disprove survival by naming R's different value as
-    /// an older base, even when restored histories reused the record's revision.
+    /// The ancestry this device holds of the record's value can disprove survival by naming R's
+    /// different value as an older base, even when restored histories reused the record's revision:
+    /// that of L's source when the record names it, else that of S's when the record gave S its
+    /// content, such as after this device's user deleted or edited the file. A node proven older
+    /// through S's ancestry takes R's shape at the position S holds, so what L holds, a delete too,
+    /// is sent over R's value.
     ///
     /// A node R holds live as S does but at another position keeps S, so R's position is a remote
     /// move: a device that did not set S's position cannot tell whether a lost commit set it, and
@@ -3404,19 +3408,29 @@ impl Trees {
         held_through: u64,
         accepted: u64,
     ) {
-        let older_bases: BTreeSet<NodeId> = records
+        let older_bases: BTreeMap<NodeId, bool> = records
             .iter()
             .filter_map(|(id, record)| {
-                let source = self.content_provenance.get(id)?.local.as_ref()?;
+                let provenance = self.content_provenance.get(id)?;
+                let source = match &record.source_version_id {
+                    Some(source) => {
+                        (provenance.local.as_ref()).filter(|local| &local.version_id == source)?
+                    }
+                    None => (provenance.synced.as_ref())
+                        .filter(|synced| synced.version_id == record.node.version_id)?,
+                };
                 let remote = self.r.get(id)?;
-                let local = self.l.get(id)?.shape.content.as_ref()?;
                 let listed = remote.shape.content.as_ref()?;
-                (record.source_version_id.as_ref() == Some(&source.version_id)
-                    && !remote.trashed
+                let differs = match self.l.get(id) {
+                    Some(local) => (local.shape.content.as_ref())
+                        .is_some_and(|local| !same_content(local, listed)),
+                    None => true,
+                };
+                (!remote.trashed
                     && source.version_id != remote.version_id
                     && source.made_over.contains(&remote.version_id)
-                    && !same_content(local, listed))
-                .then(|| id.clone())
+                    && differs)
+                    .then(|| (id.clone(), record.source_version_id.is_none()))
             })
             .collect();
         let seen = |id: &NodeId, remote: &RemoteNode| {
@@ -3539,12 +3553,20 @@ impl Trees {
             .filter_map(|(id, remote)| Some((id, remote?)))
             .collect();
         let synced = synced_ids;
-        for id in synced.iter().cloned() {
+        let over_older: Vec<NodeId> = (synced.iter())
+            .chain(
+                (older_bases.iter())
+                    .filter(|(id, of_synced)| **of_synced && !synced.contains(*id))
+                    .map(|(id, _)| id),
+            )
+            .cloned()
+            .collect();
+        for id in over_older {
             let replaced = self.replaced_versions.get(&id);
             let Some(remote) = (self.r.get(&id))
                 .filter(|remote| !remote.trashed)
                 .filter(|remote| {
-                    older_bases.contains(&id)
+                    older_bases.contains_key(&id)
                         || replaced.is_some_and(|versions| versions.contains(&remote.version_id))
                 })
                 .filter(|remote| {
@@ -3555,7 +3577,7 @@ impl Trees {
             else {
                 continue;
             };
-            if self.set_synced_if_valid(id.clone(), Some(remote)) {
+            if self.set_synced_if_valid(id.clone(), Some(remote)) && synced.contains(&id) {
                 self.resends.insert(id);
             }
         }
@@ -3669,7 +3691,7 @@ impl Trees {
                     };
                     at.same(remote)
                 };
-                let survived = !older_bases.contains(*id)
+                let survived = !older_bases.contains_key(*id)
                     && (records.get(*id).map(|record| &record.node))
                         .zip(self.r.get(id))
                         .is_some_and(|(old, remote)| {
