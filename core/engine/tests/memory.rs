@@ -14,7 +14,8 @@ const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
 const NOW: u64 = 1_794_268_740_000;
 const PACKAGES: usize = 600;
 const TARGET: u64 = 600;
-const CEILING: u64 = 4_900;
+const FIRST_UPLOAD_CEILING: u64 = 4_100;
+const RESTART_CEILING: u64 = 4_300;
 
 struct Live;
 
@@ -208,6 +209,8 @@ fn first_upload() -> (Trees, usize) {
     }
     assert!(trees.dirty().is_empty(), "{:?}", trees.work());
     assert_eq!(trees.synced().len(), entries.len());
+    trees.take_changed();
+    trees.take_changes();
     (trees, entries.len())
 }
 
@@ -225,6 +228,7 @@ fn restarted() -> (Trees, usize) {
     }
     trees.restore(synced.state()).unwrap();
     trees.take_changed();
+    trees.take_changes();
     assert!(trees.dirty().is_empty(), "{:?}", trees.work());
     (trees, entries)
 }
@@ -237,10 +241,14 @@ fn bytes_per_entry(build: fn() -> (Trees, usize)) -> u64 {
     held as u64 / entries as u64
 }
 
-fn assert_holds(budget: u64) {
-    for (when, build) in [
-        ("after a first upload", first_upload as fn() -> _),
-        ("after a restart", restarted),
+fn assert_holds(first_upload_budget: u64, restart_budget: u64) {
+    for (when, build, budget) in [
+        (
+            "after a first upload",
+            first_upload as fn() -> _,
+            first_upload_budget,
+        ),
+        ("after a restart", restarted, restart_budget),
     ] {
         let held = bytes_per_entry(build);
         println!("{when}: {held} bytes per entry");
@@ -253,11 +261,11 @@ fn assert_holds(budget: u64) {
 
 #[test]
 fn the_engine_holds_a_synced_folder_within_its_memory_ceiling() {
-    assert_holds(CEILING);
+    assert_holds(FIRST_UPLOAD_CEILING, RESTART_CEILING);
 }
 
 #[test]
 #[ignore]
 fn the_engine_holds_a_synced_folder_in_600_bytes_per_entry() {
-    assert_holds(TARGET);
+    assert_holds(TARGET, TARGET);
 }
