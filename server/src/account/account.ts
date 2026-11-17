@@ -50,6 +50,7 @@ const REWIND_MAX_AGE_MS = 29 * DAY_MS;
 const REWIND_RETRY_MIN_MS = 1000;
 const HOUR_MS = 3_600_000;
 const REPORT_DELAY_MS = 5 * 60_000;
+const REPORT_VOTE_MS = 24 * HOUR_MS;
 const REPORT_KEEP_HOURS = 24;
 const REPORT_TIMEOUT_MS = 10_000;
 const NOTICE_RETRY_MS = 30_000;
@@ -114,6 +115,11 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
   return x.length === y.length && x.every((byte, i) => byte === y[i]);
 }
 
+interface ReportVotes {
+  onUntilMs: number;
+  off: boolean;
+}
+
 interface DeviceRow {
   device_id: string;
   user_id: string;
@@ -127,6 +133,7 @@ interface DeviceRow {
   scope: string | null;
   expires_at_ms: number | null;
   issued_by: string | null;
+  telemetry: number | null;
   rotation_clock_ms: number;
 }
 
@@ -396,14 +403,17 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       }
       const serverTimeMs = Math.max(nowMs, device.rotation_clock_ms);
       const rotated = proposal !== undefined && serverTimeMs <= rotateBeforeMs;
+      const vote = args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED;
       this.sql.exec(
-        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ? WHERE device_id = ?",
+        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
         nowMs,
         args.rotation ? serverTimeMs : device.rotation_clock_ms,
         rotated ? proposal : device.refresh_hash,
+        vote,
         device.device_id,
       );
-      this.sql.exec("UPDATE devices SET telemetry = ? WHERE device_id = ?", args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED, device.device_id);
+      if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
+      else if (vote === TokenRequest_Telemetry.ON && nowMs + REPORT_VOTE_MS > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: nowMs + REPORT_VOTE_MS + HOUR_MS });
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);
@@ -460,6 +470,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.db.transactionSync(() => {
         const revoked = this.sql.exec("UPDATE devices SET revoked_at_ms = ? WHERE device_id = ? AND revoked_at_ms IS NULL", nowMs, deviceId).rowsWritten;
         if (revoked === 0) return;
+        this.countVotes();
         this.sql.exec(
           "INSERT INTO revocation_notices (device_id, space_id, next_try_ms) SELECT ?, space_id, ? FROM spaces WHERE true ON CONFLICT DO NOTHING",
           deviceId,
@@ -571,15 +582,29 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     }
 
     reporting(): boolean {
-      const votes = this.sql
+      const votes = this.votes();
+      return !votes.off && this.clock() < votes.onUntilMs;
+    }
+
+    private votes(): ReportVotes {
+      const row = this.sql.exec("SELECT value FROM settings WHERE key = 'report_votes'").toArray()[0];
+      return row ? (JSON.parse(String(row.value)) as ReportVotes) : { onUntilMs: 0, off: false };
+    }
+
+    private storeVotes(votes: ReportVotes): void {
+      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify(votes));
+    }
+
+    private countVotes(): void {
+      const counted = this.sql
         .exec(
-          "SELECT COALESCE(MAX(telemetry = ?), 0) AS yes, COALESCE(MAX(telemetry = ?), 0) AS no FROM devices WHERE revoked_at_ms IS NULL AND (expires_at_ms IS NULL OR expires_at_ms > ?)",
+          "SELECT COALESCE(MAX(CASE WHEN telemetry = ? THEN last_seen_ms END), 0) AS on_seen_ms, COALESCE(MAX(telemetry = ?), 0) AS off FROM devices WHERE revoked_at_ms IS NULL",
           TokenRequest_Telemetry.ON,
           TokenRequest_Telemetry.OFF,
-          this.clock(),
         )
         .one();
-      return Number(votes.yes) === 1 && Number(votes.no) === 0;
+      const onSeenMs = Number(counted.on_seen_ms);
+      this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onSeenMs + REPORT_VOTE_MS + HOUR_MS, off: Number(counted.off) === 1 });
     }
 
     async recordUsage(hours: UsageHours): Promise<boolean> {
@@ -589,7 +614,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.db.transactionSync(() => {
         for (const [key, usage] of Object.entries(hours)) {
           const hour = Number(key);
-          if (!Number.isInteger(hour) || hour < nowHour - REPORT_KEEP_HOURS || hour > nowHour) continue;
+          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
           const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
           if (stored) {
             this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(JSON.parse(String(stored.usage)), usage)), hour);

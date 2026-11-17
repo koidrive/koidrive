@@ -33,7 +33,18 @@ export class UsageTally {
   private hours: UsageHours = {};
   private empty = true;
   private flushedAtMs = 0;
-  reporting: boolean | undefined;
+  private reportingNow: boolean | undefined;
+
+  get reporting(): boolean | undefined {
+    return this.reportingNow;
+  }
+
+  set reporting(on: boolean | undefined) {
+    this.reportingNow = on;
+    if (on !== false) return;
+    this.hours = {};
+    this.empty = true;
+  }
 
   count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
     if (this.reporting === false) return;

@@ -59,6 +59,9 @@ async function refresh(device: DeviceCredentials, telemetry: TokenRequest_Teleme
   return device.deviceId;
 }
 
+let claimed: DeviceCredentials | undefined;
+const ownerOnce = async () => (claimed ??= await claim());
+const countVotes = (instance: AccountDO) => (instance as unknown as { countVotes(): void }).countVotes();
 const reporting = () => runInDurableObject(account(), (instance: AccountDO) => instance.reporting());
 const storedHours = () => runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT hour, usage FROM usage_hours").toArray());
 
@@ -82,6 +85,14 @@ describe("usage tally", () => {
     tally.reporting = false;
     tally.count("get_server", "200", 3, 11 * HOUR_MS);
     expect(tally.take(12 * HOUR_MS)).toBeUndefined();
+  });
+
+  it("drops the counts it holds once the server says it stopped reporting", () => {
+    const tally = new UsageTally();
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    tally.reporting = false;
+    tally.reporting = true;
+    expect(tally.take(10 * HOUR_MS + FLUSH_MS)).toBeUndefined();
   });
 });
 
@@ -116,7 +127,7 @@ describe("report payload", () => {
 
 describe("hourly server report", () => {
   it("follows the devices' choice, counts the hour's traffic and sends it once with no id of a device, space or person", async () => {
-    const owner = await claim();
+    const owner = await ownerOnce();
     const second = await pair(owner);
     expect(await reporting()).toBe(false);
     await refresh(owner, TokenRequest_Telemetry.ON);
@@ -165,9 +176,12 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: unknown[] = [];
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, (hour + 2) * HOUR_MS);
+      countVotes(instance);
+      instance.clock = () => hour * HOUR_MS + 60_000;
       await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
       state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
+      countVotes(instance);
       instance.clock = () => (hour + 2) * HOUR_MS;
       instance.sendReport = async (report) => {
         sent.push(report);
@@ -181,12 +195,90 @@ describe("hourly server report", () => {
     expect(await runInDurableObject(account(), (instance: AccountDO) => instance.recordUsage({ [hour]: emptyUsage() }))).toBe(false);
   });
 
+  it("sends one server_report an hour even when a process hands over that hour's counts after it was sent", async () => {
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const sent: { batch: unknown[] }[] = [];
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, hour * HOUR_MS);
+      countVotes(instance);
+      instance.clock = () => hour * HOUR_MS + 60_000;
+      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      instance.clock = () => (hour + 1) * HOUR_MS + 6 * 60_000;
+      instance.sendReport = async (report) => {
+        sent.push(report as { batch: unknown[] });
+        return true;
+      };
+    });
+    await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
+    await runInDurableObject(account(), async (instance: AccountDO) => {
+      instance.clock = () => (hour + 1) * HOUR_MS + 20 * 60_000;
+      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+    });
+    await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
+    expect(sent.flatMap((report) => report.batch)).toHaveLength(1);
+  });
+
+  it("counts an ON vote for 24 to 25 hours after its device last refreshed, and an OFF vote until the device replaces it or is revoked", async () => {
+    const owner = await ownerOnce();
+    const second = await pair(owner);
+    const at = async (clockMs: number, step: () => Promise<unknown>) => {
+      await runInDurableObject(account(), (instance: AccountDO) => {
+        instance.clock = () => clockMs;
+      });
+      await step();
+      return reporting();
+    };
+    const startMs = Date.now();
+    expect(await at(startMs, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(true);
+    expect(await at(startMs + 24 * HOUR_MS - 1, async () => {})).toBe(true);
+    expect(await at(startMs + 25 * HOUR_MS + 60_000, async () => {})).toBe(false);
+    expect(await at(startMs + 26 * HOUR_MS, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(true);
+    expect(await at(startMs + 26 * HOUR_MS, () => refresh(second, TokenRequest_Telemetry.OFF))).toBe(false);
+    expect(await at(startMs + 30 * 24 * HOUR_MS, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(false);
+    expect(await at(startMs + 30 * 24 * HOUR_MS, () => runInDurableObject(account(), (instance: AccountDO) => instance.revokeDevice(second.deviceId)))).toBe(true);
+  });
+
+  it("reads the same rows for a session check however many devices the server has revoked", async () => {
+    const owner = await ownerOnce();
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    const rowsRead = () =>
+      runInDurableObject(account(), async (instance: AccountDO, state) => {
+        const sql = state.storage.sql;
+        const exec = sql.exec.bind(sql);
+        const cursors: { rowsRead: number }[] = [];
+        const spy = vi.spyOn(sql, "exec").mockImplementation((query, ...bindings) => {
+          const cursor = exec(query, ...bindings);
+          cursors.push(cursor);
+          return cursor;
+        });
+        try {
+          await instance.checkSession(owner.deviceId);
+        } finally {
+          spy.mockRestore();
+        }
+        return cursors.reduce((sum, cursor) => sum + cursor.rowsRead, 0);
+      });
+    const before = await rowsRead();
+    await runInDurableObject(account(), (_instance, state) => {
+      for (let n = 0; n < 500; n++) {
+        state.storage.sql.exec(
+          "INSERT INTO devices (device_id, user_id, name, platform, created_at_ms, refresh_hash, issued_by, list_seq, revoked_at_ms) SELECT ?, user_id, 'old', 'linux', 1, x'00', NULL, 100000 + ?, 1 FROM devices LIMIT 1",
+          "revoked-" + n,
+          n,
+        );
+      }
+    });
+    expect(await rowsRead()).toBe(before);
+  });
+
   it("keeps an hour whose send failed for the next hour, and drops it after a day", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const tries: number[] = [];
     let nowMs = (hour + 2) * HOUR_MS;
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, (hour + 2) * HOUR_MS);
+      countVotes(instance);
+      instance.clock = () => hour * HOUR_MS + 60_000;
       await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
       instance.clock = () => nowMs;
       instance.sendReport = async () => {
@@ -200,7 +292,7 @@ describe("hourly server report", () => {
     nowMs += HOUR_MS / 2;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     expect(tries).toHaveLength(1);
-    nowMs = (hour + 26) * HOUR_MS;
+    nowMs = (hour + 25) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     expect(tries).toHaveLength(2);
     expect(await storedHours()).toEqual([]);
