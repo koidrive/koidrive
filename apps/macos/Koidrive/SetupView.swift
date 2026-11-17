@@ -310,7 +310,13 @@ struct FolderStep: View {
                     .foregroundStyle(Color.text2)
                 Picker("Space", selection: $setup.selectedSpaceID) {
                     ForEach(setup.spaces, id: \.spaceId) { space in
-                        Text(space.name).tag(Optional(space.spaceId))
+                        if let path = setup.linkedPath(ofSpace: space.spaceId) {
+                            Text("\(space.name) — linked to \(abbreviatingHome(path))")
+                                .tag(Optional(space.spaceId))
+                                .selectionDisabled()
+                        } else {
+                            Text(space.name).tag(Optional(space.spaceId))
+                        }
                     }
                     if !setup.spaces.isEmpty {
                         Divider()

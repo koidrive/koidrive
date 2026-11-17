@@ -752,6 +752,95 @@ private final class Fetches {
         #expect(setup.spaces.filter { $0.name == "Projects" }.count == 1)
     }
 
+    private func signedInWithOneLinkedFolder(at folder: URL) async throws -> AppModel {
+        let app = AppModel.fake(scenario: .firstRun)
+        let setup = SetupModel(app: app, mode: .firstRun, deviceName: "Mac")
+        setup.serverURL = "https://box.example.com"
+        await setup.connect()
+        setup.userName = "Ada"
+        setup.code = "ABCD-EFGH-JKLM"
+        await setup.signIn()
+        setup.folderPath = folder.path(percentEncoded: false)
+        await setup.link()
+        try #require(setup.step == .done)
+        return app
+    }
+
+    @Test func withNoSpaceLinkedTheFirstSpaceIsChosenAndEverySpaceCanBeLinked() async throws {
+        let app = AppModel.fake(scenario: .firstRun)
+        try #require(app.session.fakeCore()).setServerClaimed(claimed: true)
+        let setup = SetupModel(app: app, mode: .firstRun, deviceName: "Mac")
+        setup.serverURL = "https://box.example.com"
+        await setup.connect()
+        setup.code = "ABCD-EFGH"
+        await setup.signIn()
+        let projects = try await app.createSpace(name: "Projects")
+        await setup.loadSpaces()
+
+        #expect(setup.spaces.map(\.name) == ["Shared", "Projects"])
+        #expect(setup.spaces.allSatisfy { setup.linkedPath(ofSpace: $0.spaceId) == nil })
+        #expect(setup.selectedSpaceID == setup.spaces.first?.spaceId)
+        setup.selectedSpaceID = projects.spaceId
+        setup.folderPath = "/tmp"
+        #expect(setup.canLink)
+        #expect(setup.newSpaceName == "Koidrive")
+    }
+
+    @Test func aSpaceLinkedOnThisMacNamesItsFolderAndCannotBeLinkedAgain() async throws {
+        let first = try temporaryDirectory()
+        let second = try temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let app = try await signedInWithOneLinkedFolder(at: first)
+        let linked = try #require(app.state.folders.first)
+        let projects = try await app.createSpace(name: "Projects")
+        let setup = SetupModel(app: app, mode: .addFolder, deviceName: "Mac")
+        await setup.loadSpaces()
+
+        #expect(setup.spaces.map(\.name) == ["Koidrive", "Projects"])
+        #expect(setup.linkedPath(ofSpace: linked.spaceId) == linked.path)
+        #expect(setup.linkedPath(ofSpace: projects.spaceId) == nil)
+        #expect(setup.selectedSpaceID == projects.spaceId)
+
+        setup.folderPath = second.path(percentEncoded: false)
+        setup.selectedSpaceID = linked.spaceId
+        #expect(!setup.canLink)
+        setup.selectedSpaceID = projects.spaceId
+        #expect(setup.canLink)
+        await setup.link()
+        #expect(setup.error == nil)
+        #expect(setup.step == .done)
+        #expect(app.state.folders.map(\.spaceName).sorted() == ["Koidrive", "Projects"])
+    }
+
+    @Test func withEverySpaceLinkedTheFolderStepOffersANewSpaceWithAnUnusedName() async throws {
+        let first = try temporaryDirectory()
+        let second = try temporaryDirectory()
+        let third = try temporaryDirectory()
+        defer {
+            for folder in [first, second, third] { try? FileManager.default.removeItem(at: folder) }
+        }
+        let app = try await signedInWithOneLinkedFolder(at: first)
+        let other = try await app.createSpace(name: "koidrive 2")
+        _ = try await app.linkFolder(spaceID: other.spaceId, path: second.path(percentEncoded: false))
+        let setup = SetupModel(app: app, mode: .addFolder, deviceName: "Mac")
+        await setup.loadSpaces()
+
+        #expect(setup.spaces.count == 2)
+        #expect(setup.spaces.allSatisfy { setup.linkedPath(ofSpace: $0.spaceId) != nil })
+        #expect(setup.selectedSpaceID == nil)
+        #expect(setup.newSpaceName == "Koidrive 3")
+
+        setup.folderPath = third.path(percentEncoded: false)
+        #expect(setup.canLink)
+        await setup.link()
+        #expect(setup.error == nil)
+        #expect(setup.step == .done)
+        #expect(app.state.folders.map(\.spaceName).sorted() == ["Koidrive", "Koidrive 3", "koidrive 2"])
+    }
+
     @Test func anUndecidedSetupAsksAndConnectStoresUsageReportsOn() async throws {
         let app = AppModel.fake(scenario: .firstRun)
         try #require(app.session.fakeCore()).failNext(error: .ServerUnreachable(reason: "timed out"))
