@@ -14,16 +14,44 @@ WORKFLOW = ROOT / ".github/workflows/property-battery.yml"
 HEAVY_WORKFLOW = ROOT / ".github/workflows/heavy-tests.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 MANIFEST = ROOT / "Cargo.toml"
+CARGO_CONFIGS = (ROOT / ".cargo/config.toml", ROOT / ".cargo/config")
+RUNTIME_CHECK = re.compile(r"debug-assertions|overflow-checks|\bpanic\b")
+RUSTC_OVERRIDE = re.compile(r"CARGO_PROFILE_|debug-assertions=(?:off|no|n|false)|overflow-checks=(?:off|no|n|false)|-C\s*panic=")
+
+
+def sections(manifest):
+    header = ""
+    for line in manifest.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if re.fullmatch(r"\[\[?[^\]]+\]\]?", stripped):
+            header = stripped.strip("[]").strip()
+        elif stripped:
+            yield header, stripped
 
 
 def check_checked_profile(manifest):
-    section = re.search(r"(?ms)^\[profile\.checked\]\n(.*?)(?=^\[|\Z)", manifest)
-    if section is None:
-        raise ValueError("Cargo.toml has no [profile.checked]")
-    settings = dict(re.findall(r'(?m)^([a-z-]+) = "?([^"\n]+)"?$', section[1]))
-    required = {"inherits": "dev", "debug-assertions": "true", "overflow-checks": "true"}
-    if any(settings.get(key) != value for key, value in required.items()) or "panic" in settings:
-        raise ValueError(f"The checked profile must inherit dev and keep debug assertions, overflow checks and unwinding, got {settings}")
+    top = {}
+    for header, line in sections(manifest):
+        key, _, value = (part.strip() for part in line.partition("="))
+        if header == "profile.checked":
+            top[key] = value
+        if header.startswith(("profile.release", "profile.bench")) or not RUNTIME_CHECK.search(line):
+            continue
+        if header == "profile.checked" and key in ("debug-assertions", "overflow-checks") and value == "true":
+            continue
+        raise ValueError(f"[{header}] sets {line!r}: only [profile.checked] may set debug-assertions or overflow-checks, only to true, and nothing that the checked profile inherits may change them or panic")
+    required = {"inherits": '"dev"', "debug-assertions": "true", "overflow-checks": "true"}
+    if any(top.get(key) != value for key, value in required.items()):
+        raise ValueError(f"[profile.checked] must inherit dev and set debug-assertions and overflow-checks to true, got {top}")
+
+
+def check_no_profile_overrides(configs, workflows):
+    for text in configs:
+        if re.search(r"(?m)^\s*\[\s*profile|^\s*profile\s*[.=]", text) or RUSTC_OVERRIDE.search(text):
+            raise ValueError("Cargo config must not override profiles or runtime checks")
+    for text in workflows:
+        if RUSTC_OVERRIDE.search(text):
+            raise ValueError("Workflows must not override profiles or runtime checks")
 
 
 def commands(workflow):
@@ -137,10 +165,35 @@ class CheckedProfile(unittest.TestCase):
         manifest = MANIFEST.read_text()
         for original, weakened in (("debug-assertions = true", "debug-assertions = false"),
                                    ("overflow-checks = true", "overflow-checks = false"),
+                                   ("overflow-checks = true", ""),
                                    ('inherits = "dev"', 'inherits = "release"'),
-                                   ("overflow-checks = true", 'overflow-checks = true\npanic = "abort"')):
+                                   ("overflow-checks = true", 'overflow-checks = true\npanic = "abort"'),
+                                   ("overflow-checks = true", "overflow-checks = true\npackage.koidrive-engine.debug-assertions = false"),
+                                   ("overflow-checks = true", 'overflow-checks = true\npackage = { "*" = { overflow-checks = false } }')):
             with self.subTest(weakened=weakened), self.assertRaises(ValueError):
                 check_checked_profile(manifest.replace(original, weakened, 1))
+        for table in ("profile.checked.package.koidrive-engine", "profile.checked.package.\"*\"",
+                      "profile.dev.package.koidrive-sim", "profile.dev", "profile.checked.build-override",
+                      "profile"):
+            for setting in ("debug-assertions = false", "overflow-checks = false", 'panic = "abort"'):
+                key = setting if table != "profile" else "checked.package.koidrive-engine." + setting
+                with self.subTest(table=table, setting=setting), self.assertRaises(ValueError):
+                    check_checked_profile(manifest + f"\n[{table}]\n{key}\n")
+
+    def test_release_profiles_may_turn_checks_off(self):
+        check_checked_profile(MANIFEST.read_text() + '\n[profile.release]\ndebug-assertions = false\npanic = "abort"\n')
+
+    def test_no_profile_override_outside_cargo_toml(self):
+        check_no_profile_overrides([path.read_text() for path in CARGO_CONFIGS if path.exists()],
+                                   [path.read_text() for path in (ROOT / ".github/workflows").glob("*.yml")])
+        for config in ("[profile.checked]\noverflow-checks = false\n", "profile.dev.debug-assertions = false\n",
+                       '[build]\nrustflags = ["-C", "overflow-checks=off"]\n'):
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                check_no_profile_overrides([config], [])
+        for workflow in ("env:\n  CARGO_PROFILE_CHECKED_OVERFLOW_CHECKS: 'false'\n",
+                         "env:\n  RUSTFLAGS: -C debug-assertions=off\n", "env:\n  RUSTFLAGS: -Cpanic=abort\n"):
+            with self.subTest(workflow=workflow), self.assertRaises(ValueError):
+                check_no_profile_overrides([], [workflow])
 
     def test_battery_builds_and_reproduces_with_the_checked_profile(self):
         workflow = WORKFLOW.read_text()
