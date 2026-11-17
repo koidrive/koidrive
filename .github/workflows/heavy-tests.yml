@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       cases:
-        description: Cases per opted-in stress property; deadline-bound properties keep their own budgets (empty keeps each property's own count)
+        description: PROPTEST_CASES (empty keeps each property's own case count)
         type: string
         default: ''
       repeat:
@@ -43,6 +43,14 @@ on:
         description: Also run the tests marked #[ignore]
         type: boolean
         default: false
+      release:
+        description: Build the tests with the release profile
+        type: boolean
+        default: false
+      env:
+        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
+        type: string
+        default: ''
       os:
         description: Operating systems to run on
         type: choice
@@ -61,6 +69,8 @@ env:
   SEED: ${{ inputs.seed }}
   FEATURES: ${{ inputs.features }}
   IGNORED: ${{ inputs.ignored }}
+  RELEASE: ${{ inputs.release }}
+  EXTRA_ENV: ${{ inputs.env }}
 
 defaults:
   run:
@@ -135,26 +145,35 @@ jobs:
             echo "::error::$CRATE is not a package of the workspace at $SHA."
             exit 1
           fi
-          cargo test --locked --no-run -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+          profile=()
+          [ "$RELEASE" != "true" ] || profile=(--release)
+          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
       - name: Run the tests
         run: |
+          for pair in $EXTRA_ENV; do
+            if [[ ! "$pair" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]]*$ ]]; then
+              echo "::error::env takes NAME=value pairs, not '$pair'."
+              exit 1
+            fi
+            export "${pair?}"
+          done
           out="$RUNNER_TEMP/heavy-tests"
           mkdir -p "$out/logs" "$out/regressions"
           cargo_args=(--locked --no-fail-fast -p "$CRATE")
+          [ "$RELEASE" != "true" ] || cargo_args+=(--release)
           [ -z "$FEATURES" ] || cargo_args+=(--features "$FEATURES")
           [ -z "$TEST" ] || cargo_args+=(--test "$TEST")
           test_args=()
           [ -z "$FILTER" ] || test_args+=("$FILTER")
           [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
-          unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
-          [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
+          [ -z "$CASES" ] || export PROPTEST_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
           [ "${#test_args[@]}" -eq 0 ] || repro_args+=" --$(printf ' %q' "${test_args[@]}")"
-          repro="git checkout $SHA && env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES PROPTEST_RNG_SEED=<seed>${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES} cargo test$repro_args"
+          repro="git checkout $SHA && PROPTEST_RNG_SEED=<seed>${CASES:+ PROPTEST_CASES=$CASES}${EXTRA_ENV:+ $EXTRA_ENV} cargo test$repro_args"
           {
             echo "### $RUNNER_OS: cargo test$repro_args"
             echo
-            echo "Commit $SHA, stress budget KOIDRIVE_BATTERY_CASES=${CASES:-unset, so each property runs its own count}. Deadline-bound properties keep their own budgets; unit tests run once per repetition."
+            echo "Commit $SHA, PROPTEST_CASES=${CASES:-unset, so each property runs its own count}."
             echo
             echo "| Run | Seed | Result | Passed | Failed | Ignored | Minutes |"
             echo "|---|---|---|---|---|---|---|"
