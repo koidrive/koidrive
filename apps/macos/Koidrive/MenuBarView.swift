@@ -13,7 +13,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(turningArrows.isTurning ? "MenuBar/syncing-fish" : model.iconBadge.imageName)
-            .accessibilityLabel(Text("Koidrive: \(model.iconBadge == .question ? String(localized: "Needs you") : model.headlineTitle)"))
+            .accessibilityLabel(Text("Koidrive: \(model.iconTitle)"))
             .onChange(of: model.turnsMenuBarArrows(reduceMotion: reduceMotion), initial: true) { _, turns in
                 turningArrows.turn(turns)
             }
@@ -107,6 +107,14 @@ extension AppModel {
         case .questions: foldersWaitingForAnswers.map(\.waitingTitle) ?? String(localized: "Needs your answer")
         case .status(.syncing) where syncHeader.folders > 1: String(localized: "Syncing \(syncHeader.folders) folders")
         case .status(let status): status.title
+        }
+    }
+
+    var iconTitle: String {
+        switch iconBadge {
+        case .question: String(localized: "Needs you")
+        case .problem where headline != .halted: String(localized: "Needs attention")
+        default: headlineTitle
         }
     }
 

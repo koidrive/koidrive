@@ -11,6 +11,8 @@ public struct SyncHeader: Equatable, Sendable {
     /// What the only busy folder is doing, above the meter.
     public var activity: ActivityLine?
     public var meter: Meter
+    /// Whether the meter shows the transfers rather than the only folder's comparison.
+    public var meterShowsTransfers = false
     public var uploads: UInt64
     public var downloads: UInt64
     public var current: FolderPath?
@@ -101,6 +103,7 @@ extension SyncHeader {
             let left = progress.bytesTotal - done
             let fill = Meter.Fill.fraction(Double(done) / Double(progress.bytesTotal))
             let bytes = Meter.Caption.bytes(done: done, total: progress.bytesTotal)
+            meterShowsTransfers = true
             if left >= Self.backlogFrom {
                 meter = Meter(fill: fill, backlog: .left(bytes: left, files: uploads + downloads), remaining: remaining)
             } else if remaining != nil {

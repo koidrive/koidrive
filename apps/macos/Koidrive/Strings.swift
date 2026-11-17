@@ -579,7 +579,7 @@ extension ActivityLine {
 
 extension SyncHeader {
     var accessibilityLabel: String {
-        if let activity { return activity.noteText }
+        if let activity, !meterShowsTransfers { return activity.noteText }
         if let folder { return String(localized: "Syncing \(folder)") }
         return folders > 1 ? String(localized: "Syncing \(folders) folders") : SyncStatus.syncing.title
     }

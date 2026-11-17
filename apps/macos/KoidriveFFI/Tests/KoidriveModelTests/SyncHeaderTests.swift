@@ -53,6 +53,7 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
     @Test func comparingFillsByTheLargestSizeSeenInThePass() {
         let model = syncing([folder("Photos", .checking(files: 3_120, bytes: 4_200_000_000))])
         #expect(model.syncHeader.meter == Meter(fill: .fraction(0), caption: .bytes(done: 0, total: 4_200_000_000)))
+        #expect(!model.syncHeader.meterShowsTransfers)
         model.apply(.folders(folders: [folder("Photos", .checking(files: 2_000, bytes: 3_100_000_000))]))
         model.apply(.progress(progress: transfers(up: 214, done: 0, total: 50_000_000, current: "Reports/q3.pdf")))
         let header = model.syncHeader
@@ -60,6 +61,7 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
         #expect(header.meter.caption == .bytes(done: 1_100_000_000, total: 4_200_000_000))
         #expect(header.uploads == 214)
         #expect(header.current?.path == "Reports/q3.pdf")
+        #expect(!header.meterShowsTransfers)
 
         model.apply(.folders(folders: [folder("Photos", .catchingUp)]))
         model.apply(.folders(folders: [folder("Photos", .checking(files: 10, bytes: 1_000))]))
@@ -69,6 +71,8 @@ private func syncing(_ folders: [LinkedFolder], _ progress: SyncProgress? = nil,
     @Test func comparingBeforeTheSizeIsKnownFallsBackToTheTransfers() {
         let header = syncing([folder("Photos", .checking(files: 3_120, bytes: 0))], transfers(up: 2, done: 148_000_000, total: 240_000_000)).syncHeader
         #expect(header.meter == Meter(fill: .fraction(148.0 / 240), caption: .bytes(done: 148_000_000, total: 240_000_000)))
+        #expect(header.activity == .comparing(folder: "Photos", files: 3_120))
+        #expect(header.meterShowsTransfers)
     }
 
     @Test func transfersAloneShowNoActivityLine() {
