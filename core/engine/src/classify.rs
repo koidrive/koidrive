@@ -1323,9 +1323,10 @@ impl Trees {
         let (Some(local), Some(remote)) = (self.l.get(&id), self.r.live(&id)) else {
             return;
         };
+        let moved_here = self.local_changes.contains(&id) || self.unsent_moves.contains(&id);
         let shape = Shape {
             content: local.shape.content.clone(),
-            ..remote.clone()
+            ..(if moved_here { remote } else { &local.shape }).clone()
         };
         self.lost_creates.remove(&id);
         self.resends.remove(&id);

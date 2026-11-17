@@ -339,6 +339,20 @@ fn a_lost_write_is_sent_as_an_edit_once_the_server_holds_its_file_again() {
 }
 
 #[test]
+fn a_file_at_the_version_r_was_made_over_takes_rs_name_when_s_holds_no_base() {
+    let node = RemoteNode {
+        shape: file(ROOT, "c", 2),
+        ..ancestry_node(2, "v2", &["v1"])
+    };
+    let mut trees = without_a_base(1, Some(("v1", &[])), node);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids);
+    assert!(commit.is_none(), "{:?}", commit.map(|commit| ops(&commit)));
+    assert_eq!(trees.class("f"), Class::Remote);
+}
+
+
+#[test]
 fn a_lost_write_is_sent_again_when_this_device_holds_an_unsent_edit_of_the_file_holding_it() {
     let trees = a_lost_write(true, |trees| {
         trees.set_local("g".into(), local(written(ROOT, "b", 3), 2));
