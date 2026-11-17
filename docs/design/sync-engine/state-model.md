@@ -265,8 +265,8 @@ The server keeps, per device, the highest `device_seq` it accepted and that comm
 |---|---|---|
 | *w* = *a* | the commit in flight, if any, was not accepted | Resend it unchanged. If its result has already arrived, the server accepted it and lost it: act as in the last row |
 | *w* = *a* + 1, and the commit in flight has slot *a* + 1 | the commit was accepted and its response lost | Resend it unchanged; the server returns the stored result. Only `STALE_DEVICE_STATE`, meaning the server does not know that `commit_id`, makes this a rollback |
-| *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1 | the store is behind the server: restored or copied | Plan nothing from this store; the space enters recovery (§6.4) with the store as evidence |
-| *w* < *a*, or *w* = *a* with the result of the commit in flight held | the server lost accepted commits of this device | *a* := *w*; drop the commit in flight and keep its restores queued; record R as ahead of the server and bootstrap as for `AHEAD_OF_SERVER` (§4.4) |
+| *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1, at a slot the store does not keep | the store is behind the server: restored or copied | Plan nothing from this store; the space enters recovery (§6.4) with the store as evidence |
+| *w* < *a*, *w* = *a* with the result of the commit in flight held, or *w* > *a* at a slot the store keeps from before a loss it has not listed since | the server lost accepted commits of this device | *a* := *w*; drop the commit in flight and keep its restores queued; record R as ahead of the server and bootstrap as for `AHEAD_OF_SERVER` (§4.4) |
 
 These ordering rules keep the counter comparison sound:
 

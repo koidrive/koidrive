@@ -43,8 +43,8 @@ The server keeps this row when log truncation removes the commit from `commits`.
 |---|---|---|
 | *w* = *a* | The commit in flight, if there is one, was not accepted | Resend it unchanged |
 | *w* = *a* + 1, and the commit in flight has slot *a* + 1 | The commit was accepted and its response was lost | Resend it unchanged; the server returns its stored result |
-| *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1 | The store is behind the server: it was restored from a backup or cloned | Plan nothing from this store and enter recovery (§6) |
-| *w* < *a* | The server lost commits of this device that it had accepted: its counter only grows, and the store learns a slot only from its result | Take *a* := *w*, drop the commit in flight, and list the tree again as for `AHEAD_OF_SERVER`. What was lost is planned again from the difference between the new listing and the client's synced state, so a lost edit comes back as a conflict copy and a lost delete comes back as a download |
+| *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1, and the client keeps no result of slot *w* | The store is behind the server: it was restored from a backup or cloned | Plan nothing from this store and enter recovery (§6) |
+| *w* < *a*, or *w* > *a* at a slot whose result the client keeps from before an earlier loss it has not listed the tree since | The server lost commits of this device that it had accepted: its counter only grows, and the store learns a slot only from its result | Take *a* := *w*, drop the commit in flight, and list the tree again as for `AHEAD_OF_SERVER`. What was lost is planned again from the difference between the new listing and the client's synced state, so a lost edit comes back as a conflict copy and a lost delete comes back as a download |
 
 The client compares *w* with *a* before it applies any result it got on the same connection. A result applied first raises *a* past a current *w*, so a healthy server looks like one that lost commits. When *w* < *a*, the client also discards any tree listing or commit result from an earlier connection that arrives after the `Welcome`, because it may describe commits the server lost.
 

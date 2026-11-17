@@ -2421,7 +2421,10 @@ impl Commits {
     /// stay until R is listed again ([`Commits::forget_lost_slots`]), so that
     /// [`Commits::lost_here`] still names the commits the server lost, while
     /// [`Commits::held_through`] counts none above *a*. A later `Welcome` finds *w* = *a*, so a
-    /// loss is handled once. Whether R
+    /// loss is handled once. A later `Welcome` whose *w* is above *a* but one of those slots, as
+    /// from a second restore of the server before R is listed again, is a loss too: the server holds
+    /// commits this device made, through slot *w*, and lost the ones after. *a* takes *w* and R is
+    /// listed again. Whether R
     /// itself belongs to the `Welcome`'s history is checked where R is kept.
     ///
     /// Recovery keeps the queued restores with the commit in flight: nothing is built under that
@@ -2440,7 +2443,7 @@ impl Commits {
             Some(flight) if flight.result.is_none() && (w == a || w == a + 1) => Reconnect::Resend,
             Some(_) if w == a + 1 => Reconnect::Idle,
             Some(_) if w == a => Reconnect::AheadOfServer,
-            _ if w < a => Reconnect::AheadOfServer,
+            _ if w < a || self.slots.contains_key(&w) => Reconnect::AheadOfServer,
             _ => Reconnect::Recovery,
         };
         if reconnect == Reconnect::Recovery {

@@ -262,6 +262,32 @@ fn a_server_count_below_the_accepted_one_is_taken_and_drops_the_commit_in_flight
     }
 }
 
+#[test]
+fn a_server_count_above_the_accepted_one_at_a_slot_an_earlier_loss_took_is_a_loss() {
+    let mut trees = trees(&[("n", Some(file(ROOT, "n", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    for (seq, name) in [(3, "m"), (7, "o")] {
+        build(&mut commits, &mut trees, &mut ids).unwrap();
+        let applied = vec![outcome(op_result::Code::Applied)];
+        commits.received(result(seq, applied)).unwrap();
+        assert!(commits.acknowledge(&mut trees, seq));
+        trees.settle();
+        trees.set_local(name.into(), local(file(ROOT, name, 2), seq.into()));
+        trees.settle();
+    }
+    assert_eq!((commits.accepted(), commits.held_through()), (2, 7));
+    let mut twice = commits.clone();
+    assert_eq!(twice.connected(&welcome(0)), Reconnect::AheadOfServer);
+    assert_eq!((twice.accepted(), twice.held_through()), (0, 0));
+    assert_eq!(twice.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!((twice.accepted(), twice.held_through()), (1, 3));
+    assert!(twice.lost_here(7) && !twice.lost_here(3));
+    assert_eq!(twice.halted(), None);
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome(3)), Reconnect::Recovery);
+    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+}
+
 /// GUN-444: a commit's result arrives, but before it is acknowledged the server loses it, and
 /// its `Welcome` counts *w* = *a*. That is a loss, so the commit in flight is dropped and R is
 /// listed again, instead of recovery starting.
