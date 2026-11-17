@@ -120,6 +120,7 @@ const CLOSE_UNSUPPORTED_VERSION: u16 = 4002;
 const CLOSE_DEVICE_REVOKED: u16 = 4003;
 const MAX_REAUTH_WAIT: Duration = Duration::from_secs(3600);
 const MAX_REFUSAL: usize = 64 << 10;
+const EVENTS_AHEAD: usize = 64;
 const REFUSAL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_UNREADABLE_REFUSALS: u32 = 5;
 const MIN_REAUTH_WAIT: Duration = Duration::from_secs(1);
@@ -167,7 +168,7 @@ impl SessionConfig {
 
 /// The events of a session, in order. Ends after `Event::Stopped`.
 #[derive(Debug)]
-pub struct Events(mpsc::UnboundedReceiver<Event>);
+pub struct Events(mpsc::Receiver<Event>);
 
 impl Events {
     pub async fn next(&mut self) -> Option<Event> {
@@ -198,7 +199,7 @@ impl Session {
     pub fn start(auth: Arc<Auth>, config: SessionConfig) -> Result<(Session, Events), StopReason> {
         let url = websocket_url(auth.api().base(), &config.space_id)?;
         let (commands, command_rx) = mpsc::unbounded_channel();
-        let (events, event_rx) = mpsc::unbounded_channel();
+        let (events, event_rx) = mpsc::channel(EVENTS_AHEAD);
         let stopped = Arc::new(OnceLock::new());
         let (closing, closing_rx) = watch::channel(false);
         let bundles = Arc::new(Bundles::default());
@@ -520,7 +521,7 @@ struct Task {
     tls: Option<Arc<rustls::ClientConfig>>,
     commands: mpsc::UnboundedReceiver<Command>,
     closing: watch::Receiver<bool>,
-    events: mpsc::UnboundedSender<Event>,
+    events: mpsc::Sender<Event>,
     stopped: Arc<OnceLock<StopReason>>,
     next_req: u64,
     pending: BTreeMap<u64, PendingCall>,
@@ -557,7 +558,7 @@ impl Task {
             .max(self.asked_wait.take().unwrap_or_default());
             self.attempt = self.attempt.saturating_add(1);
             tracing::debug!(?reason, ?retry_in, "koidrive session disconnected");
-            self.emit(Event::Disconnected { reason, retry_in });
+            self.emit(Event::Disconnected { reason, retry_in }).await;
             if !self.idle(retry_in).await {
                 break StopReason::Closed;
             }
@@ -571,7 +572,7 @@ impl Task {
         {
             let _ = call.reply.send(Err(CallError::Stopped(reason.clone())));
         }
-        self.emit(Event::Stopped(reason));
+        self.emit(Event::Stopped(reason)).await;
     }
 
     async fn idle(&mut self, delay: Duration) -> bool {
@@ -607,7 +608,7 @@ impl Task {
                 .iter()
                 .any(|feature| feature == CHUNK_BUNDLES),
         );
-        self.emit(Event::Connected(welcome.clone()));
+        self.emit(Event::Connected(welcome.clone())).await;
         if let Some(resume) = self.stream.reconnected()
             && let Err(exit) = self
                 .send(&mut socket, client_message::Msg::Resume(resume))
@@ -824,7 +825,7 @@ impl Task {
                 Some(Msg::Goodbye(goodbye)) => {
                     return Err(self.closed(Some(goodbye.code as u16), goodbye.reason));
                 }
-                Some(Msg::Notice(notice)) => self.emit(Event::Notice(notice)),
+                Some(Msg::Notice(notice)) => self.emit(Event::Notice(notice)).await,
                 Some(_) => return Err(Exit::violation("a message before Welcome")),
                 None => {}
             }
@@ -1104,7 +1105,7 @@ impl Task {
             }
             Msg::Rpc(response) => self.answer(response, socket).await,
             Msg::Notice(notice) => {
-                self.emit(Event::Notice(notice));
+                self.emit(Event::Notice(notice)).await;
                 Ok(())
             }
             Msg::Goodbye(goodbye) => Err(self.closed(Some(goodbye.code as u16), goodbye.reason)),
@@ -1139,7 +1140,7 @@ impl Task {
 
     async fn feed(&mut self, fed: Fed, socket: &mut Socket) -> Result<(), Exit> {
         for event in fed.events {
-            self.emit(event);
+            self.emit(event).await;
         }
         match fed.resume {
             Some(resume) => self.send(socket, client_message::Msg::Resume(resume)).await,
@@ -1166,8 +1167,13 @@ impl Task {
         req_id
     }
 
-    fn emit(&self, event: Event) {
-        let _ = self.events.send(event);
+    async fn emit(&mut self, event: Event) {
+        let closing = self.closing.wait_for(|closing| *closing);
+        tokio::select! {
+            biased;
+            _ = self.events.send(event) => {}
+            _ = closing => {}
+        }
     }
 }
 
