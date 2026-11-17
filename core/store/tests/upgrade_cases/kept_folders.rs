@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+
+upgrade_case!(kept_folders, |store| {
+    store
+        .transaction(|tx| {
+            let mut state = tx.engine_state()?;
+            assert!(state.trees.kept_folders.is_empty());
+            let report = tx
+                .local_nodes()?
+                .into_iter()
+                .find(|node| node.shape.name == "report.txt")
+                .unwrap();
+            state.trees.kept_folders.insert(report.node_id.clone());
+            tx.set_engine_state(&state)?;
+            assert_eq!(
+                tx.engine_state()?.trees.kept_folders,
+                std::collections::BTreeSet::from([report.node_id])
+            );
+            Ok::<_, koidrive_store::Error>(())
+        })
+        .unwrap();
+});
