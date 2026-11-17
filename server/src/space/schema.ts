@@ -2,7 +2,6 @@
 
 import type { Sql } from "../host";
 import { type Migration, migrate as runMigrations } from "../migrations";
-import { backfillLegacyIntents } from "./intents";
 
 export const MIGRATIONS: readonly Migration[] = [
   `
@@ -120,9 +119,11 @@ export const MIGRATIONS: readonly Migration[] = [
     const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
     if (!columns.includes("status_before")) sql.exec("ALTER TABLE nodes ADD COLUMN status_before TEXT");
     if (!columns.includes("copy_mark")) sql.exec("ALTER TABLE nodes ADD COLUMN copy_mark TEXT");
-    backfillLegacyIntents(sql);
+    sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('${LEGACY_INTENTS_DUE}', 1)`);
   },
 ];
+
+export const LEGACY_INTENTS_DUE = "legacy_intents_due";
 
 export function migrate(sql: Sql): void {
   runMigrations(sql, "meta", MIGRATIONS);
