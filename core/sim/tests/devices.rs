@@ -39,6 +39,8 @@ mod restore_write_history;
 mod restore_yielded_resend;
 #[path = "devices/unasked_names.rs"]
 mod unasked_names;
+#[path = "devices/undone_deletes.rs"]
+mod undone_deletes;
 
 fn action() -> impl Strategy<Value = Action> {
     (
