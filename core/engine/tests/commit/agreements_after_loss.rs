@@ -698,7 +698,7 @@ fn a_second_loss_before_l_takes_a_resends_position_creates_it_there_again() {
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, Default::default(), commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     assert!(!trees.waiting().contains_key("f"));
     let next = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -820,7 +820,7 @@ fn a_second_loss_after_another_device_renamed_a_resend_creates_it_at_that_name()
     assert_eq!(records.get("f").map(|record| record.node.shape.name.as_str()), Some("c"));
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
     let planned = ops(&commit);
@@ -837,7 +837,7 @@ fn a_rename_another_device_makes_during_a_second_resend_is_not_undone() {
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     let commit = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 0).cloned().unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(create)] if create.name == "b"));
@@ -971,7 +971,7 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     assert!(trees.state().lost_positions.is_empty());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1024,7 +1024,7 @@ fn undone_move_then_edit_then_loss(peer: Option<&str>) -> Vec<(String, u8)> {
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.remove_remote("f");
     trees.forget_lost(trashed, edited, synced, moved, untaken, records, commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     created_at(&build(&mut commits, &mut trees, &mut ids).unwrap())
 }

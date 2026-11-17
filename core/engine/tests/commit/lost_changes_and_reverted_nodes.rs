@@ -2570,7 +2570,7 @@ fn a_folder_merged_into_one_a_lost_commit_created_is_created_again_after_the_los
         commits.held_through(),
         commits.accepted(),
     );
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     let created: Vec<(String, String)> = (sent.into_iter().flatten())

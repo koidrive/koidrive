@@ -131,7 +131,7 @@ A reverted node is one whose local position the server will not take: a move tha
 - A node reverted because its move closes a cycle against R stops being reverted when another device moves, trashes or purges a node and the local position no longer closes a cycle against R. The planner then sends the move, or reverts it again when the move still closes a cycle once the commit's own ops and merges count.
 - The effects of §2.5 make its position on disk equal to R, as for a remote change, but never replace its content.
 - When R no longer has it, the effects remove it only if it holds no unuploaded edit. A file that holds one becomes a new node and the edit is uploaded as a create.
-- After a server loss (§4.4), a reverted node that R does not hold at all stops being reverted, also a folder merged into another that S never held: the server's rename or merge that reverted it was lost too. It keeps its ID and is created again at the position L holds.
+- After a server loss (§4.4), a reverted node that S or R held and R no longer holds at all stops being reverted, since the server's rename that reverted it was lost too. A folder merged into another stops being reverted when R no longer holds the folder it was merged into, since the merge was lost too. A merge into a folder R still holds stays, even when another device has since renamed or deleted that folder. The node keeps its ID and is created again at the position L holds.
 - A folder that L deleted on the way from a reverted or parked node to the root is reverted too, so it is created again. So is a folder that the keep rule cannot clear from S because S still has children under it.
 - A node stops being reverted once both L and S have it at its R position.
 

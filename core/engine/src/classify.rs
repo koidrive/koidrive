@@ -3251,9 +3251,9 @@ impl Trees {
     /// this device applied (design §4.4). S forgets every node that R does not hold at all or holds
     /// live with another shape, and every node S holds below one. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
-    /// position L holds. No node R does not hold at all stays reverted, also one S never held, such
-    /// as a folder a lost commit merged into another: the server's rename or merge that reverted
-    /// it was lost too. One whose content differs from
+    /// position L holds. A reverted node that S, a waiting S update or R held and R no longer holds at all stops being
+    /// reverted, since the server's rename that reverted it was lost too; a folder merged into
+    /// another stops being reverted in [`Commits::forget_lost`]. One whose content differs from
     /// R's is kept beside R's as a conflict copy instead of being replaced by R's older content. A
     /// node R holds in the trash keeps S, so it stays a remote delete, also below a node S forgets,
     /// unless it is a file whose edit the server lost (see `edited` below).
@@ -3418,6 +3418,14 @@ impl Trees {
                     && !same_content(local, listed))
                 .then(|| id.clone())
             })
+            .collect();
+        let held: Vec<NodeId> = (self.reverted.iter())
+            .filter(|id| {
+                self.s.get(id).is_some()
+                    || self.waiting.contains_key(*id)
+                    || records.contains_key(*id)
+            })
+            .cloned()
             .collect();
         let seen = |id: &NodeId, remote: &RemoteNode| {
             (self.past_positions.get(id).into_iter().flatten()).any(|past| {
@@ -3815,13 +3823,10 @@ impl Trees {
                 self.wait(id, Some(kept), Origin::Other);
             }
         }
-        let unreverted: Vec<NodeId> = (self.reverted.iter())
-            .filter(|id| self.r.get(id).is_none())
-            .cloned()
-            .collect();
-        for id in unreverted {
-            self.reverted.remove(&id);
-            self.mark(&id);
+        for id in held {
+            if self.r.get(&id).is_none() {
+                self.end_revert(&id);
+            }
         }
         self.yield_resends();
         let unproven: Vec<NodeId> = (self.watched_positions.iter())
@@ -4308,6 +4313,12 @@ impl Trees {
         self.mark(&id);
         self.cycle_reverted.remove(&id);
         self.reverted.insert(id);
+    }
+
+    pub(crate) fn end_revert(&mut self, id: &str) {
+        if self.reverted.remove(id) {
+            self.mark(id);
+        }
     }
 
     pub(crate) fn revert_for_cycle(&mut self, id: NodeId) {

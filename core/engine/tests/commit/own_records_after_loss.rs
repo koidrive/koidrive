@@ -78,7 +78,7 @@ fn served_at_5_then_lost(
         commits.held_through(),
         commits.accepted(),
     );
-    commits.forget_lost_slots();
+    commits.forget_lost(&mut trees);
     trees.settle();
     let effects = effects_for(&mut trees, &mut ids, "n");
     let sent = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));

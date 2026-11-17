@@ -353,7 +353,7 @@ impl Commits {
 
     /// Whether one of this device's commits has seq `seq`: one of the last [`SLOTS_KEPT`]
     /// acknowledged, or one whose record R held while it was in flight ([`Commits::own_record`]). A
-    /// commit the server lost is included until R is listed again ([`Commits::forget_lost_slots`]).
+    /// commit the server lost is included until R is listed again ([`Commits::forget_lost`]).
     pub fn made_here(&self, seq: u64) -> bool {
         self.slots.values().any(|&made| made == seq)
     }
@@ -434,10 +434,17 @@ impl Commits {
     }
 
     /// Forgets the slots above the accepted counter, those of the commits a loss took, once R is
-    /// listed again and [`Trees::forget_lost`] no longer needs them.
-    pub fn forget_lost_slots(&mut self) {
+    /// listed again and [`Trees::forget_lost`] no longer needs them. A folder this device merged
+    /// into one R no longer holds stops being reverted, since the loss took the merge too, so it is
+    /// created again at the position L holds.
+    pub fn forget_lost(&mut self, trees: &mut Trees) {
         let accepted = *self.accepted;
         self.slots.retain(|slot, _| *slot <= accepted);
+        for (id, into) in self.aliases.iter() {
+            if trees.remote().get(into).is_none() {
+                trees.end_revert(id);
+            }
+        }
     }
 
     /// The accepted counter *a* of section 2.8: the `device_seq` of the last commit whose result
@@ -2413,7 +2420,7 @@ impl Commits {
     /// under a policy halt resends nothing whatever the `Welcome` says, but *w* < *a* is a loss
     /// there too: *a* takes *w*, the refused commit is dropped, since its slot is no longer the one
     /// after the server's count, and R is listed again, while the halt stays. The slots above *w*
-    /// stay until R is listed again ([`Commits::forget_lost_slots`]), so that
+    /// stay until R is listed again ([`Commits::forget_lost`]), so that
     /// [`Commits::lost_here`] still names the commits the server lost, while
     /// [`Commits::held_through`] counts none above *a*. A later `Welcome` finds *w* = *a*, so a
     /// loss is handled once. Whether R

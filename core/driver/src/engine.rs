@@ -555,7 +555,7 @@ impl Engine {
                 self.commits.held_through(),
                 self.commits.accepted(),
             );
-            self.commits.forget_lost_slots();
+            self.commits.forget_lost(&mut self.trees);
         }
         tx.clear_remote_nodes()?;
         for state in staging.nodes.values() {

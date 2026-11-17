@@ -25,6 +25,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 
 #[path = "devices/restore_deleted_folder.rs"]
 mod restore_deleted_folder;
+#[path = "devices/restore_kept_merge.rs"]
+mod restore_kept_merge;
 #[path = "devices/restore_unsent_nodes.rs"]
 mod restore_unsent_nodes;
 #[path = "devices/restore_write_history.rs"]

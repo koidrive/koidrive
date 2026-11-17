@@ -1988,7 +1988,7 @@ impl World {
                         commits.held_through(),
                         commits.accepted(),
                     );
-                    commits.forget_lost_slots();
+                    commits.forget_lost(trees);
                 }
                 *cursor = head;
                 *behind = false;
