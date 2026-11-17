@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{FlockOperation, flock};
+use koidrive_state_file::Flock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -49,7 +49,7 @@ fn is_false(value: &bool) -> bool {
 pub struct Hold {
     id: InstallId,
     run: String,
-    _lock: File,
+    _lock: Flock,
 }
 
 impl Hold {
@@ -107,7 +107,7 @@ pub struct Sending {
     pub id: InstallId,
     pub batch: Batch,
     pub uuids: Vec<EventUuid>,
-    _lock: File,
+    _lock: Flock,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -337,7 +337,7 @@ pub struct SendingOld {
     pub id: InstallId,
     pub batch: OldBatch,
     pub uuids: Vec<EventUuid>,
-    _lock: File,
+    _lock: Flock,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -895,7 +895,7 @@ impl Store {
         }
     }
 
-    fn lock(&self, wait: bool) -> io::Result<File> {
+    fn lock(&self, wait: bool) -> io::Result<Flock> {
         let lock = self.flock("lock", wait)?;
         koidrive_state_file::recover(&self.dir)?;
         for name in [
@@ -909,11 +909,11 @@ impl Store {
         Ok(lock)
     }
 
-    fn send_lock(&self) -> io::Result<File> {
+    fn send_lock(&self) -> io::Result<Flock> {
         self.flock("send.lock", false)
     }
 
-    fn flock(&self, name: &str, wait: bool) -> io::Result<File> {
+    fn flock(&self, name: &str, wait: bool) -> io::Result<Flock> {
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -923,13 +923,10 @@ impl Store {
             .truncate(false)
             .write(true)
             .open(self.dir.join(name))?;
-        let operation = if wait {
-            FlockOperation::LockExclusive
-        } else {
-            FlockOperation::NonBlockingLockExclusive
-        };
-        flock(&file, operation)?;
-        Ok(file)
+        if wait {
+            return Flock::wait(file);
+        }
+        Flock::take(file)?.ok_or_else(|| io::ErrorKind::WouldBlock.into())
     }
 }
 
@@ -1040,6 +1037,20 @@ mod tests {
             commands(&store.peek().unwrap()),
             BTreeMap::from([("join".to_owned(), 1), ("setup".to_owned(), 1)])
         );
+        assert_eq!(held_files(dir.path()), 0);
+    }
+
+    #[test]
+    fn what_a_dropped_hold_kept_is_deleted_while_a_child_process_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let hold = store.hold().unwrap().unwrap();
+        store.keep(&hold, counted(Command::Setup)).unwrap();
+        let child = koidrive_test_support::Forked::start();
+        drop(hold);
+        let held = store.held().unwrap();
+        drop(child);
+        assert!(held.is_empty());
         assert_eq!(held_files(dir.path()), 0);
     }
 
@@ -1541,6 +1552,19 @@ mod tests {
             .unwrap();
         drop(store.take(100).unwrap().unwrap());
         assert_eq!(store.peek().unwrap().events.len(), Event::PER_KIND_PER_DAY);
+    }
+
+    #[test]
+    fn a_dropped_sending_frees_the_next_take_while_a_child_process_starts() {
+        let (_dir, store) = store();
+        store.set(true).unwrap();
+        store.absorb_at(panics(99, 1), 100, true).unwrap();
+        let sending = store.take(100).unwrap().unwrap();
+        let child = koidrive_test_support::Forked::start();
+        drop(sending);
+        let again = store.take(100).unwrap();
+        drop(child);
+        assert!(again.is_some());
     }
 
     #[test]

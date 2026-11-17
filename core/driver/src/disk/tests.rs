@@ -337,7 +337,7 @@ struct Running {
     disk: Disk,
     engine: Engine,
     store: Store,
-    _lock: claim::Flock,
+    _lock: koidrive_state_file::Flock,
 }
 
 impl Pending {

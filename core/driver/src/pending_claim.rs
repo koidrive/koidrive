@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::claim::Flock;
 use crate::paths::Paths;
+use koidrive_state_file::Flock;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct PendingClaim {

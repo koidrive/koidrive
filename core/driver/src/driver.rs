@@ -17,11 +17,12 @@ use koidrive_fs::{Marker, probe_no_replace, read_marker, root_at, write_marker};
 use koidrive_ignore::LocalRulesError;
 use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, Resend, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
+use koidrive_state_file::Flock;
 use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, watch};
 
-use crate::claim::{self, Flock, Owner};
+use crate::claim::{self, Owner};
 use crate::config::{Config, ConfigError};
 use crate::credential::{
     Credential, CredentialError, CredentialFiles, NewCredentialFile, StoredCredential, api_for,
