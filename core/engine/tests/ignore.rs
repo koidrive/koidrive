@@ -43,6 +43,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -250,6 +251,8 @@ fn a_node_is_synced_again_once_its_rule_is_removed() {
         "the remote edit made while ignored is downloaded"
     );
     let update = op::Op::UpdateContent(proto::UpdateContent {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
         node_id: "b".into(),
         content: Some(content(9)),
         resend: false,

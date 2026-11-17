@@ -695,6 +695,7 @@ fn revive(server: &mut Server, id: &str, changed: &mut Vec<String>) {
 
 fn remote(node: &ServerNode) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape: node.shape.clone(),
         trashed: node.trash.is_some(),
         content_rev: 1,

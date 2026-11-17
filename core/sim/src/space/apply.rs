@@ -91,7 +91,14 @@ impl<'a> Applier<'a> {
             Some(op::Op::CreateFile(op)) => self.create_file(op),
             Some(op::Op::UpdateContent(op)) => {
                 let content = op.content.as_ref().expect("checked before applying");
-                self.update_content(&op.node_id, content, &content.chunks, op.resend)
+                self.update_content(
+                    &op.node_id,
+                    content,
+                    &content.chunks,
+                    op.resend,
+                    &op.made_over,
+                    &op.source_version_id,
+                )
             }
             Some(op::Op::Move(op)) => self.move_node(op),
             Some(op::Op::Delete(op)) => Ok(self.delete(op, index)),
@@ -367,6 +374,29 @@ impl<'a> Applier<'a> {
         self.touch(node_id);
     }
 
+    fn made_over(&self, node_id: &str, ids: &[String], source: &str) -> Vec<String> {
+        let mut ancestry = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut pending: Vec<_> = ids.iter().rev().cloned().collect();
+        while ancestry.len() < 64
+            && let Some(id) = pending.pop()
+        {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(version) = self.st.versions.get(&id).filter(|v| v.node_id == node_id) {
+                pending.extend(version.made_over.iter().rev().cloned());
+            }
+            ancestry.push(id);
+        }
+        if !source.is_empty() {
+            ancestry.retain(|id| id != source);
+            ancestry.insert(0, source.to_owned());
+            ancestry.truncate(64);
+        }
+        ancestry
+    }
+
     fn insert_version(&mut self, node_id: &str, content: &Content, chunks: &[ChunkRef]) -> String {
         let version_id = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
         let content = Content {
@@ -384,6 +414,7 @@ impl<'a> Applier<'a> {
                 device_id: self.dev().into(),
                 user_id: self.ctx.committer.user_id.clone(),
                 created_at_ms: self.ctx.now_ms,
+                made_over: Vec::new(),
             },
         );
         let distinct: BTreeSet<&[u8]> = chunks.iter().map(|c| c.hash.as_slice()).collect();
@@ -462,6 +493,8 @@ impl<'a> Applier<'a> {
         let (name, renamed) = self.pick_name(&parent.node_id, &name, "");
         let content = op.content.as_ref().expect("checked before applying");
         let version_id = self.insert_version(&op.node_id, content, &content.chunks);
+        let ancestry = self.made_over(&op.node_id, &op.made_over, &op.source_version_id);
+        self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
         let dev = self.dev().to_string();
         self.insert_node(
             &op.node_id,
@@ -480,6 +513,8 @@ impl<'a> Applier<'a> {
         content: &Content,
         chunks: &[ChunkRef],
         resend: bool,
+        made_over: &[String],
+        source_version_id: &str,
     ) -> Result<OpResult, Error> {
         let Some(found) = self.node(node_id) else {
             return Ok(rejected("NOT_FOUND"));
@@ -487,14 +522,46 @@ impl<'a> Applier<'a> {
         if found.kind != NodeKind::File {
             return Ok(rejected("NOT_FILE"));
         }
+        if resend
+            && found.cur_version_id.as_ref().is_some_and(|id| {
+                self.st.versions[id]
+                    .made_over
+                    .iter()
+                    .any(|id| id == source_version_id)
+            })
+        {
+            return Ok(result(op_result::Code::Superseded, "", ""));
+        }
         if resend && found.status == NodeStatus::Trashed {
             return Ok(result(op_result::Code::Superseded, "", ""));
         }
+        let bases = self.made_over(node_id, made_over, "");
+        let ancestry = self.made_over(
+            node_id,
+            made_over,
+            if resend { source_version_id } else { "" },
+        );
         let current = (found.cur_version_id.as_ref()).map(|id| &self.st.versions[id].content);
         if self.unseen_content(&found)
             && current.is_some_and(|current| same_content(current, content))
         {
             if resend || found.edit_rev >= found.content_rev {
+                if resend
+                    && !source_version_id.is_empty()
+                    && let Some(id) = &found.cur_version_id
+                {
+                    let version = self.st.versions.get_mut(id).unwrap();
+                    let mut chain = vec![source_version_id.to_owned()];
+                    for id in &version.made_over {
+                        if !chain.contains(id) && chain.len() < 64 {
+                            chain.push(id.clone());
+                        }
+                    }
+                    if version.made_over != chain {
+                        version.made_over = chain;
+                        self.touch(&found.node_id);
+                    }
+                }
                 return Ok(applied(false, &found.name));
             }
             let (node, renamed) = self.revive_target(found);
@@ -511,10 +578,16 @@ impl<'a> Applier<'a> {
         }
         let (node, renamed) = self.revive_target(found);
         let parent_id = node.parent_id.clone().expect("a file has a parent");
-        if self.unseen_content(&node) {
+        if self.unseen_content(&node)
+            && !node
+                .cur_version_id
+                .as_ref()
+                .is_some_and(|id| bases.contains(id))
+        {
             let copy_id = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
             let name = self.pick_conflict_copy_name(&parent_id, &node.name);
             let version_id = self.insert_version(&copy_id, content, chunks);
+            self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
             self.insert_node(
                 &copy_id,
                 &parent_id,
@@ -526,6 +599,7 @@ impl<'a> Applier<'a> {
             return Ok(result(op_result::Code::ConflictCopy, &copy_id, &name));
         }
         let version_id = self.insert_version(&node.node_id, content, chunks);
+        self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
         let (seq, dev) = (self.ctx.seq, self.dev().to_string());
         let stored = self
             .st
@@ -747,6 +821,8 @@ impl<'a> Applier<'a> {
                 },
                 &chunks,
                 false,
+                &[],
+                "",
             );
         }
         let Some(original_parent) = node.parent_id.clone() else {

@@ -103,6 +103,10 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("pending_for")) sql.exec("ALTER TABLE nodes ADD COLUMN pending_for TEXT");
     if (!columns.includes("pending_by")) sql.exec("ALTER TABLE nodes ADD COLUMN pending_by TEXT");
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('versions')").toArray().map((row) => row.name);
+    if (!columns.includes("made_over")) sql.exec("ALTER TABLE versions ADD COLUMN made_over TEXT NOT NULL DEFAULT ''");
+  },
 ];
 
 export function migrate(sql: Sql): void {

@@ -44,6 +44,100 @@ pub struct LostPosition {
     pub name: String,
 }
 
+/// A server version whose value this device held, and whether its user authored it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContentVersion {
+    pub version_id: String,
+    pub made_over: Vec<String>,
+    pub own: bool,
+}
+
+/// The sync-relevant identity of an uncommitted value this device's user edited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContentValue {
+    pub size: u64,
+    pub manifest_digest: Vec<u8>,
+    pub executable: bool,
+}
+
+/// The held versions and unsent edit bases of a file, independent of R's current version.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContentProvenance {
+    pub synced: Option<ContentVersion>,
+    pub local: Option<ContentVersion>,
+    pub edit_bases: Vec<String>,
+    pub unversioned_bases: Vec<ContentValue>,
+}
+
+/// The maximum number of server version IDs or uncommitted bases retained for one value.
+pub const CONTENT_ANCESTRY_LIMIT: usize = 64;
+
+pub(crate) fn content_chain(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    ids.into_iter()
+        .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+        .take(CONTENT_ANCESTRY_LIMIT)
+        .collect()
+}
+
+impl From<&crate::tree::Content> for ContentValue {
+    fn from(content: &crate::tree::Content) -> Self {
+        Self {
+            size: content.size,
+            manifest_digest: content.manifest_digest.clone(),
+            executable: content.executable,
+        }
+    }
+}
+
+impl ContentVersion {
+    pub(crate) fn remote(node: &crate::tree::RemoteNode, own: bool) -> Option<Self> {
+        (!node.version_id.is_empty()).then(|| Self {
+            version_id: node.version_id.clone(),
+            made_over: content_chain(node.made_over.clone()),
+            own,
+        })
+    }
+
+    pub(crate) fn bases(&self) -> Vec<String> {
+        content_chain(
+            std::iter::once(self.version_id.clone())
+                .chain(self.made_over.iter().filter(|_| self.own).cloned()),
+        )
+    }
+}
+
+impl ContentProvenance {
+    pub(crate) fn edit(&mut self, previous: Option<&crate::tree::Content>) {
+        if let Some(source) = self.local.take() {
+            self.edit_bases = source.bases();
+            self.unversioned_bases.clear();
+        } else if let Some(previous) = previous {
+            let value = ContentValue::from(previous);
+            self.unversioned_bases.retain(|old| old != &value);
+            self.unversioned_bases.insert(0, value);
+            self.unversioned_bases.truncate(CONTENT_ANCESTRY_LIMIT);
+        }
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        let valid_chain = |ids: &[String]| {
+            ids.len() <= CONTENT_ANCESTRY_LIMIT
+                && ids.iter().all(|id| !id.is_empty())
+                && ids.iter().collect::<BTreeSet<_>>().len() == ids.len()
+        };
+        valid_chain(&self.edit_bases)
+            && self.unversioned_bases.len() <= CONTENT_ANCESTRY_LIMIT
+            && [&self.synced, &self.local]
+                .into_iter()
+                .flatten()
+                .all(|version| !version.version_id.is_empty() && valid_chain(&version.made_over))
+    }
+}
+
 /// What [`Trees`](crate::classify::Trees) holds besides the nodes of R, L and S.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreesState {
@@ -131,6 +225,8 @@ pub struct TreesState {
     /// version ID to two versions, also across a loss of commits (RFC 0016), so a version of this
     /// list that a restored server holds is one that the content S took from R replaced.
     pub replaced_versions: BTreeMap<NodeId, Vec<String>>,
+    /// The server values S and L actually held and the bases of this user's unsent edits.
+    pub content_provenance: BTreeMap<NodeId, ContentProvenance>,
     /// The nodes this device sends again after a server loss although no change of its user is in
     /// them (section 4.4): a file whose content S took back from R so that the content L holds is
     /// sent again, and a node S forgot that L holds as S did. A delete that R holds of the node, or
@@ -283,6 +379,7 @@ pub struct TreesChanges {
     pub unsent_moves: SetChanges<NodeId>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
+    pub content_provenance: MapChanges<NodeId, ContentProvenance>,
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
     pub lost_positions: MapChanges<NodeId, LostPosition>,
@@ -320,6 +417,7 @@ impl TreesChanges {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            content_provenance,
             resends,
             local_changes,
             lost_positions,
@@ -353,6 +451,7 @@ impl TreesChanges {
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
+            content_provenance: map_changes(&before.content_provenance, content_provenance),
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
             lost_positions: map_changes(&before.lost_positions, lost_positions),
@@ -533,6 +632,7 @@ pub enum StateError {
     /// A node is recorded with a change R took since S took its shape, but S does not hold it.
     NotUnseenChange(NodeId),
     NotRemote(NodeId),
+    InvalidContentProvenance(NodeId),
     /// A node is recorded as sent again after a server loss, but L does not hold it.
     NotResend(NodeId),
     /// A node is recorded as holding a change of this device's user, but L does not hold it.

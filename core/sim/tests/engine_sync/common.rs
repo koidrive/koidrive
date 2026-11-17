@@ -176,14 +176,14 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             name,
             pending_for: String::new(),
         }),
-        1 => op::Op::CreateFile(CreateFile {
+        1 => op::Op::CreateFile(CreateFile { made_over: Vec::new(), source_version_id: String::new(),
             node_id: ids.uuid_v7(NOW as u64),
             parent_id: parent,
             name,
             content: Some(content(device, action.text)),
         }),
         2 => match target(&files) {
-            Some(node_id) => op::Op::UpdateContent(UpdateContent {
+            Some(node_id) => op::Op::UpdateContent(UpdateContent { made_over: Vec::new(), source_version_id: String::new(),
                 node_id,
                 content: Some(content(device, action.text)),
                 resend: false,

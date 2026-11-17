@@ -240,10 +240,16 @@ function checkIds(op: Op, index: number): void {
   const optional: string[] = [];
   switch (op.op.case) {
     case "createDir":
-    case "createFile":
       required.push(op.op.value.nodeId, op.op.value.parentId);
       break;
+    case "createFile":
+      required.push(op.op.value.nodeId, op.op.value.parentId, ...op.op.value.madeOver);
+      optional.push(op.op.value.sourceVersionId);
+      break;
     case "updateContent":
+      required.push(op.op.value.nodeId, ...op.op.value.madeOver);
+      optional.push(op.op.value.sourceVersionId);
+      break;
     case "delete":
       required.push(op.op.value.nodeId);
       break;
@@ -787,7 +793,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         result,
         deviceId: String(row.device_id ?? ""),
         digest: row.request_digest === null ? null : new Uint8Array(row.request_digest as ArrayBuffer),
-        digestVersion: version === 1 || version === 2 ? version : 3,
+        digestVersion: version === 1 || version === 2 || version === 3 ? version : 4,
       };
     }
 
@@ -842,7 +848,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         fail(Error_Code.LIMIT_EXCEEDED, "the commit's change records do not fit in one 1 MiB message; split the commit");
       }
       this.sql.exec(
-        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 3)",
+        "INSERT INTO commits (seq, commit_id, device_id, user_id, committed_at_ms, record, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 4)",
         Number(record.seq),
         record.commitId,
         record.deviceId,
@@ -924,16 +930,16 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           changes,
         });
         const result = create(CommitResultSchema, { seq: BigInt(ctx.seq), results, changes, committedAtMs: BigInt(nowMs) });
-        this.appendCommit(record, result, digests[3]);
+        this.appendCommit(record, result, digests[4]);
         this.sql.exec(
-          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, 3)
+          `INSERT INTO device_commits (device_id, device_seq, commit_id, results, request_digest, digest_version) VALUES (?, ?, ?, ?, ?, 4)
            ON CONFLICT (device_id) DO UPDATE SET device_seq = excluded.device_seq, commit_id = excluded.commit_id, results = excluded.results,
              request_digest = excluded.request_digest, digest_version = excluded.digest_version`,
           session.deviceId,
           Number(commit.deviceSeq),
           commit.commitId,
           toBinary(CommitResultSchema, result),
-          digests[3],
+          digests[4],
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
       });

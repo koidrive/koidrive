@@ -57,6 +57,7 @@ fn identity(ino: u128) -> FileIdentity {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,

@@ -286,7 +286,7 @@ fn a_resend_lost_in_a_second_loss_is_not_sent_again_as_this_devices_edit() {
         version(remote(file(ROOT, "a", 1)), "v1"),
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [resend("a", 2)]);
+    assert_eq!(ops(&commit), [resend("a", 2, "v2")]);
     let resent = RemoteNode {
         content_rev: 6,
         ..version(remote(file(ROOT, "a", 2)), "v6")

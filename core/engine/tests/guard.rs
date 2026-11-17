@@ -39,6 +39,7 @@ fn space(loose: usize, inside: usize) -> Trees {
         trees.set_remote(
             id,
             RemoteNode {
+                made_over: Vec::new(),
                 shape,
                 trashed: false,
                 content_rev: 1,
@@ -482,6 +483,7 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
     trees.set_remote(
         "f0".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: edited,
             trashed: false,
             content_rev: 2,
@@ -748,6 +750,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
     trees.set_remote(
         "d/new".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: added,
             trashed: false,
             content_rev: 1,
@@ -822,6 +825,7 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
         .collect();
     for (id, shape, top) in gone {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape,
             trashed: true,
             content_rev: 2,
@@ -1005,6 +1009,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
     let set_remote = |trees: &mut Trees, trashed: bool, rev: u64| {
         for (id, shape) in &original {
             let node = RemoteNode {
+                made_over: Vec::new(),
                 shape: shape.clone(),
                 trashed,
                 content_rev: rev,
@@ -1245,6 +1250,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
     let set_remote = |trees: &mut Trees, trashed: bool, rev: u64| {
         for (id, shape) in &original {
             let node = RemoteNode {
+                made_over: Vec::new(),
                 shape: shape.clone(),
                 trashed,
                 content_rev: rev,
@@ -1330,6 +1336,7 @@ fn nested() -> Trees {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
         trees.set_synced(id.clone(), Some(shape.clone()));
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape,
             trashed: false,
             content_rev: 1,

@@ -419,6 +419,8 @@ async fn upload_benchmark() {
             1,
             vec![Op {
                 op: Some(op::Op::CreateFile(CreateFile {
+                    made_over: Vec::new(),
+                    source_version_id: String::new(),
                     node_id: uuidv7(),
                     parent_id: space.space_id,
                     name: "payload.bin".into(),

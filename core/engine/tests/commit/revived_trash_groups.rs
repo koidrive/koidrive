@@ -19,7 +19,7 @@ fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_i
     assert!(commits.acknowledge(&mut trees, 2));
     trees.settle();
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    let create = op::Op::CreateFile(proto::CreateFile {
+    let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "h".into(),
         parent_id: "a".into(),
         name: "g".into(),
@@ -107,7 +107,7 @@ fn a_rename_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until
     assert!(commits.acknowledge(&mut trees, 2));
     trees.settle();
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    let create = op::Op::CreateFile(proto::CreateFile {
+    let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "x".into(),
         parent_id: "t".into(),
         name: "g".into(),

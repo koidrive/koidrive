@@ -17,6 +17,7 @@ import type { Sql, SqlCursor, SqlRow, SqlValue } from "../host";
 
 export const PAGE_CHUNKS = 4096;
 export const INLINE_CHUNKS = 16384;
+export const MAX_MADE_OVER = 64;
 const CHUNK_ENTRY_BYTES = 36;
 
 export interface NodeRow {
@@ -45,6 +46,7 @@ export interface NodeRow {
 
 export interface VersionRow {
   version_id: string;
+  made_over: string;
   node_id: string;
   seq: number;
   size: number;
@@ -112,6 +114,27 @@ export function getVersion(sql: Sql, versionId: string): VersionRow | undefined 
   return rows<VersionRow>(sql.exec("SELECT * FROM versions WHERE version_id = ?", versionId))[0];
 }
 
+export function boundMadeOver(ids: readonly string[]): string[] {
+  return [...new Set(ids.filter((id) => id !== ""))].slice(0, MAX_MADE_OVER);
+}
+
+export function versionMadeOver(version: VersionRow): string[] {
+  return boundMadeOver(version.made_over.split(","));
+}
+
+export function expandMadeOver(sql: Sql, nodeId: string, ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const pending = [...ids].reverse();
+  while (pending.length > 0 && seen.size < MAX_MADE_OVER) {
+    const id = pending.pop();
+    if (id === undefined || id === "" || seen.has(id)) continue;
+    seen.add(id);
+    const version = getVersion(sql, id);
+    if (version?.node_id === nodeId) pending.push(...versionMadeOver(version).reverse());
+  }
+  return [...seen];
+}
+
 export function versionPageCount(version: VersionRow): number {
   return Math.max(1, Math.ceil(version.chunk_count / PAGE_CHUNKS));
 }
@@ -150,6 +173,7 @@ export function versionInfo(sql: Sql, version: VersionRow, complete = false): Ve
     deviceId: version.device_id,
     userId: version.user_id,
     createdAtMs: BigInt(version.created_at_ms),
+    madeOver: versionMadeOver(version),
   });
 }
 

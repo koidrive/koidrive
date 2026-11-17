@@ -33,6 +33,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -142,6 +143,7 @@ fn trees_state() -> TreesState {
         lost_positions: Default::default(),
         lost_creates: Default::default(),
         replaced_versions: [("a".into(), vec!["v1".into()])].into(),
+        content_provenance: Default::default(),
         kept_originals: [("t".into(), "a".into())].into(),
         unsent_marks: [("a".into(), "A".into())].into(),
         pending_finishes: [(

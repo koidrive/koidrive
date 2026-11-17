@@ -196,6 +196,8 @@ fn mkdir(id: &str, parent: &str, name: &str) -> Op {
 
 fn create_file(id: &str, parent: &str, name: &str, content: Content) -> Op {
     wrap(op::Op::CreateFile(CreateFile {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
         node_id: id.into(),
         parent_id: parent.into(),
         name: name.into(),
@@ -205,6 +207,8 @@ fn create_file(id: &str, parent: &str, name: &str, content: Content) -> Op {
 
 fn update(id: &str, content: Content) -> Op {
     wrap(op::Op::UpdateContent(UpdateContent {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
         node_id: id.into(),
         content: Some(content),
         resend: false,

@@ -692,10 +692,13 @@ class Run {
   }
 
   private checkCurrent(space: string, wanted: Json, got: VersionInfo): void {
-    const want = keys(wanted, "a current version", CURRENT_FIELDS);
+    const want = keys(wanted, "a current version", [...CURRENT_FIELDS, "made_over"]);
     every(want, CURRENT_FIELDS);
-    covered(VersionInfoSchema, ["versionId", "seq", "content", "deviceId", "userId", "createdAtMs"]);
+    covered(VersionInfoSchema, ["versionId", "seq", "content", "deviceId", "userId", "createdAtMs", "madeOver"]);
     within("version", () => this.expectId(space, req(optStr(want, "version"), "version"), got.versionId));
+    const madeOver = strings(optList(want, "made_over") ?? [], "made_over");
+    if (madeOver.length !== got.madeOver.length) fail(`made_over has ${got.madeOver.length} IDs, expected ${madeOver.length}`);
+    for (const [index, id] of madeOver.entries()) within(`made_over ${index + 1}`, () => this.expectId(space, id, got.madeOver[index]!));
     const seq = req(optUint(want, "seq"), "seq");
     if (got.seq !== BigInt(seq)) fail(`seq ${got.seq}, expected ${seq}`);
     const at = req(optInt(want, "created_at_ms"), "created_at_ms");
@@ -1023,6 +1026,30 @@ describe("conformance runner self-tests", () => {
       expect(await mutate(scenario, edit)).toContain(reason);
     });
   }
+
+  it("compares version ancestry, including the empty default of existing fixtures", async () => {
+    const scenario = structuredClone(req(optList(files[1]![1], "scenarios"), "scenarios")[0]!);
+    const steps = req(optList(object(scenario, "scenario"), "steps"), "steps");
+    let changed = false;
+    for (const step of steps) {
+      const expect = object(step, "step").expect;
+      if (expect === undefined) continue;
+      const response = object(expect, "expect").response;
+      if (response === undefined) continue;
+      for (const change of req(optList(object(response, "response"), "changes"), "changes")) {
+        const node = object(change, "change").node;
+        if (node === undefined) continue;
+        const current = object(node, "node").current;
+        if (current === undefined || current === null) continue;
+        object(current, "current").made_over = ["=unexpected-version"];
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+    expect(changed).toBe(true);
+    expect(await run(scenario, files[1]![1])).toContain("made_over has 0 IDs, expected 1");
+  });
 });
 
 describe("number parity with the Rust runner (spec/testdata/scenarios/runner-numbers-v1.json)", () => {

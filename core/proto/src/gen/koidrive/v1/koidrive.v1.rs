@@ -376,6 +376,8 @@ pub struct VersionInfo {
     pub user_id: ::prost::alloc::string::String,
     #[prost(int64, tag="6")]
     pub created_at_ms: i64,
+    #[prost(string, repeated, tag="7")]
+    pub made_over: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// The full resulting state of a node after a commit.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -573,6 +575,10 @@ pub struct CreateFile {
     pub name: ::prost::alloc::string::String,
     #[prost(message, optional, tag="4")]
     pub content: ::core::option::Option<Content>,
+    #[prost(string, repeated, tag="5")]
+    pub made_over: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, tag="6")]
+    pub source_version_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateContent {
@@ -585,6 +591,10 @@ pub struct UpdateContent {
     /// (RFC 0018).
     #[prost(bool, tag="3")]
     pub resend: bool,
+    #[prost(string, repeated, tag="4")]
+    pub made_over: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, tag="5")]
+    pub source_version_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Move {

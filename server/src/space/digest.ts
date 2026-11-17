@@ -18,7 +18,7 @@ function content(value: Content | undefined): Content | undefined {
   });
 }
 
-export type DigestVersion = 1 | 2 | 3;
+export type DigestVersion = 1 | 2 | 3 | 4;
 
 export type Digests = Record<DigestVersion, Uint8Array>;
 
@@ -31,13 +31,28 @@ function op({ op }: Op, version: DigestVersion): Op {
     }
     case "createFile": {
       const { nodeId, parentId, name } = op.value;
-      return create(OpSchema, { op: { case: op.case, value: { nodeId, parentId, name, content: content(op.value.content) } } });
+      return create(OpSchema, {
+        op: {
+          case: op.case,
+          value: {
+            nodeId, parentId, name, content: content(op.value.content),
+            madeOver: version >= 4 ? op.value.madeOver : [],
+            sourceVersionId: version >= 4 ? op.value.sourceVersionId : "",
+          },
+        },
+      });
     }
     case "updateContent":
       return create(OpSchema, {
         op: {
           case: op.case,
-          value: { nodeId: op.value.nodeId, content: content(op.value.content), resend: version >= 2 && op.value.resend },
+          value: {
+            nodeId: op.value.nodeId,
+            content: content(op.value.content),
+            resend: version >= 2 && op.value.resend,
+            madeOver: version >= 4 ? op.value.madeOver : [],
+            sourceVersionId: version >= 4 ? op.value.sourceVersionId : "",
+          },
         },
       });
     case "move": {
@@ -56,7 +71,7 @@ function op({ op }: Op, version: DigestVersion): Op {
   }
 }
 
-export async function commitDigest(commit: Commit, version: DigestVersion = 3): Promise<Uint8Array> {
+export async function commitDigest(commit: Commit, version: DigestVersion = 4): Promise<Uint8Array> {
   const projected = create(CommitSchema, {
     baseSeq: commit.baseSeq,
     ops: commit.ops.map((each) => op(each, version)),
@@ -67,5 +82,5 @@ export async function commitDigest(commit: Commit, version: DigestVersion = 3): 
 }
 
 export async function commitDigests(commit: Commit): Promise<Digests> {
-  return { 1: await commitDigest(commit, 1), 2: await commitDigest(commit, 2), 3: await commitDigest(commit, 3) };
+  return { 1: await commitDigest(commit, 1), 2: await commitDigest(commit, 2), 3: await commitDigest(commit, 3), 4: await commitDigest(commit, 4) };
 }

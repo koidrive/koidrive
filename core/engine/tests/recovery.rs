@@ -70,6 +70,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
     }
     for Remote(id, shape, trashed, rev) in remote {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape: shape.clone(),
             trashed: *trashed,
             content_rev: *rev,
@@ -277,6 +278,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
     trees.set_remote(
         "n".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: file(ROOT, "a", 5),
             trashed: false,
             content_rev: 2,
@@ -328,6 +330,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
     trees.set_remote(
         "n".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: file(ROOT, "a", 5),
             trashed: false,
             content_rev: 2,
@@ -475,6 +478,7 @@ fn keeping_a_folder_sends_an_edit_in_it_and_still_moves_the_file_where_the_rewin
     trees.set_remote(
         "f".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: file(ROOT, "b", 2),
             trashed: false,
             content_rev: 2,
@@ -683,6 +687,7 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
     trees.set_remote(
         "n".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: file(ROOT, "n", 2),
             trashed: false,
             content_rev: 1,
@@ -731,6 +736,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         ("theirs", dir(ROOT, "a")),
     ] {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape,
             trashed: false,
             content_rev: 2,
@@ -781,6 +787,7 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
         trees.set_remote(
             "n".into(),
             RemoteNode {
+                made_over: Vec::new(),
                 shape: published.clone(),
                 trashed: false,
                 content_rev: 2,
@@ -1119,6 +1126,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
     trees.set_remote(
         "other".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: dir(ROOT, "a"),
             trashed: false,
             content_rev: 1,
@@ -1168,6 +1176,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
     trees.set_remote(
         "other".into(),
         RemoteNode {
+            made_over: Vec::new(),
             shape: dir(ROOT, "a"),
             trashed: false,
             content_rev: 1,
@@ -1306,6 +1315,7 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
     asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["m"]);
     assert!(!trees.held("n"));
     let renamed = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "A", 2),
         trashed: false,
         content_rev: 1,
@@ -1516,6 +1526,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
         ("f", file("d", "child", 1), true),
     ] {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape,
             trashed,
             content_rev: 1,
@@ -2122,6 +2133,7 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
     } = &mut stale;
     assert_eq!(ops(commits, trees, ids), [("create file", "x".into())]);
     let sent = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "x", 1),
         trashed: false,
         content_rev: 2,
@@ -2225,6 +2237,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
 fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
     let mut trees = dropped_from_s();
     let node = RemoteNode {
+        made_over: Vec::new(),
         meta_edit_rev: 5,
         shape: dir(ROOT, "A (pending)"),
         trashed: false,

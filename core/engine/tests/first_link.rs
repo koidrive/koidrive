@@ -64,6 +64,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
     }
     for (id, shape) in remote {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape: shape.clone(),
             trashed: false,
             content_rev: 1,
@@ -184,6 +185,7 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
         &[("r-b", file(ROOT, "b", 2))],
     );
     let trashed = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "a", 1),
         trashed: true,
         content_rev: 1,
@@ -462,6 +464,7 @@ fn a_first_link_to_a_space_listed_empty_holds_only_what_the_trash_names() {
         &[],
     );
     let trashed = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "Slides.pptx", 2),
         trashed: true,
         content_rev: 1,
@@ -583,6 +586,7 @@ fn a_fresh_first_link_to_a_live_space_holds_only_what_the_trash_names() {
         &[("r-docs", dir(ROOT, "docs"))],
     );
     let trashed = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "Slides.pptx", 2),
         trashed: true,
         content_rev: 1,
@@ -621,6 +625,7 @@ fn a_fresh_first_link_holds_a_folder_that_holds_an_entry_at_a_path_the_trash_hol
             ],
         );
         let trashed = RemoteNode {
+            made_over: Vec::new(),
             shape: file("r-docs", "Deleted.txt", 1),
             trashed: true,
             content_rev: 1,
@@ -1187,6 +1192,7 @@ fn publishing_sends_every_held_entry_as_a_create() {
 fn renamed_create(commits: &mut Commits, trees: &mut Trees, id: &str, name: &str, seq: u64) {
     let shape = trees.local().get(id).unwrap().shape.clone();
     let node = RemoteNode {
+        made_over: Vec::new(),
         shape: Shape {
             name: name.into(),
             ..shape
@@ -1264,6 +1270,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         [("create file", "l-later".to_owned())]
     );
     let theirs = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "later", 7),
         trashed: false,
         content_rev: 3,
@@ -1785,6 +1792,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(sent, [("create file", "pad".to_owned())]);
     let pad = RemoteNode {
+        made_over: Vec::new(),
         shape: file(ROOT, "pad", 3),
         trashed: false,
         content_rev: 2,
@@ -1857,6 +1865,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         );
     }
     let remote = |shape: Shape| RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -1900,6 +1909,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
 
 fn remote_node(shape: Shape) -> RemoteNode {
     RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -2002,6 +2012,7 @@ fn reclaim_with_waiting(
     }
     for (id, shape) in remote {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape: shape.clone(),
             trashed: false,
             content_rev: 1,
@@ -2301,6 +2312,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
     );
 
     let remote = |shape| RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 2,
@@ -2351,6 +2363,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
     };
     let applied = |commits: &mut Commits, trees: &mut Trees, seq, digest| {
         let node = RemoteNode {
+            made_over: Vec::new(),
             shape: file("r-docs", "b", digest),
             trashed: false,
             content_rev: seq,
@@ -4690,6 +4703,7 @@ mod a_server_file_moved_into_an_asked_folder {
         t.set_remote(
             "x".into(),
             RemoteNode {
+                made_over: Vec::new(),
                 shape: copied,
                 trashed: false,
                 content_rev: 1,

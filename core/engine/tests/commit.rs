@@ -8,6 +8,7 @@ include!("commit/commit_moves_and_conflicts.rs");
 include!("commit/commit_results_and_conflicts.rs");
 include!("commit/commit_size_limits.rs");
 include!("commit/common.rs");
+include!("commit/edit_ancestry.rs");
 include!("commit/late_content_acknowledgements.rs");
 include!("commit/late_create_and_move_acknowledgements.rs");
 include!("commit/late_position_acknowledgements.rs");

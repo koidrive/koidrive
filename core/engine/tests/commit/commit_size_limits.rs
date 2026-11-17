@@ -134,7 +134,7 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
 
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(commit.encoded_len() <= MAX_COMMIT_BYTES);
-    let answer = op::Op::UpdateContent(proto::UpdateContent {
+    let answer = op::Op::UpdateContent(proto::UpdateContent { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "f".into(),
         content: Some(copied.clone()),
         resend: false,

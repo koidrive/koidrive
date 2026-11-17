@@ -17,7 +17,7 @@ fn local_changes_become_ops_with_parents_first() {
                 name: "d".into(),
                 pending_for: String::new(),
             }),
-            op::Op::CreateFile(proto::CreateFile {
+            op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
                 node_id: "a".into(),
                 parent_id: "z".into(),
                 name: "f".into(),

@@ -198,6 +198,7 @@ fn first_upload(upload: Upload) -> u64 {
         for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
             let (id, shape) = created(op);
             let node = RemoteNode {
+                made_over: Vec::new(),
                 shape,
                 trashed: false,
                 content_rev: seq,
@@ -270,6 +271,7 @@ fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
         ..Default::default()
     });
     RemoteNode {
+        made_over: Vec::new(),
         shape: Shape {
             parent,
             name,

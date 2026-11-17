@@ -93,6 +93,7 @@ pub struct RemoteNode {
     pub meta_edit_rev: u64,
     pub trash_group: String,
     pub version_id: String,
+    pub made_over: Vec<String>,
     pub edit_rev: u64,
     pub pending_for: Option<String>,
     pub pending_by: Option<String>,
@@ -154,6 +155,9 @@ impl RemoteNode {
             trash_group: state.trash_group.clone(),
             version_id: (state.current.as_ref())
                 .map(|version| version.version_id.clone())
+                .unwrap_or_default(),
+            made_over: (state.current.as_ref())
+                .map(|version| crate::state::content_chain(version.made_over.clone()))
                 .unwrap_or_default(),
             edit_rev: match state.edit_rev {
                 0 => state.content_rev,

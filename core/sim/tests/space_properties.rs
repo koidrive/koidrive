@@ -135,12 +135,16 @@ fn run(actions: &[Action]) -> Vec<NodeState> {
                 pending_for: String::new(),
             }),
             Kind::Create => op::Op::CreateFile(CreateFile {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: fresh.clone(),
                 parent_id: pick(a.parent),
                 name,
                 content: Some(content(a.text)),
             }),
             Kind::Update => op::Op::UpdateContent(UpdateContent {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id: pick(a.target),
                 content: Some(content(a.text)),
                 resend: false,
