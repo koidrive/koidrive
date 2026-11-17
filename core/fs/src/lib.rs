@@ -2234,8 +2234,8 @@ impl NativeWatcher {
             // https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags
             #[cfg(target_vendor = "apple")]
             EventKind::Create(_) => (event.paths.iter()).all(|path| self.folder_as_scanned(path)),
-            // inotify reports an extended attribute written on a folder as a change of its attributes, as it does a
-            // change of its permissions.
+            // inotify reports an extended attribute written on a folder as IN_ATTRIB, as it does a chmod:
+            // https://man7.org/linux/man-pages/man7/inotify.7.html
             #[cfg(target_os = "linux")]
             EventKind::Modify(ModifyKind::Metadata(_)) => (event.paths.iter()).all(|path| {
                 use rustix::fs::Access;

@@ -1106,8 +1106,6 @@ fn a_file_replaced_by_a_rename_is_modified_in_place() {
     assert_eq!(changes, [Change::Modified { path: "doc".into() }]);
 }
 
-/// A node mark changes nothing a scan compares, so a mark on a large folder must not walk everything below it again,
-/// even when the folder was made just before the watch began.
 #[test]
 fn a_mark_on_a_folder_rescans_nothing_below_it() {
     #[cfg(target_vendor = "apple")]
