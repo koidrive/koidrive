@@ -18,6 +18,36 @@ use super::{Listed, Listing, TREE_PAGE};
 /// Work that is running, or nothing.
 pub(super) type Slot<'a, T> = Option<Pin<Box<dyn Future<Output = T> + Send + 'a>>>;
 
+/// Tokio does not let another worker take a task from a busy worker's LIFO slot
+/// (<https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.disable_lifo_slot>).
+pub(super) fn in_place<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(work),
+        _ => work(),
+    }
+}
+
+pub(super) fn spawned<T: Send + 'static>(
+    work: impl Future<Output = T> + Send + 'static,
+) -> Slot<'static, T> {
+    struct Spawned<T>(tokio::task::JoinHandle<T>);
+    impl<T> Future for Spawned<T> {
+        type Output = T;
+        fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+            Pin::new(&mut self.0).poll(cx).map(|done| match done {
+                Ok(out) => out,
+                Err(error) => std::panic::resume_unwind(error.into_panic()),
+            })
+        }
+    }
+    impl<T> Drop for Spawned<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    Some(Box::pin(Spawned(tokio::spawn(work))))
+}
+
 /// Waits for the work in `slot` and empties it. Never returns for an empty slot.
 pub(super) async fn finished<T>(slot: &mut Slot<'_, T>) -> T {
     match slot {
@@ -34,8 +64,8 @@ pub(super) async fn finished<T>(slot: &mut Slot<'_, T>) -> T {
 /// v0 section 7.5), then the trash with `ListTrash` when the listing asks for it (RFC 0002 §6). A page refused in a
 /// way the server asks to retry ends it with the wait, so the folder can show it.
 pub(super) async fn list_tree(
-    session: &Session,
-    space_id: &str,
+    session: Arc<Session>,
+    space_id: String,
     mut listing: Listing,
     wait: Option<Duration>,
 ) -> Result<Listed, Stop> {
@@ -49,7 +79,7 @@ pub(super) async fn list_tree(
                 listing.cursor.clone_from(&page.next_cursor);
                 listing.pages.push(page);
             }
-            Err(error) => return later(space_id, "tree", listing, &error),
+            Err(error) => return later(&space_id, "tree", listing, &error),
         }
     }
     while listing.trash_pages.is_empty() || !listing.trash_cursor.is_empty() {
@@ -62,7 +92,7 @@ pub(super) async fn list_tree(
                 listing.trash_cursor.clone_from(&page.next_cursor);
                 listing.trash_pages.push(page);
             }
-            Err(error) => return later(space_id, "trash", listing, &error),
+            Err(error) => return later(&space_id, "trash", listing, &error),
         }
     }
     Ok(Listed::Done {
@@ -109,26 +139,26 @@ pub(super) fn later(
 
 /// Stages `pending`, after `wait` when there is one, and gives it back with how the staging ended.
 pub(super) async fn stage_effect(
-    session: &Session,
-    transfer: &Transfer,
+    session: Arc<Session>,
+    transfer: Transfer,
     pending: Pending,
     wait: Option<Duration>,
 ) -> (Pending, Result<Staged, Stall>) {
     if let Some(wait) = wait {
         tokio::time::sleep(wait).await;
     }
-    let staged = pending.stage(&(session, transfer)).await;
+    let staged = pending.stage(&(&*session, &transfer)).await;
     (pending, staged)
 }
 
 /// Uploads the chunks of `upload` the server lacks, and adds the bytes of each to [`crate::volume`] once it is stored.
 pub(super) async fn upload_chunks(
-    session: &Session,
-    transfer: &Transfer,
+    session: Arc<Session>,
+    transfer: Transfer,
     upload: Upload,
 ) -> Result<Vec<UploadReceipt>, ChunkError> {
     let bytes = upload.timing_bytes.clone();
-    upload_counted(session, transfer, upload, |count| {
+    upload_counted(&session, &transfer, upload, |count| {
         crate::volume::uploaded(count);
         crate::timing::add_bytes(&bytes, count);
     })
