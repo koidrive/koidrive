@@ -17,8 +17,8 @@ fn nfc_expansion_of_the_device_name_never_cuts_the_attempt_number() {
                 assert!(name.contains(&format!(" {})", i + 1)), "{name}");
             }
         }
-        let distinct: std::collections::BTreeSet<&String> = names.iter().collect();
-        assert_eq!(distinct.len(), names.len());
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
     }
 }
 
