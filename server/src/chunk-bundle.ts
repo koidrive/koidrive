@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { fromBinary } from "@bufbuild/protobuf";
 import { type ChunkBundle, ChunkBundleSchema } from "./gen/koidrive/v1/rpc_pb";
 import { BadRequest } from "./http";
