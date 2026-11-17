@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koidrive_proto::v1::error::Code;
+use koidrive_proto::v1::token_request::Telemetry;
 use koidrive_proto::v1::{AccessToken, TokenRequest};
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -528,5 +529,28 @@ async fn a_reader_that_is_refused_presents_the_reloaded_current_and_then_staged_
     assert!(
         refused.as_ref().is_err_and(ApiError::is_unauthenticated),
         "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn each_refresh_carries_the_usage_report_choice_set_before_it() {
+    let (stub, api) = Stub::start("old").await;
+    let credentials = Credentials {
+        user_id: "u".into(),
+        device_id: "d".into(),
+        refresh_credential: "old".into(),
+    };
+    let auth = Auth::new(api, credentials).with_refresh_margin(Duration::from_secs(20 * 60));
+    auth.access_token().await.unwrap();
+    crate::set_telemetry(Telemetry::On);
+    auth.access_token().await.unwrap();
+    crate::set_telemetry(Telemetry::Off);
+    auth.access_token().await.unwrap();
+    let sent: Vec<Telemetry> = (stub.server().seen.iter())
+        .map(|request| request.telemetry())
+        .collect();
+    assert_eq!(
+        sent,
+        [Telemetry::Unspecified, Telemetry::On, Telemetry::Off]
     );
 }

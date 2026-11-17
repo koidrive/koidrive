@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use koidrive_driver::{Driver, Paths, Status, Volume};
+use koidrive_proto::v1::token_request::Telemetry;
 use koidrive_telemetry::schema::{
     self, Client, Counter, ErrorCode, Failure, Level, Outcome, SetupFlow, SetupStep, Synced,
     magnitude,
@@ -97,10 +98,11 @@ pub async fn start(
     {
         tracing::warn!(%error, "the telemetry choice could not be stored");
     }
-    let on = matches!(
-        store.status(var).map(|status| status.mode),
-        Ok(Mode::On | Mode::Debug)
-    );
+    let status = store.status(var);
+    if let Ok(status) = status {
+        koidrive_net::set_telemetry(vote(status));
+    }
+    let on = matches!(status.map(|status| status.mode), Ok(Mode::On | Mode::Debug));
     let id = on
         .then(|| {
             (store.install_id())
@@ -354,6 +356,14 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
     .ok()
 }
 
+fn vote(status: koidrive_telemetry::Status) -> Telemetry {
+    match (status.mode, status.source) {
+        (Mode::On, _) => Telemetry::On,
+        (Mode::Off, Source::Unset) => Telemetry::Unspecified,
+        (Mode::Off | Mode::Debug, _) => Telemetry::Off,
+    }
+}
+
 fn environment(store: &Store, client: Client) -> Environment {
     Environment {
         internal: store.internal(var).unwrap_or_default(),
@@ -377,6 +387,9 @@ pub async fn run_daemon(stop: tokio::sync::oneshot::Receiver<()>, driver: Driver
         );
         record_failures(&run.recorder, &mut failed, koidrive_driver::failures());
         driver.record_health();
+        if let Ok(status) = run.store.status(var) {
+            koidrive_net::set_telemetry(vote(status));
+        }
         flush();
     };
     every(TICK, stop, tick, || send(&run.store, Client::CliDaemon)).await;
@@ -775,6 +788,47 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn the_server_hears_on_only_while_reports_are_sent_and_no_vote_until_someone_chose() {
+        let vote_with = |pairs: &[(&str, &str)], stored: Option<bool>| {
+            let pairs: Vec<(String, std::ffi::OsString)> = (pairs.iter())
+                .map(|(name, value)| ((*name).to_owned(), (*value).into()))
+                .collect();
+            vote(koidrive_telemetry::resolve(
+                |name| (pairs.iter().find(|(key, _)| key == name)).map(|(_, value)| value.clone()),
+                stored,
+            ))
+        };
+        assert_eq!(vote_with(&[], None), Telemetry::Unspecified);
+        assert_eq!(vote_with(&[], Some(false)), Telemetry::Off);
+        assert_eq!(
+            vote_with(&[("DO_NOT_TRACK", "1")], Some(true)),
+            Telemetry::Off
+        );
+        assert_eq!(vote_with(&[("DO_NOT_TRACK", "1")], None), Telemetry::Off);
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "0")], Some(true)),
+            Telemetry::Off
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "maybe")], None),
+            Telemetry::Off
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "debug")], None),
+            Telemetry::Off
+        );
+        assert_eq!(vote_with(&[], Some(true)), Telemetry::On);
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "1")], Some(false)),
+            Telemetry::On
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "internal")], None),
+            Telemetry::On
+        );
+    }
 
     #[test]
     fn the_daemon_records_the_failures_seen_since_its_last_tick_as_sums_and_problem_events() {

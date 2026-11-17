@@ -3,9 +3,11 @@
 use std::fmt;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use koidrive_proto::v1::token_request::Telemetry;
 use koidrive_proto::v1::{AccessToken, DeviceCredentials, TokenRequest};
 use tokio::sync::Mutex;
 
@@ -18,6 +20,13 @@ pub const DEFAULT_REFRESH_MARGIN: Duration = Duration::from_secs(120);
 pub const ROTATION_PERIOD: Duration = Duration::from_secs(24 * 3600);
 
 const ROTATION_DEADLINE_MS: i64 = 60_000;
+
+static TELEMETRY: AtomicI32 = AtomicI32::new(Telemetry::Unspecified as i32);
+
+/// Sets this device's usage-report choice, which every later `POST /v1/token` of this process carries.
+pub fn set_telemetry(choice: Telemetry) {
+    TELEMETRY.store(choice as i32, Ordering::Relaxed);
+}
 
 /// A device's long-lived credentials from `POST /v1/claim` or `POST /v1/pair/complete`. The caller stores them.
 #[derive(Clone, PartialEq, Eq)]
@@ -346,6 +355,7 @@ impl Auth {
                 .map(|staged| staged.refresh_credential.clone())
                 .unwrap_or_default(),
             rotate_before_ms: proposal.map_or(0, |staged| staged.rotate_before_ms),
+            telemetry: TELEMETRY.load(Ordering::Relaxed),
         };
         self.api.token(&request).await
     }

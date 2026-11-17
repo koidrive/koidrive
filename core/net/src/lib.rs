@@ -26,7 +26,7 @@ mod transport;
 pub use api::Api;
 pub use auth::{
     Auth, CredentialStore, Credentials, DEFAULT_REFRESH_MARGIN, ROTATION_PERIOD, Reload, Staged,
-    Stored,
+    Stored, set_telemetry,
 };
 pub use backoff::Backoff;
 pub use chunks::{
