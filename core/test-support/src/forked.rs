@@ -26,7 +26,8 @@ impl Forked {
             });
         }
         let spawn = thread::spawn(move || command.spawn());
-        rustix::io::read(&ready, &mut [0; 1]).unwrap();
+        let forked = rustix::io::read(&ready, &mut [0; 1]).unwrap();
+        assert_eq!(forked, 1, "the child did not start");
         Self {
             release,
             spawn: Some(spawn),
