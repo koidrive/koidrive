@@ -998,14 +998,15 @@ impl Trees {
     }
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
+        let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
         let changed_after_loss = !made_here
-            && self.resends.contains(&id)
+            && sent_again
             && self.source_version_id(&id).is_some_and(|source| {
                 !node.trashed && node.made_over.iter().any(|base| base == source)
             });
         let sent_by_another = !(made_here && self.lost_positions.contains_key(&id))
             && !node.trashed
-            && (self.resends.contains(&id) || self.lost_creates.contains(&id))
+            && sent_again
             && (self.l.live(&id)).is_some_and(|local| {
                 let holds_local = |remote: &Shape| {
                     let at = Shape {
@@ -3349,9 +3350,9 @@ impl Trees {
     ///
     /// Any other node S forgets that R lacks and L holds as S did, whose position no move of
     /// `moved` set, is created again as L holds it, as above. Another device that creates it again
-    /// first held it, so R taking it again, live with the content L holds, is a remote move here
-    /// too, also when that device held only a position that a later create of this device replaced
-    /// ([`TreesState::lost_creates`]).
+    /// first held it, so R taking it again, live with the content L holds or with a version made
+    /// over that value, is a remote move here too, also when that device held only a position that
+    /// a later create of this device replaced ([`TreesState::lost_creates`]).
     ///
     /// A node of `moved` or `edited` whose commit has a seq above `held_through` holds a change of
     /// this device's user that the server lost ([`TreesState::local_changes`]).

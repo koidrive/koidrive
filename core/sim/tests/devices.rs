@@ -1412,6 +1412,53 @@ fn a_device_with_a_commit_in_flight_does_not_commit_a_remote_name_back() {
 }
 
 #[test]
+fn a_creator_takes_a_write_made_over_its_lost_create_so_a_rewind_leaves_one_file() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (1, u(1))],
+        vec![(0, u(2)), (0, Step::Backup), (0, Step::RestoreEarlier)],
+        vec![(0, Step::Rewind)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_creator_takes_a_write_made_over_its_lost_create_so_a_second_restore_leaves_one_file() {
+    let u = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (2, u(1, 0))],
+        vec![
+            (0, u(2, 0)),
+            (0, Step::Work(0)),
+            (0, u(0, 0)),
+            (0, u(3, 1)),
+            (0, Step::Backup),
+            (1, u(0, 0)),
+            (0, Step::RestoreEarlier),
+            (0, u(0, 2)),
+        ],
+        vec![(0, Step::Restore)],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
 fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
     let u = |kind| {
         Step::User(Action {
