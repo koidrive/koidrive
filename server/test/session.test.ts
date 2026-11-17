@@ -45,7 +45,8 @@ import { CallFailure } from "../src/space/commit";
 import { MIGRATIONS as SPACE_MIGRATIONS } from "../src/space/schema";
 import { chunkKey, encodeChunkList } from "../src/space/store";
 import worker from "../src/worker";
-import { decodeChunkBundle } from "../src/chunk-bundle";
+import { countBundledChunks, decodeChunkBundle } from "../src/chunk-bundle";
+import { BadRequest } from "../src/http";
 import { type AccountDO } from "../src/account-do";
 import { SESSION_LEASE_MS } from "../src/account/account";
 import { content, op, storedObjects, targetIncarnation } from "./helpers";
@@ -2459,6 +2460,21 @@ describe("chunk bundles", () => {
     expect(await post(undecodable)).toEqual([413, Error_Code.LIMIT_EXCEEDED]);
     expect(await post(new Uint8Array([0x0a, 0x05, 0x00]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
     expect(await post(new Uint8Array([0x0b]))).toEqual([400, Error_Code.INVALID_ARGUMENT]);
+  });
+
+  it("refuses a chunks field with the wrong wire type before decoding, so it can't hide entries from the count", async () => {
+    const { spaceId } = await planned("wrong wire type");
+    const blocks = 200000;
+    const bytes = new Uint8Array(8 + blocks * 20 + 3);
+    bytes.set([9, 6, 24, 0, 24, 0, 24, 0], 0);
+    for (let i = 0; i < blocks; i++) bytes.set([10, 18, 18, 16], 8 + i * 20);
+    bytes.set([16, 16, 0], 8 + blocks * 20);
+    expect(bytes.length).toBeLessThanOrEqual(4 << 20);
+    expect(() => countBundledChunks(bytes)).toThrow(BadRequest);
+    expect(() => countBundledChunks(new Uint8Array([0x0d, 0, 0, 0, 0]))).toThrow(BadRequest);
+    expect(countBundledChunks(new Uint8Array([0x10, 0x01, 0x0a, 0x00]))).toBe(1);
+    const response = await exports.default.fetch(new Request(bundlePath(spaceId), { method: "POST", body: bytes, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(bytes.length) } }));
+    expect([response.status, fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer())).code]).toEqual([400, Error_Code.INVALID_ARGUMENT]);
   });
 
   it("keeps no unknown fields of a bundle, at the top level or inside a chunk, when it decodes one", async () => {

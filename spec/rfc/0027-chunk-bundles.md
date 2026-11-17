@@ -24,7 +24,7 @@ The server refuses the whole request, and stores nothing, when:
 | `Content-Length` is missing | 411, `INVALID_ARGUMENT` |
 | `Content-Length` or the body read is over 4 MiB | 413, `LIMIT_EXCEEDED` |
 | It holds 0 chunks or more than 32, counted as top-level field-1 entries before the body is decoded | 413, `LIMIT_EXCEEDED` |
-| The body is not a `ChunkBundle` | 400, `INVALID_ARGUMENT` |
+| The body is not a `ChunkBundle`, including a field-1 entry that is not length-delimited | 400, `INVALID_ARGUMENT` |
 | A `target` is not a URL whose path is `/v1/spaces/{space_id}/chunks/{hash}` for the route's `space_id`, with a valid `inc` | 400, `INVALID_ARGUMENT` |
 | Two chunks name the same hash | 400, `INVALID_ARGUMENT` |
 | A chunk's `data` is empty or over 1 MiB | 413, `LIMIT_EXCEEDED` |

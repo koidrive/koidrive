@@ -27,7 +27,7 @@ export function countBundledChunks(bytes: Uint8Array): number {
     const tag = varint();
     const field = Math.floor(tag / 8);
     const wire = tag % 8;
-    if (field === 0) throw malformed();
+    if (field === 0 || (field === 1 && wire !== 2)) throw malformed();
     if (wire === 0) varint();
     else if (wire === 1) skip(8);
     else if (wire === 2) skip(varint());
