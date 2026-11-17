@@ -114,6 +114,29 @@ fn a_download_counts_its_files_until_they_are_on_disk() {
 }
 
 #[test]
+fn a_download_that_starts_before_a_recount_counts_its_files_and_the_bytes_it_fetches() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let (_site_b, mut b) = linked(&mut remote, "b");
+    let big = noise(4, 9 * MIB);
+    fs::write(site_a.root.join("big.bin"), &big).unwrap();
+    fs::write(site_a.root.join("small.txt"), b"small").unwrap();
+    let total = big.len() as u64 + 5;
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    a.settle();
+
+    b.pull(&remote);
+    let Some(Work::Stage(pending)) = b.work.pop_front() else {
+        panic!("the files are fetched");
+    };
+    b.folder.progress.lock().unwrap().clear();
+    assert_eq!(progress(&b), None);
+    ready(pending.stage(&remote.chunks)).unwrap();
+    assert_eq!(counts(&b), Some((0, 2, total, total)));
+}
+
+#[test]
 fn chunks_the_server_holds_already_count_as_done_without_being_sent() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");

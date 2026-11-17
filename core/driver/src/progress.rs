@@ -354,6 +354,40 @@ mod tests {
     }
 
     #[test]
+    fn an_upload_that_starts_before_a_recount_counts_its_file_and_the_chunks_it_sends() {
+        use koidrive_proto::v1::{ChunkRef, Content, CreateFile, Op};
+        let sum = Arc::default();
+        let a = folder("a", &sum);
+        let tracker = Arc::new(Mutex::new(a.tracker));
+        let chunk = |hash: &[u8], size| ChunkRef {
+            hash: hash.to_vec(),
+            size,
+            ..Default::default()
+        };
+        let content = Content {
+            size: 100,
+            manifest_digest: b"a".to_vec(),
+            chunks: vec![chunk(b"1", 40), chunk(b"2", 60)],
+            ..Default::default()
+        };
+        let commit = Commit {
+            ops: vec![Op {
+                op: Some(op::Op::CreateFile(CreateFile {
+                    node_id: "a".into(),
+                    content: Some(content),
+                    ..Default::default()
+                })),
+            }],
+            ..Default::default()
+        };
+
+        let credit = Credit::upload(&tracker, &commit, |_| None);
+        assert_eq!(shown(&sum), Some((0, 100)));
+        credit.chunk(b"1");
+        assert_eq!(shown(&sum), Some((40, 100)));
+    }
+
+    #[test]
     fn a_transfer_that_starts_before_a_recount_counts_its_file_and_keeps_the_bytes_it_moves() {
         let sum = Arc::default();
         let mut a = folder("a", &sum);
