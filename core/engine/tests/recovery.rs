@@ -3784,3 +3784,133 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert!(trees.local().get("new").is_none());
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
 }
+
+#[test]
+fn a_new_folder_at_the_name_of_a_folder_this_device_deleted_is_created_beside_the_trash() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("n", dir("a", "b")),
+            ("m", dir("n", "m")),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "b".into()),
+            ("delete", "b".into()),
+            ("create dir", "n".into()),
+            ("create dir", "m".into())
+        ]
+    );
+}
+
+#[test]
+fn a_new_folder_at_the_name_of_a_folder_this_device_is_deleting_is_created_beside_the_trash() {
+    let mut trees = trees(
+        &[
+            ("b", dir(ROOT, "b")),
+            ("n", dir(ROOT, "a")),
+            ("f", file("n", "f", 1)),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "b".into()),
+            ("create dir", "n".into()),
+            ("create file", "f".into())
+        ]
+    );
+}
+
+fn recovered_with_history(trees: &mut Trees, history: &[(&str, Shape)]) -> (Commits, IdGen) {
+    let mut log = History::new();
+    for (id, shape) in history {
+        log.entry((*id).to_owned()).or_default().push(shape.clone());
+    }
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(rewind());
+    assert_eq!(commits.build(trees, &mut ids, NOW, OLD, "me", 9), None);
+    commits.recover(trees, 0, &rewind(), &log, &Marks::new(), &mut ids, NOW);
+    trees.settle();
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    (commits, ids)
+}
+
+#[test]
+fn a_new_folder_at_the_name_of_a_folder_this_device_deleted_is_created_when_the_log_shows_that_name()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("n", dir("a", "b")),
+            ("m", dir("n", "m")),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let history = [("a", dir(ROOT, "a")), ("b", dir("a", "b"))];
+    let (mut commits, mut ids) = recovered_with_history(&mut trees, &history);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "b".into()),
+            ("delete", "b".into()),
+            ("create dir", "n".into()),
+            ("create dir", "m".into())
+        ]
+    );
+}
+
+#[test]
+fn a_new_file_with_the_bytes_of_a_file_this_device_deleted_is_created_beside_the_trash() {
+    for history in [vec![], vec![("f", file(ROOT, "x", 1))]] {
+        let mut trees = trees(
+            &[("n", file(ROOT, "x", 1))],
+            &[("f", file(ROOT, "x", 1))],
+            &[Remote("f", file(ROOT, "x", 1), true, 1)],
+        );
+        let (mut commits, mut ids) = recovered_with_history(&mut trees, &history);
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("create file", "n".into())],
+            "{history:?}"
+        );
+    }
+}
