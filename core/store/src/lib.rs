@@ -256,7 +256,24 @@ impl Store {
     /// migrations it lacks. Fails with [`Error::UnknownMigration`] if a newer build
     /// already migrated it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        Self::open_with(path.as_ref(), OpenFlags::default())
+    }
+
+    /// Opens the database at `path` as [`Store::open`] does, but only when the file exists and holds data, so a
+    /// missing or emptied database fails and is not replaced by a new store.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0) {
+            return Err(Error::NotAStore);
+        }
+        Self::open_with(
+            path,
+            OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE),
+        )
+    }
+
+    fn open_with(path: &Path, flags: OpenFlags) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
@@ -269,15 +286,6 @@ impl Store {
         }
         migrate(&mut store.conn)?;
         Ok(store)
-    }
-
-    /// Opens the database at `path` as [`Store::open`] does, but only when the file holds data, so an emptied
-    /// database fails with [`Error::NotAStore`] and stays empty instead of becoming a new store.
-    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
-        match std::fs::metadata(path.as_ref()) {
-            Ok(metadata) if metadata.len() == 0 => Err(Error::NotAStore),
-            _ => Self::open(path),
-        }
     }
 
     /// Opens the database at `path` to read it without writing anything: no migration, and no journal or shared-memory

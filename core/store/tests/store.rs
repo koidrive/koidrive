@@ -4954,3 +4954,11 @@ fn an_emptied_database_is_refused_and_left_empty() {
     drop(Store::open(&path).unwrap());
     drop(Store::open_existing(&path).unwrap());
 }
+
+#[test]
+fn a_missing_database_is_refused_and_not_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    assert!(Store::open_existing(&path).is_err());
+    assert!(!path.exists());
+}

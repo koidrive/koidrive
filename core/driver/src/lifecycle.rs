@@ -313,11 +313,13 @@ impl Lifecycle {
     pub(crate) fn store_unopened(&self, problem: String) {
         let mut checkpoint = self.checkpoint.lock().unwrap();
         if let Some(halt) = &checkpoint.halt
-            && (halt.recovery == Recovery::Unlink
-                || (halt.why == Some(Halted::Store) && !self.unreadable.load(Ordering::Relaxed)))
+            && halt.recovery == Recovery::Unlink
         {
             return;
         }
+        let saved = (checkpoint.halt.as_ref()).is_some_and(|halt| {
+            halt.why == Some(Halted::Store) && !self.unreadable.load(Ordering::Relaxed)
+        });
         let since =
             (checkpoint.halt.as_ref()).map_or_else(koidrive_telemetry::now, |halt| halt.since);
         checkpoint.halt = Some(Halt {
@@ -326,14 +328,16 @@ impl Lifecycle {
             why: Some(Halted::Store),
             since,
         });
-        self.unreadable.store(true, Ordering::Relaxed);
+        if !saved {
+            self.unreadable.store(true, Ordering::Relaxed);
+        }
         let mut status = self.status.lock().unwrap();
         status.state = FolderState::Halted;
         status.problem = Some(problem);
     }
 
-    pub(crate) fn halted_by(&self) -> Option<Halted> {
-        (self.checkpoint.lock().unwrap().halt.as_ref()).and_then(|halt| halt.why)
+    pub(crate) fn halted(&self) -> bool {
+        self.checkpoint.lock().unwrap().halt.is_some()
     }
 
     pub(crate) fn set_pending(&self, nodes: u64) {

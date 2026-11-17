@@ -1571,7 +1571,7 @@ impl Driver {
                     Ok(open)
                 })
             }) {
-                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                Err(DriverError::Store { .. }) if self.halted(&space_id) => continue,
                 open => open?,
             };
             questions.extend(open.into_iter().flatten());
@@ -1639,7 +1639,7 @@ impl Driver {
                     }
                 })
             }) {
-                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                Err(DriverError::Store { .. }) if self.halted(&space_id) => continue,
                 stored => stored?,
             };
             if let Some(question) =
@@ -1698,7 +1698,7 @@ impl Driver {
                     Ok(Some(Ok(Some(left as u64))))
                 })
             }) {
-                Err(DriverError::Store { .. }) if self.store_halted(&space_id) => continue,
+                Err(DriverError::Store { .. }) if self.halted(&space_id) => continue,
                 outcome => outcome?,
             };
             match outcome.flatten() {
@@ -2134,9 +2134,9 @@ impl Driver {
         self.inner.folders.lock().unwrap().keys().cloned().collect()
     }
 
-    fn store_halted(&self, space_id: &str) -> bool {
+    fn halted(&self, space_id: &str) -> bool {
         (self.inner.folders.lock().unwrap().get(space_id))
-            .is_some_and(|folder| folder.status.halted_by() == Some(Halted::Store))
+            .is_some_and(|folder| folder.status.halted())
     }
 
     #[cfg(test)]
@@ -2366,7 +2366,7 @@ fn read_folders(
         let Ok(store) = paths.store(&space_id) else {
             continue;
         };
-        if !store.exists() {
+        if let Ok(false) = store.try_exists() {
             continue;
         }
         let read = open(&store).and_then(|mut opened| {
@@ -3925,6 +3925,106 @@ mod tests {
         assert_eq!(cleared, ["halted.store"]);
         driver.stop().await;
         serde_json::from_slice::<serde_json::Value>(&fs::read(&record).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_damaged_store_whose_unlink_did_not_finish_leaves_the_other_folders_questions() {
+        const UNLINKING: &str = "0190f0a0-0000-7000-8000-0000000000e1";
+        const HEALTHY: &str = "0190f0a0-0000-7000-8000-0000000000e2";
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        paired(&paths, "d1");
+        for space_id in [UNLINKING, HEALTHY] {
+            linked_to(&paths, &base.join(space_id), "d1", space_id);
+        }
+        drop(Driver::open(paths.clone()).unwrap());
+        let unlinking = paths.store(UNLINKING).unwrap();
+        fs::write(unlinking.with_file_name("unlinking"), b"").unwrap();
+        let halt = serde_json::json!({
+            "halt": {
+                "problem": crate::lifecycle::UNFINISHED_UNLINK,
+                "recovery": "Unlink",
+                "why": "unlink",
+                "since": 1,
+            },
+        });
+        fs::write(unlinking.with_file_name("lifecycle.json"), halt.to_string()).unwrap();
+        garble(&paths, UNLINKING);
+        Store::open(paths.store(HEALTHY).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                tx.put_question(&StoredQuestion {
+                    question_id: "q1".into(),
+                    asked_at_ms: 10,
+                    body: serde_json::to_vec(&mass_delete("q1")).unwrap(),
+                    answer: None,
+                })
+            })
+            .unwrap();
+
+        let driver = Driver::open(paths.clone()).unwrap();
+        let folders = driver.status().folders;
+        let unlinking = (folders.iter())
+            .find(|folder| folder.space_id == UNLINKING)
+            .unwrap();
+        assert_eq!(
+            unlinking.problem.as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        assert_eq!(driver.questions().unwrap().len(), 1);
+        assert!(driver.answered_question("q2").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_damaged_store_that_loses_the_copy_of_its_link_says_to_unlink_it_by_its_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        drop(Driver::open(paths.clone()).unwrap());
+        garble(&paths, SPACE);
+        drop(Driver::open(paths.clone()).unwrap());
+        let store = paths.store(SPACE).unwrap();
+        let record = store.with_file_name("lifecycle.json");
+        let saved = fs::read(&record).unwrap();
+        fs::write(crate::link_copy::path(&store), b"{").unwrap();
+        failures::take_counted_here();
+
+        let listed = Driver::linked_folders(&paths).unwrap();
+        let problem = listed[0].problem.clone().unwrap();
+        assert!(
+            problem.ends_with(&format!(
+                "run koi folder unlink --space {SPACE}, then link the folder again"
+            )),
+            "{problem}"
+        );
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert_eq!(driver.status().folders[0].problem.as_ref(), Some(&problem));
+        assert!(failures::take_counted_here().is_empty());
+        assert_eq!(
+            fs::read(&record).unwrap(),
+            saved,
+            "the halt keeps when it began"
+        );
+    }
+
+    #[test]
+    fn a_folder_whose_state_cannot_be_read_is_listed_as_halted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        drop(Driver::open(paths.clone()).unwrap());
+        let space = paths.store(SPACE).unwrap().parent().unwrap().to_path_buf();
+        fs::set_permissions(&space, fs::Permissions::from_mode(0o000)).unwrap();
+        let listed = Driver::linked_folders(&paths);
+        fs::set_permissions(&space, fs::Permissions::from_mode(0o700)).unwrap();
+        let listed = listed.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].state, FolderState::Halted);
     }
 
     fn garble(paths: &Paths, space_id: &str) {
