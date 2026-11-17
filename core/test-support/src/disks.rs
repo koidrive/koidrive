@@ -567,7 +567,8 @@ mod tests {
     fn a_busy_image_attached_through_a_symlinked_path_is_still_ejected() {
         let mut disks = Disks::new().unwrap();
         let image = disks.image("Spelled");
-        let spelled = Path::new("/var").join(image.strip_prefix("/private/var").unwrap());
+        let spelled = disks.base().join("Alias.dmg");
+        std::os::unix::fs::symlink(&image, &spelled).unwrap();
         let at = disks.base().join("at");
         fs::create_dir(&at).unwrap();
         disks.attach(&spelled, &at);
