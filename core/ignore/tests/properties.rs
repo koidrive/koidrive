@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use koidrive_ignore::{Change, Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Status};
+use koidrive_ignore::{
+    Change, Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Source, Status,
+};
 use proptest::prelude::*;
 use proptest::sample::Index;
 
@@ -106,15 +108,28 @@ fn dirs(tree: &Tree) -> Vec<Vec<String>> {
 
 #[derive(Clone, Debug)]
 enum Update {
-    Rules(Index, Option<String>),
-    Local(Vec<Index>, Vec<String>),
+    Rules(Index, Source, Option<String>),
+    Local(Vec<Index>, Vec<String>, bool),
+}
+
+fn source() -> impl Strategy<Value = Source> {
+    prop::sample::select(Source::ALL.to_vec())
+}
+
+fn files() -> impl Strategy<Value = Vec<(Index, Source, String)>> {
+    prop::collection::vec((any::<Index>(), source(), rules()), 0..4)
 }
 
 fn update() -> impl Strategy<Value = Update> {
     prop_oneof![
-        3 => (any::<Index>(), prop::option::of(rules())).prop_map(|(d, r)| Update::Rules(d, r)),
-        1 => (prop::collection::vec(any::<Index>(), 0..3), prop::collection::vec(line(), 0..3))
-            .prop_map(|(i, e)| Update::Local(i, e)),
+        3 => (any::<Index>(), source(), prop::option::of(rules()))
+            .prop_map(|(d, s, r)| Update::Rules(d, s, r)),
+        1 => (
+            prop::collection::vec(any::<Index>(), 0..3),
+            prop::collection::vec(line(), 0..3),
+            any::<bool>(),
+        )
+            .prop_map(|(i, e, g)| Update::Local(i, e, g)),
     ]
 }
 
@@ -134,11 +149,16 @@ fn entries(tree: &Tree) -> Vec<(Vec<String>, Kind)> {
     tree.iter().map(|(p, k)| (p.clone(), *k)).collect()
 }
 
-fn build(tree: &Tree, files: &[(Index, String)], local: LocalRules<Folded>) -> Matcher<Folded> {
+fn build(
+    tree: &Tree,
+    files: &[(Index, Source, String)],
+    local: LocalRules<Folded>,
+) -> Matcher<Folded> {
     let dirs = dirs(tree);
     let mut matcher = Matcher::new(local);
-    for (dir, text) in files {
-        matcher.set_rules(dir.get(&dirs), Some(RuleFile::parse(text.as_bytes())), []);
+    for (dir, source, text) in files {
+        let rules = RuleFile::parse(text.as_bytes());
+        matcher.set_rules(dir.get(&dirs), *source, Some(rules), []);
     }
     matcher
 }
@@ -191,7 +211,12 @@ fn spellings(pieces: &[&[&str]], picks: &[(Index, Index)]) -> (String, String) {
 
 fn spelled_statuses<K: NameKey>(rules: &str, paths: &[(Vec<String>, Kind)]) -> Vec<Status> {
     let mut matcher = Matcher::<K>::new(LocalRules::default());
-    matcher.set_rules(&[] as &[&str], Some(RuleFile::parse(rules.as_bytes())), []);
+    matcher.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(rules.as_bytes())),
+        [],
+    );
     paths
         .iter()
         .map(|(path, kind)| matcher.status(path, *kind))
@@ -206,20 +231,20 @@ proptest! {
     #[test]
     fn updates_report_exactly_what_changed(
         tree in tree(),
-        files in prop::collection::vec((any::<Index>(), rules()), 0..4),
+        files in files(),
         updates in prop::collection::vec(update(), 1..4),
     ) {
         let mut matcher = build(&tree, &files, LocalRules::default());
         for update in updates {
             let before = statuses(&matcher, &tree);
             let (changes, dir) = match &update {
-                Update::Rules(dir, text) => {
+                Update::Rules(dir, source, text) => {
                     let dir = dir.get(&dirs(&tree)).clone();
                     let rules = text.as_ref().map(|t| RuleFile::parse(t.as_bytes()));
-                    (matcher.set_rules(&dir, rules, entries(&tree)), dir)
+                    (matcher.set_rules(&dir, *source, rules, entries(&tree)), dir)
                 }
-                Update::Local(include, exclude) => {
-                    let local = local(&tree, include, exclude);
+                Update::Local(include, exclude, gitignore) => {
+                    let local = local(&tree, include, exclude).with_gitignore(*gitignore);
                     (matcher.set_local(local, entries(&tree)), Vec::new())
                 }
             };
@@ -245,9 +270,33 @@ proptest! {
     }
 
     #[test]
+    fn gitignore_files_change_nothing_while_the_device_does_not_follow_them(
+        tree in tree(),
+        files in files(),
+        gitignore in prop::collection::vec((any::<Index>(), rules()), 1..4),
+    ) {
+        let koiignore: Vec<_> = (files.into_iter())
+            .filter(|(_, source, _)| *source == Source::Koiignore)
+            .collect();
+        let both: Vec<_> = (koiignore.iter().cloned())
+            .chain(gitignore.into_iter().map(|(dir, text)| (dir, Source::Gitignore, text)))
+            .collect();
+        let off = LocalRules::default().with_gitignore(false);
+        let without = build(&tree, &koiignore, off.clone());
+        let with = build(&tree, &both, off);
+        prop_assert_eq!(statuses(&with, &tree), statuses(&without, &tree));
+        let on = build(&tree, &both, LocalRules::default());
+        for (path, kind) in &tree {
+            if without.status(path, *kind) != Status::Included {
+                prop_assert_ne!(on.status(path, *kind), Status::Included, "{:?}", path);
+            }
+        }
+    }
+
+    #[test]
     fn exclusion_invariants_hold(
         tree in tree(),
-        files in prop::collection::vec((any::<Index>(), rules()), 0..4),
+        files in files(),
         include in prop::collection::vec(any::<Index>(), 0..3),
         exclude in prop::collection::vec(line(), 0..3),
     ) {
@@ -285,7 +334,7 @@ proptest! {
         prop_assert!(numbers.windows(2).all(|w| w[0] < w[1]));
         prop_assert!(numbers.iter().all(|&n| n >= 1 && n <= lines));
         let mut matcher = Matcher::new(LocalRules::default());
-        matcher.set_rules(&[] as &[&str], Some(file), []);
+        matcher.set_rules(&[] as &[&str], Source::Koiignore, Some(file), []);
         let kind = if is_dir { Kind::Dir } else { Kind::File };
         let _ = matcher.status(&path, kind);
         prop_assert_eq!(matcher.status(&[".koiignore"], Kind::File), Status::Included);

@@ -2,7 +2,7 @@
 
 #![no_main]
 
-use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, RuleFile, Status};
+use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, RuleFile, Source, Status};
 use libfuzzer_sys::fuzz_target;
 
 struct Folded;
@@ -30,7 +30,7 @@ fn check<K: NameKey>(data: &[u8]) {
         .collect();
     let local = LocalRules::<K>::new(&lines, &lines).unwrap_or_default();
     let mut matcher = Matcher::new(local);
-    matcher.set_rules(&[] as &[&str], Some(file), []);
+    matcher.set_rules(&[] as &[&str], Source::Koiignore, Some(file), []);
     for line in &lines {
         let path: Vec<&str> = line.split('/').filter(|c| !c.is_empty()).collect();
         for kind in [Kind::File, Kind::Dir] {
@@ -38,6 +38,7 @@ fn check<K: NameKey>(data: &[u8]) {
         }
     }
     assert_eq!(matcher.status(&[".koiignore"], Kind::File), Status::Included);
+    assert_eq!(matcher.status(&[".gitignore"], Kind::File), Status::Included);
 }
 
 fuzz_target!(|data: &[u8]| {

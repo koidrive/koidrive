@@ -441,7 +441,7 @@ fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it
 fn holding_an_excluded_folders_name(incoming: RemoteNode) -> Trees {
     let mut trees = trees(&[("kept", Some(dir(ROOT, "ig")), None, None)]);
     trees.set_remote("f".into(), incoming);
-    trees.set_rules(&AT_ROOT, rules("/ig/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ig/\n"));
     assert!(trees.excluded("kept"));
     trees
 }
@@ -468,7 +468,7 @@ fn a_server_file_at_an_excluded_folders_name_is_renamed_from_its_place_to_a_conf
 #[test]
 fn a_server_file_at_an_excluded_folders_name_the_rules_leave_no_conflict_name_for_is_reported() {
     let mut trees = holding_an_excluded_folders_name(remote(file(ROOT, "ig", 1)));
-    trees.set_rules(&AT_ROOT, rules("/ig/\n*conflict*\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ig/\n*conflict*\n"));
     assert_eq!(ops(&mut trees), []);
     let renaming = Commits::default().renaming(&trees, NOW);
     assert_eq!(
@@ -2101,11 +2101,11 @@ fn a_vanished_node_below_a_folder_the_user_moved_waits_while_its_place_on_disk_i
             synced("d", dir(ROOT, "dist")),
             synced("a", file("d", "a.log", 1)),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         trees.remove_local("a");
         place(&mut trees, "d", ROOT, "out");
-        trees.set_rules(&AT_ROOT, None);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, None);
         trees.listed(&[ROOT.into()], Pending::new([pending.split('/')]));
         trees.settle(&Default::default());
         assert_eq!(
@@ -2128,10 +2128,10 @@ fn a_folder_whose_copy_goes_while_pending_keeps_what_a_release_took_from_it_wait
         synced("x", file("p", "x.txt", 1)),
         synced("y", file("p", "y.txt", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("x");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[], Pending::default());
     trees.settle(&Default::default());
     assert_eq!(trees.synced().live("x"), None);
@@ -2152,7 +2152,7 @@ fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
     let mut trees = trees(&[]);
     trees.set_local("n".into(), local(file(ROOT, "n.log", 1), 1));
     assert!(matches!(ops(&mut trees)[..], [op::Op::CreateFile(_)]));
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.remove_local("n");
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
@@ -2164,10 +2164,10 @@ fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
 #[test]
 fn a_file_waiting_under_a_name_that_differs_only_in_case_keeps_its_place_pending() {
     let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("x");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     let renamed =
         Pending::new(Vec::<Vec<&str>>::new()).waiting([(["X.log"], true), (["x.log"], false)]);
     trees.listed(&[], renamed);
@@ -2192,7 +2192,7 @@ fn an_excluded_node_the_server_renames_keeps_its_synced_entries_while_their_old_
             synced("p", dir(ROOT, "p.log")),
             synced("x", file(parent, "x.log", 1)),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         trees.remove_local("x");
         trees.remove_local(renamed);
@@ -2221,7 +2221,7 @@ fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r
             false => incoming("p", dir(ROOT, "dest")),
         };
         let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1)), folder]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         ops(&mut trees);
         trees.remove_local("x");
         if folder_in_s {

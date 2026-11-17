@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::pattern::{LineError, RuleFile, key};
-use crate::{NameKey, RULES_FILE};
+use crate::{NameKey, Source};
 
 pub const PLATFORM_FILES: [&str; 4] = [".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"];
 const STATE_DIR: &str = ".koidrive";
@@ -29,8 +29,13 @@ pub enum Reason {
     BuiltIn,
     /// The device-local include or exclude list.
     Local,
-    /// Line `line` of the `.koiignore` file in the path's ancestor at `depth` (0 is the root).
-    Rule { depth: usize, line: u32 },
+    /// Line `line` of the rules file of kind `source` in the path's ancestor at `depth` (0 is the
+    /// root).
+    Rule {
+        source: Source,
+        depth: usize,
+        line: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,11 +85,12 @@ impl fmt::Display for LocalRulesError {
 
 impl std::error::Error for LocalRulesError {}
 
-/// This device's include and exclude lists. They are never synced; see the crate documentation
-/// for how they combine with `.koiignore` files.
+/// This device's include and exclude lists, and whether it follows `.gitignore` files. They are
+/// never synced; see the crate documentation for how they combine with the rules files.
 pub struct LocalRules<K> {
     include: Vec<IncludePath>,
     exclude: RuleFile<K>,
+    gitignore: bool,
 }
 
 impl<K> Clone for LocalRules<K> {
@@ -92,13 +98,16 @@ impl<K> Clone for LocalRules<K> {
         Self {
             include: self.include.clone(),
             exclude: self.exclude.clone(),
+            gitignore: self.gitignore,
         }
     }
 }
 
 impl<K> PartialEq for LocalRules<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.include == other.include && self.exclude == other.exclude
+        self.include == other.include
+            && self.exclude == other.exclude
+            && self.gitignore == other.gitignore
     }
 }
 
@@ -107,16 +116,31 @@ impl<K> fmt::Debug for LocalRules<K> {
         f.debug_struct("LocalRules")
             .field("include", &self.include)
             .field("exclude", &self.exclude)
+            .field("gitignore", &self.gitignore)
             .finish()
     }
 }
 
+/// No include or exclude list, following `.gitignore` files.
 impl<K> Default for LocalRules<K> {
     fn default() -> Self {
         Self {
             include: Vec::new(),
             exclude: RuleFile::default(),
+            gitignore: true,
         }
+    }
+}
+
+impl<K> LocalRules<K> {
+    /// The same lists, following `.gitignore` files or not.
+    pub fn with_gitignore(mut self, follow: bool) -> Self {
+        self.gitignore = follow;
+        self
+    }
+
+    pub fn follows_gitignore(&self) -> bool {
+        self.gitignore
     }
 }
 
@@ -186,18 +210,21 @@ impl<K: NameKey> LocalRules<K> {
         Ok(Self {
             include,
             exclude: rules,
+            gitignore: true,
         })
     }
 }
 
+type Folder<K> = [Option<RuleFile<K>>; Source::ALL.len()];
+
 /// The rules in force on this device: the built-in exclusions, the device-local list and the
-/// `.koiignore` files known so far, by directory.
+/// rules files known so far, by directory.
 pub struct Matcher<K> {
     local: LocalRules<K>,
-    files: HashMap<Vec<String>, RuleFile<K>>,
+    files: HashMap<Vec<String>, Folder<K>>,
     platform_files: Vec<String>,
     state_dir: String,
-    rules_file: String,
+    rules_files: Vec<String>,
 }
 
 impl<K> Clone for Matcher<K> {
@@ -207,7 +234,7 @@ impl<K> Clone for Matcher<K> {
             files: self.files.clone(),
             platform_files: self.platform_files.clone(),
             state_dir: self.state_dir.clone(),
-            rules_file: self.rules_file.clone(),
+            rules_files: self.rules_files.clone(),
         }
     }
 }
@@ -235,7 +262,7 @@ impl<K: NameKey> Matcher<K> {
             files: HashMap::new(),
             platform_files: PLATFORM_FILES.iter().map(|name| key::<K>(name)).collect(),
             state_dir: key::<K>(STATE_DIR),
-            rules_file: key::<K>(RULES_FILE),
+            rules_files: Source::ALL.map(|s| key::<K>(s.file_name())).to_vec(),
         }
     }
 
@@ -254,22 +281,30 @@ impl<K: NameKey> Matcher<K> {
             matcher: self,
             dir: Vec::new(),
             text: Vec::new(),
-            files: self
-                .files
-                .get(&Vec::new())
-                .map(|f| (0, f))
-                .into_iter()
-                .collect(),
+            files: self.folder_files(&[], 0).collect(),
             include,
         }
     }
 
-    /// Sets or removes the rules file of `dir` and returns the entries whose status changed.
-    /// `entries` are the known paths, relative to the root; only those below `dir` are
-    /// evaluated, since no other path depends on this file.
+    fn folder_files(
+        &self,
+        dir: &[String],
+        depth: usize,
+    ) -> impl Iterator<Item = (usize, Source, &RuleFile<K>)> {
+        let folder = self.files.get(dir);
+        Source::ALL.into_iter().filter_map(move |source| {
+            let file = folder?[source as usize].as_ref()?;
+            Some((depth, source, file))
+        })
+    }
+
+    /// Sets or removes the rules file of kind `source` in `dir` and returns the entries whose
+    /// status changed. `entries` are the known paths, relative to the root; only those below
+    /// `dir` are evaluated, since no other path depends on this file.
     pub fn set_rules<S: AsRef<str>>(
         &mut self,
         dir: &[S],
+        source: Source,
         rules: Option<RuleFile<K>>,
         entries: impl IntoIterator<Item = (Vec<String>, Kind)>,
     ) -> Vec<Change> {
@@ -282,10 +317,11 @@ impl<K: NameKey> Matcher<K> {
             })
             .collect();
         let before = self.statuses_below(dir, &below);
-        match rules {
-            Some(rules) => self.files.insert(dir_keys, rules),
-            None => self.files.remove(&dir_keys),
-        };
+        let folder = self.files.entry(dir_keys.clone()).or_default();
+        folder[source as usize] = rules;
+        if folder.iter().all(Option::is_none) {
+            self.files.remove(&dir_keys);
+        }
         let Some(before) = before else {
             return Vec::new();
         };
@@ -293,9 +329,9 @@ impl<K: NameKey> Matcher<K> {
         changes(below, before, after)
     }
 
-    /// The rules file of `dir`, the names from the root to it, if one is known.
-    pub fn rules_file<S: AsRef<str>>(&self, dir: &[S]) -> Option<&RuleFile<K>> {
-        self.files.get(&keys::<K, S>(dir))
+    /// The rules file of kind `source` in `dir`, the names from the root to it, if one is known.
+    pub fn rules_file<S: AsRef<str>>(&self, dir: &[S], source: Source) -> Option<&RuleFile<K>> {
+        self.files.get(&keys::<K, S>(dir))?[source as usize].as_ref()
     }
 
     /// Removes every rules file.
@@ -366,7 +402,7 @@ pub struct Scope<'a, K> {
     matcher: &'a Matcher<K>,
     dir: Vec<String>,
     text: Vec<char>,
-    files: Vec<(usize, &'a RuleFile<K>)>,
+    files: Vec<(usize, Source, &'a RuleFile<K>)>,
     include: Include,
 }
 
@@ -397,9 +433,7 @@ impl<'a, K: NameKey> Scope<'a, K> {
         let mut dir = self.dir.clone();
         dir.push(name);
         let mut files = self.files.clone();
-        if let Some(file) = self.matcher.files.get(&dir) {
-            files.push((dir.len(), file));
-        }
+        files.extend(self.matcher.folder_files(&dir, dir.len()));
         Ok(Scope {
             matcher: self.matcher,
             dir,
@@ -431,7 +465,7 @@ impl<'a, K: NameKey> Scope<'a, K> {
         {
             return (Status::Excluded(Reason::BuiltIn), None);
         }
-        if kind == Kind::File && name == matcher.rules_file {
+        if kind == Kind::File && matcher.rules_files.iter().any(|f| f == name) {
             return (Status::Included, None);
         }
         let Some(include) = self.include_step(name, kind) else {
@@ -461,19 +495,26 @@ impl<'a, K: NameKey> Scope<'a, K> {
         {
             return (Status::Excluded(Reason::Local), None);
         }
-        for &(file_depth, file) in self.files.iter().rev() {
-            if let Some(rule) = file.last_match(&text[starts[file_depth]..], basename, is_dir) {
-                if rule.negated {
-                    break;
-                }
-                let reason = Reason::Rule {
-                    depth: file_depth,
-                    line: rule.line,
-                };
-                return (Status::Excluded(reason), None);
-            }
+        let sources = match matcher.local.gitignore {
+            true => &Source::ALL[..],
+            false => &[Source::Koiignore][..],
+        };
+        let decided = sources.iter().find_map(|&source| {
+            (self.files.iter().rev())
+                .filter(|(_, file_source, _)| *file_source == source)
+                .find_map(|&(depth, _, file)| {
+                    let rule = file.last_match(&text[starts[depth]..], basename, is_dir)?;
+                    Some((!rule.negated).then_some(Reason::Rule {
+                        source,
+                        depth,
+                        line: rule.line,
+                    }))
+                })
+        });
+        match decided.flatten() {
+            Some(reason) => (Status::Excluded(reason), None),
+            None => (Status::Included, Some(include)),
         }
-        (Status::Included, Some(include))
     }
 
     fn include_step(&self, name: &str, kind: Kind) -> Option<Include> {

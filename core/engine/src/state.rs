@@ -87,13 +87,23 @@ pub struct KeptCause {
     pub rules: Vec<KeptRules>,
 }
 
-/// The rules of one folder on a kept entry's path: the rules file L held there, and the bytes of the rules the matcher
-/// applied there.
+/// The rules of one folder on a kept entry's path: for its `.koiignore` file and for its `.gitignore` file, the rules file
+/// L held there, and the bytes of the rules the matcher applied there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptRules {
     pub file: Option<KeptRulesFile>,
     pub rules: Option<Vec<u8>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub gitignore_file: Option<KeptRulesFile>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub gitignore_rules: Option<Vec<u8>>,
 }
 
 /// A rules file L held on a kept entry's path, and whether R held it when the cause was recorded.

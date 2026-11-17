@@ -481,7 +481,11 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
             ids.push(id);
         }
     }
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"ignored/\n")),
+    );
     trees.discard_server_entries_below(&BTreeMap::from([("f".into(), dir("root", "new"))]));
     trees.discard(
         ["f".to_string()],
@@ -541,7 +545,11 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
         place(&mut trees, id, shape.clone(), true);
         trees.set_synced(id.into(), Some(shape));
     }
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored/\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"ignored/\n")),
+    );
     let shown = BTreeMap::from([("f".into(), dir("root", "new"))]);
     trees.discard_server_entries_below(&shown);
     trees.discard(["f".to_string()], &shown);
@@ -1152,15 +1160,27 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
     );
     trees.set_local("root-rules".into(), rules_file("root", 0, 3));
     trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n")),
+    );
     trees.settle(&BTreeMap::new());
 
     trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n*.tmp\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n*.tmp\n")),
+    );
     trees.settle(&BTreeMap::new());
     trees.set_local("app-rules".into(), rules_file("app", 2, 4));
     trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
-    trees.set_rules(&["app"], Some(RuleFile::parse(b"!.env\n")));
+    trees.set_rules(
+        &["app"],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"!.env\n")),
+    );
     trees.settle(&BTreeMap::new());
 
     assert!(!trees.ignores(&["app", ".env"], Kind::File));
@@ -1173,11 +1193,15 @@ fn a_kept_entry_is_released_when_the_person_deletes_the_rules_file_that_left_it_
  {
     let mut trees = with_a_kept_env();
     trees.set_local_changed("root-rules".into(), rules_file("root", 0, 3));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n")),
+    );
     trees.settle(&BTreeMap::new());
 
     trees.remove_local("root-rules");
-    trees.set_rules(&[] as &[&str], None);
+    trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
     trees.settle(&BTreeMap::new());
 
     assert!(!trees.kept_nodes.contains_key("env"));
@@ -1189,12 +1213,39 @@ fn a_kept_entry_stays_kept_when_the_server_drops_the_rules_file_that_left_it_out
     trees.set_local("root-rules".into(), rules_file("root", 0, 3));
     trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
     trees.set_remote("root-rules".into(), remote(rules_file("root", 0, 3).shape));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n")),
+    );
     trees.settle(&BTreeMap::new());
 
     trees.remove_remote("root-rules");
     trees.remove_local("root-rules");
-    trees.set_rules(&[] as &[&str], None);
+    trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
+    trees.settle(&BTreeMap::new());
+
+    assert!(trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
+fn a_kept_entry_stays_kept_when_the_server_drops_the_gitignore_file_that_left_it_out() {
+    let mut gitignore = rules_file("root", 0, 3);
+    gitignore.shape.name = ".gitignore".into();
+    let mut trees = with_a_kept_env();
+    trees.set_local("root-rules".into(), gitignore.clone());
+    trees.set_synced("root-rules".into(), Some(gitignore.shape.clone()));
+    trees.set_remote("root-rules".into(), remote(gitignore.shape));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Gitignore,
+        Some(RuleFile::parse(b".env\n")),
+    );
+    trees.settle(&BTreeMap::new());
+
+    trees.remove_remote("root-rules");
+    trees.remove_local("root-rules");
+    trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Gitignore, None);
     trees.settle(&BTreeMap::new());
 
     assert!(trees.kept_nodes.contains_key("env"));
@@ -1206,14 +1257,26 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
     let mut trees = with_a_kept_env();
     trees.set_local("root-rules".into(), rules_file("root", 0, 3));
     trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n")),
+    );
     trees.settle(&BTreeMap::new());
 
     trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n*.tmp\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b".env\n*.tmp\n")),
+    );
     trees.set_local("app-rules".into(), rules_file("app", 2, 4));
     trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
-    trees.set_rules(&["app"], Some(RuleFile::parse(b"!.env\n")));
+    trees.set_rules(
+        &["app"],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"!.env\n")),
+    );
     trees.settle(&BTreeMap::new());
     trees.settle(&BTreeMap::new());
 

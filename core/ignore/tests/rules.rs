@@ -2,7 +2,7 @@
 
 use koidrive_ignore::{
     Change, InvalidLine, Kind, LineError, LocalRules, LocalRulesError, Matcher, NameKey, Reason,
-    RuleFile, Status,
+    RuleFile, Source, Status,
 };
 
 struct Folded;
@@ -32,7 +32,12 @@ fn kind(path: &str) -> Kind {
 fn matcher_with(local: LocalRules<Folded>, files: &[(&str, &str)]) -> Matcher<Folded> {
     let mut matcher = Matcher::new(local);
     for (dir, text) in files {
-        matcher.set_rules(&split(dir), Some(RuleFile::parse(text.as_bytes())), []);
+        matcher.set_rules(
+            &split(dir),
+            Source::Koiignore,
+            Some(RuleFile::parse(text.as_bytes())),
+            [],
+        );
     }
     matcher
 }
@@ -50,7 +55,28 @@ fn excluded(matcher: &Matcher<Folded>, path: &str) -> bool {
 }
 
 fn rule(depth: usize, line: u32) -> Status {
-    Status::Excluded(Reason::Rule { depth, line })
+    Status::Excluded(Reason::Rule {
+        source: Source::Koiignore,
+        depth,
+        line,
+    })
+}
+
+fn git_rule(depth: usize, line: u32) -> Status {
+    Status::Excluded(Reason::Rule {
+        source: Source::Gitignore,
+        depth,
+        line,
+    })
+}
+
+fn sourced(local: LocalRules<Folded>, files: &[(&str, Source, &str)]) -> Matcher<Folded> {
+    let mut matcher = Matcher::new(local);
+    for (dir, source, text) in files {
+        let rules = RuleFile::parse(text.as_bytes());
+        matcher.set_rules(&split(dir), *source, Some(rules), []);
+    }
+    matcher
 }
 
 fn entries(paths: &[&str]) -> Vec<(Vec<String>, Kind)> {
@@ -374,7 +400,7 @@ fn unusable_lines_are_reported_and_skipped() {
         ]
     );
     let mut m = Matcher::new(LocalRules::default());
-    m.set_rules(&split(""), Some(file), []);
+    m.set_rules(&split(""), Source::Koiignore, Some(file), []);
     assert_eq!(m.status(&split("ok"), Kind::File), rule(0, 1));
     assert_eq!(m.status(&split("last"), Kind::File), rule(0, 7));
 }
@@ -461,22 +487,35 @@ fn a_new_rule_excludes_without_deleting_and_removing_it_includes_again() {
         "other/d.log",
     ]);
     let mut m = matcher(&[]);
-    let added = m.set_rules(&split("sub"), Some(RuleFile::parse(b"*\n")), tree.clone());
+    let added = m.set_rules(
+        &split("sub"),
+        Source::Koiignore,
+        Some(RuleFile::parse(b"*\n")),
+        tree.clone(),
+    );
     assert_eq!(
         added,
         [
             Change::Excluded {
                 path: split("sub/b.log"),
-                reason: Reason::Rule { depth: 1, line: 1 }
+                reason: Reason::Rule {
+                    source: Source::Koiignore,
+                    depth: 1,
+                    line: 1
+                }
             },
             Change::Excluded {
                 path: split("sub/c.txt"),
-                reason: Reason::Rule { depth: 1, line: 1 }
+                reason: Reason::Rule {
+                    source: Source::Koiignore,
+                    depth: 1,
+                    line: 1
+                }
             },
         ],
         "only the subtree changes, and the rules file stays"
     );
-    let removed = m.set_rules(&split("sub"), None, tree);
+    let removed = m.set_rules(&split("sub"), Source::Koiignore, None, tree);
     assert_eq!(
         removed,
         [
@@ -496,12 +535,13 @@ fn rules_set_inside_an_excluded_directory_wait_until_it_is_included() {
     let mut m = matcher(&[("", "build/\n")]);
     let changes = m.set_rules(
         &split("build"),
+        Source::Koiignore,
         Some(RuleFile::parse(b"*.o\n")),
         tree.clone(),
     );
     assert!(changes.is_empty());
     assert_eq!(status(&m, "build/a.o"), rule(0, 1));
-    let changes = m.set_rules(&split(""), None, tree);
+    let changes = m.set_rules(&split(""), Source::Koiignore, None, tree);
     assert_eq!(
         changes,
         [
@@ -550,7 +590,11 @@ fn a_scope_walk_refuses_excluded_directories() {
     let root = m.root();
     assert_eq!(
         root.enter("node_modules").unwrap_err(),
-        Reason::Rule { depth: 0, line: 1 }
+        Reason::Rule {
+            source: Source::Koiignore,
+            depth: 0,
+            line: 1
+        }
     );
     let app = root.enter("app").unwrap();
     assert_eq!(app.status("x.tmp", Kind::File), rule(1, 1));
@@ -563,4 +607,198 @@ fn a_long_globstar_chain_matches_without_recursion() {
     let m = matcher(&[("", &format!("{}a\n", "**/".repeat(50_000)))]);
     assert_eq!(status(&m, "x/y/a"), rule(0, 1));
     assert_eq!(status(&m, "b"), Status::Included);
+}
+
+#[test]
+fn rules_files_are_named_by_key() {
+    assert_eq!(Source::of::<Folded>(".GitIgnore"), Some(Source::Gitignore));
+    assert_eq!(Source::of::<Folded>(".koiignore"), Some(Source::Koiignore));
+    assert_eq!(Source::of::<Folded>("gitignore"), None);
+}
+
+#[test]
+fn gitignore_files_exclude_while_the_device_follows_them() {
+    let files = [
+        (
+            "",
+            Source::Gitignore,
+            "node_modules/
+*.log
+",
+        ),
+        (
+            "app",
+            Source::Gitignore,
+            "dist/
+",
+        ),
+    ];
+    let m = sourced(LocalRules::default(), &files);
+    assert_eq!(status(&m, "node_modules/"), git_rule(0, 1));
+    assert_eq!(status(&m, "node_modules/x/index.js"), git_rule(0, 1));
+    assert_eq!(status(&m, "app/debug.log"), git_rule(0, 2));
+    assert_eq!(status(&m, "app/dist/"), git_rule(1, 1));
+    assert_eq!(status(&m, "dist/"), Status::Included);
+    let off = sourced(LocalRules::default().with_gitignore(false), &files);
+    for path in [
+        "node_modules/",
+        "node_modules/x/index.js",
+        "app/debug.log",
+        "app/dist/",
+    ] {
+        assert_eq!(status(&off, path), Status::Included, "{path}");
+    }
+}
+
+#[test]
+fn koiignore_patterns_decide_before_gitignore_patterns() {
+    let m = sourced(
+        LocalRules::default(),
+        &[
+            (
+                "",
+                Source::Koiignore,
+                "!.env
+*.psd
+!build/
+",
+            ),
+            (
+                "app",
+                Source::Gitignore,
+                ".env
+*.tmp
+build/
+!*.psd
+",
+            ),
+        ],
+    );
+    assert_eq!(status(&m, "app/.env"), Status::Included);
+    assert_eq!(status(&m, "app/cover.psd"), rule(0, 2));
+    assert_eq!(status(&m, "app/a.tmp"), git_rule(1, 2));
+    assert_eq!(status(&m, "app/build/"), Status::Included);
+    assert_eq!(status(&m, "app/build/x.tmp"), git_rule(1, 2));
+    assert_eq!(status(&m, "app/build/x.txt"), Status::Included);
+}
+
+#[test]
+fn a_file_in_a_directory_a_gitignore_excludes_cannot_be_included_again() {
+    let m = sourced(
+        LocalRules::default(),
+        &[
+            (
+                "",
+                Source::Gitignore,
+                "build/
+!build/keep.txt
+out/
+",
+            ),
+            (
+                "",
+                Source::Koiignore,
+                "!out/keep.txt
+",
+            ),
+            (
+                "build",
+                Source::Gitignore,
+                "!*
+",
+            ),
+        ],
+    );
+    assert_eq!(status(&m, "build/keep.txt"), git_rule(0, 1));
+    assert_eq!(status(&m, "out/keep.txt"), git_rule(0, 3));
+}
+
+#[test]
+fn rules_files_of_both_kinds_are_always_included() {
+    for gitignore in [true, false] {
+        let m = sourced(
+            LocalRules::default().with_gitignore(gitignore),
+            &[
+                (
+                    "",
+                    Source::Koiignore,
+                    "*
+!*/
+",
+                ),
+                (
+                    "",
+                    Source::Gitignore,
+                    "*
+",
+                ),
+            ],
+        );
+        for path in [
+            ".gitignore",
+            ".koiignore",
+            "sub/.GITIGNORE",
+            "sub/.koiignore",
+        ] {
+            assert_eq!(status(&m, path), Status::Included, "{path}");
+        }
+        assert_eq!(status(&m, "sub/a"), rule(0, 1));
+    }
+}
+
+#[test]
+fn following_gitignore_files_or_not_reports_only_what_they_decide() {
+    let tree = entries(&[
+        "node_modules/",
+        "node_modules/a.js",
+        "src/",
+        "src/main.rs",
+        ".gitignore",
+        "x.log",
+        "y.psd",
+    ]);
+    let files = [
+        (
+            "",
+            Source::Gitignore,
+            "node_modules/
+*.log
+*.psd
+",
+        ),
+        (
+            "",
+            Source::Koiignore,
+            "*.psd
+",
+        ),
+    ];
+    let mut m = sourced(LocalRules::default().with_gitignore(false), &files);
+    let on = m.set_local(LocalRules::default(), tree.clone());
+    let excluded = |path: &str, line| Change::Excluded {
+        path: split(path),
+        reason: Reason::Rule {
+            source: Source::Gitignore,
+            depth: 0,
+            line,
+        },
+    };
+    assert_eq!(
+        on,
+        [
+            excluded("node_modules", 1),
+            excluded("node_modules/a.js", 1),
+            excluded("x.log", 2),
+        ]
+    );
+    let off = m.set_local(LocalRules::default().with_gitignore(false), tree);
+    let included = |path: &str| Change::Included { path: split(path) };
+    assert_eq!(
+        off,
+        [
+            included("node_modules"),
+            included("node_modules/a.js"),
+            included("x.log"),
+        ]
+    );
 }

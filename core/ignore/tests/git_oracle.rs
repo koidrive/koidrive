@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Status};
+use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Source, Status};
 use proptest::prelude::*;
 use proptest::sample::Index;
 use unicode_normalization::UnicodeNormalization;
@@ -35,17 +35,30 @@ struct Case {
 type Verdict = Option<(usize, u32)>;
 
 fn ours<K: NameKey>(case: &Case, spell: fn(&str) -> String) -> Vec<Verdict> {
+    let [koiignore, gitignore] = Source::ALL.map(|source| ours_as::<K>(case, source, spell));
+    assert_eq!(
+        koiignore, gitignore,
+        "the same lines in .koiignore and .gitignore files"
+    );
+    gitignore
+}
+
+fn ours_as<K: NameKey>(case: &Case, source: Source, spell: fn(&str) -> String) -> Vec<Verdict> {
     let respell = |path: &[String]| -> Vec<String> { path.iter().map(|n| spell(n)).collect() };
     let mut matcher = Matcher::<K>::new(LocalRules::default());
     for (dir, text) in &case.files {
         let rules = RuleFile::parse(spell(text).as_bytes());
-        matcher.set_rules(&respell(dir), Some(rules), []);
+        matcher.set_rules(&respell(dir), source, Some(rules), []);
     }
     case.entries
         .iter()
         .map(|(path, kind)| match matcher.status(&respell(path), *kind) {
             Status::Included => None,
-            Status::Excluded(Reason::Rule { depth, line }) => Some((depth, line)),
+            Status::Excluded(Reason::Rule {
+                source: by,
+                depth,
+                line,
+            }) if by == source => Some((depth, line)),
             Status::Excluded(reason) => panic!("{path:?} excluded by {reason:?}"),
         })
         .collect()

@@ -5,7 +5,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use koidrive_ignore::{Scope, Status};
+use koidrive_ignore::{Scope, Source, Status};
 
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
@@ -2262,11 +2262,12 @@ impl Trees {
         self.rules_changed.insert(Vec::new());
     }
 
-    /// Sets the rules of the `.koiignore` file in the folder at `dir`, the names from the root to
-    /// it, or removes them with `None`. The driver parses each rules file it observes on this
-    /// device's disk and passes the rules here with the observation.
-    pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], rules: Option<RuleFile>) {
-        self.ignore.set_rules(dir, rules, std::iter::empty());
+    /// Sets the rules of the rules file of kind `source` in the folder at `dir`, the names from the
+    /// root to it, or removes them with `None`. The driver parses each rules file it observes on
+    /// this device's disk and passes the rules here with the observation.
+    pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], source: Source, rules: Option<RuleFile>) {
+        self.ignore
+            .set_rules(dir, source, rules, std::iter::empty());
         self.relink = true;
         (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
     }
@@ -3967,18 +3968,28 @@ impl Trees {
 
     fn kept_rules(&self, parent: &str, path: &[&str]) -> Vec<KeptRules> {
         (0..path.len())
-            .map(|depth| KeptRules {
-                file: (self.rules_file_above(parent, depth)).map(|id| KeptRulesFile {
-                    on_server: self.r.get(&id).is_some(),
-                    id,
-                }),
-                rules: (self.ignore.rules_file(&path[..depth]))
-                    .map(|rules| rules.source().to_vec()),
+            .map(|depth| {
+                let file = |source| {
+                    (self.rules_file_above(parent, depth, source)).map(|id| KeptRulesFile {
+                        on_server: self.r.get(&id).is_some(),
+                        id,
+                    })
+                };
+                let rules = |source| {
+                    (self.ignore.rules_file(&path[..depth], source))
+                        .map(|rules| rules.source().to_vec())
+                };
+                KeptRules {
+                    file: file(Source::Koiignore),
+                    rules: rules(Source::Koiignore),
+                    gitignore_file: file(Source::Gitignore),
+                    gitignore_rules: rules(Source::Gitignore),
+                }
             })
             .collect()
     }
 
-    fn rules_file_above(&self, parent: &str, depth: usize) -> Option<NodeId> {
+    fn rules_file_above(&self, parent: &str, depth: usize, source: Source) -> Option<NodeId> {
         let mut folders = Vec::new();
         let mut current = parent;
         for _ in 0..=self.l.len() {
@@ -3990,7 +4001,7 @@ impl Trees {
         }
         folders.reverse();
         let folder = *folders.get(depth)?;
-        (self.local_holders(folder, koidrive_ignore::RULES_FILE))
+        (self.local_holders(folder, source.file_name()))
             .find(|id| (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::File))
             .cloned()
     }
@@ -4003,17 +4014,35 @@ impl Trees {
         }
         let mut without_others = self.ignore.clone();
         for (depth, (now, then)) in now.iter().zip(&cause.rules).enumerate() {
-            if now.rules == then.rules || self.changed_by_the_person(now, then) {
-                continue;
+            let kinds_of = |rules: &KeptRules| {
+                [
+                    (Source::Koiignore, rules.file.clone(), rules.rules.clone()),
+                    (
+                        Source::Gitignore,
+                        rules.gitignore_file.clone(),
+                        rules.gitignore_rules.clone(),
+                    ),
+                ]
+            };
+            for ((source, now_file, now_rules), (_, then_file, then_rules)) in
+                kinds_of(now).into_iter().zip(kinds_of(then))
+            {
+                if now_rules == then_rules || self.changed_by_the_person(&now_file, &then_file) {
+                    continue;
+                }
+                let rules = then_rules.as_deref().map(RuleFile::parse);
+                without_others.set_rules(&path[..depth], source, rules, std::iter::empty());
             }
-            let rules = then.rules.as_deref().map(RuleFile::parse);
-            without_others.set_rules(&path[..depth], rules, std::iter::empty());
         }
         !excluded(&without_others, &path, kinds)
     }
 
-    fn changed_by_the_person(&self, now: &KeptRules, then: &KeptRules) -> bool {
-        match (&now.file, &then.file) {
+    fn changed_by_the_person(
+        &self,
+        now: &Option<KeptRulesFile>,
+        then: &Option<KeptRulesFile>,
+    ) -> bool {
+        match (now, then) {
             (Some(file), _) => self.edited(&file.id) || self.local_changes.contains(&file.id),
             (None, Some(file)) if self.l.get(&file.id).is_some() => {
                 self.local_changes.contains(&file.id)
