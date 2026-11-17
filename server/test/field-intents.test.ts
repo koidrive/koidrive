@@ -148,8 +148,36 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     expect((await stateOf(space, plain))!.intents!.content!.appliedAtMs).toBe(done.committedAtMs);
   });
 
-  it("waits for its clock to pass the head's stamp before it commits, and stamps one past the head after 50 ms behind it", async () => {
+  it("waits for its clock to pass the head's stamp before it commits, and answers RETRY_LATER when that takes more than 50 ms", async () => {
     const { space, a, root } = await setup();
+    const waits: number[] = [];
+    let [atMs, ticks] = [5_000_000_000_000, true];
+    await runInDurableObject(space.stub, (instance: SpaceDO) => {
+      instance.clock = () => atMs;
+      instance.sleep = async (ms) => {
+        waits.push(ms);
+        if (ticks) atMs += ms;
+      };
+    });
+    const first = await a.commit([op.mkdir(uuidv7(), root, "one")]);
+    const second = await a.commit([op.mkdir(uuidv7(), root, "two")]);
+    expect(waits).toEqual([1]);
+    expect([second.committedAtMs - first.committedAtMs, second.committedAtMs]).toEqual([1n, BigInt(atMs)]);
+    const [commitId, ops] = [uuidv7(), [op.mkdir(uuidv7(), root, "three")]];
+    atMs -= 51;
+    expect(await a.commitRaw(ops, { commitId })).toMatchObject({ case: "error", value: { code: Error_Code.RETRY_LATER, retryAfterMs: 52n } });
+    atMs += 30;
+    ticks = false;
+    expect(await a.commitRaw(ops, { commitId })).toMatchObject({ case: "error", value: { code: Error_Code.RETRY_LATER, retryAfterMs: 22n } });
+    expect(waits).toEqual([1, 22, 22]);
+    ticks = true;
+    const third = await a.commit(ops, { commitId });
+    expect(waits).toEqual([1, 22, 22, 22]);
+    expect(third.committedAtMs - second.committedAtMs).toBe(1n);
+  });
+
+  it("keeps arrival order among commits that wait for the clock", async () => {
+    const { space, a, b, root } = await setup();
     const waits: number[] = [];
     let atMs = 5_000_000_000_000;
     await runInDurableObject(space.stub, (instance: SpaceDO) => {
@@ -157,16 +185,63 @@ describe("RFC 0028 section 3.1: recording intents", () => {
       instance.sleep = async (ms) => {
         waits.push(ms);
         atMs += ms;
+        await new Promise((resolve) => setTimeout(resolve, 200));
       };
     });
-    const first = await a.commit([op.mkdir(uuidv7(), root, "one")]);
-    const second = await a.commit([op.mkdir(uuidv7(), root, "two")]);
+    await a.commit([op.mkdir(uuidv7(), root, "one")]);
+    const waiting = a.commit([op.mkdir(uuidv7(), root, "two")]);
+    while (waits.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    const later = await Promise.all([waiting, b.commit([op.mkdir(uuidv7(), root, "three")])]);
+    expect(waits).toEqual([1, 1]);
+    expect(later.map((done) => done.seq - later[0]!.seq)).toEqual([0n, 1n]);
+    expect(later[1]!.committedAtMs - later[0]!.committedAtMs).toBe(1n);
+  });
+
+  it("clamps a replay's applied time to the stamp its commit took after waiting", async () => {
+    const { space, a, values, root } = await setup();
+    let atMs = 5_000_000_000_000;
+    await runInDurableObject(space.stub, (instance: SpaceDO) => freezeClock(instance, atMs));
+    await runInDurableObject(space.stub, (instance: SpaceDO) => {
+      instance.sleep = async (ms) => {
+        atMs += ms;
+        instance.clock = () => atMs;
+      };
+    });
+    await a.commit([op.mkdir(uuidv7(), root, "one")]);
+    const nodeId = await file(a, root, "replayed.txt", values[0]!, intent(a.session.deviceId, { replay: true, appliedAtMs: BigInt(atMs + 10_000) }));
+    const { intents } = (await stateOf(space, nodeId))!;
+    expect(intents!.content!.appliedAtMs).toBe(BigInt(atMs));
+    expect(atMs).toBe(5_000_000_000_001);
+  });
+
+  it("stamps a purge commit past the head, and keeps the trash when the clock is too far behind", async () => {
+    const { space, a, values, root } = await setup();
+    const gone = await file(a, root, "gone.txt", values[0]!);
+    const deleted = await a.commit([sent(del(gone), intent(a.session.deviceId))]);
+    const headMs = Number(deleted.committedAtMs);
+    let atMs = headMs - 60;
+    const waits: number[] = [];
+    const purge = () =>
+      runInDurableObject(space.stub, async (instance: SpaceDO, state) => {
+        instance.clock = () => atMs;
+        instance.sleep = async (ms) => {
+          waits.push(ms);
+          atMs += ms;
+        };
+        try {
+          const report = await instance.collectGarbage(Date.now() + 31 * DAY_MS);
+          const stamp = state.storage.sql.exec("SELECT committed_at_ms FROM commits ORDER BY seq DESC LIMIT 1").one().committed_at_ms;
+          return { purged: report.purgedNodes, stamp: Number(stamp) };
+        } catch (error) {
+          return { code: (error as { code?: number }).code };
+        }
+      });
+    expect(await purge()).toEqual({ code: Error_Code.RETRY_LATER });
+    expect((await stateOf(space, gone))!.status).toBe(NodeStatus.TRASHED);
+    atMs = headMs;
+    expect(await purge()).toEqual({ purged: 1, stamp: headMs + 1 });
     expect(waits).toEqual([1]);
-    expect(second.committedAtMs).toBe(BigInt(atMs));
-    atMs = 1_000;
-    const third = await a.commit([op.mkdir(uuidv7(), root, "three")]);
-    expect(waits).toEqual([1, 50]);
-    expect([second.committedAtMs - first.committedAtMs, third.committedAtMs - second.committedAtMs]).toEqual([1n, 1n]);
+    expect(await stateOf(space, gone)).toBeUndefined();
   });
 
   it("stamps concurrent commits in seq order, each after the one before and none ahead of the clock", async () => {
@@ -548,19 +623,29 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     expect(await stateOf(space, nodeId)).toBeUndefined();
   });
 
-  it("places a create or move into a purged folder under the nearest live ancestor of its last parent", async () => {
+  it("places a create or move into a purged folder under the nearest live ancestor of its last parent, and reports that place", async () => {
     const { space, a, b, values, root } = await setup();
     const [kept, gone, inner] = [uuidv7(), uuidv7(), uuidv7()];
     await a.commit([op.mkdir(kept, root, "Kept"), op.mkdir(gone, kept, "Gone"), op.mkdir(inner, gone, "Inner")]);
     const loose = await file(a, root, "loose.txt", values[0]!);
+    const legacy = await file(a, root, "legacy.txt", values[1]!);
+    await file(a, kept, "new.txt", values[2]!);
     await a.commit([sent(del(gone), intent(a.session.deviceId))]);
     const purged = await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS));
     expect(purged.purgedNodes).toBe(2);
-    const created = await file(b, inner, "new.txt", values[1]!);
+    const reported = (done: Awaited<ReturnType<TestClient["commit"]>>, nodeId: string) => done.changes.map(({ change }) => change).find((change) => change.case === "node" && change.value.nodeId === nodeId)?.value;
+    const created = uuidv7();
+    const clashed = await b.commit([sent(op.create(created, inner, "new.txt", values[3]!), intent(b.session.deviceId))]);
+    expect(clashed.results[0]!.code).toBe(OpResult_Code.APPLIED_RENAMED);
+    expect(clashed.results[0]!.name).not.toBe("new.txt");
+    expect(reported(clashed, created)).toMatchObject({ parentId: kept, name: clashed.results[0]!.name });
     expect((await stateOf(space, created))!.parentId).toBe(kept);
     const moved = await b.commit([sent(op.move(loose, gone, "loose.txt"), intent(b.session.deviceId))]);
     expect(moved.results[0]!.code).toBe(OpResult_Code.APPLIED);
-    expect((await stateOf(space, loose))!.parentId).toBe(kept);
+    expect(reported(moved, loose)).toMatchObject({ parentId: kept, name: "loose.txt" });
+    const old = await b.commit([op.move(legacy, inner, "legacy.txt")]);
+    expect(old.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect(reported(old, legacy)).toMatchObject({ parentId: kept, name: "legacy.txt" });
   });
 });
 

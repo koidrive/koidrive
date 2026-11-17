@@ -112,6 +112,12 @@ export const MAX_CLIENT_FRAME = 8 * 1024 * 1024;
 const MAX_REQ_ID = 2n ** 64n - 1n;
 const RETRY_LATER_MS = 60_000;
 const CLOCK_WAIT_MS = 50;
+
+class ClockBehind extends Error {
+  constructor(readonly waitMs: number) {
+    super("the clock reads no later than the head's stamp");
+  }
+}
 const PAGE_ENVELOPE_BYTES = 1024;
 const GC_BATCH = 1000;
 const GC_RETRY_MS = 10 * 60_000;
@@ -321,6 +327,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     snapshotPageNodes = 1000;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
+    private stampTurn: Promise<unknown> = Promise.resolve();
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
@@ -823,18 +830,30 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return Number(this.tokenAt(this.headSeq).committedAtMs);
     }
 
-    private async waitForClockPastHead(): Promise<void> {
-      for (let waited = 0; waited < CLOCK_WAIT_MS; ) {
-        const now = this.clock();
-        const ms = Math.min(this.headStampMs() + 1 - now, CLOCK_WAIT_MS - waited);
-        if (ms <= 0) return;
-        await this.sleep(ms);
-        waited = this.clock() > now ? waited + ms : CLOCK_WAIT_MS;
-      }
+    private stampAfterHead(): number {
+      const nowMs = this.clock();
+      const headMs = this.headStampMs();
+      if (nowMs <= headMs) throw new ClockBehind(headMs + 1 - nowMs);
+      return nowMs;
     }
 
-    private stampAfterHead(atMs: number): number {
-      return Math.max(atMs, this.headStampMs() + 1);
+    private inStampOrder<T>(append: () => T): Promise<T> {
+      const turn = this.stampTurn.then(async () => {
+        for (let waitedMs = 0; ; ) {
+          try {
+            return append();
+          } catch (error) {
+            if (!(error instanceof ClockBehind)) throw error;
+            if (waitedMs + error.waitMs > CLOCK_WAIT_MS) {
+              throw new CallFailure(Error_Code.RETRY_LATER, "the server clock is behind its newest commit; retry later", [], Math.min(error.waitMs, RETRY_LATER_MS));
+            }
+            await this.sleep(error.waitMs);
+            waitedMs += error.waitMs;
+          }
+        }
+      });
+      this.stampTurn = turn.catch(() => undefined);
+      return turn;
     }
 
     private tokenAt(seq: number): { commitId: string; committedAtMs: bigint } {
@@ -926,15 +945,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
       }
       const confirmed = await this.confirmUploads(referenced, commit.receipts, this.clock());
-      await this.waitForClockPastHead();
 
-      const done = this.db.transactionSync((): { result: CommitResult; record?: CommitRecord; rearm?: boolean } => {
+      const done = await this.inStampOrder(() => this.db.transactionSync((): { result: CommitResult; record?: CommitRecord; rearm?: boolean } => {
         if (this.revoked(session.deviceId)) fail(Error_Code.UNAUTHENTICATED, "device revoked");
         this.checkOpen();
         const again = this.checkCommitOrder(session.deviceId, commit, digests);
         if (again) return { result: again };
         const head = this.headSeq;
-        const committedAtMs = this.stampAfterHead(this.clock());
+        const committedAtMs = this.stampAfterHead();
 
         const missing: Uint8Array[] = [];
         for (const [hex, chunk] of referenced) {
@@ -986,7 +1004,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           DIGEST_VERSION,
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
-      });
+      }));
       if (done.rearm || !done.record || this.alarmStale) await this.armAfterCommit();
       return { result: done.result, record: done.record };
     }
@@ -1215,10 +1233,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     async collectGarbage(nowMs: number): Promise<GcReport> {
-      if (nowMs <= this.headStampMs()) await this.waitForClockPastHead();
       const settings = this.settings();
       const spaceId = this.spaceId;
-      const purge = this.db.transactionSync(() => {
+      const purge = await this.inStampOrder(() => this.db.transactionSync(() => {
         const expired = rows<VersionRow>(
           this.sql.exec(
             "SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL AND superseded_at_ms < ? LIMIT ?",
@@ -1263,13 +1280,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         let record: CommitRecord | undefined;
         if (changes.length > 0) {
           const seq = BigInt(this.headSeq + 1);
-          const committedAtMs = this.stampAfterHead(nowMs);
+          const committedAtMs = this.stampAfterHead();
           record = create(CommitRecordSchema, { seq, commitId: uuidv7(committedAtMs), committedAtMs: BigInt(committedAtMs), changes });
           this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(committedAtMs) }), null);
           noteCommitted(this.sql, record);
         }
         return { expiredVersions: expired.length, purgedNodes: changes.length, record };
-      });
+      }));
       if (purge.record) await this.broadcast(purge.record);
 
       const marked = this.db.transactionSync(() => {
