@@ -371,7 +371,7 @@ impl Drop for Unlinking<'_> {
             folder.unlink = Some(Unlink::Abandoned);
             folder.status.halt(
                 Halted::Unlink,
-                "unlinking the folder did not finish; unlink it again to finish".into(),
+                crate::lifecycle::UNFINISHED_UNLINK.into(),
                 crate::lifecycle::Recovery::Unlink,
             );
             drop(folders);
@@ -622,9 +622,7 @@ impl Driver {
                 let mut status = folder.status.lock().unwrap().clone();
                 if folder.unlink == Some(Unlink::Abandoned) {
                     status.state = FolderState::Halted;
-                    status.problem = Some(
-                        "unlinking the folder did not finish; unlink it again to finish".into(),
-                    );
+                    status.problem = Some(crate::lifecycle::UNFINISHED_UNLINK.into());
                 }
                 if !matches!(
                     status.state,
@@ -1350,14 +1348,12 @@ impl Driver {
             .map_err(store_error(&store_path))?;
         crate::timing::Timing::initialize(&store_path, link.linked_at_ms, &self.inner.telemetry);
         tracing::info!(space_id = link.space_id, path = %koidrive_fs::quoted(&link.root), "linked a folder");
-        let status = Arc::new(
-            crate::lifecycle::Lifecycle::open(
-                &store_path,
-                folder_status(&link, None, 0, 0),
-                self.inner.telemetry.clone(),
-            )
-            .map_err(io_error(&store_path))?,
-        );
+        let status = Arc::new(crate::lifecycle::Lifecycle::open(
+            &store_path,
+            folder_status(&link, None, 0, 0),
+            self.inner.telemetry.clone(),
+        ));
+        status.settle_unreadable();
         let linked = roots(&folders);
         let mut folder = Folder {
             linked_started: Some(linked_started),
@@ -1369,7 +1365,7 @@ impl Driver {
             progress: Arc::default(),
         };
         drop(lock);
-        if self.syncs() {
+        if self.syncs() && !folder.status.needs_restart() {
             self.spawn(&mut folder, &credential, linked);
         }
         folders.insert(space.space_id, folder);
@@ -2229,6 +2225,7 @@ fn load_folders(
     Ok(read_folders(paths, telemetry, |path| Store::open(path))?
         .into_iter()
         .map(|(link, status)| {
+            status.settle_unreadable();
             (
                 link.space_id.clone(),
                 Folder {
@@ -2285,14 +2282,11 @@ fn read_folders(
             tracing::warn!(path = %koidrive_fs::quoted(&path), "a store records no linked folder; ignoring it");
             continue;
         };
-        let status = Arc::new(
-            crate::lifecycle::Lifecycle::open(
-                &path,
-                folder_status(&link, cursor, nodes, questions as u64),
-                telemetry.clone(),
-            )
-            .map_err(io_error(&path))?,
-        );
+        let status = Arc::new(crate::lifecycle::Lifecycle::open(
+            &path,
+            folder_status(&link, cursor, nodes, questions as u64),
+            telemetry.clone(),
+        ));
         folders.push((link, status));
     }
     Ok(folders)
@@ -3566,14 +3560,223 @@ mod tests {
         drop(driver);
         let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
         fs::write(record, b"not json").unwrap();
-        assert!(matches!(
-            Driver::open(paths.clone()),
-            Err(DriverError::Io { .. })
-        ));
-        assert!(matches!(
-            Driver::linked_folders(&paths),
-            Err(DriverError::Io { .. })
-        ));
+        let listed = Driver::linked_folders(&paths).unwrap();
+        assert_eq!(listed[0].state, FolderState::Halted);
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_eq!(driver.status().folders[0].state, FolderState::Halted);
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_unlink_whose_record_became_unreadable_waits_to_be_finished_not_restarted() {
+        for lost in [false, true] {
+            an_unlink_whose_record_is_damaged_waits(lost).await;
+        }
+    }
+
+    async fn an_unlink_whose_record_is_damaged_waits(lost: bool) {
+        let (_dir, paths, root) = profile(&[]);
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        fs::write(record.with_file_name("unlinking"), b"").unwrap();
+        match lost {
+            true => drop(fs::remove_file(&record)),
+            false => fs::write(&record, b"not json").unwrap(),
+        }
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        let status = driver.status().folders[0].clone();
+        assert_eq!(status.state, FolderState::Halted);
+        assert_eq!(
+            status.problem.as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await;
+        assert!(
+            restarted.is_err() || restarted.unwrap().state == FolderState::Halted,
+            "a restart lifted an unfinished unlink"
+        );
+        assert!(!matches!(claim::owner(&root), Ok(Some(_))));
+        driver.unlink(&root).await.unwrap();
+        assert!(driver.status().folders.is_empty());
+        assert!(!record.parent().unwrap().exists());
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_unlink_leaves_no_marker_to_block_a_later_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        eventually("the folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        let blocked = record.with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(driver.unlink(&root).await.is_err());
+        fs::remove_dir(&blocked).unwrap();
+        driver.stop().await;
+        drop(driver);
+        assert!(!record.with_file_name("unlinking").exists());
+
+        fs::write(&record, br#"{"halt":"#).unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_ne!(
+            driver.status().folders[0].problem.as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await.unwrap();
+        assert_ne!(restarted.state, FolderState::Halted);
+        eventually("the restarted folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_retry_of_an_unfinished_unlink_keeps_it_unfinished() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
+        drop(Driver::open(paths.clone()).unwrap());
+        fs::write(record.with_file_name("unlinking"), b"").unwrap();
+        fs::write(&record, br#"{"halt":"#).unwrap();
+        let blocked = record.with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let problem = |driver: &Driver| driver.status().folders[0].problem.clone();
+        assert_eq!(
+            problem(&driver).as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        assert!(driver.unlink(&root).await.is_err());
+        assert!(record.with_file_name("unlinking").exists());
+        drop(driver);
+
+        fs::remove_dir(&blocked).unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_eq!(
+            problem(&driver).as_deref(),
+            Some(crate::lifecycle::UNFINISHED_UNLINK)
+        );
+        let restarted = driver.restart(&root).await;
+        assert!(
+            restarted.is_err() || restarted.unwrap().state == FolderState::Halted,
+            "a restart lifted an unfinished unlink"
+        );
+        driver.unlink(&root).await.unwrap();
+        assert!(!record.parent().unwrap().exists());
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_lifecycle_record_halts_only_its_folder_until_a_restart() {
+        use crate::health::tests::{named, posthog, with_prefix};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let (broken, healthy) = (base.join("Broken"), base.join("Healthy"));
+        paired(&paths, "d1");
+        linked_to(
+            &paths,
+            &broken,
+            "d1",
+            "0190f0a0-0000-7000-8000-0000000000b1",
+        );
+        linked_to(
+            &paths,
+            &healthy,
+            "d1",
+            "0190f0a0-0000-7000-8000-0000000000b2",
+        );
+        let record = paths
+            .store("0190f0a0-0000-7000-8000-0000000000b1")
+            .unwrap()
+            .with_file_name("lifecycle.json");
+        fs::write(&record, br#"{"halt":null,"ro"#).unwrap();
+        let halted = Failure::Halted(Halted::Store);
+        let counted = || {
+            (failures::take_counted_here().get(&halted))
+                .copied()
+                .unwrap_or(0)
+        };
+        counted();
+
+        let listed = Driver::linked_folders(&paths).unwrap();
+        let state = |folders: &[FolderStatus], space: &str| {
+            (folders
+                .iter()
+                .find(|folder| folder.space_id == space)
+                .unwrap())
+            .clone()
+        };
+        assert_eq!(
+            state(&listed, "0190f0a0-0000-7000-8000-0000000000b1").state,
+            FolderState::Halted
+        );
+        assert_eq!(counted(), 0, "a listing counts no halt");
+        drop(Driver::open(paths.clone()).unwrap());
+        assert_eq!(counted(), 1);
+        let recorder = koidrive_telemetry::Recorder::on();
+        let driver = Driver::open_with_telemetry(paths, recorder.clone()).unwrap();
+        assert_eq!(counted(), 0, "a halt is counted once");
+        driver.start();
+        let problem = state(
+            &driver.status().folders,
+            "0190f0a0-0000-7000-8000-0000000000b1",
+        )
+        .problem
+        .unwrap();
+        assert!(
+            problem.contains("lifecycle.json") && problem.contains("koi folder restart"),
+            "{problem}"
+        );
+        eventually("the healthy folder is claimed", || {
+            claim::owner(&healthy).unwrap().is_some()
+        })
+        .await;
+        assert_ne!(
+            state(
+                &driver.status().folders,
+                "0190f0a0-0000-7000-8000-0000000000b2"
+            )
+            .state,
+            FolderState::Halted
+        );
+        assert!(claim::owner(&broken).unwrap().is_none());
+
+        driver.record_health();
+        let events = posthog(recorder.take());
+        let report = named(&events, "hourly_report")[0];
+        assert_eq!(report["l.sync.halted"], 1);
+        assert_eq!(with_prefix(report, "l.halted."), [("l.halted.store", 1)]);
+
+        let restarted = driver.restart(&broken).await.unwrap();
+        assert_ne!(restarted.state, FolderState::Halted);
+        eventually("the restarted folder is claimed", || {
+            claim::owner(&broken).unwrap().is_some()
+        })
+        .await;
+        let cleared = named(&posthog(recorder.take()), "problem_cleared")
+            .into_iter()
+            .map(|event| event["problem"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(cleared, ["halted.store"]);
+        driver.stop().await;
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&record).unwrap()).unwrap();
     }
 
     #[tokio::test]

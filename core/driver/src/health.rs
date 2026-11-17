@@ -127,7 +127,7 @@ pub(crate) mod tests {
         });
         fs::write(store.with_file_name("lifecycle.json"), stored.to_string()).unwrap();
         let recorder = Recorder::on();
-        let lifecycle = Lifecycle::open(&store, stopped(), recorder.clone()).unwrap();
+        let lifecycle = Lifecycle::open(&store, stopped(), recorder.clone());
         for hour in 0..=28 {
             let at = halted_at + hour * 3_600;
             record(&recorder, at, false, &[lifecycle.health(at)]);

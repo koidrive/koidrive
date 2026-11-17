@@ -316,14 +316,11 @@ mod tests {
             "local_entries": null, "questions": 0, "problem": null,
         }))
         .unwrap();
-        let status = Arc::new(
-            Lifecycle::open(
-                &dir.path().join("store.sqlite"),
-                status,
-                koidrive_telemetry::Recorder::off(),
-            )
-            .unwrap(),
-        );
+        let status = Arc::new(Lifecycle::open(
+            &dir.path().join("store.sqlite"),
+            status,
+            koidrive_telemetry::Recorder::off(),
+        ));
         let mut tracker = Tracker::default();
         let progressed = Arc::new(watch::Sender::new(()));
         tracker.publish_to(status.clone(), progressed, sum.clone(), space.into());

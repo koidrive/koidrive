@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LockResult, Mutex, MutexGuard};
 
 use koidrive_telemetry::schema::Age;
@@ -35,6 +35,41 @@ struct Halt {
     since: u64,
 }
 
+pub(crate) const UNFINISHED_UNLINK: &str =
+    "unlinking the folder did not finish; unlink it again to finish";
+
+fn unreadable(path: &Path, error: &io::Error) -> Checkpoint {
+    tracing::warn!(path = %koidrive_fs::quoted(path), %error, "a folder's lifecycle record cannot be read");
+    let since = (fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok())
+    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+    .map_or_else(koidrive_telemetry::now, |since| since.as_secs());
+    let halt = match path.with_file_name(UNLINKING).exists() {
+        true => Halt {
+            problem: UNFINISHED_UNLINK.into(),
+            recovery: Recovery::Unlink,
+            why: Some(Halted::Unlink),
+            since,
+        },
+        false => Halt {
+            problem: format!(
+                "the folder's sync record {} can't be read ({error}); run koi folder restart to check the folder and sync it again",
+                koidrive_fs::quoted(path)
+            ),
+            recovery: Recovery::Restart,
+            why: Some(Halted::Store),
+            since,
+        },
+    };
+    Checkpoint {
+        halt: Some(halt),
+        ..Checkpoint::default()
+    }
+}
+
+const UNLINKING: &str = "unlinking";
+
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
@@ -64,31 +99,36 @@ pub(crate) struct Lifecycle {
     checkpoint: Mutex<Checkpoint>,
     pending: AtomicU64,
     telemetry: Recorder,
+    unreadable: AtomicBool,
 }
 
 impl Lifecycle {
-    pub(crate) fn open(
-        store: &Path,
-        mut status: FolderStatus,
-        telemetry: Recorder,
-    ) -> io::Result<Self> {
+    pub(crate) fn open(store: &Path, mut status: FolderStatus, telemetry: Recorder) -> Self {
         let path = store.with_file_name("lifecycle.json");
-        let checkpoint: Checkpoint = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Checkpoint::default(),
-            Err(error) => return Err(error),
+        let read = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && !path.with_file_name(UNLINKING).exists() =>
+            {
+                Ok(Checkpoint::default())
+            }
+            Err(error) => Err(error),
         };
+        let unreadable_record = read.is_err();
+        let checkpoint = read.unwrap_or_else(|error| unreadable(&path, &error));
         if let Some(halt) = &checkpoint.halt {
             status.state = FolderState::Halted;
             status.problem = Some(halt.problem.clone());
         }
-        Ok(Self {
+        Self {
             path,
             status: Mutex::new(status),
             checkpoint: Mutex::new(checkpoint),
             pending: AtomicU64::new(0),
             telemetry,
-        })
+            unreadable: AtomicBool::new(unreadable_record),
+        }
     }
 
     pub(crate) fn lock(&self) -> LockResult<MutexGuard<'_, FolderStatus>> {
@@ -117,6 +157,7 @@ impl Lifecycle {
         {
             return Err(io::Error::other("the folder's unlink is unfinished"));
         }
+        self.forget_unlink()?;
         if checkpoint.root != Some(root) || checkpoint.halt.is_some() {
             let next = Checkpoint {
                 root: Some(root),
@@ -143,6 +184,7 @@ impl Lifecycle {
             synced: checkpoint.synced,
             ..Checkpoint::default()
         };
+        self.forget_unlink()?;
         self.save(&next)?;
         self.cleared(checkpoint.halt.as_ref());
         *checkpoint = next;
@@ -158,7 +200,7 @@ impl Lifecycle {
         let next = Checkpoint {
             root: checkpoint.root,
             halt: Some(Halt {
-                problem: "unlinking the folder did not finish; unlink it again to finish".into(),
+                problem: UNFINISHED_UNLINK.into(),
                 recovery: Recovery::Unlink,
                 why: Some(Halted::Unlink),
                 since: (checkpoint.halt.as_ref())
@@ -167,9 +209,38 @@ impl Lifecycle {
             }),
             synced: checkpoint.synced,
         };
-        self.save(&next)?;
+        let marker = self.path.with_file_name(UNLINKING);
+        let unfinished = marker.exists();
+        let written = koidrive_state_file::write(&marker, b"").and_then(|()| self.save(&next));
+        if let Err(error) = written {
+            if !unfinished {
+                let _ = self.forget_unlink();
+            }
+            return Err(error);
+        }
         *checkpoint = next;
         Ok(())
+    }
+
+    fn forget_unlink(&self) -> io::Result<()> {
+        let marker = self.path.with_file_name(UNLINKING);
+        match marker.exists() {
+            true => koidrive_state_file::remove_with_legacy_matching(&marker, |_| false),
+            false => Ok(()),
+        }
+    }
+
+    pub(crate) fn settle_unreadable(&self) {
+        if !self.unreadable.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let checkpoint = self.checkpoint.lock().unwrap();
+        if let Some(why) = checkpoint.halt.as_ref().and_then(|halt| halt.why) {
+            failures::failed(Failure::Halted(why));
+        }
+        if let Err(error) = self.save(&checkpoint) {
+            tracing::warn!(path = %koidrive_fs::quoted(&self.path), %error, "a folder's halt could not be saved over its unreadable lifecycle record");
+        }
     }
 
     pub(crate) fn persist(&self) -> io::Result<()> {
@@ -297,7 +368,7 @@ mod tests {
                     "questions":0, "problem":null,
                 }))
                 .unwrap();
-                let lifecycle = Lifecycle::open(&store, status.clone(), Recorder::off()).unwrap();
+                let lifecycle = Lifecycle::open(&store, status.clone(), Recorder::off());
                 let identity = Identity::of(&fs::metadata(dir.path()).unwrap());
                 lifecycle.claimed(identity).unwrap();
                 lifecycle.halt(
@@ -314,7 +385,7 @@ mod tests {
                 }
                 lifecycle.restart().unwrap();
                 drop(lifecycle);
-                let reopened = Lifecycle::open(&store, status, Recorder::off()).unwrap();
+                let reopened = Lifecycle::open(&store, status, Recorder::off());
                 let checkpoint = reopened.checkpoint.lock().unwrap();
                 assert_eq!(checkpoint.halt.as_ref().unwrap().recovery, Recovery::Unlink);
                 assert_eq!(checkpoint.root, Some(identity));
@@ -341,7 +412,7 @@ mod tests {
     fn a_halt_keeps_when_it_began_while_it_repeats_and_across_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
-        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
         lifecycle.halt(Halted::Withdrawn, "moved away".into(), Recovery::Root);
         let began = lifecycle
             .checkpoint
@@ -353,7 +424,7 @@ mod tests {
             .since;
         lifecycle.halt(Halted::Root, "missing".into(), Recovery::Root);
         drop(lifecycle);
-        let reopened = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
         let health = reopened.health(began + 7_200);
         let halt = health.halt.unwrap();
         assert_eq!((halt.why, halt.seconds), (Some(Halted::Root), 7_200));
@@ -364,7 +435,7 @@ mod tests {
     fn an_up_to_date_folder_saves_when_it_was_last_synced_every_ten_minutes() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
-        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
         lifecycle.lock().unwrap().state = FolderState::UpToDate;
         lifecycle.set_pending(5);
         assert_eq!(lifecycle.health(1_000).synced_ago, Some(0));
@@ -375,7 +446,7 @@ mod tests {
         assert_eq!((health.synced_ago, health.pending), (Some(7_400), 5));
         lifecycle.restart().unwrap();
         drop(lifecycle);
-        let reopened = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
         assert_eq!(reopened.health(9_000).synced_ago, Some(7_400));
     }
 
@@ -389,7 +460,7 @@ mod tests {
             "synced": -5,
         });
         fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
-        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
         let now = koidrive_telemetry::now();
         let health = lifecycle.health(now + 60);
         let halt = health.halt.unwrap();
@@ -397,6 +468,80 @@ mod tests {
         assert!((60..120).contains(&halt.seconds), "{}", halt.seconds);
         assert_eq!(health.synced_ago, None);
         assert_eq!(lifecycle.lock().unwrap().state, FolderState::Halted);
+    }
+
+    #[test]
+    fn a_record_with_a_recovery_this_build_does_not_know_halts_its_folder_until_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let record = json!({ "halt": { "problem": "x", "recovery": "Purge" }, "root": null });
+        fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        assert!(lifecycle.needs_restart());
+        let halt = lifecycle.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Store));
+        let problem = lifecycle.lock().unwrap().problem.clone().unwrap();
+        assert!(problem.contains("koi folder restart"), "{problem}");
+        lifecycle.restart().unwrap();
+        assert!(!lifecycle.needs_restart());
+        drop(lifecycle);
+        assert!(!Lifecycle::open(&store, status(), Recorder::off()).needs_restart());
+    }
+
+    #[test]
+    fn an_unlink_whose_record_became_unreadable_stays_an_unlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        lifecycle.begin_unlink().unwrap();
+        drop(lifecycle);
+        fs::write(store.with_file_name("lifecycle.json"), b"{\"halt\":").unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
+        reopened.restart().unwrap();
+        assert!(reopened.needs_restart());
+        assert!(store.with_file_name(UNLINKING).exists());
+        let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Unlink));
+        assert_eq!(
+            reopened.lock().unwrap().problem.as_deref(),
+            Some(UNFINISHED_UNLINK)
+        );
+    }
+
+    #[test]
+    fn a_restart_forgets_an_unlink_that_never_took_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        fs::write(store.with_file_name("lifecycle.json"), b"{}").unwrap();
+        fs::write(store.with_file_name(UNLINKING), b"").unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        lifecycle.halt(
+            Halted::Io,
+            "the folder could not be unlinked".into(),
+            Recovery::Restart,
+        );
+        lifecycle.restart().unwrap();
+        assert!(!store.with_file_name(UNLINKING).exists());
+        fs::write(store.with_file_name("lifecycle.json"), b"not json").unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
+        let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Store));
+    }
+
+    #[test]
+    fn an_unlink_that_failed_to_begin_or_a_later_claim_leaves_no_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let identity = Identity::of(&fs::metadata(dir.path()).unwrap());
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        let blocked = store.with_file_name("lifecycle.json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(lifecycle.begin_unlink().is_err());
+        assert!(!store.with_file_name(UNLINKING).exists());
+        fs::remove_dir(&blocked).unwrap();
+        fs::write(store.with_file_name(UNLINKING), b"").unwrap();
+        lifecycle.claimed(identity).unwrap();
+        assert!(!store.with_file_name(UNLINKING).exists());
     }
 
     #[test]
@@ -408,10 +553,10 @@ mod tests {
             "root": null,
         });
         fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
-        let lifecycle = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
         lifecycle.begin_unlink().unwrap();
         drop(lifecycle);
-        let reopened = Lifecycle::open(&store, status(), Recorder::off()).unwrap();
+        let reopened = Lifecycle::open(&store, status(), Recorder::off());
         let halt = reopened.health(1_000 + 7_200).halt.unwrap();
         assert_eq!((halt.why, halt.seconds), (Some(Halted::Unlink), 7_200));
     }
@@ -423,7 +568,7 @@ mod tests {
         let record = json!({ "halt": { "problem": "missing", "recovery": "Root" }, "root": null });
         fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
         let recorder = Recorder::on();
-        let lifecycle = Lifecycle::open(&store, status(), recorder.clone()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), recorder.clone());
         let halt = lifecycle.health(koidrive_telemetry::now()).halt.unwrap();
         assert_eq!(halt.why, None);
         lifecycle.restart().unwrap();
@@ -435,7 +580,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
         let recorder = Recorder::on();
-        let lifecycle = Lifecycle::open(&store, status(), recorder.clone()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), recorder.clone());
         let identity = Identity::of(&fs::metadata(dir.path()).unwrap());
         lifecycle.claimed(identity).unwrap();
         lifecycle.halt(Halted::Claim, "another device".into(), Recovery::Restart);
@@ -474,7 +619,7 @@ mod unreachable_tests {
             "wait": {"kind": "retry", "until_ms": 1, "unreachable": {"why": "the server's address could not be found"}},
         }))
         .unwrap();
-        let lifecycle = Lifecycle::open(&store, status, Recorder::off()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status, Recorder::off());
         lifecycle.halt(Halted::Io, "the folder is missing".into(), Recovery::Root);
         {
             let status = lifecycle.lock().unwrap();
