@@ -347,6 +347,7 @@ fn commits_state() -> CommitsState {
             },
         )]
         .into(),
+        answer_moves: ["m".into()].into(),
         guard: guard_state(),
     }
 }

@@ -195,6 +195,7 @@ pub struct Commits {
     /// so a create of one that takes a conflict name asks nothing.
     published: TrackedSet<NodeId>,
     given_up: TrackedMap<NodeId, GivenUp>,
+    answer_moves: TrackedSet<NodeId>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
 }
@@ -225,6 +226,7 @@ impl Commits {
             questions: (*self.questions).clone(),
             published: (*self.published).clone(),
             given_up: (*self.given_up).clone(),
+            answer_moves: (*self.answer_moves).clone(),
             guard: self.guard.state(),
         }
     }
@@ -245,6 +247,7 @@ impl Commits {
             questions,
             published,
             given_up,
+            answer_moves,
             guard,
             granted: _,
         } = self;
@@ -262,6 +265,7 @@ impl Commits {
             questions: questions.take_changed().cloned(),
             published: published.take_changes(),
             given_up: given_up.take_changes(),
+            answer_moves: answer_moves.take_changes(),
             guard: guard.take_changes(),
         }
     }
@@ -328,6 +332,7 @@ impl Commits {
             questions,
             published,
             given_up,
+            answer_moves,
             guard,
         } = state;
         Ok(Self {
@@ -344,6 +349,7 @@ impl Commits {
             questions: questions.into(),
             published: published.into(),
             given_up: given_up.into(),
+            answer_moves: answer_moves.into(),
             guard: guard.into(),
             granted: Unstored::default(),
         })
@@ -592,6 +598,7 @@ impl Commits {
         self.aliases.clear();
         self.published.clear();
         self.given_up.clear();
+        self.answer_moves.clear();
         trees.rewound();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
@@ -1218,6 +1225,9 @@ impl Commits {
             .map(|(id, intent)| (id.clone(), intent.clone()))
             .collect();
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
+        if released.is_empty() {
+            self.answer_moves.clear();
+        }
         let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
         let aliased: Vec<&NodeId> = (self.aliases.keys())
             .flat_map(|alias| trees.local_children(alias))
@@ -1278,6 +1288,7 @@ impl Commits {
                     &self.aliases,
                     &restores,
                     &answers,
+                    &self.answer_moves,
                     device_id,
                 )
             };
@@ -1337,6 +1348,21 @@ impl Commits {
             _ => None,
         };
         let mut ops: Vec<proto::Op> = planned.into_iter().chain(answered).collect();
+        if !released.is_empty() {
+            let trashed = |id: &NodeId| {
+                self.given_up.contains_key(id)
+                    || (deletes.iter()).any(|(top, members)| top == id || members.contains(id))
+            };
+            let moved: Vec<NodeId> = (ops.iter())
+                .filter(|op| finish(trees, op).is_none())
+                .filter_map(|op| match &op.op {
+                    Some(op::Op::Move(moved)) => Some(moved.node_id.clone()),
+                    _ => None,
+                })
+                .filter(|id| !answers.contains(id) && !trashed(id))
+                .collect();
+            self.answer_moves.extend(moved);
+        }
         if ops.is_empty() && released.is_empty() {
             let mut bytes = 0;
             let first: Vec<(NodeId, NodeId, String)> = (finishes(trees, &skip, Some(device_id)))
@@ -3442,6 +3468,7 @@ fn plan(
     aliases: &BTreeMap<NodeId, NodeId>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     answers: &BTreeSet<NodeId>,
+    answer_moves: &BTreeSet<NodeId>,
     device_id: &str,
 ) -> (Planned, bool) {
     let mut wants = Vec::new();
@@ -3714,7 +3741,10 @@ fn plan(
             _ => None,
         })
         .collect();
-    scratch.moved = scratch.moves.keys().cloned().collect();
+    scratch.moved = (scratch.moves.keys())
+        .chain(answer_moves)
+        .cloned()
+        .collect();
     scratch.restores = (wants.iter())
         .filter_map(|want| match want {
             Want::Restore { op, .. } if !op.target_parent_id.is_empty() => {
