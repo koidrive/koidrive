@@ -1960,12 +1960,15 @@ impl Commits {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
                         let copied = edited.or_else(|| {
-                            (trees.local().get(id))
-                                .filter(|local| !local.parked)
-                                .map(|local| Shape {
+                            (flight.commit.ops.iter().rev()).find_map(|op| match &op.op {
+                                Some(op::Op::Move(moved)) if moved.node_id == *id => Some(Shape {
+                                    parent: parent(&moved.new_parent_id),
+                                    name: moved.new_name.clone(),
+                                    kind: Kind::File,
                                     content: update.content.clone(),
-                                    ..local.shape.clone()
-                                })
+                                }),
+                                _ => None,
+                            })
                         });
                         synced.set(&outcome.node_id, copied);
                         synced.set(id, None);
