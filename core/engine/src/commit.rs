@@ -4550,6 +4550,7 @@ impl<'a> Scratch<'a> {
                     && moving.contains(current)
             } else {
                 self.restoring.contains(current)
+                    || self.trees.held(current)
                     || moving.contains(current)
                         && (self.in_trash(parent)
                             || !self.stalled && !self.ends.cycles.contains(current))
