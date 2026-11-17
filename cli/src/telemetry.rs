@@ -216,7 +216,7 @@ fn flow() -> Option<SetupFlow> {
 async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     let question = if terminal.setup_guided() {
         terminal.separator();
-        terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.");
+        terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.");
         terminal
             .message("No file names, paths, contents, error messages, server address, or account.");
         terminal.message("Reports carry your IP address, which estimates your country and city.");
@@ -225,7 +225,7 @@ async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
         "Send usage reports?"
     } else {
         terminal.message("Send usage reports to the Koidrive project?");
-        terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, and your OS and Koidrive version.");
+        terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, your server's hourly request counts, and your OS and Koidrive version.");
         terminal.message("They never hold file names, paths, contents, error messages, your server address or your account.");
         terminal.message("They carry your IP address, which estimates your country and city.");
         terminal

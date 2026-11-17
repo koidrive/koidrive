@@ -90,7 +90,7 @@ You need a Cloudflare account, and a Mac with Apple silicon or a Linux machine. 
 
    On macOS, the installer continues into `koi setup` and installs the Mac app. When you run it in an interactive terminal, it configures `PATH` for zsh, bash, or fish. Start a new login shell to run `koi` by name. [Install](docs/guide/install.md) covers opting out and building from source.
 
-2. **Run `koi setup`** if the installer didn't start it. It logs in with Cloudflare, deploys your server or finds it, signs in this machine and links `~/Koidrive`. If your account has no workers.dev subdomain, setup suggests one. [koi setup](docs/guide/koi-setup.md) describes each question.
+2. **Run `koi setup`** if the installer didn't start it. It logs in with Cloudflare, deploys your server or finds it, signs in this machine and links `~/Koidrive`. It also asks whether your machines and your server send anonymous [usage reports](docs/guide/telemetry.md). If your account has no workers.dev subdomain, setup suggests one. [koi setup](docs/guide/koi-setup.md) describes each question.
 
 3. **Add your other machines.** On a machine that is signed in, run `koi device invite`. It prints a command with a pairing code. Run that command on the new machine. On a signed-in Mac, **Settings**, **Account**, **Add a Device…** gives the pairing code too.
 

@@ -79,7 +79,15 @@ A completed duration or rate counts in the hour it completes. Spans can cross an
 - Error messages, log lines, `.koiignore` rules and configuration values, and from a stack trace anything other than the names of Koidrive's own functions.
 - Your host name or user name.
 
-Your own Koidrive server sends nothing to the project. Its Worker logs stay in your Cloudflare account.
+## Your server's report
+
+While reports are on, the Koidrive server your devices use sends one report an hour to the same place. Your devices tell the server their choice each time they renew their sign-in, about every 15 minutes. The server reports while at least one device has reports on and none has them off, so turning reports off on any device stops it within the hour. The report holds:
+
+- How many requests each kind of call got in the hour, such as a file upload, a sign-in or a sync call, by HTTP status, refusal code and what failed inside the server.
+- How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
+- The server's version and the protocol versions it speaks.
+
+Each hour's report carries a new random id, so one hour's report can't be linked to another. It holds no names, paths, contents or ids of files, spaces, devices or people, and not the server's address or your Cloudflare account id. Counting adds a few small requests and storage writes a minute while your server is busy, and nothing while it's idle. Your Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 
