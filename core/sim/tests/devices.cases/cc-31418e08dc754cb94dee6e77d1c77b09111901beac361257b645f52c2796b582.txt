@@ -1,0 +1,1 @@
+cc 31418e08dc754cb94dee6e77d1c77b09111901beac361257b645f52c2796b582 # shrinks to devices = 2, a second loss bootstrap uploads a file again into a folder another device deleted (GUN-956)

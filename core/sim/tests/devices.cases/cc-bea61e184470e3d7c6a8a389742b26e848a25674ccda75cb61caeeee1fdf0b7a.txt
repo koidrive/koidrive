@@ -1,0 +1,1 @@
+cc bea61e184470e3d7c6a8a389742b26e848a25674ccda75cb61caeeee1fdf0b7a # shrinks to devices = 2, a removal not yet taken across a second loss bootstrap (GUN-956)

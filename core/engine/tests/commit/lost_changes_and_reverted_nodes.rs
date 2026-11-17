@@ -2462,3 +2462,67 @@ fn a_folder_another_device_deleted_before_a_loss_that_took_it_stays_deleted() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+fn lose_and_build(trees: &mut Trees) -> Option<proto::Commit> {
+    let untaken = trees.untaken_changes(|_| false);
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        untaken,
+        Default::default(),
+        0,
+        0,
+    );
+    trees.settle();
+    build(&mut Commits::default(), trees, &mut IdGen::new(1))
+}
+
+#[test]
+fn a_file_r_no_longer_holds_is_not_uploaded_again_after_a_loss() {
+    let held = Some(file(ROOT, "a", 1));
+    let mut trees = trees(&[("a", held.clone(), held, None)]);
+    assert_eq!(lose_and_build(&mut trees), None);
+    assert_eq!(trees.class("a"), Class::Remote);
+}
+
+#[test]
+fn a_file_r_no_longer_holds_in_a_folder_another_device_deleted_is_not_uploaded_into_it_after_a_loss() {
+    let held = Some(file("d", "a", 1));
+    let mut trees = trees(&[
+        (
+            "d",
+            Some(dir(ROOT, "d")),
+            Some(dir(ROOT, "d")),
+            Some(trashed(dir(ROOT, "d"))),
+        ),
+        ("a", held.clone(), held, None),
+    ]);
+    assert_eq!(lose_and_build(&mut trees), None);
+    assert_eq!(trees.class("d"), Class::Remote);
+    assert_eq!(trees.class("a"), Class::Remote);
+}
+
+#[test]
+fn a_delete_of_another_device_stays_across_two_losses_before_the_device_takes_it() {
+    let held = Some(file(ROOT, "a", 1));
+    let mut trees = trees(&[("a", held.clone(), held, Some(trashed(file(ROOT, "a", 1))))]);
+    for _ in 0..2 {
+        let untaken = trees.untaken_changes(|_| false);
+        trees.remove_remote("a");
+        trees.forget_lost(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            untaken,
+            Default::default(),
+            0,
+            0,
+        );
+        trees.settle();
+    }
+    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(build(&mut Commits::default(), &mut trees, &mut IdGen::new(1)), None);
+}
