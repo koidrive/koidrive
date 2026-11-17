@@ -2446,7 +2446,11 @@ describe("chunk bundles", () => {
       } as unknown as Env, {} as ExecutionContext);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), failing);
-    expect(sent.results.map((result) => [result.status, result.error?.code])).toEqual([[429, Error_Code.RETRY_LATER], [503, Error_Code.RETRY_LATER], [200, undefined]]);
+    expect(sent.results.map((result) => [result.status, result.error?.code, result.error?.cause])).toEqual([
+      [429, Error_Code.RETRY_LATER, Error_Cause.R2_RATE_LIMITED],
+      [503, Error_Code.RETRY_LATER, Error_Cause.EXCEPTION],
+      [200, undefined, undefined],
+    ]);
     expect(await env.BUCKET.head(keys[2]!)).not.toBeNull();
   });
 
