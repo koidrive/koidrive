@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 camino = "1"
 determinator = "0.13"
+globset = "0.4"
 guppy = "0.19"
 serde = { version = "1", features = ["derive"] }
 toml = "1"

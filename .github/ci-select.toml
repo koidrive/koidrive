@@ -119,6 +119,10 @@ globs = [
   "scripts/test-mutations.py",
 ]
 
+[[read]]
+globs = ["core/{chunk,driver,engine,ffi,fs,ignore,net,proto,store,telemetry}/src/**"]
+by = ["koidrive-fs"]
+
 [job.rust]
 packages = "any"
 except = ["koidrive-driver", "koidrive-engine", "koidrive-sim"]

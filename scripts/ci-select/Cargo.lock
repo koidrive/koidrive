@@ -89,6 +89,7 @@ version = "0.0.0"
 dependencies = [
  "camino",
  "determinator",
+ "globset",
  "guppy",
  "serde",
  "toml",

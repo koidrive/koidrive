@@ -6,6 +6,7 @@ use determinator::rules::{
     DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathMatch, PathRule,
     RuleIndex,
 };
+use globset::{Glob, GlobSetBuilder};
 use guppy::MetadataCommand;
 use guppy::graph::cargo::CargoOptions;
 use guppy::graph::feature::StandardFeatures;
@@ -20,7 +21,16 @@ use std::{env, fs};
 #[serde(deny_unknown_fields)]
 struct Config {
     path: Vec<PathEntry>,
+    #[serde(default)]
+    read: Vec<Read>,
     job: BTreeMap<String, Job>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Read {
+    globs: Vec<String>,
+    by: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -107,10 +117,40 @@ fn outcome(matched: PathMatch) -> PathOutcome {
     }
 }
 
+fn tests(job: &Job, package: &str) -> bool {
+    match &job.packages {
+        Packages::Any(_) => !job.except.iter().any(|name| name == package),
+        Packages::Named(packages) => packages.iter().any(|name| name == package),
+        Packages::None => false,
+    }
+}
+
+fn reads(config: &Config, changed: &[&str]) -> Result<Vec<(String, String)>, String> {
+    let mut found = Vec::new();
+    for read in &config.read {
+        let mut globs = GlobSetBuilder::new();
+        for glob in &read.globs {
+            globs.add(Glob::new(glob).map_err(|error| format!("ci-select config: {error}"))?);
+        }
+        let globs = globs
+            .build()
+            .map_err(|error| format!("ci-select config: {error}"))?;
+        for path in changed.iter().filter(|path| globs.is_match(path)) {
+            found.extend(
+                read.by
+                    .iter()
+                    .map(|package| (path.to_string(), package.clone())),
+            );
+        }
+    }
+    Ok(found)
+}
+
 fn select(
     config: &Config,
     affected: &BTreeSet<String>,
     paths: &[(String, PathOutcome)],
+    reads: &[(String, String)],
 ) -> BTreeMap<String, Option<String>> {
     config
         .job
@@ -131,19 +171,24 @@ fn select(
                     _ => None,
                 })
             };
+            let by_read = || {
+                reads
+                    .iter()
+                    .find(|(_, package)| tests(job, package))
+                    .map(|(path, package)| format!("the tests of {package} read {path}"))
+            };
             let by_package = || {
                 affected
                     .iter()
-                    .find(|package| match &job.packages {
-                        Packages::Any(_) => !job.except.contains(package),
-                        Packages::Named(packages) => packages.contains(package),
-                        Packages::None => false,
-                    })
+                    .find(|package| tests(job, package))
                     .map(|package| format!("the change affects {package}"))
             };
             (
                 name.clone(),
-                everything.or_else(by_path).or_else(by_package),
+                everything
+                    .or_else(by_path)
+                    .or_else(by_read)
+                    .or_else(by_package),
             )
         })
         .collect()
@@ -158,6 +203,18 @@ fn check(config: &Config, graph: &PackageGraph) -> Result<(), String> {
             return Err(format!(
                 "path rule {:?} names the unknown job {job}",
                 entry.globs
+            ));
+        }
+    }
+    for read in &config.read {
+        if let Some(package) = read
+            .by
+            .iter()
+            .find(|package| !workspace.contains_name(package.as_str()))
+        {
+            return Err(format!(
+                "read rule {:?} names {package}, which is not a workspace package",
+                read.globs
             ));
         }
     }
@@ -204,6 +261,20 @@ fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
         .split('\0')
         .filter(|path| !path.is_empty())
         .collect();
+    let in_a_checkout = |path: &str| {
+        path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+            && [base_dir, head_dir].iter().any(|dir| {
+                Utf8Path::new(dir)
+                    .join(path)
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| !metadata.is_dir())
+            })
+    };
+    if let Some(path) = changed.iter().find(|path| !in_a_checkout(path)) {
+        return Err(format!(
+            "{changed_path} lists {path:?}, which is no file in either checkout. Pass the NUL-separated output of git diff -z --name-only --no-renames BASE HEAD."
+        ));
+    }
     compute(&config, &graph(base_dir)?, &graph(head_dir)?, &changed)
 }
 
@@ -214,6 +285,7 @@ fn compute(
     changed: &[&str],
 ) -> Result<BTreeMap<String, Option<String>>, String> {
     check(config, head)?;
+    let readers = reads(config, changed)?;
     let rules = rules(config);
     let changed: Vec<&Utf8Path> = changed.iter().copied().map(Utf8Path::new).collect();
     let mut options = CargoOptions::new();
@@ -246,7 +318,7 @@ fn compute(
             )
         })
         .collect();
-    Ok(select(config, &affected, &paths))
+    Ok(select(config, &affected, &paths, &readers))
 }
 
 fn main() -> ExitCode {
@@ -418,6 +490,172 @@ mod tests {
                 "macos_app"
             ])
         );
+    }
+
+    fn select_from_list(
+        name: &str,
+        list: &str,
+    ) -> Result<BTreeMap<String, Option<String>>, String> {
+        let file = env::temp_dir().join(format!("ci-select-{}-{name}", std::process::id()));
+        fs::write(&file, list).unwrap();
+        let selection = run(&[
+            format!("{ROOT}/.github/ci-select.toml"),
+            ROOT.to_string(),
+            ROOT.to_string(),
+            file.to_str().unwrap().to_string(),
+        ]);
+        fs::remove_file(&file).unwrap();
+        selection
+    }
+
+    #[test]
+    fn a_change_list_that_is_not_nul_separated_paths_fails_instead_of_skipping_jobs() {
+        let modified_by_595 = [
+            "core/driver/src/disk/tests.rs",
+            "core/driver/src/engine.rs",
+            "core/driver/src/observe.rs",
+            "core/fs/src/lib.rs",
+            "core/fs/src/mark.rs",
+            "core/sim/src/world/device.rs",
+            "core/sim/tests/devices.rs",
+        ];
+        let selection = select_from_list("nul", &(modified_by_595.join("\0") + "\0")).unwrap();
+        assert!(selection["rust_sim"].is_some(), "{selection:?}");
+        for (name, list) in [
+            ("newline", modified_by_595.join("\n") + "\n"),
+            ("absolute", format!("{ROOT}/core/sim/tests/devices.rs\0")),
+            (
+                "parent",
+                "core/driver/../sim/tests/devices.rs\0".to_string(),
+            ),
+            ("missing", "core/sim/tests/no-such-file.rs\0".to_string()),
+            ("dot", "core/sim/./tests/devices.rs\0".to_string()),
+            ("double slash", "core/sim//tests/devices.rs\0".to_string()),
+            ("directory", "core/sim/tests\0".to_string()),
+        ] {
+            let error = select_from_list(name, &list).unwrap_err();
+            assert!(error.contains("git diff -z"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_change_under_each_package_runs_every_job_that_builds_it() {
+        let workspace = GRAPH.workspace();
+        let builds = |tested: &guppy::graph::PackageMetadata,
+                      changed: &guppy::graph::PackageMetadata| {
+            GRAPH
+                .query_forward([tested.id()])
+                .unwrap()
+                .resolve_with_fn(|_, link| link.from().id() == tested.id() || !link.dev_only())
+                .contains(changed.id())
+                .unwrap()
+        };
+        for changed in workspace.iter() {
+            let dir = changed.source().workspace_path().unwrap();
+            let expected: BTreeSet<String> = CONFIG
+                .job
+                .iter()
+                .filter(|(_, job)| {
+                    workspace
+                        .iter()
+                        .any(|tested| tests(job, tested.name()) && builds(&tested, &changed))
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            assert!(!expected.is_empty(), "no job builds {}", changed.name());
+            for file in [
+                "src/lib.rs",
+                "tests/new.rs",
+                "README.md",
+                "LICENSE",
+                "Cargo.toml",
+                "nested dir/new file.txt",
+            ] {
+                let path = dir.join(file);
+                let running = running(&[path.as_str()]);
+                let missing: Vec<_> = expected.difference(&running).collect();
+                assert!(
+                    missing.is_empty(),
+                    "{path} must run {missing:?}, ran {running:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_rule_alone_runs_the_jobs_that_test_the_reading_package() {
+        let config: Config = toml::from_str(
+            r#"
+            [[path]]
+            globs = ["notes/**"]
+
+            [[read]]
+            globs = ["notes/read-by-fs.txt"]
+            by = ["koidrive-fs"]
+
+            [job.tests_fs]
+            packages = ["koidrive-fs"]
+
+            [job.tests_cli]
+            packages = ["koidrive-cli"]
+            "#,
+        )
+        .unwrap();
+        let select = |path: &str| compute(&config, &GRAPH, &GRAPH, &[path]).unwrap();
+        assert_eq!(
+            select("notes/read-by-fs.txt"),
+            BTreeMap::from([
+                ("tests_cli".to_string(), None),
+                (
+                    "tests_fs".to_string(),
+                    Some("the tests of koidrive-fs read notes/read-by-fs.txt".to_string())
+                ),
+            ])
+        );
+        assert_eq!(
+            select("notes/read-by-nobody.txt"),
+            BTreeMap::from([
+                ("tests_cli".to_string(), None),
+                ("tests_fs".to_string(), None)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_change_to_a_crate_the_quoted_paths_test_reads_runs_the_jobs_that_test_koidrive_fs() {
+        let quoted = fs::read_to_string(format!("{ROOT}/core/fs/tests/quoted.rs")).unwrap();
+        let crates: Vec<_> = quoted
+            .split_once("const CRATES_THE_DAEMON_AND_THE_APP_RUN")
+            .and_then(|(_, rest)| rest.split_once("= ["))
+            .and_then(|(_, rest)| rest.split_once("];"))
+            .unwrap()
+            .0
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .collect();
+        assert!(crates.len() >= 10, "{crates:?}");
+        let testing_fs: BTreeSet<String> = CONFIG
+            .job
+            .iter()
+            .filter(|(_, job)| tests(job, "koidrive-fs"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in crates {
+            let path = format!("core/{name}/src/new_module/new.rs");
+            assert!(
+                reads(&CONFIG, &[path.as_str()])
+                    .unwrap()
+                    .contains(&(path.clone(), "koidrive-fs".to_string())),
+                "core/fs/tests/quoted.rs reads {path}, but no read rule in ci-select.toml says so"
+            );
+            let running = running(&[path.as_str()]);
+            let missing: Vec<_> = testing_fs.difference(&running).collect();
+            assert!(
+                missing.is_empty(),
+                "{path} must run {missing:?}, ran {running:?}"
+            );
+        }
     }
 
     fn built(text: &str) -> BTreeSet<String> {
