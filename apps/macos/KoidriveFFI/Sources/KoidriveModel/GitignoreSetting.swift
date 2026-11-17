@@ -102,9 +102,12 @@ public final class GitignoreSettingModel {
         }
     }
 
-    public func confirmOff() async {
-        guard phase == .confirmingOff else { return }
-        await apply(false)
+    /// Starts turning the switch off. The switch shows off when this returns.
+    @discardableResult
+    public func confirmOff() -> Task<Void, Never>? {
+        guard phase == .confirmingOff else { return nil }
+        phase = .applying(false)
+        return Task { await apply(false) }
     }
 
     public func cancelOff() {

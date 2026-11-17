@@ -821,7 +821,7 @@ struct AdvancedSettings: View {
         .alert("Sync ignored files?", isPresented: Binding(get: { gitignore.confirmingOff }, set: { shown in
             if !shown { gitignore.cancelOff() }
         })) {
-            Button("Sync Files") { Task { await gitignore.confirmOff() } }
+            Button("Sync Files") { gitignore.confirmOff() }
             Button("Cancel", role: .cancel) { gitignore.cancelOff() }
         } message: {
             if let count = gitignore.count, count.files > 0 {

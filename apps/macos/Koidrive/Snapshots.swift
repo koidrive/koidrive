@@ -746,7 +746,7 @@ enum Snapshots {
         }
         let turningOff = make(following: true, held: true)
         await turningOff.1.set(follow: false)
-        Task { await turningOff.1.confirmOff() }
+        turningOff.1.confirmOff()
         let turningOn = make(following: false, held: true)
         Task { await turningOn.1.set(follow: true) }
         let turnedOn = make(following: false)

@@ -32,6 +32,18 @@ struct GitignoreSettingTests {
         #expect(session.calls(.setGitignore) == 0)
     }
 
+    @Test func theAlertClosingAfterSyncFilesStillTurnsItOff() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app)
+        await gitignore.set(follow: false)
+
+        let confirming = gitignore.confirmOff()
+        gitignore.cancelOff()
+        await confirming?.value
+        #expect(!app.followsGitignore)
+        #expect(session.calls(.setGitignore) == 1)
+    }
+
     @Test func aSlowCountAsksWithTheFallbackOnceTheWaitIsOver() async throws {
         let (app, session) = scripted()
         let gitignore = GitignoreSettingModel(app: app, countWait: .milliseconds(50))
@@ -56,7 +68,7 @@ struct GitignoreSettingTests {
         await gitignore.set(follow: false)
 
         session.holdNext(.setGitignore)
-        let confirming = Task { await gitignore.confirmOff() }
+        let confirming = gitignore.confirmOff()
         defer { session.release.signal() }
         try await untilHeld(session)
         #expect(gitignore.applying == false)
@@ -64,7 +76,7 @@ struct GitignoreSettingTests {
         #expect(!gitignore.confirmingOff)
 
         session.release.signal()
-        await confirming.value
+        await confirming?.value
         #expect(gitignore.applying == nil)
         #expect(!app.followsGitignore)
         #expect(!gitignore.follows)
@@ -160,7 +172,7 @@ struct GitignoreSettingTests {
         await gitignore.set(follow: false)
         #expect(gitignore.confirmingOff)
         #expect(gitignore.count == nil)
-        await gitignore.confirmOff()
+        await gitignore.confirmOff()?.value
         #expect(!app.followsGitignore)
 
         session.failNext(.gitignoreOnly)
@@ -175,7 +187,7 @@ struct GitignoreSettingTests {
         try #require(app.session.fakeCore()).failSaves(fail: true)
 
         await gitignore.set(follow: false)
-        await gitignore.confirmOff()
+        await gitignore.confirmOff()?.value
         #expect(app.followsGitignore)
         #expect(gitignore.follows)
         #expect(gitignore.failure == .NotSaved(reason: "saving is scripted to fail"))
@@ -264,14 +276,14 @@ struct GitignoreSettingTests {
         await gitignore.set(follow: false)
 
         session.holdNext(.setGitignore)
-        let confirming = Task { await gitignore.confirmOff() }
+        let confirming = gitignore.confirmOff()
         defer { session.release.signal() }
         try await untilHeld(session)
         await gitignore.set(follow: true)
         #expect(gitignore.applying == false)
 
         session.release.signal()
-        await confirming.value
+        await confirming?.value
         #expect(!app.followsGitignore)
     }
 }
