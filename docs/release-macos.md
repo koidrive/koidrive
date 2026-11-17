@@ -12,15 +12,15 @@ Signing needs a Developer ID certificate, an App Store Connect API key and a pro
    git fetch origin main && python3 scripts/release-commit.py make v0.1.0-alpha.2 && git push origin v0.1.0-alpha.2
    ```
 
-   The script works in a temporary worktree and leaves your checkout as it is. The release commit stamps the version into `Cargo.toml`, `Cargo.lock` and `server/release.json`, and it stays off `main`. A tag is `v` and three numbers, optionally followed by `-alpha.N` or `-rc.N`. Only repository admins can create `v*` tags. An `-alpha.N` or `-rc.N` tag publishes a normal release, not a prerelease, so unless a higher version is published it becomes Latest, which `install.sh` installs by default.
-2. Open the CLI distribution run that the tag started. Once the CLI tarballs are built, the app and the CLI signing jobs both wait for the `macos-release` environment. Click **Review deployments**, select `macos-release` and **Approve and deploy**. One approval covers both jobs. Approve only a run for a commit and version you meant to release.
-3. The `sign-checksums` job signs `SHA256SUMS` with the release key. The `publish` job runs once `release-ref`, `checksums` and `sign-checksums` pass, and `scripts/publish-release.sh` attaches the CLI tarballs, the DMG, `SHA256SUMS` and `SHA256SUMS.sig` to the release in one step. Jobs that don't feed `checksums`, such as `homebrew-install`, can fail after the release is out, so when a run fails, check the `publish` job and the release page.
+   The script works in a temporary worktree and leaves your checkout as it is. The release commit stamps the version into `Cargo.toml`, `Cargo.lock` and `server/release.json`, and it stays off `main`. A tag is `v` and three numbers, optionally followed by `-alpha.N` or `-rc.N`. Only repository admins can create `v*` tags. An `-alpha.N` or `-rc.N` tag publishes a normal release, not a prerelease. Unless a higher version is out, that release becomes Latest, which `install.sh` installs by default.
+2. Open the CLI distribution run that the tag started. Once the run has built the CLI tarballs, the app and the CLI signing jobs both wait for the `macos-release` environment. Click **Review deployments**, select `macos-release` and **Approve and deploy**. One approval covers both jobs. Approve only a run for a commit and version you meant to release.
+3. The `sign-checksums` job signs `SHA256SUMS` with the release key. The `publish` job runs once `release-ref`, `checksums` and `sign-checksums` pass, and `scripts/publish-release.sh` attaches the CLI tarballs, the DMG, `SHA256SUMS` and `SHA256SUMS.sig` to the release in one step. Jobs that don't feed `checksums`, such as `homebrew-install`, can fail after the release is out. When a run fails, check the `publish` job and the release page.
 
-If the app does not build, sign, notarize or verify, the run fails and publishes nothing, not even the CLI tarballs. `publish-release.sh` also refuses when the DMG is missing, when any other file is present (an unsigned DMG included), when `SHA256SUMS` does not list exactly those files with matching hashes, or when `SHA256SUMS.sig` is not a signature of it by the release key in `.github/release-allowed-signers`. A tag that does not point to such a release commit fails in the "commit on main" jobs: `scripts/release-commit.py check` stamps the commit's parent again and compares the trees.
+If the app does not build, sign, notarize or verify, the run fails and publishes nothing, not even the CLI tarballs. `publish-release.sh` also refuses when the DMG is missing, when any other file is present (an unsigned DMG included), when `SHA256SUMS` does not list exactly those files with matching hashes, or when `SHA256SUMS.sig` is not a signature of it by the release key in `.github/release-allowed-signers`. A tag that does not point to such a release commit fails in the "commit on main" jobs. There, `scripts/release-commit.py check` stamps the commit's parent again and compares the trees.
 
 ## Build a DMG without releasing
 
-Open **Actions**, **macOS release**, **Run workflow**, keep `main` under "Use workflow from", and enter a version such as `0.1.0-alpha.2`, or leave it empty for `0.0.0-dev`. The workflow stamps the app and its bundled CLI with the version you enter. Approve the deployment when the run page asks. The signed DMG is a workflow artifact under **Artifacts** on the run's page, and nothing is published. A run from any other branch fails in the "commit on main" job.
+Open **Actions**, **macOS release**, **Run workflow**, keep `main` under "Use workflow from", and enter a version such as `0.1.0-alpha.2`, or leave it empty for `0.0.0-dev`. The workflow stamps the app and its bundled CLI with the version you enter. Approve the deployment when the run page asks. The signed DMG is a workflow artifact under **Artifacts** on the run's page, and the run publishes nothing. A run from any other branch fails in the "commit on main" job.
 
 To check a DMG on your Mac:
 
@@ -63,7 +63,7 @@ Each notarization prints its submission id in the log and as a notice on the run
 - the failed run's build number as **build-number**. Its "Decide the version" step prints `Version <version>, build <number>.`
 - the submission id as **app-submission-id**.
 
-The new run rebuilds the same app, waits for that submission and staples its ticket. If the rebuilt app differs from the submitted one, stapling fails and the step says so. Run again with **app-submission-id** empty to submit the app again. This works only for manual runs. A tag run submits again when you rerun its failed jobs. The DMG always gets a new submission, because a rebuilt disk image is never identical to an earlier one.
+The new run rebuilds the same app, waits for that submission and staples its ticket. If the rebuilt app differs from the submitted one, stapling fails and the step says so. Run again with **app-submission-id** empty to submit the app again. Waiting for an earlier submission works only for manual runs. A tag run submits again when you rerun its failed jobs. The DMG always gets a new submission, because a rebuilt disk image is never identical to an earlier one.
 
 ## Versions
 
@@ -99,7 +99,7 @@ The `macos app` job of [CI](../.github/workflows/ci.yml) builds the app, tests i
 
 ## The app needs no entitlements
 
-`apps/macos/Koidrive.entitlements` is empty on purpose. The app ships with Developer ID, not through the Mac App Store, so it is not sandboxed and can sync any folder the person picks in their home folder. The hardened runtime needs an entitlement only to turn off one of its protections ([Hardened Runtime](https://developer.apple.com/documentation/security/hardened-runtime)), and the app needs none: the Rust core is linked statically, and the app uses no JIT, unsigned executable memory, DYLD environment variables or libraries signed by someone else. Open at login uses `SMAppService.mainApp`, which needs no entitlement outside the sandbox.
+`apps/macos/Koidrive.entitlements` is empty on purpose. The app ships with Developer ID, not through the Mac App Store, so it is not sandboxed and can sync any folder the person picks in their home folder. The hardened runtime needs an entitlement only to turn off one of its protections ([Hardened Runtime](https://developer.apple.com/documentation/security/hardened-runtime)), and the app needs none. The app links the Rust core statically and uses no JIT, unsigned executable memory, DYLD environment variables or libraries signed by someone else. Open at login uses `SMAppService.mainApp`, which needs no entitlement outside the sandbox.
 
 ## Limits
 

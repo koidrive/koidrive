@@ -37,7 +37,7 @@ background = true         # the default
 
 - `[sync]` applies to every folder of the profile. A path is excluded when the built-in exclusions, these rules or the folder's `.koiignore` files exclude it, so no `.koiignore` pattern widens what the device syncs. The rules save bandwidth and disk only. The server still sends every name, and the credential can read everything.
 - `[trash]` caps each folder's local trash (§5.2). A running folder reclaims it at start and once a day: entries past their retention go first, then the oldest while the trash holds more than `max_size_mb` megabytes.
-- `[upload]` limits chunk uploads in flight across all folders of the profile, through one `koidrive_net::UploadGate`. A value outside 1 to 16 is refused when the driver opens.
+- `[upload]` limits chunk uploads in flight across all folders of the profile, through one `koidrive_net::UploadGate`. The driver refuses a value outside 1 to 16 when it opens.
 - `[service]` with `background = false` leaves the background service alone, and the person runs `koi _daemon` some other way.
 
 ## Driver API
@@ -101,6 +101,6 @@ background = true         # the default
 ## Daemon
 
 - Socket: one JSON line each way per connection, a request tagged `request` and a response tagged `response`. The daemon refuses a peer whose uid is not its own.
-- Notifications: one per decision that opens while the daemon runs, through `org.freedesktop.Notifications` on Linux and `osascript` on macOS. A decision that replaces an open one continues its lineage and is not told again. Decisions open at start are not told, and `koi status` shows them.
+- Notifications: one per decision that opens while the daemon runs, through `org.freedesktop.Notifications` on Linux and `osascript` on macOS. A decision that replaces an open one continues its lineage and gets no new notification. Decisions open at start get no notification, and `koi status` shows them.
 - Logs: stderr, as key-value text or JSON lines with `--log-format json`. `KOIDRIVE_LOG` sets the filter.
 - Service: `cli/systemd/koidrive.service` (`Type=exec`, `Restart=on-failure`) on Linux, a launch agent on macOS.

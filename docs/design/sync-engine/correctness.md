@@ -21,7 +21,7 @@ Both conditions hold after every step, since a crash can end a run anywhere:
 - Preserve user changes: if L(n) ≠ S(n), no effect changes n on disk. The only disk operations on a locally changed node are those the user's own change implies after the server answers: renaming a fork to its conflict name (§2.7), or giving a recovered file a free name (§5.2). Both keep the content.
 - Propagate only user changes: every effect makes L(n) equal to R(n), and every op makes R(n) equal to L(n). The two exceptions are conflict names, which the server chooses (spec §6.1), and parked locations (§2.5), which are hidden and never uploaded.
 
-The engine resolves every conflict deterministically and keeps both sides (spec §1 principle 4). It never stops at a conflict to ask; §3.3 states what that must preserve.
+The engine resolves every conflict deterministically and keeps both sides (spec §1 principle 4). It never stops at a conflict to ask. §3.3 states what that must preserve.
 
 ## 3.3 No write is lost
 

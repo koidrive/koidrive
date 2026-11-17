@@ -13,13 +13,13 @@ Your server runs on your Cloudflare account, so Cloudflare's plan limits apply t
 | Durable Object rows written | 100,000 a day | same |
 | Durable Object storage | 5 GB for the account, 1 GB for each object | [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/) |
 
-Daily allowances reset at 00:00 UTC. On the Free plan, an operation past an allowance fails with an error ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
+Daily allowances reset at 00:00 UTC. On the Free plan, operations fail with an error once an allowance runs out ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
 
-Each space is one Durable Object. It stores the space's file tree, its history and its change log, but not file contents. A sync session is a WebSocket to that object, and Cloudflare bills 20 incoming WebSocket messages as one request ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
+Each space is one Durable Object. It stores the space's file tree, its history and its change log, but not file contents. A sync session is a WebSocket to that object. Cloudflare bills 20 incoming WebSocket messages as one request ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
 
 ## Koidrive waits at a daily limit
 
-When a space's Durable Object reports a daily limit, the server tells devices to wait until the next 00:00 UTC, or 5 minutes in the first half hour after it, and each folder shows the wait in its status. See [Quota waits](status-reference.md#quota-waits). When the limit hits while the server checks the device, the server only says to retry later, so the folder retries without showing a reset time. When the Worker itself is over its daily request limit, Cloudflare answers with error 1027 before Koidrive's code runs ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#daily-requests)). The folders can't reach the server then, and keep retrying.
+When a space's Durable Object reports a daily limit, the server tells devices to wait until the next 00:00 UTC. In the first half hour after 00:00 UTC, it tells them to wait 5 minutes. Each folder shows the wait in its status. See [Quota waits](status-reference.md#quota-waits). When the limit hits while the server checks the device, the server only says to retry later. The folder then retries without showing a reset time. When the Worker itself is over its daily request limit, Cloudflare answers with error 1027 before Koidrive's code runs ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/#daily-requests)). The folders can't reach the server then, and keep retrying.
 
 ## R2 bills storage and requests past a monthly allowance
 
@@ -47,4 +47,4 @@ R2 holds the contents of your files, of the files in each space's trash and of o
 
 ## A hard-linked file can reach the server twice
 
-A file with a hard link inside an ignored folder can end up on the server twice. This happens when you move the file out of a folder and remove the folder, and Koidrive picks up the file's new place before it sees the removal. The server then keeps the old copy as well as the new one. Nothing is lost.
+A file with a hard link inside an ignored folder can end up on the server twice. The file reaches the server twice when you move it out of a folder and remove the folder, and Koidrive picks up the file's new place before it sees the removal. The server then keeps the old copy as well as the new one. Nothing is lost.

@@ -1,6 +1,6 @@
 # Build the share-link viewer
 
-The share-link viewer is the page a recipient opens at `/s/<link_id>`. Its source is the web package `server/web/`, and the build writes `server/web/dist/`, which the Worker serves as static assets. [RFC 0005 §8](../spec/rfc/0005-share-links.md#8-web-viewer) defines what the page shows and the headers it is served with.
+The share-link viewer is the page a recipient opens at `/s/<link_id>`. Its source is the web package `server/web/`, and the build writes `server/web/dist/`, which the Worker serves as static assets. [RFC 0005 §8](../spec/rfc/0005-share-links.md#8-web-viewer) defines what the page shows and the headers the Worker sends with it.
 
 ## Build and check the viewer
 
@@ -24,7 +24,7 @@ The page renders every name with `textContent`, never as HTML.
 
 ## Change the headers in both places
 
-`server/web/public/_headers` sets the headers of the assets under `/viewer/`, and the build copies it into `dist/`. `server/src/share/routes.ts` sets the same headers on `/s/<link_id>`, which the Worker serves itself. A change to one needs the same change to the other.
+`server/web/public/_headers` sets the headers of the assets under `/viewer/`, and the build copies it into `dist/`. `server/src/share/routes.ts` sets the same headers on `/s/<link_id>`, which the Worker serves itself. When you change one, make the same change to the other.
 
 ## Add a page
 

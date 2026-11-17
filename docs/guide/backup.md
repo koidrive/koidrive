@@ -1,6 +1,6 @@
 # Back up the server
 
-Koidrive has no backup of its own. If you delete the R2 bucket or lose the Cloudflare account and have no copy elsewhere, nobody can get back what only the server held: the trash, the old versions, and every file that no device still has. This page copies the bucket to storage outside Cloudflare with [rclone](https://rclone.org/). The copy can put back objects the bucket lost while the server still runs, but [not a lost account](#after-you-lose-the-account).
+Koidrive has no backup of its own. If you delete the R2 bucket or lose the Cloudflare account and have no copy elsewhere, nobody can get back what only the server held: the trash, the old versions, and every file that no device still has. This page shows how to copy the bucket to storage outside Cloudflare with [rclone](https://rclone.org/). The copy can put back objects the bucket lost while the server still runs. It [can't bring back a lost account](#after-you-lose-the-account).
 
 ## Copy the bucket
 
@@ -32,13 +32,13 @@ The steps follow Cloudflare's [rclone guide](https://developers.cloudflare.com/r
 
 6. Run both commands again on a schedule, for example from `cron`. Each run transfers only new objects.
 
-Use `rclone copy`, never `rclone sync`, which would empty the copy after a bucket was emptied by mistake.
+Use `rclone copy`, never `rclone sync`. If someone empties the bucket by mistake, `rclone sync` empties the copy too.
 
 Koidrive doesn't encrypt chunks. Anyone who can read the copy can read your files, so keep it as private as the bucket.
 
 ## What the copy holds
 
-Koidrive writes only under `spaces/<space_id>/`. `chunks/` holds the file contents, named by their SHA-256. `meta/` holds an export of the space's tree, trash and old versions, in the format [RFC 0004](../../spec/rfc/0004-r2-export-format.md) describes. The server exports once 1,000 commits wait, or 5 minutes after the first commit it hasn't exported, so a copy can miss the last few minutes of changes.
+Koidrive writes only under `spaces/<space_id>/`. `chunks/` holds the file contents, named by their SHA-256. `meta/` holds an export of the space's tree, trash and old versions, in the format [RFC 0004](../../spec/rfc/0004-r2-export-format.md) describes. The server writes a new export once 1,000 commits are waiting, or 5 minutes after the first commit it hasn't exported. So a copy can miss the last few minutes of changes.
 
 ## Put lost objects back
 

@@ -8,7 +8,7 @@ On a terminal, `koi setup` asks one question: join with a pairing code from a de
 
 ## 2. The login is OAuth with PKCE on a loopback port
 
-The CLI is a public OAuth client with no secret: Authorization Code with PKCE (S256), redirecting to `http://127.0.0.1:<port>/oauth/callback`. Cloudflare's authorization server lists the device-code grant ([OpenID configuration](https://dash.cloudflare.com/.well-known/openid-configuration)), but the Koidrive client is not registered for it. A machine without a browser on its screen (an SSH session, or Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`) prints the login page and reads back the address the browser ended on, as `--no-browser` does and as a failed browser launch does. A second device can also join with a pairing code, since a server needs one login, not one per device. Cloudflare revokes the whole grant when a code or a refresh token is used twice, so the CLI never resends either. A failed exchange or refresh ends the command.
+The CLI is a public OAuth client with no secret. It uses Authorization Code with PKCE (S256) and redirects to `http://127.0.0.1:<port>/oauth/callback`. Cloudflare's authorization server lists the device-code grant ([OpenID configuration](https://dash.cloudflare.com/.well-known/openid-configuration)), but the Koidrive client is not registered for it. On a machine without a browser on its screen (an SSH session, or Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`), the CLI prints the login page and reads back the address the browser ended on. `--no-browser` and a failed browser launch do the same. A second device can also join with a pairing code, since a server needs one login, not one per device. Cloudflare revokes the whole grant when a code or a refresh token is used twice, so the CLI never resends either. A failed exchange or refresh ends the command.
 
 ## 3. The grant reaches the whole account, so it lives for one command
 
@@ -26,7 +26,7 @@ R2 cannot be enabled through the API. When listing buckets fails with error 1004
 
 ### 4.3 The upload goes through the Workers API
 
-Before creating a bucket or uploading, the CLI reads the account's workers.dev subdomain. If none exists (error 10007), it suggests `koidrive-` plus eight random hex digits and lets the user edit it. `--subdomain` supplies the name without that question. Registration uses `PUT /accounts/{account_id}/workers/subdomain`. A taken name (10031) gets a random suffix, with at most five attempts. Existing subdomains stay unchanged ([Workers subdomains API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)).
+Before creating a bucket or uploading, the CLI reads the account's workers.dev subdomain. If none exists (error 10007), it suggests `koidrive-` plus eight random hex digits and lets the user edit it. `--subdomain` supplies the name without that question. The CLI registers the name with `PUT /accounts/{account_id}/workers/subdomain`. A taken name (10031) gets a random suffix, with at most five attempts. Existing subdomains stay unchanged ([Workers subdomains API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)).
 
 The CLI creates a bucket named `koidrive-` plus 16 random hex digits, so it never adopts another application's bucket. It uploads the assets, then the Worker under `koidrive` or the next free name, tagged `koidrive-server`. Then it turns on the workers.dev route and waits for `GET /v1/server`.
 
@@ -36,7 +36,7 @@ The script upload sets `KOIDRIVE_RECOVERY_KEY` to 32 random bytes, so the Worker
 
 ### 4.5 An existing server gets a new device the same way
 
-On a claimed server the key adds a device for the owner, which is the recovery path. The CLI stops if `KOIDRIVE_RECOVERY_KEY` is already set, because the owner set it for recovery. It claims only when `ServerInfo.setup_attempts` is true, and offers to upgrade an older server first.
+On a claimed server the key adds a device for the owner. That is the recovery path. The CLI stops if `KOIDRIVE_RECOVERY_KEY` is already set, because the owner set it for recovery. It claims only when `ServerInfo.setup_attempts` is true, and offers to upgrade an older server first.
 
 ### 4.6 An interrupted run resumes from a state file
 

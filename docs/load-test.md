@@ -23,7 +23,7 @@ gh workflow run load-test.yml --ref main -f scenario=s1 -f steps=1,5 -f warmup_s
 ```
 
 - `steps` replaces the scenario's list with rising numbers, for example `1,5` for a short trial. The last step may need at most 400 writers, because one runner holds every connection.
-- `warmup_seconds` (default 120, at most 600) and `measure_seconds` (default 480, at most 1800) set each step's length. All steps together may take at most 180 minutes, so that the run step's 240 minutes also hold setup, calibration and analytics. The defaults take 70 minutes for `s1` and 30 for `s4`.
+- `warmup_seconds` (default 120, at most 600) and `measure_seconds` (default 480, at most 1800) set each step's length. All steps together may take at most 180 minutes, so that setup, calibration and analytics also fit in the run step's 240 minutes. The defaults take 70 minutes for `s1` and 30 for `s4`.
 - `max_rows_written` (default 40,000,000) sets the [rows-written budget](#the-rows-written-budget-is-an-estimate).
 - `workers_paid=confirmed` says that you checked the account is on Workers Paid.
 
@@ -33,14 +33,14 @@ The run checks `steps`, the step lengths and the budget only in its scenario ste
 
 Workers Paid bills rows written beyond its monthly allowance, for example $1.00 per million after 50 million, and Durable Object requests and duration too ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)). To limit what one run spends, the run turns `max_rows_written` into a number of commits.
 
-Five writers commit for 2 minutes. After 3 minutes for the Analytics API to catch up, the run reads the Space DO requests and the rows written in that time once a minute, until both cover the calibration's commits and stay unchanged for a minute. The budget is `max_rows_written` divided by 1.25 times the rows per commit. If no reading qualifies within 23 minutes, the run assumes 25 rows per commit. When the writers' commits, calibration included, reach the budget, the writers stop and the steps end.
+Five writers commit for 2 minutes. The run then waits 3 minutes for the Analytics API to catch up. Once a minute, it reads the Space DO requests and the rows written in that time, until both cover the calibration's commits and stay unchanged for a minute. The budget is `max_rows_written` divided by 1.25 times the rows per commit. If no reading qualifies within 23 minutes, the run assumes 25 rows per commit. When the writers' commits, calibration included, reach the budget, the writers stop and the steps end.
 
 The budget is not a hard ceiling on rows written. It does not count the setup's writes, and a step whose commits write more rows than the calibration's can pass `max_rows_written` by the difference. The results table shows each step's rows per commit. Rows written by other runs in the same month count against the same allowance, so lower `max_rows_written` when the account has already used part of it. Check the account's usage under **Workers & Pages** before and after a run.
 
 ## What a run does
 
 1. **Trust check**, as in the deploy test.
-2. **Plan check.** Workers Free allows 100,000 rows written a day, which one step uses up in minutes. `workers-plan.ts` goes on only if the account's subscriptions show an active paid Workers plan, or if the run was started with `workers_paid=confirmed`. The deploy-test token has no billing permission, so the read fails with HTTP 403 and only `workers_paid=confirmed` lets the run go on. Nothing is deployed when the check fails.
+2. **Plan check.** Workers Free allows 100,000 rows written a day, which one step uses up in minutes. `workers-plan.ts` goes on only if the account's subscriptions show an active paid Workers plan, or if you started the run with `workers_paid=confirmed`. The deploy-test token has no billing permission, so the read fails with HTTP 403 and only `workers_paid=confirmed` lets the run go on. When the check fails, the run deploys nothing.
 3. **Deploy and claim**, as in the deploy test, for the commit the run started from.
 4. **Setup.** The owner creates the spaces the last step needs. Each space gets two stored 1 KiB chunks and one small file per writer. The owner then pairs one device for every writer and every subscriber.
 5. **Calibration**, which sets the budget.
@@ -51,7 +51,7 @@ The budget is not a hard ceiling on rows written. It does not count the setup's 
 
 ## When a run stops early
 
-The run stops after a step in which more than 10% of commits failed, the median commit took over 10 seconds, or no commit was accepted. The log and `load-results.json` give the reason, and that step is the result you are looking for. A run also stops when the budget runs out.
+The run stops after a step in which more than 10% of commits failed, the median commit took over 10 seconds, or the server accepted no commit. The log and `load-results.json` give the reason, and that step is the result you are looking for. A run also stops when the budget runs out.
 
 Other causes:
 

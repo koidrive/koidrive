@@ -24,7 +24,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 
 On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` runs each macOS job the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners.
 
-One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test is skipped unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
+One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test skips itself unless `KOIDRIVE_TEST_SYSTEMD=1` is set.
 
 Two other workflows run on pull requests. [CLI distribution](../.github/workflows/release-cli.yml) builds the CLI tarballs, tests the installer and installs the CLI from a local Homebrew tap. [DCO](../.github/workflows/dco.yml) checks the `Signed-off-by` line of every commit.
 
@@ -52,7 +52,7 @@ The properties run in one of two modes, set by `KOIDRIVE_PROPTEST_DETERMINISTIC`
 
 Both modes replay the saved cases first. `PROPTEST_RNG_SEED` overrides seed 0, and `PROPTEST_CASES` overrides the case count in both modes. `ci.yml` sets the variable once for the whole workflow, to `true` only for `merge_group` events.
 
-When a property fails, proptest prints the shrunk input. The shared configuration saves its `cc` line and a single-line `# shrinks to` description in a `<suite>.cases/cc-<seed>.txt` file, for example under `core/sim/tests/engine_sync.cases/`. Later runs replay saved cases first. Replay a failure by its `cc` line rather than by `PROPTEST_RNG_SEED`. Commit the case file with the fix so it keeps being checked.
+When a property fails, proptest prints the shrunk input. The shared configuration saves its `cc` line and a single-line `# shrinks to` description in a `<suite>.cases/cc-<seed>.txt` file, for example under `core/sim/tests/engine_sync.cases/`. Later runs replay saved cases first. Replay a failure by its `cc` line rather than by `PROPTEST_RNG_SEED`. Commit the case file with the fix so later runs keep replaying it.
 
 Every property block uses `koidrive_test_support::battery_config`. The two driver properties for unreadable uploads and unwritable downloads use `regression_config` with eight generated cases because they wait on real retry deadlines. The checker records these exceptions by source path, test name and case count. A new bounded property requires an explicit entry. CI checks budget classes and regression persistence with:
 
@@ -136,7 +136,7 @@ gh run list --workflow heavy-tests.yml --limit 1   # the run's ID, for gh run wa
 
 The workflow clears inherited case overrides. The `cases` input sets only the stress budget, so the two deadline-bound driver properties retain eight generated cases even when `cases` is set to zero. Use `PROPTEST_CASES=0` in a manual reproduction to replay saved cases without generating any cases.
 
-The workflow tests one commit: it resolves `ref` once, so both operating systems test the same code even if the branch moves. Each OS job builds the tests once and then runs them `repeat` times. Its summary has one row per run with the seed, the result and the passed, failed and ignored counts, then the failing tests with the number of runs each failed in, and a command that reproduces a run from its seed. The log of the job's `Run the tests` step ends with the same summary, so `gh run view <run-id> --log` shows it too. A run whose test binary crashes, or that runs no test, counts as not finished cleanly. The job fails unless every run passed, and stops after 340 minutes. Each run starts from the case files in the commit: the job moves the case files a run saves into the `heavy-tests-<OS>` artifact under `regressions/run-<k>/`, so a later run never replays them and a run's seed reproduces it on a clean checkout. The artifact also holds the summary and each run's log. To replay a saved case, copy its file to the same path and run the test with `PROPTEST_CASES=0`.
+The workflow tests one commit. It resolves `ref` once, so both operating systems test the same code even if the branch moves. Each OS job builds the tests once and then runs them `repeat` times. Its summary has one row per run with the seed, the result and the passed, failed and ignored counts, then the failing tests with the number of runs each failed in, and a command that reproduces a run from its seed. The log of the job's `Run the tests` step ends with the same summary, so `gh run view <run-id> --log` shows it too. A run whose test binary crashes, or that runs no test, counts as not finished cleanly. The job fails unless every run passed, and stops after 340 minutes. Each run starts from the case files in the commit. The job moves the case files a run saves into the `heavy-tests-<OS>` artifact under `regressions/run-<k>/`, so a later run never replays them, and a run's seed reproduces that run on a clean checkout. The artifact also holds the summary and each run's log. To replay a saved case, copy its file to the same path and run the test with `PROPTEST_CASES=0`.
 
 To compare a fix with the code before it, start two runs with the same `seed` and `repeat`: one with `ref` set to the commit before the fix and one with the fix. While the properties' strategies are the same, run k of each tests the same cases.
 
@@ -157,4 +157,4 @@ scripts/mutations.sh               # every mutation
 scripts/mutations.sh --shard 0/4   # every fourth mutation, starting with the first
 ```
 
-`MUTATION_CASES` sets the property case count. `MUTATION_SEED` sets one unsigned 64-bit seed for the baseline and every mutation, defaulting to `0`. The hosted mutation jobs use seed `0` too; shard numbers do not change it.
+`MUTATION_CASES` sets the property case count. `MUTATION_SEED` sets one unsigned 64-bit seed for the baseline and every mutation, defaulting to `0`. The hosted mutation jobs use seed `0` too. Shard numbers do not change it.

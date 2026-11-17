@@ -13,7 +13,7 @@ After that, the server removes them the next time it cleans up. These commands r
 koi history trash ~/Koidrive
 ```
 
-This lists what was deleted in the linked folder and is still in the trash, with the size of each item. A deleted folder is one line, with the number of files and bytes that went to the trash with it. Name a folder inside a linked folder to list only what was deleted under it. A folder deleted as a whole is listed only at its own path: if `notes/` went to the trash with everything in it, `koi history trash ~/Koidrive/notes/drafts` lists nothing, and `koi history trash ~/Koidrive` shows `notes/`. Without a path, the command uses the current folder. `--json` prints each item with its node ID.
+This lists what was deleted in the linked folder and is still in the trash, with the size of each item. A deleted folder is one line, with the number of files and bytes that went to the trash with it. Name a folder inside a linked folder to list only what was deleted under it. The command lists a folder deleted as a whole only at its own path. For example, if `notes/` went to the trash with everything in it, `koi history trash ~/Koidrive/notes/drafts` lists nothing, and `koi history trash ~/Koidrive` shows `notes/`. Without a path, the command uses the current folder. `--json` prints each item with its node ID.
 
 ## See the versions of a file
 
@@ -35,7 +35,7 @@ The last column is the version ID. `--json` prints each version with its size, t
 koi history restore ~/Koidrive/notes/old.txt
 ```
 
-Name the path the file or folder had. Koidrive finds the deletion in the trash and brings it back where it was, with its versions. A folder comes back with everything that went to the trash with it. A file that went to the trash with its folder can come back alone: the folders above it come back too, without their other files.
+Name the path the file or folder had. Koidrive finds the deletion in the trash and brings it back where it was, with its versions. A folder comes back with everything that went to the trash with it. A file that went to the trash with its folder can come back alone. The folders above it come back too, without their other files.
 
 When several deletions had the same path, the command lists them and asks you to pick one with `--node <id>`. `koi history trash --json` shows the node IDs.
 
@@ -49,7 +49,7 @@ Take the full version ID from the last column of `koi history versions`. The old
 
 ## Follow a restore
 
-`koi history restore` checks the request against the server, records it, and returns the request's ID. The daemon sends it with the folder's next change to the server, after any changes to the same file that this device hasn't sent yet. The restored file then arrives in the folder like a change from another device. If the daemon isn't running, the request waits until it starts.
+`koi history restore` checks the request against the server, records it, and returns the request's ID. The daemon sends it with the folder's next change to the server, after any changes to the same file that this device hasn't sent yet. The restored file then arrives in the folder like a change from another device. If the daemon isn't running, the request waits until the daemon starts.
 
 ```sh
 koi history requests ~/Koidrive
@@ -62,7 +62,7 @@ This lists the restores asked for in the folder's space and how each went:
 | restored | The file or folder is back |
 | restored as `<name>`, since its name was taken | Something else now has its name, so it came back under a conflict name |
 | restored as a new file `<name>`, since another device changed the file meanwhile | The earlier version came back as a [conflict copy](conflicts.md#two-edits-of-one-file) next to the file |
-| refused | The server said why. For example, the item was deleted for good after 30 days |
+| refused | The server said why. For example, the server deleted the item for good after 30 days |
 | not sent | It brings back more files and folders than one change can hold |
 | pending | It hasn't been sent yet. The list says what the folder is waiting for, such as a stopped daemon or a [problem](status.md) |
 

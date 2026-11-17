@@ -12,7 +12,7 @@ Include the affected version or commit, the steps to reproduce the problem, and 
 
 Koidrive is pre-1.0. Only the latest release and the `main` branch get security fixes.
 
-[Dependabot](.github/dependabot.yml) groups security updates for supported dependencies; routine version-update pull requests are disabled.
+[Dependabot](.github/dependabot.yml) groups security updates for supported dependencies and opens no routine version-update pull requests.
 
 ## What to expect
 

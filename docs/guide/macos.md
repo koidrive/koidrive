@@ -24,11 +24,11 @@ Click Koidrive in the menu bar to check sync status, read notices or open a link
 - A minus sign means Koidrive is offline and retrying the server.
 - A question mark means **Needs You** has a question to answer.
 - An exclamation mark means there is a problem to review.
-- With no badge, open the menu to see whether sync is up to date, setup is needed or the service is stopped.
+- If the icon has no badge, open the menu to see whether sync is up to date, setup is needed or the service is stopped.
 
 Choose **Pause Sync** to pause, and **Resume Sync** to continue. Edits you make while paused stay on this Mac and sync when you resume.
 
-When **Needs You** opens, select a question and review the affected files before choosing an answer. Koidrive asks before sending a large delete to your other machines. Destructive answers need confirmation.
+When **Needs You** opens, select a question and review the affected files before choosing an answer. Koidrive asks before sending a large delete to your other machines. Koidrive asks you to confirm a destructive answer.
 
 When a file changes on two devices at once, **Needs You** shows the original and the conflicted copy side by side, with each file's modified time, size and preview. **Quick Look** opens either file. Choose which one to keep:
 
@@ -52,11 +52,11 @@ Open **Settings** from the menu bar:
 
 ## Update Koidrive
 
-Koidrive checks for a new release once a day. When one is out, the menu bar shows a notice with **What's New** and **Update**, and **Settings**, **General** shows the same choice under **About**. **General** also shows when Koidrive last checked, and says when it can't check because this Mac is offline or the check is turned off.
+Koidrive checks for a new release once a day. When one is out, the menu bar shows a notice with **What's New** and **Update**. **Settings**, **General** shows the same choice under **About**. **General** also shows when Koidrive last checked, and says when it can't check because this Mac is offline or the check is turned off.
 
 Choose **Update** to update the app and `koi` together. Koidrive quits and reopens on the new version, and the menu bar says it updated. Your Mac must be online to update.
 
-If the update fails, the version you have keeps working. **Show Log** opens `~/Library/Logs/Koidrive/update.log`, and **Try Again** retries. For a Homebrew install, the notice shows `brew upgrade --cask koidrive` with **Copy** in place of **Try Again**, to update from Terminal. [Updates](service.md#updates) covers the update check and how to turn it off.
+If the update fails, the version you have keeps working. **Show Log** opens `~/Library/Logs/Koidrive/update.log`, and **Try Again** retries. For a Homebrew install, the notice shows `brew upgrade --cask koidrive` to run in Terminal, and **Copy** in place of **Try Again**. [Updates](service.md#updates) covers the update check and how to turn it off.
 
 ## Share links
 
@@ -66,15 +66,15 @@ A share link lets anyone open a file or folder from your linked folders in a bro
 
 Open the Share Link window in one of three ways:
 
-- Choose **Share Link…** in the menu bar, then pick the file or folder. Only items in your linked folders can be chosen.
+- Choose **Share Link…** in the menu bar, then pick the file or folder. You can choose only items in your linked folders.
 - Drag the item onto the Koidrive icon in the menu bar, then drop it on **Share Link** in the panel that opens.
 - Drop the item on the **Shared Links** window.
 
 Choose how long the link works: 1, 7 or 30 days. To ask for a password, select **Require a password** and enter one of 8 to 256 characters. Click **Create Link**. Koidrive checks that the server has the item, then shows the link. Click **Copy** and send the link to the person.
 
-Koidrive shows the full link only once, when it's made. Neither the app nor the server can show it again, so copy it before you click **Done**. If you lose it, share the item again to get a new link.
+Koidrive shows the full link only once, when it makes the link. Neither the app nor the server can show it again, so copy it before you click **Done**. If you lose it, share the item again to get a new link.
 
-An item that hasn't finished syncing can't be shared yet. The window says so, and you can share the item once it's up to date. Making a link also needs your Mac to be online.
+You can't share an item that hasn't finished syncing. The window says so, and you can share the item once it's up to date. Your Mac must also be online to make a link.
 
 ### See and revoke links
 
@@ -84,7 +84,7 @@ To stop a link working, click **Revoke…** next to it and confirm. Anyone who h
 
 ## Deleted files and earlier versions
 
-The server keeps deleted files and folders and the earlier versions of each file. The app lists both and brings them back. Both windows read the server, so your Mac must be online.
+The server keeps deleted files and folders and the earlier versions of each file. The app lists both and brings them back. The Deleted Files and Version History windows read the server, so your Mac must be online.
 
 ### Deleted Files
 
@@ -96,26 +96,26 @@ Select an item and click **Restore**. The footer shows where it goes back to. It
 
 Open the history of a file in one of two ways:
 
-- Choose **Version History…** in the menu bar, then pick the file. Only files in your linked folders can be chosen.
+- Choose **Version History…** in the menu bar, then pick the file. You can choose only files in your linked folders.
 - Drag the file onto the Koidrive icon in the menu bar, then drop it on **Version History** in the panel that opens.
 
 The window lists the versions the server keeps, newest first, grouped into Today, Yesterday and Earlier. Each row shows when the version was saved, on which device, and its size. **Current** marks the content the file has now. Select an earlier version and click **Restore Version**. The restored content becomes the file's current version on every device, and the content it replaces stays as an earlier version.
 
 ### How a restore works
 
-A restore is a request that goes out with the folder's next sync. Until then, the row shows **Restore requested**. If the Mac is offline or sync is paused, the request waits. When the server answers, the restored file arrives in the folder like a change from another device.
+The app sends a restore request with the folder's next sync. Until then, the row shows **Restore requested**. If the Mac is offline or sync is paused, the request waits. When the server answers, the restored file arrives in the folder like a change from another device.
 
-The **Restores** tab of Deleted Files lists every restore asked for in each folder and how it went. A badge on the tab counts the restores still waiting.
+The **Restores** tab of Deleted Files lists every restore you asked for in each folder and how it went. A badge on the tab counts the restores still waiting.
 
 | Restores tab shows | Meaning |
 |---|---|
 | Waiting for Documents to sync | The request goes out with the folder's next sync. |
-| Waiting until a refused change to it is fixed | The server refused an earlier change to the same item. Fix the problem in Settings, Problems, and the restore goes out after it. |
+| Waiting until a refused change to it is fixed | The server refused an earlier change to the same item. Fix the problem in Settings, Problems, and the restore goes out once the problem is fixed. |
 | Restored | The file or folder is back where it was. |
 | Restored as <name>. The name was taken. | Something else has its name now, so it came back under a new name. |
 | Restored as a copy. Another device changed it. | Another device changed the file meanwhile, so the earlier version came back as a separate file next to it. |
 | Refused, with the reason | The server didn't restore it. For example, the server no longer has the item. |
-| Too many items for one restore. | The folder holds more items than one change can carry, so the request was not sent. |
+| Too many items for one restore. | The folder holds more items than one change can carry, so Koidrive didn't send the request. |
 
 ## Use the CLI alongside the app
 

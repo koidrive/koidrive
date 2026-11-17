@@ -15,20 +15,20 @@ It doesn't sync:
 
 When sync removes a folder that another device deleted, it deletes these platform files in it too, so that the folder can go. If the folder still holds anything else that Koidrive doesn't sync, such as a file your rules leave out or a symbolic link, Koidrive keeps the folder with those entries, and the status names them. Remove them and run `koi folder restart <folder>`, and the folder goes.
 
-Names compare without regard to case or Unicode normalization. Two names in one folder that differ only in case, such as `Report.txt` and `report.txt`, can exist on a Linux disk but not in a space, so the second to arrive is renamed as a [conflict](conflicts.md#two-files-with-the-same-name). A name is at most 255 bytes, and a path at most 256 folders deep.
+Koidrive compares names without regard to case or Unicode normalization. Two names in one folder that differ only in case, such as `Report.txt` and `report.txt`, can exist on a Linux disk but not in a space, so the second to arrive is renamed as a [conflict](conflicts.md#two-files-with-the-same-name). A name is at most 255 bytes, and a path at most 256 folders deep.
 
 ## The first link compares the folder with the space
 
 The first sync compares the folder with the space, path by path. Here names must match exactly, including case, so `Report.txt` doesn't match `report.txt`. Names in different Unicode forms, such as the ones macOS and Linux write for `résumé.docx`, match:
 
-- A folder that the space also holds at the same path stays, and its contents are compared one by one.
+- A folder that the space also holds at the same path stays, and sync compares its contents one by one.
 - A file that the space holds at the same path, with the same content and the same executable bit, stays as it is.
-- Files and folders that only the space holds are downloaded, except where a held entry has the same name.
+- Sync downloads files and folders that only the space holds, except where a held entry has the same name.
 - Entries that `.koiignore` or this device's rules leave out are skipped.
 - A file or folder at a path the space's trash holds is held, since the space records a deletion at that path. A folder whose name the space holds only in another case is held with everything in it when it holds such a file.
 - Every other file and folder uploads as it is. If the space has a file with the same name, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name).
 
-Sync holds every other file and folder too when the folder shows an earlier sync with the space: its `.koidrive` marker counts changes it received from the space, the server already has changes from this device in the space, or the folder already had a `.koidrive` marker for the space when you linked it. Unlinking a folder keeps its marker, so a folder linked to the space before, on any device, shows an earlier sync. This holds also when the space has no live files or folders, since its deleted files may no longer be in the trash.
+Sync holds every other file and folder too when the folder shows an earlier sync with the space: its `.koidrive` marker counts changes it received from the space, the server already has changes from this device in the space, or the folder already had a `.koidrive` marker for the space when you linked it. Unlinking a folder keeps its marker, so a folder linked to the space before, on any device, shows an earlier sync. Sync holds them even when the space has no live files or folders, since its deleted files may no longer be in the trash.
 
 Sync asks one question about the held files and folders, which takes `publish` or `discard`. A file you create later inside a held folder joins the question. Files you create anywhere else sync as usual. If the held entries change before sync applies your answer, sync replaces the question with a new one that has a new ID and drops your answer. An entry you edit or move stays held, and one you delete leaves the question. Run `koi resolve` again and answer the new question.
 
@@ -39,7 +39,7 @@ A space syncs to at most one folder on each device. Koidrive refuses a folder th
 - is inside another linked folder, or holds one.
 - holds Koidrive's own state or configuration folder, or sits inside it.
 - another device linked and hasn't unlinked.
-- is on a file system without a rename that refuses to replace its target, which Koidrive needs to write files safely.
+- is on a file system without a rename that refuses to replace its target. Koidrive needs that rename to write files safely.
 
 ## .koiignore rules
 
@@ -52,7 +52,7 @@ If you move a synced file into an ignored folder while the daemon isn't running,
 
 ## The local trash
 
-When sync replaces or removes a file in a linked folder, Koidrive moves the old file to `.koidrive/trash/` in that folder instead of deleting it. A file stays there for 7 days. While the trash holds more than 2048 MB, the oldest files leave first. A megabyte here is 1,000,000 bytes. Set another size in `config.toml`:
+When sync replaces or removes a file in a linked folder, Koidrive moves the old file to `.koidrive/trash/` in that folder instead of deleting it. A file stays there for 7 days. While the trash holds more than 2048 MB, Koidrive deletes the oldest files first. A megabyte here is 1,000,000 bytes. Set another size in `config.toml`:
 
 ```toml
 [trash]

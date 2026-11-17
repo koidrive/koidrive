@@ -27,27 +27,27 @@ The driver needs a rename that fails instead of replacing: `renameat2(RENAME_NOR
 
 - The driver holds a descriptor for the sync root and resolves every path from it one component at a time without following links: on Linux with `openat2` and `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, elsewhere with `openat(O_NOFOLLOW | O_DIRECTORY)` per component.
 - Each directory's `(dev, ino)` is compared with L before use, and every rename is a `renameat` between directory descriptors. A parent replaced by a link or another directory after the scan fails the identity check.
-- Immediately before each rename, the driver resolves the path again from the root and compares the result with the held descriptor's identity; a mismatch fails the effect. A move in the window between that check and the rename can only move the entry within the same file system, never destroy it.
+- Immediately before each rename, the driver resolves the path again from the root and compares the result with the held descriptor's identity. A mismatch fails the effect. A move in the window between that check and the rename can only move the entry within the same file system, never destroy it.
 
 ### The effect record
 
-Before an effect that creates, replaces, moves or removes anything reaches the driver, the engine persists its record in the transaction that emits it: `effect_id`, kind, the target as (parent directory identity, name), the expected state of the entry it displaces (identity, size, mtime, manifest digest), the new content for a write, and two private paths, `.koidrive/staging/<effect_id>` and `.koidrive/quarantine/<effect_id>`. Staging holds only bytes downloaded from the server and verified against their hashes; the driver never moves a user's file into staging. Quarantine holds displaced entries and is never swept.
+Before an effect that creates, replaces, moves or removes anything reaches the driver, the engine persists its record in the transaction that emits it: `effect_id`, kind, the target as (parent directory identity, name), the expected state of the entry it displaces (identity, size, mtime, manifest digest), the new content for a write, and two private paths, `.koidrive/staging/<effect_id>` and `.koidrive/quarantine/<effect_id>`. Staging holds only bytes downloaded from the server and verified against their hashes. The driver never moves a user's file into staging. Quarantine holds displaced entries and is never swept.
 
 ### Replacing a file
 
 `WriteFile` with `replaces` runs these steps:
 
 1. Download chunks into the content-addressed chunk cache, verifying each chunk's SHA-256 (spec §10). Assemble the file at the staging path, verify the manifest digest, set the executable bit and flush the file.
-2. Compare the target with the expected state. On a mismatch, stop with `EffectFailed`; nothing was displaced.
+2. Compare the target with the expected state. On a mismatch, stop with `EffectFailed`. Nothing was displaced.
 3. Rename the target to the quarantine path (no-replace). From here on, whatever the user had at the target, even a write made after step 2, is in quarantine and intact.
 4. Compare the quarantined entry with the expected state, including its content digest.
-   - On a match, rename staging to the target (no-replace). If the target name was taken meanwhile, leave the new entry alone and delete the staging file; the quarantined file is synced content and still goes through step 5, after which the effect reports `EffectFailed`.
+   - On a match, rename staging to the target (no-replace). If the target name was taken meanwhile, leave the new entry alone and delete the staging file. The quarantined file is synced content and still goes through step 5, after which the effect reports `EffectFailed`.
    - On a mismatch, the user wrote between steps 2 and 3. Rename the quarantined entry back to the target (no-replace) and report `EffectFailed`. If the target name was taken again, the quarantined entry becomes a recovered file (below).
 5. Move the quarantined entry, which equals the synced content, to `.koidrive/trash/` and report `EffectDone`.
 
 ### Removing, creating and moving
 
-- Removing (`RemoveFile`, `RemoveDir`) is steps 2 to 5 without staging: quarantine, compare, then trash or put back. A directory must be empty once quarantined; an entry created in it meanwhile is a mismatch.
+- Removing (`RemoveFile`, `RemoveDir`) is steps 2 to 5 without staging: quarantine, compare, then trash or put back. A directory must be empty once quarantined. An entry created in it meanwhile is a mismatch.
 - A quarantined directory that holds nothing but regular files with the exact names of the fixed platform list (`.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) matches. The driver deletes those files, which scans leave out, and then moves the directory to the trash empty.
 - Any other entry keeps the folder, including a file that `.koiignore` or the device-local list excludes: the effect fails, everything is put back, and the folder is reported as a problem that names those entries. The driver does not plan the removal again after a wait. The status names the entries until the effect planned for the folder changes or the folder restarts. A wait for another failed effect leaves it blocked, and a folder to remove that holds it waits behind it without keeping the folder from being up to date.
 - Creating (`CreateDir`, `WriteFile` without `replaces`) is a no-replace `mkdir`, or a no-replace rename from staging.
@@ -100,7 +100,7 @@ These rules complete the table:
 - A write is overtaken whenever the entry it replaced matched and went to the local trash while its target does not hold the new content: the user changed or removed the written file, or took its name before it was placed. An overtaken write leaves the node out of S and L, so R's content is downloaded again and what the user left on disk is kept beside it as a new file. S never stays at the content the write replaced.
 - In every row, quarantine is either moved to the trash after it is verified as synced content, or returned to the user.
 - Recovery writes the effect's counter to the marker again before it looks, since the crash may have come before the marker write (§2.8). A crash during recovery repeats recovery, which is idempotent.
-- Staging files with no effect record are deleted at startup; they hold only server bytes. Verified chunks stay in the cache, so a download resumes. Uploads resume through `PrepareUpload`, which answers `PRESENT` for chunks the server already has (spec §8 step 1).
+- Staging files with no effect record are deleted at startup. They hold only server bytes. Verified chunks stay in the cache, so a download resumes. Uploads resume through `PrepareUpload`, which answers `PRESENT` for chunks the server already has (spec §8 step 1).
 
 ## 5.4 Case sensitivity
 
@@ -108,12 +108,12 @@ The server enforces a unique `name_key` per directory on every platform (spec §
 
 - On Linux, `Report.txt` and `report.txt` in one folder cannot both sync. The one committed second gets a conflict name (R1), and the Linux device renames its local file to match.
 - The engine decides whether a name is taken by `name_key`, never by asking the file system.
-- A case-only rename must reach the engine as a rename; the fs layer recognizes it by file identity.
+- A case-only rename must reach the engine as a rename. The fs layer recognizes it by file identity.
 - A case-only or normalization-only rename the engine applies goes through `.koidrive/parked/` in two no-replace renames, because on a case-insensitive volume the source itself holds the target name.
 
 ## 5.5 Unicode normalization
 
-L keeps the exact on-disk name, so paths resolve, and names are compared after NFC normalization, so an NFD name from HFS+ does not cause an endless rename. On Linux, two names that differ only in normalization collide in `name_key`, like a case collision. RFC 0001 §1 pins case folding and normalization to Unicode 18.0.0. The server and the engine both fold with CaseFolding 18.0.0; the server normalizes with its runtime's data and the engine with the `unicode-normalization` crate, which can lag that version (RFC 0001 §1 states the limitation).
+L keeps the exact on-disk name, so paths resolve, and names are compared after NFC normalization, so an NFD name from HFS+ does not cause an endless rename. On Linux, two names that differ only in normalization collide in `name_key`, like a case collision. RFC 0001 §1 pins case folding and normalization to Unicode 18.0.0. The server and the engine both fold with CaseFolding 18.0.0. The server normalizes with its runtime's data, and the engine normalizes with the `unicode-normalization` crate, which can lag that version (RFC 0001 §1 states the limitation).
 
 ## 5.6 Symbolic links, special files and hard links
 
@@ -145,7 +145,7 @@ Becoming ignored never deletes anything, on either side. An ignored path is outs
 
 ### Evaluating the rules
 
-- The fs driver parses each `.koiignore` file it observes and passes the rules to the engine with the observation. The engine owns the matcher and applies the same rules to remote nodes; `core/fs` uses the same matcher to leave ignored paths out of scans and watchers. Rules come from the files on this device's disk.
+- The fs driver parses each `.koiignore` file it observes and passes the rules to the engine with the observation. The engine owns the matcher and applies the same rules to remote nodes. `core/fs` uses the same matcher to leave ignored paths out of scans and watchers. Rules come from the files on this device's disk.
 - When a remote change creates or updates a `.koiignore` file, the planner applies that effect before any other effect in the same directory's subtree.
 - After an effect that wrote, moved or removed a rules file, or that moved a folder, the driver asks for no further effect and no commit until a scan of the effect's paths has passed its rules. The engine holds each rules file by the path of its folder.
 - A rules file that cannot be read (larger than 1 MiB, or unreadable) keeps the rules its folder had. When the folder had none, the scan reports the folder as unreadable and leaves what it holds as it was known, so nothing the file may exclude is uploaded.
@@ -161,9 +161,9 @@ Becoming ignored never deletes anything, on either side. An ignored path is outs
 A node is excluded on this device when any of these matches the rules: its position in R, S or L; its place in L below its R parent, where an effect would write it; or its being held by R below a folder excluded here for any of these reasons.
 
 - The engine keeps an excluded node's S entry, freezes it, and plans nothing for it in either direction: no ops, no effects. R keeps following the server.
-- A node that L shows at an included position different from S's was moved by the user out of exclusion. It is not excluded; its move is planned against S like any local move, and it leaves exclusion once the result places it at an included position in R and S.
+- A node that L shows at an included position different from S's was moved by the user out of exclusion. It is not excluded. Its move is planned against S like any local move, and it leaves exclusion once the result places it at an included position in R and S.
 - A node whose local copy has not moved stays excluded, so a remote move into an ignored path never moves the local copy.
-- Freezing has two limits. S still takes what L and R both hold for the node. And S gives up a position that neither L nor R holds any more: with the node in L and live in R, S takes R's position, or the local copy's when S cannot hold the node at R's, and keeps its content for comparison when the node is included again; otherwise S drops the node, which is then resolved like a node never synced. S never holds a node the server holds below a folder the person discarded on a first link that R does not hold, since S holds that folder only so the effects can remove it and nothing was agreed there: S gives that position up too.
+- Freezing has two limits. S still takes what L and R both hold for the node. And S gives up a position that neither L nor R holds any more: with the node in L and live in R, S takes R's position, or the local copy's when S cannot hold the node at R's, and keeps its content for comparison when the node is included again. Otherwise S drops the node, which is then resolved like a node never synced. S never holds a node the server holds below a folder the person discarded on a first link that R does not hold, since S holds that folder only so the effects can remove it and nothing was agreed there: S gives that position up too.
 - A folder that S drops gives up its S entry together with every node S holds below it, when all of them are ignored too.
 - An excluded node is not a deletion and never enters the mass-delete ledger. It is ineligible for convergence (§3.4), and its local copy is left exactly as it is.
 
@@ -210,11 +210,11 @@ When events were lost and a rescan cannot attribute a disappearance to a rename,
 
 A miss proves nothing, since an editor that saved the moved file by temporary file and rename gave it a new identity. The rule for a miss:
 
-- When the sync root holds any ignored entry, a miss makes the disappearance ambiguous: no `Delete` is sent, the node is held like a guard hold (§6.1) under a question (`QuestionKind::AmbiguousDisappearance`) that asks to delete the files everywhere or restore them here, and it stays on the server and on other devices until answered. An ignored subtree that cannot be listed counts as holding entries. `.koidrive/` is not an ignored entry for this rule; the walk still lists it, so a file a user moved into it is found.
+- When the sync root holds any ignored entry, a miss makes the disappearance ambiguous: no `Delete` is sent, the node is held like a guard hold (§6.1) under a question (`QuestionKind::AmbiguousDisappearance`) that asks to delete the files everywhere or restore them here, and it stays on the server and on other devices until answered. An ignored subtree that cannot be listed counts as holding entries. `.koidrive/` is not an ignored entry for this rule. The walk still lists it, so a file a user moved into it is found.
 - Only when the root holds no ignored entry is a miss a deletion.
 - Inode reuse can make a deleted file look found. That errs toward keeping the node on the server.
 - The engine does not open the ambiguous-disappearance question yet: `core/fs` reports every miss as a removal and the node is deleted like any other that disappeared. The server copy goes to the server trash, and the local file is still in the ignored folder. While misses count as deletions, the walk does not list `.koidrive/`, because the engine's own trash moves keep their identity there and each would be found.
 
-Adding a rule, even `*`, excludes nodes and deletes nothing, so it never prompts the guard. Removing a rule can make many files appear at once; they are uploads. Only actual removals from disk count toward §6.1.
+Adding a rule, even `*`, excludes nodes and deletes nothing, so it never prompts the guard. Removing a rule can make many files appear at once. They are uploads. Only actual removals from disk count toward §6.1.
 
 For every transition caused only by a rule, or by a move into an ignored path the fs layer identifies by the rename or by finding the identity, there are zero `Delete` ops and zero removal or trash effects.

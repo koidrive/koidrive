@@ -51,7 +51,7 @@ The macOS app shows a pairing code without the server's address, under **Setting
 koi space create Photos
 ```
 
-This prints the new space's ID. `koi folder link --space` finds a space by its name, so the server refuses a name you already use. Names are compared exactly after leading and trailing whitespace is removed, so `Photos` and `photos` are two names. `koi space list` lists your spaces with their IDs. Then [link a folder](folders.md#link-a-folder) to the space.
+This prints the new space's ID. `koi folder link --space` finds a space by its name, so the server refuses a name you already use. The server compares names exactly after it trims leading and trailing whitespace, so `Photos` and `photos` are two names. `koi space list` lists your spaces with their IDs. Then [link a folder](folders.md#link-a-folder) to the space.
 
 ## Upgrade the server
 
@@ -63,4 +63,4 @@ koi server upgrade --interactive
 
 It logs in with Cloudflare and uploads the server version built into your `koi`. To upgrade by hand with Wrangler, follow [Deploying and upgrading a Koidrive server](../deploy.md#upgrade). Your files, devices and settings stay. Open sync sessions move to the new version within 5 minutes. The command stops if the server runs a newer release than your `koi`, or stores its data in a newer format. `--allow-downgrade` uploads anyway, but a server older than its data stops answering until a newer one replaces it.
 
-Never go back to an older server version. Once a newer version has moved the server's stored data forward, an older one refuses to start.
+Never go back to an older server version. Once a newer version has upgraded the server's stored data, an older one refuses to start.

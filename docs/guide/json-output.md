@@ -6,7 +6,7 @@ This page describes what `koi` prints with `--json` and the exit statuses it ret
 
 `--json` works on every command and in any position. It selects schema 1, the only schema. `--json=1` names it explicitly, and any other version is a usage error. Plain `--json` always means schema 1.
 
-With `--json`, every command except `koi _daemon` prints exactly one JSON object on stdout, also when it fails, when it shows help and when it shows the version. The daemon prints one object per line, as [The daemon prints events](#the-daemon-prints-events) describes. Logs and progress go to stderr. A command with `--json` never opens a browser and prints no pending-decision line. It reads stdin only when an explicit input flag requests it, such as `koi setup --pairing-code-stdin` or `koi share create --password`. Only `koi share create --password` asks for input on a terminal.
+With `--json`, every command except `koi _daemon` prints exactly one JSON object on stdout, even when it fails, shows help or shows the version. The daemon prints one object per line, as [The daemon prints events](#the-daemon-prints-events) describes. Logs and progress go to stderr. A command with `--json` never opens a browser and prints no pending-decision line. It reads stdin only when an explicit input flag requests it, such as `koi setup --pairing-code-stdin` or `koi share create --password`. Only `koi share create --password` asks for input on a terminal.
 
 Without `--json`, a command whose result is one value prints only that value on stdout, and what it means on stderr: `koi space create` prints the new space's ID, `koi history restore` the restore's ID, and `koi device invite` the pairing code.
 
@@ -22,7 +22,7 @@ Without `--json`, a command whose result is one value prints only that value on 
 | `decisions` | The sync decisions waiting on this device, described below |
 | `next_commands` | Commands to run next, each as an `argv` array. Present only when there is a real next step |
 
-`accepted` means the command recorded work that happens later. Answering a decision and asking for a restore return it. Check `koi status` or `koi history requests` to see the work finish.
+`accepted` means the command recorded work that happens later. `koi resolve <id> <answer>` and `koi history restore` return it. Check `koi status` or `koi history requests` to see the work finish.
 
 `unchanged` means the state the command asks for was already there, so the command changed nothing. It exits 0, and `data` describes the state as it is.
 
@@ -58,13 +58,13 @@ The entry also has `auth`, `output` and `schema`. `auth` is `none`, `device` whe
 }
 ```
 
-`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. A `conflict` decision's `items` are its two files, each with the `device_id` of the device that wrote it and its `device_name` when the account's device list has it. Its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It only takes `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
+`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. A `conflict` decision's `items` are its two files, each with the `device_id` of the device that wrote it and its `device_name` when the account's device list has it. Its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It takes only `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
 
 ## Retries never make a change twice
 
 These commands set a state, so running one again when the state already holds returns `unchanged` with exit status 0:
 
-- `koi folder link <folder> --space <space>` when the folder is already linked to that space. Linking it to another space fails and changes nothing. With a space name rather than an ID, the command reads the server's space list, so it fails while the server can't be reached.
+- `koi folder link <folder> --space <space>` when the folder is already linked to that space. Linking it to another space fails and changes nothing. With a space name rather than an ID, the command reads the server's space list, so it fails while it can't reach the server.
 - `koi folder unlink <folder>` when the folder isn't linked. `data` then has only `path`.
 - `koi device revoke <id>` when the device is already revoked.
 - `koi space create <name>` when a space has that name. It prints that space's ID, as for a new space.
@@ -74,7 +74,7 @@ These commands make a new change each time they run: `koi history restore`, `koi
 
 - The same ID with other arguments fails with `stale_decision` (exit 7) and no next command. Repeat the first call as it was, or pick a new ID. An ID for `koi device invite` also belongs to the device and server that ran it.
 - A pairing code expires after about 10 minutes. After that, `koi device invite` with its ID fails with `stale_decision`. Run it with a new ID.
-- A command whose change is known to have failed records nothing, so running it again with its ID tries again.
+- When a command knows its change failed, it records nothing, so running it again with its ID tries again.
 - If the first run stopped before it recorded its outcome, still runs, or couldn't tell whether its change happened (for example, the server didn't answer), the command fails with `interrupted` (exit 130). Wait until the first run has ended, then read the state with `koi status --json` or `koi history requests`. If its change didn't happen, make it with a new ID.
 
 `koi share create` takes no request ID, because its record would keep the link. Each run makes a new link. If a run fails without an answer, `koi share list --json` shows whether it made one, and `koi share revoke` ends a link you don't need.
@@ -96,7 +96,7 @@ The records are in `requests/` in the profile's state directory (`~/.local/state
 | 8 | `koi join` or `koi server claim` got a claim or pairing code that is wrong or has expired | Ask the person for the code again |
 | 130 | Ctrl-C stopped the command, or an earlier run with the same request ID has no recorded outcome | Read the state before you run a change again |
 
-The `error.code` values match these: `failed`, `usage`, `decision_required`, `auth_required`, `halted`, `unavailable`, `stale_decision`, `wrong_code` and `interrupted`. A `koi history` or `koi share` refusal also names its `error.reason`, such as `not_in_linked_folder` or `no_such_version`; the schema lists every reason.
+The `error.code` values match these: `failed`, `usage`, `decision_required`, `auth_required`, `halted`, `unavailable`, `stale_decision`, `wrong_code` and `interrupted`. A `koi history` or `koi share` refusal also names its `error.reason`, such as `not_in_linked_folder` or `no_such_version`. The schema lists every reason.
 
 ## status --check reports the most urgent condition
 
@@ -105,15 +105,15 @@ The `error.code` values match these: `failed`, `usage`, `decision_required`, `au
 1. 4 when this device isn't set up.
 2. 5 when a folder is halted, or stopped because the daemon isn't running. `service` in the same output says whether the background service runs and why not.
 3. 3 when a decision needs a choice. A notice that only takes `dismiss` doesn't count.
-4. 6 when a folder is offline, or puts a call off until later. The folder's `wait` says why: `quota` when the server refused for a used-up limit or full storage, `retry` when the call kept failing for another reason. `until_ms` is when it's sent again.
+4. 6 when a folder is offline, or puts a call off until later. The folder's `wait` says why: `quota` when the server refused for a used-up limit or full storage, `retry` when the call kept failing for another reason. `until_ms` is when the folder sends the call again.
 
-Connecting and catching up aren't failures, so they exit 0. Neither is a pause. While sync is paused, `data.paused` is true (it's left out otherwise), the folders the pause stopped add no `stopped` condition, and `next_commands` names `koi resume`. A halted folder still adds a `halted` condition while paused. `data.conditions` lists every condition found, with or without `--check`.
+Connecting and catching up aren't failures, so they exit 0. Neither is a pause. While sync is paused, `data.paused` is true, the folders the pause stopped add no `stopped` condition, and `next_commands` names `koi resume`. Otherwise the output leaves `data.paused` out. A halted folder still adds a `halted` condition while paused. `data.conditions` lists every condition found, with or without `--check`.
 
-`data.update` says whether a newer release is out: `state` is `available`, `up_to_date`, `unknown` (no check has had an answer yet) or `off`, and `version` is the version this device runs, the daemon's or this `koi`'s when no daemon runs. With `available` it adds `latest`, `url` and `command`, which is `koi update`. `checked_at` is when GitHub last answered, in UTC. `--check` ignores it.
+`data.update` says whether a newer release is out. `state` is `available`, `up_to_date`, `unknown` (no check has had an answer yet) or `off`. `version` is the version this device runs, which is the daemon's, or this `koi`'s when no daemon runs. With `available` it adds `latest`, `url` and `command`, which is `koi update`. `checked_at` is when GitHub last answered, in UTC. `--check` ignores it.
 
 ## The daemon prints events
 
-`koi _daemon --json` prints one JSON object per line on stdout, each with `schema_version` and `event`: `started` with the version, the socket and the number of folders, `folder_state` with the folder, its space and its new state whenever a folder's state changes, `stopping` with the signal, and `stopped`. Its logs on stderr are JSON lines too. If it can't start, it prints one error envelope on a single line.
+`koi _daemon --json` prints one JSON object per line on stdout. Each object has `schema_version` and `event`. The events are `started` with the version, the socket and the number of folders, `folder_state` with the folder, its space and its new state whenever a folder's state changes, `stopping` with the signal, and `stopped`. Its logs on stderr are JSON lines too. If it can't start, it prints one error envelope on a single line.
 
 ## Questions need a terminal
 
