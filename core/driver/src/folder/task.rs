@@ -30,7 +30,7 @@ use crate::progress::Tracker;
 use crate::timing::Time;
 
 use super::commit::sent_in_order;
-use super::work::{Slot, finished, list_tree, stage_effect, upload_chunks};
+use super::work::{Slot, finished, in_place, list_tree, spawned, stage_effect, upload_chunks};
 use super::{
     CLAIM_RECHECK, Folder, Listed, Listing, MAX_FORMAT, OTHER_FOLDER, RECLAIM_TRASH, REPLACED,
     ROOT_AGAIN, ROOT_RECHECK, View, Work,
@@ -266,6 +266,7 @@ impl FolderTask {
                 return Halt::Person(failures::session_ended(&reason), reason.to_string());
             }
         };
+        let session = Arc::new(session);
         let transfer = self.transfer();
         self.publish(&mut folder);
         let stop = {
@@ -283,36 +284,36 @@ impl FolderTask {
             'session: loop {
                 let step = tokio::select! {
                     event = events.next() => match event {
-                        Some(event) => folder.event(event),
+                        Some(event) => in_place(|| folder.event(event)),
                         None => Err(Stop::Protocol("the session ended".into())),
                     },
                     Some(seen) = from_disk.recv() => match seen {
                         // The observer reaches the folder by its path, so a folder replaced before its
                         // first scan is scanned or fails there before the recheck below sees it.
-                        FromDisk::Batch(batch, entries) => match folder.observed(*batch, entries) {
+                        FromDisk::Batch(batch, entries) => match in_place(|| folder.observed(*batch, entries)) {
                             Err(Stop::OtherRoot) if !claim::still_locked(&lock, &self.link.root) => {
                                 break Halt::Root(Halted::Replaced, REPLACED.to_owned());
                             }
                             step => step,
                         },
-                        FromDisk::Scanned => folder.scanned(),
+                        FromDisk::Scanned => in_place(|| folder.scanned()),
                         FromDisk::Failed(_) if !claim::still_locked(&lock, &self.link.root) => {
                             break Halt::Root(Halted::Replaced, REPLACED.to_owned());
                         }
                         FromDisk::Failed(why) => Err(Stop::Io(io::Error::other(why))),
                     },
-                    pages = finished(&mut list) => folder.listed(pages),
-                    (pending, staged) = finished(&mut stage) => folder.staged(pending, staged),
-                    receipts = finished(&mut upload) => folder.uploaded(receipts),
+                    pages = finished(&mut list) => in_place(|| folder.listed(pages)),
+                    (pending, staged) = finished(&mut stage) => in_place(|| folder.staged(pending, staged)),
+                    receipts = finished(&mut upload) => in_place(|| folder.uploaded(receipts)),
                     result = finished(&mut send) => {
-                        sent_in_order(&mut folder, std::iter::from_fn(|| events.try_next()), result)
+                        in_place(|| sent_in_order(&mut folder, std::iter::from_fn(|| events.try_next()), result))
                     }
-                    () = finished(&mut wait) => folder.resend(),
-                    () = finished(&mut retry) => folder.retry(),
+                    () = finished(&mut wait) => in_place(|| folder.resend()),
+                    () = finished(&mut retry) => in_place(|| folder.retry()),
                     () = finished(&mut expire) => Ok(Vec::new()),
-                    () = self.requests.notified() => folder.requested(),
+                    () = self.requests.notified() => in_place(|| folder.requested()),
                     _ = reclaim.tick() => {
-                        folder.reclaim_trash(self.trash_cap);
+                        in_place(|| folder.reclaim_trash(self.trash_cap));
                         Ok(Vec::new())
                     }
                     _ = recheck.tick() => {
@@ -331,36 +332,45 @@ impl FolderTask {
                         Work::Subscribe(since) => session.subscribe(since),
                         Work::List => {
                             let listing = Listing::default();
-                            list = Some(Box::pin(list_tree(
-                                session,
-                                &self.link.space_id,
+                            list = spawned(list_tree(
+                                session.clone(),
+                                self.link.space_id.clone(),
                                 listing,
                                 None,
-                            )))
+                            ))
                         }
                         Work::ListAfter(wait, listing) => {
-                            list = Some(Box::pin(list_tree(
-                                session,
-                                &self.link.space_id,
+                            list = spawned(list_tree(
+                                session.clone(),
+                                self.link.space_id.clone(),
                                 listing,
                                 Some(wait),
-                            )))
+                            ))
                         }
                         Work::Stage(pending) => {
-                            stage = Some(Box::pin(stage_effect(session, transfer, pending, None)));
+                            stage = spawned(stage_effect(
+                                session.clone(),
+                                transfer.clone(),
+                                pending,
+                                None,
+                            ));
                         }
                         Work::StageAfter(wait, pending) => {
-                            stage = Some(Box::pin(stage_effect(
-                                session,
-                                transfer,
+                            stage = spawned(stage_effect(
+                                session.clone(),
+                                transfer.clone(),
                                 pending,
                                 Some(wait),
-                            )));
+                            ));
                         }
                         Work::Upload(chunks) => {
-                            upload = Some(Box::pin(upload_chunks(session, transfer, chunks)));
+                            upload =
+                                spawned(upload_chunks(session.clone(), transfer.clone(), chunks));
                         }
-                        Work::Send(commit) => send = Some(Box::pin(session.commit(commit))),
+                        Work::Send(commit) => {
+                            let session = session.clone();
+                            send = spawned(async move { session.commit(commit).await });
+                        }
                         Work::ResendAfter(after) => {
                             wait = Some(Box::pin(tokio::time::sleep(after)))
                         }
@@ -370,7 +380,7 @@ impl FolderTask {
                         Work::Reconnect => break 'session Halt::Reconnect,
                     }
                 }
-                self.publish(&mut folder);
+                in_place(|| self.publish(&mut folder));
                 expire = match folder.next_change() {
                     Some(after) => Some(Box::pin(tokio::time::sleep(after))),
                     None => None,

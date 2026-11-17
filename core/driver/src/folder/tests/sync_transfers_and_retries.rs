@@ -875,7 +875,7 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
         let (session, _events, api) = crate::scripted::session(relay).await;
         let mut transfer = Transfer::new(&api);
         transfer.gate = UploadGate::new(4);
-        (upload_chunks(&session, &transfer, upload).await, seen)
+        (upload_chunks(Arc::new(session), transfer, upload).await, seen)
     });
     assert!(
         matches!(&result, Err(ChunkError::SourceChanged { hash }) if *hash == stale),
@@ -908,4 +908,35 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
     }));
     assert_eq!(remote.names().len(), 8);
     assert_eq!(a.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn an_upload_keeps_moving_while_the_folder_computes_for_longer_than_a_transfer_may_stall() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::write(site.root.join("a.txt"), b"bytes the relay stores").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    let Some(Work::Upload(upload)) = a.work.pop_front() else {
+        panic!("the content is uploaded first");
+    };
+    let hashes: Vec<Vec<u8>> = upload.chunks.iter().map(|chunk| chunk.hash.clone()).collect();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (receipts, stored_while_busy) = runtime.block_on(async {
+        let (relay, seen) = crate::scripted::relay(1).await;
+        let (session, _events, api) = crate::scripted::session(relay).await;
+        let mut transfer = Transfer::new(&api);
+        transfer.stall_timeout = Duration::from_secs(2);
+        let mut slot = work::spawned(upload_chunks(Arc::new(session), transfer, upload));
+        let stored_while_busy = work::in_place(|| {
+            let busy = Instant::now();
+            while busy.elapsed() < Duration::from_secs(4) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            seen.lock().unwrap().stored.clone()
+        });
+        (work::finished(&mut slot).await, stored_while_busy)
+    });
+    assert!(receipts.is_ok(), "{receipts:?}");
+    assert_eq!(stored_while_busy, hashes);
 }

@@ -186,7 +186,7 @@ pub struct Session {
     backoff: Backoff,
     retry_later_attempts: u32,
     bundles: Arc<Bundles>,
-    task: JoinHandle<()>,
+    task: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Session {
@@ -206,7 +206,7 @@ impl Session {
             backoff: config.backoff,
             retry_later_attempts: config.retry_later_attempts,
             bundles: bundles.clone(),
-            task: tokio::spawn(
+            task: std::sync::Mutex::new(Some(tokio::spawn(
                 Task {
                     auth,
                     config,
@@ -229,7 +229,7 @@ impl Session {
                     bundles,
                 }
                 .run(),
-            ),
+            ))),
         };
         Ok((session, Events(event_rx)))
     }
@@ -363,10 +363,13 @@ impl Session {
     }
 
     /// Closes the connection and waits for the session task to end. Pending calls fail with `StopReason::Closed`.
-    pub async fn close(self) {
+    pub async fn close(&self) {
         let _ = self.commands.send(Command::Close);
         let _ = self.closing.send(true);
-        let _ = self.task.await;
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 
     async fn call(
