@@ -1489,6 +1489,19 @@ fn settle(
                 }
                 Settled::Done
             }
+            Outcome::Failed {
+                reason: Reason::Holds(names),
+                ..
+            } if engine.effects.keeps(&engine.trees, &record.effect_id) => {
+                (engine.effects)
+                    .kept(&mut engine.trees, &record.effect_id)
+                    .map_err(refused)?;
+                tracing::info!(
+                    entries = names.len(),
+                    "a folder another device deleted stays here with the entries this device does not sync"
+                );
+                Settled::Done
+            }
             Outcome::Failed { reason, .. } => {
                 match reason {
                     Reason::Overtaken => {

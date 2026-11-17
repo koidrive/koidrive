@@ -419,6 +419,7 @@ pub struct Trees {
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
     unsent_creates: TrackedSet<NodeId>,
+    kept_folders: TrackedSet<NodeId>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     content_provenance: TrackedMap<NodeId, ContentProvenance>,
@@ -525,6 +526,7 @@ impl Trees {
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
             unsent_creates: TrackedSet::default(),
+            kept_folders: TrackedSet::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             content_provenance: TrackedMap::default(),
@@ -1950,6 +1952,7 @@ impl Trees {
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
+        self.kept_folders.remove(id);
         if let Some(old) = self.l.remove(id) {
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
@@ -2857,7 +2860,69 @@ impl Trees {
     /// it, also when the node is parked. The effects move a parked node that is ignored back to
     /// the position L keeps for it, and it is excluded from then on.
     pub fn ignored(&self, id: &str) -> bool {
-        self.discard_state(id) == Some(Discard::Kept) || self.ignored_in_place(id)
+        self.discard_state(id) == Some(Discard::Kept)
+            || self.ignored_in_place(id)
+            || self.kept_folder(id)
+    }
+
+    pub(crate) fn kept_folder(&self, id: &str) -> bool {
+        if !self.kept_folders.contains(id) || self.r.live(id).is_some() {
+            return false;
+        }
+        let Some(local) = self.l.get(id) else {
+            return false;
+        };
+        let key = name_key(&local.shape.name);
+        !(self.remote_holders_of_key(&local.shape.parent, &key)).any(|other| {
+            other != id
+                && self
+                    .r
+                    .live(other)
+                    .is_some_and(|shape| shape.kind == Kind::Dir)
+        }) && (self.local_children_placed_or_parked(id)).all(|child| self.excluded(child))
+    }
+
+    pub(crate) fn keep_folder(&mut self, id: &str) {
+        let origin = (self.waiting.get(id)).map_or(Origin::Other, |waiting| waiting.origin);
+        if !self.set_synced_if_valid(id.to_owned(), None) {
+            self.wait(id.to_owned(), None, origin);
+        }
+        self.kept_folders.insert(id.to_owned());
+        self.mark(id);
+    }
+
+    pub(crate) fn keep_folders_of_kept_folders(&mut self) {
+        loop {
+            let parents: BTreeSet<NodeId> = (self.kept_folders.iter())
+                .filter(|id| self.kept_folder(id))
+                .filter_map(|id| self.l.get(id).map(|node| node.shape.parent.clone()))
+                .filter(|parent| {
+                    *parent != self.l.root
+                        && !self.kept_folders.contains(parent)
+                        && self.r.get(parent).is_some_and(|node| node.trashed)
+                        && self.l.get(parent).is_some_and(|node| !node.parked)
+                        && !self.held(parent)
+                        && self
+                            .local_children(parent)
+                            .all(|child| self.kept_folder(child))
+                })
+                .collect();
+            if parents.is_empty() {
+                return;
+            }
+            for parent in parents {
+                self.keep_folder(&parent);
+            }
+        }
+    }
+
+    pub(crate) fn kept_folders(&self) -> &BTreeSet<NodeId> {
+        &self.kept_folders
+    }
+
+    pub(crate) fn end_kept_folder(&mut self, id: &str) {
+        self.kept_folders.remove(id);
+        self.mark(id);
     }
 
     fn ignored_in_place(&self, id: &str) -> bool {
@@ -4964,6 +5029,7 @@ impl Trees {
             dropped_edits: (*self.dropped_edits).clone(),
             unsent_moves: (*self.unsent_moves).clone(),
             unsent_creates: (*self.unsent_creates).clone(),
+            kept_folders: (*self.kept_folders).clone(),
             unseen_changes: (*self.unseen_changes).clone(),
             replaced_versions: (*self.replaced_versions).clone(),
             content_provenance: (*self.content_provenance).clone(),
@@ -5009,6 +5075,7 @@ impl Trees {
             dropped_edits,
             unsent_moves,
             unsent_creates,
+            kept_folders,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -5073,6 +5140,7 @@ impl Trees {
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
             unsent_creates: unsent_creates.take_changes(),
+            kept_folders: kept_folders.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             content_provenance: content_provenance.take_changes(),
@@ -5212,6 +5280,7 @@ impl Trees {
             dropped_edits,
             unsent_moves,
             unsent_creates,
+            kept_folders,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -5252,6 +5321,7 @@ impl Trees {
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
         self.unsent_creates = unsent_creates.into();
+        self.kept_folders = kept_folders.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
         self.content_provenance = content_provenance.into();

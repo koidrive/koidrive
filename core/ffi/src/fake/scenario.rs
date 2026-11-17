@@ -189,6 +189,14 @@ fn recent(now: i64) -> Vec<RecentChange> {
         ),
         change(
             DOCUMENTS,
+            "Projects/app",
+            NodeKind::Folder,
+            ChangeKind::Kept,
+            Direction::Downloaded,
+            22,
+        ),
+        change(
+            DOCUMENTS,
             "Budget (conflicted copy from Build server).xlsx",
             NodeKind::File,
             ChangeKind::ConflictCopy {

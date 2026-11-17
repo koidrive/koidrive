@@ -168,6 +168,8 @@ pub enum EffectError {
     MissingIdentity,
     /// L does not take the outcome of this effect in flight ([`EffectRecord::applies`]).
     DoesNotApply(String),
+    /// The effect in flight is no removal of a folder another device deleted ([`Effects::keeps`]).
+    NotKept(String),
 }
 
 /// The disk side of a space: the effects in flight, the effects cleared so far, and the effect that
@@ -650,6 +652,29 @@ impl Effects {
         } else {
             self.failed.insert(record.node, record.effect);
         }
+        Ok(())
+    }
+
+    /// Whether the effect in flight removes a folder that R holds trashed, which [`Effects::kept`] keeps when the
+    /// folder holds entries this device does not sync.
+    pub fn keeps(&self, trees: &Trees, effect_id: &str) -> bool {
+        self.flight(effect_id).is_some_and(|record| {
+            matches!(record.effect, Effect::RemoveDir { .. })
+                && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
+        })
+    }
+
+    /// The folder the removal in flight acts on holds entries this device does not sync, so it stays on disk with them
+    /// (section 5.10): S gives it up as R did, and L keeps it where it is with nothing planned for it, until L holds
+    /// something below it that this device syncs or R holds a live node at its place.
+    pub fn kept(&mut self, trees: &mut Trees, effect_id: &str) -> Result<(), EffectError> {
+        if !self.keeps(trees, effect_id) {
+            return Err(EffectError::NotKept(effect_id.to_owned()));
+        }
+        let record = self.take(effect_id)?;
+        self.cleared.set(*self.cleared + 1);
+        trees.keep_folder(&record.node);
+        self.failed.remove(&record.node);
         Ok(())
     }
 

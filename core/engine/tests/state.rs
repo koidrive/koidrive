@@ -138,6 +138,7 @@ fn trees_state() -> TreesState {
         dropped_edits: ["a".into()].into(),
         unsent_moves: ["a".into()].into(),
         unsent_creates: ["a".into()].into(),
+        kept_folders: ["k".into()].into(),
         unseen_changes: ["b".into()].into(),
         resends: Default::default(),
         local_changes: ["b".into()].into(),

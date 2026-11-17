@@ -93,6 +93,9 @@ pub enum ChangeKind {
     },
     /// Deleted. A local file removed by a remote deletion goes to the local trash (design §6.1).
     Deleted,
+    /// Another device deleted the folder, and it stays here because it holds files this device does not sync. What
+    /// it synced went to the local trash; it is no longer synced (design §5.10).
+    Kept,
     /// Two devices changed the same file, and the server kept both versions: the other one is at
     /// `path` and this one was saved under `original`'s conflict name (design §2.4).
     ConflictCopy {

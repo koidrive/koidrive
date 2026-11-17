@@ -321,11 +321,10 @@ fn a_deleted_folder_that_keeps_an_excluded_file_on_the_server_leaves_the_folder_
 }
 
 /// Device `a` deletes the folder `held` while `b` holds an entry L does not know there: a file `b`'s rules exclude,
-/// or a symlink. `b` removes `held/a.txt` and keeps the folder with that entry, so the folder's removal fails and
-/// is not planned again on a timer. The folder is up to date, and the status names the entry. Once the person removes
-/// it, a restart removes the folder.
+/// or a symlink. `b` removes `held/a.txt` and keeps the folder with that entry, with no problem and nothing sent. The
+/// folder stays out of sync from then on: once the person removes the entry, a restart leaves the empty folder alone.
 #[test]
-fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_until_it_is_removed()
+fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder_with_it()
  {
     for unknown in ["build.log", "link"] {
         let mut remote = Remote::new();
@@ -368,12 +367,12 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_
         assert!(fs::symlink_metadata(&entry).is_ok(), "{unknown} is kept");
         assert!(!site.root.join("held/a.txt").exists());
         let view = b.folder.view();
-        assert_eq!(view.state, FolderState::UpToDate, "{unknown}");
-        let problem = view.problem.unwrap_or_default();
-        assert!(
-            problem.contains(&format!("\"held\" (the server's change could not be made here: the folder holds entries this device does not sync: {unknown:?})")),
-            "{problem}"
+        assert_eq!(
+            (view.state, view.problem),
+            (FolderState::UpToDate, None),
+            "{unknown}"
         );
+        assert!(b.sent.is_empty(), "{unknown}");
 
         drop(b);
         fs::remove_file(&entry).unwrap();
@@ -382,7 +381,9 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_
         b.scan_until(|b| b.folder.scanned);
         b.run(&mut remote);
         b.settle();
-        assert!(!site.root.join("held").exists(), "{unknown}");
+        assert!(site.root.join("held").is_dir(), "{unknown}");
+        assert!(b.sent.is_empty(), "{unknown}");
+        assert!(remote.names().is_empty(), "{unknown}");
         let view = b.folder.view();
         assert_eq!(
             (view.state, view.problem),
@@ -392,10 +393,10 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_
     }
 }
 
-/// As above, with the excluded file one folder deeper. `held/sub` is the folder that cannot go, and `held` waits behind
-/// it, so the folder is still up to date. Once the person removes the file, a restart removes both folders.
+/// As above, with the excluded file one folder deeper. `held/sub` stays for the file, and `held` stays for `held/sub`.
+/// Once the person removes the file, a restart leaves both folders alone.
 #[test]
-fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_leaves_the_folder_up_to_date()
+fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders()
  {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
@@ -421,26 +422,15 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_le
     a.scan_until(|a| !a.work.is_empty());
     a.run(&mut remote);
     b.pull(&remote);
-    let mut steps = 0;
-    while let Some(work) = b.work.pop_front() {
-        steps += 1;
-        assert!(steps < 20, "the removal is planned again and again");
-        b.perform(work, &mut remote).unwrap();
-    }
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
     b.settle();
     assert!(fs::read(&entry).is_ok());
     assert!(!site.root.join("held/sub/b.txt").exists());
     let view = b.folder.view();
-    assert_eq!(view.state, FolderState::UpToDate);
-    let problem = view.problem.unwrap_or_default();
-    assert!(
-        problem.contains(&format!(
-            "{:?} (the server's change could not be made here: the folder holds entries this device does not sync: \
-             \"build.log\")",
-            Path::new("held").join("sub")
-        )),
-        "{problem}"
-    );
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+    assert!(b.sent.is_empty());
 
     drop(b);
     fs::remove_file(&entry).unwrap();
@@ -450,15 +440,17 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_le
     b.run(&mut remote);
     b.settle();
     b.run(&mut remote);
-    assert!(!site.root.join("held").exists());
+    assert!(site.root.join("held/sub").is_dir());
+    assert!(b.sent.is_empty());
+    assert!(remote.names().is_empty());
     let view = b.folder.view();
     assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
 }
 
 /// As above, with a second effect that fails for a moment: a download whose name an unobserved local file takes. Its
-/// wait ends and unblocks it, while the stuck folder removal stays blocked.
+/// wait ends and unblocks it, and the kept folder is neither blocked nor planned again.
 #[test]
-fn a_wait_for_another_failed_effect_leaves_a_folder_removal_that_entries_l_does_not_know_block_blocked()
+fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder()
  {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
@@ -483,7 +475,7 @@ fn a_wait_for_another_failed_effect_leaves_a_folder_removal_that_entries_l_does_
     b.pull(&remote);
     b.run(&mut remote);
     b.settle();
-    assert!(b.folder.engine.effects.blocked().contains_key(&held));
+    assert!(!b.folder.engine.effects.blocked().contains_key(&held));
     assert!(b.work.is_empty());
 
     a.create(&mut remote, &site_a.root.join("later.txt"), b"written on a");
@@ -495,47 +487,40 @@ fn a_wait_for_another_failed_effect_leaves_a_folder_removal_that_entries_l_does_
     let wait = b.work.pop_front().unwrap();
     assert!(matches!(wait, Work::RetryAfter(_)));
     b.perform(wait, &mut remote).unwrap();
-    assert!(b.folder.engine.effects.blocked().contains_key(&held));
+    assert!(!b.folder.engine.effects.blocked().contains_key(&held));
+    assert!(
+        (b.folder.engine.effects.in_flight().iter()).all(|record| record.node != held),
+        "the kept folder's removal is not planned again"
+    );
     assert_eq!(
         fs::read(site.root.join("held/build.log")).unwrap(),
         b"left out"
     );
 }
 
-/// The person deletes a folder whose removal is stuck on an entry L does not know. The scan takes the node out of
-/// the blocked ones without planning anything for it, and the store holds it unblocked too, as every step checks.
+/// Device `a` renames `x` to `y` while `b` holds a file at `y` that its observer has not seen, so the move fails and
+/// `x` is blocked until a wait ends. The person then deletes `x`. The scan takes the node out of the blocked ones
+/// without planning anything for it, and the store holds it unblocked too, as every step checks.
 #[test]
 fn a_scan_that_unblocks_a_node_without_planning_an_effect_stores_it_unblocked() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
-    fs::create_dir(site_a.root.join("held")).unwrap();
-    a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
-    let sync = SyncRules {
-        include: Vec::new(),
-        exclude: vec!["*.log".into()],
-    };
-    let site = Site::new(&remote, "b");
-    let mut b = site.start_with(&sync);
-    b.connect(&remote);
-    b.scan_until(|b| b.folder.scanned);
-    b.run(&mut remote);
-    b.settle();
-    let held = node_named(&b, "held");
-    fs::write(site.root.join("held/build.log"), b"left out").unwrap();
-    b.settle();
-    fs::remove_dir_all(site_a.root.join("held")).unwrap();
-    a.scan_until(|a| !a.work.is_empty());
+    a.create(&mut remote, &site_a.root.join("x"), b"synced");
+    let (site, mut b) = linked(&mut remote, "b");
+    let x = node_named(&b, "x");
+    fs::rename(site_a.root.join("x"), site_a.root.join("y")).unwrap();
+    a.settle();
     a.run(&mut remote);
     b.pull(&remote);
-    b.run(&mut remote);
-    b.settle();
-    assert!(b.folder.engine.effects.blocked().contains_key(&held));
+    fs::write(site.root.join("y"), b"not observed yet").unwrap();
+    let stage = b.work.pop_front().unwrap();
+    assert!(matches!(stage, Work::Stage(_)));
+    b.perform(stage, &mut remote).unwrap();
+    assert!(b.folder.engine.effects.blocked().contains_key(&x));
 
-    fs::remove_dir_all(site.root.join("held")).unwrap();
-    b.scan_until(|b| !b.folder.engine.effects.blocked().contains_key(&held));
-    assert!(!site.stored().effects.blocked().contains_key(&held));
-    b.settle();
-    assert_eq!(b.state(), FolderState::UpToDate);
+    fs::remove_file(site.root.join("x")).unwrap();
+    b.scan_until(|b| !b.folder.engine.effects.blocked().contains_key(&x));
+    assert!(!site.stored().effects.blocked().contains_key(&x));
 }
 
 #[test]

@@ -112,6 +112,7 @@ fn migrations_apply_from_empty() {
             "guard_ledger",
             "guard_remote",
             "guard_remote_dismissed",
+            "kept_folders",
             "kept_originals",
             "link",
             "local_changes",
@@ -1372,6 +1373,7 @@ fn engine_state() -> EngineState {
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
             unsent_creates: nodes(["c"]),
+            kept_folders: nodes(["k"]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -1606,7 +1608,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 45] = [
+const ENGINE_TABLES: [&str; 46] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1647,6 +1649,7 @@ const ENGINE_TABLES: [&str; 45] = [
     "unsent_moves",
     "unsent_creates",
     "removed_here",
+    "kept_folders",
     "unsent_marks",
     "pending_finishes",
     "lost_positions",
@@ -4772,6 +4775,31 @@ fn a_store_from_before_unsent_creates_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.unsent_creates.clear();
     assert!(!after.trees.unsent_creates.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_kept_folders_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "kept_folders");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.kept_folders.clear();
+    assert!(!after.trees.kept_folders.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

@@ -1706,6 +1706,15 @@ impl World {
                     )
                 }
                 Some(Err(Refused::Overtaken)) => effects.overtaken(trees, &record.effect_id),
+                Some(Err(Refused::NotEmpty))
+                    if applies && effects.keeps(trees, &record.effect_id) =>
+                {
+                    note(
+                        &mut self.seen,
+                        "a folder to remove that holds entries L lacks stays",
+                    );
+                    effects.kept(trees, &record.effect_id)
+                }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
                     if !applies {
                         effects.unblock(&record.node);

@@ -739,6 +739,11 @@ impl Space {
             }
             Ok(Some(_)) => {}
         }
+        if displaced.entry.kind == EntryKind::Dir
+            && let Some(reason) = held(parent.fd(), name)?
+        {
+            return Ok(failed(reason));
+        }
         hook(Step::Checked);
 
         resolve!(self.recheck(&parent));
@@ -1084,18 +1089,20 @@ fn differs(
             let same = contents.displaced(&open_file(quarantine, id)?)?;
             Ok((!same).then_some(Reason::Changed))
         }
-        EntryKind::Dir => {
-            let dir = rustix::fs::openat(quarantine, id, crate::DIR_FLAGS, Mode::empty())?;
-            let mut held = Vec::new();
-            for name in list(dir.as_fd())? {
-                let platform = PLATFORM_FILES.iter().any(|file| name == OsStr::new(file));
-                if !platform || stat_at(dir.as_fd(), &name)?.file_type != FileType::RegularFile {
-                    held.push(name);
-                }
-            }
-            Ok((!held.is_empty()).then_some(Reason::Holds(held)))
+        EntryKind::Dir => held(quarantine, id),
+    }
+}
+
+fn held(parent: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Reason>> {
+    let dir = rustix::fs::openat(parent, name, crate::DIR_FLAGS, Mode::empty())?;
+    let mut held = Vec::new();
+    for name in list(dir.as_fd())? {
+        let platform = PLATFORM_FILES.iter().any(|file| name == OsStr::new(file));
+        if !platform || stat_at(dir.as_fd(), &name)?.file_type != FileType::RegularFile {
+            held.push(name);
         }
     }
+    Ok((!held.is_empty()).then_some(Reason::Holds(held)))
 }
 
 fn clear_platform_files(quarantine: BorrowedFd<'_>, id: &OsStr) -> io::Result<()> {

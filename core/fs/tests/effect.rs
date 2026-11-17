@@ -336,6 +336,23 @@ fn folder_that_holds_anything_but_platform_files_is_put_back_as_it_was() {
 }
 
 #[test]
+fn a_folder_that_holds_an_entry_is_left_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(&SCENARIOS[5], root);
+    let folder = root.join("docs/empty");
+    fs::create_dir(folder.join("node_modules")).unwrap();
+    let before = fs::metadata(&folder).unwrap().ino();
+    let mut steps = Vec::new();
+    let outcome = apply(root, &effect, |step| steps.push(step));
+    assert_eq!(outcome, failed(Reason::Holds(vec!["node_modules".into()])));
+    assert_eq!(steps, [Step::Marked]);
+    assert_eq!(fs::metadata(&folder).unwrap().ino(), before);
+    assert!(private_names(root, "quarantine").is_empty());
+    assert_settled(root);
+}
+
+#[test]
 fn creations_never_take_a_name_that_is_in_use() {
     for scenario in [&SCENARIOS[1], &SCENARIOS[2]] {
         let dir = tempfile::tempdir().unwrap();

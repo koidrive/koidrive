@@ -218,6 +218,10 @@ pub struct TreesState {
     /// below them needs. Each is created again while S keeps it and what it holds. R taking the
     /// node, the server acknowledging its create, or L dropping it ends the record.
     pub unsent_creates: BTreeSet<NodeId>,
+    /// The folders that another device's delete left on disk here because they hold entries this device does not
+    /// sync (section 5.10). L holds each under its old ID, S does not, and nothing is planned for it while L holds
+    /// nothing below it that this device syncs and R holds nothing live at its place.
+    pub kept_folders: BTreeSet<NodeId>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
     /// node's shape past a record that carries no user's change, so a delete never passes over a change its user did not
@@ -387,6 +391,7 @@ pub struct TreesChanges {
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
     pub unsent_creates: SetChanges<NodeId>,
+    pub kept_folders: SetChanges<NodeId>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub content_provenance: MapChanges<NodeId, ContentProvenance>,
@@ -426,6 +431,7 @@ impl TreesChanges {
             dropped_edits,
             unsent_moves,
             unsent_creates,
+            kept_folders,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -461,6 +467,7 @@ impl TreesChanges {
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
             unsent_creates: set_changes(&before.unsent_creates, unsent_creates),
+            kept_folders: set_changes(&before.kept_folders, kept_folders),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             content_provenance: map_changes(&before.content_provenance, content_provenance),

@@ -2898,6 +2898,7 @@ fn rebase(
     now_ms: u64,
     skip: &BTreeSet<NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
+    settle_kept_folders(trees, ids, now_ms);
     let dirty: Vec<NodeId> = trees.dirty_others().iter().cloned().collect();
     for id in &dirty {
         let held = trees.reverted().contains(id)
@@ -2961,6 +2962,32 @@ fn rebase(
         }
     }
     (needed, agreed)
+}
+
+fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
+    trees.keep_folders_of_kept_folders();
+    let ended: Vec<NodeId> = (trees.kept_folders().iter())
+        .filter(|id| !trees.kept_folder(id))
+        .cloned()
+        .collect();
+    for id in ended {
+        trees.end_kept_folder(&id);
+        let Some(local) = trees.local().get(&id).map(|node| node.shape.clone()) else {
+            continue;
+        };
+        if trees.remote().live(&id).is_some() {
+            continue;
+        }
+        let taken = (trees.remote_holders_of_key(&local.parent, &name_key(&local.name)))
+            .find(|other| {
+                trees.local().get(other).is_none()
+                    && (trees.remote().live(other))
+                        .is_some_and(|shape| shape.kind == Kind::Dir && shape.name == local.name)
+            })
+            .cloned();
+        let to = taken.unwrap_or_else(|| ids.uuid_v7(now_ms));
+        rekey(trees, &id, &to);
+    }
 }
 
 /// S takes the part of a concurrent change that both sides made the same way, position or
