@@ -520,18 +520,12 @@ mod tests {
 
     #[test]
     fn bytes_moved_wake_the_readers_of_the_status() {
-        let dir = tempfile::tempdir().unwrap();
-        let status: FolderStatus = serde_json::from_value(serde_json::json!({
-            "space_id": "a", "space_name": "a", "path": "/folder", "state": "catching_up",
-            "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,
-            "local_entries": null, "questions": 0, "problem": null,
-        }))
-        .unwrap();
-        let status = Arc::new(Lifecycle::open(&dir.path().join("store.sqlite"), status).unwrap());
-        let tracker = Arc::new(Mutex::new(Tracker::default()));
+        let sum = Arc::default();
+        let mut a = folder("a", &sum);
         let progressed = Arc::new(watch::Sender::new(()));
         let mut readers = progressed.subscribe();
-        (tracker.lock().unwrap()).publish_to(status, progressed, Arc::default(), "a".into());
+        (a.tracker).publish_to(a.status.clone(), progressed, sum, "a".into());
+        let tracker = Arc::new(Mutex::new(a.tracker));
         let credit = Credit::download(&tracker, []);
         credit.moved(0);
         assert!(!readers.has_changed().unwrap());
