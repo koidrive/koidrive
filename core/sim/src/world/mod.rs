@@ -1488,7 +1488,7 @@ impl World {
                 commits,
                 ..
             } = &mut device.engine;
-            trees.settle();
+            trees.settle_with_merges(commits.aliases());
             let size = match outcome {
                 Outcome::Run => 1 + self.clock % BATCH,
                 Outcome::Fail | Outcome::Crash(_) => BATCH,
@@ -2196,7 +2196,7 @@ impl World {
         }
         let Some(flight) = engine.commits.in_flight() else {
             let history = engine.history.clone();
-            engine.trees.settle();
+            engine.trees.settle_with_merges(engine.commits.aliases());
             let Engine {
                 trees,
                 commits,
@@ -3121,7 +3121,7 @@ impl World {
                 ));
             }
             let mut trees = engine.trees.clone();
-            trees.settle();
+            trees.settle_with_merges(engine.commits.aliases());
             let unsettled = trees.work();
             if !unsettled.is_empty() {
                 return fail(format!("nodes are not in sync: {unsettled:?}"));

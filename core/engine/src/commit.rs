@@ -724,7 +724,7 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
     ) {
-        trees.settle();
+        trees.settle_with_merges(&self.aliases);
         let open = (self.questions.iter())
             .position(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         let noticed = open.is_some();

@@ -128,7 +128,7 @@ impl Engine {
     /// changed in the engine state, and the ID generator. A row of a node the tree no longer holds is removed. A
     /// transaction that fails ends the task, which loads the engine again from the store.
     pub fn checkpoint(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
-        self.trees.settle();
+        self.trees.settle_with_merges(self.commits.aliases());
         for id in &self.trees.take_changed() {
             match self.trees.local().get(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,

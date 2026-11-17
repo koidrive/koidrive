@@ -611,3 +611,33 @@ fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed
         "{ops:?}"
     );
 }
+
+
+#[test]
+fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "d")), None, None),
+        (
+            "b",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote(dir(ROOT, "d"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let merged = OpResult {
+        node_id: "b".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    acknowledge(&mut commits, &mut trees, vec![merged]);
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = dir("a", "e");
+    trees.set_local_changed("b".into(), moved);
+    trees.settle_with_merges(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains("b"));
+    trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
+    trees.settle_with_merges(commits.aliases());
+    assert!(trees.reverted().contains("b"));
+}

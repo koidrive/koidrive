@@ -4103,9 +4103,13 @@ impl Trees {
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self) {
+        self.settle_with_merges(&BTreeMap::new());
+    }
+
+    pub fn settle_with_merges(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         self.check_finishes();
         if std::mem::take(&mut self.cycles_may_end) {
-            self.release_cycle_reverts();
+            self.release_cycle_reverts(merged);
         }
         if self.rules_known {
             let unwatched = std::mem::take(&mut self.unwatched);
@@ -4382,12 +4386,16 @@ impl Trees {
         self.cycle_reverted.insert(id);
     }
 
-    fn release_cycle_reverts(&mut self) {
+    fn release_cycle_reverts(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         let released: Vec<NodeId> = (self.cycle_reverted.iter())
             .filter(|&id| {
                 !self.reverted.contains(id)
-                    || (self.l.get(id))
-                        .is_some_and(|local| !self.closes_a_cycle(id, &local.shape.parent))
+                    || (self.l.get(id)).is_some_and(|local| {
+                        let parent = merged
+                            .get(&local.shape.parent)
+                            .unwrap_or(&local.shape.parent);
+                        !self.closes_a_cycle(id, parent)
+                    })
             })
             .cloned()
             .collect();

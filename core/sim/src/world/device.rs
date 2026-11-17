@@ -266,7 +266,9 @@ impl Device {
     /// The end of one call into the engine: what needs no decision is settled, and the state goes
     /// to the store in one transaction.
     pub fn persist(&mut self) -> Result<(), Failure> {
-        self.engine.trees.settle();
+        self.engine
+            .trees
+            .settle_with_merges(self.engine.commits.aliases());
         let (engine, store) = (&mut self.engine, &self.store);
         let differences: Vec<String> = [
             differences(
