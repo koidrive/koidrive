@@ -1162,7 +1162,10 @@ impl Trees {
             .collect();
         yielded.sort_by_key(|id| self.local_chain(id).count());
         for id in yielded {
-            self.take_local(id);
+            self.take_local(id.clone());
+            if self.r.get(&id).is_none() && self.s.get(&id).is_some() {
+                self.resends.insert(id);
+            }
         }
     }
 
@@ -1210,6 +1213,10 @@ impl Trees {
     pub(crate) fn take_local(&mut self, id: NodeId) {
         self.lost_creates.remove(&id);
         self.resends.remove(&id);
+        self.agree_with_local(id);
+    }
+
+    fn agree_with_local(&mut self, id: NodeId) {
         self.end_local_claim(&id);
         let Some(local) = self.l.get(&id).map(|node| node.shape.clone()) else {
             return;
@@ -3541,7 +3548,8 @@ impl Trees {
         for (id, waits) in lost {
             let unchanged = (self.l.get(&id))
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
-            let resent = synced.contains(&id) || taken_late.contains(&id);
+            let resent =
+                synced.contains(&id) || taken_late.contains(&id) || self.resends.contains(&id);
             if unchanged && !resent && !moved_here.contains(&id) && self.r.get(&id).is_none() {
                 self.lost_creates.insert(id.clone());
             }

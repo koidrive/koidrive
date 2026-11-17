@@ -290,6 +290,91 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
 }
 
 #[test]
+fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
+    let mut trees = Trees::new("root");
+    let local = |shape: Shape, ino: u128| LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape,
+        identity: FileIdentity {
+            ino,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("f".into(), local(dir("root", "f"), 1));
+    trees.set_synced("f".into(), Some(dir("root", "f")));
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            trashed: true,
+            ..remote(dir("root", "f"))
+        },
+    );
+    trees.set_local("c".into(), local(dir("f", "c"), 2));
+    trees.settle();
+    trees.resends.insert("c".into());
+    trees.yield_resends();
+    assert_eq!(trees.class("c"), Class::Remote);
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        BTreeMap::new(),
+        0,
+        0,
+    );
+    trees.settle();
+    assert!(!trees.lost_creates.contains("c"));
+    assert_eq!(trees.class("c"), Class::Remote);
+}
+
+#[test]
+fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_the_delete() {
+    let mut trees = Trees::new("root");
+    let local = |shape: Shape, ino: u128| LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape,
+        identity: FileIdentity {
+            ino,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("f".into(), local(dir("root", "f"), 1));
+    trees.set_synced("f".into(), Some(dir("root", "f")));
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            trashed: true,
+            ..remote(dir("root", "f"))
+        },
+    );
+    trees.set_local("c".into(), local(dir("f", "c"), 2));
+    trees.settle();
+    trees.resends.insert("c".into());
+    trees.yield_resends();
+    assert_eq!(trees.class("c"), Class::Remote);
+    trees.set_remote("f".into(), remote(dir("root", "f")));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        BTreeMap::new(),
+        0,
+        0,
+    );
+    trees.settle();
+    assert!(trees.resends.contains("c"));
+    assert!(!trees.lost_creates.contains("c"));
+}
+
+#[test]
 fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
     let mut trees = Trees::new("root");
     let local = |shape: Shape, ino: u128, left_out_when_placed: bool| LocalNode {
