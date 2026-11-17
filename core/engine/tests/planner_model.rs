@@ -3496,3 +3496,85 @@ fn a_create_under_a_cap_waits_for_the_move_of_a_trashed_folder_an_answer_holds_b
         .unwrap_or_default();
     assert!(!capped.contains("CreateDir n→c/n"), "{}", report.text);
 }
+
+#[test]
+fn a_restore_into_a_folder_the_restored_folder_holds_on_disk_brings_back_no_folder_the_disk_removed()
+ {
+    use Local::{Into as To, Kept, Onto, Removed};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, Root, In(0), In(1)],
+        &[
+            Remote::Trashed,
+            Remote::Into(In(0)),
+            Remote::Kept,
+            Remote::Kept,
+        ],
+        &[Kept, Removed, Kept, To(In(5))],
+        &[(Kind::Dir, Onto(1)), (Kind::Dir, To(In(2)))],
+    );
+    let story = Story::Restore(2, Some(In(3)));
+    assert!(restores(&world).contains(&(world.clone(), story)));
+    let report = tell(&world, &server(&world), story).expect("the restore cannot land");
+    let revivals: Vec<&String> = (report.classes.iter())
+        .filter(|class| class.contains("revival"))
+        .collect();
+    assert!(revivals.is_empty(), "{revivals:?}\n{}", report.text);
+    assert!(!report.text.contains("Restore c"), "{}", report.text);
+}
+
+#[test]
+fn a_restore_into_a_folder_the_restored_folder_holds_on_disk_brings_back_no_folder_the_disk_removed_in_either_order()
+ {
+    use Local::{Into as To, Kept, Onto, Removed};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, Root, In(0), In(1)],
+        &[
+            Remote::Into(In(1)),
+            Remote::Trashed,
+            Remote::Kept,
+            Remote::Kept,
+        ],
+        &[Removed, Kept, To(In(5)), Kept],
+        &[(Kind::Dir, Onto(0)), (Kind::Dir, To(In(3)))],
+    );
+    let story = Story::Restore(3, Some(In(2)));
+    assert!(restores(&world).contains(&(world.clone(), story)));
+    let report = tell(&world, &server(&world), story).expect("the restore cannot land");
+    let revivals: Vec<&String> = (report.classes.iter())
+        .filter(|class| class.contains("revival"))
+        .collect();
+    assert!(revivals.is_empty(), "{revivals:?}\n{}", report.text);
+    assert!(!report.text.contains("Restore d"), "{}", report.text);
+}
+
+#[test]
+fn a_restore_into_a_folder_the_disk_moves_into_the_restored_folder_lands() {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(0)],
+        &[Remote::Trashed, Remote::Kept, Remote::Kept],
+        &[Kept, Kept, To(In(1))],
+        &[],
+    );
+    let story = Story::Restore(1, Some(In(2)));
+    assert!(restores(&world).contains(&(world.clone(), story)));
+    let space = server(&world);
+    let report = tell(&world, &space, story).expect("a restore story");
+    assert_eq!(report.classes, ["restore: clean"], "{}", report.text);
+    let root = space.space_id().to_string();
+    let mut planner = Planner::new(&world, &space);
+    let intent =
+        RestoreIntent::from_trash(world.id(1), Some(world.spot_id(&root, In(2))), None).unwrap();
+    planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
+    let sent: Vec<String> = (planner.build().iter())
+        .flat_map(|commit| &commit.ops)
+        .map(|op| world.show_op(&root, op))
+        .collect();
+    assert!(
+        sent.iter().any(|op| op.starts_with("Restore b→c/")),
+        "{sent:?}"
+    );
+}

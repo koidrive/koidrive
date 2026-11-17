@@ -4259,9 +4259,28 @@ fn return_cycle(
     let next: BTreeMap<&str, &str> = (awaits.iter())
         .map(|&(_, node, returning)| (node, returning))
         .collect();
+    let into_itself_through_a_create = |want: &Want| {
+        let Want::Restore { op, .. } = want else {
+            return false;
+        };
+        let mut folder = Some(op.target_parent_id.as_str()).filter(|id| !id.is_empty());
+        let mut created = false;
+        for _ in 0..=scratch.trees.local().len() {
+            match folder {
+                Some(at) if at == op.node_id => return created,
+                Some(at) => {
+                    created |= scratch.creating.contains_key(at);
+                    folder = (scratch.trees.local().get(at)).map(|node| node.shape.parent.as_str())
+                }
+                None => return false,
+            }
+        }
+        false
+    };
     awaits.iter().find_map(|&(at, start, returning)| {
         let sendable = (wants[at].as_ref()).is_some_and(|want| {
             matches!(scratch.placement(want, moving), Fit::Valid | Fit::NameTaken)
+                && !into_itself_through_a_create(want)
         });
         let mut seen = BTreeSet::from([start]);
         let mut node = returning;
