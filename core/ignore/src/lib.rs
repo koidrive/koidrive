@@ -77,6 +77,8 @@
 //!   byte of a UTF-8 name. Git also compares patterns and names byte for byte, so an NFD pattern
 //!   does not match an NFC name there.
 //! - A rules file in an included directory is never excluded; git can ignore a `.gitignore`.
+//! - Git's index is not read, so a file git tracks is excluded when a `.gitignore` pattern matches
+//!   it, although git keeps tracking it.
 //! - Every `.gitignore` file of the space applies to its subtree. Inside a nested repository or a
 //!   submodule, git reads only that repository's files, so the `.gitignore` files of the folders
 //!   around it can exclude more here than git does.

@@ -50,6 +50,8 @@ Koidrive follows `.gitignore` files too, so `node_modules/`, build output and ev
 
 Koidrive doesn't read `.git/info/exclude` or git's global excludes file. They hold one person's choices for one clone.
 
+A file that git already tracks stays on this device when a `.gitignore` pattern matches it, even though git keeps tracking it.
+
 Each device has its own setting. To sync what `.gitignore` files exclude on this device:
 
 ```sh
