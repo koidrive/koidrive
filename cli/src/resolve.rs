@@ -195,7 +195,7 @@ fn first_path(question: &Question) -> String {
         return String::new();
     }
     (question.items.first())
-        .map(|item| format!("; first path: {}", printable(&item.path)))
+        .map(|item| format!("; first path: {}", printable(item.path.unquoted())))
         .unwrap_or_default()
 }
 
@@ -204,7 +204,7 @@ fn first_path(question: &Question) -> String {
 fn conflict_path(question: &Question, node_id: &str) -> String {
     (question.items.iter())
         .find(|item| item.node_id == node_id)
-        .map(|item| output::command_word(&item.path))
+        .map(|item| output::command_word(item.path.unquoted()))
         .unwrap_or_else(|| format!("node {}", printable(node_id)))
 }
 
@@ -389,7 +389,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
     for item in question.items.iter().take(ITEMS_SHOWN) {
         text += &format!(
             "  {} ({})\n",
-            printable(&item.path),
+            printable(item.path.unquoted()),
             count(item.files, "file")
         );
     }

@@ -2249,8 +2249,6 @@ fn resolve_space(spaces: Vec<SpaceInfo>, wanted: &str) -> Result<SpaceInfo, Driv
     }
 }
 
-/// The question `stored` holds. A mass-delete question stored before questions kept the limits
-/// they crossed names those its counts cross, or the deletions limit when they cross none.
 type DeviceNames = HashMap<String, String>;
 
 fn name_writers(questions: &mut [Question], names: &DeviceNames) -> bool {
@@ -2268,6 +2266,8 @@ fn name_writers(questions: &mut [Question], names: &DeviceNames) -> bool {
     unknown
 }
 
+/// The question `stored` holds. A mass-delete question stored before questions kept the limits
+/// they crossed names those its counts cross, or the deletions limit when they cross none.
 fn decode_question(space_id: &str, stored: &StoredQuestion) -> Option<Question> {
     match serde_json::from_slice::<Question>(&stored.body) {
         Ok(mut question) => {
@@ -7831,7 +7831,7 @@ mod tests {
         let found: Vec<Option<&str>> = (asked.iter())
             .map(|id| {
                 let restore = listed.iter().find(|restore| &restore.id == id).unwrap();
-                restore.path.as_deref()
+                restore.path.as_ref().map(koidrive_fs::ItemPath::unquoted)
             })
             .collect();
         assert_eq!(

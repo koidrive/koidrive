@@ -1321,7 +1321,7 @@ impl Folder {
             questions: self.questions,
             held_disks: (self.detached.iter())
                 .map(|(path, why)| HeldDisk {
-                    path: path.to_string_lossy().into_owned(),
+                    path: path.to_string_lossy().into_owned().into(),
                     kind: match why {
                         Detached::Away => HeldDiskKind::NotConnected,
                         Detached::Covered => HeldDiskKind::MountedOver,

@@ -69,6 +69,26 @@ fn core_text_quotes_every_path_and_name() {
     );
 }
 
+#[test]
+fn an_item_path_is_plain_text_on_the_wire_and_quoted_in_text() {
+    let path = koidrive_fs::ItemPath::from("Q3 \"draft\"/notes.txt");
+    assert_eq!(
+        serde_json::to_string(&path).unwrap(),
+        r#""Q3 \"draft\"/notes.txt""#
+    );
+    assert_eq!(
+        format!("{}", koidrive_fs::quoted(&path)),
+        r#""Q3 \"draft\"/notes.txt""#
+    );
+    let mut found = Vec::new();
+    check(
+        "ffi/src/state.rs",
+        r#"let id = format!("disk-{space}-{}", disk.path.unquoted());"#,
+        &mut found,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
 fn sources(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -232,7 +252,7 @@ fn unquoted_arguments(arguments: &[String]) -> Vec<String> {
         };
         let lower = expression.to_lowercase();
         if !spec.contains('?')
-            && !lower.contains("quoted")
+            && !lower.replace("unquoted", "").contains("quoted")
             && WORDS_THAT_NAME_A_PATH
                 .iter()
                 .any(|word| lower.contains(word))

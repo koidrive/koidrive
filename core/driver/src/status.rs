@@ -82,7 +82,7 @@ pub struct FolderStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldDisk {
     /// The mount point, relative to the folder.
-    pub path: String,
+    pub path: koidrive_fs::ItemPath,
     pub kind: HeldDiskKind,
 }
 

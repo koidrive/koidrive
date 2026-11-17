@@ -11,6 +11,7 @@ use std::hash::{BuildHasher, Hasher, RandomState};
 use koidrive_engine::ids::{unix_ms, uuid_v7};
 use koidrive_engine::restore::{Malformed, Outcome, Rejection, RestoreIntent};
 use koidrive_engine::tree::{RemoteNode, Tree};
+use koidrive_fs::ItemPath;
 use koidrive_store::Tx;
 use serde::{Deserialize, Serialize};
 
@@ -84,7 +85,7 @@ pub struct RestoreStatus {
     /// the server's tree lacks the node or a folder above it, the path the person saw when they asked for the restore,
     /// and `None` only when that is unknown too.
     #[serde(default)]
-    pub path: Option<String>,
+    pub path: Option<koidrive_fs::ItemPath>,
     /// When the restore was asked for, from its ID.
     #[serde(default)]
     pub asked_at_ms: i64,
@@ -206,8 +207,8 @@ pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidri
         RestoreStatus {
             id: id.to_owned(),
             path: (remote.path(intent.node()))
-                .and_then(|path| path.to_str().map(str::to_owned))
-                .or(asked.path),
+                .and_then(|path| path.to_str().map(ItemPath::from))
+                .or(asked.path.map(ItemPath::from)),
             asked_at_ms: unix_ms(id).map_or(0, |ms| ms as i64),
             request: RestoreRequest::of(intent, asked.version_saved_at_ms),
             state,

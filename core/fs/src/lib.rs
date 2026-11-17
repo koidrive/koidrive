@@ -2658,6 +2658,66 @@ pub fn quoted<P: AsRef<Path> + ?Sized>(path: &P) -> impl std::fmt::Display + '_ 
     Quoted(path.as_ref())
 }
 
+/// A path relative to a linked folder, held as text for status, decisions, restores and share links. It has no
+/// [`Display`](std::fmt::Display): text a person reads shows it through [`quoted`].
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct ItemPath(String);
+
+impl ItemPath {
+    /// The path as it is, for machine-readable output and for the app, which shows it itself.
+    pub fn unquoted(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for ItemPath {
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.0)
+    }
+}
+
+impl From<String> for ItemPath {
+    fn from(path: String) -> Self {
+        Self(path)
+    }
+}
+
+impl From<&str> for ItemPath {
+    fn from(path: &str) -> Self {
+        Self(path.to_owned())
+    }
+}
+
+impl PartialEq<str> for ItemPath {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for ItemPath {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl From<ItemPath> for String {
+    fn from(path: ItemPath) -> Self {
+        path.0
+    }
+}
+
 mod effect;
 mod ignore;
 mod mark;

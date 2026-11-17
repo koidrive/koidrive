@@ -1420,7 +1420,7 @@ fn held(
         items: (0..items)
             .map(|i| koidrive_driver::HeldItem {
                 node_id: format!("n{i}"),
-                path: format!("old/{i:02}"),
+                path: format!("old/{i:02}").into(),
                 files: 1,
                 device_id: None,
                 device_name: None,

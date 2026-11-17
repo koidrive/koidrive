@@ -185,11 +185,12 @@ fn shown(link: &SharedLink) -> String {
             printable(&link.space_name)
         );
     };
-    let place = match (&link.folder, target.path.is_empty()) {
+    let path = target.path.unquoted();
+    let place = match (&link.folder, path.is_empty()) {
         (Some(folder), true) => folder.clone(),
-        (Some(folder), false) => format!("{folder}/{}", target.path),
+        (Some(folder), false) => format!("{folder}/{path}"),
         (None, true) => format!("the space {}", link.space_name),
-        (None, false) => format!("{} in the space {}", target.path, link.space_name),
+        (None, false) => format!("{path} in the space {}", link.space_name),
     };
     printable(&place)
 }
@@ -211,7 +212,7 @@ fn data(link: &SharedLink) -> ShareLinkData {
         space_name: link.space_name.clone(),
         folder: link.folder.clone(),
         node_id: link.node_id.clone(),
-        path: link.target.as_ref().map(|target| target.path.clone()),
+        path: (link.target.as_ref()).map(|target| target.path.clone().into()),
         kind: link.target.as_ref().map(|target| match target.kind {
             TargetKind::File => NodeType::File,
             TargetKind::Folder => NodeType::Folder,

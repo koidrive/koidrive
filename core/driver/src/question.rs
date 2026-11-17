@@ -69,7 +69,7 @@ pub enum RecoveryTrigger {
 pub struct HeldItem {
     pub node_id: String,
     /// The path relative to the linked folder.
-    pub path: String,
+    pub path: koidrive_fs::ItemPath,
     /// Files the answer affects through this item: 1 for a file, the files it holds for a folder.
     pub files: u64,
     /// For a file of a conflict, the device that wrote its current version.
