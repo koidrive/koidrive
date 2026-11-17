@@ -60,4 +60,4 @@ fi
 
 cd "$root"
 KOIDRIVE_TEST_SERVER="$server_url" KOIDRIVE_TEST_SERVER_LOG="$log" \
-  cargo test -p koidrive-driver --locked --test sync -- --ignored "$@"
+  cargo test -p koidrive-driver --locked --test "${KOIDRIVE_DRIVER_TEST:-sync}" -- --ignored "$@"

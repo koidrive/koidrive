@@ -51,7 +51,7 @@ use crate::credential::SET_UP_AGAIN;
 use crate::disk::{
     self, Adopted, Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload,
 };
-use crate::driver::check_placement;
+use crate::driver::{PROGRESS_INTERVAL, check_placement};
 use crate::engine::{Applied, Engine, Staging};
 use crate::failures::{self, Halted};
 use crate::ignore::Matcher;
@@ -73,6 +73,8 @@ const ROOT_RECHECK: Duration = Duration::from_secs(30);
 const ROOT_AGAIN: Duration = Duration::from_secs(1);
 /// How often a running folder reclaims its local trash, after the first time when it starts.
 const RECLAIM_TRASH: Duration = Duration::from_secs(24 * 60 * 60);
+
+const RECOUNT_SPACING: u32 = 9;
 /// How often a running folder checks that its path still names the folder it locked.
 const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// The wait before a commit is built again after a file changed while its content was uploaded. The observer
@@ -147,6 +149,8 @@ pub(crate) struct Folder {
     refused_nodes: BTreeMap<String, String>,
     asked: BTreeSet<String>,
     progress: Arc<Mutex<Tracker>>,
+    recount_at: Option<Instant>,
+    recount_waits: bool,
     /// When the [`Work::RetryAfter`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
@@ -371,6 +375,8 @@ impl Folder {
             refused_nodes: BTreeMap::new(),
             asked,
             progress: Arc::default(),
+            recount_at: None,
+            recount_waits: false,
             retry_at: None,
             #[cfg(test)]
             crash_after: None,
@@ -1344,7 +1350,27 @@ impl Folder {
         .chain(self.retrying.values().map(|retrying| retrying.at))
         .filter_map(|at| at.duration_since(now).ok())
         .chain(grace)
+        .chain(self.recount_due())
         .min()
+    }
+
+    fn recount_due(&self) -> Option<Duration> {
+        let at = self.recount_at.filter(|_| self.recount_waits)?;
+        Some(at.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn recount_progress(&mut self, state: FolderState) -> bool {
+        let counting = matches!(state, FolderState::Bootstrapping | FolderState::CatchingUp);
+        let started = Instant::now();
+        if counting && self.recount_at.is_some_and(|at| started < at) {
+            self.recount_waits = true;
+            return false;
+        }
+        let changed = self.track_progress(state);
+        self.recount_waits = false;
+        self.recount_at = counting
+            .then(|| Instant::now() + PROGRESS_INTERVAL.max(started.elapsed() * RECOUNT_SPACING));
+        changed
     }
 
     fn held(&self) -> BTreeMap<String, Stuck> {
@@ -2656,7 +2682,7 @@ impl FolderTask {
         let view = folder.view();
         (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
-        let began_or_ended = folder.track_progress(view.state);
+        let began_or_ended = folder.recount_progress(view.state);
         let asked = folder.take_questions_changed();
         let mut status = self.status.lock().unwrap();
         let shown = View {

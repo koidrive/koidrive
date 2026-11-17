@@ -944,6 +944,9 @@ impl Pending {
                 digest: content.manifest_digest.clone(),
             })
             .collect();
+        (self.credit).register(
+            (items.iter().cloned()).zip(writes.iter().map(|(_, content, _)| content.size)),
+        );
         let mut targets: HashMap<ChunkKey, Vec<(usize, &[u64])>> = HashMap::new();
         let mut distinct: Vec<&ChunkRef> = Vec::new();
         for (write, (_, _, manifest)) in writes.iter().enumerate() {

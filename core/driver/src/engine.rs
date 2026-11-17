@@ -637,6 +637,10 @@ impl Engine {
     /// ([`Engine::read`]). The rules of a folder whose path L cannot hold are left out, since no node is below it.
     /// When `all` is set the batch lists every rules file its scans read, and the trees forget the rules they had.
     pub fn rules(&mut self, rules: Vec<RulesChange>, all: bool) {
+        if !all && rules.is_empty() && self.trees.rules_known() {
+            self.unscanned = None;
+            return;
+        }
         self.unscanned = (all || !rules.is_empty()).then(|| {
             (self.trees.local().iter())
                 .filter(|(id, node)| node.shape.kind == Kind::Dir && !self.scanned(id))
