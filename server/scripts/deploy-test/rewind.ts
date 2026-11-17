@@ -35,13 +35,25 @@ export function rewindMismatch(before: CommitRecord[], after: CommitRecord[], tr
   return undefined;
 }
 
+function pathIn(tree: Map<string, NodeState>, node: NodeState): string {
+  const parent = tree.get(node.parentId);
+  return parent && parent.parentId !== "" ? pathIn(tree, parent) + "/" + node.name : node.name;
+}
+
+const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
 export function filePaths(tree: Map<string, NodeState>): [string, NodeState][] {
-  const path = (node: NodeState): string => {
-    const parent = tree.get(node.parentId);
-    return parent && parent.parentId !== "" ? path(parent) + "/" + node.name : node.name;
-  };
   return [...tree.values()]
     .filter((node) => node.status === NodeStatus.LIVE && node.kind === NodeKind.FILE)
-    .map((node) => [path(node), node] as [string, NodeState])
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    .map((node) => [pathIn(tree, node), node] as [string, NodeState])
+    .sort(([a], [b]) => byPath(a, b));
+}
+
+export function removedByRewind(log: CommitRecord[], restoreSeq: bigint): { items: string[]; files: string[] } {
+  const head = replay(log, log.at(-1)?.seq ?? 0n);
+  const restored = replay(log, restoreSeq);
+  const removed = [...head.values()].filter((node) => node.status === NodeStatus.LIVE && node.parentId !== "" && !restored.has(node.nodeId));
+  const ids = new Set(removed.map((node) => node.nodeId));
+  const paths = (nodes: NodeState[]) => nodes.map((node) => pathIn(head, node)).sort(byPath);
+  return { items: paths(removed.filter((node) => !ids.has(node.parentId))), files: paths(removed.filter((node) => node.kind === NodeKind.FILE)) };
 }

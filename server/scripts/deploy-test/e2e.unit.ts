@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommitRecordSchema, NodeKind, type NodeState, NodeStateSchema, NodeStatus } from "../../src/gen/koidrive/v1/model_pb";
-import { type Content, contents, format, keypair, listing, matches, seal, startDaemon, trees, unseal } from "./e2e.ts";
-import { replay, rewindMismatch } from "./rewind.ts";
+import { type Content, contents, format, holdsAsExpected, keypair, listing, matches, parseListing, seal, startDaemon, trees, unseal } from "./e2e.ts";
+import { removedByRewind, replay, rewindMismatch } from "./rewind.ts";
 
 const roots: string[] = [];
 
@@ -61,13 +61,72 @@ describe("a folder against a scenario's tree", () => {
   });
 });
 
+describe("a listing file", () => {
+  it("reads back a listing it formatted", () => {
+    const files = new Map([["a b/c (1).txt", "f".repeat(64)], ["d.txt", "0".repeat(64)]]);
+    expect(parseListing(format(files))).toEqual(files);
+  });
+});
+
+const node = (nodeId: string, parentId: string, name: string, kind: NodeKind, versionId = "") =>
+  create(NodeStateSchema, { nodeId, parentId, name, kind, status: NodeStatus.LIVE, current: versionId ? { versionId } : undefined });
+const trashed = (state: NodeState) => ({ ...state, status: NodeStatus.TRASHED });
+const commit = (seq: bigint, ...nodes: NodeState[]) =>
+  create(CommitRecordSchema, { seq, commitId: "c" + seq, changes: nodes.map((value) => ({ change: { case: "node" as const, value } })) });
+const purge = (seq: bigint, nodeId: string) =>
+  create(CommitRecordSchema, { seq, commitId: "c" + seq, changes: [{ change: { case: "purged", value: { nodeId } } }] });
+
+describe("what a rewind removed from the space", () => {
+  const conflict = "shared (conflict from linux 2026-11-17).txt";
+  const e2e = [
+    commit(1n, node("root", "", "", NodeKind.DIR), node("n", "root", "notes", NodeKind.DIR), node("fl", "n", "from-linux.txt", NodeKind.FILE, "fl1"), node("rl", "n", "random-from-linux.bin", NodeKind.FILE, "rl1")),
+    commit(2n, node("fm", "root", "from-mac.txt", NodeKind.FILE, "fm1"), node("rm", "root", "random-from-mac.bin", NodeKind.FILE, "rm1"), node("s", "root", "shared.txt", NodeKind.FILE, "s1")),
+    commit(3n, node("fl", "n", "from-linux.txt", NodeKind.FILE, "fl2")),
+    commit(4n, node("fm", "root", "from-mac.txt", NodeKind.FILE, "fm2")),
+    commit(5n, node("d", "root", "docs", NodeKind.DIR), node("fm", "d", "from-mac-renamed.txt", NodeKind.FILE, "fm2")),
+    commit(6n, node("rm", "n", "random-moved.bin", NodeKind.FILE, "rm1")),
+    commit(7n, trashed(node("fl", "n", "from-linux.txt", NodeKind.FILE, "fl2"))),
+    commit(8n, node("s", "root", "shared.txt", NodeKind.FILE, "s2")),
+    commit(9n, node("c", "root", conflict, NodeKind.FILE, "c1")),
+    commit(10n, node("a", "d", "after-point-linux.txt", NodeKind.FILE, "a1")),
+    commit(11n, node("x", "root", "after-point-mac.bin", NodeKind.FILE, "x1")),
+  ];
+
+  it("names the nodes the restored seq lacks at their head paths, not nodes it holds elsewhere", () => {
+    const files = ["after-point-mac.bin", "docs/after-point-linux.txt", conflict];
+    expect(removedByRewind(e2e, 5n)).toEqual({ items: files, files });
+    expect(removedByRewind(e2e, 9n)).toEqual({ items: ["after-point-mac.bin", "docs/after-point-linux.txt"], files: ["after-point-mac.bin", "docs/after-point-linux.txt"] });
+    expect(removedByRewind(e2e, 11n)).toEqual({ items: [], files: [] });
+  });
+
+  it("holds a new folder as one item, without the files the restored seq holds at another place", () => {
+    for (const seq of [3n, 4n]) expect(removedByRewind(e2e, seq)).toEqual({ items: ["after-point-mac.bin", "docs", conflict], files: ["after-point-mac.bin", "docs/after-point-linux.txt", conflict] });
+  });
+
+  it("is the decision a device that keeps them asks, at the restored seq the rewind landed on", () => {
+    const at = (path: string) => "/home/runner/koidrive/" + path;
+    for (const seq of [3n, 4n, 5n]) {
+      const { items } = removedByRewind(e2e, seq);
+      expect(holdsAsExpected(items.map(at), items)).toBe(true);
+      expect(holdsAsExpected(items.map(at), undefined)).toBe(true);
+      expect(holdsAsExpected(items.slice(1).map(at), items)).toBe(false);
+    }
+    expect(holdsAsExpected(["after-point-mac.bin", "notes"], undefined)).toBe(false);
+  });
+
+  it("names a file deleted and created again at its path after the restored seq, and not one trashed there and put back", () => {
+    const log = [
+      commit(1n, node("root", "", "", NodeKind.DIR), node("b", "root", "b.txt", NodeKind.FILE, "b1"), node("t", "root", "t.txt", NodeKind.FILE, "t1")),
+      commit(2n, trashed(node("t", "root", "t.txt", NodeKind.FILE, "t1"))),
+      commit(3n, trashed(node("b", "root", "b.txt", NodeKind.FILE, "b1"))),
+      purge(4n, "b"),
+      commit(5n, node("b2", "root", "b.txt", NodeKind.FILE, "b2"), node("t", "root", "t.txt", NodeKind.FILE, "t1")),
+    ];
+    expect(removedByRewind(log, 2n)).toEqual({ items: ["b.txt"], files: ["b.txt"] });
+  });
+});
+
 describe("the space after a rewind against the log before it", () => {
-  const node = (nodeId: string, parentId: string, name: string, kind: NodeKind, versionId = "") =>
-    create(NodeStateSchema, { nodeId, parentId, name, kind, status: NodeStatus.LIVE, current: versionId ? { versionId } : undefined });
-  const commit = (seq: bigint, ...nodes: NodeState[]) =>
-    create(CommitRecordSchema, { seq, commitId: "c" + seq, changes: nodes.map((value) => ({ change: { case: "node" as const, value } })) });
-  const purge = (seq: bigint, nodeId: string) =>
-    create(CommitRecordSchema, { seq, commitId: "c" + seq, changes: [{ change: { case: "purged", value: { nodeId } } }] });
   const root = node("root", "", "", NodeKind.DIR);
   const log = [
     commit(1n, node("d", "root", "docs", NodeKind.DIR), node("a", "d", "a.txt", NodeKind.FILE, "a1")),

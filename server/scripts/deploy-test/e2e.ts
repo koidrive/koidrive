@@ -404,7 +404,20 @@ interface Decision {
 
 const AFTER_POINT = ["after-point-mac.bin", "docs/after-point-linux.txt"];
 
-async function answerRewind(on: Device, token: "keep" | "discard"): Promise<void> {
+export function parseListing(text: string): Map<string, string> {
+  return new Map(text.split("\n").filter(Boolean).map((line) => {
+    const [hash, path] = [line.slice(0, 64), line.slice(66)];
+    return [path, hash];
+  }));
+}
+
+export function holdsAsExpected(held: string[], expected: string[] | undefined): boolean {
+  const holds = (path: string) => held.some((item) => item === path || item.endsWith("/" + path));
+  if (expected) return held.length === expected.length && expected.every(holds);
+  return AFTER_POINT.every((path) => path.split("/").some((_, at, names) => holds(names.slice(0, at + 1).join("/"))));
+}
+
+async function answerRewind(on: Device, token: "keep" | "discard", expected?: string[]): Promise<void> {
   let decision: Decision;
   try {
     decision = await until("a decision on " + on.name + " about the files written after the restore point", DECISION_MS, () =>
@@ -417,11 +430,34 @@ async function answerRewind(on: Device, token: "keep" | "discard"): Promise<void
     throw error;
   }
   const held = decision.items.map((item) => item.path);
-  if (held.length !== AFTER_POINT.length || !AFTER_POINT.every((path) => held.some((item) => item === path || item.endsWith("/" + path)))) {
-    fail("the decision on " + on.name + " holds " + JSON.stringify(held) + ", not the files written after the restore point " + JSON.stringify(AFTER_POINT));
+  if (!holdsAsExpected(held, expected)) {
+    fail("the decision on " + on.name + " holds " + JSON.stringify(held) + ", not " + (expected ? "the nodes the rewind removed " + JSON.stringify(expected) : "the files written after the restore point " + JSON.stringify(AFTER_POINT)));
   }
   const answer = decision.answers.find((candidate) => candidate.token === token) ?? fail("the decision on " + on.name + " offers no " + token + " answer");
   koi(on, answer.argv.slice(1));
+}
+
+const keptListingFile = () => temp("rewind-kept-listing.txt");
+
+async function settled(on: Device, expected?: string): Promise<Map<string, string>> {
+  let files = new Map<string, string>();
+  try {
+    await until("the folder on " + on.name + " to settle after the rewind", SYNC_MS, () => {
+      const status = folder(on);
+      if (status.state !== "up_to_date" || status.questions !== 0) return undefined;
+      try {
+        files = listing(on.folder);
+      } catch {
+        return undefined;
+      }
+      return expected === undefined || format(files) === expected ? true : undefined;
+    });
+  } catch (error) {
+    if (expected !== undefined) console.log("The expected tree:\n" + expected);
+    explain(on, files);
+    throw error;
+  }
+  return files;
 }
 
 /**
@@ -587,7 +623,8 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     const linux = device("linux");
     const point = Number(readFileSync(restorePointFile(), "utf8"));
     put(linux, "docs/after-point-linux.txt", "afterLinux");
-    passed("7. Writes after the restore point", linux, (await reach(linux, "afterPoint"))[1]);
+    const before = (await reach(linux, "afterPoint"))[1];
+    passed("7. Writes after the restore point", linux, before);
     await afterPeerStep(step);
     await sleep(Math.max(0, point + RESTORE_POINT_AGE_MS - Date.now()));
     const { space_id, history_id } = folder(linux);
@@ -607,13 +644,22 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     console.log("Rewound the space to " + new Date(point).toISOString() + ": " + JSON.stringify(result));
     checkRewind({ REWIND_CHECK: "after", SPACE_ID: space_id, HISTORY_ID: String(result.historyId), RESTORE_SEQ: String(result.restoreSeq) });
     const expected = readFileSync(temp("rewound-server-listing.txt"), "utf8");
-    await answerRewind(linux, "discard");
+    const removed = JSON.parse(readFileSync(temp("removed-by-rewind.json"), "utf8")) as { items: string[]; files: string[] };
+    console.log("The rewind removed from the server: " + JSON.stringify(removed));
+    const kept = removed.files.map((path) => [path, before.get(path) ?? fail("linux does not hold " + path + ", which the log held at its head")] as [string, string]);
+    writeFileSync(keptListingFile(), format(new Map([...parseListing(expected), ...kept].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))));
+    await answerRewind(linux, "discard", removed.items);
     let files = new Map<string, string>();
     try {
       await until("the folder on linux to follow the rewound space", SYNC_MS, () => {
-        files = listing(linux.folder);
         const status = folder(linux);
-        return status.state === "up_to_date" && status.questions === 0 && status.history_id === String(result.historyId) && format(files) === expected ? true : undefined;
+        if (status.state !== "up_to_date" || status.questions !== 0 || status.history_id !== String(result.historyId)) return undefined;
+        try {
+          files = listing(linux.folder);
+        } catch {
+          return undefined;
+        }
+        return format(files) === expected ? true : undefined;
       });
     } catch (error) {
       console.log("The server's tree after the rewind:\n" + expected);
@@ -627,12 +673,12 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     const mac = device("mac");
     await afterPeerStep(step);
     await answerRewind(mac, "keep");
-    passed("7. Keep what the rewind removed", mac, (await reach(mac, "afterPoint"))[1]);
+    passed("7. Keep what the rewind removed", mac, await settled(mac));
   },
 
   async "mac-final"() {
     const mac = device("mac");
-    const [, files] = await reach(mac, "afterPoint");
+    const files = await settled(mac);
     mkdirSync(temp("mac-listing"), { recursive: true });
     writeFileSync(temp("mac-listing", "listing.txt"), format(files));
     await stopDaemon(mac);
@@ -641,7 +687,8 @@ const phases: Record<string, (step: string) => Promise<void>> = {
   async "linux-final"(step) {
     const linux = device("linux");
     await afterPeerStep(step);
-    const [, files] = await reach(linux, "afterPoint");
+    const expected = readFileSync(keptListingFile(), "utf8");
+    const files = await settled(linux, expected);
     await download("e2e-macos-listing", temp("mac-listing"));
     const mac = readFileSync(temp("mac-listing", "listing.txt"), "utf8");
     if (mac !== format(files)) fail("macOS and Linux ended with different trees.\nmacOS:\n" + mac + "Linux:\n" + format(files));
