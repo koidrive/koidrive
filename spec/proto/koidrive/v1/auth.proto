@@ -95,7 +95,7 @@ message TokenRequest {
   string next_refresh_credential = 4;
   // The deadline for next_refresh_credential, in Unix milliseconds of the server's rotation clock.
   int64 rotate_before_ms = 5;
-  // This device's choice about usage reports, which the server's own report follows (RFC 0028).
+  // This device's choice about usage reports, which the server's own report follows (RFC 0029).
   enum Telemetry {
     TELEMETRY_UNSPECIFIED = 0;
     TELEMETRY_ON = 1;
