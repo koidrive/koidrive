@@ -3251,8 +3251,9 @@ impl Trees {
     /// this device applied (design §4.4). S forgets every node that R does not hold at all or holds
     /// live with another shape, and every node S holds below one. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
-    /// position L holds: a node R does not hold at all is no longer reverted, since the server's
-    /// rename or merge that reverted it was lost too. One whose content differs from
+    /// position L holds. No node R does not hold at all stays reverted, also one S never held, such
+    /// as a folder a lost commit merged into another: the server's rename or merge that reverted
+    /// it was lost too. One whose content differs from
     /// R's is kept beside R's as a conflict copy instead of being replaced by R's older content. A
     /// node R holds in the trash keeps S, so it stays a remote delete, also below a node S forgets,
     /// unless it is a file whose edit the server lost (see `edited` below).
@@ -3358,8 +3359,7 @@ impl Trees {
     /// 2.8). An S update that waits ([`Trees::waiting`]) from a commit above it came from a commit
     /// the server lost. The update is dropped, a removal as well as a shape, so S keeps what it held: L's change is
     /// compared with S and sent again when R holds the node as S does, and kept beside R's when R
-    /// holds it otherwise. A node R does not hold at all is then no longer reverted, as one S
-    /// forgets. An update from a kept commit, or from no commit, stays, so a change another device
+    /// holds it otherwise. An update from a kept commit, or from no commit, stays, so a change another device
     /// made since reads as a remote change once the update fits. That holds for a node R holds in
     /// the trash too: a lost update kept there would stand for S in the effects, which would then
     /// replace an edit only L holds with content another device restores, and later commits take
@@ -3566,9 +3566,6 @@ impl Trees {
             .map(|(id, _)| id.clone())
             .collect();
         for id in dropped {
-            if self.r.get(&id).is_none() {
-                self.reverted.remove(&id);
-            }
             self.waiting.remove(&id);
             self.mark(&id);
         }
@@ -3779,9 +3776,6 @@ impl Trees {
                 };
                 self.lost_positions.insert(id.clone(), at);
             }
-            if self.r.get(&id).is_none() {
-                self.reverted.remove(&id);
-            }
             let held_alike = matches!(
                 (content(self.l.live(&id)), content(self.s.live(&id)), content(self.r.live(&id))),
                 (Some(local), Some(synced), Some(remote))
@@ -3820,6 +3814,14 @@ impl Trees {
             {
                 self.wait(id, Some(kept), Origin::Other);
             }
+        }
+        let unreverted: Vec<NodeId> = (self.reverted.iter())
+            .filter(|id| self.r.get(id).is_none())
+            .cloned()
+            .collect();
+        for id in unreverted {
+            self.reverted.remove(&id);
+            self.mark(&id);
         }
         self.yield_resends();
         let unproven: Vec<NodeId> = (self.watched_positions.iter())
