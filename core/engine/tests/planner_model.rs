@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
+thread_local! { static INVALID_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -110,10 +111,10 @@ const FOUR_NODES: Bounds = Bounds {
 };
 
 const SLICE: Bounds = Bounds {
-    existing: 2..=2,
+    existing: 2..=3,
     answered: 2..=4,
     answered_changes: 1,
-    local_changes: 2,
+    local_changes: 3,
     onto: 1,
     changes: 3,
     created: &[&[], &[Kind::Dir], &[Kind::File]],
@@ -943,6 +944,9 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
 const HELD: &str = "revival held by a commit's target";
 
 fn main_baseline(class: &str) -> Option<&'static str> {
+    if true {
+        return None;
+    }
     class
         .contains(HELD)
         .then_some("a commit brings back a trashed folder L does not hold")
@@ -2145,7 +2149,7 @@ fn restores(world: &World) -> Vec<(World, Story)> {
         }));
     }
     let mut stories = Vec::new();
-    for told in (worlds.into_iter()).filter(|told| told.remote_acyclic() && told.placeable()) {
+    for told in (worlds.into_iter()).filter(|told| told.remote_acyclic() && told.placeable() != INVALID_PASS.with(|pass| pass.get())) {
         let dirs = || (0..k).filter(|&j| told.kind(j) == Kind::Dir);
         let trashed = |i: usize| told.recorded(i) && !told.remote_live(i);
         for i in (0..k).filter(|&i| trashed(i) && told.local[i] != Local::Removed) {
@@ -2646,7 +2650,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     };
     let (known, hard): (Vec<String>, Vec<String>) = hard
         .into_iter()
-        .partition(|fault| baseline(fault).is_some());
+        .partition(|fault| false && baseline(fault).is_some());
     soft.extend(known.into_iter().map(|fault| {
         let class = baseline(&fault).expect("partitioned");
         format!("main baseline, {class}: {fault}")
@@ -2720,6 +2724,11 @@ impl Tally {
     fn count(&mut self, report: Report) {
         self.runs += report.runs;
         self.hard += usize::from(report.hard);
+        if report.hard && true {
+            use std::io::Write;
+            let line = format!("HARDSTORY\t{}\t{}\n", report.classes.join("|"), report.text.lines().next().unwrap_or(""));
+            let _ = std::io::stderr().lock().write_all(line.as_bytes());
+        }
         for class in report.classes {
             let example = (!report.text.is_empty()).then(|| (report.size, report.text.clone()));
             self.note(class, 1, example.into_iter().collect());
@@ -2946,6 +2955,16 @@ fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Ta
                             let space = (spaces.entry(world.ranks[..world.existing()].to_vec()))
                                 .or_insert_with(|| server(&world));
                             tally.add(check(&world, space));
+                            if true {
+                                INVALID_PASS.with(|pass| pass.set(true));
+                                let invalid = restores(&world);
+                                INVALID_PASS.with(|pass| pass.set(false));
+                                for (told, story) in invalid {
+                                    if tell(&told, &server(&told), story).is_some() {
+                                        tally.note("invalid restore story".into(), 1, Vec::new());
+                                    }
+                                }
+                            }
                             for (told, story) in restores(&world) {
                                 let space = if told.remote == world.remote {
                                     space.clone()
@@ -3561,14 +3580,14 @@ fn a_revival_a_later_commit_hides_is_found_over_the_run() {
 #[test]
 fn every_world_of_the_slice_keeps_trashed_folders_trashed_and_names_given() {
     let tally = sweep(&SLICE, threads(), (0, 1));
-    println!("{}", tally.summary());
-    assert_eq!(tally.worlds, 5756, "{}", tally.summary());
+    { use std::io::Write; let _ = writeln!(std::io::stderr().lock(), "{}", tally.summary()); }
+    assert_eq!(tally.worlds, 37575, "{}", tally.summary());
     assert_eq!(tally.hard, 0, "{}", tally.summary());
 }
 
 fn full_sweep(bounds: &Bounds, (shard, shards): (usize, usize)) {
     let tally = sweep(bounds, threads(), (shard, shards));
-    println!("shard {shard} of {shards}: {}", tally.summary());
+    { use std::io::Write; let _ = writeln!(std::io::stderr().lock(), "shard {shard} of {shards}: {}", tally.summary()); }
     assert_eq!(tally.hard, 0, "{}", tally.summary());
 }
 
