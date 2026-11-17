@@ -121,6 +121,7 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
           INSTALLER_SOURCE: ${{ inputs.installer_source || 'live' }}
           INSTALLER_REFERENCE: ${{ github.event_name == 'workflow_dispatch' && 'accepted' || 'release' }}
+          KOIDRIVE_JOURNEY_GITHUB_TOKEN: ${{ github.token }}
         run: |
           printf 'Clearing runner HOMEBREW_CASK_OPTS=%s\n' "${HOMEBREW_CASK_OPTS-<unset>}"
           unset HOMEBREW_CASK_OPTS

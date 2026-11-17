@@ -4,6 +4,7 @@
 import argparse
 import errno
 import hashlib
+import http.server
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -35,6 +37,8 @@ HELD_URL = RAW_INSTALLER.format(HELD_COMMIT)
 INSTALLER_SOURCES = {"held": HELD_URL, "live": "https://koidrive.com/install.sh"}
 APP = Path("/Applications/Koidrive.app")
 TAP = "koidrive/tap/koidrive"
+GITHUB_API = "https://api.github.com"
+RELEASE_LIST = "/repos/koidrive/koidrive/releases"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 SCENARIOS = ("verify", "cask", "formula-conflict", "installer", "homebrew-update", "uninstall")
 REQUIRED = {
@@ -49,7 +53,7 @@ REQUIRED = {
                   "xattrs preserved", "healthy native service", "exact byte sync"},
     "homebrew-update": {"release assets verified", "clean account", "tap cask matches release",
                         "previous cask updates itself", "previous release installed", "previous release syncs",
-                        "koi update through Homebrew", "updated version", "app replaced in place",
+                        "GitHub answered the release list", "koi update through Homebrew", "updated version", "app replaced in place",
                         "koi link follows the new app", "Homebrew still records the cask it installed",
                         "cask auto-updates", "brew upgrade leaves the self-updated app",
                         "files from before the update kept", "updated service syncs",
@@ -270,6 +274,8 @@ class Evidence:
         self.processes = []
         self.env = {**os.environ, "DO_NOT_TRACK": "1", "WRANGLER_SEND_METRICS": "false",
                     "HOMEBREW_NO_AUTO_UPDATE": "1", "NO_COLOR": "1"}
+        self.github_token = self.env.pop("KOIDRIVE_JOURNEY_GITHUB_TOKEN", "")
+        self.secrets.append(self.github_token)
 
     def check(self, name, condition, detail=""):
         self.report["assertions"].append({"name": name, "passed": bool(condition),
@@ -991,8 +997,47 @@ def preserved(transfers, *folders):
                for t in transfers for folder in folders)
 
 
-def update_env(env):
-    return {key: value for key, value in env.items() if key != "CI"} | {"PATH": SYSTEM_PATH}
+def update_env(env, release_list):
+    return {key: value for key, value in env.items() if key != "CI"} | {
+        "PATH": SYSTEM_PATH, "KOIDRIVE_UPDATE_CHECK_URL": release_list}
+
+
+def release_relay(token, answers):
+    class Relay(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.split("?", 1)[0] != RELEASE_LIST:
+                self.send_error(404)
+                return
+            headers = {"Accept": self.headers.get("Accept", "application/vnd.github+json"), "User-Agent": "koidrive",
+                       "X-GitHub-Api-Version": self.headers.get("X-GitHub-Api-Version", "2022-11-28")}
+            if self.headers.get("If-None-Match"):
+                headers["If-None-Match"] = self.headers["If-None-Match"]
+            if token:
+                headers["Authorization"] = "Bearer " + token
+            request = urllib.request.Request(GITHUB_API + self.path, headers=headers)
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    status, reply, body = response.status, response.headers, response.read()
+            except urllib.error.HTTPError as error:
+                status, reply, body = error.code, error.headers, error.read()
+            answers.append({"path": self.path, "status": status, "authenticated": bool(token),
+                            "ratelimit_remaining": reply.get("X-RateLimit-Remaining")})
+            self.send_response(status)
+            for name in ("Content-Type", "ETag", "Retry-After", "X-RateLimit-Remaining", "X-RateLimit-Reset"):
+                if reply.get(name):
+                    self.send_header(name, reply[name])
+            if reply.get("Link"):
+                self.send_header("Link", reply["Link"].replace(GITHUB_API, f"http://127.0.0.1:{self.server.server_port}"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Relay)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def cask_self_update(evidence, tap, head, link, previous, current):
@@ -1031,6 +1076,7 @@ def homebrew_update(evidence, root, ownership, entries):
     peer_folder = root / "PeerSync"
     owned_labels = {"dev.koidrive.koi"}
     installed = False
+    relay = release_relay(evidence.github_token, evidence.report.setdefault("release_list_answers", []))
     try:
         evidence.run(["git", "-C", tap, "reset", "--hard", "--quiet", commit])
         _, info, _ = evidence.run(["brew", "info", "--json=v2", "--cask", TAP])
@@ -1053,11 +1099,13 @@ def homebrew_update(evidence, root, ownership, entries):
                        and any(f.get("path") == str(folder) for f in before.get("folders", []))
                        and all(t["passed"] for t in earlier), json.dumps({"status": before, "transfers": earlier}))
         status, out, err = evidence.run([link, "update", "--json"], required=False, timeout=900,
-                                        env=update_env(evidence.env))
+                                        env=update_env(evidence.env, f"http://127.0.0.1:{relay.server_port}/"))
         envelope = json.loads(out) if out.strip().startswith("{") else {}
         data = envelope.get("data") or {}
         evidence.report["koi_update"] = {"status": status, "outcome": envelope.get("outcome"), "data": data,
                                          "next_commands": envelope.get("next_commands")}
+        answers = evidence.report["release_list_answers"]
+        evidence.check("GitHub answered the release list", answers and answers[-1]["status"] in (200, 304), json.dumps(answers))
         evidence.check("koi update through Homebrew", status == 0 and envelope.get("outcome") == "ok"
                        and data.get("via") == "app" and data.get("result") == "updated"
                        and data.get("from") == previous and data.get("to") == current
@@ -1080,6 +1128,8 @@ def homebrew_update(evidence, root, ownership, entries):
                        and not APP.exists() and not link.exists() and not link.is_symlink()
                        and not (home / "Library/Application Support/Koidrive").exists(), out + err)
     finally:
+        relay.shutdown()
+        relay.server_close()
         safe = True
         if APP.exists():
             safe &= evidence.cleanup("terminate exact installed app", lambda: stop_app(evidence, APP))

@@ -4,6 +4,7 @@
 import argparse
 import copy
 import errno
+import http.server
 import importlib.util
 import json
 import os
@@ -16,7 +17,10 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 
@@ -331,8 +335,67 @@ class ReleaseJourneys(unittest.TestCase):
 
     def test_koi_update_runs_without_ci_so_the_app_updater_runs(self):
         env = {"CI": "true", "PATH": "/opt/homebrew/bin:/usr/bin", "HOME": "/Users/runner"}
-        self.assertEqual(DRIVER.update_env(env), {"PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner"})
+        self.assertEqual(DRIVER.update_env(env, "http://127.0.0.1:1/"), {
+            "PATH": DRIVER.SYSTEM_PATH, "HOME": "/Users/runner", "KOIDRIVE_UPDATE_CHECK_URL": "http://127.0.0.1:1/"})
         self.assertEqual(env["CI"], "true")
+
+    def test_journey_token_reaches_no_child_process_and_is_redacted(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"KOIDRIVE_JOURNEY_GITHUB_TOKEN": "ghs_journey"}):
+            evidence = DRIVER.Evidence(Path(directory) / "evidence", "v0.1.0-alpha.7", "homebrew-update")
+        self.assertNotIn("KOIDRIVE_JOURNEY_GITHUB_TOKEN", evidence.env)
+        self.assertEqual(evidence.github_token, "ghs_journey")
+        self.assertNotIn("ghs_journey", DRIVER.sanitized("sent ghs_journey to GitHub", evidence.secrets))
+
+    def test_release_relay_answers_with_github_through_the_journey_token(self):
+        seen = []
+
+        class GitHub(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append({"path": self.path, "authorization": self.headers.get("Authorization"),
+                             "if_none_match": self.headers.get("If-None-Match")})
+                limited = "limited" in self.path
+                self.send_response(403 if limited else 200)
+                self.send_header("X-RateLimit-Remaining", "0" if limited else "999")
+                self.send_header("X-RateLimit-Reset", "1800000000")
+                self.send_header("ETag", '"list"')
+                self.send_header("Link", f'<{DRIVER.GITHUB_API}{DRIVER.RELEASE_LIST}?page=2>; rel="next"')
+                body = b"[]"
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        github = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GitHub)
+        threading.Thread(target=github.serve_forever, daemon=True).start()
+        answers = []
+        with patch.object(DRIVER, "GITHUB_API", f"http://127.0.0.1:{github.server_port}"):
+            relay = DRIVER.release_relay("ghs_journey", answers)
+            base = f"http://127.0.0.1:{relay.server_port}"
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                request = urllib.request.Request(base + DRIVER.RELEASE_LIST + "?per_page=20",
+                                                 headers={"If-None-Match": '"old"'})
+                with opener.open(request, timeout=5) as response:
+                    self.assertEqual((response.status, response.read()), (200, b"[]"))
+                    self.assertEqual(response.headers["ETag"], '"list"')
+                    self.assertEqual(response.headers["Link"], f'<{base}{DRIVER.RELEASE_LIST}?page=2>; rel="next"')
+                with self.assertRaises(urllib.error.HTTPError) as limited:
+                    opener.open(base + DRIVER.RELEASE_LIST + "?limited=1", timeout=5)
+                self.assertEqual((limited.exception.code, limited.exception.headers["X-RateLimit-Remaining"]), (403, "0"))
+                with self.assertRaises(urllib.error.HTTPError) as other:
+                    opener.open(base + "/user", timeout=5)
+                self.assertEqual(other.exception.code, 404)
+            finally:
+                relay.shutdown()
+                relay.server_close()
+                github.shutdown()
+                github.server_close()
+        self.assertEqual([entry["authorization"] for entry in seen], ["Bearer ghs_journey"] * 2)
+        self.assertEqual(seen[0]["if_none_match"], '"old"')
+        self.assertEqual([(a["status"], a["ratelimit_remaining"]) for a in answers], [(200, "999"), (403, "0")])
 
     def test_homebrew_update_passes_only_after_the_updated_service_syncs_and_zap_cleans_up(self):
         printed_only = {"release assets verified", "clean account", "tap cask matches release",
