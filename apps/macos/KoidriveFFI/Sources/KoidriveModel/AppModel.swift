@@ -345,19 +345,22 @@ public final class AppModel {
         try await run { try $0.setGitignore(follow: follow) }
     }
 
-    /// The files that only `.gitignore` files leave out of the linked folders, counted on disk, whichever way the
-    /// setting is. Nil when a folder can't be counted.
+    /// The files that only `.gitignore` files leave out of the linked folders, counted on disk one folder at a time,
+    /// whichever way the setting is. Nil when a folder can't be counted or the caller is cancelled before the last
+    /// folder. The count is as old as its oldest folder.
     public func gitignoreOnly() async -> GitignoreCount? {
-        let folders = state.folders
-        return try? await run { session in
-            let counts = try folders.map { ($0.spaceName, try session.gitignoreOnly(spaceId: $0.spaceId)) }
-            return GitignoreCount(
-                files: counts.reduce(0) { $0 + $1.1.files },
-                bytes: counts.reduce(0) { $0 + $1.1.bytes },
-                folderNames: counts.filter { $0.1.files > 0 }.map(\.0),
-                countedAtMs: counts.map(\.1.countedAtMs).min() ?? 0
-            )
+        var counts: [(name: String, only: GitignoreOnly)] = []
+        for folder in state.folders {
+            let spaceID = folder.spaceId
+            guard !Task.isCancelled, let only = try? await run({ try $0.gitignoreOnly(spaceId: spaceID) }) else { return nil }
+            counts.append((folder.spaceName, only))
         }
+        return GitignoreCount(
+            files: counts.reduce(0) { $0 + $1.only.files },
+            bytes: counts.reduce(0) { $0 + $1.only.bytes },
+            folderNames: counts.filter { $0.only.files > 0 }.map(\.name),
+            countedAtMs: counts.map(\.only.countedAtMs).min() ?? 0
+        )
     }
 
     /// Updates Koidrive to the newest release. When the update replaces this app, the updater quits it and opens the

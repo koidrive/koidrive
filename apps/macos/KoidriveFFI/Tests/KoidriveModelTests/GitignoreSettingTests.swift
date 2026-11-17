@@ -7,11 +7,10 @@ import Testing
 
 @MainActor
 struct GitignoreSettingTests {
-    private let documentsAndPhotos = GitignoreCount(files: 18_342 + 36_684, bytes: 412_000_000 + 824_000_000,
-                                                    folderNames: ["Documents", "Photos"], countedAtMs: 0)
+    private let files: UInt64 = 18_342 + 36_684
 
     @Test func turningOffAsksFirstWithTheCountAndCancelKeepsFollowing() async throws {
-        let (app, _) = scripted()
+        let (app, session) = scripted()
         let gitignore = GitignoreSettingModel(app: app)
         #expect(app.followsGitignore)
 
@@ -19,14 +18,36 @@ struct GitignoreSettingTests {
         #expect(gitignore.confirmingOff)
         #expect(gitignore.follows)
         let count = try #require(gitignore.count)
-        #expect(count.files == documentsAndPhotos.files)
-        #expect(count.bytes == documentsAndPhotos.bytes)
-        #expect(count.folderNames == documentsAndPhotos.folderNames)
+        #expect(count.files == files)
+        #expect(count.bytes == 412_000_000 + 824_000_000)
+        #expect(count.folderNames == ["Documents", "Photos"])
 
         gitignore.cancelOff()
+        try await Task.sleep(for: .milliseconds(100))
+        await gitignore.recount()
         #expect(!gitignore.confirmingOff)
+        #expect(gitignore.applying == nil)
         #expect(app.followsGitignore)
-        #expect(app.session.gitignore())
+        #expect(session.gitignore())
+        #expect(session.calls(.setGitignore) == 0)
+    }
+
+    @Test func aSlowCountAsksWithTheFallbackOnceTheWaitIsOver() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app, countWait: .milliseconds(50))
+
+        session.holdNext(.gitignoreOnly)
+        defer { session.release.signal() }
+        let asked = ContinuousClock.now
+        await gitignore.set(follow: false)
+        #expect(ContinuousClock.now - asked < .seconds(2))
+        #expect(gitignore.confirmingOff)
+        #expect(gitignore.count == nil)
+
+        session.release.signal()
+        await gitignore.recount()
+        #expect(gitignore.confirmingOff)
+        #expect(gitignore.count?.files == files)
     }
 
     @Test func confirmingTurnsItOffAndShowsTheSwitchOffWhileItApplies() async throws {
@@ -69,7 +90,66 @@ struct GitignoreSettingTests {
         session.release.signal()
         await turningOn.value
         #expect(app.followsGitignore)
-        #expect(gitignore.noLongerSyncing == documentsAndPhotos.files)
+        #expect(gitignore.noLongerSyncing == files)
+    }
+
+    @Test func theTurnedOnLineCountsOnlyAWalkThatStartedAfterTheChange() async throws {
+        let (app, session) = scripted()
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app)
+        await gitignore.recount()
+
+        session.holdNext(.gitignoreOnly)
+        let earlier = Task { await gitignore.recount() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        try await Task.sleep(for: .milliseconds(5))
+
+        await gitignore.set(follow: true)
+        #expect(gitignore.noLongerSyncing == files)
+        let afterTurningOn = try #require(gitignore.count)
+        #expect(session.calls(.gitignoreOnly) == 2 + 1 + 2)
+
+        try await Task.sleep(for: .milliseconds(5))
+        session.release.signal()
+        await earlier.value
+        #expect(gitignore.count == afterTurningOn)
+    }
+
+    @Test func turningOffWhileTheTurnedOnCountRunsShowsNoLine() async throws {
+        let (app, session) = scripted()
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app, countWait: .milliseconds(50))
+        await gitignore.recount()
+
+        session.holdNext(.gitignoreOnly)
+        let turningOn = Task { await gitignore.set(follow: true) }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        #expect(app.followsGitignore)
+
+        await gitignore.set(follow: false)
+        #expect(gitignore.confirmingOff)
+        session.release.signal()
+        await turningOn.value
+        #expect(gitignore.noLongerSyncing == nil)
+    }
+
+    @Test func aTurnedOnCountThatFailsLeavesNoLineForALaterTurnOff() async throws {
+        let (app, session) = scripted()
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app)
+        await gitignore.recount()
+
+        session.failNext(.gitignoreOnly)
+        await gitignore.set(follow: true)
+        #expect(app.followsGitignore)
+        #expect(gitignore.noLongerSyncing == nil)
+
+        await gitignore.set(follow: false)
+        #expect(gitignore.confirmingOff)
+        #expect(gitignore.count?.files == files)
+        #expect(gitignore.noLongerSyncing == nil)
     }
 
     @Test func aCountThatFailsLeavesTheFallbackAndStillAppliesTheSetting() async throws {
@@ -105,21 +185,38 @@ struct GitignoreSettingTests {
         #expect(gitignore.failure == nil)
     }
 
-    @Test func anOlderCountThatArrivesLastIsDropped() async throws {
+    @Test func countsAskedForWhileOneRunsShareIt() async throws {
         let (app, session) = scripted()
         let gitignore = GitignoreSettingModel(app: app)
 
         session.holdNext(.gitignoreOnly)
-        let older = Task { await gitignore.recount() }
+        let first = Task { await gitignore.recount() }
         defer { session.release.signal() }
         try await untilHeld(session)
-        try await Task.sleep(for: .milliseconds(5))
-        await gitignore.recount()
-        let newer = try #require(gitignore.count)
+        let second = Task { await gitignore.recount() }
+        try await Task.sleep(for: .milliseconds(20))
 
         session.release.signal()
-        await older.value
-        #expect(gitignore.count == newer)
+        await first.value
+        await second.value
+        #expect(gitignore.count?.files == files)
+        #expect(session.calls(.gitignoreOnly) == 2)
+    }
+
+    @Test func aCancelledCountStopsBeforeTheNextFolder() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app)
+
+        session.holdNext(.gitignoreOnly)
+        let counting = Task { await gitignore.recount() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        counting.cancel()
+
+        session.release.signal()
+        await counting.value
+        #expect(gitignore.count == nil)
+        #expect(session.calls(.gitignoreOnly) == 1)
     }
 
     @Test func theSwitchIgnoresInputWhileAChangeApplies() async throws {
