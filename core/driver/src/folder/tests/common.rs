@@ -477,8 +477,14 @@ impl Device {
                 let result = remote.commit(&self.caller, &commit);
                 self.folder.sent(result)
             }
-            Work::ResendAfter(_) => self.folder.resend(),
-            Work::RetryAfter(_) => self.folder.retry(),
+            Work::ResendAfter(wait) => {
+                clock::advance(wait);
+                self.folder.resend()
+            }
+            Work::RetryAfter(wait) => {
+                clock::advance(wait);
+                self.folder.retry()
+            }
             Work::Reconnect => {
                 let welcome = remote.space.welcome(&self.caller);
                 self.folder.event(Event::Connected(welcome))

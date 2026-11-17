@@ -47,6 +47,7 @@ use koidrive_telemetry::schema::magnitude;
 use tokio::sync::{Notify, mpsc, watch};
 
 use crate::claim::{self, Identity, Owner};
+use crate::clock;
 use crate::credential::SET_UP_AGAIN;
 use crate::disk::{
     self, Adopted, Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload,
@@ -488,10 +489,10 @@ impl Folder {
                     || matches!(self.stream, Stream::Connecting)
                     || retry_in >= QUICK_RECONNECT;
                 let since = (self.disconnected.as_ref())
-                    .map_or_else(Instant::now, |disconnected| disconnected.since);
+                    .map_or_else(clock::instant, |disconnected| disconnected.since);
                 self.disconnected = Some(Disconnected {
                     reason,
-                    retry_at: SystemTime::now() + retry_in,
+                    retry_at: clock::system() + retry_in,
                     since,
                     shown,
                 });
@@ -696,7 +697,7 @@ impl Folder {
                         "an effect failed; its node is planned again after the wait, or once what is planned for \
                          it changes"
                     );
-                    let at = Instant::now() + wait;
+                    let at = clock::instant() + wait;
                     if denied {
                         self.denied.insert(node, Denied { due: at, foreseen });
                     }
@@ -741,7 +742,7 @@ impl Folder {
     /// blocked, since no wait changes what keeps it.
     pub fn retry(&mut self) -> Result<Vec<Work>, Stop> {
         self.retry_at = None;
-        let now = Instant::now();
+        let now = clock::instant();
         let (timed, refused): (Vec<String>, Vec<String>) = (self.engine.effects.blocked().keys())
             .filter(|node| !self.stuck_effects.contains(*node))
             .filter(|node| (self.denied.get(*node)).is_none_or(|denied| denied.due <= now))
@@ -969,7 +970,7 @@ impl Folder {
         }
         let wait = PERMISSION_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
         self.step(|engine, _| Ok(engine.commits.leave_out(&node)))?;
-        let at = Instant::now() + wait;
+        let at = clock::instant() + wait;
         let seen = self.engine.trees.local().get(&node).cloned();
         self.unreadable.insert(
             node,
@@ -977,7 +978,7 @@ impl Folder {
                 failures,
                 why,
                 left_out: Some(LeftOut {
-                    at: SystemTime::now() + wait,
+                    at: clock::system() + wait,
                     due: at,
                     seen,
                 }),
@@ -1041,7 +1042,7 @@ impl Folder {
 
     /// A wait is over: upload or send the commit again, or build the next one.
     pub fn resend(&mut self) -> Result<Vec<Work>, Stop> {
-        let now = SystemTime::now();
+        let now = clock::system();
         for call in [Call::Upload, Call::Commit] {
             if let Some(retrying) = self.retrying.get_mut(&call) {
                 retrying.at = retrying.at.min(now);
@@ -1081,8 +1082,9 @@ impl Folder {
         kind: WaitKind,
         unreachable: Option<Cause>,
     ) {
-        let since = (self.retrying.get(&call)).map_or_else(Instant::now, |retrying| retrying.since);
-        let at = SystemTime::now() + wait;
+        let since =
+            (self.retrying.get(&call)).map_or_else(clock::instant, |retrying| retrying.since);
+        let at = clock::system() + wait;
         let retrying = Retrying {
             since,
             why,
@@ -1116,7 +1118,7 @@ impl Folder {
     pub fn view(&self) -> View {
         let trees = &self.engine.trees;
         let held = self.held();
-        let now = SystemTime::now();
+        let now = clock::system();
         let reconnect = (self.disconnected.as_ref())
             .filter(|disconnected| disconnected.shown && disconnected.retry_at > now);
         let waiting: Vec<&Retrying> = (self.retrying.values())
@@ -1126,7 +1128,9 @@ impl Folder {
         let reconnecting = (self.disconnected.as_ref()).filter(|disconnected| {
             disconnected.retry_at <= now
                 && disconnected.reason.unreachable()
-                && (disconnected.shown || disconnected.since.elapsed() >= QUICK_RECONNECT)
+                && (disconnected.shown
+                    || clock::instant().saturating_duration_since(disconnected.since)
+                        >= QUICK_RECONNECT)
         });
         let state = match &self.stream {
             _ if reconnect.is_some_and(|disconnected| disconnected.reason.unreachable())
@@ -1215,7 +1219,8 @@ impl Folder {
             .collect();
         stuck.sort();
         let shown = (waiting.iter()).find(|retrying| {
-            retrying.wait >= RETRY_SHOWN || retrying.since.elapsed() >= RETRY_SHOWN
+            retrying.wait >= RETRY_SHOWN
+                || clock::instant().saturating_duration_since(retrying.since) >= RETRY_SHOWN
         });
         let unix_ms =
             |at: SystemTime| (at.duration_since(UNIX_EPOCH)).map_or(0, |at| at.as_millis() as i64);
@@ -1334,9 +1339,11 @@ impl Folder {
 
     /// How long until a wait the status shows ends, so the status can be shown again then.
     pub fn next_change(&self) -> Option<Duration> {
-        let now = SystemTime::now();
-        let grace = (self.disconnected.iter())
-            .filter_map(|disconnected| QUICK_RECONNECT.checked_sub(disconnected.since.elapsed()));
+        let now = clock::system();
+        let grace = (self.disconnected.iter()).filter_map(|disconnected| {
+            QUICK_RECONNECT
+                .checked_sub(clock::instant().saturating_duration_since(disconnected.since))
+        });
         (self
             .disconnected
             .iter()

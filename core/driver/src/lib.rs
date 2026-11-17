@@ -19,6 +19,7 @@
 //! are not proved end to end yet. docs/design/driver.md describes the loop and lists what is still to wire.
 
 mod claim;
+mod clock;
 mod config;
 #[cfg(test)]
 mod counting;

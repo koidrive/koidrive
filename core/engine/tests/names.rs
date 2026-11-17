@@ -28,6 +28,15 @@ fn name_key_matches_canonically_equivalent_names_that_differ_only_by_case() {
     assert_eq!(name_key("\u{0390}"), "\u{03B9}\u{0308}\u{0301}");
 }
 
+#[test]
+fn every_ascii_character_keys_like_its_full_folding() {
+    for c in (0..=0x7f_u8).map(char::from) {
+        let s = c.to_string();
+        let key: String = casefold(&s.nfd().collect::<String>()).nfd().collect();
+        assert_eq!(name_key(&s), key, "{c:?}");
+    }
+}
+
 fn name() -> impl Strategy<Value = String> {
     prop_oneof![
         "[a-zA-Zß.]{1,12}",
@@ -47,6 +56,13 @@ proptest! {
     fn name_key_is_idempotent(s in "\\PC{0,40}") {
         prop_assert_eq!(name_key(&name_key(&s)), name_key(&s));
         prop_assert_eq!(casefold(&casefold(&s)), casefold(&s));
+    }
+
+    #[test]
+    fn name_key_is_the_nfd_of_the_casefold_of_the_nfd(s in prop_oneof!["[\\x00-\\x7f]{0,40}", name()]) {
+        let nfd: String = s.nfd().collect();
+        let key: String = casefold(&nfd).nfd().collect();
+        prop_assert_eq!(name_key(&s), key);
     }
 
     #[test]
