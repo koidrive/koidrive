@@ -603,6 +603,9 @@ pub struct World {
     pub seen: BTreeMap<&'static str, u64>,
     /// Prints every step and every turn after the faults stop, with the state each leaves.
     pub trace: bool,
+    /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
+    /// server from before RFC 0002's `device_commit_id` does.
+    pub tokenless_welcome: bool,
     /// The tag of the last write.
     writes: i64,
     /// The device whose user made each write.
@@ -739,6 +742,7 @@ impl World {
             devices,
             seen: BTreeMap::new(),
             trace: false,
+            tokenless_welcome: false,
             writes: 0,
             writers: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -1861,7 +1865,11 @@ impl World {
             note(&mut self.seen, "server refuses a history a rewind replaced");
             return Ok(());
         }
-        let welcome = self.space.welcome(&self.devices[d].session);
+        let mut welcome = self.space.welcome(&self.devices[d].session);
+        if self.tokenless_welcome {
+            welcome.device_commit_id.clear();
+            welcome.device_committed_at_ms = 0;
+        }
         if self.devices[d].engine.history != welcome.history_id {
             self.recover(
                 d,
