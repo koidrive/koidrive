@@ -233,6 +233,16 @@ describe("small-file benchmark", () => {
     expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
   });
 
+  it("says why the last side's Worker CPU is partial when its later query fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(627), invocations(300, 900, 2100), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 300 (partial) | 0.90 | 2.10 | 0 |");
+    expect(result.output).toContain("Worker CPU for the puts side is partial:");
+  });
+
   it("still passes when no Cloudflare credentials are set", async () => {
     fakeCargo();
     const result = await run({ command: "small", env: { CLOUDFLARE_API_TOKEN: "", CLOUDFLARE_ACCOUNT_ID: "" } });

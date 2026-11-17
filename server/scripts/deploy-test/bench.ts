@@ -158,7 +158,7 @@ async function workerCpu(script: string, path: string): Promise<void> {
     if (seen) rows.push(row(window, seen));
     if (seen && failed === undefined) continue;
     const missing = seen ? windows[i + 1] : window;
-    if (missing) unavailable = stop(missing, failed ?? deadline.what);
+    unavailable = missing ? stop(missing, failed ?? deadline.what) : "Worker CPU for the " + window.side + " side is partial: " + failed + ". The sync times and request counts above are complete.";
     break;
   }
   if (unavailable) emit(unavailable);
