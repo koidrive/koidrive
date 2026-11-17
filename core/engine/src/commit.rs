@@ -4607,7 +4607,10 @@ impl<'a> Scratch<'a> {
                         parents.insert(id, to);
                     }
                     Lands::Restore
-                        if inside(self, &parents, to, id) || self.kind(to) == Some(Kind::File) => {}
+                        if inside(self, &parents, to, id)
+                            || (self.kind(to)).or_else(|| {
+                                self.trees.local().get(to).map(|node| node.shape.kind)
+                            }) == Some(Kind::File) => {}
                     Lands::Restore => {
                         parents.insert(id, to);
                     }
@@ -4986,9 +4989,12 @@ impl<'a> Scratch<'a> {
         }
         let riding = |node: &str| {
             let mut at = placed(node);
-            while let Some(up) =
-                at.filter(|up| revived.contains(*up) || self.creating.contains_key(*up))
-            {
+            for _ in 0..=revived.len() + self.creating.len() {
+                let Some(up) =
+                    at.filter(|up| revived.contains(*up) || self.creating.contains_key(*up))
+                else {
+                    return false;
+                };
                 if self.moves.contains_key(up) && !answers.contains(up) {
                     return true;
                 }
