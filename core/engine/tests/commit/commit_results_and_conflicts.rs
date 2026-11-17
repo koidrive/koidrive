@@ -652,6 +652,15 @@ fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_
 }
 
 #[test]
+fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it() {
+    let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
+    trees.settle_with_merges(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
+    assert!(!trees.reverted().contains("b"));
+}
+
+#[test]
 fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_while_the_server_changes_elsewhere() {
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
@@ -696,3 +705,15 @@ fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the
         assert!(trees.reverted().contains("b"));
     }
 }
+
+#[test]
+fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forgets_the_merge() {
+    let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(false);
+    let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
+    commits.enter_recovery(cause);
+    commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
+    trees.settle_with_merges(commits.aliases());
+    assert!(commits.aliases().is_empty());
+    assert!(!trees.reverted().contains("b"));
+}
+

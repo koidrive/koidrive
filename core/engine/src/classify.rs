@@ -1744,6 +1744,7 @@ impl Trees {
             let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
             if moved {
                 self.unsent_marks.remove(&id);
+                self.cycles_may_end = true;
             }
             let to_remote =
                 (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
@@ -1918,6 +1919,7 @@ impl Trees {
         self.local_changes.remove(id);
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
+        self.cycles_may_end = true;
         if let Some(old) = self.l.remove(id) {
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
@@ -2079,6 +2081,7 @@ impl Trees {
         self.edited_here.clear();
         let r = &self.r;
         self.reverted.retain(|id| r.get(id).is_some());
+        self.cycles_may_end = true;
         let waiting: Vec<NodeId> = self.waiting.keys().cloned().collect();
         for id in waiting {
             if let Some(mut waiting) = self.waiting.get(&id).cloned() {
@@ -4377,6 +4380,7 @@ impl Trees {
 
     pub(crate) fn end_revert(&mut self, id: &str) {
         if self.reverted.remove(id) {
+            self.cycles_may_end = true;
             self.mark(id);
         }
     }
