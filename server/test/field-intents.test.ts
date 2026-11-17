@@ -462,6 +462,21 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     expect(own.results[0]).toMatchObject({ code: OpResult_Code.REJECTED, rejectReason: "NOT_FOUND" });
     expect(await stateOf(space, nodeId)).toBeUndefined();
   });
+
+  it("places a create or move into a purged folder under the nearest live ancestor of its last parent", async () => {
+    const { space, a, b, values, root } = await setup();
+    const [kept, gone, inner] = [uuidv7(), uuidv7(), uuidv7()];
+    await a.commit([op.mkdir(kept, root, "Kept"), op.mkdir(gone, kept, "Gone"), op.mkdir(inner, gone, "Inner")]);
+    const loose = await file(a, root, "loose.txt", values[0]!);
+    await a.commit([sent(del(gone), intent(a.session.deviceId))]);
+    const purged = await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS));
+    expect(purged.purgedNodes).toBe(2);
+    const created = await file(b, inner, "new.txt", values[1]!);
+    expect((await stateOf(space, created))!.parentId).toBe(kept);
+    const moved = await b.commit([sent(op.move(loose, gone, "loose.txt"), intent(b.session.deviceId))]);
+    expect(moved.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect((await stateOf(space, loose))!.parentId).toBe(kept);
+  });
 });
 
 describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {

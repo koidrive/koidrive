@@ -433,8 +433,15 @@ export class CommitApplier {
     return { node: getNode(this.sql, node.node_id)!, renamed };
   }
 
-  private parentRow(parentId: string): NodeRow | Reject {
+  private placeIn(parentId: string): NodeRow | undefined {
     const parent = this.node(parentId);
+    if (parent) return parent;
+    const tombstone = tombstoneOf(this.sql, this.id(parentId));
+    return tombstone && this.nearestLive(tombstone.parent_id);
+  }
+
+  private parentRow(parentId: string): NodeRow | Reject {
+    const parent = this.placeIn(parentId);
     if (!parent) return "NOT_FOUND";
     if (parent.kind !== NodeKindValue.DIR) return "PARENT_NOT_DIR";
     this.checkDepth(parent);
@@ -699,7 +706,7 @@ export class CommitApplier {
     if (!name) return rejected("INVALID_NAME");
     const pendingFor = pendingName(op.pendingFor);
     if (pendingFor === undefined) return rejected("INVALID_NAME");
-    const target = this.node(op.newParentId);
+    const target = this.placeIn(op.newParentId);
     if (!target) return rejected("NOT_FOUND");
     if (target.kind !== NodeKindValue.DIR) return rejected("PARENT_NOT_DIR");
     if (this.isSelfOrDescendant(target, found.node_id)) return rejected("CYCLE");
