@@ -1,4 +1,4 @@
-# RFC 0028: Recorded intents
+# RFC 0029: Recorded intents
 
 Status: proposed. Applies to spec v0 (format_version 1). Amends spec v0 §6.2 R3, R7 and R8, RFC 0004 §3 to §5, RFC 0006 §8, RFC 0017 §2 and §3, RFC 0018 §4, §5 and §7, RFC 0019 §4, RFC 0022 §2, RFC 0026 §3, and the sync-engine design §2.8, §4.4 and §6.4. Adds messages and fields to `Op`, `NodeState`, `NodePurged`, `NodeSnapshot`, `Delete` and `CreateFile`.
 

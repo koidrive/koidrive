@@ -73,13 +73,13 @@ message NodeState {
   // that carried a user's move to the place such a move gave it (RFC 0019). 0 from a server before RFC 0019, read as
   // meta_rev.
   uint64 meta_edit_rev = 13;
-  // The intent that set each field (RFC 0028). Empty from a server without field_intents.
+  // The intent that set each field (RFC 0029). Empty from a server without field_intents.
   FieldIntents intents = 14;
-  // On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0028).
+  // On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0029).
   repeated bytes trash_held = 15;
 }
 
-// One user change to one node (RFC 0028).
+// One user change to one node (RFC 0029).
 message Intent {
   // UUIDv7 minted by the author's device, 16 bytes.
   bytes id = 1;
@@ -111,7 +111,7 @@ message ChangeRecord {
 
 message NodePurged {
   string node_id = 1;
-  // The tombstone a purge keeps (RFC 0028): the parent the node last had, its field intents and the trash's held list.
+  // The tombstone a purge keeps (RFC 0029): the parent the node last had, its field intents and the trash's held list.
   string last_parent_id = 2;
   FieldIntents intents = 3;
   repeated bytes held = 4;

@@ -233,14 +233,14 @@ export type NodeState = Message<"koidrive.v1.NodeState"> & {
   metaEditRev: bigint;
 
   /**
-   * The intent that set each field (RFC 0028). Empty from a server without field_intents.
+   * The intent that set each field (RFC 0029). Empty from a server without field_intents.
    *
    * @generated from field: koidrive.v1.FieldIntents intents = 14;
    */
   intents?: FieldIntents | undefined;
 
   /**
-   * On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0028).
+   * On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0029).
    *
    * @generated from field: repeated bytes trash_held = 15;
    */
@@ -255,7 +255,7 @@ export const NodeStateSchema: GenMessage<NodeState> = /*@__PURE__*/
   messageDesc(file_koidrive_v1_model, 3);
 
 /**
- * One user change to one node (RFC 0028).
+ * One user change to one node (RFC 0029).
  *
  * @generated from message koidrive.v1.Intent
  */
@@ -381,7 +381,7 @@ export type NodePurged = Message<"koidrive.v1.NodePurged"> & {
   nodeId: string;
 
   /**
-   * The tombstone a purge keeps (RFC 0028): the parent the node last had, its field intents and the trash's held list.
+   * The tombstone a purge keeps (RFC 0029): the parent the node last had, its field intents and the trash's held list.
    *
    * @generated from field: string last_parent_id = 2;
    */

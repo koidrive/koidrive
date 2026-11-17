@@ -417,14 +417,14 @@ pub struct NodeState {
     /// meta_rev.
     #[prost(uint64, tag="13")]
     pub meta_edit_rev: u64,
-    /// The intent that set each field (RFC 0028). Empty from a server without field_intents.
+    /// The intent that set each field (RFC 0029). Empty from a server without field_intents.
     #[prost(message, optional, tag="14")]
     pub intents: ::core::option::Option<FieldIntents>,
-    /// On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0028).
+    /// On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0029).
     #[prost(bytes="vec", repeated, tag="15")]
     pub trash_held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
-/// One user change to one node (RFC 0028).
+/// One user change to one node (RFC 0029).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Intent {
     /// UUIDv7 minted by the author's device, 16 bytes.
@@ -476,7 +476,7 @@ pub mod change_record {
 pub struct NodePurged {
     #[prost(string, tag="1")]
     pub node_id: ::prost::alloc::string::String,
-    /// The tombstone a purge keeps (RFC 0028): the parent the node last had, its field intents and the trash's held list.
+    /// The tombstone a purge keeps (RFC 0029): the parent the node last had, its field intents and the trash's held list.
     #[prost(string, tag="2")]
     pub last_parent_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag="3")]
@@ -574,7 +574,7 @@ impl NodeStatus {
 /// An intended change sent by a client.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Op {
-    /// The user change this op sends (RFC 0028). Empty from a client before RFC 0028; the server mints one.
+    /// The user change this op sends (RFC 0029). Empty from a client before RFC 0029; the server mints one.
     #[prost(message, optional, tag="7")]
     pub intent: ::core::option::Option<Intent>,
     /// Set only on CreateDir and CreateFile: a separate intent for each field. A field left empty takes `intent`.
@@ -627,7 +627,7 @@ pub struct CreateFile {
     pub made_over: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, tag="6")]
     pub source_version_id: ::prost::alloc::string::String,
-    /// The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0028).
+    /// The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0029).
     #[prost(string, tag="7")]
     pub pending_for: ::prost::alloc::string::String,
 }
@@ -680,10 +680,10 @@ pub struct Delete {
     /// CODE_SUPERSEDED and trashes nothing (RFC 0015).
     #[prost(message, optional, tag="2")]
     pub requires: ::core::option::Option<NodeRevisions>,
-    /// Intents the deleting device's R held on this node and below whose values its L never held (RFC 0028).
+    /// Intents the deleting device's R held on this node and below whose values its L never held (RFC 0029).
     #[prost(bytes="vec", repeated, tag="3")]
     pub unseen: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-    /// Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0028).
+    /// Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0029).
     #[prost(bytes="vec", repeated, tag="4")]
     pub held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
@@ -840,7 +840,7 @@ pub struct NodeSnapshot {
     /// When the node was trashed; 0 when it is not trashed.
     #[prost(int64, tag="3")]
     pub trashed_at_ms: i64,
-    /// A purged node's tombstone (RFC 0028). Set on a record with no node, in node id order with the node records, only in
+    /// A purged node's tombstone (RFC 0029). Set on a record with no node, in node id order with the node records, only in
     /// a snapshot at format_version 2.
     #[prost(message, optional, tag="4")]
     pub tombstone: ::core::option::Option<NodePurged>,

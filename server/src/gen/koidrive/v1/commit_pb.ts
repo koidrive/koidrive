@@ -64,7 +64,7 @@ export type Op = Message<"koidrive.v1.Op"> & {
   } | { case: undefined; value?: undefined };
 
   /**
-   * The user change this op sends (RFC 0028). Empty from a client before RFC 0028; the server mints one.
+   * The user change this op sends (RFC 0029). Empty from a client before RFC 0029; the server mints one.
    *
    * @generated from field: koidrive.v1.Intent intent = 7;
    */
@@ -154,7 +154,7 @@ export type CreateFile = Message<"koidrive.v1.CreateFile"> & {
   sourceVersionId: string;
 
   /**
-   * The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0028).
+   * The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0029).
    *
    * @generated from field: string pending_for = 7;
    */
@@ -294,14 +294,14 @@ export type Delete = Message<"koidrive.v1.Delete"> & {
   requires?: NodeRevisions | undefined;
 
   /**
-   * Intents the deleting device's R held on this node and below whose values its L never held (RFC 0028).
+   * Intents the deleting device's R held on this node and below whose values its L never held (RFC 0029).
    *
    * @generated from field: repeated bytes unseen = 3;
    */
   unseen: Uint8Array[];
 
   /**
-   * Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0028).
+   * Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0029).
    *
    * @generated from field: repeated bytes held = 4;
    */
