@@ -1753,6 +1753,25 @@ fn kinds(verdicts: &[&Verdict]) -> Vec<&'static str> {
     kinds
 }
 
+fn later_faults(runs: &[Run]) -> Vec<(&'static str, &Sent)> {
+    let mut seen = BTreeSet::new();
+    let later = runs.iter().flat_map(|run| run.sent.iter().skip(1));
+    later
+        .flat_map(|sent| {
+            kinds(&[&sent.verdict])
+                .into_iter()
+                .map(move |kind| (kind, sent))
+        })
+        .filter(|&(kind, _)| kind != "made-up name" && seen.insert(kind))
+        .collect()
+}
+
+fn revived_over(runs: &[Run]) -> Vec<Revived> {
+    (runs.iter())
+        .flat_map(|run| run.revived.iter().cloned())
+        .collect()
+}
+
 fn resolve(
     world: &World,
     befores: Vec<&SpaceDo>,
@@ -1827,16 +1846,10 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         ));
     }
     let later = runs.iter().flat_map(|run| run.sent.iter().skip(1));
-    if let Some(sent) = later.clone().find(|sent| {
-        !sent.verdict.revived.is_empty()
-            || !sent.verdict.lost.is_empty()
-            || !sent.verdict.renamed.is_empty()
-    }) {
+    for found in later_faults(&runs).chunk_by(|a, b| std::ptr::eq(a.1, b.1)) {
+        let sent = found[0].1;
         let (resolution, note) = resolve(world, vec![&sent.before], &sent.commit, &root);
-        for kind in kinds(&[&sent.verdict])
-            .into_iter()
-            .filter(|&kind| kind != "made-up name")
-        {
+        for &(kind, _) in found {
             hard |= main_baseline(kind).is_none();
             classes.push(format!("later commit: {kind}"));
             classes.push(format!("later commit: {kind} → {resolution}"));
@@ -1988,14 +2001,13 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         hard = true;
         classes.push("empty commit".into());
     }
-    if let Some(run) = runs.iter().find(|run| !run.revived.is_empty()) {
-        for class in over_the_run(&run.revived) {
+    let revived = revived_over(&runs);
+    if !revived.is_empty() {
+        for class in over_the_run(&revived) {
             hard |= main_baseline(&class).is_none();
             classes.push(class);
         }
-        let labels: Vec<&str> = run
-            .revived
-            .iter()
+        let labels: Vec<&str> = (revived.iter())
             .map(|revived| revived.label.as_str())
             .collect();
         notes += &format!("\n    revived over the run: {labels:?}");
@@ -2267,7 +2279,14 @@ fn met(world: &World, root: &str, before: &SpaceDo, end: &SpaceDo, i: usize, wan
         Want::Edited => {
             let was = before.node(&world.id(i)).map_or(0, |was| was.content_rev);
             reached(world, root, end, 1 << i) != 0
-                && node.is_some_and(|node| node.content_rev > was)
+                && node.is_some_and(|node| {
+                    node.content_rev > was
+                        && (node.current.as_ref())
+                            .and_then(|version| version.content.as_ref())
+                            .is_some_and(|content| {
+                                content.manifest_digest == edited().manifest_digest
+                            })
+                })
         }
     }
 }
@@ -2517,7 +2536,11 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     }
     let baseline = |fault: &str| match story {
         _ if main_baseline(fault).is_some() => main_baseline(fault),
-        Story::Answer(..) if fault.starts_with("under a cap of") => {
+        Story::Answer(..)
+            if fault.starts_with("under a cap of")
+                && (fault.ends_with(": ends while a node is not where L holds it")
+                    || fault.ends_with(": ends while an edit is not kept in place")) =>
+        {
             Some("a split bundle never finishes")
         }
         Story::Answer(_, Answer::Discard, _)
@@ -3576,5 +3599,80 @@ fn a_restore_into_a_folder_the_disk_moves_into_the_restored_folder_lands() {
     assert!(
         sent.iter().any(|op| op.starts_with("Restore b→c/")),
         "{sent:?}"
+    );
+}
+
+#[test]
+fn a_restore_into_a_new_file_reverts_no_move_through_the_restored_folder() {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, Root],
+        &[Remote::Kept, Remote::Trashed],
+        &[To(In(3)), Kept],
+        &[(Kind::File, To(In(0))), (Kind::Dir, To(In(1)))],
+    );
+    let space = server(&world);
+    let root = space.space_id().to_string();
+    let mut planner = Planner::new(&world, &space);
+    let intent =
+        RestoreIntent::from_trash(world.id(1), Some(world.spot_id(&root, In(2))), None).unwrap();
+    planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
+    let sent: Vec<String> = (planner.build().iter())
+        .flat_map(|commit| &commit.ops)
+        .map(|op| world.show_op(&root, op))
+        .collect();
+    assert!(!planner.trees.reverted().contains(&world.id(0)), "{sent:?}");
+    assert!(sent.iter().any(|op| op == "Move a→n/a"), "{sent:?}");
+}
+
+#[test]
+fn a_baseline_fault_found_first_hides_no_later_fault() {
+    let space = || SpaceDo::new(1, NOW as i64);
+    let revived = |held| Revived {
+        label: "unseen trash".into(),
+        held,
+    };
+    let sent = |verdict| Sent {
+        before: space(),
+        commit: proto::Commit::default(),
+        result: proto::CommitResult::default(),
+        verdict,
+    };
+    let run = |sent: Vec<Sent>, revived: Vec<Revived>| Run {
+        unseen: Unseen::Nothing,
+        before: space(),
+        sent,
+        end: space(),
+        stop: Stop::Quiet,
+        revived,
+        empty: false,
+        restores: 0,
+    };
+    let held = Verdict {
+        revived: vec![revived(true)],
+        ..Verdict::default()
+    };
+    let lost = Verdict {
+        lost: vec!["a".into()],
+        ..Verdict::default()
+    };
+    let runs = [
+        run(
+            vec![sent(Verdict::default()), sent(held)],
+            vec![revived(true)],
+        ),
+        run(
+            vec![sent(Verdict::default()), sent(lost)],
+            vec![revived(false)],
+        ),
+    ];
+    let later: Vec<&str> = later_faults(&runs).iter().map(|&(kind, _)| kind).collect();
+    assert_eq!(later, [HELD, "lost"]);
+    assert!(later.iter().any(|kind| main_baseline(kind).is_none()));
+    let over = over_the_run(&revived_over(&runs));
+    assert!(
+        over.iter().any(|class| main_baseline(class).is_none()),
+        "{over:?}"
     );
 }
