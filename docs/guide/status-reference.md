@@ -87,10 +87,10 @@ When the space is rewound on the server, the folder reads the server's tree agai
 
 | `koi status` shows | Answers |
 |---|---|
-| files created after the restore point, which the restore removed from the server | `keep` puts them back on the server. `discard` moves this device's copies to the local trash. |
-| files changed on this device since it last synced | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash. |
+| files created after the restore point, which the restore removed from the server | `keep` puts them back on the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files changed on this device since it last synced | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and downloads the server's version. |
 | files on this device that the space does not hold | `publish` or `discard`, as above |
-| files deleted on this device that the server still holds | `delete` deletes them on the server and other devices. `restore` downloads them again. |
+| files deleted on this device that the server still holds | `delete` deletes them on the server and other devices. `restore` downloads them to this device again. |
 | restores asked for before recovery began, which the server does not show | `repeat` sends the request again. `cancel` drops it. |
 
 Files outside these groups follow the server without a question.
