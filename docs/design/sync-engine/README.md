@@ -35,7 +35,7 @@ This page lists the rules of the sync engine (`core/engine`) and of the drivers 
   - [5.7 Permissions and the executable bit](filesystem.md#57-permissions-and-the-executable-bit)
   - [5.8 Files that change while being chunked or uploaded](filesystem.md#58-files-that-change-while-being-chunked-or-uploaded)
   - [5.9 Very large directories and trees](filesystem.md#59-very-large-directories-and-trees)
-  - [5.10 `.koiignore`](filesystem.md#510-koiignore)
+  - [5.10 `.koiignore` and `.gitignore`](filesystem.md#510-koiignore-and-gitignore)
 - [6. Mass-deletion safety](mass-deletion.md#6-mass-deletion-safety)
   - [6.1 A large delete waits for confirmation](mass-deletion.md#61-a-large-delete-waits-for-confirmation)
   - [6.2 A missing root pauses the space](mass-deletion.md#62-a-missing-root-pauses-the-space)

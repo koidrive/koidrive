@@ -132,27 +132,34 @@ The fs driver records identity, size and mtime before reading a file and checks 
 
 The trees are indexed by `(parent, name)` and `(parent, name_key)`, and planning visits only dirty nodes. Commits are cut at 1,000 ops in dependency order, bootstrap reads `ListTree` page by page (spec §7.5), and the initial scan streams entries to the engine in batches. The engine holds the trees in memory and the store persists changes row by row.
 
-## 5.10 `.koiignore`
+## 5.10 `.koiignore` and `.gitignore`
 
 Becoming ignored never deletes anything, on either side. An ignored path is outside the sync tree on the device that ignores it, and that device stops syncing it. The one exception is the ambiguous disappearance below, which the engine counts as a deletion until it opens its question.
 
 ### Rules files
 
 - A `.koiignore` file can be in any directory of the space and uses `.gitignore` syntax: blank lines and `#` comments, `!` negation, a leading or middle `/` anchoring a pattern to the file's directory, a trailing `/` matching only directories, `*`, `?`, `[...]` and `**`. Its patterns apply to its directory's subtree. A deeper file's patterns take precedence over a shallower one's, and within a file the last matching pattern wins. A file cannot be re-included when one of its parent directories is excluded.
-- Names are matched after NFC normalization and case folding (`name_key`, §5.5), so a pattern means the same on every volume. An unparsable line is ignored and reported as a problem on the `.koiignore` file.
-- `.koiignore` files are ordinary synced files, so every device converges on the same rules. A `.koiignore` file in an included directory is never ignored itself. One inside an excluded subtree is excluded with it and not read.
+- A `.gitignore` file is a rules file too, with the same syntax and the same reach. For a path, the `.koiignore` files decide first. The `.gitignore` files decide only when no `.koiignore` pattern matches the path, and they decide as git does. So `!.env` in a `.koiignore` file syncs the `.env` files a `.gitignore` file excludes, and `*.psd` in a `.koiignore` file excludes files no `.gitignore` file mentions. Git's other sources, `.git/info/exclude` and `core.excludesFile`, hold one person's choices for one clone and are not read.
+- Names are matched after NFC normalization and case folding (`name_key`, §5.5), so a pattern means the same on every volume. An unparsable line is ignored and reported as a problem on its rules file.
+- Rules files are ordinary synced files, so every device converges on the same rules. A rules file in an included directory is never ignored itself. One inside an excluded subtree is excluded with it and not read.
 - The built-in exclusions of §5.1 (`.koidrive/`, platform files) apply in addition and cannot be negated.
-- A rules file is any file whose `name_key` is that of `.koiignore`, so `.KOIIGNORE` is one too, and scans hold each folder's rules under the `name_key` of its path: renaming a folder or its rules file only in case keeps the rules.
+- A rules file is any file whose `name_key` is that of `.koiignore` or `.gitignore`, so `.KOIIGNORE` is one too, and scans hold each folder's rules under the `name_key` of its path and the kind of file: renaming a folder or its rules file only in case keeps the rules.
+
+### Following `.gitignore` files
+
+- Each device follows `.gitignore` files unless its configuration sets `gitignore = false` under `[sync]`. The setting belongs to the device and is never synced. A device that does not follow them still syncs the `.gitignore` files themselves.
+- Changing the setting is a rule change on that device, and the Transitions table below applies: what it starts excluding stays on disk and on the server, and what it includes again syncs. Nothing is deleted on either side.
+- The driver writes the setting to the configuration file before it restarts the running folders with the new rules, so a driver that starts after a crash applies it.
 
 ### Evaluating the rules
 
-- The fs driver parses each `.koiignore` file it observes and passes the rules to the engine with the observation. The engine owns the matcher and applies the same rules to remote nodes. `core/fs` uses the same matcher to leave ignored paths out of scans and watchers. Rules come from the files on this device's disk.
-- When a remote change creates or updates a `.koiignore` file, the planner applies that effect before any other effect in the same directory's subtree.
+- The fs driver parses each rules file it observes and passes the rules, with their kind, to the engine with the observation. The engine owns the matcher and applies the same rules to remote nodes. `core/fs` uses the same matcher to leave ignored paths out of scans and watchers. Rules come from the files on this device's disk.
+- When a remote change creates or updates a rules file, the planner applies that effect before any other effect in the same directory's subtree.
 - After an effect that wrote, moved or removed a rules file, or that moved a folder, the driver asks for no further effect and no commit until a scan of the effect's paths has passed its rules. The engine holds each rules file by the path of its folder.
 - A rules file that cannot be read (larger than 1 MiB, or unreadable) keeps the rules its folder had. When the folder had none, the scan reports the folder as unreadable and leaves what it holds as it was known, so nothing the file may exclude is uploaded.
 - The engine plans no effect and no commit for a node that L, S or R places below a folder a scan reports unreadable, until a scan reports the folder's rules. It holds the folder by its node, found after the batch's changes at the path the scan reports, by exact name as L holds names: a folder renamed, also only in case, is the same folder, and two folders whose names differ only in case are two. The hold ends when L no longer holds the folder.
 - Each scan reports, apart from the rules files that changed, every folder whose rules it established at the path where it listed the folder: it read the rules file, found none, or kept the rules an earlier scan read. The hold of the node at that path ends there.
-- A folder that holds two rules files whose names differ only in case is reported unreadable until one is gone.
+- A folder that holds two rules files of the same kind whose names differ only in case is reported unreadable until one is gone.
 - Until the first scan of a watcher has settled every scope, a folder that is still pending is reported unreadable.
 - The rules are not stored (§2.8). After a restart the engine plans no effect and no commit until the driver has passed it the device-local list and the rules files of a full scan.
 - The first batch of each watcher lists every rules file its scan read, and the engine drops the rules of every folder it does not list.
@@ -185,8 +192,8 @@ A node is excluded on this device when any of these matches the rules: its posit
 
 | Situation | What happens on the device with the rule |
 |---|---|
-| A synced node becomes ignored (a rule is added) | It becomes excluded. Nothing is deleted locally or remotely; other devices keep syncing it. Local edits made while it is ignored are not uploaded |
-| An ignored node becomes included again (the rule is removed) | The driver rescans the path; the node re-enters L with its kept S entry, and §2.3 resolves it: an edit made while ignored is uploaded, a remote change is downloaded, both are a concurrent change. A node whose local copy was removed while ignored downloads again from the server, and nothing is sent. A path never synced appears as a new local node |
+| A synced node becomes ignored (a rule is added, or the device starts following `.gitignore` files) | It becomes excluded. Nothing is deleted locally or remotely; other devices keep syncing it. Local edits made while it is ignored are not uploaded |
+| An ignored node becomes included again (the rule is removed, or the device stops following `.gitignore` files) | The driver rescans the path; the node re-enters L with its kept S entry, and §2.3 resolves it: an edit made while ignored is uploaded, a remote change is downloaded, both are a concurrent change. A node whose local copy was removed while ignored downloads again from the server, and nothing is sent. A path never synced appears as a new local node |
 | A remote node matches a local rule | It is not downloaded and becomes excluded, with its whole subtree for a directory |
 | The user moves a synced node into an ignored path | The fs layer reports the move from the rename (file identity), and the node becomes excluded at its last synced position: no op is sent. When events were lost, see below |
 | The user moves an ignored entry into a synced path | A new local node, or, for an excluded node returning, a move of that node plus whatever edit it carries |

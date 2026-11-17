@@ -24,6 +24,7 @@ The CLI uses the XDG base directories. The macOS app passes its own container to
 [sync]
 include = ["Projects/"]   # when not empty, only these paths are synced
 exclude = ["*.iso"]       # .koiignore patterns
+gitignore = true          # the default: .gitignore files apply too
 
 [trash]
 max_size_mb = 2048        # the default
@@ -35,7 +36,7 @@ concurrency = 4           # the default, from 1 to 16
 background = true         # the default
 ```
 
-- `[sync]` applies to every folder of the profile. A path is excluded when the built-in exclusions, these rules or the folder's `.koiignore` files exclude it, so no `.koiignore` pattern widens what the device syncs. The rules save bandwidth and disk only. The server still sends every name, and the credential can read everything.
+- `[sync]` applies to every folder of the profile. A path is excluded when the built-in exclusions, these rules or the folder's rules files exclude it, so no rules file widens what the device syncs. `gitignore = false` leaves the folder's `.gitignore` files out of the rules (§5.10). The rules save bandwidth and disk only. The server still sends every name, and the credential can read everything.
 - `[trash]` caps each folder's local trash (§5.2). A running folder reclaims it at start and once a day: entries past their retention go first, then the oldest while the trash holds more than `max_size_mb` megabytes.
 - `[upload]` limits chunk uploads in flight across all folders of the profile, through one `koidrive_net::UploadGate`. The driver refuses a value outside 1 to 16 when it opens.
 - `[service]` with `background = false` leaves the background service alone, and the person runs `koi _daemon` some other way.
@@ -58,6 +59,8 @@ background = true         # the default
 | `start()`, `stop()` | Starts one task per folder unless paused. Stops them and waits until every task has ended |
 | `pause()`, `resume()` | Stops every folder and writes the paused file. Removes it and starts the folders |
 | `restart(folder)`, `lift(folder, lift)` | Syncs the folder again from the start. `lift` also clears a refusal's halt by resending the commit or planning it again |
+| `follows_gitignore()`, `set_gitignore(follow)` | Whether the folders follow their `.gitignore` files. Writes `gitignore` under `[sync]`, keeping the rest of the file, and restarts each running folder with the new rules; the same value restarts nothing |
+| `gitignore_only(folder)` | The regular files and bytes of the folder on disk that only its `.gitignore` files leave out, whatever the setting is |
 | `watch()` | A receiver marked whenever `status`, `questions` or `restores` may have changed |
 | `signed_in()` | The profile's one `Auth`, for calls the driver does not make |
 
