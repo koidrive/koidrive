@@ -615,6 +615,19 @@ impl Device {
             Ruling::Include(paths) => self.rules.include = paths.clone(),
         }
         self.rules.read(&mut self.trees);
+        self.rescan();
+    }
+
+    fn rescan(&mut self) {
+        let local = self.trees.local();
+        let folders: Vec<String> = std::iter::once(local.root.clone())
+            .chain(
+                (local.iter())
+                    .filter(|(_, node)| node.shape.kind == Kind::Dir)
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect();
+        self.trees.listed(&folders);
     }
 
     /// One change the user makes on disk, as the next rescan reports it. The user sees no parked

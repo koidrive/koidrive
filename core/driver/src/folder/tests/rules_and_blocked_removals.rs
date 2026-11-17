@@ -1200,3 +1200,156 @@ fn a_build_folder_rebuilt_with_the_same_files_while_excluded_sends_nothing_when_
     assert!(b.sent.is_empty(), "sent {:?}", b.sent);
     assert_eq!(files(&site.root), synced);
 }
+
+fn rebuilt_under_another_spelling(server_name: &str, local_name: &str) {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::write(site.root.join("dist").join(server_name), "report").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    drop(b);
+    let server = remote.tree();
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::remove_dir_all(site.root.join("dist")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::write(site.root.join("dist").join(local_name), "rebuilt").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "nothing is sent while dist is left out");
+    drop(b);
+
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "sent {sent:?}");
+    assert!(shown(&site).is_empty(), "no question opens");
+    assert_eq!(
+        files(&site.root),
+        [(format!("dist/{local_name}"), "rebuilt".to_owned())]
+    );
+    assert_eq!(
+        remote.tree().into_values().collect::<Vec<_>>(),
+        server.into_values().collect::<Vec<_>>(),
+        "the rebuilt file is the server's node"
+    );
+}
+
+#[test]
+fn a_file_rebuilt_while_excluded_with_its_name_in_another_case_replaces_the_server_copy() {
+    rebuilt_under_another_spelling("f0.docx", "F0.docx");
+}
+
+#[test]
+fn a_file_rebuilt_while_excluded_with_its_name_in_another_normalization_replaces_the_server_copy() {
+    rebuilt_under_another_spelling("caf\u{e9}.docx", "cafe\u{301}.docx");
+}
+
+fn relinked(site: &Site, remote: &Remote) -> Site {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("store.sqlite");
+    let space_id = remote.space.space_id().to_owned();
+    let found_marker = koidrive_fs::read_marker(&site.root)
+        .unwrap()
+        .is_some_and(|marker| marker.space_id == space_id);
+    if !found_marker {
+        let marker = Marker {
+            space_id: space_id.clone(),
+            effects: 0,
+            token: None,
+        };
+        write_marker(&site.root, &marker).unwrap();
+    }
+    let link = Link {
+        space_id,
+        found_marker,
+        ..site.link.clone()
+    };
+    Store::open(&db).unwrap().transaction(|tx| tx.set_link(&link)).unwrap();
+    Site {
+        _dir: dir,
+        root: site.root.clone(),
+        db,
+        link,
+        caller: site.caller.clone(),
+    }
+}
+
+#[test]
+fn a_folder_linked_again_keeps_no_mark_from_its_old_link() {
+    for same_space in [true, false] {
+        let (mut remote, site, synced) = excluded_dist(3);
+        let mut b = started(&site, &mut remote, &dist_left_out());
+        fs::remove_dir_all(site.root.join("dist")).unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        assert!(!site.stored().trees.state().unobserved.is_empty());
+        drop(b);
+
+        let mut other = Remote::new();
+        let target = if same_space { &mut remote } else { &mut other };
+        let again = relinked(&site, target);
+        let c = started(&again, target, &SyncRules::default());
+        let stored = again.stored();
+        assert!(stored.trees.state().unobserved.is_empty(), "same_space={same_space}");
+        assert!(c.sent.is_empty(), "same_space={same_space}: {:?}", c.sent);
+        assert!(shown(&again).is_empty(), "same_space={same_space}");
+        assert!(
+            (stored.trees.local().iter()).all(|(id, _)| !stored.trees.held(id)),
+            "same_space={same_space}"
+        );
+        match same_space {
+            true => assert_eq!(files(&site.root), synced),
+            false => {
+                assert!(files(&site.root).is_empty());
+                assert!(target.names().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_rescan_that_finds_nothing_new_writes_nothing_to_the_store_while_nodes_are_unobserved() {
+    let (mut remote, site, _) = excluded_dist(3);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    assert_eq!(site.stored().trees.state().unobserved.len(), 5);
+    let watcher = rusqlite::Connection::open(&site.db).unwrap();
+    let version = || -> i64 {
+        (watcher.query_row("PRAGMA data_version", [], |row| row.get(0))).unwrap()
+    };
+    let before = version();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty());
+    assert_eq!(version(), before, "the rescan wrote to the store");
+}
+
+#[test]
+fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_server_and_away_from_here() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty());
+    drop(b);
+
+    for sync in [dist_left_out(), SyncRules::default()] {
+        let b = started(&site, &mut remote, &sync);
+        let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+        assert!(!sent.contains(&"delete"), "{:?}: {sent:?}", sync.exclude);
+        assert!(remote.names().contains(&"report.docx".to_owned()));
+        assert!(files(&site.root).is_empty(), "{:?}", sync.exclude);
+    }
+}

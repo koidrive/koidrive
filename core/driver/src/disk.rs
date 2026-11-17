@@ -705,7 +705,7 @@ impl Disk {
             .map(|(change, _)| change)
             .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
-        if !changes.is_empty() || mounts.is_some() || !observation.read.is_empty() {
+        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&observation.read) {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);

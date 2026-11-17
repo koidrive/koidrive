@@ -700,6 +700,11 @@ impl Engine {
         self.trees.listed(&listed);
     }
 
+    /// Whether [`Engine::listed`] would change what the trees hold.
+    pub fn sees_unobserved(&self, listed: &[PathBuf]) -> bool {
+        (self.trees).sees_unobserved(listed.iter().filter_map(|dir| local_at(&self.trees, dir)))
+    }
+
     /// Puts `changes` into L and returns the nodes whose L entry changed. Paths a change names in the previous state
     /// (`Removed::path`, `Renamed::from`) are resolved before any change applies. The changes apply in batch order,
     /// except that a change waits for the change of the batch that creates or moves the nearest folder above it into
@@ -1189,7 +1194,8 @@ impl Engine {
             let replaced = self.trees.local().get(&holder).map(|node| node.shape.kind);
             let synced =
                 self.trees.synced().get(&id).is_some() || self.trees.remote().get(&id).is_some();
-            let kept = self.trees.ignored_local().contains(&holder)
+            let kept = (self.trees.ignored_local().contains(&holder)
+                || self.trees.unobserved(&holder))
                 && self.trees.remote().live(&holder).is_some();
             let recorded = self.trees.recorded_local(&holder);
             if kind == Kind::File && replaced == Some(Kind::File) && !synced && !recorded {
@@ -1199,7 +1205,7 @@ impl Engine {
                 id = holder;
             } else if kind == Kind::Dir
                 && replaced == Some(Kind::Dir)
-                && (kept || self.trees.unobserved(&holder))
+                && kept
                 && !synced
                 && self.trees.local().get(&id).is_none()
             {

@@ -1153,7 +1153,9 @@ proptest! {
                 everything.set_synced(id.clone(), Some(shape.clone()));
             }
             let mut state = everything.state();
-            state.unobserved = trees.state().unobserved;
+            state.unobserved = (trees.state().unobserved.into_iter())
+                .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
+                .collect();
             everything.restore(state).unwrap();
             everything.rules_scanned();
             trees.settle(&Default::default());

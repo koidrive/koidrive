@@ -1218,10 +1218,8 @@ fn a_kept_folder_another_device_renames_comes_back_with_the_child_the_rules_let_
     assert!(trees.kept_for_excluded()("d"));
     assert_eq!(ops(&mut trees), []);
     let done: Vec<String> = effects(&mut trees).into_iter().map(|(id, _)| id).collect();
-    assert_eq!(done, ["d"]);
+    assert_eq!(done, ["d", "log"]);
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(ops(&mut trees), []);
-    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
     assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
     assert_eq!(ops(&mut trees), []);
 }
@@ -1243,6 +1241,13 @@ fn a_node_deleted_while_excluded_is_downloaded_again_when_the_rules_let_it_in() 
     assert_eq!(effects(&mut trees), []);
 
     trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(
+        effects(&mut trees),
+        [],
+        "nothing comes back before a scan lists the root"
+    );
+    trees.listed(&[ROOT.into()]);
     assert_eq!(ops(&mut trees), []);
     let mut done = nodes(&effects(&mut trees))
         .into_iter()
@@ -1270,6 +1275,7 @@ fn a_folder_deleted_with_the_excluded_file_it_holds_comes_back_with_it_when_the_
     assert_eq!(ops(&mut trees), []);
 
     trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into()]);
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["d", "log"]);
     assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
@@ -1299,4 +1305,88 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
         .collect();
     assert_eq!(sent, wanted);
     assert_eq!(effects(&mut trees), []);
+}
+
+fn the_mark_of_an_excluded_dist_after_the_server_drops_it(drop_remote: impl Fn(&mut Trees, &str)) {
+    for vanished in [true, false] {
+        for lift in [true, false] {
+            let case = format!("vanished={vanished}, lift={lift}");
+            let mut trees = trees(&[
+                synced("d", dir(ROOT, "dist")),
+                synced("a", file("d", "a.js", 1)),
+            ]);
+            trees.set_rules(&AT_ROOT, rules("dist/\n"));
+            assert_eq!(ops(&mut trees), []);
+            if vanished {
+                trees.remove_local("a");
+                trees.remove_local("d");
+                assert_eq!(ops(&mut trees), []);
+            }
+            assert_eq!(
+                trees.state().unobserved,
+                BTreeSet::from(["a".into(), "d".into()])
+            );
+            for id in ["a", "d"] {
+                drop_remote(&mut trees, id);
+            }
+            assert_eq!(ops(&mut trees), [], "{case}");
+            assert_eq!(effects(&mut trees), [], "{case}");
+            if lift {
+                trees.set_rules(&AT_ROOT, None);
+                trees.listed(&[ROOT.into(), "d".into()]);
+            }
+            assert_eq!(ops(&mut trees), [], "{case}");
+            let done = effects(&mut trees);
+            assert!(
+                (done.iter()).all(|(_, effect)| !matches!(
+                    effect,
+                    Effect::WriteFile { .. } | Effect::CreateDir { .. }
+                )),
+                "{case}: {done:?}"
+            );
+            assert_eq!(ops(&mut trees), [], "{case}");
+            for id in ["a", "d"] {
+                assert!(!trees.held(id), "{case}: {id}");
+            }
+            let left_here = !vanished && !lift;
+            let held_here: Vec<&str> = (trees.local().iter()).map(|(id, _)| id.as_str()).collect();
+            let state = trees.state();
+            let marked: Vec<&str> = state.unobserved.iter().map(String::as_str).collect();
+            match left_here {
+                true => {
+                    assert_eq!(
+                        held_here,
+                        ["a", "d"],
+                        "{case}: the local copy stays while the rules leave it out"
+                    );
+                    assert_eq!(marked, ["a", "d"], "{case}");
+                }
+                false => {
+                    assert!(held_here.is_empty(), "{case}: {held_here:?}");
+                    assert!(trees.synced().iter().next().is_none(), "{case}");
+                    assert!(marked.is_empty(), "{case}: {marked:?}");
+                }
+            }
+            assert_eq!(trees.check(), Ok(()), "{case}");
+        }
+    }
+}
+
+#[test]
+fn the_mark_of_an_excluded_node_goes_with_it_when_the_server_purges_it() {
+    the_mark_of_an_excluded_dist_after_the_server_drops_it(|trees, id| trees.remove_remote(id));
+}
+
+#[test]
+fn the_mark_of_an_excluded_node_goes_with_it_when_another_device_trashes_it() {
+    the_mark_of_an_excluded_dist_after_the_server_drops_it(|trees, id| {
+        let shape = trees.remote().get(id).unwrap().shape.clone();
+        trees.set_remote(
+            id.into(),
+            RemoteNode {
+                trashed: true,
+                ..remote(shape)
+            },
+        );
+    });
 }

@@ -5,10 +5,10 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use koidrive_ignore::Status;
+use koidrive_ignore::{Scope, Status};
 
 use crate::first_link;
-use crate::ignore::{LocalRules, Matcher, RuleFile, is_rules_file};
+use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptEntries,
@@ -404,6 +404,7 @@ pub struct Trees {
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
     rules_changed: bool,
+    created_dirs: Vec<NodeId>,
     cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
     waiting: ByParent<Waiting>,
@@ -527,6 +528,7 @@ impl Trees {
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
             rules_changed: false,
+            created_dirs: Vec::new(),
             cycles_may_end: false,
             parked_as: TrackedMap::default(),
             waiting: ByParent::default(),
@@ -2000,6 +2002,9 @@ impl Trees {
             self.forget_identity(id, &old.identity);
             self.mark(id);
         }
+        if self.s.get(id).is_none() {
+            self.unobserved.remove(id);
+        }
     }
 
     pub(crate) fn rekey_local(&mut self, from: &str, to: &str, node: LocalNode) {
@@ -2700,6 +2705,11 @@ impl Trees {
         if self.l.get(id).is_some() {
             self.outside.insert(id.to_owned());
             self.lost.remove(id);
+            let mut below = vec![id.to_owned()];
+            while let Some(node) = below.pop() {
+                below.extend(self.l_names.children(&node).cloned());
+                self.unobserved.insert(node);
+            }
         }
     }
 
@@ -2766,8 +2776,8 @@ impl Trees {
             .map(|(id, _)| id)
     }
 
-    /// Whether S holds the node at a position that neither placed L nor R holds, or L lost the node while
-    /// it was unobserved, the nodes [`Trees::released`] may give that position up for.
+    /// Whether S holds the node at a position that neither placed L nor R holds, the nodes
+    /// [`Trees::released`] may give that position up for.
     fn orphaned_in_s(&self, id: &str) -> bool {
         let Some(synced) = self.s.live(id) else {
             return false;
@@ -2776,13 +2786,14 @@ impl Trees {
         let placed = (self.l.get(id))
             .filter(|node| !node.parked)
             .map(|node| &node.shape);
-        !held(placed) && (self.vanished(id) || !held(self.r.live(id)))
+        !held(placed) && !held(self.r.live(id))
     }
 
     fn vanished(&self, id: &str) -> bool {
         self.unobserved.contains(id)
             && self.l.get(id).is_none()
             && self.s.live(id).is_some()
+            && self.r.live(id).is_some()
             && !self.displaced.contains_key(id)
     }
 
@@ -2823,9 +2834,6 @@ impl Trees {
     /// like a node never synced: what R holds is downloaded, and what only L holds is uploaded.
     fn released(&self, id: &str) -> Option<Vec<Option<Shape>>> {
         let synced = self.s.live(id)?;
-        if self.vanished(id) && !self.ignored(id) {
-            return Some(vec![None]);
-        }
         let local = self.l.get(id);
         let remote = self.r.live(id);
         let server = self.r.get(id).is_some();
@@ -2875,53 +2883,175 @@ impl Trees {
         false
     }
 
-    /// Records that a scan listed each of `folders`, the root or folders L holds: what L holds in them
-    /// at an included position is observed (section 5.10).
+    /// Records that a scan listed each of `folders`, the root or folders L holds, or that an effect created
+    /// one: what L holds in them at an included position is observed. A node there whose local copy
+    /// disappeared while it was unobserved leaves S with what S holds below it, so it is downloaded
+    /// again and no deletion is sent (section 5.10).
     pub fn listed(&mut self, folders: &[NodeId]) {
+        if self.unobserved.is_empty() {
+            return;
+        }
         for folder in folders {
-            let seen: Vec<NodeId> = std::iter::once(folder)
-                .chain(self.l_names.children(folder))
-                .filter(|id| self.unobserved.contains(*id) && !self.excluded(id))
-                .cloned()
-                .collect();
+            let seen: Vec<NodeId> = self.seen_in(folder).cloned().collect();
             for id in seen {
                 self.unobserved.remove(&id);
             }
+            let mut gone: Vec<NodeId> = self.lost_in(folder).cloned().collect();
+            let mut next = 0;
+            while let Some(id) = gone.get(next).cloned() {
+                next += 1;
+                let below: Vec<NodeId> = self.lost_in(&id).cloned().collect();
+                gone.extend(below);
+            }
+            for id in gone.iter().rev() {
+                if self.vanished(id) && !self.ignored(id) && self.fits_synced(id, None) {
+                    self.set_synced(id.clone(), None);
+                }
+            }
         }
+    }
+
+    pub(crate) fn created_dir(&mut self, id: &str) {
+        self.created_dirs.push(id.to_owned());
+    }
+
+    /// Whether [`Trees::listed`] would change what the trees hold for one of `folders`.
+    pub fn sees_unobserved(&self, folders: impl IntoIterator<Item = NodeId>) -> bool {
+        !self.unobserved.is_empty()
+            && (folders.into_iter()).any(|folder| {
+                let mut lost: Vec<&NodeId> = self.lost_in(&folder).collect();
+                while let Some(id) = lost.pop() {
+                    if self.vanished(id) && !self.ignored(id) {
+                        return true;
+                    }
+                    lost.extend(self.lost_in(id));
+                }
+                self.seen_in(&folder).next().is_some()
+            })
+    }
+
+    fn seen_in<'a>(&'a self, folder: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
+        std::iter::once(folder)
+            .chain(self.l_names.children(folder))
+            .filter(|id| self.unobserved.contains(*id) && !self.excluded(id))
+    }
+
+    fn lost_in<'a>(&'a self, folder: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
+        (self.s_names.children(folder)).filter(|id| self.l.get(id).is_none())
     }
 
     fn note_unobserved(&mut self) {
         if !self.rules_known || !std::mem::take(&mut self.rules_changed) {
             return;
         }
+        let mut scopes = HashMap::new();
         let left_out: Vec<NodeId> = (self.l.iter().map(|(id, _)| id))
-            .filter(|id| self.excluded(id))
+            .filter(|id| {
+                !self.unobserved.contains(*id) && self.left_out(id, &self.ignore, &mut scopes)
+            })
             .cloned()
             .collect();
         for id in left_out {
             self.unobserved.insert(id);
         }
-        let gone: Vec<NodeId> = (self.unobserved.iter())
-            .filter(|id| self.l.get(id).is_none())
-            .cloned()
-            .collect();
-        for id in gone {
-            self.mark(&id);
+    }
+
+    /// [`Trees::excluded`] of a node L holds, decided by the rules at its position in L when they
+    /// exclude it, or when L, S and R hold it and every folder above it at the same position, which
+    /// leaves no other position the rules could exclude. `scopes` keeps the rules of each folder
+    /// of L read so far, so a pass over many nodes evaluates each folder once.
+    fn left_out<'m>(
+        &self,
+        id: &str,
+        ignore: &'m Matcher,
+        scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
+    ) -> bool {
+        let Some(node) = self.l.get(id).filter(|_| id != self.l.root) else {
+            return self.excluded(id);
+        };
+        let kind = match node.shape.kind {
+            Kind::Dir => koidrive_ignore::Kind::Dir,
+            Kind::File => koidrive_ignore::Kind::File,
+        };
+        match self.local_scope(&node.shape.parent, ignore, scopes) {
+            Some(None) => !node.parked,
+            Some(Some(scope)) if scope.status(&node.shape.name, kind) != Status::Included => {
+                !node.parked
+            }
+            Some(Some(_)) if self.placed_alike(id) => false,
+            _ => self.excluded(id),
         }
     }
 
-    /// The node whose local copy disappeared while it was unobserved, that R holds as `name` of
-    /// `kind` in `parent`: an entry a scan finds there is that node's local copy.
+    fn local_scope<'s, 'm>(
+        &self,
+        folder: &str,
+        ignore: &'m Matcher,
+        scopes: &'s mut HashMap<NodeId, Option<Scope<'m, Key>>>,
+    ) -> Option<&'s Option<Scope<'m, Key>>> {
+        let mut above = Vec::new();
+        let mut current = folder;
+        while !scopes.contains_key(current) {
+            if current == self.l.root {
+                scopes.insert(current.to_owned(), Some(ignore.root()));
+                break;
+            }
+            if above.len() > self.l.len() {
+                return None;
+            }
+            let shape = &self.l.get(current)?.shape;
+            above.push((current, shape));
+            current = &shape.parent;
+        }
+        for (folder, shape) in above.into_iter().rev() {
+            let scope = (scopes[shape.parent.as_str()].as_ref())
+                .and_then(|scope| scope.enter(&shape.name).ok());
+            scopes.insert(folder.to_owned(), scope);
+        }
+        scopes.get(folder)
+    }
+
+    fn placed_alike(&self, id: &str) -> bool {
+        let mut current = id;
+        for _ in 0..=self.l.len() {
+            if current == self.l.root {
+                return current == self.s.root
+                    && current == self.r.root
+                    && !self.outside.contains(current);
+            }
+            let Some(local) = self.l.get(current) else {
+                return false;
+            };
+            let shape = &local.shape;
+            let alike = |other: Option<&Shape>| {
+                other.is_some_and(|other| {
+                    other.parent == shape.parent
+                        && other.name == shape.name
+                        && other.kind == shape.kind
+                })
+            };
+            if !alike(self.s.live(current))
+                || !alike(self.r.live(current))
+                || self.outside.contains(current)
+                || self.displaced.contains_key(current)
+            {
+                return false;
+            }
+            current = &shape.parent;
+        }
+        false
+    }
+
+    /// The node whose local copy disappeared while it was unobserved, that R holds in `parent` as
+    /// `kind` under the name key of `name`: an entry a scan finds there is that node's local copy.
     pub fn vanished_at<'a>(
         &'a self,
         parent: &'a str,
         name: &str,
         kind: Kind,
     ) -> Option<&'a NodeId> {
-        self.r_names.children(parent).find(|id| {
-            self.vanished(id)
-                && (self.r.live(id))
-                    .is_some_and(|remote| remote.name == name && remote.kind == kind)
+        self.r_names.holders(parent, name).find(|id| {
+            self.vanished(id) && (self.r.live(id)).is_some_and(|remote| remote.kind == kind)
         })
     }
 
@@ -4756,6 +4886,11 @@ impl Trees {
         while self.link_due() {
             self.settle_marked();
         }
+        let created = std::mem::take(&mut self.created_dirs);
+        if !created.is_empty() {
+            self.listed(&created);
+            self.settle_marked();
+        }
     }
 
     pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
@@ -4819,6 +4954,8 @@ impl Trees {
         );
         let mut queue: Vec<NodeId> = unsettled.into_iter().collect();
         let mut next = 0;
+        let ignore = self.ignore.clone();
+        let mut scopes = HashMap::new();
         while let Some(id) = queue.get(next).cloned() {
             next += 1;
             let released: Vec<Option<Shape>> = self.released(&id).into_iter().flatten().collect();
@@ -4839,10 +4976,15 @@ impl Trees {
             } else {
                 self.orphaned.remove(&id);
             }
-            if self.l.get(&id).is_some() && self.excluded(&id) {
-                self.unobserved.insert(id.clone());
-            } else if self.l.get(&id).is_none() && self.s.get(&id).is_none() {
-                self.unobserved.remove(&id);
+            if self.l.get(&id).is_some()
+                && !self.unobserved.contains(&id)
+                && self.left_out(&id, &ignore, &mut scopes)
+            {
+                let mut below = vec![id.clone()];
+                while let Some(node) = below.pop() {
+                    below.extend(self.l_names.children(&node).cloned());
+                    self.unobserved.insert(node);
+                }
             }
             pending.remove(&id);
             match self.class(&id) {
@@ -5313,10 +5455,7 @@ impl Trees {
             next += 1;
             below.extend(self.s_names.children(&folder).cloned());
         }
-        let released = |node: &NodeId| {
-            self.vanished(node) || self.ignored(node) && !self.trashed_while_parked(node)
-        };
-        if !below.iter().all(released) {
+        if !(below.iter()).all(|node| self.ignored(node) && !self.trashed_while_parked(node)) {
             return Vec::new();
         }
         for node in below.iter().rev() {
@@ -5388,6 +5527,9 @@ impl Trees {
             provenance.synced = source;
         }
         self.prune_content_provenance(id);
+        if shape.is_none() && self.l.get(id).is_none() {
+            self.unobserved.remove(id);
+        }
         self.forget_reclaims();
         let waited = (self.waiting.remove(id)).is_some_and(|waiting| waiting.shape == shape);
         if shape.is_none() || !waited {
@@ -5585,6 +5727,7 @@ impl Trees {
             cycle_reverted,
             unobserved,
             rules_changed: _,
+            created_dirs: _,
             cycles_may_end: _,
             parked_as,
             waiting,
