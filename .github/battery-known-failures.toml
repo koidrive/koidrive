@@ -247,6 +247,16 @@ cases = [
 [[failure]]
 class = "J"
 issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores", "devices_lose_no_write_across_server_restores"]
+message = '''after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.'''
+examples = ["after phase 1: write 7 left the disk of device 0: the server never held it, and its user never overwrote or deleted it."]
+cases = [
+  "cd970b7805c3",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
 tests = ["a_discarded_overwrite_across_a_rewind_keeps_the_rewound_write_in_one_file", "a_same_bytes_rewrite_across_a_rewind_keeps_the_rewound_write_in_one_file"]
 message = '''called `Result::unwrap\(\)` on an `Err` value: Diverged\("after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
 examples = ["called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 2: write 2 is in more than one file on the server, and no user copied it: [[\\\"a\\\"], [\\\"a (conflict from device-2 2026-11-09)\\\"]]\")"]
