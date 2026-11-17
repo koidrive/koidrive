@@ -1320,8 +1320,12 @@ fn placement_check(
         &record.after,
         device.trees.local().get(&record.node),
     ) {
-        let taken_along =
-            kept_with.contains_key(&record.node) && !acted_below(device, &record.node, kept_with);
+        let mut chain =
+            std::iter::successors(kept_with.get(&record.node), |kept| kept_with.get(&kept.parent))
+                .take(kept_with.len() + 1);
+        let taken_along = kept_with.contains_key(&record.node)
+            && chain.all(|kept| !revived.contains(&kept.parent))
+            && !acted_below(device, &record.node, kept_with);
         let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
         let reverted = closes_a_cycle(&device.trees, &record.node, parent)
             && (device.trees.remote().live(&record.node))
