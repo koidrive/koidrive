@@ -1319,6 +1319,21 @@ impl Trees {
         self.agree_with_local(id);
     }
 
+    pub(crate) fn take_local_content(&mut self, id: NodeId) {
+        let (Some(local), Some(remote)) = (self.l.get(&id), self.r.live(&id)) else {
+            return;
+        };
+        let shape = Shape {
+            content: local.shape.content.clone(),
+            ..remote.clone()
+        };
+        self.lost_creates.remove(&id);
+        self.resends.remove(&id);
+        if !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
+            self.wait(id, Some(shape), Origin::Other);
+        }
+    }
+
     fn agree_with_local(&mut self, id: NodeId) {
         self.end_local_claim(&id);
         let Some(local) = self.l.get(&id).map(|node| node.shape.clone()) else {

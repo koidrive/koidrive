@@ -120,3 +120,90 @@ fn a_resend_create_names_the_server_version_of_the_value_it_carries() {
     assert_eq!(create.source_version_id, "v1");
     assert!(uploads(&sent, 1));
 }
+
+fn without_a_base(digest: u8, source: Option<(&str, &[&str])>, node: RemoteNode) -> Trees {
+    use koidrive_engine::state::{ContentProvenance, ContentVersion};
+    let mut trees = Trees::new(ROOT);
+    trees.set_remote("f".into(), node);
+    trees.set_local("f".into(), local(file(ROOT, "a", digest), 1));
+    let provenance = source.map(|(version_id, made_over)| {
+        let local = ContentVersion {
+            version_id: version_id.into(),
+            made_over: made_over.iter().map(|id| (*id).into()).collect(),
+            own: false,
+        };
+        let provenance = ContentProvenance {
+            synced: None,
+            local: Some(local),
+            edit_bases: Vec::new(),
+            unversioned_bases: Vec::new(),
+        };
+        ("f".into(), provenance)
+    });
+    let state = TreesState {
+        dirty: ["f".into()].into(),
+        content_provenance: provenance.into_iter().collect(),
+        ..Default::default()
+    };
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle();
+    trees
+}
+
+#[test]
+fn a_file_at_the_version_r_was_made_over_takes_r_when_s_holds_no_base() {
+    let mut trees = without_a_base(1, Some(("v1", &[])), ancestry_node(2, "v2", &["v1"]));
+    assert_eq!(trees.class("f"), Class::Concurrent);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids);
+    assert!(commit.is_none(), "{:?}", commit.map(|commit| ops(&commit)));
+    assert_eq!(trees.class("f"), Class::Remote);
+}
+
+#[test]
+fn a_renamed_file_at_the_version_r_was_made_over_keeps_its_name_when_s_holds_no_base() {
+    let mut trees = without_a_base(1, Some(("v1", &[])), ancestry_node(2, "v2", &["v1"]));
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1), 1));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", ROOT, "b")]);
+}
+
+#[test]
+fn a_file_at_a_version_made_over_r_updates_r_when_s_holds_no_base() {
+    let mut trees = without_a_base(2, Some(("v2", &["v1"])), ancestry_node(1, "v1", &[]));
+    assert_eq!(trees.class("f"), Class::Concurrent);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    let [op::Op::UpdateContent(update)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(update.node_id, "f");
+    assert_eq!(update.made_over, ["v1"]);
+    assert!(uploads(&sent, 2), "{sent:?}");
+}
+
+#[test]
+fn a_file_of_unknown_ancestry_beside_r_keeps_both_values_when_s_holds_no_base() {
+    let cases = [
+        (None, ancestry_node(2, "v2", &["v1"])),
+        (Some(("v1", &[][..])), ancestry_node(2, "v2", &[])),
+        (Some(("v1", &[][..])), ancestry_node(2, "v2", &["other"])),
+        (Some(("v1", &["v0"][..])), ancestry_node(2, "", &[])),
+    ];
+    for (source, node) in cases {
+        let mut trees = without_a_base(1, source, node);
+        assert_eq!(trees.class("f"), Class::Concurrent);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        let sent = ops(&commit);
+        let [op::Op::CreateFile(create)] = sent.as_slice() else {
+            panic!("{source:?} {sent:?}");
+        };
+        assert_ne!(create.node_id, "f");
+        assert!(uploads(&sent, 1), "{sent:?}");
+    }
+}

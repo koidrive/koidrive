@@ -2837,6 +2837,10 @@ fn rebase(
         if trees.take_forgotten_shape(id) {
             continue;
         }
+        if remote_made_over_local(trees, id) {
+            trees.take_local_content(id.clone());
+            continue;
+        }
         if trees.write_held_beside(id) {
             trees.take_local(id.clone());
             continue;
@@ -2910,9 +2914,27 @@ fn edited_on_both_sides(trees: &Trees, id: &str) -> bool {
     ) else {
         return false;
     };
-    let s = content(trees.acknowledged(id));
-    let changed = |c: &Content| s.as_ref().is_none_or(|s| !same_content(c, s));
-    (changed(&l) || trees.unsent_edits().contains(id)) && changed(&r) && !same_content(&l, &r)
+    if same_content(&l, &r) {
+        return false;
+    }
+    let Some(s) = content(trees.acknowledged(id)) else {
+        let source = trees.source_version_id(id);
+        return !(trees.remote().get(id))
+            .is_some_and(|remote| in_lineage(&remote.version_id, source, &trees.edit_bases(id)));
+    };
+    (!same_content(&l, &s) || trees.unsent_edits().contains(id)) && !same_content(&r, &s)
+}
+
+fn remote_made_over_local(trees: &Trees, id: &str) -> bool {
+    (trees.acknowledged(id)).is_none_or(|shape| shape.content.is_none())
+        && !trees.unsent_edits().contains(id)
+        && (trees.source_version_id(id).zip(trees.remote().get(id))).is_some_and(
+            |(source, remote)| in_lineage(source, Some(&remote.version_id), &remote.made_over),
+        )
+}
+
+fn in_lineage(version: &str, head: Option<&str>, made_over: &[String]) -> bool {
+    !version.is_empty() && (head == Some(version) || made_over.iter().any(|base| base == version))
 }
 
 fn holds_server_entry(trees: &Trees, id: &str) -> bool {
