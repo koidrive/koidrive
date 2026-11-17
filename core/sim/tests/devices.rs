@@ -31,6 +31,8 @@ mod restore_deleted_folder;
 mod restore_write_history;
 #[path = "devices/restore_yielded_resend.rs"]
 mod restore_yielded_resend;
+#[path = "devices/unasked_names.rs"]
+mod unasked_names;
 
 fn action() -> impl Strategy<Value = Action> {
     (
