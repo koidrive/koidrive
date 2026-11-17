@@ -23,7 +23,7 @@ import {
 import { sha256 } from "../src/crypto";
 import { toHex } from "../src/ids";
 import { type Field, intentBytes, legacyIntentId, legacyPlaceKey } from "../src/space/intents";
-import { boundMadeOver, nodeState, type NodeRow, rows, type VersionRow, versionInfo } from "../src/space/store";
+import { boundMadeOver, nodeState, type NodeRow, rows, tombstoneRecord, type VersionRow, versionInfo } from "../src/space/store";
 
 export interface RestoredNode {
   state: NodeState;
@@ -109,6 +109,7 @@ function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePu
       continue;
     }
     if (change.case !== "node") throw new Error(`unexpected change ${change.case}`);
+    tombstones.delete(change.value.nodeId);
     const known = nodes.get(change.value.nodeId);
     const revived = change.value.status === NodeStatus.LIVE && known?.state.status !== NodeStatus.LIVE;
     if (revived) liveSince.set(change.value.nodeId, record.seq);
@@ -176,6 +177,10 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
         if (records.length !== page.records) throw new Error(`page ${page.name} holds ${records.length} records`);
         for (const record of records) {
           const snapshot = fromBinary(NodeSnapshotSchema, record);
+          if (snapshot.tombstone) {
+            tombstones.set(snapshot.tombstone.nodeId, snapshot.tombstone);
+            continue;
+          }
           const previous = new Map(snapshot.previous.map((retained) => [retained.version!.versionId, { version: retained.version!, supersededAtMs: retained.supersededAtMs }]));
           nodes.set(snapshot.node!.nodeId, { state: snapshot.node!, previous, trashedAtMs: snapshot.trashedAtMs });
         }
@@ -219,7 +224,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
   }
 }
 
-export function serverState(stub: DurableObjectStub): Promise<{ headSeq: number; nodes: Map<string, RestoredNode> }> {
+export function serverState(stub: DurableObjectStub): Promise<{ headSeq: number; nodes: Map<string, RestoredNode>; tombstones: Map<string, NodePurged> }> {
   return runInDurableObject(stub, (_instance, state) => {
     const sql = state.storage.sql;
     const nodes = new Map<string, RestoredNode>();
@@ -232,6 +237,9 @@ export function serverState(stub: DurableObjectStub): Promise<{ headSeq: number;
       );
       nodes.set(node.node_id, { state: nodeState(sql, node, true), previous, trashedAtMs: BigInt(node.trashed_at_ms ?? 0) });
     }
-    return { headSeq: Number(sql.exec("SELECT value FROM meta WHERE key = 'head_seq'").one().value), nodes };
+    const tombstones = new Map(
+      rows<{ node_id: string }>(sql.exec("SELECT node_id FROM tombstones")).map(({ node_id }) => [node_id, tombstoneRecord(sql, node_id)!] as const),
+    );
+    return { headSeq: Number(sql.exec("SELECT value FROM meta WHERE key = 'head_seq'").one().value), nodes, tombstones };
   });
 }

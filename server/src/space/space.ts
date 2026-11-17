@@ -29,7 +29,6 @@ import {
   type CommitRecord,
   CommitRecordSchema,
   type Content,
-  NodePurgedSchema,
   NodeStateSchema,
   VersionInfoSchema,
 } from "../gen/koidrive/v1/model_pb";
@@ -73,7 +72,7 @@ import type { ShareOutcome } from "../share/links";
 import { checkFence, checkLinkRoot, type DownloadFence, type ShareFile, shareFile, shareInfo, shareListing } from "../share/space";
 import type { Pitr } from "./pitr";
 import { ChunkState } from "./schema";
-import { backfillLegacyIntents, intentBytes, intentsValid, LOST_CHANGE_RULE, type LostChangeRule, readIntents, trashHeld, wireIntents } from "./intents";
+import { backfillLegacyIntents, intentsValid, LOST_CHANGE_RULE, type LostChangeRule, readIntents, trashHeld } from "./intents";
 import { readUsage } from "./usage";
 import {
   chunkKey,
@@ -86,6 +85,7 @@ import {
   nodeState,
   rows,
   setMeta,
+  tombstoneRecord,
   type VersionRow,
   versionChunkPage,
   versionChunks,
@@ -1238,13 +1238,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             );
             this.sql.exec("DELETE FROM field_intents WHERE node_id = ?", node.node_id);
             this.sql.exec("DELETE FROM nodes WHERE node_id = ?", node.node_id);
-            const purged = create(NodePurgedSchema, {
-              nodeId: node.node_id,
-              lastParentId: node.parent_id ?? "",
-              intents: wireIntents(intents),
-              held: held.map(intentBytes),
-            });
-            changes.push(create(ChangeRecordSchema, { change: { case: "purged", value: purged } }));
+            changes.push(create(ChangeRecordSchema, { change: { case: "purged", value: tombstoneRecord(this.sql, node.node_id)! } }));
           }
         }
         this.sql.exec("DELETE FROM trash_held WHERE trash_group NOT IN (SELECT trash_group FROM nodes WHERE trash_group IS NOT NULL)");

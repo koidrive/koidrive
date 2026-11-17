@@ -7,6 +7,8 @@ import {
   type Content,
   ContentSchema,
   NodeKind,
+  type NodePurged,
+  NodePurgedSchema,
   type NodeState,
   NodeStateSchema,
   NodeStatus,
@@ -129,6 +131,17 @@ export function tombstoneOf(sql: Sql, nodeId: string): Tombstone | undefined {
     name: String(row.name),
     knows: new Set([...Object.values(intents).map((intent) => intent.id), ...held]),
   };
+}
+
+export function tombstoneRecord(sql: Sql, nodeId: string): NodePurged | undefined {
+  const row = sql.exec("SELECT parent_id, intents, held FROM tombstones WHERE node_id = ?", nodeId).toArray()[0];
+  if (!row) return undefined;
+  return create(NodePurgedSchema, {
+    nodeId,
+    lastParentId: row.parent_id === null ? "" : String(row.parent_id),
+    intents: wireIntents(JSON.parse(String(row.intents)) as NodeIntents),
+    held: (JSON.parse(String(row.held)) as string[]).map(intentBytes),
+  });
 }
 
 export function getVersion(sql: Sql, versionId: string): VersionRow | undefined {
