@@ -5,7 +5,7 @@ import { Error_Code } from "./gen/koidrive/v1/rpc_pb";
 import type { Database, Sql } from "./host";
 import { errorReply } from "./http";
 import { uuidv7 } from "./ids";
-import { bootstrapExport } from "./space/export";
+import { bootstrapExport, requestSnapshot } from "./space/export";
 import { backfillMigratedIntents } from "./space/intents";
 import { type Pitr, pitrBackend } from "./space/pitr";
 import { migrate } from "./space/schema";
@@ -26,7 +26,7 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
     this.pitr = pitrBackend.open(ctx);
     this.db.transactionSync(() => {
       migrate(this.sql);
-      backfillMigratedIntents(this.sql);
+      if (backfillMigratedIntents(this.sql)) requestSnapshot(this.sql, this.clock());
       bootstrapExport(this.sql, this.clock());
     });
     void ctx.blockConcurrencyWhile(() => this.armAlarm());

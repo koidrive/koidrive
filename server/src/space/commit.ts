@@ -643,8 +643,8 @@ export class CommitApplier {
     const yields = resend || (this.client && intent.carried);
     if (found.status === NodeStatusValue.TRASHED) {
       if (this.client && (intent.carried || this.authorsReplayUnderB(intent))) {
-        if (this.trashKnows(found, intent.id) || !intent.carried) return superseded();
-        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+        if (this.trashKnows(found, intent.id)) return superseded();
+        if (intent.carried) return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
       }
       if (resend) return superseded();
     }
@@ -714,7 +714,7 @@ export class CommitApplier {
     const place = this.incoming("place");
     const live = found.status === NodeStatusValue.LIVE;
     if (this.client) {
-      if (live && found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return this.same(found, ["place"]);
+      if (found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return this.same(found, ["place"]);
       if (this.heldElsewhere(found.node_id, ["place"])) return superseded();
       if (!this.overHeld(found, "place")) return superseded();
       const trash = !live ? found : target.status === NodeStatusValue.TRASHED ? target : undefined;
@@ -927,6 +927,7 @@ export class CommitApplier {
     if (this.client) {
       const view: DeleteView = { baseSeq: this.ctx.baseSeq, unseen: new Set(op.unseen.map(toHex)), held: new Set(held), seenContent: new Set() };
       const kept = this.trashByView(node, group, view);
+      if (this.sql.exec("SELECT 1 FROM nodes WHERE trash_group = ? LIMIT 1", group).toArray().length === 0) return superseded();
       for (const intentId of held) this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING", group, intentId);
       this.trashCopies([...view.held, ...view.seenContent], group);
       if (kept) return superseded();

@@ -94,6 +94,15 @@ export function bootstrapExport(sql: Sql, atMs: number): void {
   setMeta(sql, "export_state", JSON.stringify(state));
 }
 
+export function requestSnapshot(sql: Sql, atMs: number): void {
+  if (getMeta(sql, "export_state") === undefined) return;
+  const state = readState(sql);
+  state.running = undefined;
+  state.dueSeq = Number(getMeta(sql, "head_seq"));
+  setMeta(sql, "export_state", JSON.stringify(state));
+  scheduleExport(sql, atMs, true);
+}
+
 export function descriptorDurable(sql: Sql): boolean {
   return readState(sql).descriptor;
 }
