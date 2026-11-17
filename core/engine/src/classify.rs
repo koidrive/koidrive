@@ -984,16 +984,13 @@ impl Trees {
     /// up to the version it lists.
     pub fn set_listed_remote(&mut self, id: NodeId, node: RemoteNode) {
         let moved = (self.r.get(&id)).is_some_and(|old| old.version_id != node.version_id);
-        if self.r.get(&id).is_none() {
+        if moved || self.r.get(&id).is_none() {
             self.full_history.remove(&id);
         }
         if moved && let Some(versions) = self.replaced_versions.get_mut(&id) {
             let kept = (versions.iter())
                 .position(|version| *version == node.version_id)
                 .map_or(0, |at| at + 1);
-            if kept < versions.len() {
-                self.full_history.remove(&id);
-            }
             versions.truncate(kept);
             if versions.is_empty() {
                 self.replaced_versions.remove(&id);
