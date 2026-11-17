@@ -135,9 +135,10 @@ pub struct TreesState {
     /// them (section 4.4): a file whose content S took back from R so that the content L holds is
     /// sent again, and a node S forgot that L holds as S did. A delete that R holds of the node, or
     /// of a folder L holds it under, beats the resend unless L holds a change of this device's user
-    /// below it: S then takes L's shape, so the delete reaches L. So does R taking the node again,
-    /// live with the content L holds, after R lacked it. The record also ends when S takes L's shape
-    /// or L changes the node. A file whose resend ends with a change of this device's user holds an
+    /// below it: S then takes L's shape, so the delete reaches L. A node R lacks keeps the record
+    /// until L no longer holds it, so a listing after another loss finds it a resend again. R taking
+    /// the node again, live with the content L holds, after R lacked it also makes S take L's shape.
+    /// Otherwise the record ends when S takes L's shape or L changes the node. A file whose resend ends with a change of this device's user holds an
     /// edit the server does not have ([`TreesState::unsent_edits`]). A folder S holds and R lacks
     /// that L holds such a change under is sent again as a resend.
     pub resends: BTreeSet<NodeId>,

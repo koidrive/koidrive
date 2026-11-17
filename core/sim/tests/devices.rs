@@ -25,6 +25,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 
 #[path = "devices/restore_write_history.rs"]
 mod restore_write_history;
+#[path = "devices/restore_yielded_resend.rs"]
+mod restore_yielded_resend;
 
 fn action() -> impl Strategy<Value = Action> {
     (
