@@ -3446,3 +3446,23 @@ fn a_folder_create_onto_a_name_its_holder_leaves_waits_for_the_holder_instead_of
     assert!(sent.contains("CreateDir n→a/c"), "{}", report.text);
     assert!(!sent.contains("(pending)"), "{}", report.text);
 }
+
+#[test]
+fn a_new_folder_takes_the_place_of_a_folder_moving_into_it_after_a_publish_answer() {
+    use Local::{Into as To, Kept, Onto};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0)],
+        &[Remote::Kept; 2],
+        &[Kept, To(In(2))],
+        &[(Kind::Dir, Onto(1))],
+    );
+    let story = Story::Answer(0, Answer::Publish, After::Move(0, Root));
+    assert!(answers(&world).contains(&story));
+    let report =
+        tell(&world, &server(&world), story).expect("no question holds the renamed folder");
+    let uncapped: Vec<&String> = (report.classes.iter())
+        .filter(|class| !class.ends_with("clean") && !class.contains("under a cap of"))
+        .collect();
+    assert!(uncapped.is_empty(), "{uncapped:?}\n{}", report.text);
+}

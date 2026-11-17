@@ -4003,7 +4003,9 @@ fn plan(
                 || (scratch.name_holders(want)).any(|holder| {
                     scratch.owed.contains(holder)
                         || held.iter().any(|id| scratch.inside(holder, id))
-                        || (!scratch.stalled || emitted > 0) && leaves(holder, &scratch, &moving)
+                        || matches!(want, Want::Move { .. })
+                            && (!scratch.stalled || emitted > 0)
+                            && leaves(holder, &scratch, &moving)
                 })
             {
                 return None;
