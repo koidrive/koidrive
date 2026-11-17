@@ -278,14 +278,17 @@ impl ByName {
 #[derive(Clone, Debug)]
 enum Holders {
     One(NodeId),
-    Many(BTreeSet<NodeId>),
+    #[allow(clippy::box_collection)]
+    Many(Box<BTreeSet<NodeId>>),
 }
 
 impl Holders {
     fn insert(&mut self, id: NodeId) {
         match self {
             Holders::One(held) if *held == id => {}
-            Holders::One(held) => *self = Holders::Many(BTreeSet::from([std::mem::take(held), id])),
+            Holders::One(held) => {
+                *self = Holders::Many(Box::new(BTreeSet::from([std::mem::take(held), id])))
+            }
             Holders::Many(ids) => {
                 ids.insert(id);
             }
@@ -308,7 +311,7 @@ impl Holders {
     fn iter(&self) -> impl DoubleEndedIterator<Item = &NodeId> {
         let (one, many) = match self {
             Holders::One(id) => (Some(id), None),
-            Holders::Many(ids) => (None, Some(ids)),
+            Holders::Many(ids) => (None, Some(&**ids)),
         };
         one.into_iter().chain(many.into_iter().flatten())
     }
