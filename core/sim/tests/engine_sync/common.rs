@@ -1070,8 +1070,7 @@ fn held_by(questions: &[Question]) -> BTreeSet<String> {
 /// it is, or by a node that waits the same way, or a folder on the way waits itself or is
 /// excluded and not where R has it. A folder R
 /// no longer holds waits when L still holds such a node in it, since only an empty folder is
-/// removed, or when S still holds a node that waits in it, since S drops a folder only once it
-/// holds nothing. Such a node stays as it is, and the driver reports it as a problem (section 5.1).
+/// removed. Such a node stays as it is, and the driver reports it as a problem (section 5.1).
 fn waits_on_excluded(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> bool {
     let mut current = id;
     for _ in 0..=trees.remote().len() {
