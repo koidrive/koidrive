@@ -189,7 +189,7 @@ def replay(spec, side, checkout, timeout):
     text = manifest.read_text()
     if checked_profile(text) is None:
         manifest.write_text(text.rstrip("\n") + "\n\n" + spec["checked_profile"])
-        print(f"{side}: Cargo.toml has no [profile.checked], so the head's section was added.", flush=True)
+        print(f"{side}: Cargo.toml has no [profile.checked], so the triage added the one from cases.json.", flush=True)
     metadata = json.loads(subprocess.run(["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
                                          cwd=checkout, check=True, stdout=subprocess.PIPE, text=True).stdout)
     executables = {}
