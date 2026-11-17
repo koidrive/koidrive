@@ -78,7 +78,7 @@ export type NodeSnapshot = Message<"koidrive.v1.NodeSnapshot"> & {
   trashedAtMs: bigint;
 
   /**
-   * A purged node's tombstone (RFC 0028). Set on a record whose node is empty, in node id order with the node records.
+   * A purged node's tombstone (RFC 0028). Set on a record with no node, in node id order with the node records.
    *
    * @generated from field: koidrive.v1.NodePurged tombstone = 4;
    */

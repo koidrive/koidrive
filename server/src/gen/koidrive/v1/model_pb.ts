@@ -240,7 +240,7 @@ export type NodeState = Message<"koidrive.v1.NodeState"> & {
   intents?: FieldIntents | undefined;
 
   /**
-   * On a trashed node: the intents the deleting users held that the trash had lost (RFC 0028).
+   * On a trashed node: the held lists of the deletes that trashed it (RFC 0028).
    *
    * @generated from field: repeated bytes trash_held = 15;
    */

@@ -294,14 +294,14 @@ export type Delete = Message<"koidrive.v1.Delete"> & {
   requires?: NodeRevisions | undefined;
 
   /**
-   * Intents R held on this node and below whose values the deleting user never held (RFC 0028).
+   * Intents the deleting device's R held on this node and below whose values its L never held (RFC 0028).
    *
    * @generated from field: repeated bytes unseen = 3;
    */
   unseen: Uint8Array[];
 
   /**
-   * Intents the deleting user held there whose values R lacked when the delete was built (RFC 0028).
+   * Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0028).
    *
    * @generated from field: repeated bytes held = 4;
    */

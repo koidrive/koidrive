@@ -75,9 +75,9 @@ message Delete {
   // When set, the delete applies only while this node is live at these revisions; otherwise it is answered with
   // CODE_SUPERSEDED and trashes nothing (RFC 0015).
   NodeRevisions requires = 2;
-  // Intents R held on this node and below whose values the deleting user never held (RFC 0028).
+  // Intents the deleting device's R held on this node and below whose values its L never held (RFC 0028).
   repeated bytes unseen = 3;
-  // Intents the deleting user held there whose values R lacked when the delete was built (RFC 0028).
+  // Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0028).
   repeated bytes held = 4;
 }
 

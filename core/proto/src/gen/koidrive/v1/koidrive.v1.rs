@@ -420,7 +420,7 @@ pub struct NodeState {
     /// The intent that set each field (RFC 0028). Empty from a server without field_intents.
     #[prost(message, optional, tag="14")]
     pub intents: ::core::option::Option<FieldIntents>,
-    /// On a trashed node: the intents the deleting users held that the trash had lost (RFC 0028).
+    /// On a trashed node: the held lists of the deletes that trashed it (RFC 0028).
     #[prost(bytes="vec", repeated, tag="15")]
     pub trash_held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
@@ -680,10 +680,10 @@ pub struct Delete {
     /// CODE_SUPERSEDED and trashes nothing (RFC 0015).
     #[prost(message, optional, tag="2")]
     pub requires: ::core::option::Option<NodeRevisions>,
-    /// Intents R held on this node and below whose values the deleting user never held (RFC 0028).
+    /// Intents the deleting device's R held on this node and below whose values its L never held (RFC 0028).
     #[prost(bytes="vec", repeated, tag="3")]
     pub unseen: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-    /// Intents the deleting user held there whose values R lacked when the delete was built (RFC 0028).
+    /// Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0028).
     #[prost(bytes="vec", repeated, tag="4")]
     pub held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
@@ -840,7 +840,7 @@ pub struct NodeSnapshot {
     /// When the node was trashed; 0 when it is not trashed.
     #[prost(int64, tag="3")]
     pub trashed_at_ms: i64,
-    /// A purged node's tombstone (RFC 0028). Set on a record whose node is empty, in node id order with the node records.
+    /// A purged node's tombstone (RFC 0028). Set on a record with no node, in node id order with the node records.
     #[prost(message, optional, tag="4")]
     pub tombstone: ::core::option::Option<NodePurged>,
 }
