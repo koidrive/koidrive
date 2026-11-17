@@ -307,44 +307,65 @@ class Triage(unittest.TestCase):
         self.assertEqual(triage.outcome(101, "error: no such test"), {"result": "fail", "message": "exit code 101"})
 
     def test_verdicts(self):
-        def side(result, message=None):
-            return {"result": result, "message": message}
+        def runs(result, message=None, times=2):
+            return [{"result": result, "message": message}] * times
         rules = [
-            (side("fail", "lost at a.rs:12:3"), side("pass"), "PR-caused"),
-            (side("fail", "lost at a.rs:12:3"), side("missing"), "PR-caused"),
-            (side("fail", "lost at a.rs:12:3"), side("ignored"), "PR-caused"),
-            (side("fail", "lost at a.rs:12:3"), side("fail", "lost twice at a.rs:12:3"), "PR-caused"),
-            (side("fail", "lost at a.rs:12:3"), side("fail", "lost at a.rs:40:3"), "baseline"),
-            (side("fail", "lost at a.rs:12"), side("fail", "lost at a.rs:40"), "baseline"),
-            (side("fail", "lost at a.rs:12"), side("fail", "lost at b.rs:12"), "PR-caused"),
-            (side("fail", "node 01a1-1 lost"), side("fail", "node 01a1-2 lost"), "PR-caused"),
-            (side("pass"), side("fail", "lost"), "flaky or fixed"),
-            (side("pass"), side("pass"), "flaky or fixed"),
-            (side("fail", "lost"), side("timeout", "no result"), "unknown"),
-            (side("fail", "lost"), side("error", "build failed"), "unknown"),
-            (side("timeout", "no result"), side("fail", "lost"), "unknown"),
-            (side("unmapped", "no log"), side("unmapped", "no log"), "unknown"),
+            (runs("fail", "lost at a.rs:12:3"), runs("pass"), "PR-caused"),
+            (runs("fail", "lost at a.rs:12:3"), runs("missing", times=1), "PR-caused"),
+            (runs("fail", "lost at a.rs:12:3"), runs("ignored"), "PR-caused"),
+            (runs("fail", "lost at a.rs:12:3"), runs("fail", "lost twice at a.rs:12:3"), "PR-caused"),
+            (runs("fail", "lost at a.rs:12:3"), runs("fail", "lost at a.rs:12:3"), triage.SAME),
+            (runs("fail", "lost at a.rs:12"), runs("fail", "lost at b.rs:12"), "PR-caused"),
+            (runs("fail", "node 01a1-1 lost"), runs("fail", "node 01a1-2 lost"), "PR-caused"),
+            (runs("pass"), runs("fail", "lost"), "flaky or fixed"),
+            (runs("pass"), runs("pass"), "flaky or fixed"),
+            (runs("fail", "lost"), runs("timeout", "no result"), "unknown"),
+            (runs("fail", "lost"), runs("error", "build failed", times=1), "unknown"),
+            (runs("timeout", "no result"), runs("fail", "lost"), "unknown"),
+            (runs("unmapped", "no log", times=1), runs("unmapped", "no log", times=1), "unknown"),
+            (runs("pass")[:1] + runs("fail", "lost")[:1], runs("fail", "lost"), "unstable"),
+            (runs("fail", "lost at a.rs:1")[:1] + runs("fail", "lost at a.rs:2")[:1], runs("fail", "lost"), "unstable"),
         ]
         for head, base, expected in rules:
             with self.subTest(head=head, base=base):
                 self.assertEqual(triage.verdict(head, base), expected)
 
-    def test_report_orders_by_verdict_and_states_its_normalisation(self):
+    def test_a_moved_assertion_is_never_counted_as_the_same_failure(self):
+        head = [{"result": "fail", "message": "write is lost at invariant.rs:220:1"}] * 2
+        base = [{"result": "fail", "message": "write is lost at invariant.rs:120:1"}] * 2
+        self.assertEqual(triage.verdict(head, base), triage.MOVED)
+        self.assertNotEqual(triage.MOVED, triage.SAME)
+
+    def test_a_flaky_base_is_unstable_instead_of_either_verdict(self):
+        head = [{"result": "fail", "message": "write is lost at invariant.rs:220:1"}] * 2
+        for base in ([{"result": "fail", "message": "write is lost at invariant.rs:220:1"}, {"result": "pass", "message": None}],
+                     [{"result": "pass", "message": None}, {"result": "fail", "message": "write is lost at invariant.rs:220:1"}]):
+            with self.subTest(base=base):
+                self.assertEqual(triage.verdict(head, base), "unstable")
+
+    def test_report_orders_by_verdict_and_shows_each_run(self):
         spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "others": [],
                 "cases": [{"case": c * 64, "path": f"t.cases/cc-{c * 64}.txt", "binary": "devices", "test": "t",
-                           "shards": [1]} for c in "ab"]}
-        replays = {"head": {"results": [{"result": "fail", "message": "x at a.rs:1", "target": "sim --test devices"},
-                                        {"result": "fail", "message": "y | z", "target": "sim --test devices"}]}}
-        replays["base"] = {"results": [{"result": "fail", "message": "x at a.rs:2", "target": "sim --test devices"},
-                                       {"result": "pass", "message": None, "target": "sim --test devices"}]}
+                           "shards": [1]} for c in "abc"]}
+        def side(*runs):
+            return {"runs": [{"result": result, "message": message} for result, message in runs],
+                    "target": "sim --test devices"}
+        replays = {"head": {"results": [side(("fail", "x at a.rs:1"), ("fail", "x at a.rs:1")),
+                                        side(("fail", "y | z"), ("fail", "y | z")),
+                                        side(("fail", "w"), ("fail", "w"))]},
+                   "base": {"results": [side(("fail", "x at a.rs:1"), ("fail", "x at a.rs:1")),
+                                        side(("pass", None), ("pass", None)),
+                                        side(("fail", "w"), ("pass", None))]}}
         rows = triage.combine(spec, replays)
-        self.assertEqual([(row["case"][0], row["verdict"]) for row in rows], [("b", "PR-caused"), ("a", "baseline")])
+        self.assertEqual([(row["case"][0], row["verdict"]) for row in rows],
+                         [("b", "PR-caused"), ("c", "unstable"), ("a", triage.SAME)])
         text = triage.markdown(spec, rows, "https://example.com/runs/7")
-        self.assertIn("1 PR-caused, 0 unknown, 0 flaky or fixed, 1 baseline", text)
-        self.assertIn("read as §file.rs:N§".replace("§", chr(96)), text)
+        self.assertIn(f"1 PR-caused, 1 unstable, 0 unknown, 0 {triage.MOVED}, 0 flaky or fixed, 1 {triage.SAME}", text)
+        self.assertIn("with nothing normalised", text)
+        self.assertIn("| fail / pass | w | run 1: w / run 2: (none) | unstable |", text)
         self.assertIn("y \\| z", text)
         rows = triage.combine(spec, {"head": replays["head"]})
-        self.assertEqual({row["base"] for row in rows}, {"error"})
+        self.assertEqual({row["base"][0]["result"] for row in rows}, {"error"})
 
     def test_isolate_leaves_only_the_case_under_test(self):
         with tempfile.TemporaryDirectory() as directory:

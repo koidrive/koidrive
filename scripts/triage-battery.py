@@ -16,7 +16,10 @@ CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
 LOCATION = re.compile(r"\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
 DISPLAY_LIMIT = 300
-VERDICTS = ("PR-caused", "unknown", "flaky or fixed", "baseline")
+REPLAYS = 2
+SAME = "fails on base with the same message"
+MOVED = "same message, different location (unconfirmed)"
+VERDICTS = ("PR-caused", "unstable", "unknown", MOVED, "flaky or fixed", SAME)
 
 
 def sections(log):
@@ -198,11 +201,11 @@ def replay(spec, side, checkout, timeout):
         entry = {"path": case["path"], "test": case["test"], "target": None}
         results.append(entry)
         if case["test"] is None:
-            entry.update(result="unmapped", message="no battery log names the test that saved this case")
+            entry["runs"] = [{"result": "unmapped", "message": "no battery log names the test that saved this case"}]
             continue
         target = resolve(metadata, checkout, case)
         if target is None:
-            entry.update(result="missing", message=None)
+            entry["runs"] = [{"result": "missing", "message": None}]
             continue
         package, selector, directory = target
         entry["target"] = " ".join([package, *selector])
@@ -210,17 +213,30 @@ def replay(spec, side, checkout, timeout):
             executables[entry["target"]] = build(checkout, package, selector)
         executable = executables[entry["target"]]
         if executable is None:
-            entry.update(result="error", message=f"cargo test --no-run for {entry['target']} failed")
+            entry["runs"] = [{"result": "error", "message": f"cargo test --no-run for {entry['target']} failed"}]
             continue
-        isolate(checkout, case)
-        print(f"::group::{side} {case['case'][:12]} {entry['target']} {case['test']}", flush=True)
-        entry.update(replay_one(executable, checkout / directory, case["test"], timeout))
-        print("::endgroup::", flush=True)
-        print(f"{side} {case['case'][:12]} {case['test']}: {entry['result']}", flush=True)
+        entry["runs"] = []
+        for attempt in range(1, REPLAYS + 1):
+            isolate(checkout, case)
+            print(f"::group::{side} {case['case'][:12]} {entry['target']} {case['test']} run {attempt}", flush=True)
+            entry["runs"].append(replay_one(executable, checkout / directory, case["test"], timeout))
+            print("::endgroup::", flush=True)
+        print(f"{side} {case['case'][:12]} {case['test']}: {', '.join(run['result'] for run in entry['runs'])}",
+              flush=True)
     return {"side": side, "sha": spec[side], "results": results}
 
 
-def verdict(head, base):
+def settle(runs):
+    first = runs[0]
+    if all((run["result"], run["message"]) == (first["result"], first["message"]) for run in runs):
+        return first
+    return {"result": "unstable", "message": None}
+
+
+def verdict(head_runs, base_runs):
+    head, base = settle(head_runs), settle(base_runs)
+    if "unstable" in (head["result"], base["result"]):
+        return "unstable"
     if head["result"] == "pass":
         return "flaky or fixed"
     if head["result"] != "fail":
@@ -229,14 +245,18 @@ def verdict(head, base):
         return "PR-caused"
     if base["result"] != "fail":
         return "unknown"
-    return "baseline" if comparable(head["message"]) == comparable(base["message"]) else "PR-caused"
+    if head["message"] == base["message"]:
+        return SAME
+    if comparable(head["message"]) == comparable(base["message"]):
+        return MOVED
+    return "PR-caused"
 
 
 def combine(spec, replays):
     rows = []
     for index, case in enumerate(spec["cases"]):
         sides = {side: replays[side]["results"][index] if side in replays
-                 else {"result": "error", "message": f"the {side} replay left no result", "target": None}
+                 else {"runs": [{"result": "error", "message": f"the {side} replay left no result"}], "target": None}
                  for side in ("head", "base")}
         rows.append({
             "case": case["case"],
@@ -244,11 +264,9 @@ def combine(spec, replays):
             "target": sides["head"]["target"] or sides["base"]["target"] or case["binary"],
             "test": case["test"],
             "shards": case["shards"],
-            "head": sides["head"]["result"],
-            "base": sides["base"]["result"],
-            "head_message": sides["head"]["message"],
-            "base_message": sides["base"]["message"],
-            "verdict": verdict(sides["head"], sides["base"]),
+            "head": sides["head"]["runs"],
+            "base": sides["base"]["runs"],
+            "verdict": verdict(sides["head"]["runs"], sides["base"]["runs"]),
         })
     rows.sort(key=lambda row: (VERDICTS.index(row["verdict"]), row["target"] or "", row["test"] or "", row["case"]))
     return rows
@@ -263,26 +281,43 @@ def cell(text):
     return text.replace("|", "\\|")
 
 
+def results_cell(runs):
+    results = [run["result"] for run in runs]
+    return results[0] if len(set(results)) == 1 else " / ".join(results)
+
+
+def messages_cell(runs):
+    messages = [run["message"] for run in runs]
+    if len(set(messages)) == 1:
+        return cell(messages[0])
+    return " / ".join(f"run {number}: {cell(message) or '(none)'}" for number, message in enumerate(messages, 1))
+
+
 def markdown(spec, rows, run_url):
     counts = ", ".join(f"{sum(row['verdict'] == name for row in rows)} {name}" for name in VERDICTS)
     lines = [
         "## Battery triage",
         "",
         f"[Run {spec['run']}]({run_url}) saved {len(rows)} new cases: {counts}. "
-        "Each case replayed alone, without the committed cases, with `PROPTEST_CASES=0` and the checked profile, "
-        f"on the head `{spec['head']}` and on its merge base with main `{spec['base']}`.",
+        f"Each case replayed alone {REPLAYS} times on each side, without the committed cases, with "
+        f"`PROPTEST_CASES=0` and the checked profile, on the head `{spec['head']}` and on its merge base with main "
+        f"`{spec['base']}`.",
         "",
         "PR-caused means the case fails on the head and passes on the base, fails on both with a different message, "
-        "or the base has no such test. Baseline means it fails on both with the same message. "
-        "Messages are compared with each source location `file.rs:line:column` read as `file.rs:N`, because line "
-        "numbers move between commits; the rest of each message is compared as it is. "
+        "or the base has no such test. "
+        f"{SAME[0].upper() + SAME[1:]} means both sides fail with exactly the same message. "
+        f"{MOVED[0].upper() + MOVED[1:]} means the messages match only once their `file.rs:line:column` positions "
+        "are ignored, so they may come from different assertions. "
+        "Unstable means the runs on one side disagree on the result or the message, and the table shows each run. "
+        "Messages are compared as they are, with nothing normalised. "
         f"This table cuts messages at {DISPLAY_LIMIT} characters; triage.json holds them in full.",
         "",
         "| Case | Binary and test | Head | Base | Head message | Base message | Verdict |",
         "|---|---|---|---|---|---|---|",
     ]
-    lines += [f"| `{row['case'][:12]}` | {cell(row['target'])} `{row['test'] or '?'}` | {row['head']} | "
-              f"{row['base']} | {cell(row['head_message'])} | {cell(row['base_message'])} | {row['verdict']} |"
+    lines += [f"| `{row['case'][:12]}` | {cell(row['target'])} `{row['test'] or '?'}` | {results_cell(row['head'])} | "
+              f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
+              f"{row['verdict']} |"
               for row in rows]
     if spec["others"]:
         lines += ["", "These tests failed without saving a new case, so they are not in the table:", ""]
