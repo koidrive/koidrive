@@ -840,7 +840,8 @@ pub struct NodeSnapshot {
     /// When the node was trashed; 0 when it is not trashed.
     #[prost(int64, tag="3")]
     pub trashed_at_ms: i64,
-    /// A purged node's tombstone (RFC 0028). Set on a record with no node, in node id order with the node records.
+    /// A purged node's tombstone (RFC 0028). Set on a record with no node, in node id order with the node records, only in
+    /// a snapshot at format_version 2.
     #[prost(message, optional, tag="4")]
     pub tombstone: ::core::option::Option<NodePurged>,
 }
