@@ -9,9 +9,10 @@ import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { commitDigest } from "../src/space/digest";
-import { legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
+import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
 import { MIGRATIONS } from "../src/space/schema";
 import { getNode, nodeState } from "../src/space/store";
+import legacyVectors from "../../spec/vectors/legacy-intents.json";
 import { restoreFromR2, serverState } from "./export-reader";
 import { client, content, newSpace, op, runSpaceAlarm, type TestClient } from "./helpers";
 
@@ -594,8 +595,14 @@ describe("RFC 0028 section 3.8: content conflicts by ancestry", () => {
 });
 
 describe("RFC 0028 section 7.2: legacy intents", () => {
-  it("computes the published vector", () => {
-    expect(legacyIntentId("0190f5c2-0000-7000-8000-000000000001", "content", "0190f5c2-0000-7000-8000-0000000000aa")).toBe("0617f58fc8455692 8316de6f361ad5a0".replace(" ", ""));
+  it.each(legacyVectors.vectors)("computes the published vector for $note", (vector) => {
+    expect(legacyIntentId(vector.node_id, vector.field as Field, vector.key)).toBe(vector.id.replaceAll("-", ""));
+  });
+
+  it("encodes a place key as the published vectors do", () => {
+    const [, root, folder] = legacyVectors.vectors;
+    expect(legacyPlaceKey(7, null, "a.txt")).toBe(root!.key);
+    expect(legacyPlaceKey(12, "0190f5c2-0000-7000-8000-000000000002", "Caf\u00e9.docx")).toBe(folder!.key);
   });
 
   it("gives every field of a store from before the migration its legacy intent, with the time of the commit at its revision", async () => {
