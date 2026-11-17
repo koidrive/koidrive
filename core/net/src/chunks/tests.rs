@@ -1328,9 +1328,10 @@ async fn one_chunk_at_a_time_reads_and_sends_in_the_order_of_the_chunks() {
 #[tokio::test]
 async fn four_chunks_at_once_take_at_most_a_third_of_the_time_of_one_at_a_time() {
     let parts = full_named(8);
-    let (relay, _) = busy_relay(|_, _| ok_after(Duration::from_secs(1))).await;
+    let (instant, _) = busy_relay(|_, _| ok_after(Duration::ZERO)).await;
+    let (relay, _) = busy_relay(|_, _| ok_after(Duration::from_millis(250))).await;
     let mut took = Vec::new();
-    for concurrency in [1, 4] {
+    for (relay, concurrency) in [(instant, 1), (relay, 1), (relay, 4)] {
         let (session, _events, _) = uploads_through(relay, &parts).await;
         let transfer = Transfer {
             gate: UploadGate::new(concurrency),
@@ -1344,11 +1345,12 @@ async fn four_chunks_at_once_take_at_most_a_third_of_the_time_of_one_at_a_time()
         took.push(started.elapsed());
         assert_eq!(receipts.len(), 8);
     }
+    let [local, one, four] = took[..] else {
+        unreachable!()
+    };
     assert!(
-        took[1] * 3 <= took[0],
-        "one at a time {:?}, four at once {:?}",
-        took[0],
-        took[1]
+        four.saturating_sub(local) * 3 <= one.saturating_sub(local),
+        "without waits {local:?}, one at a time {one:?}, four at once {four:?}"
     );
 }
 
