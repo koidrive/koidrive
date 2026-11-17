@@ -3773,7 +3773,7 @@ fn plan(
             Want::Restore { op, .. } => {
                 scratch.restoring.remove(&op.node_id);
                 scratch.restores.remove(&op.node_id);
-                match restored_at(trees, &op) {
+                match restored_at(trees, &op).filter(|_| !scratch.live(&op.node_id)) {
                     Some((parent, name, node)) => {
                         let fit = scratch.fit_at(&op.node_id, parent, name);
                         if matches!(fit, Fit::Valid | Fit::NameTaken) {
@@ -4535,6 +4535,7 @@ impl<'a> Scratch<'a> {
                 _ => None,
             })
             .collect();
+        let mut restored = BTreeSet::new();
         let mut left: Vec<(&str, &str, &str, Lands)> = (wants.iter())
             .filter_map(|want| match want {
                 Want::Move {
@@ -4548,7 +4549,8 @@ impl<'a> Scratch<'a> {
                 )),
                 Want::Restore { op, .. }
                     if !positioned.contains(op.node_id.as_str())
-                        && self.restoring.contains(&op.node_id) =>
+                        && self.restoring.contains(&op.node_id)
+                        && restored.insert(op.node_id.as_str()) =>
                 {
                     (restored_at(self.trees, op)).map(|(parent, name, _)| {
                         (op.node_id.as_str(), parent, name, Lands::Restore)
