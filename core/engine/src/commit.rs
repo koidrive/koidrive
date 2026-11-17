@@ -617,7 +617,7 @@ impl Commits {
         for (id, shape) in update_synced(trees, agreed.collect()) {
             trees.wait(id, shape, Origin::Other);
         }
-        let mut groups = recovery::classify(trees);
+        let mut groups = recovery::classify(trees, cause);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
             let unfit = first_link::adopt_equal_files(trees, restored);
             trees.wait_to_link(unfit);
@@ -842,7 +842,7 @@ impl Commits {
         now_ms: u64,
     ) -> Vec<Question> {
         let mut asked: BTreeMap<RecoveryGroup, Question> = BTreeMap::new();
-        let mut groups = recovery::regroup(trees, left);
+        let mut groups = recovery::regroup(trees, left, cause.as_ref());
         groups.remove(&RecoveryGroup::CreatedOnThisDevice);
         let mut intents = None;
         for mut question in std::mem::take(self.questions.get_mut()) {
@@ -863,7 +863,7 @@ impl Commits {
                 continue;
             }
             for id in question.holds() {
-                let Some(now) = recovery::group(trees, id) else {
+                let Some(now) = recovery::group(trees, id, cause.as_ref()) else {
                     continue;
                 };
                 let now = match now {
@@ -945,9 +945,10 @@ impl Commits {
                     ..
                 }
             );
+            let cause = question.cause().copied();
             let kept = |id: &str| match intents {
                 true => self.restores.contains_key(id),
-                false => recovery::group(trees, id).is_some(),
+                false => recovery::group(trees, id, cause.as_ref()).is_some(),
             };
             let kept = recovery::narrow(trees, question, kept);
             self.questions.get_mut().extend(kept);

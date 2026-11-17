@@ -83,6 +83,10 @@ pub(crate) fn content_chain(ids: impl IntoIterator<Item = String>) -> Vec<String
         .collect()
 }
 
+pub(crate) fn made_over(made_over: &[String], version_id: &str) -> bool {
+    !version_id.is_empty() && made_over.iter().any(|base| base == version_id)
+}
+
 impl From<&crate::tree::Content> for ContentValue {
     fn from(content: &crate::tree::Content) -> Self {
         Self {

@@ -1416,6 +1416,137 @@ fn a_device_with_a_commit_in_flight_does_not_commit_a_remote_name_back() {
 }
 
 #[test]
+fn a_creator_takes_a_write_made_over_its_lost_create_so_a_rewind_leaves_one_file() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (1, u(1))],
+        vec![(0, u(2)), (0, Step::Backup), (0, Step::RestoreEarlier)],
+        vec![(0, Step::Rewind)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_creator_takes_a_write_made_over_its_lost_create_so_a_second_restore_leaves_one_file() {
+    let u = |kind, name| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (2, u(1, 0))],
+        vec![
+            (0, u(2, 0)),
+            (0, Step::Work(0)),
+            (0, u(0, 0)),
+            (0, u(3, 1)),
+            (0, Step::Backup),
+            (1, u(0, 0)),
+            (0, Step::RestoreEarlier),
+            (0, u(0, 2)),
+        ],
+        vec![(0, Step::Restore)],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_restore_of_an_older_value_holds_the_write_a_disk_made_over_it() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(0, 0, 0)), (1, u(1, 0, 0))],
+        vec![
+            (0, u(0, 0, 1)),
+            (0, Step::Work(0)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Served)),
+            (0, u(2, 1469111414549624374, 0)),
+            (0, Step::Backup),
+            (0, Step::RestoreEarlier),
+            (0, Step::Backup),
+        ],
+        vec![(0, Step::RestoreEarlier)],
+    ];
+    keep(2, &phases).unwrap();
+}
+
+#[test]
+fn an_owner_rewind_retires_a_write_both_devices_took_without_asking() {
+    let phases = vec![
+        vec![(0, file("a"))],
+        vec![(0, Step::Backup), (1, overwrite(0))],
+        vec![(0, Step::Rewind)],
+    ];
+    let world = converge(2, &phases).unwrap();
+    assert!(
+        !(world.seen.keys()).any(|what| what.starts_with("recovery answer")),
+        "{:?}",
+        world.seen
+    );
+    let held: Vec<i64> = (world.space().nodes().into_iter())
+        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .collect();
+    assert_eq!(held, [1]);
+}
+
+#[test]
+fn an_edit_back_to_a_lost_creates_bytes_matches_the_server_after_a_second_restore() {
+    let phases = vec![
+        vec![(0, Step::Backup), (1, file("a"))],
+        vec![
+            (0, overwrite(0)),
+            (0, Step::Backup),
+            (0, Step::RestoreEarlier),
+        ],
+        vec![(1, overwrite(0)), (0, Step::Restore)],
+    ];
+    let world = converge(2, &phases).unwrap();
+    let disk = content_on(&world, 1, "a");
+    assert!((world.space().nodes().into_iter()).any(|node| {
+        (node.current.and_then(|current| current.content))
+            .is_some_and(|content| content.manifest_digest == disk.manifest_digest)
+    }));
+}
+
+#[test]
+fn an_edit_after_a_lost_create_reaches_the_server_after_a_second_restore() {
+    let phases = vec![
+        vec![(0, Step::Backup), (1, file("a"))],
+        vec![
+            (0, overwrite(0)),
+            (0, Step::Backup),
+            (0, Step::RestoreEarlier),
+        ],
+        vec![(1, act(2, 0, 0, "a", 1)), (0, Step::Restore)],
+    ];
+    let world = converge(2, &phases).unwrap();
+    assert!((world.space().nodes().into_iter()).any(|node| {
+        (node.current.and_then(|current| current.content))
+            .is_some_and(|content| content.mtime_ns == 3)
+    }));
+}
+
+#[test]
 fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
     let u = |kind| {
         Step::User(Action {
