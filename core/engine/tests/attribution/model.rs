@@ -903,8 +903,13 @@ impl World {
             Action::TrashRestore(d) => {
                 w.budget.trash_restores[d] -= 1;
                 let seq = w.server.head() + 1;
+                let trashes: Vec<Tok> = (w.server.log.iter().rev())
+                    .map_while(|record| record.node.trashed)
+                    .filter(|gone| !w.server.restored.contains(gone))
+                    .collect();
+                w.server.restored.extend(trashes);
                 let mut node = w.server.node();
-                w.server.restored.extend(node.trashed.take());
+                node.trashed = None;
                 node.meta_rev = seq;
                 if !rules.main_rules() {
                     node.meta_edit_rev = seq;

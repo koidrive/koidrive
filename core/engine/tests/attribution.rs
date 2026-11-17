@@ -753,6 +753,31 @@ fn a_delete_stays_across_a_restore_and_back() {
 }
 
 #[test]
+fn a_trash_restore_settles_the_delete_its_trash_replaced() {
+    settle(
+        MADE_BY_A,
+        Rules::Spec,
+        &[
+            Delete(B),
+            Build(B, 1),
+            Write(A),
+            Build(A, 1),
+            Serve(A),
+            Answer(A),
+            Record(A),
+            Delete(A),
+            Build(A, 1),
+            Serve(A),
+            Serve(B),
+            Answer(A),
+            Answer(B),
+            TrashRestore(B),
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_delete_overrides_a_move_resent_after_its_create_was_refused() {
     broken(
         &[Rules::AllFixes],
