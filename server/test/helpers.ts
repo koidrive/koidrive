@@ -71,13 +71,21 @@ export async function storedObjects(spaceId: string, hash: Uint8Array | string):
 
 type Stub = Awaited<ReturnType<typeof newSpace>>["stub"];
 
+export function freezeClock(instance: SpaceDO, atMs: number): void {
+  let nowMs = atMs;
+  instance.clock = () => nowMs;
+  instance.sleep = async (ms) => {
+    nowMs += ms;
+  };
+}
+
 export function runSpaceAlarm(
   stub: Stub,
   atMs: number,
   options: { pageNodes?: number; intercept?: (key: string, put: () => Promise<unknown>) => Promise<unknown> } = {},
 ): Promise<void> {
   return runInDurableObject(stub, async (instance: SpaceDO) => {
-    instance.clock = () => atMs;
+    freezeClock(instance, atMs);
     if (options.pageNodes !== undefined) instance.snapshotPageNodes = options.pageNodes;
     const bucket = (instance as unknown as { env: Env }).env.BUCKET;
     const put = bucket.put.bind(bucket);

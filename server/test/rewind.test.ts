@@ -32,7 +32,7 @@ import { RETIRED_HISTORY } from "../src/space/space";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
 import { restoreFromR2, serverState } from "./export-reader";
-import { content, op, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
+import { content, freezeClock, op, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
 import { pitrBackend } from "../src/space/pitr";
 import { simulatedPitr } from "./pitr";
 
@@ -937,8 +937,7 @@ describe("space rewind (RFC 0003)", () => {
     const leased = await socket(spaceId, token);
     const age = (byMs: number) =>
       runInDurableObject(space(spaceId), (instance: SpaceDO) => {
-        const atMs = instance.clock() + byMs;
-        instance.clock = () => atMs;
+        freezeClock(instance, instance.clock() + byMs);
       });
     const listTree = async (reqId: bigint) => {
       leased.send({ case: "rpc", value: { reqId, call: { case: "listTree", value: {} } } });

@@ -46,7 +46,7 @@ import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { GRANT_MS, type Role, type Session, type SpaceDO } from "../src/space-do";
 import { chunkKey, encodeChunkList, getMeta, getNode, nodeState } from "../src/space/store";
 import { restoreFromR2, serverState } from "./export-reader";
-import { OWNER, targetIncarnation } from "./helpers";
+import { freezeClock, OWNER, targetIncarnation } from "./helpers";
 import { type Dump, dump, load } from "./pitr";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -334,7 +334,7 @@ class Run {
 
   private enter(space: string, atMs: number): Promise<void> {
     return runInDurableObject(this.stub(space), (instance: SpaceDO) => {
-      instance.clock = () => atMs;
+      freezeClock(instance, atMs);
       (instance as RuledSpace).lostChangeRule = this.rule;
     });
   }

@@ -12,7 +12,7 @@ import { SpaceDO } from "../src/space-do";
 import { descriptorDurable } from "../src/space/export";
 import { encodeChunkList, setMeta } from "../src/space/store";
 import { type Manifest, restoreFromR2, serverState } from "./export-reader";
-import { client, content, newSpace, op, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
+import { client, content, freezeClock, newSpace, op, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -22,7 +22,7 @@ type Space = Awaited<ReturnType<typeof newSpace>>;
 function setClock(space: Space, device: TestClient, atMs: number) {
   device.nowMs = atMs;
   return runInDurableObject(space.stub, (instance: SpaceDO) => {
-    instance.clock = () => atMs;
+    freezeClock(instance, atMs);
   });
 }
 
