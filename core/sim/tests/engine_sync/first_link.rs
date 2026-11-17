@@ -159,31 +159,52 @@ fn sent_move_check_of(parent: &str, name: &str, pending_for: &str) -> Result<(),
         pending_for: pending_for.into(),
         ..Default::default()
     };
-    sent_move_check(&moved, &held.shape, None, None, &BTreeMap::new())
+    sent_move_check(&moved, &held.shape, None, None, "me", &BTreeMap::new())
 }
 
-fn owed_rename_check(mark: &str, synced_name: &str) -> Result<(), TestCaseError> {
-    let (_, held) = RemoteNode::from_state(&NodeState {
+fn owed_rename_check_with(
+    synced_name: &str,
+    change: impl FnOnce(&mut Move, &mut NodeState),
+) -> Result<(), TestCaseError> {
+    let mut state = NodeState {
         node_id: "x".into(),
         parent_id: "home".into(),
         name: "a (pending)".into(),
         kind: 1,
         status: 1,
-        pending_for: mark.into(),
+        pending_for: "a".into(),
+        pending_by: "me".into(),
         ..Default::default()
-    })
-    .unwrap();
+    };
+    let (_, held) = RemoteNode::from_state(&state).unwrap();
     let synced = Shape {
         name: synced_name.into(),
         ..held.shape.clone()
     };
-    let moved = Move {
+    let mut moved = Move {
         node_id: "x".into(),
         new_parent_id: "home".into(),
         new_name: "a".into(),
         ..Default::default()
     };
-    sent_move_check(&moved, &held.shape, Some(&synced), Some(&held), &BTreeMap::new())
+    change(&mut moved, &mut state);
+    let (_, remote) = RemoteNode::from_state(&state).unwrap();
+    sent_move_check(
+        &moved,
+        &held.shape,
+        Some(&synced),
+        Some(&remote),
+        "me",
+        &BTreeMap::new(),
+    )
+}
+
+fn owed_rename_check(mark: &str, synced_name: &str) -> Result<(), TestCaseError> {
+    owed_rename_check_with(synced_name, |_, state| state.pending_for = mark.into())
+}
+
+fn owed_rename_check_after(change: impl FnOnce(&mut Move, &mut NodeState)) -> Result<(), TestCaseError> {
+    owed_rename_check_with("a (pending)", change)
 }
 
 #[test]
@@ -195,6 +216,31 @@ fn the_rename_a_pending_name_owes_passes_the_sent_move_check_while_the_disk_hold
 fn a_rename_from_a_pending_name_fails_the_sent_move_check_unless_the_mark_and_every_tree_agree() {
     assert!(owed_rename_check("b", "a (pending)").is_err());
     assert!(owed_rename_check("a", "a").is_err());
+}
+
+#[test]
+fn a_move_aside_for_another_name_fails_the_sent_move_check_while_the_disk_holds_the_pending_name() {
+    assert!(owed_rename_check_after(|moved, _| moved.pending_for = "b".into()).is_err());
+}
+
+#[test]
+fn a_rename_from_a_pending_name_into_another_folder_fails_the_sent_move_check() {
+    assert!(owed_rename_check_after(|moved, _| moved.new_parent_id = "elsewhere".into()).is_err());
+}
+
+#[test]
+fn a_rename_from_a_pending_name_fails_the_sent_move_check_while_r_holds_the_node_elsewhere() {
+    assert!(owed_rename_check_after(|_, state| state.parent_id = "elsewhere".into()).is_err());
+}
+
+#[test]
+fn a_rename_from_a_pending_name_fails_the_sent_move_check_while_r_holds_the_node_in_the_trash() {
+    assert!(owed_rename_check_after(|_, state| state.status = 2).is_err());
+}
+
+#[test]
+fn a_rename_from_a_pending_name_another_device_set_fails_the_sent_move_check() {
+    assert!(owed_rename_check_after(|_, state| state.pending_by = "other".into()).is_err());
 }
 
 #[test]

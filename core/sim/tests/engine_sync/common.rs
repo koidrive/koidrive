@@ -1255,6 +1255,7 @@ fn sent_move_check(
     local: &Shape,
     synced: Option<&Shape>,
     remote: Option<&RemoteNode>,
+    device: &str,
     merged_into: &BTreeMap<String, String>,
 ) -> Result<(), TestCaseError> {
     let held = position(local);
@@ -1262,7 +1263,10 @@ fn sent_move_check(
         && moved.new_parent_id == local.parent
         && synced.map(position).as_ref() == Some(&held)
         && remote.is_some_and(|node| {
-            position(&node.shape) == held && node.pending_for.as_ref() == Some(&moved.new_name)
+            !node.trashed
+                && node.pending_by.as_deref() == Some(device)
+                && position(&node.shape) == held
+                && node.pending_for.as_ref() == Some(&moved.new_name)
         });
     if owed_rename {
         return Ok(());
@@ -1863,7 +1867,14 @@ fn run_ignoring_answering_after(
             {
                 let synced = device.trees.synced().get(id);
                 let remote = device.trees.remote().get(id);
-                sent_move_check(moved, &local.shape, synced, remote, &merged_into)?;
+                sent_move_check(
+                    moved,
+                    &local.shape,
+                    synced,
+                    remote,
+                    &me.device_id,
+                    &merged_into,
+                )?;
             }
             if matches!(
                 op.op,
