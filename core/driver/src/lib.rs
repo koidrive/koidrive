@@ -28,6 +28,7 @@ mod driver;
 mod engine;
 mod failures;
 mod folder;
+mod health;
 pub mod ignore;
 mod leave;
 mod lifecycle;

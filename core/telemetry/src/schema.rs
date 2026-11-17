@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA: u16 = 3;
+pub const SCHEMA: u16 = 4;
 
 /// What one install recorded in one UTC hour. Its keys are always those of a [`Counter`], a [`Level`] or a [`Measure`]: only a
 /// [`Recorder`](crate::Recorder) fills it, and reading one from JSON keeps only the keys of the closed set.
@@ -201,6 +201,12 @@ pub enum Event {
         problem: Failure,
         count: u64,
     },
+    /// A halted folder syncs again, after being halted for `problem` for `lasted`.
+    ProblemCleared {
+        at: u64,
+        problem: Failure,
+        lasted: Age,
+    },
     /// A linked folder's disk was mounted under another device number, and the daemon showed it is the same folder.
     RootAdopted {
         at: u64,
@@ -251,6 +257,7 @@ impl Event {
             | Event::Panic { at, .. }
             | Event::CommandFailed { at, .. }
             | Event::Problem { at, .. }
+            | Event::ProblemCleared { at, .. }
             | Event::RootAdopted { at, .. }
             | Event::AppCrash { at, .. } => *at,
         }
@@ -278,6 +285,10 @@ impl Event {
             Event::Problem { problem, .. } => {
                 let (group, name) = problem.key();
                 ("problem", group, name)
+            }
+            Event::ProblemCleared { problem, .. } => {
+                let (group, name) = problem.key();
+                ("problem_cleared", group, name)
             }
         }
     }
@@ -598,19 +609,73 @@ pub enum Level {
     Spaces,
     /// Nodes of the spaces' remote trees, files and folders, live and trashed.
     Nodes,
+    /// Folders halted.
+    Halted,
+    /// Folders halted for this reason.
+    HaltedBy(Halted),
+    /// Minutes since the folder halted longest ago halted.
+    OldestHaltMinutes,
+    /// Folders whose last moment up to date is this long ago. An up-to-date folder is under an hour.
+    LastSynced(Age),
+    /// Nodes that differ between the folders and the server, as their tasks last saw them.
+    PendingNodes,
+    /// 1 while sync is paused.
+    Paused,
 }
 
 impl Level {
-    pub const ALL: [Level; 2] = [Level::Spaces, Level::Nodes];
-
     pub fn all() -> impl Iterator<Item = Level> {
-        Level::ALL.into_iter()
+        [
+            Level::Spaces,
+            Level::Nodes,
+            Level::Halted,
+            Level::OldestHaltMinutes,
+            Level::PendingNodes,
+            Level::Paused,
+        ]
+        .into_iter()
+        .chain(Halted::ALL.iter().copied().map(Level::HaltedBy))
+        .chain(Age::ALL.iter().copied().map(Level::LastSynced))
     }
 
     pub(crate) fn key(self) -> (&'static str, &'static str) {
         match self {
             Level::Spaces => ("sync", "spaces"),
             Level::Nodes => ("sync", "nodes"),
+            Level::Halted => ("sync", "halted"),
+            Level::HaltedBy(why) => ("halted", why.name()),
+            Level::OldestHaltMinutes => ("sync", "oldest_halt_minutes"),
+            Level::LastSynced(age) => ("last_synced", age.name()),
+            Level::PendingNodes => ("sync", "pending_nodes"),
+            Level::Paused => ("sync", "paused"),
+        }
+    }
+}
+
+labels! {
+    /// A range of elapsed time, from its lower bound up to its upper one.
+    pub enum Age {
+        UnderOneHour => "under_1h",
+        OneToSixHours => "1h_6h",
+        SixHoursToOneDay => "6h_1d",
+        OneToThreeDays => "1d_3d",
+        ThreeToSevenDays => "3d_7d",
+        OverSevenDays => "over_7d",
+        /// Nothing records when it began.
+        Unknown => "unknown",
+    }
+}
+
+impl Age {
+    pub fn of(seconds: u64) -> Age {
+        const HOUR: u64 = 3_600;
+        match seconds / HOUR {
+            0 => Age::UnderOneHour,
+            1..6 => Age::OneToSixHours,
+            6..24 => Age::SixHoursToOneDay,
+            24..72 => Age::OneToThreeDays,
+            72..168 => Age::ThreeToSevenDays,
+            _ => Age::OverSevenDays,
         }
     }
 }
@@ -1055,6 +1120,15 @@ named!(
     Command::ALL.into_iter(),
     |command: Command| command.name().to_owned()
 );
+named!(
+    Halted,
+    "halt reason",
+    Halted::ALL.iter().copied(),
+    |why: Halted| why.name().to_owned()
+);
+named!(Age, "age", Age::ALL.iter().copied(), |age: Age| age
+    .name()
+    .to_owned());
 named!(Failure, "failure", Failure::all(), |failure: Failure| {
     let (group, kind) = failure.key();
     format!("{group}.{kind}")
@@ -1332,6 +1406,76 @@ mod tests {
     }
 
     #[test]
+    fn ages_split_at_one_six_24_72_and_168_hours() {
+        let hour = 3_600;
+        let ages = [
+            0,
+            hour - 1,
+            hour,
+            6 * hour - 1,
+            6 * hour,
+            24 * hour,
+            72 * hour - 1,
+            72 * hour,
+            168 * hour,
+            u64::MAX,
+        ]
+        .map(|seconds| Age::of(seconds).name());
+        assert_eq!(
+            ages,
+            [
+                "under_1h", "under_1h", "1h_6h", "1h_6h", "6h_1d", "1d_3d", "1d_3d", "3d_7d",
+                "over_7d", "over_7d"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cleared_problem_carries_only_its_kind_and_how_long_it_lasted() {
+        let event = Event::ProblemCleared {
+            at: 1_700_000_000,
+            problem: Failure::Halted(Halted::Root),
+            lasted: Age::OneToThreeDays,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "problem_cleared",
+                "at": 1_700_000_000,
+                "problem": "halted.root",
+                "lasted": "1d_3d",
+            })
+        );
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+        assert_eq!(event.kind(), ("problem_cleared", "halted", "root"));
+    }
+
+    #[test]
+    fn a_stored_report_keeps_only_known_health_levels() {
+        let stored = serde_json::json!({
+            "hour": 100,
+            "levels": {
+                "sync": { "halted": 1, "oldest_halt_minutes": 1680, "pending_nodes": 4, "paused": 0, "/home/alice": 1 },
+                "halted": { "root": 1, "Alice Notes": 1 },
+                "last_synced": { "1d_3d": 1, "2 days": 1 },
+            },
+        });
+        let report: HourlyReport = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({
+                "hour": 100,
+                "levels": {
+                    "halted": { "root": 1 },
+                    "last_synced": { "1d_3d": 1 },
+                    "sync": { "halted": 1, "oldest_halt_minutes": 1680, "paused": 0, "pending_nodes": 4 },
+                },
+            })
+        );
+    }
+
+    #[test]
     fn levels_merge_as_the_highest_and_counters_as_the_sum() {
         let report = |bytes: u64, nodes: u64| -> HourlyReport {
             serde_json::from_value(serde_json::json!({
@@ -1352,7 +1496,7 @@ mod tests {
         let counters: std::collections::BTreeSet<_> = Counter::all().map(Counter::key).collect();
         assert_eq!(counters.len(), Counter::all().count());
         let levels: std::collections::BTreeSet<_> = Level::all().map(Level::key).collect();
-        assert_eq!(levels.len(), Level::ALL.len());
+        assert_eq!(levels.len(), Level::all().count());
     }
 
     #[test]

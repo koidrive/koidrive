@@ -491,10 +491,14 @@ impl Driver {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(io_error(&lock_path)(error)),
         };
-        Ok(read_folders(paths, |path| Store::open_read_only(path))?
+        Ok(
+            read_folders(paths, &koidrive_telemetry::Recorder::off(), |path| {
+                Store::open_read_only(path)
+            })?
             .into_iter()
             .map(|(_, status)| status.lock().unwrap().clone())
-            .collect())
+            .collect(),
+        )
     }
 
     /// Opens the profile at `paths`: takes its lock, reads its configuration and credential, and finds its linked
@@ -555,7 +559,7 @@ impl Driver {
         let folders = if blocked {
             Default::default()
         } else {
-            load_folders(&paths)?
+            load_folders(&paths, &telemetry)?
         };
         let paused = paths.paused().is_file();
         let variable = std::env::var(update::VARIABLE).ok();
@@ -641,6 +645,27 @@ impl Driver {
                 .flatten(),
             folders,
         }
+    }
+
+    /// Keeps each linked folder's sync health in this hour's telemetry report: the folders halted, why and for how long,
+    /// how long ago each was last up to date, and the nodes left to sync.
+    pub fn record_health(&self) {
+        self.record_health_at(koidrive_telemetry::now());
+    }
+
+    fn record_health_at(&self, now: u64) {
+        let lifecycles: Vec<_> = (self.inner.folders.lock().unwrap().values())
+            .map(|folder| folder.status.clone())
+            .collect();
+        let folders: Vec<_> = (lifecycles.iter())
+            .map(|lifecycle| lifecycle.health(now))
+            .collect();
+        crate::health::record(
+            &self.inner.telemetry,
+            now,
+            self.inner.paused.load(Ordering::SeqCst),
+            &folders,
+        );
     }
 
     /// A receiver that is marked changed whenever [`Driver::status`], [`Driver::questions`] or [`Driver::restores`]
@@ -897,7 +922,7 @@ impl Driver {
                     *self.inner.credential.lock().unwrap() = stored.map(|stored| stored.credential);
                     *self.inner.auth.lock().unwrap() = previous_auth;
                     if self.inner.folders.lock().unwrap().is_empty() {
-                        let folders = load_folders(&self.inner.paths)?;
+                        let folders = load_folders(&self.inner.paths, &self.inner.telemetry)?;
                         *self.inner.folders.lock().unwrap() = folders;
                     }
                     if let Err(error) = leaving.finish() {
@@ -1325,8 +1350,12 @@ impl Driver {
         crate::timing::Timing::initialize(&store_path, link.linked_at_ms, &self.inner.telemetry);
         tracing::info!(space_id = link.space_id, path = %koidrive_fs::quoted(&link.root), "linked a folder");
         let status = Arc::new(
-            crate::lifecycle::Lifecycle::open(&store_path, folder_status(&link, None, 0, 0))
-                .map_err(io_error(&store_path))?,
+            crate::lifecycle::Lifecycle::open(
+                &store_path,
+                folder_status(&link, None, 0, 0),
+                self.inner.telemetry.clone(),
+            )
+            .map_err(io_error(&store_path))?,
         );
         let linked = roots(&folders);
         let mut folder = Folder {
@@ -2192,8 +2221,11 @@ fn folder_status(
     }
 }
 
-fn load_folders(paths: &Paths) -> Result<BTreeMap<String, Folder>, DriverError> {
-    Ok(read_folders(paths, |path| Store::open(path))?
+fn load_folders(
+    paths: &Paths,
+    telemetry: &koidrive_telemetry::Recorder,
+) -> Result<BTreeMap<String, Folder>, DriverError> {
+    Ok(read_folders(paths, telemetry, |path| Store::open(path))?
         .into_iter()
         .map(|(link, status)| {
             (
@@ -2214,6 +2246,7 @@ fn load_folders(paths: &Paths) -> Result<BTreeMap<String, Folder>, DriverError> 
 
 fn read_folders(
     paths: &Paths,
+    telemetry: &koidrive_telemetry::Recorder,
     open: impl Fn(&Path) -> Result<Store, koidrive_store::Error>,
 ) -> Result<Vec<(Link, Arc<crate::lifecycle::Lifecycle>)>, DriverError> {
     let spaces = paths.spaces();
@@ -2255,6 +2288,7 @@ fn read_folders(
             crate::lifecycle::Lifecycle::open(
                 &path,
                 folder_status(&link, cursor, nodes, questions as u64),
+                telemetry.clone(),
             )
             .map_err(io_error(&path))?,
         );
@@ -3924,6 +3958,58 @@ mod tests {
         .await;
         driver.stop().await;
         assert!(claim::lock(&root).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_halted_folder_shows_in_the_next_hourly_report_and_its_recovery_after() {
+        use crate::health::tests::{named, posthog, with_prefix};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &root, "d1");
+        let recorder = koidrive_telemetry::Recorder::on();
+        let driver = Driver::open_with_telemetry(paths, recorder.clone()).unwrap();
+        driver.start();
+        eventually("the folder is claimed", || {
+            claim::owner(&root).unwrap().is_some()
+        })
+        .await;
+        driver.record_health();
+        let healthy = posthog(recorder.take());
+        assert_eq!(named(&healthy, "hourly_report")[0]["l.sync.halted"], 0);
+
+        fs::rename(&root, base.join("Moved")).unwrap();
+        halted(&driver).await;
+        let now = koidrive_telemetry::now();
+        driver.record_health_at(now);
+        let events = posthog(recorder.take());
+        let report = named(&events, "hourly_report")[0];
+        assert_eq!(report["l.sync.halted"], 1);
+        assert_eq!(report["l.sync.oldest_halt_minutes"], 0);
+        let reasons = with_prefix(report, "l.halted.");
+        let [(reason, 1)] = reasons[..] else {
+            panic!("{reasons:?}")
+        };
+        let reason = reason.trim_start_matches("l.halted.").to_owned();
+        assert!(named(&events, "problem_cleared").is_empty());
+
+        fs::rename(base.join("Moved"), &root).unwrap();
+        eventually("the folder syncs again", || {
+            driver.status().folders[0].state != FolderState::Halted
+        })
+        .await;
+        driver.record_health_at(now + 3_600);
+        let events = posthog(recorder.take());
+        let report = named(&events, "hourly_report")[0];
+        assert_eq!(report["l.sync.halted"], 0);
+        assert!(with_prefix(report, "l.halted.").is_empty(), "{report}");
+        let cleared = named(&events, "problem_cleared");
+        assert_eq!(cleared.len(), 1, "{events:?}");
+        assert_eq!(cleared[0]["problem"], format!("halted.{reason}"));
+        assert_eq!(cleared[0]["lasted"], "under_1h");
+        driver.stop().await;
     }
 
     #[tokio::test]

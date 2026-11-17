@@ -2653,6 +2653,7 @@ impl FolderTask {
     /// Shows what the folder knows in the status, and marks the status changed when it differs or a question changed.
     fn publish(&self, folder: &mut Folder) {
         let view = folder.view();
+        (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
         let began_or_ended = folder.track_progress(view.state);
         let asked = folder.take_questions_changed();

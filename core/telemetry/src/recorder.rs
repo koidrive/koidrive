@@ -156,7 +156,7 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn level_on(&self, hour: u32, level: Level, value: u64) {
+    pub fn level_on(&self, hour: u32, level: Level, value: u64) {
         let (metric, label) = level.key();
         self.with(|pending| {
             let report = pending.hours.entry(hour).or_insert_with(|| HourlyReport {

@@ -14,7 +14,7 @@
           "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-02T01:00:00Z"
       }
@@ -30,7 +30,6 @@
           "$process_person_profile": false,
           "arch": "arm64",
           "build": "release",
-          "channel": "release",
           "c.asked.ambiguous_disappearance": 3,
           "c.asked.conflict": 3,
           "c.asked.mass_delete": 3,
@@ -138,9 +137,9 @@
           "c.upload_failed.refused": 3,
           "c.upload_failed.source_changed": 3,
           "c.upload_failed.unavailable": 3,
+          "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
           "h.download_per_second.bytes": {
             "buckets": [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -286,13 +285,51 @@
             "shift": 0,
             "sum": 65536
           },
+          "internal": false,
           "koi_version": "0.1.0",
+          "l.halted.claim": 5,
+          "l.halted.connection_refused": 5,
+          "l.halted.credentials_refused": 5,
+          "l.halted.device_revoked": 5,
+          "l.halted.disk_behind": 5,
+          "l.halted.io": 5,
+          "l.halted.no_replace": 5,
+          "l.halted.not_a_member": 5,
+          "l.halted.other_root": 5,
+          "l.halted.placement": 5,
+          "l.halted.protocol": 5,
+          "l.halted.record": 5,
+          "l.halted.recovery": 5,
+          "l.halted.refused": 5,
+          "l.halted.replaced": 5,
+          "l.halted.root": 5,
+          "l.halted.session_closed": 5,
+          "l.halted.session_start": 5,
+          "l.halted.signed_out": 5,
+          "l.halted.space_not_found": 5,
+          "l.halted.start": 5,
+          "l.halted.store": 5,
+          "l.halted.store_behind": 5,
+          "l.halted.unlink": 5,
+          "l.halted.unsupported_version": 5,
+          "l.halted.withdrawn": 5,
+          "l.last_synced.1d_3d": 5,
+          "l.last_synced.1h_6h": 5,
+          "l.last_synced.3d_7d": 5,
+          "l.last_synced.6h_1d": 5,
+          "l.last_synced.over_7d": 5,
+          "l.last_synced.under_1h": 5,
+          "l.last_synced.unknown": 5,
+          "l.sync.halted": 5,
           "l.sync.nodes": 5,
+          "l.sync.oldest_halt_minutes": 5,
+          "l.sync.paused": 5,
+          "l.sync.pending_nodes": 5,
           "l.sync.spaces": 5,
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T00:00:00Z",
         "uuid": "00000000-0000-4000-8000-000000000000"
@@ -307,15 +344,15 @@
           "client": "cli_daemon",
           "cloudflare_code": 10042,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
           "flow": "cloudflare",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 3,
+          "schema": 4,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -331,15 +368,15 @@
           "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
           "flow": "cloudflare",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 3,
+          "schema": 4,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -355,19 +392,16 @@
           "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
           "file": "core/driver/src/folder.rs",
-          "frames": [
-            "koidrive_driver::folder::Folder::run",
-            "koi::main"
-          ],
+          "frames": ["koidrive_driver::folder::Folder::run", "koi::main"],
+          "internal": false,
           "koi_version": "0.1.0",
           "line": 42,
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000003"
@@ -383,13 +417,13 @@
           "code": "failed",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000004"
@@ -405,13 +439,13 @@
           "code": "usage",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000005"
@@ -427,13 +461,13 @@
           "code": "decision_required",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000006"
@@ -449,13 +483,13 @@
           "code": "auth_required",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000007"
@@ -471,13 +505,13 @@
           "code": "halted",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000008"
@@ -493,13 +527,13 @@
           "code": "unavailable",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000009"
@@ -515,13 +549,13 @@
           "code": "stale_decision",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000a"
@@ -537,13 +571,13 @@
           "code": "wrong_code",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000b"
@@ -559,13 +593,13 @@
           "code": "interrupted",
           "command": "folder",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000c"
@@ -580,14 +614,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.withdrawn",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000d"
@@ -602,14 +636,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000e"
@@ -624,14 +658,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.replaced",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000f"
@@ -646,14 +680,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.other_root",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000010"
@@ -668,14 +702,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.placement",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000011"
@@ -690,14 +724,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.claim",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000012"
@@ -712,14 +746,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.no_replace",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000013"
@@ -734,14 +768,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store_behind",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000014"
@@ -756,14 +790,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.disk_behind",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000015"
@@ -778,14 +812,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.record",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000016"
@@ -800,14 +834,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000017"
@@ -822,14 +856,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.io",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000018"
@@ -844,14 +878,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_start",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000019"
@@ -866,14 +900,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_closed",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001a"
@@ -888,14 +922,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.credentials_refused",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001b"
@@ -910,14 +944,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.device_revoked",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001c"
@@ -932,14 +966,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unsupported_version",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001d"
@@ -954,14 +988,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.not_a_member",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001e"
@@ -976,14 +1010,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.space_not_found",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001f"
@@ -998,14 +1032,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.connection_refused",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000020"
@@ -1020,14 +1054,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.recovery",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000021"
@@ -1042,14 +1076,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.refused",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000022"
@@ -1064,14 +1098,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.protocol",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000023"
@@ -1086,14 +1120,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.signed_out",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000024"
@@ -1108,14 +1142,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.start",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000025"
@@ -1130,14 +1164,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unlink",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000026"
@@ -1152,14 +1186,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.call",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000027"
@@ -1174,14 +1208,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.source_changed",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000028"
@@ -1196,14 +1230,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.corrupt",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000029"
@@ -1218,14 +1252,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.refused",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002a"
@@ -1240,14 +1274,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.unavailable",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002b"
@@ -1262,14 +1296,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.no_target",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002c"
@@ -1284,14 +1318,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.io",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002d"
@@ -1306,14 +1340,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.call",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002e"
@@ -1328,14 +1362,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.source_changed",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002f"
@@ -1350,14 +1384,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.corrupt",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000030"
@@ -1372,14 +1406,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.refused",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000031"
@@ -1394,14 +1428,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.unavailable",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000032"
@@ -1416,14 +1450,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.no_target",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000033"
@@ -1438,14 +1472,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.io",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000034"
@@ -1460,14 +1494,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unauthenticated",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000035"
@@ -1482,14 +1516,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.forbidden",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000036"
@@ -1504,14 +1538,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.invalid_argument",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000037"
@@ -1526,14 +1560,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.missing_chunks",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000038"
@@ -1548,14 +1582,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.limit_exceeded",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000039"
@@ -1570,14 +1604,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.quota_exceeded",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003a"
@@ -1592,14 +1626,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.read_only",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003b"
@@ -1614,14 +1648,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.retry_later",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003c"
@@ -1636,14 +1670,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unsupported_version",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003d"
@@ -1658,14 +1692,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.internal",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003e"
@@ -1680,14 +1714,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.history_mismatch",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003f"
@@ -1702,14 +1736,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.stale_device_state",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000040"
@@ -1724,14 +1758,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.head_moved",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000041"
@@ -1746,14 +1780,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.ahead_of_server",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000042"
@@ -1768,14 +1802,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.not_found",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000043"
@@ -1790,14 +1824,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.confirmation_required",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000044"
@@ -1812,14 +1846,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unknown",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000045"
@@ -1834,14 +1868,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unauthenticated",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000046"
@@ -1856,14 +1890,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.forbidden",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000047"
@@ -1878,14 +1912,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.invalid_argument",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000048"
@@ -1900,14 +1934,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.missing_chunks",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000049"
@@ -1922,14 +1956,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.limit_exceeded",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004a"
@@ -1944,14 +1978,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.quota_exceeded",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004b"
@@ -1966,14 +2000,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.read_only",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004c"
@@ -1988,14 +2022,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.retry_later",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004d"
@@ -2010,14 +2044,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unsupported_version",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004e"
@@ -2032,14 +2066,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.internal",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004f"
@@ -2054,14 +2088,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.history_mismatch",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000050"
@@ -2076,14 +2110,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.stale_device_state",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000051"
@@ -2098,14 +2132,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.head_moved",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000052"
@@ -2120,14 +2154,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.ahead_of_server",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000053"
@@ -2142,14 +2176,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.not_found",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000054"
@@ -2164,14 +2198,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.confirmation_required",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000055"
@@ -2186,14 +2220,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "problem_node.unknown",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000056"
@@ -2208,14 +2242,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "too_large.commit",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000057"
@@ -2230,14 +2264,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "too_large.problem_node",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000058"
@@ -2252,14 +2286,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.mass_delete",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000059"
@@ -2274,14 +2308,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.remote_mass_delete",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005a"
@@ -2296,14 +2330,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.ambiguous_disappearance",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005b"
@@ -2318,14 +2352,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.recovery",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005c"
@@ -2340,14 +2374,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "asked.conflict",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005d"
@@ -2362,14 +2396,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.busy",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005e"
@@ -2384,14 +2418,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.profile",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005f"
@@ -2406,14 +2440,14 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.socket",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000060"
@@ -2428,17 +2462,171 @@
           "client": "cli_daemon",
           "count": 2,
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
           "problem": "daemon_start_failed.signals",
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000061"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "under_1h",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000062"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "1h_6h",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000063"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "6h_1d",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000064"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "1d_3d",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000065"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "3d_7d",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000066"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "over_7d",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000067"
+      },
+      {
+        "event": "problem_cleared",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "lasted": "unknown",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "halted.root",
+          "schema": 4
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000068"
       },
       {
         "event": "app_crash",
@@ -2450,20 +2638,20 @@
           "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
           "exception": "bad_access",
+          "internal": false,
           "kind": "mach",
           "koi_version": "0.1.0",
           "offsets": [1000, 2000],
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3,
+          "schema": 4,
           "signal": "sigsegv"
         },
         "timestamp": "1970-01-01T01:02:08Z",
-        "uuid": "00000000-0000-4000-8000-000000000062"
+        "uuid": "00000000-0000-4000-8000-000000000069"
       },
       {
         "event": "app_crash",
@@ -2474,17 +2662,17 @@
           "channel": "release",
           "client": "cli_daemon",
           "distinct_id": "00000000000000000000000000000000",
-          "internal": false,
           "distro": "debian",
+          "internal": false,
           "kind": "other",
           "koi_version": "0.1.0",
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 3
+          "schema": 4
         },
         "timestamp": "1970-01-01T01:02:09Z",
-        "uuid": "00000000-0000-4000-8000-000000000063"
+        "uuid": "00000000-0000-4000-8000-00000000006a"
       }
     ],
     "historical_migration": false
