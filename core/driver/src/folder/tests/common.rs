@@ -809,7 +809,6 @@ fn ask(site: &Site, intent: &RestoreIntent) -> String {
     id
 }
 
-/// The node L holds under the root as `name`.
 fn local_named(device: &Device, name: &str) -> String {
     let local = device.folder.engine.trees.local();
     (device.folder.engine.trees)

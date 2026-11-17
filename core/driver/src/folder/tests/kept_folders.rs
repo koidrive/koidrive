@@ -274,3 +274,51 @@ fn a_rule_that_lets_a_kept_entry_in_uploads_the_kept_folder_as_a_new_folder() {
     );
     assert_ne!(tree["app"], old);
 }
+
+#[test]
+fn a_kept_folder_moves_with_the_folder_another_device_renames_around_it() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site_a.root.join("proj/app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("proj/notes.txt"), b"synced");
+    a.create(&mut remote, &site_a.root.join("proj/app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    fs::write(site.root.join("proj/app/.env"), b"SECRET=local").unwrap();
+    b.settle();
+
+    fs::remove_dir_all(site_a.root.join("proj/app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    fs::rename(site_a.root.join("proj"), site_a.root.join("renamed")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+
+    assert_eq!(
+        fs::read(site.root.join("renamed/app/.env")).unwrap(),
+        b"SECRET=local"
+    );
+    assert_eq!(fs::read(site.root.join("renamed/notes.txt")).unwrap(), b"synced");
+    assert!(!site.root.join("proj").exists());
+    assert!(!site.root.join("renamed/app/README.md").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["renamed", "renamed/notes.txt"]
+    );
+    assert!(b.folder.engine.effects.blocked().is_empty());
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+}

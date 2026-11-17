@@ -320,9 +320,6 @@ fn a_deleted_folder_that_keeps_an_excluded_file_on_the_server_leaves_the_folder_
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
-/// Device `a` deletes the folder `held` while `b` holds an entry L does not know there: a file `b`'s rules exclude,
-/// or a symlink. `b` removes `held/a.txt` and keeps the folder with that entry, with no problem and nothing sent. The
-/// folder stays out of sync from then on: once the person removes the entry, a restart leaves the empty folder alone.
 #[test]
 fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder_with_it()
  {
@@ -393,8 +390,6 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
     }
 }
 
-/// As above, with the excluded file one folder deeper. `held/sub` stays for the file, and `held` stays for `held/sub`.
-/// Once the person removes the file, a restart leaves both folders alone.
 #[test]
 fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders()
  {
@@ -447,8 +442,6 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_ke
     assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
 }
 
-/// As above, with a second effect that fails for a moment: a download whose name an unobserved local file takes. Its
-/// wait ends and unblocks it, and the kept folder is neither blocked nor planned again.
 #[test]
 fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder()
  {
@@ -498,9 +491,6 @@ fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder()
     );
 }
 
-/// Device `a` renames `x` to `y` while `b` holds a file at `y` that its observer has not seen, so the move fails and
-/// `x` is blocked until a wait ends. The person then deletes `x`. The scan takes the node out of the blocked ones
-/// without planning anything for it, and the store holds it unblocked too, as every step checks.
 #[test]
 fn a_scan_that_unblocks_a_node_without_planning_an_effect_stores_it_unblocked() {
     let mut remote = Remote::new();
