@@ -13618,7 +13618,7 @@
         {
           "device": "b",
           "commit": {
-            "base_seq": 1,
+            "base_seq": 0,
             "ops": [
               {
                 "update_content": {

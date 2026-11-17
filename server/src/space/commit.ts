@@ -271,11 +271,9 @@ export class CommitApplier {
     });
   }
 
-  private overHeld(node: NodeRow): boolean {
+  private overHeld(node: NodeRow, field: "place" | "status"): boolean {
     const over = this.intents.over;
-    if (over === undefined) return true;
-    const held = readIntents(this.sql, node.node_id);
-    return held.place?.id === over || held.status?.id === over;
+    return over === undefined || readIntents(this.sql, node.node_id)[field]?.id === over;
   }
 
   private trashKnows(node: NodeRow, intentId: string): boolean {
@@ -284,8 +282,8 @@ export class CommitApplier {
     return this.sql.exec("SELECT 1 FROM trash_held WHERE trash_group = ? AND intent_id = ?", node.trash_group, intentId).toArray().length > 0;
   }
 
-  private purgedReplay(nodeId: string): ReturnType<typeof tombstoneOf> {
-    if (!this.client || !FIELDS.some((field) => this.incoming(field).replay)) return undefined;
+  private purgedReplay(nodeId: string, create = false): ReturnType<typeof tombstoneOf> {
+    if (!create && !FIELDS.some((field) => this.incoming(field).replay || this.incoming(field).carried)) return undefined;
     return tombstoneOf(this.sql, nodeId);
   }
 
@@ -571,7 +569,7 @@ export class CommitApplier {
     if (pendingFor === undefined) return rejected("INVALID_NAME");
     const existing = getNode(this.sql, op.nodeId);
     if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? this.same(existing, ["place", "status"]) : rejected("ID_EXISTS");
-    if (this.purgedReplay(op.nodeId)) return superseded();
+    if (this.purgedReplay(op.nodeId, true)) return superseded();
     if (this.heldElsewhere(op.nodeId, ["place", "status"])) return superseded();
     const found = this.parentRow(op.parentId);
     if (typeof found === "string") return rejected(found);
@@ -599,7 +597,7 @@ export class CommitApplier {
     if (existing) return this.sameCreate(existing, op.parentId, name, op.content!) ? this.same(existing, ["place", "content", "status"]) : rejected("ID_EXISTS");
     const bases = expandMadeOver(this.sql, op.nodeId, op.madeOver);
     const madeOver = boundMadeOver(op.sourceVersionId ? [op.sourceVersionId, ...bases] : bases);
-    const tombstone = this.purgedReplay(op.nodeId);
+    const tombstone = this.purgedReplay(op.nodeId, true);
     if (tombstone) {
       const intent = this.incoming("content");
       if (tombstone.knows.has(intent.id)) return superseded();
@@ -711,7 +709,7 @@ export class CommitApplier {
     if (this.client) {
       if (live && found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return this.same(found, ["place"]);
       if (this.heldElsewhere(found.node_id, ["place"])) return superseded();
-      if (!this.overHeld(found)) return superseded();
+      if (!this.overHeld(found, "place")) return superseded();
       const trash = !live ? found : target.status === NodeStatusValue.TRASHED ? target : undefined;
       if (trash && (place.carried || (this.authorsReplayUnderB(place) && this.trashKnows(trash, place.id)))) return superseded();
     }
@@ -901,7 +899,7 @@ export class CommitApplier {
         this.mergeHeld(node, held);
         return result(OpResult_Code.APPLIED);
       }
-      if (!this.overHeld(node)) return superseded();
+      if (!this.overHeld(node, "status")) return superseded();
     }
     if (trashed) {
       if (this.client) this.mergeHeld(node, held);
