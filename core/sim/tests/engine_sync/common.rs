@@ -1064,15 +1064,18 @@ fn members(question: &Question) -> impl Iterator<Item = String> + '_ {
 /// it is, or by a node that waits the same way, or a folder on the way waits itself or is
 /// excluded and not where R has it. A folder R
 /// no longer holds waits when L still holds such a node in it, since only an empty folder is
-/// removed. Such a node stays as it is, and the driver reports it as a problem (section 5.1).
+/// removed, or when S still holds a node that waits in it, since S drops a folder only once it
+/// holds nothing. Such a node stays as it is, and the driver reports it as a problem (section 5.1).
 fn waits_on_excluded(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> bool {
     let mut current = id;
     for _ in 0..=trees.remote().len() {
         let Some(remote) = trees.remote().live(current) else {
             let stays = |other: &str| trees.ignored(other) || waiting.contains(other);
             return current == id
-                && (trees.local().iter())
-                    .any(|(other, node)| node.shape.parent == id && stays(other));
+                && ((trees.local().iter())
+                    .any(|(other, node)| node.shape.parent == id && stays(other))
+                    || (trees.synced().iter())
+                        .any(|(other, shape)| shape.parent == id && waiting.contains(other)));
         };
         let placed = |node: &LocalNode| !node.parked && node.shape.same_position(remote);
         let unplaced = !trees.local().get(current).is_some_and(placed);
@@ -1856,6 +1859,10 @@ fn run_ignoring_answering_after(
         };
         let mut sending = Vec::new();
         let mut positioned = Vec::new();
+        merged_into.retain(|id, _| {
+            !(commit.ops.iter())
+                .any(|op| matches!(&op.op, Some(op::Op::CreateDir(create)) if create.node_id == *id))
+        });
         for op in &commit.ops {
             let id = match &op.op {
                 Some(op::Op::Delete(delete)) => &delete.node_id,
