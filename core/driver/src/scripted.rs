@@ -7,8 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use koidrive_net::{Api, Auth, Credentials, Events, Session, SessionConfig};
 use koidrive_proto::v1::{
-    AccessToken, ChunkPlan, ClientMessage, PrepareUploadResult, RpcResponse, ServerMessage, Target,
-    UploadReceipt, Welcome, chunk_plan, client_message, rpc_request, rpc_response, server_message,
+    AccessToken, BundledChunkResult, ChunkBundle, ChunkBundleResult, ChunkPlan, ClientMessage,
+    PrepareUploadResult, RpcResponse, ServerMessage, Target, UploadReceipt, Welcome, chunk_plan,
+    client_message, rpc_request, rpc_response, server_message,
 };
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -25,6 +26,7 @@ pub(crate) struct Seen {
     pub hashes: Vec<Vec<u8>>,
     pub refuse: Option<Vec<u8>>,
     pub stored: Vec<Vec<u8>>,
+    pub bundles: Vec<usize>,
 }
 
 pub(crate) async fn relay(expected: usize) -> (SocketAddr, Arc<Mutex<Seen>>) {
@@ -45,9 +47,15 @@ pub(crate) async fn relay_refusing(
             let (mut socket, _) = listener.accept().await.unwrap();
             let (seen, open) = (log.clone(), open.clone());
             tokio::spawn(async move {
-                let Some((ticket, size)) = read_upload(&mut socket).await else {
+                let Some((head, body)) = read_request(&mut socket).await else {
                     return;
                 };
+                if head.starts_with("POST ") {
+                    return answer_bundle(&mut socket, &seen, &body).await;
+                }
+                let (_, query) = head.split_once("ticket=").unwrap();
+                let ticket = query.split(' ').next().unwrap().to_owned();
+                let size = body.len();
                 let hash = unhex(&ticket);
                 let (mut arrived, mut refuse) = (0, false);
                 open.send_modify(|open| {
@@ -89,7 +97,39 @@ pub(crate) async fn relay_refusing(
     (address, seen)
 }
 
-async fn read_upload(socket: &mut TcpStream) -> Option<(String, usize)> {
+async fn answer_bundle(socket: &mut TcpStream, seen: &Mutex<Seen>, body: &[u8]) {
+    let bundle = ChunkBundle::decode(body).unwrap();
+    let results = {
+        let mut seen = seen.lock().unwrap();
+        seen.bundles.push(bundle.chunks.len());
+        (bundle.chunks.iter())
+            .map(|chunk| {
+                let hash = unhex(chunk.target.split_once("ticket=").unwrap().1);
+                seen.hashes.push(hash.clone());
+                seen.stored.push(hash.clone());
+                BundledChunkResult {
+                    hash: hash.clone(),
+                    status: 200,
+                    receipt: Some(UploadReceipt {
+                        hash,
+                        size: chunk.data.len() as u32,
+                        token: "bundled".into(),
+                    }),
+                    error: None,
+                }
+            })
+            .collect()
+    };
+    let answer = ChunkBundleResult { results }.encode_to_vec();
+    let head = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        answer.len()
+    );
+    let _ = socket.write_all(head.as_bytes()).await;
+    let _ = socket.write_all(&answer).await;
+}
+
+async fn read_request(socket: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let head_end = loop {
@@ -112,8 +152,7 @@ async fn read_upload(socket: &mut TcpStream) -> Option<(String, usize)> {
         let n = socket.read(&mut buffer).await.ok().filter(|n| *n > 0)?;
         request.extend_from_slice(&buffer[..n]);
     }
-    let (_, query) = head.split_once("ticket=").unwrap();
-    Some((query.split(' ').next().unwrap().to_owned(), length))
+    Some((head, request[head_end..head_end + length].to_vec()))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -128,12 +167,27 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 pub(crate) async fn session(relay: SocketAddr) -> (Session, Events, Api) {
-    session_holding(relay, Vec::new()).await
+    scripted_session(relay, Vec::new(), Vec::new()).await
 }
 
 pub(crate) async fn session_holding(
     relay: SocketAddr,
     held: Vec<Vec<u8>>,
+) -> (Session, Events, Api) {
+    scripted_session(relay, held, Vec::new()).await
+}
+
+pub(crate) async fn session_with(
+    relay: SocketAddr,
+    features: Vec<String>,
+) -> (Session, Events, Api) {
+    scripted_session(relay, Vec::new(), features).await
+}
+
+async fn scripted_session(
+    relay: SocketAddr,
+    held: Vec<Vec<u8>>,
+    features: Vec<String>,
 ) -> (Session, Events, Api) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -163,6 +217,7 @@ pub(crate) async fn session_holding(
         let welcome = Welcome {
             proto: 1,
             history_id: "h".into(),
+            features,
             ..Default::default()
         };
         let mut welcomed = false;
@@ -191,7 +246,8 @@ pub(crate) async fn session_holding(
                                 action: chunk_plan::Action::Upload as i32,
                                 target: Some(Target {
                                     url: format!(
-                                        "http://{relay}/v1/spaces/s/chunks/x?ticket={}",
+                                        "http://{relay}/v1/spaces/s/chunks/{}?ticket={}",
+                                        hex(&chunk.hash),
                                         hex(&chunk.hash)
                                     ),
                                     expires_at_ms: in_an_hour(),

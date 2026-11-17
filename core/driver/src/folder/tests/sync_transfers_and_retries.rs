@@ -775,6 +775,38 @@ fn a_chunk_sent_again_after_a_refused_ticket_counts_its_bytes_once() {
 }
 
 #[test]
+fn small_files_go_in_one_bundle_to_a_server_that_offers_bundles_and_one_put_each_to_one_that_does_not() {
+    for offered in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        for i in 0..5 {
+            fs::write(site.root.join(format!("{i}.txt")), format!("file {i}")).unwrap();
+        }
+        a.scan_until(|a| !a.work.is_empty());
+        let Some(Work::Upload(upload)) = a.work.pop_front() else {
+            panic!("the content is uploaded first");
+        };
+        let total: u64 = upload.chunks.iter().map(|chunk| u64::from(chunk.size)).sum();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let ((receipts, bytes), seen) = runtime.block_on(async {
+            let (relay, seen) = crate::scripted::relay(1).await;
+            let features = if offered { vec![koidrive_net::CHUNK_BUNDLES.into()] } else { Vec::new() };
+            let (session, _events, api) = crate::scripted::session_with(relay, features).await;
+            let transfer = Transfer::new(&api);
+            let mut bytes = 0;
+            let receipts = upload_counted(&session, &transfer, upload, |size| bytes += size).await;
+            ((receipts, bytes), seen)
+        });
+        assert_eq!(receipts.unwrap().len(), 5);
+        assert_eq!(bytes, total);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.stored.len(), 5);
+        let expected: &[usize] = if offered { &[5] } else { &[] };
+        assert_eq!(seen.bundles, expected, "bundles offered: {offered}");
+    }
+}
+
+#[test]
 fn an_upload_that_fails_after_storing_some_chunks_counts_the_bytes_of_those() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");

@@ -5,6 +5,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
@@ -52,6 +53,8 @@ pub const PROTO_MIN: u32 = 1;
 pub const PROTO_MAX: u32 = 1;
 pub const MAX_SERVER_MESSAGE: usize = 1 << 20;
 pub const MAX_CLIENT_MESSAGE: usize = 8 << 20;
+/// The `Welcome.features` name of chunk bundles (RFC 0027).
+pub const CHUNK_BUNDLES: &str = "chunk_bundles";
 
 const CLOSE_TOKEN_EXPIRED: u16 = 4001;
 const CLOSE_UNSUPPORTED_VERSION: u16 = 4002;
@@ -127,6 +130,7 @@ pub struct Session {
     commit_lock: Mutex<()>,
     backoff: Backoff,
     retry_later_attempts: u32,
+    bundles: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
 
@@ -138,6 +142,7 @@ impl Session {
         let (events, event_rx) = mpsc::unbounded_channel();
         let stopped = Arc::new(OnceLock::new());
         let (closing, closing_rx) = watch::channel(false);
+        let bundles = Arc::new(AtomicBool::new(false));
         let session = Session {
             commands,
             closing,
@@ -145,6 +150,7 @@ impl Session {
             commit_lock: Mutex::new(()),
             backoff: config.backoff,
             retry_later_attempts: config.retry_later_attempts,
+            bundles: bundles.clone(),
             task: tokio::spawn(
                 Task {
                     auth,
@@ -165,11 +171,22 @@ impl Session {
                     expired: None,
                     asked_wait: None,
                     unreadable_refusals: 0,
+                    bundles,
                 }
                 .run(),
             ),
         };
         Ok((session, Events(event_rx)))
+    }
+
+    /// True when the current connection's `Welcome` offers chunk bundles (RFC 0027) and no bundle has been refused
+    /// since.
+    pub fn bundles_offered(&self) -> bool {
+        self.bundles.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn refuse_bundles(&self) {
+        self.bundles.store(false, Ordering::Relaxed);
     }
 
     /// Streams the log after `since.since_seq` of `since.history_id`: the last seq the driver applied completely, or
@@ -453,6 +470,7 @@ struct Task {
     expired: Option<String>,
     asked_wait: Option<Duration>,
     unreadable_refusals: u32,
+    bundles: Arc<AtomicBool>,
 }
 
 impl Task {
@@ -521,6 +539,13 @@ impl Task {
         };
         self.attempt = 0;
         self.unreadable_refusals = 0;
+        self.bundles.store(
+            welcome
+                .features
+                .iter()
+                .any(|feature| feature == CHUNK_BUNDLES),
+            Ordering::Relaxed,
+        );
         self.emit(Event::Connected(welcome.clone()));
         if let Some(resume) = self.stream.reconnected()
             && let Err(exit) = self

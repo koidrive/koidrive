@@ -13,7 +13,10 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use hyper::body::{Body, Frame, SizeHint};
-use koidrive_proto::v1::{ChunkRef, Target, UploadReceipt, chunk_plan::Action};
+use koidrive_proto::v1::{
+    BundledChunk, ChunkBundle, ChunkBundleResult, ChunkRef, Target, UploadReceipt,
+    chunk_plan::Action,
+};
 use prost::Message;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, StatusCode};
@@ -228,27 +231,42 @@ impl Transfer {
                         Action::Unspecified => return Err(no_target()),
                     }
                 }
+                let units = units(uploads, session.bundles_offered());
                 let mut started = 0;
                 let mut running = FuturesUnordered::new();
                 loop {
                     tokio::select! {
                         biased;
-                        Some(sent) = running.next() => match sent? {
-                            (index, Some(receipt)) => {
-                                stored(&todo[index]);
-                                receipts.extend(receipt);
+                        Some(sent) = running.next() => {
+                            for (index, sent) in sent? {
+                                match sent {
+                                    Some(receipt) => {
+                                        stored(&todo[index]);
+                                        receipts.extend(receipt);
+                                    }
+                                    None => deferred.push(index),
+                                }
                             }
-                            (index, None) => deferred.push(index),
-                        },
-                        permit = self.gate.enter(uploads.get(started).map_or(0, |upload| upload.1.size)), if started < uploads.len() => {
-                            let (index, chunk, target) = uploads[started];
+                        }
+                        permit = self.gate.enter(units.get(started).map_or(0, |unit| unit.size)), if started < units.len() => {
+                            let unit = &units[started];
                             started += 1;
-                            if expiring(target) && !expiring_at(target, prepared) {
-                                deferred.push(index);
-                            } else {
-                                let bytes = read(chunk);
-                                running.push(async move {
-                                    let _permit = permit;
+                            let mut members = Vec::new();
+                            for &(index, chunk, target) in &unit.members {
+                                if expiring(target) && !expiring_at(target, prepared) {
+                                    deferred.push(index);
+                                } else {
+                                    members.push((index, chunk, target, read(chunk)));
+                                }
+                            }
+                            if members.is_empty() {
+                                continue;
+                            }
+                            let url = unit.url.as_deref();
+                            running.push(async move {
+                                let _permit = permit;
+                                let mut loaded = Vec::with_capacity(members.len());
+                                for (index, chunk, target, bytes) in members {
                                     let bytes = bytes.await.map_err(|source| ChunkError::Io {
                                         hash: chunk.hash.clone(),
                                         source,
@@ -258,12 +276,13 @@ impl Transfer {
                                             hash: chunk.hash.clone(),
                                         });
                                     }
-                                    let sent = self
-                                        .retrying(|| self.put(target, chunk, bytes.clone()))
-                                        .await?;
-                                    Ok((index, sent))
-                                });
-                            }
+                                    loaded.push(Member { index, chunk, target, bytes, tries: 0 });
+                                }
+                                match url {
+                                    Some(url) if loaded.len() > 1 => self.send_bundle(session, url, loaded).await,
+                                    _ => self.put_each(loaded).await,
+                                }
+                            });
                         }
                         else => break,
                     }
@@ -418,68 +437,199 @@ impl Transfer {
         }
     }
 
-    /// One upload. The connection takes slices into its send buffers, so the answer wait also covers sending what
-    /// those buffers still hold.
     async fn put(
         &self,
         target: &Target,
         chunk: &ChunkRef,
         bytes: Bytes,
     ) -> Attempt<Option<UploadReceipt>> {
+        let request = self.request(&self.uploads, target, "PUT");
+        let answer = match self.send(chunk, request, bytes).await {
+            Ok(answer) => answer,
+            Err(error) => return Attempt::Retry(error),
+        };
+        if answer.status.is_success() && !answer.protobuf {
+            return Attempt::Done(None);
+        }
+        let body = answer.body.unwrap_or_default();
+        if answer.status.is_success() {
+            put_outcome(
+                chunk,
+                answer.status,
+                UploadReceipt::decode(body.as_slice()).ok(),
+                None,
+            )
+        } else {
+            put_outcome(chunk, answer.status, None, ServerError::decode(&body))
+        }
+    }
+
+    async fn put_each(&self, members: Vec<Member<'_>>) -> Result<Sent, ChunkError> {
+        let mut sent = Vec::with_capacity(members.len());
+        for member in members {
+            let receipt = self
+                .retrying(|| self.put(member.target, member.chunk, member.bytes.clone()))
+                .await?;
+            sent.push((member.index, receipt));
+        }
+        Ok(sent)
+    }
+
+    async fn send_bundle(
+        &self,
+        session: &Session,
+        url: &str,
+        mut members: Vec<Member<'_>>,
+    ) -> Result<Sent, ChunkError> {
+        let mut sent = Vec::with_capacity(members.len());
+        while !members.is_empty() {
+            let mut again = Vec::new();
+            let mut wait = None;
+            match self.post_bundle(url, &members).await {
+                Bundled::Unsupported => {
+                    session.refuse_bundles();
+                    sent.extend(self.put_each(members).await?);
+                    return Ok(sent);
+                }
+                Bundled::Refused => {
+                    sent.extend(self.put_each(members).await?);
+                    return Ok(sent);
+                }
+                Bundled::Retry(error) => {
+                    wait = retry_after(&error);
+                    for mut member in members {
+                        member.tries += 1;
+                        if member.tries >= self.attempts {
+                            return Err(error);
+                        }
+                        again.push(member);
+                    }
+                }
+                Bundled::Answered(outcomes) => {
+                    for (mut member, outcome) in members.into_iter().zip(outcomes) {
+                        match outcome {
+                            Attempt::Done(receipt) => sent.push((member.index, Some(receipt))),
+                            Attempt::Expired => sent.push((member.index, None)),
+                            Attempt::Fail(error) => return Err(error),
+                            Attempt::Retry(error) => {
+                                member.tries += 1;
+                                if member.tries >= self.attempts {
+                                    return Err(error);
+                                }
+                                wait = wait.max(retry_after(&error));
+                                again.push(member);
+                            }
+                        }
+                    }
+                }
+            }
+            if !again.is_empty() {
+                let delay = wait.unwrap_or_else(|| self.backoff.delay(again[0].tries - 1));
+                tracing::debug!(
+                    chunks = again.len(),
+                    "koidrive chunk bundle will be retried"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            members = again;
+        }
+        Ok(sent)
+    }
+
+    async fn post_bundle(&self, url: &str, members: &[Member<'_>]) -> Bundled {
+        let bundle = ChunkBundle {
+            chunks: members
+                .iter()
+                .map(|member| BundledChunk {
+                    target: member.target.url.clone(),
+                    data: member.bytes.to_vec(),
+                })
+                .collect(),
+        };
+        let first = members[0].chunk;
+        let request = self
+            .uploads
+            .post(url)
+            .header(CONTENT_TYPE, "application/x-protobuf");
+        let answer = match self
+            .send(first, request, Bytes::from(bundle.encode_to_vec()))
+            .await
+        {
+            Ok(answer) => answer,
+            Err(error) => return Bundled::Retry(error),
+        };
+        let body = answer.body.unwrap_or_default();
+        match answer.status {
+            StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => return Bundled::Unsupported,
+            status if !status.is_success() => {
+                return match put_outcome(first, status, None, ServerError::decode(&body)) {
+                    Attempt::Retry(error) => Bundled::Retry(error),
+                    _ => Bundled::Refused,
+                };
+            }
+            _ => {}
+        }
+        let Ok(answered) = ChunkBundleResult::decode(body.as_slice()) else {
+            return Bundled::Refused;
+        };
+        if answered.results.len() != members.len() {
+            return Bundled::Refused;
+        }
+        let mut outcomes = Vec::with_capacity(members.len());
+        for (member, result) in members.iter().zip(answered.results) {
+            let Ok(status) = StatusCode::from_u16(result.status as u16) else {
+                return Bundled::Refused;
+            };
+            if result.hash != member.chunk.hash {
+                return Bundled::Refused;
+            }
+            outcomes.push(put_outcome(
+                member.chunk,
+                status,
+                result.receipt,
+                result.error.map(ServerError),
+            ));
+        }
+        Bundled::Answered(outcomes)
+    }
+
+    /// Sends `bytes` as the body of `request`. The connection takes slices into its send buffers, so the answer wait
+    /// also covers sending what those buffers still hold.
+    async fn send(
+        &self,
+        chunk: &ChunkRef,
+        request: reqwest::RequestBuilder,
+        bytes: Bytes,
+    ) -> Result<Answer, ChunkError> {
         let progress = Arc::new(Mutex::new(Progress::Body(Instant::now())));
         let body = reqwest::Body::wrap(Sending {
             rest: bytes,
             progress: progress.clone(),
         });
         let attempt = async {
-            let request = self.request(&self.uploads, target, "PUT").body(body);
-            let response = match request.send().await {
-                Ok(response) => response,
-                Err(error) => return Attempt::Retry(unavailable(chunk, error)),
-            };
+            let response = request
+                .body(body)
+                .send()
+                .await
+                .map_err(|error| unavailable(chunk, error))?;
             let status = response.status();
-            if status.is_success() && !protobuf(&response) {
-                return Attempt::Done(None);
-            }
-            let body = if protobuf(&response) {
-                match small_answer(response).await {
-                    Ok(body) => body,
-                    Err(error) => return Attempt::Retry(unavailable(chunk, error)),
-                }
+            let protobuf = protobuf(&response);
+            let body = if protobuf {
+                small_answer(response)
+                    .await
+                    .map_err(|error| unavailable(chunk, error))?
             } else {
                 None
             };
-            if status.is_success() {
-                return match body.and_then(|body| UploadReceipt::decode(body.as_slice()).ok()) {
-                    Some(receipt) if receipt.hash == chunk.hash && receipt.size == chunk.size => {
-                        Attempt::Done(Some(receipt))
-                    }
-                    _ => Attempt::Fail(ChunkError::Refused {
-                        hash: chunk.hash.clone(),
-                        status: status.as_u16(),
-                        error: None,
-                    }),
-                };
-            }
-            let refused = ChunkError::Refused {
-                hash: chunk.hash.clone(),
-                status: status.as_u16(),
-                error: body.and_then(|body| ServerError::decode(&body)),
-            };
-            let refused = match by_code(refused) {
-                Ok(attempt) => return attempt,
-                Err(refused) => refused,
-            };
-            match status {
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Attempt::Expired,
-                StatusCode::BAD_REQUEST => Attempt::Retry(refused),
-                status if retryable(status) => Attempt::Retry(refused),
-                _ => Attempt::Fail(refused),
-            }
+            Ok(Answer {
+                status,
+                protobuf,
+                body,
+            })
         };
         tokio::select! {
-            attempt = attempt => attempt,
-            message = self.stalled(&progress) => Attempt::Retry(ChunkError::Unavailable {
+            answer = attempt => answer,
+            message = self.stalled(&progress) => Err(ChunkError::Unavailable {
                 hash: chunk.hash.clone(),
                 message,
                 cause: Some(Cause::TimedOut),
@@ -645,6 +795,135 @@ impl Body for Sending {
     fn size_hint(&self) -> SizeHint {
         SizeHint::with_exact(self.rest.len() as u64)
     }
+}
+
+struct Answer {
+    status: StatusCode,
+    protobuf: bool,
+    body: Option<Vec<u8>>,
+}
+
+type Sent = Vec<(usize, Option<Option<UploadReceipt>>)>;
+
+struct Member<'a> {
+    index: usize,
+    chunk: &'a ChunkRef,
+    target: &'a Target,
+    bytes: Bytes,
+    tries: u32,
+}
+
+enum Bundled {
+    Answered(Vec<Attempt<Option<UploadReceipt>>>),
+    Retry(ChunkError),
+    Unsupported,
+    Refused,
+}
+
+fn put_outcome(
+    chunk: &ChunkRef,
+    status: StatusCode,
+    receipt: Option<UploadReceipt>,
+    error: Option<ServerError>,
+) -> Attempt<Option<UploadReceipt>> {
+    if status.is_success() {
+        return match receipt {
+            Some(receipt) if receipt.hash == chunk.hash && receipt.size == chunk.size => {
+                Attempt::Done(Some(receipt))
+            }
+            _ => Attempt::Fail(ChunkError::Refused {
+                hash: chunk.hash.clone(),
+                status: status.as_u16(),
+                error: None,
+            }),
+        };
+    }
+    let refused = ChunkError::Refused {
+        hash: chunk.hash.clone(),
+        status: status.as_u16(),
+        error,
+    };
+    let refused = match by_code(refused) {
+        Ok(attempt) => return attempt,
+        Err(refused) => refused,
+    };
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Attempt::Expired,
+        StatusCode::BAD_REQUEST => Attempt::Retry(refused),
+        status if retryable(status) => Attempt::Retry(refused),
+        _ => Attempt::Fail(refused),
+    }
+}
+
+fn retry_after(error: &ChunkError) -> Option<Duration> {
+    match error {
+        ChunkError::Refused {
+            error: Some(server),
+            ..
+        } => server.retry_after(),
+        _ => None,
+    }
+}
+
+const MAX_BUNDLE_CHUNKS: usize = 32;
+const MAX_BUNDLE_BYTES: u32 = 1 << 20;
+
+struct Unit<'a> {
+    url: Option<String>,
+    members: Vec<(usize, &'a ChunkRef, &'a Target)>,
+    size: u32,
+}
+
+fn units<'a>(uploads: Vec<(usize, &'a ChunkRef, &'a Target)>, bundle: bool) -> Vec<Unit<'a>> {
+    let mut units: Vec<Unit<'a>> = Vec::new();
+    let mut open: HashMap<String, usize> = HashMap::new();
+    for upload in uploads {
+        let size = upload.1.size;
+        let url = (bundle && size < PERMIT_BYTES)
+            .then(|| bundle_url(upload.2, upload.1))
+            .flatten();
+        let Some(url) = url else {
+            units.push(Unit {
+                url: None,
+                members: vec![upload],
+                size,
+            });
+            continue;
+        };
+        if let Some(&at) = open.get(&url) {
+            let unit = &mut units[at];
+            if unit.members.len() < MAX_BUNDLE_CHUNKS && unit.size + size <= MAX_BUNDLE_BYTES {
+                unit.members.push(upload);
+                unit.size += size;
+                continue;
+            }
+        }
+        open.insert(url.clone(), units.len());
+        units.push(Unit {
+            url: Some(url),
+            members: vec![upload],
+            size,
+        });
+    }
+    units
+}
+
+fn bundle_url(target: &Target, chunk: &ChunkRef) -> Option<String> {
+    if !(target.method.is_empty() || target.method == "PUT") || !target.headers.is_empty() {
+        return None;
+    }
+    let mut url = reqwest::Url::parse(&target.url).ok()?;
+    let relay = matches!(
+        url.path_segments()?.collect::<Vec<_>>().as_slice(),
+        [.., "v1", "spaces", _, "chunks", hash] if *hash == hex(&chunk.hash)
+    );
+    if !relay {
+        return None;
+    }
+    url.path_segments_mut().ok()?.pop();
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.into())
 }
 
 fn distinct(chunks: &[ChunkRef]) -> Vec<ChunkRef> {

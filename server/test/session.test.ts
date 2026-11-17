@@ -34,7 +34,7 @@ import {
   type Welcome,
 } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkRefSchema, type CommitRecord, ContentSchema } from "../src/gen/koidrive/v1/model_pb";
-import { ChunkPlan_Action, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
+import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
 import { type Identity, type ServerKey, signAccessToken, verifyAccessToken } from "../src/auth";
 import { fromBase64url, sha256 } from "../src/crypto";
 import { ShareLinkListSchema } from "../src/gen/koidrive/v1/share_pb";
@@ -2324,6 +2324,150 @@ describe("chunk relay", () => {
       expect((await send(url)).status).toBe(403);
     }
     expect(calls).toBe(1);
+  });
+});
+
+describe("chunk bundles", () => {
+  async function planned(...parts: string[]) {
+    const a = await getOwner();
+    const spaceId = await createSpace(a);
+    const socket = await Socket.connect(spaceId, a);
+    const welcome = await socket.start();
+    const file = await content(...parts);
+    const plan = await socket.rpc({ case: "prepareUpload", value: { chunks: file.content.chunks } });
+    if (plan.case !== "prepareUpload") throw new Error("prepareUpload failed");
+    const targets = plan.value.chunks.map((chunk) => chunk.target!);
+    const keys = file.content.chunks.map((chunk, i) => chunkKey(spaceId, toHex(chunk.hash), targetIncarnation(targets[i]!.url)));
+    return { spaceId, socket, welcome, file, targets, keys };
+  }
+
+  const bundleBody = (chunks: { target: string; data: Uint8Array }[]) => body(ChunkBundleSchema, { chunks });
+  const bundlePath = (spaceId: string) => `${BASE}/v1/spaces/${spaceId}/chunks`;
+
+  async function sendBundle(spaceId: string, chunks: { target: string; data: Uint8Array }[], fetcher: (request: Request) => Promise<Response> = (request) => exports.default.fetch(request)) {
+    const sent = bundleBody(chunks);
+    const response = await fetcher(new Request(bundlePath(spaceId), { method: "POST", body: sent, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(sent.length) } }));
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { status: response.status, results: response.ok ? fromBinary(ChunkBundleResultSchema, bytes).results : [], code: response.ok ? undefined : fromBinary(ErrorSchema, bytes).code };
+  }
+
+  it("is offered in Welcome, stores each chunk as its own upload, and a commit accepts the receipts", async () => {
+    const { spaceId, socket, welcome, file, targets, keys } = await planned("first small file", "second small file", "third small file");
+    expect(welcome.features).toContain("chunk_bundles");
+    const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })));
+    expect(sent.status).toBe(200);
+    expect(sent.results.map((result) => [toHex(result.hash), result.status])).toEqual(file.content.chunks.map((chunk) => [toHex(chunk.hash), 200]));
+    for (const [i, key] of keys.entries()) expect((await env.BUCKET.head(key))?.size).toBe(file.bytes[i]!.length);
+    await socket.commit(0n, [op.create(uuidv7(), spaceId, "bundled.txt", file.content)], sent.results.map((result) => result.receipt!));
+
+    const again = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })));
+    expect(again.results.map((result) => result.status)).toEqual([200, 200, 200]);
+    expect((await put(targets[0]!, file.bytes[0]!)).status).toBe(200);
+  });
+
+  it("answers each chunk with the status a PUT of it alone gets, and stores only the chunks that pass", async () => {
+    const { spaceId, file, targets, keys } = await planned("bad ticket", "bad bytes", "longer than its ticket", "fine chunk");
+    const mac = new URL(targets[0]!.url).searchParams.get("ticket")!.split(".")[2]!;
+    const middle = targets[0]!.url.lastIndexOf(mac) + Math.floor(mac.length / 2);
+    const tampered = targets[0]!.url.slice(0, middle) + (targets[0]!.url[middle] === "A" ? "B" : "A") + targets[0]!.url.slice(middle + 1);
+    const chunks = [
+      { target: tampered, data: file.bytes[0]! },
+      { target: targets[1]!.url, data: new Uint8Array(file.bytes[1]!.length) },
+      { target: targets[2]!.url, data: new Uint8Array(file.bytes[2]!.length + 1) },
+      { target: targets[3]!.url, data: file.bytes[3]! },
+    ];
+    const sent = await sendBundle(spaceId, chunks);
+    expect(sent.status).toBe(200);
+    expect(sent.results.map((result) => result.status)).toEqual([403, 400, 403, 200]);
+    expect(sent.results.map((result) => result.error?.code ?? Error_Code.UNSPECIFIED)).toEqual([Error_Code.FORBIDDEN, Error_Code.INVALID_ARGUMENT, Error_Code.FORBIDDEN, Error_Code.UNSPECIFIED]);
+    expect(sent.results[3]!.receipt?.size).toBe(file.bytes[3]!.length);
+    for (const key of keys.slice(0, 3)) expect(await env.BUCKET.head(key)).toBeNull();
+    expect(await env.BUCKET.head(keys[3]!)).not.toBeNull();
+
+    const alone = [
+      await put({ ...targets[0]!, url: tampered }, chunks[0]!.data),
+      await put(targets[1]!, chunks[1]!.data),
+      await put(targets[2]!, chunks[2]!.data),
+    ];
+    expect(alone.map((response) => response.status)).toEqual([403, 400, 403]);
+  });
+
+  it("answers a chunk whose storage write fails with the PUT's retry status and still stores the others", async () => {
+    const { spaceId, file, targets, keys } = await planned("throttled chunk", "unavailable chunk", "stored chunk");
+    const failing = (request: Request) =>
+      worker.fetch(request as Parameters<typeof worker.fetch>[0], {
+        ...env,
+        BUCKET: {
+          put: (key: string, value: unknown, options: R2PutOptions) => {
+            if (key === keys[0]) throw new Error("put: 429 too many requests (10058)");
+            if (key === keys[1]) throw new Error("put: internal error");
+            return env.BUCKET.put(key, value as ArrayBuffer, options);
+          },
+        },
+      } as unknown as Env, {} as ExecutionContext);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), failing);
+    expect(sent.results.map((result) => [result.status, result.error?.code])).toEqual([[429, Error_Code.RETRY_LATER], [503, Error_Code.RETRY_LATER], [200, undefined]]);
+    expect(await env.BUCKET.head(keys[2]!)).not.toBeNull();
+  });
+
+  it("refuses a malformed or oversized bundle whole and writes nothing", async () => {
+    const { spaceId, file, targets } = await planned("one", "two");
+    const BUCKET = new Proxy({}, { get: () => { throw new Error("R2 was used for a refused bundle"); } });
+    const guarded = (request: Request) => worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET } as unknown as Env, {} as ExecutionContext);
+    const valid = { target: targets[0]!.url, data: file.bytes[0]! };
+    const cases: [string, { target: string; data: Uint8Array }[], number, Error_Code][] = [
+      ["empty", [], 413, Error_Code.LIMIT_EXCEEDED],
+      ["33 chunks", Array.from({ length: 33 }, () => valid), 413, Error_Code.LIMIT_EXCEEDED],
+      ["a chunk twice", [valid, valid], 400, Error_Code.INVALID_ARGUMENT],
+      ["another space", [valid, { target: targets[1]!.url.replace(spaceId, uuidv7()), data: file.bytes[1]! }], 400, Error_Code.INVALID_ARGUMENT],
+      ["not a chunk target", [valid, { target: bundlePath(spaceId), data: file.bytes[1]! }], 400, Error_Code.INVALID_ARGUMENT],
+      ["not a URL", [valid, { target: "chunk", data: file.bytes[1]! }], 400, Error_Code.INVALID_ARGUMENT],
+      ["no incarnation", [valid, { target: targets[1]!.url.replace(/inc=[^&]*/, "inc=x"), data: file.bytes[1]! }], 400, Error_Code.INVALID_ARGUMENT],
+      ["an empty chunk", [valid, { target: targets[1]!.url, data: new Uint8Array(0) }], 413, Error_Code.LIMIT_EXCEEDED],
+      ["a chunk over 1 MiB", [valid, { target: targets[1]!.url, data: new Uint8Array((1 << 20) + 1) }], 413, Error_Code.LIMIT_EXCEEDED],
+    ];
+    for (const [name, chunks, status, code] of cases) {
+      const sent = await sendBundle(spaceId, chunks, guarded);
+      expect([name, sent.status, sent.code]).toEqual([name, status, code]);
+    }
+    const raw = (init: RequestInit) => guarded(new Request(bundlePath(spaceId), { method: "POST", ...init }));
+    expect((await raw({ body: new Uint8Array([0xff, 0xff, 0xff]), headers: { "Content-Length": "3" } })).status).toBe(400);
+    expect((await raw({ body: new Uint8Array((4 << 20) + 1), headers: { "Content-Length": String((4 << 20) + 1) } })).status).toBe(413);
+    expect((await raw({ body: new Uint8Array((4 << 20) + 1), headers: { "Content-Length": "10" } })).status).toBe(413);
+    expect((await raw({ body: new ReadableStream({ start: (c) => { c.enqueue(new Uint8Array(4)); c.close(); } }), duplex: "half" } as RequestInit)).status).toBe(411);
+    expect((await guarded(new Request(bundlePath(spaceId)))).status).toBe(405);
+  });
+
+  it("exports from the Worker module only entrypoints the runtime accepts", async () => {
+    const exported = Object.entries(await import("../src/worker"));
+    const entrypoint = (value: unknown) => typeof value === "function" || (typeof value === "object" && value !== null && "fetch" in value);
+    expect(exported.filter(([, value]) => !entrypoint(value)).map(([name]) => name)).toEqual([]);
+  });
+
+  it("makes one storage write per chunk, at most six at once, for a full bundle", async () => {
+    const parts = Array.from({ length: 32 }, (_, i) => `bundled chunk ${i} ${uuidv7()}`);
+    const { spaceId, file, targets } = await planned(...parts);
+    let open = 0;
+    let peak = 0;
+    let writes = 0;
+    const counting = (request: Request) =>
+      worker.fetch(request as Parameters<typeof worker.fetch>[0], {
+        ...env,
+        BUCKET: {
+          put: async (key: string, value: unknown, options: R2PutOptions) => {
+            writes++;
+            peak = Math.max(peak, ++open);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            open--;
+            return env.BUCKET.put(key, value as ArrayBuffer, options);
+          },
+        },
+      } as unknown as Env, {} as ExecutionContext);
+    const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), counting);
+    expect(sent.results.map((result) => result.status)).toEqual(Array(32).fill(200));
+    expect(writes).toBe(32);
+    expect(peak).toBe(6);
   });
 });
 

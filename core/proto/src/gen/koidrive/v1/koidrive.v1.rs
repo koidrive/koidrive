@@ -1066,6 +1066,38 @@ pub struct Trashed {
     #[prost(string, tag="3")]
     pub device_id: ::prost::alloc::string::String,
 }
+/// Several chunk uploads in one request to POST /v1/spaces/{space_id}/chunks (RFC 0027).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChunkBundle {
+    #[prost(message, repeated, tag="1")]
+    pub chunks: ::prost::alloc::vec::Vec<BundledChunk>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BundledChunk {
+    /// The upload Target.url from ChunkPlan, unchanged.
+    #[prost(string, tag="1")]
+    pub target: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+/// One result per BundledChunk, in request order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChunkBundleResult {
+    #[prost(message, repeated, tag="1")]
+    pub results: ::prost::alloc::vec::Vec<BundledChunkResult>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BundledChunkResult {
+    #[prost(bytes="vec", tag="1")]
+    pub hash: ::prost::alloc::vec::Vec<u8>,
+    /// The HTTP status a PUT of this chunk alone would have answered.
+    #[prost(uint32, tag="2")]
+    pub status: u32,
+    #[prost(message, optional, tag="3")]
+    pub receipt: ::core::option::Option<UploadReceipt>,
+    #[prost(message, optional, tag="4")]
+    pub error: ::core::option::Option<Error>,
+}
 /// A binary WebSocket frame from client to server.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {

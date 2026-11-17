@@ -7,15 +7,16 @@ use std::sync::{Arc, Mutex};
 use koidrive_proto::v1::Error as ProtoError;
 use koidrive_proto::v1::error::Code;
 use koidrive_proto::v1::{
-    ChunkPlan, ChunkTarget, DownloadTargets, PrepareUploadResult, rpc_request, rpc_response,
+    BundledChunkResult, ChunkPlan, ChunkTarget, DownloadTargets, PrepareUploadResult, Welcome,
+    rpc_request, rpc_response,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
 
 use super::*;
-use crate::session::Events;
 use crate::session::tests::{accept, config, listen, recv_rpc, reply, welcome};
+use crate::session::{CHUNK_BUNDLES, Events};
 
 #[tokio::test]
 async fn upload_gate_reports_configured_concurrency_while_busy() {
@@ -528,6 +529,13 @@ async fn relay() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
 }
 
 async fn scripted_session(
+    plans: impl FnMut(usize) -> Vec<ChunkPlan> + Send + 'static,
+) -> (Session, Events, Arc<Mutex<Vec<Vec<ChunkRef>>>>) {
+    scripted_session_with(welcome("h", 0), plans).await
+}
+
+async fn scripted_session_with(
+    welcome: Welcome,
     mut plans: impl FnMut(usize) -> Vec<ChunkPlan> + Send + 'static,
 ) -> (Session, Events, Arc<Mutex<Vec<Vec<ChunkRef>>>>) {
     let (listener, auth) = listen().await;
@@ -535,7 +543,7 @@ async fn scripted_session(
     let asked = Arc::new(Mutex::new(Vec::new()));
     let calls = asked.clone();
     tokio::spawn(async move {
-        let mut ws = accept(&listener, welcome("h", 0)).await;
+        let mut ws = accept(&listener, welcome).await;
         loop {
             let request = recv_rpc(&mut ws).await;
             let Some(rpc_request::Call::PrepareUpload(prepare)) = request.call else {
@@ -1617,4 +1625,318 @@ async fn a_chunk_refused_for_good_ends_the_download_and_names_its_hash() {
     }
     assert!(!written.contains(&parts[5].1.hash));
     assert!(written.len() < parts.len() - 1, "{} written", written.len());
+}
+
+fn offering() -> Welcome {
+    Welcome {
+        features: vec![CHUNK_BUNDLES.into()],
+        ..welcome("h", 0)
+    }
+}
+
+fn bundle_plan(relay: SocketAddr, chunk: &ChunkRef, ticket: &str) -> ChunkPlan {
+    let mut plan = upload_plan(relay, chunk, ticket, HOUR);
+    plan.target.as_mut().unwrap().url = format!(
+        "http://{relay}/v1/spaces/s/chunks/{}?inc=0.1&ticket={ticket}",
+        hex(&chunk.hash)
+    );
+    plan
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Wire {
+    Put(String),
+    Bundle(Vec<String>),
+}
+
+fn ticket_of(url: &str) -> String {
+    url.split_once("ticket=")
+        .unwrap()
+        .1
+        .split([' ', '&'])
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+async fn bundle_relay(
+    answer: Option<fn(&str, usize) -> u16>,
+) -> (SocketAddr, Arc<Mutex<Vec<Wire>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let log = Arc::new(Mutex::new(Vec::<Wire>::new()));
+    let seen = log.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (head, body) = read_request(&mut socket).await;
+            let earlier = |seen: &[Wire], ticket: &str| {
+                seen.iter()
+                    .map(|sent| match sent {
+                        Wire::Put(t) => usize::from(t == ticket),
+                        Wire::Bundle(ts) => ts.iter().filter(|t| *t == ticket).count(),
+                    })
+                    .sum::<usize>()
+            };
+            let (status, answer) = if head.starts_with("PUT ") {
+                let ticket = ticket_of(&head);
+                let receipt = UploadReceipt {
+                    hash: Sha256::digest(&body).to_vec(),
+                    size: body.len() as u32,
+                    token: ticket.clone(),
+                };
+                seen.lock().unwrap().push(Wire::Put(ticket));
+                (200, receipt.encode_to_vec())
+            } else if let Some(answer) = answer {
+                let bundle = ChunkBundle::decode(body.as_slice()).unwrap();
+                let tickets: Vec<_> = bundle.chunks.iter().map(|c| ticket_of(&c.target)).collect();
+                let results = {
+                    let mut seen = seen.lock().unwrap();
+                    let results = bundle
+                        .chunks
+                        .iter()
+                        .zip(&tickets)
+                        .map(|(chunk, ticket)| {
+                            let status = answer(ticket, earlier(&seen, ticket));
+                            let hash = Sha256::digest(&chunk.data).to_vec();
+                            BundledChunkResult {
+                                receipt: (status == 200).then(|| UploadReceipt {
+                                    hash: hash.clone(),
+                                    size: chunk.data.len() as u32,
+                                    token: ticket.clone(),
+                                }),
+                                error: (status != 200).then(|| ProtoError {
+                                    code: if status == 403 {
+                                        Code::Forbidden
+                                    } else {
+                                        Code::RetryLater
+                                    } as i32,
+                                    ..Default::default()
+                                }),
+                                hash,
+                                status: status.into(),
+                            }
+                        })
+                        .collect();
+                    seen.push(Wire::Bundle(tickets));
+                    results
+                };
+                (200, ChunkBundleResult { results }.encode_to_vec())
+            } else {
+                (404, Vec::new())
+            };
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                answer.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&answer).await.unwrap();
+        }
+    });
+    (address, log)
+}
+
+fn stored_all(_: &str, _: usize) -> u16 {
+    200
+}
+
+async fn bundled_upload(
+    welcome: Welcome,
+    answer: Option<fn(&str, usize) -> u16>,
+    parts: &[(String, ChunkRef, Bytes)],
+) -> (
+    Result<Vec<UploadReceipt>, ChunkError>,
+    Vec<Wire>,
+    Vec<Vec<ChunkRef>>,
+    Session,
+) {
+    let (relay, sent) = bundle_relay(answer).await;
+    let plans: Vec<_> = parts
+        .iter()
+        .map(|(name, chunk, _)| bundle_plan(relay, chunk, name))
+        .collect();
+    let (session, _events, asked) = scripted_session_with(welcome, move |_| plans.clone()).await;
+    let receipts = transfer()
+        .upload(&session, &refs(parts), source(parts))
+        .await;
+    let sent = sent.lock().unwrap().clone();
+    let asked = asked.lock().unwrap().clone();
+    (receipts, sent, asked, session)
+}
+
+#[tokio::test]
+async fn small_chunks_go_in_bundles_of_at_most_32_when_the_server_offers_them() {
+    let parts = named(40);
+    let (receipts, sent, _, _) = bundled_upload(offering(), Some(stored_all), &parts).await;
+    assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
+    let sizes: Vec<_> = sent
+        .iter()
+        .map(|sent| match sent {
+            Wire::Bundle(tickets) => tickets.len(),
+            Wire::Put(_) => 1,
+        })
+        .collect();
+    assert_eq!(sizes, [32, 8]);
+    assert!(sent.iter().all(|sent| matches!(sent, Wire::Bundle(_))));
+}
+
+#[tokio::test]
+async fn a_server_that_does_not_offer_bundles_gets_one_put_per_chunk() {
+    let parts = named(5);
+    let (receipts, sent, _, _) = bundled_upload(welcome("h", 0), Some(stored_all), &parts).await;
+    assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
+    assert_eq!(
+        sent,
+        names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn a_server_without_the_bundle_route_gets_the_chunks_as_puts_and_no_more_bundles() {
+    let parts = named(5);
+    let (receipts, sent, _, session) = bundled_upload(offering(), None, &parts).await;
+    assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
+    assert_eq!(
+        sent,
+        names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>()
+    );
+    assert!(!session.bundles_offered());
+}
+
+#[tokio::test]
+async fn chunks_of_a_full_permit_or_more_go_alone_while_smaller_ones_share_a_bundle() {
+    let mut parts = named(3);
+    let big = Bytes::from(vec![9u8; PERMIT_BYTES as usize]);
+    parts.insert(1, ("big".into(), chunk(&big), big));
+    let (receipts, sent, _, _) = bundled_upload(offering(), Some(stored_all), &parts).await;
+    assert_eq!(receipts.unwrap().len(), 4);
+    assert_eq!(
+        sent,
+        [
+            Wire::Bundle(vec!["c0".into(), "c1".into(), "c2".into()]),
+            Wire::Put("big".into())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn only_the_chunks_a_bundle_could_not_store_are_sent_again() {
+    fn answer(ticket: &str, earlier: usize) -> u16 {
+        match (ticket, earlier) {
+            ("c1", 0) => 503,
+            ("c2", 0) => 403,
+            _ => 200,
+        }
+    }
+    let parts = named(4);
+    let (receipts, sent, asked, _) = bundled_upload(offering(), Some(answer), &parts).await;
+    assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
+    let tickets = |names: &[&str]| Wire::Bundle(names.iter().map(|n| (*n).into()).collect());
+    assert_eq!(
+        sent,
+        [
+            tickets(&["c0", "c1", "c2", "c3"]),
+            tickets(&["c1"]),
+            Wire::Put("c2".into())
+        ]
+    );
+    assert_eq!(
+        asked.len(),
+        2,
+        "the chunk whose ticket was refused is prepared again"
+    );
+    assert_eq!(asked[1], vec![parts[2].1.clone()]);
+}
+
+#[tokio::test]
+async fn each_chunk_of_a_bundle_gets_the_outcome_a_put_with_the_same_answer_gets() {
+    let sent = chunk(b"payload");
+    let other = chunk(b"other");
+    let error = |code: Code, retry_after_ms: u64| ProtoError {
+        code: code as i32,
+        message: "refused".into(),
+        retry_after_ms,
+        ..Default::default()
+    };
+    let receipt = |of: &ChunkRef| UploadReceipt {
+        hash: of.hash.clone(),
+        size: of.size,
+        token: "t".into(),
+    };
+    let cases: Vec<(u16, Option<UploadReceipt>, Option<ProtoError>)> = vec![
+        (200, Some(receipt(&sent)), None),
+        (200, Some(receipt(&other)), None),
+        (403, None, Some(error(Code::Forbidden, 0))),
+        (401, None, Some(error(Code::Unauthenticated, 0))),
+        (400, None, Some(error(Code::InvalidArgument, 0))),
+        (413, None, Some(error(Code::LimitExceeded, 0))),
+        (429, None, Some(error(Code::RetryLater, 1000))),
+        (429, None, Some(error(Code::QuotaExceeded, 0))),
+        (503, None, Some(error(Code::RetryLater, 0))),
+        (503, None, None),
+        (500, None, Some(error(Code::Internal, 0))),
+        (404, None, Some(error(Code::NotFound, 0))),
+    ];
+    let mut alone = Vec::new();
+    for (status, receipt, error) in &cases {
+        let body = match (receipt, error) {
+            (Some(receipt), _) => receipt.encode_to_vec(),
+            (_, Some(error)) => error.encode_to_vec(),
+            _ => Vec::new(),
+        };
+        let (target, server) = serve(vec![(*status, "application/x-protobuf", body)]).await;
+        alone.push(outcome(
+            &transfer()
+                .put(&target, &sent, Bytes::from_static(b"payload"))
+                .await,
+        ));
+        server.await.unwrap();
+    }
+    let in_bundle: Vec<_> = cases
+        .into_iter()
+        .map(|(status, receipt, error)| {
+            outcome(&put_outcome(
+                &sent,
+                StatusCode::from_u16(status).unwrap(),
+                receipt,
+                error.map(ServerError),
+            ))
+        })
+        .collect();
+    assert_eq!(in_bundle, alone);
+    assert_eq!(&alone[..3], ["done", &alone[1], "expired"]);
+}
+
+#[test]
+fn only_relay_targets_of_the_chunk_itself_have_a_bundle_route() {
+    let c = chunk(b"c");
+    let target = |url: String, method: &str| Target {
+        url,
+        method: method.into(),
+        ..Default::default()
+    };
+    let relay = format!(
+        "https://k.test/base/v1/spaces/s1/chunks/{}?inc=0.1&ticket=t",
+        hex(&c.hash)
+    );
+    assert_eq!(
+        bundle_url(&target(relay.clone(), ""), &c).as_deref(),
+        Some("https://k.test/base/v1/spaces/s1/chunks")
+    );
+    assert_eq!(
+        bundle_url(&target(relay.clone(), "PUT"), &c).as_deref(),
+        Some("https://k.test/base/v1/spaces/s1/chunks")
+    );
+    assert_eq!(bundle_url(&target(relay.clone(), "POST"), &c), None);
+    assert_eq!(
+        bundle_url(&target(relay.replace(&hex(&c.hash), "ab"), ""), &c),
+        None
+    );
+    assert_eq!(
+        bundle_url(
+            &target("https://r2.test/bucket/key?X-Amz-Signature=s".into(), "PUT"),
+            &c
+        ),
+        None
+    );
 }

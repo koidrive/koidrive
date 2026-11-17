@@ -636,6 +636,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         restoreSeq: BigInt(Number(getMeta(this.sql, "restore_seq") ?? 0)),
         restorePointMs: BigInt(Number(getMeta(this.sql, "restore_point_ms") ?? 0)),
         readOnly: attachment.role === "viewer" || hello.maxFormat < formatVersion,
+        features: ["chunk_bundles"],
       });
       this.send(ws, { case: "welcome", value: welcome });
     }

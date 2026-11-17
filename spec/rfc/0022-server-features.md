@@ -23,6 +23,7 @@ A feature name is 1 to 64 characters of `a` to `z`, `0` to `9` and `_`, starting
 | `human_auth` | RFC 0021 | Passkeys and browser sessions |
 | `device_authorization` | RFC 0021 | The device authorization routes |
 | `hosted_auth` | RFC 0021 | Sign-in through an external identity provider |
+| `chunk_bundles` | RFC 0027 | Several chunk uploads in one request to `POST /v1/spaces/{space_id}/chunks` |
 
 The namespace is shared with the `Hello.features` that RFC 0006 §5 uses for change-record kinds. A record-kind feature appears in `ServerInfo.features` when the server can send records of that kind.
 
