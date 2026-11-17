@@ -1597,6 +1597,7 @@ dependencies = [
 name = "koidrive-test-support"
 version = "0.0.0-dev"
 dependencies = [
+ "koidrive-state-file",
  "plist",
  "proptest",
  "tempfile",

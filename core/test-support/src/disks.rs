@@ -154,7 +154,9 @@ impl Disks {
         let copy = image
             .with_file_name(name)
             .with_extension(image.extension().unwrap());
-        fs::copy(image, &copy).unwrap();
+        let stage = koidrive_state_file::AtomicFile::prepare(&copy).unwrap();
+        std::io::copy(&mut fs::File::open(image).unwrap(), &mut stage.as_file()).unwrap();
+        stage.finish(koidrive_state_file::Publish::Replace).unwrap();
         copy
     }
 
@@ -435,6 +437,27 @@ mod tests {
         disks.cleanup(|_| Ok(()));
         drop(disks);
         assert!(!base.exists());
+    }
+
+    #[test]
+    fn image_copies_publish_the_same_bytes_without_an_unfinished_stage() {
+        let disks = Disks {
+            dir: tempfile::tempdir().unwrap(),
+            mounted: Vec::new(),
+        };
+        let image = disks.base().join("source.dmg");
+        let bytes = vec![42; 16_384];
+        fs::write(&image, &bytes).unwrap();
+        let copy = disks.copy(&image, "copy");
+        assert_eq!(fs::read(&copy).unwrap(), bytes);
+        assert!(std::panic::catch_unwind(|| disks.copy(&disks.base().join("missing.dmg"), "unfinished")).is_err());
+        assert!(!disks.base().join("unfinished.dmg").exists());
+        let mut files: Vec<_> = fs::read_dir(disks.base())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["copy.dmg", "source.dmg"]);
     }
 
     #[cfg(target_os = "macos")]
