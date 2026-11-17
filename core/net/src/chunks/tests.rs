@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use koidrive_proto::v1::Error as ProtoError;
@@ -19,7 +20,7 @@ use crate::session::tests::{accept, config, listen, recv_rpc, reply, welcome};
 #[tokio::test]
 async fn upload_gate_reports_configured_concurrency_while_busy() {
     let gate = UploadGate::new(2);
-    let permit = gate.enter().await;
+    let permit = gate.enter(1).await;
     assert_eq!(gate.concurrency(), 2);
     assert_eq!(gate.clone().concurrency(), 2);
     drop(permit);
@@ -557,8 +558,8 @@ async fn scripted_session(
 #[tokio::test]
 async fn an_upload_target_that_expires_during_its_batch_is_prepared_again_before_the_chunk_is_read()
 {
-    let a = chunk(b"chunk a");
-    let b = chunk(b"chunk b");
+    let (a_bytes, b_bytes) = (full("chunk a"), full("chunk b"));
+    let (a, b) = (chunk(&a_bytes), chunk(&b_bytes));
     let (relay, tickets) = relay().await;
     let (session, _events, asked) = scripted_session({
         let (a, b) = (a.clone(), b.clone());
@@ -581,14 +582,14 @@ async fn an_upload_target_that_expires_during_its_batch_is_prepared_again_before
         }
         .upload(&session, &[b.clone(), a.clone()], |chunk| {
             reads.push(chunk.hash.clone());
-            let (bytes, delay): (&'static [u8], _) = if chunk.hash == b.hash {
-                (b"chunk b", Duration::from_millis(1500))
+            let (bytes, delay) = if chunk.hash == b.hash {
+                (b_bytes.clone(), Duration::from_millis(1500))
             } else {
-                (b"chunk a", Duration::ZERO)
+                (a_bytes.clone(), Duration::ZERO)
             };
             async move {
                 tokio::time::sleep(delay).await;
-                Ok(Bytes::from_static(bytes))
+                Ok(bytes)
             }
         }),
     )
@@ -975,6 +976,21 @@ fn named(count: usize) -> Vec<(String, ChunkRef, Bytes)> {
         .collect()
 }
 
+fn full(label: &str) -> Bytes {
+    let mut bytes = label.as_bytes().to_vec();
+    bytes.resize(FULL_CHUNK_BYTES as usize, 0);
+    Bytes::from(bytes)
+}
+
+fn full_named(count: usize) -> Vec<(String, ChunkRef, Bytes)> {
+    (0..count)
+        .map(|i| {
+            let bytes = full(&format!("chunk {i}"));
+            (format!("c{i}"), chunk(&bytes), bytes)
+        })
+        .collect()
+}
+
 fn refs(parts: &[(String, ChunkRef, Bytes)]) -> Vec<ChunkRef> {
     parts.iter().map(|(_, chunk, _)| chunk.clone()).collect()
 }
@@ -1014,8 +1030,8 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn uploads_keep_as_many_chunks_in_flight_as_the_gate_allows_and_no_more() {
-    let parts = named(12);
+async fn uploads_keep_as_many_full_chunks_in_flight_as_the_gate_allows_and_no_more() {
+    let parts = full_named(12);
     let (relay, seen) = busy_relay(|_, _| ok_after(Duration::from_millis(100))).await;
     let (session, _events, _) = uploads_through(relay, &parts).await;
 
@@ -1026,6 +1042,24 @@ async fn uploads_keep_as_many_chunks_in_flight_as_the_gate_allows_and_no_more() 
 
     assert_eq!(sorted(tokens(receipts)), sorted(names(&parts)));
     assert_eq!(seen.lock().unwrap().peak, DEFAULT_UPLOAD_CONCURRENCY);
+}
+
+#[tokio::test]
+async fn small_chunks_share_the_bytes_of_one_full_chunk_in_flight() {
+    let parts = named(40);
+    let (relay, seen) = busy_relay(|_, _| ok_after(Duration::from_millis(100))).await;
+    let (session, _events, _) = uploads_through(relay, &parts).await;
+
+    let receipts = Transfer {
+        gate: UploadGate::new(1),
+        ..transfer()
+    }
+    .upload(&session, &refs(&parts), source(&parts))
+    .await
+    .unwrap();
+
+    assert_eq!(receipts.len(), 40);
+    assert_eq!(seen.lock().unwrap().peak, 16);
 }
 
 #[tokio::test]
@@ -1104,7 +1138,7 @@ async fn a_chunk_that_is_retried_does_not_hold_up_the_others() {
 
 #[tokio::test]
 async fn a_chunk_that_changed_ends_the_upload_while_others_are_in_flight() {
-    let parts = named(6);
+    let parts = full_named(6);
     let changed = parts[2].1.clone();
     let (relay, seen) = busy_relay(|_, _| ok_after(Duration::from_secs(30))).await;
     let (session, _events, _) = uploads_through(relay, &parts).await;
@@ -1197,7 +1231,7 @@ async fn a_chunk_refused_for_good_ends_the_upload_without_waiting_for_slower_one
 
 #[tokio::test]
 async fn transfers_that_share_a_gate_share_its_limit() {
-    let parts = named(12);
+    let parts = full_named(12);
     let (relay, seen) = busy_relay(|_, _| ok_after(Duration::from_millis(50))).await;
     let gate = UploadGate::new(2);
     let (first, second) = parts.split_at(6);
@@ -1221,8 +1255,10 @@ async fn transfers_that_share_a_gate_share_its_limit() {
 
 #[tokio::test]
 async fn one_chunk_at_a_time_reads_and_sends_in_the_order_of_the_chunks() {
-    let [a, b, c, d, e] = [b"chunk a", b"chunk b", b"chunk c", b"chunk d", b"chunk e"]
-        .map(|bytes| (chunk(bytes), Bytes::from_static(bytes)));
+    let [a, b, c, d, e] = ["chunk a", "chunk b", "chunk c", "chunk d", "chunk e"].map(|label| {
+        let bytes = full(label);
+        (chunk(&bytes), bytes)
+    });
     let (relay, seen) = busy_relay(|ticket, _| match ticket {
         "stale" => Reply {
             after: Duration::ZERO,
@@ -1291,30 +1327,28 @@ async fn one_chunk_at_a_time_reads_and_sends_in_the_order_of_the_chunks() {
 }
 
 #[tokio::test]
-async fn four_chunks_at_once_take_at_most_a_third_of_the_time_of_one_at_a_time() {
-    let parts = named(100);
-    let (relay, _) = busy_relay(|_, _| ok_after(Duration::from_millis(50))).await;
-    let mut took = Vec::new();
+async fn the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency() {
+    let parts = full_named(8);
     for concurrency in [1, 4] {
+        let arrived = AtomicUsize::new(0);
+        let (relay, seen) = busy_relay(move |_, _| {
+            let first_wave = arrived.fetch_add(1, Ordering::SeqCst) < concurrency;
+            ok_after(Duration::from_secs(if first_wave { 2 } else { 0 }))
+        })
+        .await;
         let (session, _events, _) = uploads_through(relay, &parts).await;
-        let transfer = Transfer {
+
+        let receipts = Transfer {
             gate: UploadGate::new(concurrency),
             ..transfer()
-        };
-        let started = Instant::now();
-        let receipts = transfer
-            .upload(&session, &refs(&parts), source(&parts))
-            .await
-            .unwrap();
-        took.push(started.elapsed());
-        assert_eq!(receipts.len(), 100);
+        }
+        .upload(&session, &refs(&parts), source(&parts))
+        .await
+        .unwrap();
+
+        assert_eq!(receipts.len(), 8);
+        assert_eq!(seen.lock().unwrap().peak, concurrency);
     }
-    assert!(
-        took[1] * 3 <= took[0],
-        "one at a time {:?}, four at once {:?}",
-        took[0],
-        took[1]
-    );
 }
 
 #[derive(Default)]
