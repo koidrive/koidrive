@@ -181,9 +181,7 @@ impl<'a> Claim<'a> {
                 Err(ApiError::Server { error, .. }) if error.code() == Code::RetryLater => {
                     error.retry_after().unwrap_or(Duration::from_secs(10))
                 }
-                Err(ApiError::Server { error, .. }) if error.platform_failure() => {
-                    Duration::from_secs(3)
-                }
+                Err(ApiError::Server { status, .. }) if status >= 500 => Duration::from_secs(3),
                 Err(
                     ApiError::Transport(_)
                     | ApiError::TooLarge { .. }
@@ -301,7 +299,7 @@ pub(super) fn user_name() -> String {
 
 #[cfg(test)]
 mod tests {
-    use koidrive_proto::v1::{AccessToken, Error};
+    use koidrive_proto::v1::{AccessToken, Error, error::Cause};
     use prost::Message;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -641,42 +639,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_claim_is_sent_again_after_a_worker_exception_page_or_an_internal_platform_failure() {
-        let exception_page =
-            claims_after_one_failure("text/plain; charset=UTF-8", b"error code: 1101".to_vec())
-                .await;
-        let platform_failure = claims_after_one_failure(
-            "application/x-protobuf",
+    async fn a_claim_is_sent_again_after_any_server_failure() {
+        let internal = |cause: Cause| {
             Error {
                 code: Code::Internal as i32,
                 message: "internal error".into(),
-                cause: koidrive_proto::v1::error::Cause::DoUnavailable as i32,
+                cause: cause as i32,
                 ..Error::default()
             }
-            .encode_to_vec(),
-        )
-        .await;
-
+            .encode_to_vec()
+        };
         let saved = ("the claim reached the credential save".to_owned(), 2);
-        assert_eq!(exception_page, saved);
-        assert_eq!(platform_failure, saved, "the claim was not retried");
-    }
-
-    #[tokio::test]
-    async fn an_internal_exception_stops_the_claim() {
-        let (error, claims) = claims_after_one_failure(
-            "application/x-protobuf",
-            Error {
-                code: Code::Internal as i32,
-                message: "internal error".into(),
-                cause: koidrive_proto::v1::error::Cause::Exception as i32,
-                ..Error::default()
-            }
-            .encode_to_vec(),
-        )
-        .await;
-
-        assert!(error.contains("the server refused the claim"), "{error}");
-        assert_eq!(claims, 1);
+        assert_eq!(
+            claims_after_one_failure("text/plain; charset=UTF-8", b"error code: 1101".to_vec())
+                .await,
+            saved
+        );
+        for cause in [Cause::DoUnavailable, Cause::Exception, Cause::Unspecified] {
+            assert_eq!(
+                claims_after_one_failure("application/x-protobuf", internal(cause)).await,
+                saved,
+                "{cause:?}"
+            );
+        }
     }
 }

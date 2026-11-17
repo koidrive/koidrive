@@ -43,7 +43,7 @@ No field is removed or renumbered.
 
 ## 3. Client rules
 
-1. A client treats a refusal by its code, with one exception: when it may send the request again, it treats `CODE_INTERNAL` with a cause other than `CAUSE_UNSPECIFIED` and `CAUSE_EXCEPTION` like `CODE_RETRY_LATER`, because the platform failed and not the request.
+1. A client treats a refusal by its code and HTTP status alone. It never retries, waits or stops differently because of the cause. A client that keeps a request id so it can send a create again keeps it through any 5xx answer and forgets it only on a 4xx answer.
 2. A client may count causes. A value it does not know counts as an unknown cause.
 3. A server without this RFC sends no cause. The client reads that as `CAUSE_UNSPECIFIED`.
 4. When the Worker gives no answer, Cloudflare's edge answers in its place with a non-protobuf body that holds `error code: ` and a number ([error codes](https://developers.cloudflare.com/workers/observability/errors/)): 1101 for an exception the Worker did not catch, 1102 for a Worker past its CPU time or memory limit, and 1027 for the Workers Free daily request limit. A client may read that number from an error body of at most 64 KiB with a known length, and count it like a cause.

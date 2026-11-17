@@ -15,7 +15,7 @@ use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_fs::{Marker, probe_no_replace, read_marker, root_at, write_marker};
 use koidrive_ignore::LocalRulesError;
-use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, Resend, ServerError, UploadGate};
+use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
 use koidrive_state_file::Flock;
 use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
@@ -761,7 +761,9 @@ impl Driver {
         let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
             Ok(issued) => issued,
             Err(error) => {
-                if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed && !error.platform_failure())
+                if error
+                    .status()
+                    .is_some_and(|status| (400..500).contains(&status))
                 {
                     pending_claim::forget(&self.inner._lock, &pending, api.base(), code)
                         .map_err(io_error(&pending))?;
@@ -4702,25 +4704,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_claim_keeps_its_request_id_only_through_an_internal_platform_failure() {
+    async fn a_claim_keeps_its_request_id_through_any_internal_error() {
         use koidrive_proto::v1::error::Cause;
 
-        let (platform, exception, unspecified) = tokio::join!(
+        let answers = tokio::join!(
             request_ids_around_an_internal_error(Cause::DoUnavailable as i32),
             request_ids_around_an_internal_error(Cause::Exception as i32),
             request_ids_around_an_internal_error(Cause::Unspecified as i32),
         );
 
-        assert!(platform.0, "the platform failure forgot the pending claim");
-        assert!(
-            platform.1.iter().all(|id| *id == platform.1[0]),
-            "{:?}",
-            platform.1
-        );
-        for (pending, ids) in [exception, unspecified] {
-            assert!(!pending);
-            assert!(ids[..4].iter().all(|id| *id == ids[0]), "{ids:?}");
-            assert_ne!(ids[4], ids[0]);
+        for (pending, ids) in [answers.0, answers.1, answers.2] {
+            assert!(pending, "an internal error forgot the pending claim");
+            assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
         }
     }
 

@@ -3,10 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use koidrive_proto::v1::{
-    Error as ProtoError,
-    error::{Cause, Code},
-};
+use koidrive_proto::v1::{Error as ProtoError, error::Code};
 use prost::Message;
 
 /// A refusal from the server: the `Error` of an RPC response or of an HTTP reply.
@@ -44,16 +41,6 @@ impl ServerError {
             Code::QuotaExceeded | Code::Unspecified => Resend::Never,
             _ => Resend::ByCode,
         }
-    }
-
-    /// Whether the server failed in the platform under it, such as a Durable Object reset, which a later try may pass:
-    /// `INTERNAL` with a cause other than `CAUSE_EXCEPTION` (RFC 0027).
-    pub fn platform_failure(&self) -> bool {
-        self.code() == Code::Internal
-            && !matches!(
-                Cause::try_from(self.0.cause),
-                Ok(Cause::Unspecified | Cause::Exception)
-            )
     }
 
     pub fn missing_chunks(&self) -> &[Vec<u8>] {
@@ -228,25 +215,5 @@ mod tests {
         );
         assert_eq!(error(Code::Internal as i32, 50).resend(), Resend::ByCode);
         assert_eq!(error(Code::Forbidden as i32, 0).resend(), Resend::ByCode);
-    }
-
-    #[test]
-    fn only_an_internal_error_with_a_platform_cause_is_a_platform_failure() {
-        let error = |code: Code, cause: i32| {
-            ServerError(ProtoError {
-                code: code as i32,
-                cause,
-                ..Default::default()
-            })
-        };
-        assert!(error(Code::Internal, Cause::DoUnavailable as i32).platform_failure());
-        assert!(error(Code::Internal, Cause::R2Unavailable as i32).platform_failure());
-        assert!(
-            error(Code::Internal, 999).platform_failure(),
-            "a cause this client does not know"
-        );
-        assert!(!error(Code::Internal, Cause::Exception as i32).platform_failure());
-        assert!(!error(Code::Internal, Cause::Unspecified as i32).platform_failure());
-        assert!(!error(Code::Forbidden, Cause::DoUnavailable as i32).platform_failure());
     }
 }
