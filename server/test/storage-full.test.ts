@@ -6,7 +6,7 @@ import { env, exports } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
 import { ClaimRequestSchema, CreateSpaceRequestSchema, DeviceCredentialsSchema, SpaceInfoSchema } from "../src/gen/koidrive/v1/auth_pb";
 import { RpcRequestSchema } from "../src/gen/koidrive/v1/messages_pb";
-import { Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
+import { Error_Cause, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { uuidv7 } from "../src/ids";
 import { getMeta } from "../src/space/store";
 import { op } from "./helpers";
@@ -44,7 +44,7 @@ it("answers a commit that fills the space's storage with 429 QUOTA_EXCEEDED and 
 
   expect(response.status).toBe(429);
   const error = fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer()));
-  expect(error).toMatchObject({ code: Error_Code.QUOTA_EXCEEDED, message: "the server's storage is full" });
+  expect(error).toMatchObject({ code: Error_Code.QUOTA_EXCEEDED, message: "the server's storage is full", cause: Error_Cause.STORAGE_FULL });
   const wait = (nowMs: number) => (nowMs % DAY_MS < 30 * 60_000 ? 300_000 : DAY_MS - (nowMs % DAY_MS));
   const bounds = [wait(before), wait(after)].sort((x, y) => x - y);
   expect(error.retryAfterMs).toBeGreaterThanOrEqual(BigInt(bounds[0]!));

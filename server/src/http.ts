@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create, type DescMessage, fromBinary, fromJson, type MessageShape, toBinary, toJson } from "@bufbuild/protobuf";
-import { Error_Code, ErrorSchema } from "./gen/koidrive/v1/rpc_pb";
+import { Error_Cause, Error_Code, ErrorSchema } from "./gen/koidrive/v1/rpc_pb";
 
 function wantsJson(request: Request): boolean {
   const type = request.headers.get("Content-Type") ?? request.headers.get("Accept") ?? "";
@@ -35,6 +35,6 @@ const STATUS: Partial<Record<Error_Code, number>> = {
   [Error_Code.CONFIRMATION_REQUIRED]: 409,
 };
 
-export function errorReply(request: Request, code: Error_Code, message: string, status = STATUS[code] ?? 500): Response {
-  return reply(request, ErrorSchema, create(ErrorSchema, { code, message }), status);
+export function errorReply(request: Request, code: Error_Code, message: string, status = STATUS[code] ?? 500, cause = Error_Cause.UNSPECIFIED): Response {
+  return reply(request, ErrorSchema, create(ErrorSchema, { code, message, cause }), status);
 }

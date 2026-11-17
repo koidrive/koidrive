@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use koidrive_net::{CallError, ChunkError, ServerError, StopReason};
-use koidrive_proto::v1::error::Code;
+use koidrive_proto::v1::error::{Cause, Code};
 pub use koidrive_telemetry::schema::Failure;
-pub(crate) use koidrive_telemetry::schema::{Asked, Halted, Refusal, TooLarge, Transfer};
+pub(crate) use koidrive_telemetry::schema::{
+    Asked, Halted, Refusal, ServerCause, TooLarge, Transfer,
+};
 
 use crate::disk::Stop;
 use crate::question::QuestionKind;
@@ -67,9 +69,43 @@ pub(crate) fn refusal(error: &ServerError) -> Refusal {
     }
 }
 
+fn server_cause(error: &ServerError) -> Option<ServerCause> {
+    Some(match Cause::try_from(error.0.cause) {
+        Ok(Cause::Unspecified) => return None,
+        Ok(Cause::Exception) => ServerCause::Exception,
+        Ok(Cause::R2RateLimited) => ServerCause::R2RateLimited,
+        Ok(Cause::R2Unavailable) => ServerCause::R2Unavailable,
+        Ok(Cause::R2Error) => ServerCause::R2Error,
+        Ok(Cause::DoOverloaded) => ServerCause::DoOverloaded,
+        Ok(Cause::DoUnavailable) => ServerCause::DoUnavailable,
+        Ok(Cause::CpuExceeded) => ServerCause::CpuExceeded,
+        Ok(Cause::MemoryExceeded) => ServerCause::MemoryExceeded,
+        Ok(Cause::SubrequestLimit) => ServerCause::SubrequestLimit,
+        Ok(Cause::StorageFull) => ServerCause::StorageFull,
+        Ok(Cause::DailyLimit) => ServerCause::DailyLimit,
+        Err(_) => ServerCause::Unknown,
+    })
+}
+
+fn edge_cause(code: u16) -> ServerCause {
+    match code {
+        1101 => ServerCause::EdgeException,
+        1102 => ServerCause::EdgeResourceLimit,
+        1027 => ServerCause::EdgeDailyRequests,
+        _ => ServerCause::EdgeOther,
+    }
+}
+
+fn server_refused(error: &ServerError) {
+    failed(Failure::Refused(refusal(error)));
+    if let Some(cause) = server_cause(error) {
+        failed(Failure::Server(cause));
+    }
+}
+
 pub(crate) fn call_failed(error: &CallError) {
     if let CallError::Server(refusal) = error {
-        failed(Failure::Refused(self::refusal(refusal)));
+        server_refused(refusal);
     }
 }
 
@@ -82,9 +118,16 @@ pub(crate) fn transfer_failed(error: &ChunkError, as_failure: fn(Transfer) -> Fa
         }
         ChunkError::SourceChanged { .. } => Transfer::SourceChanged,
         ChunkError::Corrupt { .. } => Transfer::Corrupt,
-        ChunkError::Refused { error, .. } => {
+        ChunkError::Refused {
+            error,
+            cloudflare_error_code,
+            ..
+        } => {
             if let Some(refusal) = error {
-                failed(Failure::Refused(self::refusal(refusal)));
+                server_refused(refusal);
+            }
+            if let Some(code) = cloudflare_error_code {
+                failed(Failure::Server(edge_cause(*code)));
             }
             Transfer::Refused
         }
@@ -131,5 +174,73 @@ pub(crate) fn asked(kind: &QuestionKind) -> Asked {
         QuestionKind::AmbiguousDisappearance => Asked::AmbiguousDisappearance,
         QuestionKind::Recovery { .. } => Asked::Recovery,
         QuestionKind::Conflict { .. } => Asked::Conflict,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use koidrive_proto::v1::Error as ProtoError;
+
+    use super::*;
+
+    fn refused(error: Option<ServerError>, cloudflare_error_code: Option<u16>) -> ChunkError {
+        ChunkError::Refused {
+            hash: Vec::new(),
+            status: 503,
+            error,
+            cloudflare_error_code,
+        }
+    }
+
+    fn server(code: Code, cause: i32) -> ServerError {
+        ServerError(ProtoError {
+            code: code as i32,
+            cause,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn an_edge_error_page_is_named_by_its_code() {
+        let names = [1101, 1102, 1027, 1015, 520].map(|code| edge_cause(code).name());
+        assert_eq!(
+            names,
+            [
+                "edge_exception",
+                "edge_resource_limit",
+                "edge_daily_requests",
+                "edge_other",
+                "edge_other",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refusal_counts_the_server_cause_or_the_edge_error_beside_its_code() {
+        take_counted_here();
+        transfer_failed(
+            &refused(
+                Some(server(Code::RetryLater, Cause::DoOverloaded as i32)),
+                None,
+            ),
+            Failure::Upload,
+        );
+        transfer_failed(&refused(None, Some(1102)), Failure::Download);
+        transfer_failed(&refused(None, Some(1015)), Failure::Download);
+        call_failed(&CallError::Server(server(Code::Internal, 999)));
+        call_failed(&CallError::Server(server(Code::Internal, 0)));
+        assert_eq!(
+            take_counted_here(),
+            BTreeMap::from([
+                (Failure::Upload(Transfer::Refused), 1),
+                (Failure::Download(Transfer::Refused), 2),
+                (Failure::Refused(Refusal::RetryLater), 1),
+                (Failure::Refused(Refusal::Internal), 2),
+                (Failure::Server(ServerCause::DoOverloaded), 1),
+                (Failure::Server(ServerCause::Unknown), 1),
+                (Failure::Server(ServerCause::EdgeResourceLimit), 1),
+                (Failure::Server(ServerCause::EdgeOther), 1),
+            ])
+        );
     }
 }

@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
-use crate::api::Api;
+use crate::api::{Api, is_protobuf};
 use crate::backoff::Backoff;
 use crate::error::{CallError, Resend, ServerError};
 use crate::session::Session;
@@ -66,6 +66,7 @@ pub enum ChunkError {
         hash: Vec<u8>,
         status: u16,
         error: Option<ServerError>,
+        cloudflare_error_code: Option<u16>,
     },
     /// `cause` is what kind of failure it was, when the request reached no answer.
     #[error("the transfer of chunk {} kept failing: {message}", hex(.hash))]
@@ -468,16 +469,23 @@ impl Transfer {
         if answer.status.is_success() && !answer.protobuf {
             return Attempt::Done(None);
         }
-        let body = answer.body.unwrap_or_default();
         if answer.status.is_success() {
+            let body = answer.body.unwrap_or_default();
             put_outcome(
                 chunk,
                 answer.status,
                 UploadReceipt::decode(body.as_slice()).ok(),
                 None,
+                None,
             )
         } else {
-            put_outcome(chunk, answer.status, None, ServerError::decode(&body))
+            put_outcome(
+                chunk,
+                answer.status,
+                None,
+                answer.error(),
+                answer.cloudflare_error_code(),
+            )
         }
     }
 
@@ -587,19 +595,25 @@ impl Transfer {
             Ok(answer) => answer,
             Err(error) => return Bundled::Retry(error),
         };
-        let body = answer.body.unwrap_or_default();
         match answer.status {
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => return Bundled::Unsupported,
             status if !status.is_success() && !retryable(status) => return Bundled::Refused,
             status if !status.is_success() => {
-                return match put_outcome(first, status, None, ServerError::decode(&body)) {
+                return match put_outcome(
+                    first,
+                    status,
+                    None,
+                    answer.error(),
+                    answer.cloudflare_error_code(),
+                ) {
                     Attempt::Retry(error) => Bundled::Retry(error),
                     _ => Bundled::Refused,
                 };
             }
             _ => {}
         }
-        let Ok(answered) = ChunkBundleResult::decode(body.as_slice()) else {
+        let Ok(answered) = ChunkBundleResult::decode(answer.body.unwrap_or_default().as_slice())
+        else {
             return Bundled::Refused;
         };
         if answered.results.len() != members.len() {
@@ -618,6 +632,7 @@ impl Transfer {
                 status,
                 result.receipt,
                 result.error.map(ServerError),
+                None,
             ));
         }
         Bundled::Answered(outcomes)
@@ -648,6 +663,8 @@ impl Transfer {
                 small_answer(response)
                     .await
                     .map_err(|error| unavailable(chunk, error))?
+            } else if !status.is_success() && small(&response) {
+                small_answer(response).await.ok().flatten()
             } else {
                 None
             };
@@ -701,19 +718,21 @@ impl Transfer {
             };
             let status = response.status();
             if !status.is_success() {
-                let error = if protobuf(&response) {
-                    small_answer(response)
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|body| ServerError::decode(&body))
-                } else {
-                    None
+                let protobuf = protobuf(&response);
+                let body = match protobuf || small(&response) {
+                    true => small_answer(response).await.ok().flatten(),
+                    false => None,
+                };
+                let answer = Answer {
+                    status,
+                    protobuf,
+                    body,
                 };
                 let refused = ChunkError::Refused {
                     hash: chunk.hash.clone(),
                     status: status.as_u16(),
-                    error,
+                    error: answer.error(),
+                    cloudflare_error_code: answer.cloudflare_error_code(),
                 };
                 let refused = match by_code(refused) {
                     Ok(attempt) => return attempt,
@@ -833,6 +852,16 @@ struct Answer {
     body: Option<Vec<u8>>,
 }
 
+impl Answer {
+    fn error(&self) -> Option<ServerError> {
+        ServerError::decode(self.body.as_deref().filter(|_| self.protobuf)?)
+    }
+
+    fn cloudflare_error_code(&self) -> Option<u16> {
+        edge_code(self.body.as_deref().filter(|_| !self.protobuf)?)
+    }
+}
+
 type Sent = Vec<(usize, Option<Option<UploadReceipt>>)>;
 
 struct Member<'a> {
@@ -855,6 +884,7 @@ fn put_outcome(
     status: StatusCode,
     receipt: Option<UploadReceipt>,
     error: Option<ServerError>,
+    cloudflare_error_code: Option<u16>,
 ) -> Attempt<Option<UploadReceipt>> {
     if status.is_success() {
         return match receipt {
@@ -865,6 +895,7 @@ fn put_outcome(
                 hash: chunk.hash.clone(),
                 status: status.as_u16(),
                 error: None,
+                cloudflare_error_code: None,
             }),
         };
     }
@@ -872,6 +903,7 @@ fn put_outcome(
         hash: chunk.hash.clone(),
         status: status.as_u16(),
         error,
+        cloudflare_error_code,
     };
     let refused = match by_code(refused) {
         Ok(attempt) => return attempt,
@@ -1008,12 +1040,28 @@ async fn small_answer(mut response: reqwest::Response) -> Result<Option<Vec<u8>>
     Ok(Some(body))
 }
 
+fn small(response: &reqwest::Response) -> bool {
+    response
+        .content_length()
+        .is_some_and(|length| length <= SMALL_ANSWER as u64)
+}
+
 fn protobuf(response: &reqwest::Response) -> bool {
     response
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("application/x-protobuf"))
+        .is_some_and(is_protobuf)
+}
+
+fn edge_code(body: &[u8]) -> Option<u16> {
+    const PREFIX: &str = "error code: ";
+    let text = std::str::from_utf8(body).ok()?;
+    let rest = &text[text.find(PREFIX)? + PREFIX.len()..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 fn unavailable(chunk: &ChunkRef, error: reqwest::Error) -> ChunkError {

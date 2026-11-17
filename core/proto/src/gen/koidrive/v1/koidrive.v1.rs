@@ -803,6 +803,8 @@ pub struct Error {
     pub missing_chunks: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(uint64, tag="4")]
     pub retry_after_ms: u64,
+    #[prost(enumeration="error::Cause", tag="5")]
+    pub cause: i32,
 }
 /// Nested message and enum types in `Error`.
 pub mod error {
@@ -882,6 +884,74 @@ pub mod error {
                 "CODE_AHEAD_OF_SERVER" => Some(Self::AheadOfServer),
                 "CODE_NOT_FOUND" => Some(Self::NotFound),
                 "CODE_CONFIRMATION_REQUIRED" => Some(Self::ConfirmationRequired),
+                _ => None,
+            }
+        }
+    }
+    /// What failed inside the server, when the call failed for a reason other than the request (RFC 0028).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Cause {
+        Unspecified = 0,
+        /// An exception the server does not recognize.
+        Exception = 1,
+        /// R2 refused a write for its rate limit, such as more than one write a second to one key.
+        R2RateLimited = 2,
+        /// R2 answered with an internal error or as unavailable.
+        R2Unavailable = 3,
+        /// R2 failed with another error.
+        R2Error = 4,
+        /// A Durable Object had more requests queued than it accepts.
+        DoOverloaded = 5,
+        /// A Durable Object failed with a transient error, such as a reset for a code update or a lost connection.
+        DoUnavailable = 6,
+        /// A Durable Object ran past its CPU time limit.
+        CpuExceeded = 7,
+        /// A Durable Object ran past its memory limit.
+        MemoryExceeded = 8,
+        /// The invocation made more subrequests than its plan allows.
+        SubrequestLimit = 9,
+        /// A Durable Object's storage is full.
+        StorageFull = 10,
+        /// The account reached a Workers Free daily limit for Durable Objects.
+        DailyLimit = 11,
+    }
+    impl Cause {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "CAUSE_UNSPECIFIED",
+                Self::Exception => "CAUSE_EXCEPTION",
+                Self::R2RateLimited => "CAUSE_R2_RATE_LIMITED",
+                Self::R2Unavailable => "CAUSE_R2_UNAVAILABLE",
+                Self::R2Error => "CAUSE_R2_ERROR",
+                Self::DoOverloaded => "CAUSE_DO_OVERLOADED",
+                Self::DoUnavailable => "CAUSE_DO_UNAVAILABLE",
+                Self::CpuExceeded => "CAUSE_CPU_EXCEEDED",
+                Self::MemoryExceeded => "CAUSE_MEMORY_EXCEEDED",
+                Self::SubrequestLimit => "CAUSE_SUBREQUEST_LIMIT",
+                Self::StorageFull => "CAUSE_STORAGE_FULL",
+                Self::DailyLimit => "CAUSE_DAILY_LIMIT",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "CAUSE_UNSPECIFIED" => Some(Self::Unspecified),
+                "CAUSE_EXCEPTION" => Some(Self::Exception),
+                "CAUSE_R2_RATE_LIMITED" => Some(Self::R2RateLimited),
+                "CAUSE_R2_UNAVAILABLE" => Some(Self::R2Unavailable),
+                "CAUSE_R2_ERROR" => Some(Self::R2Error),
+                "CAUSE_DO_OVERLOADED" => Some(Self::DoOverloaded),
+                "CAUSE_DO_UNAVAILABLE" => Some(Self::DoUnavailable),
+                "CAUSE_CPU_EXCEEDED" => Some(Self::CpuExceeded),
+                "CAUSE_MEMORY_EXCEEDED" => Some(Self::MemoryExceeded),
+                "CAUSE_SUBREQUEST_LIMIT" => Some(Self::SubrequestLimit),
+                "CAUSE_STORAGE_FULL" => Some(Self::StorageFull),
+                "CAUSE_DAILY_LIMIT" => Some(Self::DailyLimit),
                 _ => None,
             }
         }

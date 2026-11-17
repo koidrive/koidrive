@@ -772,7 +772,8 @@ impl Driver {
         let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
             Ok(issued) => issued,
             Err(error) => {
-                if matches!(&error, ApiError::Server { error, .. } if error.resend() != Resend::Allowed)
+                if matches!(&error, ApiError::Server { status, error }
+                    if (400..500).contains(status) && *status != 429 && error.resend() != Resend::Allowed)
                 {
                     pending_claim::forget(&self.inner._lock, &pending, api.base(), code)
                         .map_err(io_error(&pending))?;
@@ -5366,6 +5367,95 @@ mod tests {
             })
             .collect();
         assert_ne!(ids[0], ids[1]);
+    }
+
+    async fn request_ids_around_a_refusal(
+        status: u16,
+        refusal: Option<(koidrive_proto::v1::error::Code, i32)>,
+    ) -> (bool, Vec<String>) {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let (content_type, refusal) = match refusal {
+            Some((code, cause)) => (
+                "application/x-protobuf",
+                prost::Message::encode_to_vec(&koidrive_proto::v1::Error {
+                    code: code as i32,
+                    message: "refused".into(),
+                    cause,
+                    ..Default::default()
+                }),
+            ),
+            None => ("text/plain", b"error code: 1020".to_vec()),
+        };
+        let refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first_claim_ended = refused.clone();
+        let served = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                bodies.push(read_request(&mut socket).await.1);
+                if refused.load(std::sync::atomic::Ordering::SeqCst) {
+                    write_reply(&mut socket, &issued("d1")).await;
+                    return bodies;
+                }
+                let head = format!(
+                    "HTTP/1.1 {status} Refused\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    refusal.len()
+                );
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(&refusal).await.unwrap();
+            }
+        });
+
+        let failed = driver.claim(&server, "claim-code", "Ada", "laptop").await;
+        assert!(matches!(failed, Err(DriverError::Api(_))), "{failed:?}");
+        first_claim_ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        let pending = crate::claim_pending(&paths, &url::Url::parse(&server).unwrap());
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let ids = (served.await.unwrap().iter())
+            .map(|body| {
+                prost::Message::decode(body.as_slice())
+                    .map(|request: ClaimRequest| request.request_id)
+                    .unwrap()
+            })
+            .collect();
+        (pending, ids)
+    }
+
+    #[tokio::test]
+    async fn a_claim_keeps_its_request_id_through_a_429_an_unreadable_answer_or_any_5xx() {
+        use koidrive_proto::v1::error::{Cause, Code};
+
+        let answers = tokio::join!(
+            request_ids_around_a_refusal(500, Some((Code::Internal, Cause::DoUnavailable as i32))),
+            request_ids_around_a_refusal(500, Some((Code::Internal, Cause::Exception as i32))),
+            request_ids_around_a_refusal(500, Some((Code::Internal, Cause::Unspecified as i32))),
+            request_ids_around_a_refusal(
+                429,
+                Some((Code::QuotaExceeded, Cause::DailyLimit as i32))
+            ),
+            request_ids_around_a_refusal(429, Some((Code::RetryLater, Cause::Unspecified as i32))),
+            request_ids_around_a_refusal(403, None),
+        );
+
+        for (pending, ids) in [
+            answers.0, answers.1, answers.2, answers.3, answers.4, answers.5,
+        ] {
+            assert!(
+                pending,
+                "an answer that allows a resend forgot the pending claim"
+            );
+            assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+        }
     }
 
     #[tokio::test]

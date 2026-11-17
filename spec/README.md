@@ -36,3 +36,4 @@ Spec v0 was drafted outside this repository, and the schema here is its current 
 | [0024](rfc/0024-create-retries.md) | A resent create returns what the first request made | Spec v0 §15; RFC 0005 §2 and RFC 0008 (not folded into them) |
 | [0025](rfc/0025-server-build-and-storage.md) | The server reports its storage versions and the commit it was built from | Spec v0 §15 (`GET /v1/server`); RFC 0022 |
 | [0027](rfc/0027-chunk-bundles.md) | Several chunk uploads in one request | Spec v0 §15 chunk relay; RFC 0022 |
+| [0028](rfc/0028-error-causes.md) | A failure names what failed inside the server | Spec v0 §13 (`Error`) |

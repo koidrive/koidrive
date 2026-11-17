@@ -38,6 +38,7 @@ import {
   ChunkPlanSchema,
   ChunkTargetSchema,
   DownloadTargetsSchema,
+  Error_Cause,
   Error_Code,
   ErrorSchema,
   type GetDownloadTargets,
@@ -62,7 +63,8 @@ import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
 import { policy } from "../policy";
-import { quotaRefusal } from "../quota";
+import { causeOf } from "../cause";
+import { platformFailure, quotaRefusal } from "../quota";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -134,6 +136,10 @@ export function closeReason(reason: string): string {
 
 export const RETIRED_HISTORY =
   "the space's storage holds a history that a rewind replaced, so it was restored outside a rewind; the server serves it again once its operator restores the storage the rewind left (RFC 0003 section 4)";
+
+export class CheckFailed {
+  constructor(readonly cause: Error_Cause) {}
+}
 
 const SHARE_CLOSED = { ok: false, code: Error_Code.RETRY_LATER, message: "this link is temporarily unavailable; retry later", status: 503 } as const;
 
@@ -314,7 +320,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
     private renewing: { atMs: number; forMs: number } | undefined;
-    private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | undefined> } | undefined;
+    private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | CheckFailed> } | undefined;
 
     async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array }): Promise<void> {
       const existing = getMeta(this.sql, "space_id");
@@ -355,11 +361,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     async httpRpc(connect: Connect, request: Uint8Array): Promise<Uint8Array> {
       const req = fromBinary(RpcRequestSchema, request);
       const role = this.memberRole(connect.identity.userId);
-      const refuse = (code: Error_Code, message: string) =>
-        toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message }) } }));
+      const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) =>
+        toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } }));
       if (!role) return refuse(Error_Code.FORBIDDEN, "not a member of this space");
       const check = await this.checkDevice(connect.identity.deviceId);
-      if (check === undefined) return refuse(Error_Code.RETRY_LATER, "could not check the device; retry later");
+      if (check instanceof CheckFailed) return refuse(Error_Code.RETRY_LATER, "could not check the device; retry later", check.cause);
       if (!check.active) return refuse(Error_Code.UNAUTHENTICATED, "device revoked");
       if (check.closed) return refuse(Error_Code.RETRY_LATER, "the space is being rewound; retry later");
       if (this.historyRetired(check)) return refuse(Error_Code.HISTORY_MISMATCH, RETIRED_HISTORY);
@@ -389,7 +395,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const attachment = ws.deserializeAttachment() as Attachment;
       if (this.clock() > attachment.identity.expiresAtMs + TOKEN_GRACE_MS) return this.goodbye(ws, Close.TOKEN_EXPIRED, "access token expired");
       const check = await this.checkDevice(attachment.identity.deviceId);
-      if (check === undefined) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
+      if (check instanceof CheckFailed) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
       if (!check.active) return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
       if (check.closed) return this.goodbye(ws, Close.SPACE_REWOUND, "the space is being rewound");
       if (this.historyRetired(check)) return this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
@@ -483,11 +489,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return typeof check.historyId === "string" && check.historyId !== String(getMeta(this.sql, "history_id"));
     }
 
-    protected async checkDevice(deviceId: string): Promise<SessionCheck | undefined> {
-      return this.knownCheck(deviceId) ?? (await this.coldCheck([deviceId]))?.[deviceId];
+    protected async checkDevice(deviceId: string): Promise<SessionCheck | CheckFailed> {
+      const known = this.knownCheck(deviceId);
+      if (known) return known;
+      const answers = await this.coldCheck([deviceId]);
+      return answers instanceof CheckFailed ? answers : (answers[deviceId] ?? new CheckFailed(Error_Cause.UNSPECIFIED));
     }
 
-    protected async admitDevice(deviceId: string): Promise<SessionCheck | undefined> {
+    protected async admitDevice(deviceId: string): Promise<SessionCheck | CheckFailed> {
       const known = this.knownCheck(deviceId);
       if (known) return known;
       if (!this.gathering) {
@@ -499,7 +508,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         this.gathering = { deviceIds: gathered, answers };
       }
       this.gathering.deviceIds.add(deviceId);
-      return (await this.gathering.answers)?.[deviceId];
+      const answers = await this.gathering.answers;
+      return answers instanceof CheckFailed ? answers : (answers[deviceId] ?? new CheckFailed(Error_Cause.UNSPECIFIED));
     }
 
     private async checkDevices(deviceIds: string[]): Promise<Map<string, SessionCheck> | undefined> {
@@ -511,7 +521,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       });
       if (unknown.length === 0) return checks;
       const answered = await this.coldCheck(unknown);
-      if (!answered) return undefined;
+      if (answered instanceof CheckFailed) return undefined;
       for (const deviceId of unknown) if (answered[deviceId]) checks.set(deviceId, answered[deviceId]);
       return checks;
     }
@@ -520,7 +530,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
      * The error is caught inside the callback, because an exception there would reset this object and drop every
      * connection.
      */
-    private async coldCheck(deviceIds: Iterable<string>): Promise<Record<string, SessionCheck> | undefined> {
+    private async coldCheck(deviceIds: Iterable<string>): Promise<Record<string, SessionCheck> | CheckFailed> {
       const account = this.account();
       const spaceId = String(getMeta(this.sql, "space_id"));
       const answers = await this.state.blockConcurrencyWhile(async () => {
@@ -537,11 +547,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           return answers;
         } catch (error) {
           console.error("account device check failed", errorText(error));
-          return undefined;
+          return new CheckFailed(causeOf(error));
         }
       });
-      for (const [deviceId, check] of Object.entries(answers ?? {})) if (check.revoked) this.recordRevoked(deviceId);
-      return answers && Object.fromEntries(Object.entries(answers).filter(([, check]) => check.historyId !== undefined));
+      if (answers instanceof CheckFailed) return answers;
+      for (const [deviceId, check] of Object.entries(answers)) if (check.revoked) this.recordRevoked(deviceId);
+      return Object.fromEntries(Object.entries(answers).filter(([, check]) => check.historyId !== undefined));
     }
 
     private checkOpen(): void {
@@ -688,7 +699,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         return this.goodbye(ws, Close.TOKEN_EXPIRED, "invalid access token");
       }
       const check = await this.checkDevice(identity.deviceId);
-      if (check === undefined) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
+      if (check instanceof CheckFailed) return this.goodbye(ws, Close.TRY_AGAIN_LATER, "could not check the device; reconnect later");
       if (!check.active) return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
       if (check.closed) return this.goodbye(ws, Close.SPACE_REWOUND, "the space is being rewound");
       if (this.historyRetired(check)) return this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
@@ -728,10 +739,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             return fail(Error_Code.INVALID_ARGUMENT, "empty request");
         }
       } catch (error) {
+        let cause = Error_Cause.UNSPECIFIED;
         if (!(error instanceof CallFailure)) {
           console.error("space rpc failed", errorText(error));
-          const quota = quotaRefusal(error, this.clock());
-          error = quota ? new CallFailure(Error_Code.QUOTA_EXCEEDED, quota.message, [], quota.retryAfterMs) : new CallFailure(Error_Code.INTERNAL, "internal error");
+          const platform = platformFailure(error, this.clock());
+          cause = platform.cause;
+          error = new CallFailure(platform.code, platform.message, [], platform.retryAfterMs);
         }
         const failure = error as CallFailure;
         const value = create(ErrorSchema, {
@@ -739,6 +752,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           message: failure.message,
           missingChunks: failure.missingChunks,
           retryAfterMs: BigInt(failure.retryAfterMs),
+          cause,
         });
         const response = create(RpcResponseSchema, { reqId, result: { case: "error", value } });
         if (frameBytes(response) <= MAX_SERVER_FRAME) return { response };
@@ -1381,7 +1395,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         resolved = await this.account().shareResolve({ ...link, counted: false });
       } catch (error) {
         console.error("account link check failed", errorText(error));
-        return SHARE_CLOSED;
+        return { ...SHARE_CLOSED, cause: causeOf(error) };
       }
       return checkFence(this.sql, this.spaceId, resolved, fence);
     }

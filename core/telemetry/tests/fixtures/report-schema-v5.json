@@ -14,7 +14,7 @@
           "internal": false,
           "koi_version": "0.1.0",
           "os": "linux",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-02T01:00:00Z"
       }
@@ -124,6 +124,22 @@
           "c.refused.unauthenticated": 3,
           "c.refused.unknown": 3,
           "c.refused.unsupported_version": 3,
+          "c.server_cause.cpu_exceeded": 3,
+          "c.server_cause.daily_limit": 3,
+          "c.server_cause.do_overloaded": 3,
+          "c.server_cause.do_unavailable": 3,
+          "c.server_cause.edge_daily_requests": 3,
+          "c.server_cause.edge_exception": 3,
+          "c.server_cause.edge_other": 3,
+          "c.server_cause.edge_resource_limit": 3,
+          "c.server_cause.exception": 3,
+          "c.server_cause.memory_exceeded": 3,
+          "c.server_cause.r2_error": 3,
+          "c.server_cause.r2_rate_limited": 3,
+          "c.server_cause.r2_unavailable": 3,
+          "c.server_cause.storage_full": 3,
+          "c.server_cause.subrequest_limit": 3,
+          "c.server_cause.unknown": 3,
           "c.sync.bytes_downloaded": 3,
           "c.sync.bytes_uploaded": 3,
           "c.sync.commits_received": 3,
@@ -329,7 +345,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T00:00:00Z",
         "uuid": "00000000-0000-4000-8000-000000000000"
@@ -352,7 +368,7 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 4,
+          "schema": 5,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -376,7 +392,7 @@
           "os_major": 6,
           "os_minor": 8,
           "outcome": "failed",
-          "schema": 4,
+          "schema": 5,
           "seconds_magnitude": 7,
           "step": "r2_checkout"
         },
@@ -401,7 +417,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:05Z",
         "uuid": "00000000-0000-4000-8000-000000000003"
@@ -423,7 +439,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000004"
@@ -445,7 +461,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000005"
@@ -467,7 +483,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000006"
@@ -489,7 +505,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000007"
@@ -511,7 +527,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000008"
@@ -533,7 +549,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-000000000009"
@@ -555,7 +571,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000a"
@@ -577,7 +593,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000b"
@@ -599,7 +615,7 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:06Z",
         "uuid": "00000000-0000-4000-8000-00000000000c"
@@ -621,7 +637,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.withdrawn",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000d"
@@ -643,7 +659,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000e"
@@ -665,7 +681,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.replaced",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000000f"
@@ -687,7 +703,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.other_root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000010"
@@ -709,7 +725,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.placement",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000011"
@@ -731,7 +747,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.claim",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000012"
@@ -753,7 +769,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.no_replace",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000013"
@@ -775,7 +791,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store_behind",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000014"
@@ -797,7 +813,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.disk_behind",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000015"
@@ -819,7 +835,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.record",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000016"
@@ -841,7 +857,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.store",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000017"
@@ -863,7 +879,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.io",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000018"
@@ -885,7 +901,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_start",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000019"
@@ -907,7 +923,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.session_closed",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001a"
@@ -929,7 +945,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.credentials_refused",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001b"
@@ -951,7 +967,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.device_revoked",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001c"
@@ -973,7 +989,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unsupported_version",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001d"
@@ -995,7 +1011,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.not_a_member",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001e"
@@ -1017,7 +1033,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.space_not_found",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000001f"
@@ -1039,7 +1055,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.connection_refused",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000020"
@@ -1061,7 +1077,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.recovery",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000021"
@@ -1083,7 +1099,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.refused",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000022"
@@ -1105,7 +1121,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.protocol",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000023"
@@ -1127,7 +1143,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.signed_out",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000024"
@@ -1149,7 +1165,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.start",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000025"
@@ -1171,7 +1187,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.unlink",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000026"
@@ -1193,7 +1209,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.call",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000027"
@@ -1215,7 +1231,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.source_changed",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000028"
@@ -1237,7 +1253,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.corrupt",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000029"
@@ -1259,7 +1275,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.refused",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002a"
@@ -1281,7 +1297,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.unavailable",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002b"
@@ -1303,7 +1319,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.no_target",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002c"
@@ -1325,7 +1341,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "upload_failed.io",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002d"
@@ -1347,7 +1363,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.call",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002e"
@@ -1369,7 +1385,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.source_changed",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000002f"
@@ -1391,7 +1407,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.corrupt",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000030"
@@ -1413,7 +1429,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.refused",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000031"
@@ -1435,7 +1451,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.unavailable",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000032"
@@ -1457,7 +1473,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.no_target",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000033"
@@ -1479,7 +1495,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "download_failed.io",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000034"
@@ -1501,7 +1517,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unauthenticated",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000035"
@@ -1523,7 +1539,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.forbidden",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000036"
@@ -1545,7 +1561,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.invalid_argument",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000037"
@@ -1567,7 +1583,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.missing_chunks",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000038"
@@ -1589,7 +1605,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.limit_exceeded",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000039"
@@ -1611,7 +1627,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.quota_exceeded",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003a"
@@ -1633,7 +1649,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.read_only",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003b"
@@ -1655,7 +1671,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.retry_later",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003c"
@@ -1677,7 +1693,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unsupported_version",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003d"
@@ -1699,7 +1715,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.internal",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003e"
@@ -1721,7 +1737,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.history_mismatch",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000003f"
@@ -1743,7 +1759,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.stale_device_state",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000040"
@@ -1765,7 +1781,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.head_moved",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000041"
@@ -1787,7 +1803,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.ahead_of_server",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000042"
@@ -1809,7 +1825,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.not_found",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000043"
@@ -1831,7 +1847,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.confirmation_required",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000044"
@@ -1853,7 +1869,7 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "refused.unknown",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000045"
@@ -1874,8 +1890,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.unauthenticated",
-          "schema": 4
+          "problem": "server_cause.exception",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000046"
@@ -1896,8 +1912,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.forbidden",
-          "schema": 4
+          "problem": "server_cause.r2_rate_limited",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000047"
@@ -1918,8 +1934,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.invalid_argument",
-          "schema": 4
+          "problem": "server_cause.r2_unavailable",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000048"
@@ -1940,8 +1956,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.missing_chunks",
-          "schema": 4
+          "problem": "server_cause.r2_error",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000049"
@@ -1962,8 +1978,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.limit_exceeded",
-          "schema": 4
+          "problem": "server_cause.do_overloaded",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004a"
@@ -1984,8 +2000,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.quota_exceeded",
-          "schema": 4
+          "problem": "server_cause.do_unavailable",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004b"
@@ -2006,8 +2022,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.read_only",
-          "schema": 4
+          "problem": "server_cause.cpu_exceeded",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004c"
@@ -2028,8 +2044,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.retry_later",
-          "schema": 4
+          "problem": "server_cause.memory_exceeded",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004d"
@@ -2050,8 +2066,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.unsupported_version",
-          "schema": 4
+          "problem": "server_cause.subrequest_limit",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004e"
@@ -2072,8 +2088,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.internal",
-          "schema": 4
+          "problem": "server_cause.storage_full",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000004f"
@@ -2094,8 +2110,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.history_mismatch",
-          "schema": 4
+          "problem": "server_cause.daily_limit",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000050"
@@ -2116,8 +2132,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.stale_device_state",
-          "schema": 4
+          "problem": "server_cause.unknown",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000051"
@@ -2138,8 +2154,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.head_moved",
-          "schema": 4
+          "problem": "server_cause.edge_exception",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000052"
@@ -2160,8 +2176,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.ahead_of_server",
-          "schema": 4
+          "problem": "server_cause.edge_resource_limit",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000053"
@@ -2182,8 +2198,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.not_found",
-          "schema": 4
+          "problem": "server_cause.edge_daily_requests",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000054"
@@ -2204,8 +2220,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.confirmation_required",
-          "schema": 4
+          "problem": "server_cause.edge_other",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000055"
@@ -2226,8 +2242,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "problem_node.unknown",
-          "schema": 4
+          "problem": "problem_node.unauthenticated",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000056"
@@ -2248,8 +2264,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "too_large.commit",
-          "schema": 4
+          "problem": "problem_node.forbidden",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000057"
@@ -2270,8 +2286,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "too_large.problem_node",
-          "schema": 4
+          "problem": "problem_node.invalid_argument",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000058"
@@ -2292,8 +2308,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "asked.mass_delete",
-          "schema": 4
+          "problem": "problem_node.missing_chunks",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000059"
@@ -2314,8 +2330,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "asked.remote_mass_delete",
-          "schema": 4
+          "problem": "problem_node.limit_exceeded",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005a"
@@ -2336,8 +2352,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "asked.ambiguous_disappearance",
-          "schema": 4
+          "problem": "problem_node.quota_exceeded",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005b"
@@ -2358,8 +2374,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "asked.recovery",
-          "schema": 4
+          "problem": "problem_node.read_only",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005c"
@@ -2380,8 +2396,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "asked.conflict",
-          "schema": 4
+          "problem": "problem_node.retry_later",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005d"
@@ -2402,8 +2418,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "daemon_start_failed.busy",
-          "schema": 4
+          "problem": "problem_node.unsupported_version",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005e"
@@ -2424,8 +2440,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "daemon_start_failed.profile",
-          "schema": 4
+          "problem": "problem_node.internal",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-00000000005f"
@@ -2446,8 +2462,8 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "daemon_start_failed.socket",
-          "schema": 4
+          "problem": "problem_node.history_mismatch",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000060"
@@ -2468,11 +2484,363 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "problem": "daemon_start_failed.signals",
-          "schema": 4
+          "problem": "problem_node.stale_device_state",
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
         "uuid": "00000000-0000-4000-8000-000000000061"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "problem_node.head_moved",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000062"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "problem_node.ahead_of_server",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000063"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "problem_node.not_found",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000064"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "problem_node.confirmation_required",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000065"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "problem_node.unknown",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000066"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "too_large.commit",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000067"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "too_large.problem_node",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000068"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "asked.mass_delete",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000069"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "asked.remote_mass_delete",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006a"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "asked.ambiguous_disappearance",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006b"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "asked.recovery",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006c"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "asked.conflict",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006d"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "daemon_start_failed.busy",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006e"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "daemon_start_failed.profile",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-00000000006f"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "daemon_start_failed.socket",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000070"
+      },
+      {
+        "event": "problem",
+        "properties": {
+          "$process_person_profile": false,
+          "arch": "arm64",
+          "build": "release",
+          "channel": "release",
+          "client": "cli_daemon",
+          "count": 2,
+          "distinct_id": "00000000000000000000000000000000",
+          "distro": "debian",
+          "internal": false,
+          "koi_version": "0.1.0",
+          "os": "linux",
+          "os_major": 6,
+          "os_minor": 8,
+          "problem": "daemon_start_failed.signals",
+          "schema": 5
+        },
+        "timestamp": "1970-01-01T01:02:07Z",
+        "uuid": "00000000-0000-4000-8000-000000000071"
       },
       {
         "event": "problem_cleared",
@@ -2491,10 +2859,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000062"
+        "uuid": "00000000-0000-4000-8000-000000000072"
       },
       {
         "event": "problem_cleared",
@@ -2513,10 +2881,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000063"
+        "uuid": "00000000-0000-4000-8000-000000000073"
       },
       {
         "event": "problem_cleared",
@@ -2535,10 +2903,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000064"
+        "uuid": "00000000-0000-4000-8000-000000000074"
       },
       {
         "event": "problem_cleared",
@@ -2557,10 +2925,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000065"
+        "uuid": "00000000-0000-4000-8000-000000000075"
       },
       {
         "event": "problem_cleared",
@@ -2579,10 +2947,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000066"
+        "uuid": "00000000-0000-4000-8000-000000000076"
       },
       {
         "event": "problem_cleared",
@@ -2601,10 +2969,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000067"
+        "uuid": "00000000-0000-4000-8000-000000000077"
       },
       {
         "event": "problem_cleared",
@@ -2623,10 +2991,10 @@
           "os_major": 6,
           "os_minor": 8,
           "problem": "halted.root",
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:07Z",
-        "uuid": "00000000-0000-4000-8000-000000000068"
+        "uuid": "00000000-0000-4000-8000-000000000078"
       },
       {
         "event": "app_crash",
@@ -2647,11 +3015,11 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4,
+          "schema": 5,
           "signal": "sigsegv"
         },
         "timestamp": "1970-01-01T01:02:08Z",
-        "uuid": "00000000-0000-4000-8000-000000000069"
+        "uuid": "00000000-0000-4000-8000-000000000079"
       },
       {
         "event": "app_crash",
@@ -2669,10 +3037,10 @@
           "os": "linux",
           "os_major": 6,
           "os_minor": 8,
-          "schema": 4
+          "schema": 5
         },
         "timestamp": "1970-01-01T01:02:09Z",
-        "uuid": "00000000-0000-4000-8000-00000000006a"
+        "uuid": "00000000-0000-4000-8000-00000000007a"
       }
     ],
     "historical_migration": false

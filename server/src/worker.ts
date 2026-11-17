@@ -24,17 +24,19 @@ import {
   type BundledChunkResult,
   BundledChunkResultSchema,
   ChunkBundleResultSchema,
+  Error_Cause,
   Error_Code,
   ErrorSchema,
 } from "./gen/koidrive/v1/rpc_pb";
 import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chunk-bundle";
+import { causeOf } from "./cause";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply } from "./http";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
-import { quotaRefusal } from "./quota";
+import { platformFailure } from "./quota";
 import { shareRoute } from "./share/routes";
 import { CONNECT_HEADER, type Connect, GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/space";
 import { chunkKey, INCARNATION } from "./space/store";
@@ -126,7 +128,7 @@ async function rewind(request: Request, env: Env, spaceId: string): Promise<Resp
     restorePointMs: Number(body.restorePointMs),
     expectedHistoryId: body.expectedHistoryId,
   });
-  if (!outcome.ok) return errorReply(request, outcome.code, outcome.message, REWIND_STATUS[outcome.code]);
+  if (!outcome.ok) return errorReply(request, outcome.code, outcome.message, REWIND_STATUS[outcome.code], outcome.cause);
   return reply(request, RewindResultSchema, create(RewindResultSchema, outcome.value));
 }
 
@@ -183,7 +185,8 @@ async function storeChunk(
   nowMs: number,
 ): Promise<BundledChunkResult> {
   const hash = fromHex(object.hashHex);
-  const refuse = (status: number, code: Error_Code, message: string) => create(BundledChunkResultSchema, { hash, status, error: create(ErrorSchema, { code, message }) });
+  const refuse = (status: number, code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) =>
+    create(BundledChunkResultSchema, { hash, status, error: create(ErrorSchema, { code, message, cause }) });
   if (!(await verifyChunkGrant(secret, "put", object, size, ticket, nowMs))) {
     return refuse(403, Error_Code.FORBIDDEN, "invalid or expired upload ticket, or a size the ticket does not cover");
   }
@@ -193,8 +196,8 @@ async function storeChunk(
     const message = error instanceof Error ? error.message : String(error);
     console.error("chunk upload failed", object.spaceId, object.hashHex, errorText(error));
     if (/checksum/i.test(message)) return refuse(400, Error_Code.INVALID_ARGUMENT, "the body does not match the chunk hash");
-    const throttled = /\b429\b|10058|too many|rate/i.test(message);
-    return refuse(throttled ? 429 : 503, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload");
+    const cause = causeOf(error);
+    return refuse(cause === Error_Cause.R2_RATE_LIMITED ? 429 : 503, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload", cause);
   }
   const token = await signChunkGrant(secret, "receipt", object, size, nowMs + GRANT_MS);
   return create(BundledChunkResultSchema, { hash, status: 200, receipt: create(UploadReceiptSchema, { hash, size, token }) });
@@ -385,10 +388,9 @@ export default {
     } catch (error) {
       if (error instanceof BadRequest) return errorReply(request, Error_Code.INVALID_ARGUMENT, error.message);
       if (error instanceof LimitExceeded) return errorReply(request, Error_Code.LIMIT_EXCEEDED, error.message);
-      const quota = quotaRefusal(error, Date.now());
-      if (!quota) throw error;
-      console.error("request stopped at a platform limit", errorText(error));
-      return reply(request, ErrorSchema, create(ErrorSchema, { code: Error_Code.QUOTA_EXCEEDED, message: quota.message, retryAfterMs: BigInt(quota.retryAfterMs) }), 429);
+      const failure = platformFailure(error, Date.now());
+      console.error(failure.code === Error_Code.QUOTA_EXCEEDED ? "request stopped at a platform limit" : "request failed", errorText(error));
+      return reply(request, ErrorSchema, create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs), cause: failure.cause }), failure.status);
     }
   },
 } satisfies ExportedHandler<Env>;

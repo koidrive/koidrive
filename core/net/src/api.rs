@@ -18,6 +18,13 @@ use crate::auth::Auth;
 use crate::error::{ApiError, ServerError};
 
 pub(crate) const PROTOBUF: &str = "application/x-protobuf";
+
+pub(crate) fn is_protobuf(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case(PROTOBUF))
+}
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -465,7 +472,7 @@ impl Api {
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with(PROTOBUF));
+            .is_some_and(is_protobuf);
         let limit = if status.is_success() {
             limit
         } else {
@@ -532,6 +539,26 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn protobuf_media_type_ignores_case_and_parameters() {
+        for yes in [
+            "application/x-protobuf",
+            "Application/X-Protobuf",
+            "application/x-protobuf; charset=binary",
+            " application/x-protobuf ;q=1",
+        ] {
+            assert!(is_protobuf(yes), "{yes}");
+        }
+        for no in [
+            "application/x-protobuffer",
+            "text/plain",
+            "",
+            "application/json",
+        ] {
+            assert!(!is_protobuf(no), "{no}");
+        }
+    }
 
     #[test]
     fn plain_http_is_refused_outside_local_development_on_loopback() {

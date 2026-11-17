@@ -8,7 +8,7 @@ import { uuidv7 } from "./ids";
 import { bootstrapExport } from "./space/export";
 import { type Pitr, pitrBackend } from "./space/pitr";
 import { migrate } from "./space/schema";
-import { type Attachment, CONNECT_HEADER, type Connect, RETIRED_HISTORY, spaceLogic, TOKEN_GRACE_MS } from "./space/space";
+import { type Attachment, CheckFailed, CONNECT_HEADER, type Connect, RETIRED_HISTORY, spaceLogic, TOKEN_GRACE_MS } from "./space/space";
 
 export { Close, CONNECT_HEADER, GRANT_MS, HOLD_MS, MAX_HEAD_CHECKS } from "./space/space";
 export type { Role, Session } from "./space/space";
@@ -50,7 +50,7 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
     const role = this.memberRole(connect.identity.userId);
     if (!role) return new Response("not a member of this space", { status: 403 });
     const check = await this.admitDevice(connect.identity.deviceId);
-    if (check === undefined) return new Response("could not check the device; retry later", { status: 503 });
+    if (check instanceof CheckFailed) return errorReply(request, Error_Code.RETRY_LATER, "could not check the device; retry later", 503, check.cause);
     if (!check.active) return new Response("device revoked", { status: 401 });
     if (check.closed) return new Response("the space is being rewound; retry later", { status: 503 });
     if (this.historyRetired(check)) return errorReply(request, Error_Code.HISTORY_MISMATCH, RETIRED_HISTORY, 409);

@@ -478,7 +478,7 @@ mod tests {
             ),
         });
         let fixture = match SCHEMA {
-            4 => include_str!("../tests/fixtures/report-schema-v4.json"),
+            5 => include_str!("../tests/fixtures/report-schema-v5.json"),
             version => panic!("Add a report-layout fixture for SCHEMA {version}"),
         };
         let expected: Value = serde_json::from_str(fixture).unwrap();

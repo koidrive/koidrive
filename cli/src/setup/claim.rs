@@ -181,6 +181,7 @@ impl<'a> Claim<'a> {
                 Err(ApiError::Server { error, .. }) if error.code() == Code::RetryLater => {
                     error.retry_after().unwrap_or(Duration::from_secs(10))
                 }
+                Err(ApiError::Server { status, .. }) if status >= 500 => Duration::from_secs(3),
                 Err(
                     ApiError::Transport(_)
                     | ApiError::TooLarge { .. }
@@ -298,7 +299,7 @@ pub(super) fn user_name() -> String {
 
 #[cfg(test)]
 mod tests {
-    use koidrive_proto::v1::{AccessToken, Error};
+    use koidrive_proto::v1::{AccessToken, Error, error::Cause};
     use prost::Message;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -557,5 +558,109 @@ mod tests {
         );
         assert!(fake.seen().is_empty());
         assert!(paths.credential().exists());
+    }
+
+    async fn claims_after_one_failure(
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> (String, usize) {
+        let issued = koidrive_proto::v1::DeviceCredentials {
+            user_id: "user".into(),
+            device_id: "0194f8a2-0000-7000-8000-000000000002".into(),
+            refresh_credential: "device".into(),
+            ..Default::default()
+        };
+        let failed = Reply {
+            method: "POST",
+            path: "/v1/claim".into(),
+            status: 500,
+            content_type,
+            body,
+        };
+        let fake = Fake::start(vec![tokens(), failed, proto("POST", "/v1/claim", issued)]).await;
+        let mut session = session(&fake).await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+        let daemon = tokio::net::UnixListener::bind(paths.socket()).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = daemon.accept().await.unwrap();
+            let (reader, mut writer) = stream.split();
+            let mut request = String::new();
+            BufReader::new(reader)
+                .read_line(&mut request)
+                .await
+                .unwrap();
+            let refusal = Response::Error {
+                message: "the claim reached the credential save".into(),
+                human: None,
+                code: koidrive_ipc::Code::Failed,
+                reason: None,
+                next: Vec::new(),
+            };
+            let line = format!("{}\n", serde_json::to_string(&refusal).unwrap());
+            writer.write_all(line.as_bytes()).await.unwrap();
+        });
+        let server = Found {
+            script: koidrive_cloudflare::Script {
+                id: "koidrive".into(),
+                created_on: None,
+                tags: Vec::new(),
+                migration_tag: None,
+                has_assets: true,
+            },
+            bucket: None,
+            url: fake.base.clone(),
+            info: None,
+        };
+        let state = SetupState {
+            account: ACCOUNT.into(),
+            script: "koidrive".into(),
+            step: Step::Serving,
+            secret_set: true,
+            setup_attempt: Some("attempt".into()),
+            ..SetupState::default()
+        };
+        let error = Claim::new(
+            &mut session,
+            &paths,
+            &server,
+            "laptop",
+            state,
+            Some(Secret::random(32)),
+        )
+        .run(Duration::from_secs(60))
+        .await
+        .unwrap_err();
+        let claims = (fake.seen().iter())
+            .filter(|seen| seen.path == "/v1/claim")
+            .count();
+        (error.message, claims)
+    }
+
+    #[tokio::test]
+    async fn a_claim_is_sent_again_after_any_server_failure() {
+        let internal = |cause: Cause| {
+            Error {
+                code: Code::Internal as i32,
+                message: "internal error".into(),
+                cause: cause as i32,
+                ..Error::default()
+            }
+            .encode_to_vec()
+        };
+        let saved = ("the claim reached the credential save".to_owned(), 2);
+        assert_eq!(
+            claims_after_one_failure("text/plain; charset=UTF-8", b"error code: 1101".to_vec())
+                .await,
+            saved
+        );
+        for cause in [Cause::DoUnavailable, Cause::Exception, Cause::Unspecified] {
+            assert_eq!(
+                claims_after_one_failure("application/x-protobuf", internal(cause)).await,
+                saved,
+                "{cause:?}"
+            );
+        }
     }
 }

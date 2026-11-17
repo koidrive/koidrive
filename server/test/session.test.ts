@@ -34,7 +34,7 @@ import {
   type Welcome,
 } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkRefSchema, type CommitRecord, ContentSchema } from "../src/gen/koidrive/v1/model_pb";
-import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
+import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema, type Target } from "../src/gen/koidrive/v1/rpc_pb";
 import { type Identity, type ServerKey, signAccessToken, verifyAccessToken } from "../src/auth";
 import { fromBase64url, sha256 } from "../src/crypto";
 import { ShareLinkListSchema } from "../src/gen/koidrive/v1/share_pb";
@@ -827,6 +827,39 @@ describe("RFC 0006 principals, capabilities and device routes", () => {
       expect(await socket.next()).toMatchObject({ case: "goodbye", value: { code: Close.TRY_AGAIN_LATER } });
     } finally {
       prototype.checkSessions = original;
+    }
+  });
+
+  it("answers a device check the Account DO could not make with RETRY_LATER and the failure's cause, over HTTP RPC, the WebSocket upgrade and a share link", async () => {
+    const owner = await getOwner();
+    const pad = await pairDevice(owner, "Overloaded check");
+    const spaceId = await createSpace(owner);
+    const stub = env.SPACE.get(env.SPACE.idFromName(spaceId));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const prototype = await runInDurableObject(account(), (instance: import("../src/account-do").AccountDO) => Object.getPrototypeOf(instance) as import("../src/account-do").AccountDO);
+    const original = { checkSessions: prototype.checkSessions, shareResolve: prototype.shareResolve };
+    const overloaded = async () => {
+      throw Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true });
+    };
+    prototype.checkSessions = overloaded;
+    prototype.shareResolve = overloaded;
+    try {
+      await runInDurableObject(stub, (instance: SpaceDO) => {
+        (instance as unknown as { leases: Map<string, unknown> }).leases.clear();
+      });
+      const rpc = await call(`/v1/spaces/${spaceId}/rpc`, { token: pad.access!.token, body: body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }) }, RpcResponseSchema);
+      expect(rpc.message!.result).toMatchObject({ case: "error", value: { code: Error_Code.RETRY_LATER, cause: Error_Cause.DO_OVERLOADED } });
+      const upgrade = await exports.default.fetch(BASE + "/v1/spaces/" + spaceId + "/ws", { headers: { Upgrade: "websocket", Authorization: "Bearer " + pad.access!.token } });
+      const refused = fromBinary(ErrorSchema, new Uint8Array(await upgrade.arrayBuffer()));
+      expect([upgrade.status, refused.code, refused.cause]).toEqual([503, Error_Code.RETRY_LATER, Error_Cause.DO_OVERLOADED]);
+      expect(await stub.shareContinue({ linkId: "link", client: "client" }, { historyId: "history", generation: 1 })).toMatchObject({
+        ok: false,
+        code: Error_Code.RETRY_LATER,
+        status: 503,
+        cause: Error_Cause.DO_OVERLOADED,
+      });
+    } finally {
+      Object.assign(prototype, original);
     }
   });
 
@@ -1629,7 +1662,8 @@ describe("RFC 0007 name limits and space list pages", () => {
         () => ({ init: () => Promise.reject(new Error("the Space DO is unavailable")) }) as unknown as ReturnType<typeof spaces.get>,
       );
     });
-    await expect(send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).rejects.toThrow("the Space DO is unavailable");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).toEqual({ status: 500, code: Error_Code.INTERNAL });
     const listed = (await spacePages(token)).flatMap((page) => page.spaces);
     expect(listed.some((space) => space.name === name)).toBe(false);
     const created = await call("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) }, SpaceInfoSchema);
@@ -2278,10 +2312,10 @@ describe("chunk relay", () => {
     expect((await decode(mismatch)).code).toBe(Error_Code.INVALID_ARGUMENT);
     const throttled = await fail("put: Reduce your concurrent request rate for the same object. (10058)");
     expect(throttled.status).toBe(429);
-    expect((await decode(throttled)).code).toBe(Error_Code.RETRY_LATER);
+    expect(await decode(throttled)).toMatchObject({ code: Error_Code.RETRY_LATER, cause: Error_Cause.R2_RATE_LIMITED });
     const outage = await fail("put: We encountered an internal error. Please try again. (10001)");
     expect(outage.status).toBe(503);
-    expect((await decode(outage)).code).toBe(Error_Code.RETRY_LATER);
+    expect(await decode(outage)).toMatchObject({ code: Error_Code.RETRY_LATER, cause: Error_Cause.R2_UNAVAILABLE });
     expect(await env.BUCKET.head(key)).toBeNull();
   });
 
@@ -2298,7 +2332,10 @@ describe("chunk relay", () => {
       return account().serverKey();
     });
     const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, {} as ExecutionContext);
-    await expect(send()).rejects.toThrow("injected Account DO failure");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failed = await send();
+    expect(failed.status).toBe(500);
+    expect(fromBinary(ErrorSchema, new Uint8Array(await failed.arrayBuffer()))).toMatchObject({ code: Error_Code.INTERNAL, cause: Error_Cause.EXCEPTION });
     expect((await send()).status).toBe(200);
     expect(calls).toBe(2);
     expect(await env.BUCKET.head(key)).not.toBeNull();
@@ -2409,7 +2446,11 @@ describe("chunk bundles", () => {
       } as unknown as Env, {} as ExecutionContext);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), failing);
-    expect(sent.results.map((result) => [result.status, result.error?.code])).toEqual([[429, Error_Code.RETRY_LATER], [503, Error_Code.RETRY_LATER], [200, undefined]]);
+    expect(sent.results.map((result) => [result.status, result.error?.code, result.error?.cause])).toEqual([
+      [429, Error_Code.RETRY_LATER, Error_Cause.R2_RATE_LIMITED],
+      [503, Error_Code.RETRY_LATER, Error_Cause.EXCEPTION],
+      [200, undefined, undefined],
+    ]);
     expect(await env.BUCKET.head(keys[2]!)).not.toBeNull();
   });
 
@@ -2675,15 +2716,22 @@ describe("platform limits", () => {
     expect(await socket.rpc({ case: "listTree", value: {} })).toMatchObject({ case: "error", value: { code: Error_Code.QUOTA_EXCEEDED, retryAfterMs } });
   });
 
-  it("keeps any other error of an RPC an INTERNAL error without a wait", async () => {
+  it("answers a transient platform failure of an RPC with RETRY_LATER and any other error with INTERNAL, each with its cause", async () => {
     const { spaceId, stub, socket } = await connected();
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const others = [
-      new Error("disk I/O error: SQLITE_IOERR"),
-      new Error("Durable Object reset because its code was updated."),
-      new TypeError("Cannot read properties of undefined (reading 'nodeId')"),
+    const retry = { code: Error_Code.RETRY_LATER, message: "the server is briefly unavailable; retry" };
+    const internal = { code: Error_Code.INTERNAL, message: "internal error" };
+    const others: [Error, Error_Cause, { code: Error_Code; message: string }][] = [
+      [new Error("disk I/O error: SQLITE_IOERR"), Error_Cause.EXCEPTION, internal],
+      [Object.assign(new Error("Durable Object reset because its code was updated."), { retryable: true }), Error_Cause.DO_UNAVAILABLE, retry],
+      [Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true }), Error_Cause.DO_OVERLOADED, retry],
+      [new Error("get: We encountered an internal error. Please try again. (10001)"), Error_Cause.R2_UNAVAILABLE, retry],
+      [new Error("put: The specified bucket does not exist. (10006)"), Error_Cause.R2_ERROR, internal],
+      [new Error("Too many subrequests."), Error_Cause.SUBREQUEST_LIMIT, internal],
+      [new TypeError("Cannot read properties of undefined (reading 'nodeId')"), Error_Cause.EXCEPTION, internal],
+      [new Error("the request failed (10001)"), Error_Cause.EXCEPTION, internal],
     ];
-    for (const error of others) {
+    for (const [error, cause, answer] of others) {
       await runInDurableObject(stub, (instance: SpaceDO) => {
         (instance as unknown as { listTree: () => never }).listTree = () => {
           throw error;
@@ -2691,7 +2739,7 @@ describe("platform limits", () => {
       });
       expect(await socket.rpc({ case: "listTree", value: {} }), error.message).toMatchObject({
         case: "error",
-        value: { code: Error_Code.INTERNAL, message: "internal error", retryAfterMs: 0n },
+        value: { ...answer, retryAfterMs: 0n, cause },
       });
     }
     expect(spaceId).toBeTruthy();
@@ -2756,22 +2804,30 @@ describe("platform limits", () => {
     expect(logged.mock.calls.filter(([what]) => what === "request stopped at a platform limit").map(([, error]) => error)).toEqual(["Error: " + text, "Error: " + text]);
   });
 
-  it("lets any other error of the Account DO escape the Worker as before", async () => {
+  it("answers a transient failure of the Account DO with 503 RETRY_LATER and any other error with 500 INTERNAL, each with its cause", async () => {
     const a = await getOwner();
-    const exec = await runInDurableObject(account(), (_instance, state) =>
-      vi.spyOn(state.storage.sql, "exec").mockImplementation(() => {
-        throw new Error("disk I/O error: SQLITE_IOERR");
-      }),
-    );
-    try {
-      const request = exports.default.fetch(BASE + "/v1/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-protobuf" },
-        body: body(TokenRequestSchema, { deviceId: a.deviceId, refreshCredential: a.refreshCredential }),
-      });
-      await expect(request).rejects.toThrow("disk I/O error: SQLITE_IOERR");
-    } finally {
-      exec.mockRestore();
+    const failures: [Error, number, Error_Code, Error_Cause][] = [
+      [new Error("disk I/O error: SQLITE_IOERR"), 500, Error_Code.INTERNAL, Error_Cause.EXCEPTION],
+      [Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true }), 503, Error_Code.RETRY_LATER, Error_Cause.DO_OVERLOADED],
+    ];
+    for (const [thrown, status, code, cause] of failures) {
+      const exec = await runInDurableObject(account(), (_instance, state) =>
+        vi.spyOn(state.storage.sql, "exec").mockImplementation(() => {
+          throw thrown;
+        }),
+      );
+      try {
+        const request = exports.default.fetch(BASE + "/v1/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-protobuf" },
+          body: body(TokenRequestSchema, { deviceId: a.deviceId, refreshCredential: a.refreshCredential }),
+        });
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        const response = await request;
+        expect([response.status, fromBinary(ErrorSchema, new Uint8Array(await response.arrayBuffer()))], thrown.message).toMatchObject([status, { code, cause }]);
+      } finally {
+        exec.mockRestore();
+      }
     }
   });
 });

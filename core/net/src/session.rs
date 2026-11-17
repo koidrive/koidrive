@@ -40,7 +40,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{self, Message as WsMessage};
 use url::Url;
 
-use crate::api::PROTOBUF;
+use crate::api::is_protobuf;
 use crate::auth::Auth;
 use crate::backoff::Backoff;
 use crate::error::{ApiError, CallError, NotResent, Resend, ServerError, StopReason};
@@ -709,7 +709,7 @@ impl Task {
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with(PROTOBUF));
+            .is_some_and(is_protobuf);
         if protobuf {
             let (head, tail) = response.into_parts();
             let error = refusal_body(&head, tail.unwrap_or_default(), kept)

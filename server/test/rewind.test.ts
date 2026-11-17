@@ -25,7 +25,7 @@ import {
   type ServerMessage,
   ServerMessageSchema,
 } from "../src/gen/koidrive/v1/messages_pb";
-import { ChunkPlan_Action, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
+import { ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import { Close, CONNECT_HEADER, type SpaceDO } from "../src/space-do";
 import { RETIRED_HISTORY } from "../src/space/space";
@@ -636,8 +636,14 @@ describe("space rewind (RFC 0003)", () => {
       throw new RangeError("no bookmark at that time");
     };
     const refused = await rewind(token, spaceId, { restorePointMs: point, expectedHistoryId: history });
-    expect([refused.status, refused.error?.code]).toEqual([503, Error_Code.RETRY_LATER]);
+    expect([refused.status, refused.error?.code, refused.error?.cause]).toEqual([503, Error_Code.RETRY_LATER, Error_Cause.EXCEPTION]);
     expect(logged.mock.calls).toContainEqual(["rewind admission failed", "RangeError: no bookmark at that time"]);
+
+    simulatedPitr.bookmarkFor = () => {
+      throw Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true });
+    };
+    const overloaded = await rewind(token, spaceId, { restorePointMs: point, expectedHistoryId: history });
+    expect([overloaded.status, overloaded.error?.code, overloaded.error?.cause]).toEqual([503, Error_Code.RETRY_LATER, Error_Cause.DO_OVERLOADED]);
   });
 
   it("answers the space closed to a check the Space DO makes while the admission waits for rewindInfo (RFC 0014)", async () => {

@@ -224,6 +224,7 @@ fn an_upload_that_halts_is_counted_by_its_cause() {
                 hash: Vec::new(),
                 status: 403,
                 error: Some(forbidden()),
+                cloudflare_error_code: None,
             },
             Halted::Refused,
         ),
