@@ -377,11 +377,13 @@ struct MenuContent: View {
     private func byteProgress(done: UInt64, total: UInt64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
         let units: [ByteCountFormatter.Units] = [.useBytes, .useKB, .useMB, .useGB, .useTB]
-        let power = min(units.count - 1, total < 1000 ? 0 : Int(log10(Double(total)) / 3))
-        formatter.allowedUnits = units[power]
+        let power = { (bytes: UInt64) in min(units.count - 1, bytes < 1000 ? 0 : Int(log10(Double(bytes)) / 3)) }
+        formatter.allowedUnits = units[power(total)]
         let totalText = formatter.string(fromByteCount: Int64(clamping: total))
-        formatter.includesUnit = false
+        formatter.allowedUnits = units[power(done)]
+        formatter.includesUnit = power(done) != power(total)
         let doneText = formatter.string(fromByteCount: Int64(clamping: done))
         return String(localized: "\(doneText) of \(totalText)")
     }
