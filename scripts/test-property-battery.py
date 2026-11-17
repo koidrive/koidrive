@@ -459,6 +459,42 @@ class KnownFailures(unittest.TestCase):
                         found = triage.matches(entries, test, example)
                         self.assertEqual([entries.index(other) for other in found], [index], (test, example))
 
+    def test_every_registry_test_name_is_a_test_in_core(self):
+        files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
+                               stdout=subprocess.PIPE, text=True).stdout.split("\0")
+        source = "".join((ROOT / path).read_text(errors="replace") for path in files if path)
+        for entry in triage.known_failures(triage.KNOWN_FAILURES.read_text()):
+            for test in entry["tests"]:
+                with self.subTest(failure=entry["class"], test=test):
+                    self.assertRegex(source, rf"\bfn {re.escape(test)}\(")
+
+    def test_a_registry_that_cant_be_read_is_named_in_the_error(self):
+        broken = {
+            "not toml": "[[failure]\n",
+            "no entries": "",
+            "a missing field": KNOWN.replace('examples = ["no convergence within 400 steps"]\n', "", 1),
+            "tests as a string": KNOWN.replace('tests = ["devices_converge"]', 'tests = "devices_converge"'),
+            "a regex that doesn't compile": KNOWN.replace("'''write <n> is lost'''", "'''write (<n> is lost'''"),
+            "a message that isn't a string": KNOWN.replace("'''write <n> is lost'''", "1"),
+            "a class that isn't a string": KNOWN.replace('class = "A"', "class = 1"),
+            "an entry that isn't a table": "failure = [1]\n",
+        }
+        for name, text in broken.items():
+            with self.subTest(name), self.assertRaises(ValueError):
+                triage.known_failures(text)
+
+    def test_a_registry_that_cant_be_read_still_writes_the_report(self):
+        run, rows, text = self.report("[[failure]\n", [
+            ("devices_converge", ("fail", "write 1 is lost"), ("fail", "write 1 is lost")),
+        ])
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("::error::No row has a class: ", run.stdout)
+        self.assertIn("known.toml can't be read: ", run.stdout)
+        self.assertEqual((rows[0]["verdict"], rows[0]["class"], rows[0]["issue"]), (triage.SAME, None, None))
+        self.assertIn("No row has a class: ", text)
+        self.assertIn(f"| {triage.SAME} |  |  |", text)
+
+
 
 class Triage(unittest.TestCase):
     def shard(self, root, number, cases, extra=()):
