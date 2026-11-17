@@ -961,7 +961,10 @@ mod holders_against_a_rebuild {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(20_000))]
+        #![proptest_config(koidrive_test_support::battery_config(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/classify/tests.proptest-regressions"),
+            2_048,
+        ))]
         #[test]
         fn holders_match_a_rebuild_from_l(ops in proptest::collection::vec(op(), 1..40)) {
             let mut trees = Trees::new("root");
