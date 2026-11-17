@@ -286,7 +286,8 @@ jobs:
         timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/deploy-test/e2e.ts linux-7 "e2e 7: write after the restore point"
+        run: |
+          node scripts/deploy-test/e2e.ts linux-7 "e2e 7: write after the restore point"
       - name: "e2e: compare the macOS and Linux trees"
         if: inputs.mode == 'e2e'
         timeout-minutes: 20
