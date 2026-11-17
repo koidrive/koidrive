@@ -4991,6 +4991,9 @@ impl<'a> Scratch<'a> {
             }
         }
         let riding = |node: &str| {
+            if trees.local().get(node).is_none() {
+                return false;
+            }
             let mut at = placed(node);
             for _ in 0..=revived.len() + self.creating.len() + 1 {
                 let Some(up) = at else {
