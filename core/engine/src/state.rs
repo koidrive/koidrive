@@ -125,6 +125,11 @@ pub struct TreesState {
     /// version ID to two versions, also across a loss of commits (RFC 0016), so a version of this
     /// list that a restored server holds is one that the content S took from R replaced.
     pub replaced_versions: BTreeMap<NodeId, Vec<String>>,
+    /// The nodes whose every version since the node was created this device held: it applied the record that
+    /// created the node, or made the node itself, and no version since left [`TreesState::replaced_versions`]
+    /// unrecorded. A version of such a node that this device never held was made after it last heard from the
+    /// server.
+    pub full_history: BTreeSet<NodeId>,
     /// The nodes this device sends again after a server loss although no change of its user is in
     /// them (section 4.4): a file whose content S took back from R so that the content L holds is
     /// sent again, and a node S forgot that L holds as S did. A delete that R holds of the node, or
@@ -275,6 +280,7 @@ pub struct TreesChanges {
     pub unsent_moves: SetChanges<NodeId>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
+    pub full_history: SetChanges<NodeId>,
     pub resends: SetChanges<NodeId>,
     pub local_changes: SetChanges<NodeId>,
     pub lost_positions: MapChanges<NodeId, LostPosition>,
@@ -311,6 +317,7 @@ impl TreesChanges {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            full_history,
             resends,
             local_changes,
             lost_positions,
@@ -343,6 +350,7 @@ impl TreesChanges {
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
+            full_history: set_changes(&before.full_history, full_history),
             resends: set_changes(&before.resends, resends),
             local_changes: set_changes(&before.local_changes, local_changes),
             lost_positions: map_changes(&before.lost_positions, lost_positions),

@@ -292,6 +292,11 @@ impl Tx<'_> {
                 .or_default())
             .push(row.get(1)?);
         }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM full_history")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.full_history.insert(row.get(0)?);
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM resends")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -451,6 +456,7 @@ impl Tx<'_> {
             "unsent_moves",
             "unseen_changes",
             "replaced_versions",
+            "full_history",
             "resends",
             "local_changes",
             "lost_positions",
@@ -518,6 +524,7 @@ impl Tx<'_> {
             unsent_moves,
             unseen_changes,
             replaced_versions,
+            full_history,
             resends,
             local_changes,
             lost_positions,
@@ -736,6 +743,11 @@ impl Tx<'_> {
                 put.execute(params![node, position, version])?;
             }
         }
+        self.write_set(
+            full_history,
+            "DELETE FROM full_history WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO full_history (node_id) VALUES (?1)",
+        )?;
         self.write_set(
             resends,
             "DELETE FROM resends WHERE node_id = ?1",
