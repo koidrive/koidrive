@@ -224,6 +224,15 @@ describe("small-file benchmark", () => {
     expect(result.output).not.toContain("| puts |");
   });
 
+  it("keeps a side's partial Worker CPU when a later query for that side fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(300), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 300 (partial) | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("Worker CPU unavailable from the bundles side on:");
+  });
+
   it("still passes when no Cloudflare credentials are set", async () => {
     fakeCargo();
     const result = await run({ command: "small", env: { CLOUDFLARE_API_TOKEN: "", CLOUDFLARE_ACCOUNT_ID: "" } });

@@ -91,6 +91,8 @@ struct Owner {
 struct Retries {
     chunks: HashSet<String>,
     statuses: BTreeMap<String, usize>,
+    bundles: usize,
+    bundle_chunks: u64,
 }
 
 impl Retries {
@@ -113,6 +115,11 @@ impl Retries {
         *self.statuses.entry(status.to_owned()).or_default() += 1;
     }
 
+    fn record_bundle(&mut self, chunks: u64) {
+        self.bundles += 1;
+        self.bundle_chunks += chunks;
+    }
+
     fn text(&self) -> String {
         let counts = self
             .statuses
@@ -120,8 +127,16 @@ impl Retries {
             .map(|(status, n)| format!("{status}: {n}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let bundles = if self.bundles == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {} bundle retry events ({} chunks)",
+                self.bundles, self.bundle_chunks
+            )
+        };
         format!(
-            "{} chunks; {} retry events{}",
+            "{} chunks; {} retry events{}{bundles}",
             self.chunks.len(),
             self.statuses.values().sum::<usize>(),
             if counts.is_empty() {
@@ -139,6 +154,7 @@ struct Requests {
     chunks: usize,
 }
 
+#[derive(Clone, Default)]
 struct RetryCounter {
     retries: Arc<Mutex<Retries>>,
     protocols: Arc<Mutex<HashSet<&'static str>>>,
@@ -187,6 +203,9 @@ impl Subscriber for RetryCounter {
         event.record(&mut fields);
         if fields.message == "koidrive chunk transfer will be retried" {
             self.retries.lock().unwrap().record(&fields.error);
+        }
+        if fields.message == "koidrive chunk bundle will be retried" {
+            self.retries.lock().unwrap().record_bundle(fields.chunks);
         }
         if fields.message == "koidrive chunk upload request" {
             let mut requests = self.requests.lock().unwrap();
@@ -265,6 +284,18 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
+fn counter() -> RetryCounter {
+    static COUNTER: std::sync::OnceLock<RetryCounter> = std::sync::OnceLock::new();
+    COUNTER
+        .get_or_init(|| {
+            let counter = RetryCounter::default();
+            tracing::subscriber::set_global_default(counter.clone())
+                .expect("install retry counter");
+            counter
+        })
+        .clone()
+}
+
 fn client() -> Api {
     match std::env::var("KOIDRIVE_BENCH_URL") {
         Ok(url) => Api::new(url.parse().expect("benchmark URL")).expect("HTTPS benchmark origin"),
@@ -309,16 +340,12 @@ async fn upload_benchmark() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     let (api, auth) = deployment().await;
-    let retries = Arc::new(Mutex::new(Retries::default()));
-    let protocols = Arc::new(Mutex::new(HashSet::new()));
-    let uploading = Arc::new(AtomicBool::new(false));
-    tracing::subscriber::set_global_default(RetryCounter {
-        retries: retries.clone(),
-        protocols: protocols.clone(),
-        uploading: uploading.clone(),
-        requests: Arc::default(),
-    })
-    .expect("install retry counter");
+    let RetryCounter {
+        retries,
+        protocols,
+        uploading,
+        ..
+    } = counter();
 
     let probe = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -572,15 +599,9 @@ async fn small_file_benchmark() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     let (api, auth) = deployment().await;
-    let retries = Arc::new(Mutex::new(Retries::default()));
-    let requests = Arc::new(Mutex::new(Requests::default()));
-    tracing::subscriber::set_global_default(RetryCounter {
-        retries: retries.clone(),
-        protocols: Arc::default(),
-        uploading: Arc::default(),
-        requests: requests.clone(),
-    })
-    .expect("install request counter");
+    let RetryCounter {
+        retries, requests, ..
+    } = counter();
     emit(&format!(
         "### Small-file upload benchmark\n\nCommit `{}`. {} fresh files of {} KiB per side, one chunk each, default upload concurrency, {} runs. Odd runs upload with bundles first and even runs with puts first. Each side has its own HTTP connection pool.\n\n| Run | Side | upload() seconds | Files/s | Upload requests | Chunks per request | Receipts | Observed retries |\n|---|---|---|---|---|---|---|---|",
         commit_sha(),
@@ -847,6 +868,7 @@ fn trace_observer_counts_retries_and_only_active_upload_handshakes() {
         tracing::debug!(target: "koidrive_net::chunks", %error, "koidrive chunk transfer will be retried");
         tracing::trace!(target: "koidrive_net::chunks", chunks = 32, "koidrive chunk upload request");
         tracing::trace!(target: "koidrive_net::chunks", chunks = 1, "koidrive chunk upload request");
+        tracing::debug!(target: "koidrive_net::chunks", chunks = 5, "koidrive chunk bundle will be retried");
     });
     assert_eq!(
         *requests.lock().unwrap(),
@@ -857,7 +879,7 @@ fn trace_observer_counts_retries_and_only_active_upload_handshakes() {
     );
     assert_eq!(
         retries.lock().unwrap().text(),
-        "1 chunks; 1 retry events (429: 1)"
+        "1 chunks; 1 retry events (429: 1); 1 bundle retry events (5 chunks)"
     );
     assert_eq!(*protocols.lock().unwrap(), HashSet::from(["HTTP/2"]));
 }

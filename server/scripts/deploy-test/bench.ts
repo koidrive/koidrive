@@ -132,6 +132,11 @@ async function workerCpu(script: string, path: string): Promise<void> {
   const rows: string[] = [];
   let unavailable: string | undefined;
   const deadline = Date.now() + ANALYTICS_MS;
+  const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
+  const row = (window: Window, seen: Invocations | undefined) => {
+    const n = seen?.sum.requests ?? 0;
+    return "| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |";
+  };
   for (const window of windows) {
     let seen: Invocations | undefined;
     try {
@@ -142,12 +147,11 @@ async function workerCpu(script: string, path: string): Promise<void> {
       }
     } catch (error) {
       const why = missingScope(error) ? "the deploy-test token lacks Account Analytics Read" : (error instanceof Error ? error.message : String(error)).slice(0, 200);
-      unavailable = "Worker CPU unavailable" + (rows.length > 0 ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
+      unavailable = "Worker CPU unavailable" + (rows.length > 0 || seen ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
+      if (seen) rows.push(row(window, seen));
       break;
     }
-    const n = seen?.sum.requests ?? 0;
-    const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
-    rows.push("| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |");
+    rows.push(row(window, seen));
   }
   if (unavailable) emit(unavailable);
   if (rows.length === 0) return;
