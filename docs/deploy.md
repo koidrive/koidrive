@@ -5,7 +5,7 @@
 ## What you need
 
 - A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Wrangler can't activate R2, and without it the bucket can't be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
-- Git, Node.js 22 or later, and pnpm.
+- Git, Node.js 22.12 or later, and pnpm.
 - The [Mac app](guide/macos.md) or the [`koi` command](guide/install.md), to claim the server.
 
 ## Deploy
