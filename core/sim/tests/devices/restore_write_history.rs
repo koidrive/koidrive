@@ -117,13 +117,15 @@ fn observers_keep_one_copy_of_a_lost_write_across_another_restore() {
     let source = version_of_write(&world, 1).version_id;
     world.phase(1, &phases[1]).unwrap();
     assert!(version_of_write(&world, 2).made_over.contains(&source));
-    let mut writes: Vec<_> = world
+    let writes: Vec<_> = world
         .space()
         .nodes()
         .into_iter()
         .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
-        .filter_map(|node| node.current?.content.map(|content| content.mtime_ns))
+        .filter_map(|node| Some((node.name, node.current?.content?.mtime_ns)))
         .collect();
-    writes.sort_unstable();
-    assert_eq!(writes, [1, 2]);
+    assert_eq!(
+        writes,
+        [("A (conflict from device-2 2026-11-09)".to_owned(), 2)]
+    );
 }
