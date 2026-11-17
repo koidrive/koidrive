@@ -419,6 +419,24 @@ mod tests {
     }
 
     #[test]
+    fn a_record_with_a_recovery_this_build_does_not_know_halts_its_folder_until_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let record = json!({ "halt": { "problem": "x", "recovery": "Purge" }, "root": null });
+        fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        assert!(lifecycle.needs_restart());
+        let halt = lifecycle.health(koidrive_telemetry::now()).halt.unwrap();
+        assert_eq!(halt.why, Some(Halted::Store));
+        let problem = lifecycle.lock().unwrap().problem.clone().unwrap();
+        assert!(problem.contains("koi folder restart"), "{problem}");
+        lifecycle.restart().unwrap();
+        assert!(!lifecycle.needs_restart());
+        drop(lifecycle);
+        assert!(!Lifecycle::open(&store, status(), Recorder::off()).needs_restart());
+    }
+
+    #[test]
     fn an_unlink_tried_again_keeps_when_its_halt_began() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
