@@ -198,7 +198,7 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     });
   }
 
-  it("supersedes a Move or Delete whose over the node's place or status does not hold", async () => {
+  it("supersedes a Move whose over the node's place does not hold and a Delete whose over its status does not hold", async () => {
     const { space, a, b, values, root } = await setup();
     const nodeId = await file(a, root, "plan.txt", values[0]!);
     const held = (await stateOf(space, nodeId))!.intents!;
@@ -207,9 +207,15 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     expect(stale.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     const moved = await b.commit([sent(op.move(nodeId, root, "plan 2.txt"), intent(b.session.deviceId, { over: held.place!.id }))]);
     expect(moved.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect(idOf((await stateOf(space, nodeId))!.intents!.status)).toBe(idOf(held.status));
+    const overStatus = await b.commit([sent(op.move(nodeId, root, "plan 3.txt"), intent(b.session.deviceId, { over: held.status!.id }))]);
+    expect(overStatus.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     const deleted = await b.commit([sent(del(nodeId), intent(b.session.deviceId, { over: intentId() }))]);
     expect(deleted.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.LIVE);
+    const trashed = await b.commit([sent(del(nodeId), intent(b.session.deviceId, { over: held.status!.id }))]);
+    expect(trashed.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.TRASHED);
   });
 
   it("merges a Delete's held into a trash whose replaced status is the Delete's over, and answers APPLIED", async () => {
@@ -430,7 +436,7 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     }
   });
 
-  it("keeps a tombstone for a purged node, supersedes a replay's place and lands its unknown content as a copy", async () => {
+  it("keeps a tombstone for a purged node, supersedes a replay's, carried op's or create's place and lands unknown content as a copy", async () => {
     const { space, a, b, values, root } = await setup();
     const dir = uuidv7();
     await a.commit([op.mkdir(dir, root, "Keep")]);
@@ -447,6 +453,13 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     const lost = await b.commit([sent(update(nodeId, values[1]!), intent(a.session.deviceId, { replay: true }))]);
     expect(lost.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
     expect((await stateOf(space, lost.results[0]!.nodeId))!.parentId).toBe(dir);
+    const carried = await b.commit([sent(update(nodeId, values[2]!), intent(a.session.deviceId))]);
+    expect(carried.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
+    const recreated = await b.commit([op.mkdir(nodeId, root, "again")]);
+    expect(recreated.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    const own = await b.commit([sent(op.move(nodeId, root, "mine.txt"), intent(b.session.deviceId))]);
+    expect(own.results[0]).toMatchObject({ code: OpResult_Code.REJECTED, rejectReason: "NOT_FOUND" });
+    expect(await stateOf(space, nodeId)).toBeUndefined();
   });
 });
 
