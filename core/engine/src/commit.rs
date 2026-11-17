@@ -4605,6 +4605,7 @@ fn plan(
         for want in wants.iter().flatten() {
             if let Want::Move { id, .. } = want
                 && scratch.fit(want, &moving) == Fit::Cycle
+                && scratch.ends.cycles.contains(id)
             {
                 cycle_reverts.push(id.clone());
             }
