@@ -798,9 +798,7 @@ impl World {
             );
         }
         quiet.map_err(|failure| failure.at(format!("after phase {phase}")))?;
-        if !self.space.refuses() {
-            self.recovered();
-        }
+        self.recovered();
         Ok(())
     }
 
@@ -833,8 +831,10 @@ impl World {
                 device.restored_ahead = false;
             }
         }
-        for names in &mut self.restored_names {
-            names.clear();
+        if !self.space.refuses() {
+            for names in &mut self.restored_names {
+                names.clear();
+            }
         }
         self.rolled_back.clear();
         let mut files: BTreeMap<i64, BTreeMap<NodeId, (usize, bool)>> = BTreeMap::new();
