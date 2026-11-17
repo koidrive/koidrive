@@ -2863,6 +2863,35 @@ impl Trees {
         self.discard_state(id) == Some(Discard::Kept)
             || self.ignored_in_place(id)
             || self.kept_folder(id)
+            || (self.l.get(id)).is_some_and(|node| {
+                self.left_rules_file(id) && self.kept_folder(&node.shape.parent)
+            })
+    }
+
+    pub(crate) fn left_rules_file(&self, id: &str) -> bool {
+        (self.l.get(id))
+            .is_some_and(|node| node.shape.kind == Kind::File && is_rules_file(&node.shape.name))
+            && self.r.live(id).is_none()
+    }
+
+    pub(crate) fn carried(&self, id: &str) -> bool {
+        let Some(node) = self.l.get(id) else {
+            return false;
+        };
+        let parent = node.shape.parent.as_str();
+        self.left_rules_file(id)
+            && !node.parked
+            && !self.edited(id)
+            && parent != self.l.root
+            && self.r.live(parent).is_none()
+            && (self.l.get(parent)).is_some_and(|folder| folder.shape.kind == Kind::Dir)
+    }
+
+    pub(crate) fn give_up(&mut self, id: &str) {
+        let origin = (self.waiting.get(id)).map_or(Origin::Other, |waiting| waiting.origin);
+        if !self.set_synced_if_valid(id.to_owned(), None) {
+            self.wait(id.to_owned(), None, origin);
+        }
     }
 
     pub(crate) fn kept_folder(&self, id: &str) -> bool {
@@ -2879,41 +2908,61 @@ impl Trees {
                     .r
                     .live(other)
                     .is_some_and(|shape| shape.kind == Kind::Dir)
-        }) && (self.local_children_placed_or_parked(id)).all(|child| self.excluded(child))
+        }) && (self.local_children_placed_or_parked(id))
+            .all(|child| self.left_rules_file(child) || self.excluded(child))
     }
 
     pub(crate) fn keep_folder(&mut self, id: &str) {
-        let origin = (self.waiting.get(id)).map_or(Origin::Other, |waiting| waiting.origin);
-        if !self.set_synced_if_valid(id.to_owned(), None) {
-            self.wait(id.to_owned(), None, origin);
+        let carried: Vec<NodeId> = (self.local_children(id))
+            .filter(|child| self.carried(child))
+            .cloned()
+            .collect();
+        for child in carried {
+            self.give_up(&child);
+            self.mark(&child);
         }
+        self.give_up(id);
         self.kept_folders.insert(id.to_owned());
         self.mark(id);
     }
 
-    pub(crate) fn keep_folders_of_kept_folders(&mut self) {
+    pub(crate) fn keep_deleted_folders(&mut self) {
         loop {
-            let parents: BTreeSet<NodeId> = (self.kept_folders.iter())
+            let folders: BTreeSet<NodeId> = (self.kept_folders.iter())
                 .filter(|id| self.kept_folder(id))
                 .filter_map(|id| self.l.get(id).map(|node| node.shape.parent.clone()))
-                .filter(|parent| {
-                    *parent != self.l.root
-                        && !self.kept_folders.contains(parent)
-                        && self.r.get(parent).is_some_and(|node| node.trashed)
-                        && self.l.get(parent).is_some_and(|node| !node.parked)
-                        && !self.held(parent)
-                        && self
-                            .local_children(parent)
-                            .all(|child| self.kept_folder(child))
-                })
+                .chain(self.dirty.iter().cloned())
+                .filter(|id| self.left_with_excluded_entries(id))
                 .collect();
-            if parents.is_empty() {
+            if folders.is_empty() {
                 return;
             }
-            for parent in parents {
-                self.keep_folder(&parent);
+            for folder in folders {
+                self.keep_folder(&folder);
             }
         }
+    }
+
+    fn left_with_excluded_entries(&self, id: &str) -> bool {
+        if id == self.l.root
+            || self.kept_folders.contains(id)
+            || !self.r.get(id).is_some_and(|node| node.trashed)
+            || !(self.l.get(id)).is_some_and(|node| !node.parked && node.shape.kind == Kind::Dir)
+            || self.held(id)
+        {
+            return false;
+        }
+        let mut kept = false;
+        for child in self.local_children_placed_or_parked(id) {
+            if self.carried(child) {
+                continue;
+            }
+            if !(self.kept_folder(child) || self.excluded(child)) {
+                return false;
+            }
+            kept = true;
+        }
+        kept
     }
 
     pub(crate) fn kept_folders(&self) -> &BTreeSet<NodeId> {

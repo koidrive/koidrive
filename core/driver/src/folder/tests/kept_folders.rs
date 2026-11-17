@@ -322,3 +322,224 @@ fn a_kept_folder_moves_with_the_folder_another_device_renames_around_it() {
     let view = b.folder.view();
     assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
 }
+
+fn deleted_with_rules_files(
+    rules: &[(&str, &str)],
+    synced: &[&str],
+    ignored: &[&str],
+) -> (Remote, Site, Device, Site, Device, String) {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let files = (rules.iter().map(|(path, rules)| (*path, rules.as_bytes())))
+        .chain(synced.iter().map(|path| (*path, b"synced".as_slice())));
+    for (path, content) in files {
+        let path = site_a.root.join("app").join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        a.create(&mut remote, &path, content);
+    }
+    let app = live_id(&server_nodes(&remote), "app");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    for _ in 0..3 {
+        b.run(&mut remote);
+        b.settle();
+    }
+    for path in ignored {
+        let path = site.root.join("app").join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, local_only(&path)).unwrap();
+    }
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(b.state(), FolderState::UpToDate);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    (remote, site_a, a, site, b, app)
+}
+
+#[test]
+fn a_kept_folder_whose_rules_file_was_synced_uploads_nothing() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b".env\nnode_modules/\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let old = live_id(&server_nodes(&remote), "app");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    fs::write(site.root.join("app/.env"), b"SECRET=local").unwrap();
+    fs::create_dir_all(site.root.join("app/node_modules/pkg")).unwrap();
+    fs::write(site.root.join("app/node_modules/pkg/index.js"), b"built").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert!(!remote.tree().contains_key("app/.env"));
+
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let tree = remote.tree();
+    assert!(!tree.contains_key("app/.env"), "{tree:?}");
+    assert!(!server_nodes(&remote).contains(&("app".into(), old, true)), "{tree:?}");
+}
+
+#[test]
+fn a_kept_folder_keeps_the_rules_files_that_leave_its_entries_out_at_any_depth() {
+    let rules = [(".koiignore", ".env\n"), ("sub/.koiignore", "build/\n")];
+    let ignored = [".env", "sub/build/out.o"];
+    let (remote, _, _, site, b, _) =
+        deleted_with_rules_files(&rules, &["README.md", "sub/a.txt"], &ignored);
+
+    assert_kept(&site, &b, &ignored);
+    for (path, rules) in rules {
+        assert_eq!(fs::read_to_string(site.root.join("app").join(path)).unwrap(), rules);
+    }
+    assert!(!site.root.join("app/README.md").exists());
+    assert!(!site.root.join("app/sub/a.txt").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty(), "{:?}", remote.tree());
+}
+
+#[test]
+fn a_remote_delete_of_a_folder_whose_rules_file_leaves_nothing_out_here_removes_it_whole() {
+    let rules = [(".koiignore", ".env\n"), ("sub/.koiignore", "build/\n")];
+    let (remote, _, _, site, b, _) = deleted_with_rules_files(&rules, &["README.md"], &[]);
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+    assert!(b.folder.engine.effects.blocked().is_empty());
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+}
+
+#[test]
+fn an_edit_to_a_kept_rules_file_that_lets_its_entries_in_uploads_the_folder_as_new() {
+    let (mut remote, _, _, site, mut b, old) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+
+    fs::write(site.root.join("app/.koiignore"), b"").unwrap();
+    for _ in 0..2 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    let tree = remote.tree();
+    assert_eq!(
+        tree.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.env", "app/.koiignore"]
+    );
+    assert_ne!(tree["app"], old);
+}
+
+#[test]
+fn a_kept_folder_with_its_rules_file_takes_the_folder_another_device_makes_at_its_place() {
+    let rules = ".env\nnode_modules/\n";
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, mut b, old) =
+        deleted_with_rules_files(&[(".koiignore", rules)], &["README.md"], &ignored);
+
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), rules.as_bytes());
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    let app = live_id(&server_nodes(&remote), "app");
+    assert_ne!(app, old);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert_eq!(local_named(&b, "app"), app);
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["app", "app/.koiignore", "app/README.md"]
+    );
+    assert_eq!(
+        names(&site.root.join("app")),
+        [".env", ".koiignore", "README.md", "node_modules"]
+    );
+    assert_kept(&site, &b, &ignored);
+}
+
+#[test]
+fn a_kept_folder_takes_the_folder_another_device_makes_at_its_name_in_another_case() {
+    let ignored = [".env"];
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &ignored);
+
+    fs::create_dir(site_a.root.join("App")).unwrap();
+    a.create(&mut remote, &site_a.root.join("App/README.md"), b"cloned again");
+    let app = live_id(&server_nodes(&remote), "App");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["App", "App/README.md"]
+    );
+    let folder = (names(&site.root).into_iter())
+        .find(|name| name.eq_ignore_ascii_case("app"))
+        .unwrap();
+    assert_eq!(local_named(&b, &folder), app);
+    let env = site.root.join(&folder).join(".env");
+    assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+}
+
+#[test]
+fn a_remote_delete_keeps_a_folder_whose_synced_file_the_person_renamed_to_an_ignored_name() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    a.create(&mut remote, &site_a.root.join("app/notes.txt"), b"synced");
+    let old = live_id(&server_nodes(&remote), "app");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    fs::rename(site.root.join("app/notes.txt"), site.root.join("app/.env")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert_eq!(fs::read(site.root.join("app/.env")).unwrap(), b"synced");
+    assert!(!site.root.join("app/README.md").exists());
+    assert!(!server_nodes(&remote).contains(&("app".into(), old, true)), "{:?}", remote.tree());
+    assert!(b.folder.engine.effects.blocked().is_empty());
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+}

@@ -67,7 +67,7 @@ For a node with a remote change and no local change, the planner emits one effec
 | content change | `WriteFile(path, content, replaces)` | the displaced file, once quarantined, has the identity and content `replaces` (S's content) |
 | move or rename | `Move(from, to)` | the source has the recorded identity; the target name is free (no-replace rename) |
 | trashed file | `RemoveFile(path)` | the quarantined file has S's content |
-| trashed directory | `RemoveDir(path)` | the directory is empty or holds only platform files (§5.2); children are removed first, bottom up. One that holds entries this device does not sync stays and leaves the tree (§5.10) |
+| trashed directory | `RemoveDir(path)` | the directory is empty or holds only platform files and the `.koiignore` file it takes along (§5.2); children are removed first, bottom up. One that holds entries this device does not sync stays and leaves the tree (§5.10) |
 
 Every effect follows these rules:
 

@@ -2965,7 +2965,7 @@ fn rebase(
 }
 
 fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
-    trees.keep_folders_of_kept_folders();
+    trees.keep_deleted_folders();
     let ended: Vec<NodeId> = (trees.kept_folders().iter())
         .filter(|id| !trees.kept_folder(id))
         .cloned()
@@ -2978,16 +2978,41 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
         if trees.remote().live(&id).is_some() {
             continue;
         }
-        let taken = (trees.remote_holders_of_key(&local.parent, &name_key(&local.name)))
-            .find(|other| {
-                trees.local().get(other).is_none()
-                    && (trees.remote().live(other))
-                        .is_some_and(|shape| shape.kind == Kind::Dir && shape.name == local.name)
-            })
-            .cloned();
-        let to = taken.unwrap_or_else(|| ids.uuid_v7(now_ms));
+        let taken = twin(trees, &local);
+        let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
         rekey(trees, &id, &to);
+        if taken.is_some() {
+            trees.set_synced_if_valid(to.clone(), Some(local));
+        }
+        let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
+            .filter(|child| trees.left_rules_file(child))
+            .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
+            .collect();
+        for (child, shape) in rules {
+            match twin(trees, &shape) {
+                Some(twin) => {
+                    rekey(trees, &child, &twin);
+                    trees.set_synced_if_valid(twin, Some(shape));
+                }
+                None => rekey(trees, &child, &ids.uuid_v7(now_ms)),
+            }
+        }
     }
+}
+
+fn twin(trees: &Trees, shape: &Shape) -> Option<NodeId> {
+    (trees.remote_holders_of_key(&shape.parent, &name_key(&shape.name)))
+        .find(|other| {
+            trees.local().get(other).is_none()
+                && (trees.remote().live(other)).is_some_and(|remote| {
+                    remote.kind == shape.kind
+                        && match (&remote.content, &shape.content) {
+                            (Some(remote), Some(local)) => same_content(remote, local),
+                            (remote, local) => remote.is_none() && local.is_none(),
+                        }
+                })
+        })
+        .cloned()
 }
 
 /// S takes the part of a concurrent change that both sides made the same way, position or

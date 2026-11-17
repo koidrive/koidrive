@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::effects::{Base, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::tree::{Content, FileIdentity, NodeId, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, NodeId, same_content};
 
 use super::tag;
 
@@ -56,7 +56,7 @@ pub enum Refused {
     Changed,
     /// The target name is taken.
     Taken,
-    /// The directory to remove has entries.
+    /// The directory to remove has entries beside the files it takes along.
     NotEmpty,
     /// The target is inside the directory that moves.
     Cycle,
@@ -163,6 +163,29 @@ impl Disk {
             .iter()
             .filter(move |(_, entry)| entry.place == *place)
             .map(|(ino, _)| *ino)
+    }
+
+    pub fn held(&self, effect: &Effect) -> Vec<(String, Kind)> {
+        let Effect::RemoveDir { at, along, .. } = effect else {
+            return Vec::new();
+        };
+        let Ok(Some(folder)) = self.at(at) else {
+            return Vec::new();
+        };
+        let carried: Vec<u128> = (along.iter())
+            .filter_map(|displaced| self.displaced(displaced).ok())
+            .collect();
+        (self.children(&Place::In(folder)))
+            .filter(|child| !carried.contains(child))
+            .map(|child| {
+                let entry = &self.entries[&child];
+                let kind = match entry.content {
+                    Some(_) => Kind::File,
+                    None => Kind::Dir,
+                };
+                (entry.name.clone(), kind)
+            })
+            .collect()
     }
 
     pub fn child(&self, place: &Place, name: &str) -> Option<u128> {
@@ -479,14 +502,24 @@ impl Disk {
                 }
                 Ok(None)
             }
-            Effect::RemoveDir { at, identity: gone } => {
+            Effect::RemoveDir {
+                at,
+                identity: gone,
+                along,
+            } => {
                 let ino = self.at(at)?.filter(|ino| *ino == gone.ino);
                 let ino = ino.ok_or(Refused::Moved)?;
                 if self.entries[&ino].content.is_some() {
                     return Err(Refused::Changed);
                 }
-                if self.children(&Place::In(ino)).next().is_some() {
+                let carried = (along.iter())
+                    .map(|displaced| self.displaced(displaced))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if (self.children(&Place::In(ino))).any(|child| !carried.contains(&child)) {
                     return Err(Refused::NotEmpty);
+                }
+                for file in carried {
+                    self.entries.remove(&file);
                 }
                 let entry = self.entries.remove(&ino);
                 if let Some(entry) = entry.filter(|_| until != Cut::Done) {

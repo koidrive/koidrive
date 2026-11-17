@@ -209,6 +209,7 @@ fn folder_removal(entries: &[Entry]) -> Effect {
         action: Action::RemoveDir {
             at: at(vec![dir("docs", &entries[0])], "empty"),
             id: entries[1].id,
+            along: vec![],
         },
     }
 }

@@ -1492,9 +1492,13 @@ fn settle(
             Outcome::Failed {
                 reason: Reason::Holds(names),
                 ..
-            } if engine.effects.keeps(&engine.trees, &record.effect_id) => {
+            } if held(names).is_some_and(|held| {
+                (engine.effects).keeps(&engine.trees, &record.effect_id, &held)
+            }) =>
+            {
+                let held = held(names).unwrap_or_default();
                 (engine.effects)
-                    .kept(&mut engine.trees, &record.effect_id)
+                    .kept(&mut engine.trees, &record.effect_id, &held)
                     .map_err(refused)?;
                 tracing::info!(
                     entries = names.len(),
@@ -1530,7 +1534,7 @@ fn settle(
                     }
                     Reason::Holds(names) => {
                         let quoted: Vec<_> = (names.iter())
-                            .map(|name| koidrive_fs::quoted(name).to_string())
+                            .map(|(name, _)| koidrive_fs::quoted(name).to_string())
                             .collect();
                         Settled::Stuck(format!(
                             "the folder holds entries this device does not sync: {}",
@@ -1542,6 +1546,18 @@ fn settle(
         };
         Ok(settled)
     }
+}
+
+fn held(names: &[(OsString, Option<EntryKind>)]) -> Option<Vec<(&str, Option<Kind>)>> {
+    (names.iter())
+        .map(|(name, kind)| {
+            let kind = kind.map(|kind| match kind {
+                EntryKind::File => Kind::File,
+                EntryKind::Dir => Kind::Dir,
+            });
+            Some((name.to_str()?, kind))
+        })
+        .collect()
 }
 
 /// `outcome` as recovery reports it for `record`, an effect in flight, unless L refutes a done
@@ -1698,10 +1714,15 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
                 written: None,
             },
         ),
-        EngineEffect::RemoveDir { at, identity } => (
+        EngineEffect::RemoveDir {
+            at,
+            identity,
+            along,
+        } => (
             Action::RemoveDir {
                 at: location(at)?,
                 id: file_id(*identity),
+                along: along.iter().map(displaced).collect::<Result<_, _>>()?,
             },
             Expected::default(),
         ),

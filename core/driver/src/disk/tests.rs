@@ -2042,6 +2042,7 @@ fn kinds_map_one_to_one() {
         EngineEffect::RemoveDir {
             at: here.clone(),
             identity,
+            along: vec![],
         },
     ];
     let kinds: Vec<&str> = cases

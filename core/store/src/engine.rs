@@ -1300,6 +1300,8 @@ struct StoredRemoveDir {
     at: Option<StoredLocation>,
     #[prost(message, optional, tag = "2")]
     identity: Option<StoredIdentity>,
+    #[prost(message, repeated, tag = "3")]
+    along: Vec<StoredDisplaced>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1428,9 +1430,14 @@ impl From<&Effect> for StoredEffect {
                 to: Some(to.into()),
             }),
             Effect::RemoveFile { displaced } => Action::RemoveFile(displaced.into()),
-            Effect::RemoveDir { at, identity } => Action::RemoveDir(StoredRemoveDir {
+            Effect::RemoveDir {
+                at,
+                identity,
+                along,
+            } => Action::RemoveDir(StoredRemoveDir {
                 at: Some(at.into()),
                 identity: Some(identity.into()),
+                along: along.iter().map(Into::into).collect(),
             }),
         };
         Self {
@@ -1461,6 +1468,9 @@ impl TryFrom<StoredEffect> for Effect {
             Action::RemoveDir(removed) => Effect::RemoveDir {
                 at: required(removed.at, "the removed location")?.try_into()?,
                 identity: required(removed.identity, "the removed identity")?.into(),
+                along: (removed.along.into_iter())
+                    .map(TryInto::try_into)
+                    .collect::<Result<_>>()?,
             },
         })
     }

@@ -684,6 +684,11 @@ fn legacy_state() -> EngineState {
     state.effects.in_flight = full.effects.in_flight;
     state.effects.cleared = full.effects.cleared;
     state.effects.failed = full.effects.failed;
+    for effect in state.effects.failed.values_mut() {
+        if let Effect::RemoveDir { along, .. } = effect {
+            along.clear();
+        }
+    }
     state
 }
 
@@ -1570,12 +1575,18 @@ fn engine_state() -> EngineState {
                         to: Location::Parked("m".into()),
                     },
                 ),
-                ("f".into(), Effect::RemoveFile { displaced }),
+                (
+                    "f".into(),
+                    Effect::RemoveFile {
+                        displaced: displaced.clone(),
+                    },
+                ),
                 (
                     "d".into(),
                     Effect::RemoveDir {
                         at: in_docs("empty"),
                         identity: identity(8),
+                        along: vec![displaced],
                     },
                 ),
             ]),

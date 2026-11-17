@@ -801,6 +801,7 @@ fn an_identity_without_a_birth_time_round_trips() {
             Effect::RemoveDir {
                 at: Location::Parked("w".into()),
                 identity: unknown,
+                along: vec![],
             },
         )]
         .into(),
