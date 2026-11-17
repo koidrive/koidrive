@@ -17,7 +17,7 @@ use koidrive_engine::tree::Content;
 use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::disk::Place;
 use koidrive_sim::world::{
-    Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
+    Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World, tag,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -1544,7 +1544,7 @@ fn an_owner_rewind_retires_a_write_both_devices_took_without_asking() {
         world.seen
     );
     let held: Vec<i64> = (world.space().nodes().into_iter())
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect();
     assert_eq!(held, [1]);
 }
@@ -1581,8 +1581,7 @@ fn an_edit_after_a_lost_create_reaches_the_server_after_a_second_restore() {
     ];
     let world = converge(2, &phases).unwrap();
     assert!((world.space().nodes().into_iter()).any(|node| {
-        (node.current.and_then(|current| current.content))
-            .is_some_and(|content| content.mtime_ns == 3)
+        (node.current.and_then(|current| current.content)).is_some_and(|content| tag(&content) == 3)
     }));
 }
 
@@ -2329,7 +2328,7 @@ fn an_edit_revives_a_file_at_the_conflict_name_the_server_already_holds() {
         (revived.parent_id, revived.name),
         (conflict.parent_id, conflict.name)
     );
-    assert_eq!(revived.current.unwrap().content.unwrap().mtime_ns, 4);
+    assert_eq!(tag(&revived.current.unwrap().content.unwrap()), 4);
 }
 
 #[test]
@@ -2524,12 +2523,8 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
     });
     let mut world = converge(2, &[vec![(0, file("a"))], vec![(0, BACKUP), (0, edit)]]).unwrap();
     world.phase(2, &[(0, RESTORE)]).unwrap();
-    let lost = (world.devices[0].disk.entries().values()).find_map(|entry| {
-        entry
-            .content
-            .clone()
-            .filter(|content| content.mtime_ns == 2)
-    });
+    let lost = (world.devices[0].disk.entries().values())
+        .find_map(|entry| entry.content.clone().filter(|content| tag(content) == 2));
     world.devices[0]
         .disk
         .create(Place::Root, "b", lost)
@@ -2543,7 +2538,7 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
 
 fn copies_of(world: &World, write: i64) -> usize {
     (files_on(world, 0).into_iter())
-        .filter(|(_, content)| content.as_ref().is_some_and(|c| c.mtime_ns == write))
+        .filter(|(_, content)| content.as_ref().is_some_and(|c| tag(c) == write))
         .count()
 }
 
@@ -2557,7 +2552,7 @@ fn version_of_write(world: &World, write: i64) -> koidrive_proto::v1::VersionInf
             current
                 .content
                 .as_ref()
-                .is_some_and(|content| content.mtime_ns == write)
+                .is_some_and(|content| tag(content) == write)
                 .then_some(current)
         })
         .unwrap()
@@ -2613,7 +2608,7 @@ fn a_write_continued_by_a_later_edit_needs_only_one_recovery_copy() {
 fn a_copy_beside_the_copies_of_a_write_a_restore_kept_is_refused() {
     let mut world = converge(3, &a_write_a_restore_kept_and_another_device_then_edited()).unwrap();
     let kept = (world.devices[0].disk.entries().values())
-        .find_map(|entry| (entry.content.clone()).filter(|content| content.mtime_ns == 3));
+        .find_map(|entry| (entry.content.clone()).filter(|content| tag(content) == 3));
     world.devices[0]
         .disk
         .create(Place::Root, "c.txt", kept)
@@ -2694,7 +2689,7 @@ fn a_write_a_restore_took_that_no_disk_keeps_is_still_reported_lost() {
     world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
     for device in &mut world.devices {
         let held: Vec<u128> = (device.disk.entries().iter())
-            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| tag(c) == 1))
             .map(|(ino, _)| *ino)
             .collect();
         for ino in held {
@@ -2989,7 +2984,7 @@ fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_bes
     .unwrap();
     for device in &world.devices {
         let disk = &device.disk;
-        let write = |ino: u128| disk.entries()[&ino].content.as_ref().map(|c| c.mtime_ns);
+        let write = |ino: u128| disk.entries()[&ino].content.as_ref().map(tag);
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(write(a), Some(3));
         let writes: BTreeSet<Option<i64>> = disk.entries().keys().map(|ino| write(*ino)).collect();
@@ -3023,7 +3018,7 @@ fn a_write_two_downloads_place_after_a_restore_is_replaced_by_the_edit_made_over
     assert!(version_of_write(&world, 2).made_over.contains(&source));
     for device in &world.devices {
         let disk = &device.disk;
-        let write = |ino: &u128| disk.entries()[ino].content.as_ref().map(|c| c.mtime_ns);
+        let write = |ino: &u128| disk.entries()[ino].content.as_ref().map(tag);
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(write(&a), Some(2));
         let mut writes: Vec<Option<i64>> = disk.entries().keys().map(write).collect();
@@ -3236,10 +3231,7 @@ fn an_edit_of_a_lost_file_another_device_creates_again_and_deletes_first_revives
         let disk = &device.disk;
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(disk.entries().len(), 1);
-        assert_eq!(
-            disk.entries()[&a].content.as_ref().map(|c| c.mtime_ns),
-            Some(2)
-        );
+        assert_eq!(disk.entries()[&a].content.as_ref().map(tag), Some(2));
     }
 }
 
@@ -4431,7 +4423,7 @@ fn a_copy_of_a_write_replaced_by_a_later_edit_can_be_deleted() {
     let lost = (world.devices[2].disk.entries().values())
         .find_map(|entry| entry.content.clone())
         .unwrap();
-    let source = version_of_write(&world, lost.mtime_ns).version_id;
+    let source = version_of_write(&world, tag(&lost)).version_id;
     let mut steps = vec![(0, RESTORE), (1, Step::Connect)];
     steps.extend([(1, DELIVER); 8]);
     steps.push(edit(1, 2));
@@ -4550,7 +4542,7 @@ fn the_authors_lost_edit_revives_a_file_deleted_at_the_restored_version() {
             .disk
             .entries()
             .values()
-            .filter_map(|entry| entry.content.as_ref().map(|content| content.mtime_ns))
+            .filter_map(|entry| entry.content.as_ref().map(tag))
             .collect();
         assert_eq!(contents, [2]);
     }
@@ -7374,7 +7366,7 @@ fn a_write_a_restore_took_and_a_disk_then_lost_stays_lost_once_a_rewind_follows(
     world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
     for device in &mut world.devices {
         let held: Vec<u128> = (device.disk.entries().iter())
-            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| tag(c) == 1))
             .map(|(ino, _)| *ino)
             .collect();
         for ino in held {
@@ -7447,7 +7439,7 @@ fn a_restore_across_a_rewind_no_device_saw_is_refused_and_sends_nothing_again() 
             .contains_key("server refuses a history a rewind replaced")
     );
     let written = (world.space().nodes().into_iter())
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect::<Vec<_>>();
     assert!(written.is_empty(), "{written:?}");
 }
@@ -9096,7 +9088,7 @@ fn entries_beside_the_folder(world: &World) -> Vec<(String, Option<i64>)> {
         .map(|node| {
             (
                 node.name.clone(),
-                node.current.and_then(|c| c.content).map(|c| c.mtime_ns),
+                node.current.and_then(|c| c.content).map(|c| tag(&c)),
             )
         })
         .collect()
@@ -10836,12 +10828,7 @@ fn a_rename_a_restore_lost_survives_a_resend_the_server_refuses_for_the_deleted_
     world.phase(2, &[]).unwrap();
     for device in &world.devices {
         let entries: Vec<(&str, Option<i64>)> = (device.disk.entries().values())
-            .map(|entry| {
-                (
-                    entry.name.as_str(),
-                    entry.content.as_ref().map(|c| c.mtime_ns),
-                )
-            })
+            .map(|entry| (entry.name.as_str(), entry.content.as_ref().map(tag)))
             .collect();
         assert_eq!(entries, [("A", Some(2))]);
     }

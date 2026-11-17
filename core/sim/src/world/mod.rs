@@ -8,8 +8,9 @@
 //! After the schedule the faults stop and the devices run until nothing is left to do.
 //!
 //! The oracle uses the harness's own records and the server's state, never the engine's
-//! bookkeeping. Every user write carries a tag in its content's `mtime_ns`, so two files with the
-//! same bytes are still two writes. A broken property is a [`Failure`] of one of two kinds.
+//! bookkeeping. Every user write has a tag, and its content's `mtime_ns` falls in a two-second
+//! slot of its own that [`tag`] reads back, so two files with the same bytes are still two writes,
+//! also on a disk that keeps coarse times. A broken property is a [`Failure`] of one of two kinds.
 //!
 //! [`Failure::Broken`]: a write is lost, or a state or a call is refused.
 //!
@@ -100,6 +101,7 @@ pub const TEXTS: u8 = 4;
 /// The rounds the devices get to become quiet once the faults stop.
 const ROUNDS: usize = 200;
 const BATCH: u64 = 4;
+const WRITE_SLOT_NS: i64 = 2_000_000_000;
 
 /// A broken property, with what broke it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,12 +262,16 @@ fn content(device: u8, text: u8, write: i64) -> Content {
         .collect();
     Content {
         size: 3,
-        mtime_ns: write,
+        mtime_ns: NOW * 1_000_000 + write * WRITE_SLOT_NS + 1_234_567_891,
         chunk_count: 1,
         manifest_digest: Sha256::digest(list).to_vec(),
         chunks,
         ..Default::default()
     }
+}
+
+pub fn tag(content: &Content) -> i64 {
+    (content.mtime_ns - NOW * 1_000_000).div_euclid(WRITE_SLOT_NS)
 }
 
 fn sources(commit: &Commit) -> impl Iterator<Item = (&NodeId, &Content)> {
@@ -280,7 +286,7 @@ fn readable(disk: &Disk, trees: &Trees, node: &str, content: &Content) -> bool {
     let (Some(at), Some(local)) = (location_of(trees, node), trees.local().get(node)) else {
         return false;
     };
-    disk.reads(&at, local.identity.ino, content.mtime_ns)
+    disk.reads(&at, local.identity.ino, tag(content))
 }
 
 fn upload(
@@ -312,7 +318,7 @@ fn upload(
 fn live_writes(space: &SpaceDo) -> BTreeMap<i64, NodeId> {
     (space.nodes().into_iter())
         .filter(|node| node.status == NodeStatus::Live as i32)
-        .filter_map(|node| Some((node.current?.content?.mtime_ns, node.node_id)))
+        .filter_map(|node| Some((tag(&node.current?.content?), node.node_id)))
         .collect()
 }
 
@@ -386,7 +392,7 @@ fn trashed_copy(
     let Some(trashed) = applied.trashed.as_ref() else {
         return Ok(None);
     };
-    let write = trashed.mtime_ns;
+    let write = tag(trashed);
     if stored(held, write) || discarded.contains(&write) {
         return Ok(None);
     }
@@ -417,8 +423,7 @@ fn resent_over_revert(
     else {
         return false;
     };
-    (exposed.get(&content.mtime_ns))
-        .is_some_and(|exposure| exposure.nodes.contains_key(&record.node))
+    (exposed.get(&tag(content))).is_some_and(|exposure| exposure.nodes.contains_key(&record.node))
         && (rolled_back.get(&record.node)).is_some_and(|digest| *digest == trashed.manifest_digest)
 }
 
@@ -461,7 +466,7 @@ fn trashed_under(space: &SpaceDo, write: i64, folders: &BTreeSet<&str>) -> bool 
     let nodes = space.nodes();
     let Some(file) = nodes.iter().find(|node| {
         let content = (node.current.as_ref()).and_then(|version| version.content.as_ref());
-        node.status != NodeStatus::Live as i32 && content.is_some_and(|c| c.mtime_ns == write)
+        node.status != NodeStatus::Live as i32 && content.is_some_and(|c| tag(c) == write)
     }) else {
         return false;
     };
@@ -870,7 +875,7 @@ impl World {
                 continue;
             }
             if let Some(content) = node.current.and_then(|current| current.content) {
-                (files.entry(content.mtime_ns).or_default()).insert(node.node_id, (1, false));
+                (files.entry(tag(&content)).or_default()).insert(node.node_id, (1, false));
             }
         }
         for (write, exposure) in &mut self.exposed {
@@ -1055,8 +1060,8 @@ impl World {
                 if let (Some(_), Some(fresh)) = (&entry.content, fresh)
                     && let Some(old) = disk.overwrite(ino, fresh)
                 {
-                    self.removed[d].insert(old.mtime_ns);
-                    self.overwrote.insert(write, old.mtime_ns);
+                    self.removed[d].insert(tag(&old));
+                    self.overwrote.insert(write, tag(&old));
                     self.writes = write;
                     self.writers.insert(write, d);
                     touched = itself;
@@ -1065,7 +1070,7 @@ impl World {
             (Act::Rename, Some(ino)) => {
                 if disk.rename(ino, place, name).is_ok() {
                     self.named[d].insert(name);
-                    let moved = disk.entries()[&ino].content.as_ref().map(|c| c.mtime_ns);
+                    let moved = disk.entries()[&ino].content.as_ref().map(tag);
                     (self.republished).extend(moved.filter(|write| self.discarded.contains(write)));
                     (self.moved_since_rewind)
                         .extend(moved.filter(|write| self.rewound.contains_key(write)));
@@ -1074,12 +1079,12 @@ impl World {
             }
             (Act::Delete, Some(ino)) => {
                 let deleted = disk.delete(ino);
-                self.removed[d].extend(deleted.iter().map(|content| content.mtime_ns));
+                self.removed[d].extend(deleted.iter().map(tag));
             }
             (Act::Copy, Some(ino)) => {
                 if let Some(new) = disk.copy(ino, place, name) {
                     self.named[d].insert(name);
-                    (self.copied).extend(disk.entries()[&new].content.as_ref().map(|c| c.mtime_ns));
+                    (self.copied).extend(disk.entries()[&new].content.as_ref().map(tag));
                     touched = std::iter::once(new).chain(above).collect();
                 }
             }
@@ -1116,7 +1121,7 @@ impl World {
         note(&mut self.seen, "server rewound");
         unspend(&mut self.spent, &mut self.touches, backup);
         let backed_up: BTreeSet<i64> = (backup.space.nodes().into_iter())
-            .filter_map(|node| Some(node.current?.content?.mtime_ns))
+            .filter_map(|node| Some(tag(&node.current?.content?)))
             .collect();
         let still_held = |write: i64| {
             (self.devices.iter())
@@ -1238,7 +1243,7 @@ impl World {
             },
         );
         let trees = &engine.trees;
-        let content = |shape: Option<&Shape>| Some(shape?.content.as_ref()?.mtime_ns);
+        let content = |shape: Option<&Shape>| Some(tag(shape?.content.as_ref()?));
         let held: Vec<(NodeId, i64, u128)> = (question.holds())
             .filter_map(|id| {
                 let node = trees.local().get(id)?;
@@ -1309,7 +1314,7 @@ impl World {
         let asked: Vec<(NodeId, Option<i64>, u128)> = (open.flat_map(|question| question.holds()))
             .filter_map(|id| {
                 let node = engine.trees.local().get(id)?;
-                let write = node.shape.content.as_ref().map(|content| content.mtime_ns);
+                let write = node.shape.content.as_ref().map(tag);
                 Some((id.clone(), write, node.identity.ino))
             })
             .collect();
@@ -1352,7 +1357,7 @@ impl World {
         };
         let writes = |space: &SpaceDo| -> BTreeSet<(NodeId, i64)> {
             (space.nodes().into_iter())
-                .filter_map(|node| Some((node.node_id, node.current?.content?.mtime_ns)))
+                .filter_map(|node| Some((node.node_id, tag(&node.current?.content?))))
                 .collect()
         };
         let before = shapes(&self.space);
@@ -1430,7 +1435,7 @@ impl World {
                 self.retired.insert(*write);
             }
             let holds =
-                |content: &Option<Content>| content.as_ref().is_some_and(|c| c.mtime_ns == *write);
+                |content: &Option<Content>| content.as_ref().is_some_and(|c| tag(c) == *write);
             let mut holders: BTreeMap<&NodeId, usize> = (held_before.iter())
                 .filter(|(_, held)| held == write)
                 .map(|(id, _)| (id, 0))
@@ -1789,7 +1794,7 @@ impl World {
                         .zip(download)
                         .and_then(|(identity, content)| {
                             let found = device.disk.entries()[&identity.ino].content.as_ref()?;
-                            (found.mtime_ns != content.mtime_ns).then_some(found)
+                            (tag(found) != tag(content)).then_some(found)
                         });
                     if let Some(found) = taken {
                         note(
@@ -1798,9 +1803,9 @@ impl World {
                         );
                         for held in [&mut self.held, &mut self.in_history] {
                             let writes = held.entry(record.node.clone()).or_default();
-                            writes.insert(found.mtime_ns, found.manifest_digest.clone());
+                            writes.insert(tag(found), found.manifest_digest.clone());
                         }
-                        self.published.insert(found.mtime_ns);
+                        self.published.insert(tag(found));
                     }
                     note(
                         &mut self.seen,
@@ -1819,8 +1824,8 @@ impl World {
                 }
                 Err(Refused::Overtaken) => {
                     note(&mut self.seen, "restart finds a write its user overtook");
-                    if let Some(content) = download.filter(|c| device.disk.holds(c.mtime_ns)) {
-                        self.copied.insert(content.mtime_ns);
+                    if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
+                        self.copied.insert(tag(content));
                     }
                     effects.overtaken(trees, &record.effect_id)
                 }
@@ -1836,8 +1841,8 @@ impl World {
                             Err(_) => "restart finds the effect in flight refused by the disk",
                         },
                     );
-                    if let Some(content) = download.filter(|c| device.disk.holds(c.mtime_ns)) {
-                        self.copied.insert(content.mtime_ns);
+                    if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
+                        self.copied.insert(tag(content));
                     }
                     // The driver plans an interrupted effect again, and one that L no longer
                     // takes once L has changed. An effect that failed for another reason waits
@@ -2107,10 +2112,10 @@ impl World {
                         ) else {
                             continue;
                         };
-                        if here.mtime_ns != there.mtime_ns && same_content(here, there) {
+                        if tag(here) != tag(there) && same_content(here, there) {
                             let writes = self.held.entry(id.clone()).or_default();
-                            writes.insert(here.mtime_ns, here.manifest_digest.clone());
-                            self.published.insert(here.mtime_ns);
+                            writes.insert(tag(here), here.manifest_digest.clone());
+                            self.published.insert(tag(here));
                         }
                     }
                     device.persist()?;
@@ -2297,15 +2302,14 @@ impl World {
                     });
                     let versions: Vec<u64> = (versions.iter().flat_map(|list| &list.versions))
                         .filter(|version| {
-                            (version.content.as_ref())
-                                .is_some_and(|held| held.mtime_ns == content.mtime_ns)
+                            (version.content.as_ref()).is_some_and(|held| tag(held) == tag(content))
                         })
                         .map(|version| version.seq)
                         .collect();
                     if !versions.is_empty() {
                         let copy = RecoveryCopy {
                             source: source.clone(),
-                            write: content.mtime_ns,
+                            write: tag(content),
                             device: d,
                             bound,
                             versions,
@@ -2411,7 +2415,7 @@ impl World {
                                     .filter(|node| {
                                         (node.current.as_ref())
                                             .and_then(|version| version.content.as_ref())
-                                            .is_some_and(|content| content.mtime_ns != *write)
+                                            .is_some_and(|content| tag(content) != *write)
                                     })
                                     .map(|node| node.node_id.clone());
                                 exposure.replaced.extend(replaced);
@@ -2657,7 +2661,7 @@ impl World {
                                 let content = create.content.as_ref();
                                 if let Some(copy) = self.planned_copies[d].get(&create.node_id)
                                     && created
-                                    && content.is_some_and(|content| content.mtime_ns == copy.write)
+                                    && content.is_some_and(|content| tag(content) == copy.write)
                                     && (digests.get(&copy.source)).is_some_and(|digest| {
                                         Some(digest) != content.map(|c| &c.manifest_digest)
                                     })
@@ -2696,7 +2700,7 @@ impl World {
                                         update.node_id == *node
                                             && self.rolled_back.contains_key(node)
                                             && ((update.content.as_ref()).is_some_and(|content| {
-                                                (self.exposed.get(&content.mtime_ns))
+                                                (self.exposed.get(&tag(content)))
                                                     .is_some_and(|e| e.rolled_back(node))
                                             }) || (self.exposed.iter()).any(
                                                 |(write, exposure)| {
@@ -2751,10 +2755,8 @@ impl World {
                                 if let Some(content) = node.current.and_then(|v| v.content) {
                                     for held in [&mut self.held, &mut self.in_history] {
                                         let writes = held.entry(node.node_id.clone()).or_default();
-                                        writes.insert(
-                                            content.mtime_ns,
-                                            content.manifest_digest.clone(),
-                                        );
+                                        writes
+                                            .insert(tag(&content), content.manifest_digest.clone());
                                     }
                                 }
                             }
@@ -2897,7 +2899,7 @@ impl World {
         use std::fmt::Write;
         let short = |id: &str| id[id.len().saturating_sub(4)..].to_owned();
         let file = |content: &Option<Content>| match content {
-            Some(content) => format!("w{}", content.mtime_ns),
+            Some(content) => format!("w{}", tag(content)),
             None => "dir".to_owned(),
         };
         let mut out = format!(
@@ -3057,7 +3059,7 @@ impl World {
             )));
         }
         let server: BTreeSet<i64> = (self.space.nodes().into_iter())
-            .filter_map(|node| Some(node.current?.content?.mtime_ns))
+            .filter_map(|node| Some(tag(&node.current?.content?)))
             .collect();
         let dropped = (self.rewound.iter())
             .flat_map(|(write, holders)| holders.iter().map(move |d| (*write, *d)))
@@ -3259,7 +3261,7 @@ impl World {
         let mut files: BTreeMap<i64, Vec<&Vec<String>>> = BTreeMap::new();
         for (path, content) in &server {
             if let Some(content) = content {
-                files.entry(content.mtime_ns).or_default().push(path);
+                files.entry(tag(content)).or_default().push(path);
             }
         }
         let allowed = |write: i64| {
@@ -3281,9 +3283,7 @@ impl World {
             }
             let holders: BTreeSet<&NodeId> = (nodes.iter())
                 .filter(|(_, node)| !node.trashed)
-                .filter(|(_, node)| {
-                    (node.shape.content.as_ref()).is_some_and(|c| c.mtime_ns == write)
-                })
+                .filter(|(_, node)| (node.shape.content.as_ref()).is_some_and(|c| tag(c) == write))
                 .map(|(id, _)| id)
                 .collect();
             let roots: BTreeSet<&NodeId> = (holders.iter())
@@ -3313,7 +3313,7 @@ impl World {
                 .recovery_copies
                 .get(id)
                 .filter(|copy| !copy.permitted())?;
-            let holds = (node.shape.content.as_ref()).is_some_and(|c| c.mtime_ns == copy.write);
+            let holds = (node.shape.content.as_ref()).is_some_and(|c| tag(c) == copy.write);
             let excused =
                 self.exposed.contains_key(&copy.write) || self.copied.contains(&copy.write);
             (!node.trashed && holds && !excused).then_some((&node.shape.name, copy))
@@ -3327,8 +3327,7 @@ impl World {
         let live = live_writes(&self.space);
         let same_bytes_on_server = |write: i64, writer: usize| {
             (self.devices[writer].engine.trees.local().iter()).any(|(id, node)| {
-                let Some(local) = (node.shape.content.as_ref()).filter(|c| c.mtime_ns == write)
-                else {
+                let Some(local) = (node.shape.content.as_ref()).filter(|c| tag(c) == write) else {
                     return false;
                 };
                 (nodes.iter()).any(|(other, remote)| {
@@ -3342,7 +3341,7 @@ impl World {
             let device = &self.devices[writer];
             device.left
                 && (device.disk.entries().values())
-                    .any(|entry| (entry.content.as_ref()).is_some_and(|c| c.mtime_ns == write))
+                    .any(|entry| (entry.content.as_ref()).is_some_and(|c| tag(c) == write))
         };
         let lost = (self.writers.iter()).find(|(write, writer)| {
             !live.contains_key(write)
@@ -3460,7 +3459,7 @@ mod tests {
             .current
             .unwrap();
         assert_eq!(ancestry_version(&world, 4), current);
-        assert_eq!(copy.content.as_ref().unwrap().mtime_ns, 3);
+        assert_eq!(tag(copy.content.as_ref().unwrap()), 3);
         let expected: Vec<_> = [second.version_id, first.version_id]
             .into_iter()
             .chain(unknown)
@@ -3754,7 +3753,7 @@ mod tests {
             .into_iter()
             .find(|node| node.name == "a")
             .unwrap();
-        assert_eq!(node.current.unwrap().content.unwrap().mtime_ns, 2);
+        assert_eq!(tag(&node.current.unwrap().content.unwrap()), 2);
         assert!(world.placements[0] == placed);
     }
 
@@ -4260,7 +4259,7 @@ mod tests {
             let disk = &mut world.devices[0].disk;
             let ino = disk.child(&Place::Root, "a").unwrap();
             let old = disk.overwrite(ino, content(0, text, write)).unwrap();
-            world.removed[0].insert(old.mtime_ns);
+            world.removed[0].insert(tag(&old));
             world.writers.insert(write, 0);
             world.writes = write;
         };
@@ -4379,7 +4378,7 @@ mod tests {
             .find(|(_, node)| !node.trashed)
             .map(|(id, node)| (id.clone(), node.shape.clone()))
             .unwrap();
-        assert_eq!(shape.content.as_ref().unwrap().mtime_ns, 2);
+        assert_eq!(tag(shape.content.as_ref().unwrap()), 2);
         assert!(trees.local().get(&id).is_none());
         trees.set_synced(id, Some(shape));
         trees.settle(&Default::default());
@@ -4461,16 +4460,9 @@ mod tests {
             .find(|(_, node)| !node.trashed)
             .map(|(id, node)| (id.clone(), node.shape.clone()))
             .unwrap();
-        assert_eq!(shape.content.as_ref().unwrap().mtime_ns, 3);
+        assert_eq!(tag(shape.content.as_ref().unwrap()), 3);
         assert_eq!(
-            trees
-                .synced()
-                .live(&id)
-                .unwrap()
-                .content
-                .as_ref()
-                .unwrap()
-                .mtime_ns,
+            tag(trees.synced().live(&id).unwrap().content.as_ref().unwrap()),
             2
         );
         trees.set_synced(id, Some(shape));

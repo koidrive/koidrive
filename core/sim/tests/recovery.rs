@@ -6,7 +6,7 @@ use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
 use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
-use koidrive_sim::world::{Action, Cut, Failure, NAMES, Outcome, Reply, Step, World};
+use koidrive_sim::world::{Action, Cut, Failure, NAMES, Outcome, Reply, Step, World, tag};
 
 fn user(kind: u8, target: usize, parent: usize, name: &str) -> Step {
     let name = NAMES.iter().position(|other| *other == name).unwrap();
@@ -309,7 +309,7 @@ fn a_folder_parked_for_a_case_rename_then_store_rollback() {
     let disk = &world.devices[1].disk;
     let visible = (disk.visible().into_iter())
         .filter_map(|ino| disk.entries()[&ino].content.as_ref())
-        .any(|content| content.mtime_ns == 1);
+        .any(|content| tag(content) == 1);
     assert!(visible || live(&world).contains(&"b".to_owned()));
 }
 
@@ -3023,7 +3023,7 @@ fn a_keep_follows_its_file_when_the_node_is_rekeyed() {
     let new = rekey_the_create_in_flight(&mut world, 0, false);
     world.run(2, &[(0, COMMIT)]).unwrap();
     let node = world.space().node(&new).unwrap();
-    assert_eq!(node.current.unwrap().content.unwrap().mtime_ns, 1);
+    assert_eq!(tag(&node.current.unwrap().content.unwrap()), 1);
 }
 
 #[test]
@@ -3619,14 +3619,13 @@ fn a_file_a_store_rollback_forgot_that_its_user_renamed_while_another_device_edi
     world.run(0, &commit(0)).unwrap();
     let written = |world: &World, name: &str| {
         let node = world.space().node(&node_named(world, name)).unwrap();
-        node.current.unwrap().content.unwrap().mtime_ns
+        tag(&node.current.unwrap().content.unwrap())
     };
     let edited = written(&world, "a");
-    let renamed = world.devices[1].disk.entries()[&original]
+    let renamed = tag(world.devices[1].disk.entries()[&original]
         .content
         .as_ref()
-        .unwrap()
-        .mtime_ns;
+        .unwrap());
     assert_ne!(edited, renamed);
     roll_back(&mut world, 1);
     assert_eq!(answered(&world), ["recovery answer publishes"]);

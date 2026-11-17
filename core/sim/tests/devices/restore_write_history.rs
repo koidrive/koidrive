@@ -122,7 +122,7 @@ fn observers_keep_one_copy_of_a_lost_write_across_another_restore() {
         .nodes()
         .into_iter()
         .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
-        .filter_map(|node| node.current?.content.map(|content| content.mtime_ns))
+        .filter_map(|node| node.current?.content.map(|content| tag(&content)))
         .collect();
     writes.sort_unstable();
     assert_eq!(writes, [1, 2]);
