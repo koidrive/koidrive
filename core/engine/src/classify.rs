@@ -3197,8 +3197,8 @@ impl Trees {
     /// `untaken` lists the changes of other devices that this device had not taken before the
     /// bootstrap ([`Trees::untaken_changes`]). A node L held as S did while R held it in the trash,
     /// or did not hold it, was deleted by another device, so L holds nothing the server lacks. It
-    /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore brought back is a
-    /// remote change, and the delete is not undone.
+    /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore
+    /// brought back is a remote change, and the delete is not undone.
     ///
     /// The other changes are files whose content L and S held alike while R held other content
     /// live, each with whether a lost commit of this device set R's position of it and the shape R

@@ -1,1 +1,1 @@
-cc 6c97478f98bb1a2de17cd1e217cf4399e13f24ec546022b3425f1773a9080139 # shrinks to devices = 2, a removal not yet taken is uploaded again after a restore (GUN-956)
+cc 6c97478f98bb1a2de17cd1e217cf4399e13f24ec546022b3425f1773a9080139 # shrinks to devices = 2, a removal not yet taken across a second loss bootstrap (GUN-956)
