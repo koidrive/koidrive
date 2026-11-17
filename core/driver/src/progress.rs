@@ -126,11 +126,49 @@ impl Tracker {
     }
 
     pub fn track(&mut self, wanted: BTreeMap<Item, u64>, synced: impl Fn(&Item) -> bool) -> bool {
-        let shown = !self.entries.is_empty();
         let gone: Vec<Item> = (self.entries.keys())
             .filter(|item| !wanted.contains_key(*item))
             .cloned()
             .collect();
+        self.change(gone, wanted, synced)
+    }
+
+    /// Replaces what is tracked of each node with the files it now has to move.
+    pub fn update(
+        &mut self,
+        nodes: impl IntoIterator<Item = (NodeId, Vec<(Item, u64)>)>,
+        synced: impl Fn(&Item) -> bool,
+    ) -> bool {
+        let mut gone = Vec::new();
+        let mut wanted = Vec::new();
+        for (node, items) in nodes {
+            for direction in [Direction::Upload, Direction::Download] {
+                let from = Item {
+                    direction,
+                    node: node.clone(),
+                    digest: Vec::new(),
+                };
+                let tracked = (self.entries.range(from..)).map(|(item, _)| item);
+                let tracked =
+                    tracked.take_while(|item| item.direction == direction && item.node == node);
+                (gone).extend(
+                    tracked
+                        .filter(|item| !items.iter().any(|(kept, _)| kept == *item))
+                        .cloned(),
+                );
+            }
+            wanted.extend(items);
+        }
+        self.change(gone, wanted, synced)
+    }
+
+    fn change(
+        &mut self,
+        gone: Vec<Item>,
+        wanted: impl IntoIterator<Item = (Item, u64)>,
+        synced: impl Fn(&Item) -> bool,
+    ) -> bool {
+        let shown = !self.entries.is_empty();
         for item in gone {
             let entry = self.remove(&item);
             self.finished += match synced(&item) {

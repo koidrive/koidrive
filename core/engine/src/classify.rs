@@ -2,7 +2,7 @@
 
 //! Classifying a node (docs/design/sync-engine.md section 2.3) and the dirty set the planner reads.
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_ignore::Status;
@@ -22,11 +22,13 @@ use crate::tree::{
 
 type Pair = (NodeId, NodeId);
 
-/// The nodes whose rows the store must write: [`Changed::local`] for L, [`Changed::synced`] for S.
+/// The nodes whose entries changed: [`Changed::local`] in L and [`Changed::synced`] in S, whose rows the store must
+/// write, and [`Changed::remote`] in R.
 #[derive(Debug, Default)]
 pub struct Changed {
     pub local: BTreeSet<NodeId>,
     pub synced: BTreeSet<NodeId>,
+    pub remote: BTreeSet<NodeId>,
 }
 
 /// The most mutually dependent [`Class::Same`] updates [`Trees::settle`] searches as one group.
@@ -95,6 +97,64 @@ pub fn classify(l: Option<&Shape>, s: Option<&Shape>, r: Option<&Shape>) -> Clas
 }
 
 /// Whether `tree` holds `id` live and placed below one of `folders`, through live, placed folders.
+/// What can have changed whether nodes are excluded or held ([`Trees::take_rescope`]), beyond the nodes it names.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rescope {
+    /// Every node.
+    pub all: bool,
+    /// The nodes below each of these in L, the nodes R holds in any of them, and the nodes below those in R.
+    pub local: BTreeSet<NodeId>,
+    /// The nodes below each of these in S, the nodes R holds in any of them, and the nodes below those in R.
+    pub synced: BTreeSet<NodeId>,
+    /// The nodes below each of these in R.
+    pub remote: BTreeSet<NodeId>,
+    /// These nodes only.
+    pub nodes: BTreeSet<NodeId>,
+    /// The folders a node left in L, S or R, and the folders above them, whose answers read what is below them.
+    pub left: BTreeSet<NodeId>,
+}
+
+impl Rescope {
+    pub fn add(&mut self, other: Rescope) {
+        self.all |= other.all;
+        self.local.extend(other.local);
+        self.synced.extend(other.synced);
+        self.remote.extend(other.remote);
+        self.nodes.extend(other.nodes);
+        self.left.extend(other.left);
+    }
+
+    fn below(&mut self, id: &str) {
+        for folders in [&mut self.local, &mut self.synced, &mut self.remote] {
+            folders.insert(id.to_owned());
+        }
+    }
+}
+
+fn note_move<N: Node>(
+    rescope: &mut Rescope,
+    moved: fn(&mut Rescope) -> &mut BTreeSet<NodeId>,
+    id: &str,
+    old: Option<&N>,
+    new: Option<&N>,
+) {
+    fn at<N: Node>(node: Option<&N>) -> Option<(&str, &str, bool, bool)> {
+        let node = node?;
+        let shape = node.shape();
+        Some((&shape.parent, &shape.name, node.is_live(), node.is_placed()))
+    }
+    if at(old) == at(new) {
+        return;
+    }
+    if let Some(old) = old {
+        rescope.left.insert(old.shape().parent.clone());
+    }
+    let folder = |node: Option<&N>| node.is_some_and(|node| node.shape().kind == Kind::Dir);
+    if folder(old) || folder(new) {
+        moved(rescope).insert(id.to_owned());
+    }
+}
+
 fn below<N: Node>(tree: &Tree<N>, id: &str, folders: &BTreeSet<NodeId>) -> bool {
     let held = |id: &str| {
         tree.get(id)
@@ -376,7 +436,7 @@ struct Keeping {
 /// ([`Trees::rules_known`]).
 #[derive(Clone, Debug)]
 pub struct Trees {
-    r: Tree<RemoteNode>,
+    r: TrackedTree<RemoteNode>,
     l: TrackedTree<LocalNode>,
     s: TrackedTree<Shape>,
     /// The files S holds.
@@ -451,6 +511,7 @@ pub struct Trees {
     link_due: BTreeSet<Pair>,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
+    rescope: RefCell<Rescope>,
     /// The placed nodes of L.
     l_names: ByName,
     l_parked: ByName,
@@ -495,7 +556,7 @@ impl Trees {
     pub fn new(root: impl Into<NodeId>) -> Self {
         let root = root.into();
         Self {
-            r: Tree::new(root.clone()),
+            r: TrackedTree::new(root.clone()),
             l: TrackedTree::new(root.clone()),
             s: TrackedTree::new(root),
             s_files: 0,
@@ -546,6 +607,7 @@ impl Trees {
             unlinked: BTreeMap::new(),
             link_due: BTreeSet::new(),
             same: BTreeSet::new(),
+            rescope: RefCell::default(),
             l_names: ByName::default(),
             l_parked: ByName::default(),
             l_identities: HashMap::new(),
@@ -723,12 +785,19 @@ impl Trees {
         &self.others
     }
 
-    /// The nodes whose L entry or S entry changed since the last call, which empties both sets.
+    /// The nodes whose L, S or R entry changed since the last call, which empties the three sets.
     pub fn take_changed(&mut self) -> Changed {
         Changed {
             local: self.l.take_changed(),
             synced: self.s.take_changed(),
+            remote: self.r.take_changed(),
         }
+    }
+
+    /// What changed since the last call, beyond the entries [`Trees::take_changed`] names, that can change whether
+    /// a node is excluded or held, which empties it.
+    pub fn take_rescope(&self) -> Rescope {
+        self.rescope.take()
     }
 
     /// The placed nodes of L under `parent`, by the `name_key` of their names.
@@ -741,10 +810,7 @@ impl Trees {
         self.s_names.children(parent)
     }
 
-    pub(crate) fn remote_children<'a>(
-        &'a self,
-        parent: &'a str,
-    ) -> impl Iterator<Item = &'a NodeId> + 'a {
+    pub fn remote_children<'a>(&'a self, parent: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
         self.r_names.children(parent)
     }
 
@@ -1154,6 +1220,13 @@ impl Trees {
                 old.shape.parent != node.shape.parent || old.trashed != node.trashed
             });
         let old = self.r.insert(id.clone(), node);
+        note_move(
+            self.rescope.get_mut(),
+            |rescope| &mut rescope.remote,
+            &id,
+            old.as_ref(),
+            self.r.get(&id),
+        );
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
@@ -1492,6 +1565,13 @@ impl Trees {
         self.moved_here.remove(id);
         self.past_positions.remove(id);
         if let Some(old) = self.r.remove(id) {
+            note_move(
+                self.rescope.get_mut(),
+                |rescope| &mut rescope.remote,
+                id,
+                Some(&old),
+                None,
+            );
             self.index_remote(id, Some(&old));
             self.mark(id);
         }
@@ -1843,7 +1923,14 @@ impl Trees {
             .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
         self.count_held_trash(&id, false);
-        self.l.insert(id.clone(), node);
+        let old = self.l.insert(id.clone(), node);
+        note_move(
+            self.rescope.get_mut(),
+            |rescope| &mut rescope.local,
+            &id,
+            old.as_ref(),
+            self.l.get(&id),
+        );
         self.count_held_trash(&id, true);
         self.note_position(&id);
         self.record_edit_in_trash(&id);
@@ -1962,7 +2049,9 @@ impl Trees {
         }
         self.prune_content_provenance(id);
         self.parked_as.remove(id);
-        self.unknown_rules.remove(id);
+        if self.unknown_rules.remove(id) {
+            self.rescope.get_mut().below(id);
+        }
         self.outside.remove(id);
         self.lost.remove(id);
         self.count_held_trash(id, false);
@@ -1974,6 +2063,13 @@ impl Trees {
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
         if let Some(old) = self.l.remove(id) {
+            note_move(
+                self.rescope.get_mut(),
+                |rescope| &mut rescope.local,
+                id,
+                Some(&old),
+                None,
+            );
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
                 true => self.l_parked.remove(id, &old.shape),
@@ -2011,6 +2107,7 @@ impl Trees {
     /// Replaces this device's include and exclude lists, which are never synced.
     pub fn set_local_rules(&mut self, local: LocalRules) {
         self.ignore.set_local(local, std::iter::empty());
+        self.rescope.get_mut().all = true;
         self.relink = true;
     }
 
@@ -2019,12 +2116,34 @@ impl Trees {
     /// device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], rules: Option<RuleFile>) {
         self.ignore.set_rules(dir, rules, std::iter::empty());
+        self.rescope_rules(dir);
         self.relink = true;
+    }
+
+    fn rescope_rules<S: AsRef<str>>(&mut self, dir: &[S]) {
+        if dir.is_empty() {
+            self.rescope.get_mut().all = true;
+            return;
+        }
+        let at = |names: &ByName, root: &str| {
+            (dir.iter()).fold(vec![root.to_owned()], |folders, name| {
+                (folders.iter())
+                    .flat_map(|folder| names.holders(folder, name.as_ref()).cloned())
+                    .collect()
+            })
+        };
+        let local = at(&self.l_names, &self.l.root);
+        let synced = at(&self.s_names, &self.s.root);
+        let remote = at(&self.r_names, &self.r.root);
+        self.rescope.get_mut().local.extend(local);
+        self.rescope.get_mut().synced.extend(synced);
+        self.rescope.get_mut().remote.extend(remote);
     }
 
     /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
+        self.rescope.get_mut().all = true;
         self.relink = true;
     }
 
@@ -2033,8 +2152,10 @@ impl Trees {
     /// node below it ([`Trees::held`]).
     pub fn set_rules_unknown(&mut self, id: &str) {
         self.forget_reclaims();
-        if id == self.l.root || self.l.get(id).is_some() {
-            self.unknown_rules.insert(id.to_owned());
+        if (id == self.l.root || self.l.get(id).is_some())
+            && self.unknown_rules.insert(id.to_owned())
+        {
+            self.rescope.get_mut().below(id);
         }
     }
 
@@ -2045,7 +2166,11 @@ impl Trees {
 
     /// Records that a scan read the folder `id` and passed its rules, or found it has none.
     pub fn set_rules_known(&mut self, id: &str) {
-        self.relink |= self.unknown_rules.remove(id);
+        let known = self.unknown_rules.remove(id);
+        if known {
+            self.rescope.get_mut().below(id);
+        }
+        self.relink |= known;
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
@@ -2053,6 +2178,7 @@ impl Trees {
     pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
+        (self.rescope.get_mut().nodes).extend(self.asked.symmetric_difference(&asked).cloned());
         self.asked = asked;
     }
 
@@ -2337,7 +2463,7 @@ impl Trees {
         kept
     }
 
-    pub(crate) fn local_children_placed_or_parked<'a>(
+    pub fn local_children_placed_or_parked<'a>(
         &'a self,
         id: &'a str,
     ) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -2838,40 +2964,22 @@ impl Trees {
     /// (section 5.10), and the effects do not create it again, so nothing is left to sync for it. The returned check
     /// remembers what it found below each node, so asking it about every node of R reads each node once.
     pub fn kept_for_excluded(&self) -> impl Fn(&str) -> bool + '_ {
-        let children = OnceCell::new();
         let below = RefCell::new(HashMap::new());
         move |id| {
             if self.l.get(id).is_some() || self.r.live(id).is_none() {
                 return false;
             }
-            let children = children.get_or_init(|| {
-                let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
-                for (node, _) in self.r.iter() {
-                    if let Some(shape) = self.r.live(node) {
-                        children
-                            .entry(shape.parent.as_str())
-                            .or_default()
-                            .push(node);
-                    }
-                }
-                children
-            });
-            self.excluded_below(id, children, &mut below.borrow_mut())
+            self.excluded_below(id, &mut below.borrow_mut())
         }
     }
 
-    fn excluded_below(
-        &self,
-        id: &str,
-        children: &HashMap<&str, Vec<&str>>,
-        below: &mut HashMap<String, bool>,
-    ) -> bool {
+    fn excluded_below(&self, id: &str, below: &mut HashMap<String, bool>) -> bool {
         if let Some(found) = below.get(id) {
             return *found;
         }
         below.insert(id.to_owned(), false);
-        let found = (children.get(id).into_iter().flatten())
-            .any(|child| self.excluded(child) || self.excluded_below(child, children, below));
+        let found = (self.r_names.children(id))
+            .any(|child| self.excluded(child) || self.excluded_below(child, below));
         below.insert(id.to_owned(), found);
         found
     }
@@ -4835,6 +4943,13 @@ impl Trees {
             }
             None => self.s.remove(id),
         };
+        note_move(
+            self.rescope.get_mut(),
+            |rescope| &mut rescope.synced,
+            id,
+            old.as_ref(),
+            self.s.get(id),
+        );
         self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
@@ -5036,6 +5151,7 @@ impl Trees {
             unlinked: _,
             link_due: _,
             same: _,
+            rescope: _,
             l_names: _,
             l_parked: _,
             l_identities: _,
@@ -5265,6 +5381,7 @@ impl Trees {
         self.pending_finishes = pending_finishes.into();
         self.rules_known = false;
         self.unknown_rules.clear();
+        self.rescope.get_mut().all = true;
         Ok(())
     }
 }

@@ -32,8 +32,8 @@ use crate::timing::Time;
 use super::commit::sent_in_order;
 use super::work::{Slot, finished, in_place, list_tree, spawned, stage_effect, upload_chunks};
 use super::{
-    CLAIM_RECHECK, Folder, Listed, Listing, MAX_FORMAT, OTHER_FOLDER, RECLAIM_TRASH, REPLACED,
-    ROOT_AGAIN, ROOT_RECHECK, View, Work,
+    CLAIM_RECHECK, Folder, Listed, Listing, MAX_FORMAT, OBSERVED_AHEAD, OTHER_FOLDER,
+    RECLAIM_TRASH, REPLACED, ROOT_AGAIN, ROOT_RECHECK, View, Work,
 };
 
 /// What the observer's thread sends to the task.
@@ -462,8 +462,8 @@ impl FolderTask {
         lock: Arc<Flock>,
         sections: Arc<Sections>,
         previous: Snapshot,
-    ) -> mpsc::UnboundedReceiver<FromDisk> {
-        let (sender, receiver) = mpsc::unbounded_channel();
+    ) -> mpsc::Receiver<FromDisk> {
+        let (sender, receiver) = mpsc::channel(OBSERVED_AHEAD);
         let matcher = self.matcher.clone();
         *self.observing.lock().unwrap() = None;
         let walked = Arc::new(AtomicBool::new(false));
@@ -491,7 +491,7 @@ impl FolderTask {
                 Ok(observer) => observer,
                 Err(error) => {
                     tracing::warn!(space_id = link.space_id, %error, "the folder cannot be observed");
-                    let _ = sender.send(FromDisk::Failed(format!(
+                    let _ = sender.blocking_send(FromDisk::Failed(format!(
                         "the folder cannot be observed: {error}"
                     )));
                     return;
@@ -521,7 +521,7 @@ impl FolderTask {
                             "observed the folder"
                         );
                         let entries = observer.snapshot().entries.len() as u64;
-                        let _ = sender.send(FromDisk::Batch(Box::new(batch), entries));
+                        let _ = sender.blocking_send(FromDisk::Batch(Box::new(batch), entries));
                     }
                     Err(error) => {
                         tracing::warn!(space_id = link.space_id, %error, "observing the folder failed");
@@ -542,7 +542,7 @@ impl FolderTask {
                 if !scanned && observer.scanned().is_some() {
                     scanned = true;
                     walked.store(true, Ordering::Relaxed);
-                    let _ = sender.send(FromDisk::Scanned);
+                    let _ = sender.blocking_send(FromDisk::Scanned);
                 }
             }
         });
@@ -555,7 +555,7 @@ impl FolderTask {
         let view = folder.view();
         (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
-        let began_or_ended = folder.recount_progress(view.state);
+        let began_or_ended = folder.show_progress(view.state);
         let activity = folder.activity(view.state);
         let asked = folder.take_questions_changed();
         let mut status = self.status.lock().unwrap();

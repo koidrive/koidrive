@@ -8,11 +8,12 @@
 //! tree. [`Engine::observe`] puts an observation batch into L: each change goes to the node with the entry's
 //! identity, or to the node at the change's path, and a change that leaves a node as L has it changes nothing.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Rescope, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
@@ -47,6 +48,16 @@ pub(crate) struct Engine {
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
     pub mounts: BTreeMap<PathBuf, Mount>,
+    pub touched: RefCell<Touched>,
+}
+
+/// What the checkpoints since the folder last took it changed.
+#[derive(Default)]
+pub(crate) struct Touched {
+    pub stepped: bool,
+    pub nodes: BTreeSet<NodeId>,
+    pub rescope: Rescope,
+    pub questions: bool,
 }
 
 /// What applying a batch of the log did.
@@ -91,6 +102,7 @@ impl Engine {
             .restore(stored.trees)
             .map_err(|error| invalid(format!("{error:?}")))?;
         trees.take_changed();
+        trees.take_rescope();
         let stored_questions = stored.commits.questions.clone();
         let commits =
             Commits::from_state(stored.commits).map_err(|error| invalid(format!("{error:?}")))?;
@@ -120,6 +132,15 @@ impl Engine {
             recovery_cause: None,
             unscanned: None,
             mounts: tx.volume_mounts()?,
+            touched: RefCell::new(Touched {
+                stepped: true,
+                rescope: Rescope {
+                    all: true,
+                    ..Rescope::default()
+                },
+                questions: true,
+                ..Touched::default()
+            }),
         })
     }
 
@@ -157,6 +178,19 @@ impl Engine {
             effects: self.effects.take_changes(),
         };
         tx.write_engine_changes(&changes)?;
+        let touched = self.touched.get_mut();
+        touched.stepped = true;
+        touched.nodes.extend(changed.local);
+        touched.nodes.extend(changed.synced);
+        touched.nodes.extend(changed.remote);
+        touched.nodes.extend(changes.trees.nodes().cloned());
+        (touched.nodes).extend(changes.commits.problems.iter().map(|(id, _)| id.clone()));
+        (touched.nodes).extend(changes.effects.failed.iter().map(|(id, _)| id.clone()));
+        let moved_out = changes.trees.outside.iter().map(|(id, _)| id);
+        let displaced = changes.trees.displaced.iter().map(|(id, _)| id);
+        (touched.rescope.local).extend(moved_out.chain(displaced).cloned());
+        touched.rescope.add(self.trees.take_rescope());
+        touched.questions |= changes.commits.questions.is_some();
         if let Some(questions) = changes.commits.questions {
             self.stored_questions = questions;
         }
@@ -2094,6 +2128,7 @@ mod tests {
             recovery_cause: None,
             unscanned: None,
             mounts: BTreeMap::new(),
+            touched: RefCell::default(),
         };
         Case {
             name,

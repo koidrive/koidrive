@@ -395,6 +395,83 @@ pub struct TreesChanges {
 }
 
 impl TreesChanges {
+    /// Every node a field changed for.
+    pub fn nodes(&self) -> impl Iterator<Item = &NodeId> {
+        fn keys<V>(changes: &[(NodeId, V)]) -> impl Iterator<Item = &NodeId> {
+            changes.iter().map(|(id, _)| id)
+        }
+        let Self {
+            dirty,
+            unsearched,
+            reverted,
+            cycle_reverted,
+            parked_as,
+            waiting,
+            watched,
+            watched_positions,
+            trashed_here,
+            removed_here,
+            discarded,
+            forgotten_shapes,
+            lost_shapes,
+            outside,
+            lost,
+            displaced,
+            edited_here,
+            moved_here,
+            past_positions,
+            unsent_edits,
+            dropped_edits,
+            unsent_moves,
+            unseen_changes,
+            replaced_versions,
+            content_provenance,
+            resends,
+            local_changes,
+            lost_positions,
+            lost_creates,
+            kept_originals,
+            unsent_marks,
+            pending_finishes,
+        } = self;
+        [
+            keys(dirty).collect::<Vec<_>>(),
+            keys(unsearched).collect::<Vec<_>>(),
+            keys(reverted).collect::<Vec<_>>(),
+            keys(cycle_reverted).collect::<Vec<_>>(),
+            keys(parked_as).collect::<Vec<_>>(),
+            keys(waiting).collect::<Vec<_>>(),
+            keys(watched).collect::<Vec<_>>(),
+            keys(watched_positions).collect::<Vec<_>>(),
+            keys(trashed_here).collect::<Vec<_>>(),
+            keys(removed_here).collect::<Vec<_>>(),
+            keys(discarded).collect::<Vec<_>>(),
+            keys(forgotten_shapes).collect::<Vec<_>>(),
+            keys(lost_shapes).collect::<Vec<_>>(),
+            keys(outside).collect::<Vec<_>>(),
+            keys(lost).collect::<Vec<_>>(),
+            keys(displaced).collect::<Vec<_>>(),
+            keys(edited_here).collect::<Vec<_>>(),
+            keys(moved_here).collect::<Vec<_>>(),
+            keys(past_positions).collect::<Vec<_>>(),
+            keys(unsent_edits).collect::<Vec<_>>(),
+            keys(dropped_edits).collect::<Vec<_>>(),
+            keys(unsent_moves).collect::<Vec<_>>(),
+            keys(unseen_changes).collect::<Vec<_>>(),
+            keys(replaced_versions).collect::<Vec<_>>(),
+            keys(content_provenance).collect::<Vec<_>>(),
+            keys(resends).collect::<Vec<_>>(),
+            keys(local_changes).collect::<Vec<_>>(),
+            keys(lost_positions).collect::<Vec<_>>(),
+            keys(lost_creates).collect::<Vec<_>>(),
+            keys(kept_originals).collect::<Vec<_>>(),
+            keys(unsent_marks).collect::<Vec<_>>(),
+            keys(pending_finishes).collect::<Vec<_>>(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// The changes that take `before` to `after`.
     pub fn between(before: &TreesState, after: &TreesState) -> Self {
         let TreesState {

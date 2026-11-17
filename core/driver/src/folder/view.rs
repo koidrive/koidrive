@@ -1,29 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefMut;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use koidrive_engine::classify::Class;
 use koidrive_engine::commit::Halt as CommitHalt;
-use koidrive_engine::effects::{self, Stuck};
-use koidrive_engine::tree::{Content, Kind, NodeId, Shape, same_content};
+use koidrive_engine::effects::Stuck;
 use koidrive_fs::Detached;
 use koidrive_net::{Cause, DisconnectReason};
 
 use crate::clock;
-use crate::driver::PROGRESS_INTERVAL;
 use crate::failures;
-use crate::progress::{Direction, Item};
 use crate::status::{
     Activity, FolderState, HeldDisk, HeldDiskKind, Unreachable, Wait, WaitKind, describe,
 };
 use crate::timing::Time;
 
 use super::commit::lift_hint;
+use super::outstanding::Outstanding;
 use super::{
-    Disconnected, Flight, Folder, QUICK_RECONNECT, RECOUNT_SPACING, RETRY_SHOWN, Retrying,
-    STUCK_SHOWN, Stream, View,
+    Disconnected, Flight, Folder, QUICK_RECONNECT, RETRY_SHOWN, Retrying, STUCK_SHOWN, Stream, View,
 };
 
 impl Folder {
@@ -48,7 +45,9 @@ impl Folder {
     /// The folder's status as the task knows it.
     pub fn view(&self) -> View {
         let trees = &self.engine.trees;
-        let held = self.held();
+        let outstanding = self.outstanding();
+        let settled = self.settled(&outstanding);
+        let held = outstanding.held();
         let now = clock::system();
         let reconnect = (self.disconnected.as_ref())
             .filter(|disconnected| disconnected.shown && disconnected.retry_at > now);
@@ -73,7 +72,7 @@ impl Folder {
             _ if self.disconnected.is_some() => FolderState::Connecting,
             Stream::Connecting => FolderState::Connecting,
             Stream::Listing { .. } | Stream::Replaying(_) => FolderState::Bootstrapping,
-            Stream::Following { .. } if self.settled(&held) => FolderState::UpToDate,
+            Stream::Following { .. } if settled => FolderState::UpToDate,
             Stream::Following { .. } => FolderState::CatchingUp,
         };
         let quoted_item = |id: &String| {
@@ -119,7 +118,7 @@ impl Folder {
                     format!("it is kept in {}", koidrive_fs::quoted(&parked))
                 })
         };
-        for (id, stuck) in &held {
+        for (id, stuck) in held {
             let kept = kept_in(id);
             let why = match stuck {
                 Stuck::HeldBy(by) => {
@@ -282,120 +281,18 @@ impl Folder {
         .chain(self.retrying.values().map(|retrying| retrying.at))
         .filter_map(|at| at.duration_since(now).ok())
         .chain(grace)
-        .chain(self.recount_due())
         .min()
     }
 
-    fn recount_due(&self) -> Option<Duration> {
-        let at = self.recount_at.filter(|_| self.recount_waits)?;
-        Some(at.saturating_duration_since(Instant::now()))
+    pub fn show_progress(&mut self, state: FolderState) -> bool {
+        let mut tracker = self.progress.lock().unwrap();
+        self.outstanding().show(state, &self.engine, &mut tracker)
     }
 
-    pub fn recount_progress(&mut self, state: FolderState) -> bool {
-        let counting = matches!(state, FolderState::Bootstrapping | FolderState::CatchingUp);
-        let started = Instant::now();
-        if counting && self.recount_at.is_some_and(|at| started < at) {
-            self.recount_waits = true;
-            return false;
-        }
-        let changed = self.track_progress(state);
-        self.recount_waits = false;
-        self.recount_at = counting
-            .then(|| Instant::now() + PROGRESS_INTERVAL.max(started.elapsed() * RECOUNT_SPACING));
-        changed
-    }
-
-    fn held(&self) -> BTreeMap<String, Stuck> {
-        match (
-            self.engine.effects.in_flight(),
-            self.engine.commits.in_flight(),
-        ) {
-            ([], None) => effects::stuck(&self.engine.trees, &self.engine.effects, None),
-            _ => BTreeMap::new(),
-        }
-    }
-
-    pub fn track_progress(&mut self, state: FolderState) -> bool {
-        match state {
-            FolderState::Bootstrapping | FolderState::CatchingUp => {}
-            FolderState::Connecting | FolderState::Offline => return false,
-            FolderState::Stopped | FolderState::UpToDate | FolderState::Halted => {
-                return self.progress.lock().unwrap().clear();
-            }
-        }
-        let trees = &self.engine.trees;
-        let held = self.held();
-        let stays_out = self.stays_out(&held);
-        fn file(shape: Option<&Shape>) -> Option<&Content> {
-            (shape.filter(|shape| shape.kind == Kind::File))
-                .and_then(|shape| shape.content.as_ref())
-        }
-        let other = |a: &Content, b: Option<&Content>| b.is_none_or(|b| !same_content(a, b));
-        let mut wanted = BTreeMap::new();
-        let mut want = |direction, id: &String, content: &Content| {
-            let item = Item {
-                direction,
-                node: id.clone(),
-                digest: content.manifest_digest.clone(),
-            };
-            wanted.insert(item, content.size);
-        };
-        let asked: BTreeSet<&NodeId> = (self.engine.commits.questions().iter())
-            .flat_map(|question| question.holds())
-            .collect();
-        let mut other_changes = 0;
-        let mut waiting = BTreeSet::new();
-        for id in (trees.dirty().iter()).filter(|id| !stays_out(id)) {
-            if trees.held(id) {
-                if asked.contains(id) {
-                    waiting.insert(id);
-                }
-                continue;
-            }
-            let local = file(trees.local().live(id));
-            let synced = file(trees.synced().live(id));
-            let remote = file(trees.remote().live(id));
-            let class = trees.class(id);
-            let mut moves = false;
-            if let Some(local) = local
-                && matches!(class, Class::Local | Class::Concurrent)
-                && other(local, remote)
-                && (other(local, synced) || trees.unsent_edits().contains(id))
-            {
-                want(Direction::Upload, id, local);
-                moves = true;
-            }
-            if let Some(remote) = remote
-                && matches!(class, Class::Remote | Class::Concurrent)
-                && other(remote, synced)
-                && other(remote, local)
-            {
-                want(Direction::Download, id, remote);
-                moves = true;
-            }
-            match (moves, asked.contains(id)) {
-                (true, _) => {}
-                (false, true) => {
-                    waiting.insert(id);
-                }
-                (false, false) => other_changes += 1,
-            }
-        }
-        let questions_holding_changes = (self.engine.commits.questions().iter())
-            .filter(|question| question.holds().any(|id| waiting.contains(id)))
-            .count() as u64;
-        drop(stays_out);
-        let synced = |item: &Item| {
-            let holds = match item.direction {
-                Direction::Upload => file(trees.synced().live(&item.node)),
-                Direction::Download => file(trees.local().live(&item.node)),
-            };
-            holds.is_some_and(|content| content.manifest_digest == item.digest)
-        };
-        let began_or_ended = self.progress.lock().unwrap().track(wanted, synced);
-        self.other_changes = other_changes;
-        self.questions_holding_changes = questions_holding_changes;
-        began_or_ended
+    fn outstanding(&self) -> RefMut<'_, Outstanding> {
+        let mut outstanding = self.outstanding.borrow_mut();
+        outstanding.refresh(&self.engine);
+        outstanding
     }
 
     pub fn activity(&self, state: FolderState) -> Option<Activity> {
@@ -414,7 +311,9 @@ impl Folder {
         if self.progress.lock().unwrap().progress().is_some() {
             return None;
         }
-        match (self.other_changes, self.questions_holding_changes) {
+        let outstanding = self.outstanding();
+        let questions = outstanding.questions_holding_changes(&self.engine);
+        match (outstanding.other_changes(), questions) {
             (0, 0) => Some(Activity::CatchingUp),
             (0, questions) => Some(Activity::AwaitingAnswers { questions }),
             (changes, _) => Some(Activity::Applying { changes }),
@@ -433,8 +332,9 @@ impl Folder {
     /// device leaves out, a folder to remove that L holds above a node that cannot be synced, or a node of `held`, which
     /// this device's rules keep from its place or from S ([`effects::stuck`]), and so is the node of every restore
     /// that waits.
-    fn settled(&self, held: &BTreeMap<String, Stuck>) -> bool {
-        let stuck = self.stays_out(held);
+    fn settled(&self, outstanding: &Outstanding) -> bool {
+        #[cfg(test)]
+        outstanding.check(&self.engine);
         let commits = &self.engine.commits;
         self.caught_up()
             && self.scanned
@@ -442,34 +342,8 @@ impl Folder {
             && self.engine.effects.in_flight().is_empty()
             && matches!(self.flight, Flight::Idle)
             && self.engine.commits.in_flight().is_none()
-            && self.engine.trees.dirty().iter().all(stuck)
+            && outstanding.settled()
             && commits.held_restores().count() == commits.restores().len()
-    }
-
-    fn stays_out<'a>(&'a self, held: &'a BTreeMap<String, Stuck>) -> impl Fn(&String) -> bool + 'a {
-        let trees = &self.engine.trees;
-        let mut above_blocked = BTreeSet::new();
-        for node in (self.engine.effects.blocked().keys()).chain(held.keys()) {
-            let mut current = node.as_str();
-            for _ in 0..trees.local().len() {
-                match trees.local().get(current) {
-                    Some(local) if local.shape.parent != trees.local().root => {
-                        current = &local.shape.parent;
-                        above_blocked.insert(current);
-                    }
-                    _ => break,
-                }
-            }
-        }
-        let kept_for_excluded = trees.kept_for_excluded();
-        move |id: &String| {
-            self.engine.effects.blocked().contains_key(id)
-                || self.engine.commits.problems().contains(id)
-                || trees.excluded(id)
-                || kept_for_excluded(id.as_str())
-                || (above_blocked.contains(id.as_str()) && trees.remote().live(id).is_none())
-                || held.contains_key(id)
-        }
     }
 
     pub(super) fn record_status(&mut self, state: FolderState) {

@@ -13,6 +13,7 @@
 //! A future owns what it needs and borrows only the session and the transfer client, so none holds the store or
 //! the engine across an await.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -39,9 +40,12 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
 mod commit;
 mod effect;
+mod outstanding;
 mod task;
 mod view;
 mod work;
+
+use outstanding::Outstanding;
 
 #[cfg(test)]
 use crate::claim::{self, Identity};
@@ -75,6 +79,7 @@ use work::{later, upload_chunks, upload_counted};
 pub const MAX_FORMAT: u32 = 1;
 /// Nodes per `ListTree` page, the most spec v0 section 13 allows.
 const TREE_PAGE: u32 = 5_000;
+const OBSERVED_AHEAD: usize = 2;
 /// How often a folder that failed its root check is checked again.
 const ROOT_RECHECK: Duration = Duration::from_secs(30);
 /// The first wait before a folder that halted for its root syncs again. Each such halt doubles it, up to
@@ -83,7 +88,6 @@ const ROOT_AGAIN: Duration = Duration::from_secs(1);
 /// How often a running folder reclaims its local trash, after the first time when it starts.
 const RECLAIM_TRASH: Duration = Duration::from_secs(24 * 60 * 60);
 
-const RECOUNT_SPACING: u32 = 9;
 /// How often a running folder checks that its path still names the folder it locked.
 const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// The wait before a commit is built again after a file changed while its content was uploaded. The observer
@@ -158,11 +162,8 @@ pub(crate) struct Folder {
     refused_nodes: BTreeMap<String, String>,
     asked: BTreeSet<String>,
     progress: Arc<Mutex<Tracker>>,
-    recount_at: Option<Instant>,
-    recount_waits: bool,
+    outstanding: RefCell<Outstanding>,
     unread: (u64, u64),
-    other_changes: u64,
-    questions_holding_changes: u64,
     /// When the [`Work::RetryAfter`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
@@ -387,11 +388,8 @@ impl Folder {
             refused_nodes: BTreeMap::new(),
             asked,
             progress: Arc::default(),
-            recount_at: None,
-            recount_waits: false,
+            outstanding: RefCell::default(),
             unread: (0, 0),
-            other_changes: 0,
-            questions_holding_changes: 0,
             retry_at: None,
             #[cfg(test)]
             crash_after: None,

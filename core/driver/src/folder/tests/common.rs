@@ -316,7 +316,7 @@ impl Device {
     fn take(&mut self, step: Result<Vec<Work>, Stop>) -> Result<(), Stop> {
         self.work.extend(step?);
         let folder = &mut self.folder;
-        folder.track_progress(folder.view().state);
+        folder.show_progress(folder.view().state);
         if folder.timing.is_on() || folder.timing.has_first() {
             folder.record_status(folder.view().state);
         }

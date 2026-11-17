@@ -307,31 +307,23 @@ fn an_offline_folder_keeps_its_progress_until_it_connects_again() {
     upload.credit.chunk(&upload.chunks[0].hash);
     assert_eq!(counts(&a), Some((1, 0, stored, size)));
     for state in [FolderState::Offline, FolderState::Connecting, FolderState::CatchingUp] {
-        a.folder.track_progress(state);
+        a.folder.show_progress(state);
         assert_eq!(counts(&a), Some((1, 0, stored, size)), "{state:?}");
     }
 }
 
 #[test]
-fn a_recount_right_after_another_waits_for_a_wake_and_an_end_of_sync_clears_at_once() {
+fn progress_needs_no_wake_of_its_own_and_an_end_of_sync_clears_it_at_once() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     fs::write(site.root.join("one.txt"), b"one").unwrap();
     a.scan_until(|a| !a.work.is_empty());
     assert_eq!(counts(&a), Some((1, 0, 0, 3)));
 
-    a.folder.recount_progress(FolderState::CatchingUp);
-    assert!(a.folder.recount_at.is_some());
-    assert_eq!(a.folder.next_change(), None);
-    a.folder.recount_at = Some(Instant::now() + Duration::from_secs(60));
-    assert!(!a.folder.recount_progress(FolderState::CatchingUp));
-    let wake = a.folder.next_change().expect("the folder wakes for the recount it put off");
-    assert!(wake > Duration::from_secs(59) && wake <= Duration::from_secs(60), "{wake:?}");
-    a.folder.recount_at = Some(Instant::now());
-    a.folder.recount_progress(FolderState::CatchingUp);
+    a.folder.show_progress(FolderState::CatchingUp);
     assert_eq!(a.folder.next_change(), None);
 
-    assert!(a.folder.recount_progress(FolderState::UpToDate));
+    assert!(a.folder.show_progress(FolderState::UpToDate));
     assert_eq!(progress(&a), None);
 }
 
@@ -532,7 +524,7 @@ fn a_large_first_file_shows_its_bytes_fall_once_the_walk_is_done() {
 fn a_folder_whose_removals_wait_for_the_person_says_so() {
     let mut remote = Remote::new();
     let (_site, mut a) = with_a_held_folder(&mut remote);
-    a.folder.track_progress(a.state());
+    a.folder.show_progress(a.state());
     assert_eq!(a.state(), FolderState::CatchingUp);
     assert_eq!(counts(&a), None);
     assert_eq!(activity(&a), Some(Activity::AwaitingAnswers { questions: 1 }));
@@ -582,7 +574,7 @@ fn a_question_that_holds_no_change_is_not_waited_on() {
     let mut remote = Remote::new();
     let (_, (site_b, mut b)) = edited_on_both(&mut remote);
     assert_eq!(shown(&site_b).len(), 1);
-    b.folder.track_progress(FolderState::CatchingUp);
+    b.folder.show_progress(FolderState::CatchingUp);
     assert_eq!(b.folder.activity(FolderState::CatchingUp), Some(Activity::CatchingUp));
 }
 
@@ -600,7 +592,7 @@ fn a_first_link_whose_files_wait_for_the_person_says_so() {
     b.settle();
     b.run(&mut remote);
     assert_eq!(b.folder.view().questions, 1);
-    b.folder.track_progress(b.state());
+    b.folder.show_progress(b.state());
     assert_eq!((b.state(), counts(&b)), (FolderState::CatchingUp, None));
     assert_eq!(activity(&b), Some(Activity::AwaitingAnswers { questions: 1 }));
 }
