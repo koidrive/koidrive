@@ -34,7 +34,7 @@ You can also set `KOIDRIVE_NO_SETUP=1` or `KOIDRIVE_NO_MODIFY_PATH=1` for `sh`:
 curl -fsSL https://koidrive.com/install.sh | KOIDRIVE_NO_SETUP=1 KOIDRIVE_NO_MODIFY_PATH=1 sh
 ```
 
-CI and unattended installs do not change profiles or start setup. The installer starts setup only when stdout and stderr are terminals, a controlling terminal is available for input, and the `CI` environment variable is not set. Otherwise, the installer prints the setup command when this device is not set up. To start setup later, run `~/.local/bin/koi setup`, or `koi setup` from your custom install directory. `koi setup --no-app` runs setup without the app.
+CI and unattended installs do not change profiles or start setup. The installer starts setup only when stdout and stderr are terminals, a controlling terminal is available for input, and the `CI` environment variable is not set. Otherwise, the installer prints the setup command when this device is not set up. To start setup later, run `~/.local/bin/koi setup`, with your custom install directory in place of `~/.local/bin` if you set one. `koi setup --no-app` runs setup without the app.
 
 ## Install with Homebrew
 

@@ -22,7 +22,7 @@ Without `--json`, a command whose result is one value prints only that value on 
 | `decisions` | The sync decisions waiting on this device, described below |
 | `next_commands` | Commands to run next, each as an `argv` array. Present only when there is a real next step |
 
-`accepted` means the command recorded work that happens later. `koi resolve` and `koi history restore` return it. Check `koi status` or `koi history requests` to see the work finish.
+`accepted` means the command recorded work that happens later. `koi resolve <id> <answer>` and `koi history restore` return it. Check `koi status` or `koi history requests` to see the work finish.
 
 `unchanged` means the state the command asks for was already there, so the command changed nothing. It exits 0, and `data` describes the state as it is.
 
