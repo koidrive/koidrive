@@ -239,7 +239,7 @@ impl Transfer {
                     let waits_for_probe = probing
                         && units.get(started).is_some_and(|unit| unit.url.is_some())
                         && session.bundles_offered()
-                        && !session.bundles_confirmed();
+                        && !session.bundles().confirmed();
                     tokio::select! {
                         biased;
                         Some((probe, sent, result)) = running.next() => {
@@ -272,7 +272,7 @@ impl Transfer {
                                 continue;
                             }
                             let url = unit.url.as_deref().filter(|_| members.len() > 1 && session.bundles_offered());
-                            let probe = url.is_some() && !session.bundles_confirmed();
+                            let probe = url.is_some() && !session.bundles().confirmed();
                             probing |= probe;
                             running.push(async move {
                                 let _permit = permit;
@@ -391,7 +391,7 @@ impl Transfer {
                 Some(target) if !expiring(&target) => target,
                 _ => self.download_target(session, chunk).await?,
             };
-            match self.retrying(|| self.get(&current, chunk)).await? {
+            match self.retrying(0, || self.get(&current, chunk)).await? {
                 Some(bytes) => return Ok((chunk, bytes)),
                 None if renewed < self.attempts => renewed += 1,
                 None => {
@@ -426,9 +426,9 @@ impl Transfer {
 
     async fn retrying<T, F: Future<Output = Attempt<T>>>(
         &self,
+        mut tries: u32,
         mut attempt: impl FnMut() -> F,
     ) -> Result<Option<T>, ChunkError> {
-        let mut tries = 0;
         loop {
             match attempt().await {
                 Attempt::Done(value) => return Ok(Some(value)),
@@ -484,7 +484,9 @@ impl Transfer {
     async fn put_each(&self, members: Vec<Member<'_>>, sent: &mut Sent) -> Result<(), ChunkError> {
         for member in members {
             let receipt = self
-                .retrying(|| self.put(member.target, member.chunk, member.bytes.clone()))
+                .retrying(member.tries, || {
+                    self.put(member.target, member.chunk, member.bytes.clone())
+                })
                 .await?;
             sent.push((member.index, receipt));
         }
@@ -498,16 +500,20 @@ impl Transfer {
         mut members: Vec<Member<'_>>,
         sent: &mut Sent,
     ) -> Result<(), ChunkError> {
+        let on = session.bundles().connection();
         while !members.is_empty() {
+            if !session.bundles_offered() {
+                return self.put_each(members, sent).await;
+            }
             let mut again = Vec::new();
             let mut wait = None;
             match self.post_bundle(url, &members).await {
                 Bundled::Unsupported => {
-                    session.refuse_bundles();
+                    session.bundles().refuse(on);
                     return self.put_each(members, sent).await;
                 }
                 Bundled::Refused => {
-                    session.confirm_bundles();
+                    session.bundles().confirm(on);
                     return self.put_each(members, sent).await;
                 }
                 Bundled::Retry(error) => {
@@ -521,7 +527,7 @@ impl Transfer {
                     }
                 }
                 Bundled::Answered(outcomes) => {
-                    session.confirm_bundles();
+                    session.bundles().confirm(on);
                     let mut failed = None;
                     for (mut member, outcome) in members.into_iter().zip(outcomes) {
                         match outcome {

@@ -196,7 +196,7 @@ async fn a_download_that_does_not_match_its_hash_is_retried_and_then_refused() {
         ..transfer
     };
     let outcome = transfer
-        .retrying(async || transfer.get(&target, &wanted).await)
+        .retrying(0, async || transfer.get(&target, &wanted).await)
         .await;
     assert!(
         matches!(outcome, Err(ChunkError::Corrupt { .. })),
@@ -436,7 +436,7 @@ async fn a_429_is_retried_after_the_wait_the_server_asks() {
     assert!(transfer.backoff.max < Duration::from_millis(300));
     let started = Instant::now();
     let outcome = transfer
-        .retrying(async || {
+        .retrying(0, async || {
             transfer
                 .put(&target, &sent, Bytes::from_static(b"payload"))
                 .await
@@ -1780,14 +1780,18 @@ async fn small_chunks_go_in_bundles_of_at_most_32_when_the_server_offers_them() 
     assert!(sent.iter().all(|sent| matches!(sent, Wire::Bundle(_))));
 }
 
+fn unordered(sent: &[Wire]) -> Vec<String> {
+    sorted(sent.iter().map(|sent| format!("{sent:?}")).collect())
+}
+
 #[tokio::test]
 async fn a_server_that_does_not_offer_bundles_gets_one_put_per_chunk() {
     let parts = named(5);
     let (receipts, sent, _, _) = bundled_upload(welcome("h", 0), Some(stored_all), &parts).await;
     assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
     assert_eq!(
-        sent,
-        names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>()
+        unordered(&sent),
+        unordered(&names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>())
     );
 }
 
@@ -1797,8 +1801,8 @@ async fn a_server_without_the_bundle_route_gets_the_chunks_as_puts_and_no_more_b
     let (receipts, sent, _, session) = bundled_upload(offering(), None, &parts).await;
     assert_eq!(sorted(tokens(receipts.unwrap())), sorted(names(&parts)));
     assert_eq!(
-        sent,
-        names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>()
+        unordered(&sent),
+        unordered(&names(&parts).into_iter().map(Wire::Put).collect::<Vec<_>>())
     );
     assert!(!session.bundles_offered());
 }
@@ -1811,11 +1815,11 @@ async fn chunks_of_a_full_permit_or_more_go_alone_while_smaller_ones_share_a_bun
     let (receipts, sent, _, _) = bundled_upload(offering(), Some(stored_all), &parts).await;
     assert_eq!(receipts.unwrap().len(), 4);
     assert_eq!(
-        sent,
-        [
+        unordered(&sent),
+        unordered(&[
             Wire::Bundle(vec!["c0".into(), "c1".into(), "c2".into()]),
             Wire::Put("big".into())
-        ]
+        ])
     );
 }
 
@@ -1948,7 +1952,11 @@ struct Posted {
     most_at_once: usize,
 }
 
-async fn posting_relay(post: Post, hold: Duration) -> (SocketAddr, Arc<Mutex<Posted>>) {
+async fn posting_relay(
+    post: Post,
+    put: fn(&str) -> u16,
+    hold: Duration,
+) -> (SocketAddr, Arc<Mutex<Posted>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let log = Arc::new(Mutex::new(Posted {
@@ -1967,12 +1975,23 @@ async fn posting_relay(post: Post, hold: Duration) -> (SocketAddr, Arc<Mutex<Pos
                 let (status, answer) = if head.starts_with("PUT ") {
                     let ticket = ticket_of(&head);
                     seen.lock().unwrap().sent.push(Wire::Put(ticket.clone()));
-                    let receipt = UploadReceipt {
-                        hash: Sha256::digest(&body).to_vec(),
-                        size: body.len() as u32,
-                        token: ticket,
-                    };
-                    (200, receipt.encode_to_vec())
+                    match put(&ticket) {
+                        200 => {
+                            let receipt = UploadReceipt {
+                                hash: Sha256::digest(&body).to_vec(),
+                                size: body.len() as u32,
+                                token: ticket,
+                            };
+                            (200, receipt.encode_to_vec())
+                        }
+                        status => {
+                            let error = ProtoError {
+                                code: Code::RetryLater as i32,
+                                ..Default::default()
+                            };
+                            (status, error.encode_to_vec())
+                        }
+                    }
                 } else {
                     let bundle = ChunkBundle::decode(body.as_slice()).unwrap();
                     let now = at_once.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2072,7 +2091,17 @@ async fn posting(
     transfer: Transfer,
     hold: Duration,
 ) -> Posting {
-    let (relay, log) = posting_relay(post, hold).await;
+    posting_with_puts(post, |_| 200, parts, transfer, hold).await
+}
+
+async fn posting_with_puts(
+    post: Post,
+    put: fn(&str) -> u16,
+    parts: &[(String, ChunkRef, Bytes)],
+    transfer: Transfer,
+    hold: Duration,
+) -> Posting {
+    let (relay, log) = posting_relay(post, put, hold).await;
     let plans: Vec<_> = parts
         .iter()
         .map(|(name, chunk, _)| bundle_plan(relay, chunk, name))
@@ -2256,5 +2285,37 @@ async fn a_bundle_holds_at_most_1_mib_and_takes_gate_permits_for_all_its_bytes()
     assert_eq!(
         run.most_at_once, 4,
         "a 1 MiB bundle takes 4 of the 16 permits"
+    );
+}
+
+#[tokio::test]
+async fn a_chunk_falling_back_to_puts_keeps_the_attempts_its_bundle_already_used() {
+    fn busy_then_invalid(_: &ChunkBundle, n: usize) -> (u16, Vec<u8>) {
+        let code = if n < 4 {
+            Code::RetryLater
+        } else {
+            Code::InvalidArgument
+        };
+        let error = ProtoError {
+            code: code as i32,
+            ..Default::default()
+        };
+        (if n < 4 { 503 } else { 400 }, error.encode_to_vec())
+    }
+    let parts = named(2);
+    let run = posting_with_puts(
+        busy_then_invalid,
+        |_| 503,
+        &parts,
+        transfer(),
+        Duration::ZERO,
+    )
+    .await;
+    assert!(run.result.is_err());
+    assert_eq!(run.posts(), [2; 5]);
+    assert_eq!(
+        run.puts(),
+        1,
+        "4 bundle attempts leave one PUT attempt of 5"
     );
 }

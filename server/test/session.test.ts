@@ -2507,9 +2507,12 @@ describe("chunk bundles", () => {
           put: async (key: string, value: unknown, options: R2PutOptions) => {
             writes++;
             peak = Math.max(peak, ++open);
-            await new Promise((resolve) => setTimeout(resolve, 5));
-            open--;
-            return env.BUCKET.put(key, value as ArrayBuffer, options);
+            try {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              return await env.BUCKET.put(key, value as ArrayBuffer, options);
+            } finally {
+              open--;
+            }
           },
         },
       } as unknown as Env, {} as ExecutionContext);
