@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use camino::{Utf8Component, Utf8Path};
+use camino::Utf8Path;
 use determinator::Determinator;
 use determinator::rules::{
     DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathMatch, PathRule,
@@ -261,17 +261,16 @@ fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
         .split('\0')
         .filter(|path| !path.is_empty())
         .collect();
-    let in_a_checkout = |path: &Utf8Path| {
-        path.components()
-            .all(|component| matches!(component, Utf8Component::Normal(_)))
-            && [base_dir, head_dir]
-                .iter()
-                .any(|dir| Utf8Path::new(dir).join(path).symlink_metadata().is_ok())
+    let in_a_checkout = |path: &str| {
+        path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+            && [base_dir, head_dir].iter().any(|dir| {
+                Utf8Path::new(dir)
+                    .join(path)
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| !metadata.is_dir())
+            })
     };
-    if let Some(path) = changed
-        .iter()
-        .find(|path| !in_a_checkout(Utf8Path::new(path)))
-    {
+    if let Some(path) = changed.iter().find(|path| !in_a_checkout(path)) {
         return Err(format!(
             "{changed_path} lists {path:?}, which is no file in either checkout. Pass the NUL-separated output of git diff -z --name-only --no-renames BASE HEAD."
         ));
@@ -530,6 +529,9 @@ mod tests {
                 "core/driver/../sim/tests/devices.rs\0".to_string(),
             ),
             ("missing", "core/sim/tests/no-such-file.rs\0".to_string()),
+            ("dot", "core/sim/./tests/devices.rs\0".to_string()),
+            ("double slash", "core/sim//tests/devices.rs\0".to_string()),
+            ("directory", "core/sim/tests\0".to_string()),
         ] {
             let error = select_from_list(name, &list).unwrap_err();
             assert!(error.contains("git diff -z"), "{name}: {error}");
