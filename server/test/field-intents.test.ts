@@ -705,7 +705,7 @@ describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {
   }
 
   for (const rule of ["A", "B"] as const) {
-    it(`under rule ${rule}, answers a retried Move or Delete whose intent and value a trashed node holds APPLIED and changes nothing`, async () => {
+    it(`under rule ${rule}, answers a retried Move or Delete whose intent and value a trashed node holds APPLIED, changes nothing, and adds a larger held to the trash`, async () => {
       const { space, a, b, values, root } = await setup();
       await setRule(space, rule);
       const nodeId = await file(a, root, "kept.txt", values[0]!);
@@ -716,12 +716,18 @@ describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {
       await b.commit([sent(del(nodeId), removal)]);
       const before = (await stateOf(space, nodeId))!;
       const moved = await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
-      const deleted = await b.commit([sent(del(nodeId, { held: [intentId()] }), removal)]);
+      const deleted = await b.commit([sent(del(nodeId), removal)]);
       for (const retried of [moved, deleted]) {
         expect(retried.results[0]!.code).toBe(OpResult_Code.APPLIED);
         expect(retried.changes).toEqual([]);
       }
       expect(await stateOf(space, nodeId)).toEqual(before);
+      const extra = intentId();
+      const grown = await b.commit([sent(del(nodeId, { held: [extra] }), removal)]);
+      expect(grown.results[0]!.code).toBe(OpResult_Code.APPLIED);
+      expect(grown.changes.map(changedId)).toEqual([nodeId]);
+      const after = (await stateOf(space, nodeId))!;
+      expect([after.trashHeld.map(toHex), after.metaRev, after.intents!.status]).toEqual([[toHex(extra)], grown.seq, before.intents!.status]);
     });
   }
 
