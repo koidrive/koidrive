@@ -526,7 +526,7 @@ fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
         ..Status::default()
     };
     let notice = UpdateNoticeData::of(&status.update, "0.1.0", Some("koi update"));
-    let kept = r#"  2 entries kept after another device deleted their folder stay out of sync under that folder's rules: "/home/ada/Docs/app/.env", "/home/ada/Docs/app/node_modules". To sync one, delete it and create it again.
+    let kept = r#"  2 entries kept after another device deleted their folder stay out of sync under that folder's rules: "/home/ada/Docs/app/.env", "/home/ada/Docs/app/node_modules". Once one is deleted, a new entry at its path follows the rules that apply there.
 "#;
     for text in [
         status_text(&status, &[], "", &notice),

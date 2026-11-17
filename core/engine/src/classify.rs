@@ -1755,6 +1755,9 @@ impl Trees {
             provenance.edit_bases.clear();
             provenance.unversioned_bases.clear();
         }
+        if (self.l.get(&id)).is_some_and(|old| !old.shape.same_position(&node.shape)) {
+            self.release_kept_entry(&id);
+        }
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
             node.content_from_server = old.content_from_server;

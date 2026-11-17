@@ -134,12 +134,20 @@ pub fn describe_kept(folder: &str, entries: &[koidrive_fs::ItemPath]) -> String 
     let shown: Vec<String> = (entries.iter())
         .map(|entry| koidrive_fs::quoted(&std::path::Path::new(folder).join(entry)).to_string())
         .collect();
-    let (count, stay, entry) = match entries.len() {
-        1 => ("1 entry".to_owned(), "stays", "it"),
-        count => (format!("{count} entries"), "stay", "one"),
+    let (count, stay, release) = match entries.len() {
+        1 => (
+            "1 entry".to_owned(),
+            "stays",
+            "Once it's deleted, a new entry at that path",
+        ),
+        count => (
+            format!("{count} entries"),
+            "stay",
+            "Once one is deleted, a new entry at its path",
+        ),
     };
     format!(
-        "{count} kept after another device deleted their folder {stay} out of sync under that folder's rules: {}. To sync {entry}, delete it and create it again.",
+        "{count} kept after another device deleted their folder {stay} out of sync under that folder's rules: {}. {release} follows the rules that apply there.",
         shown.join(", ")
     )
 }

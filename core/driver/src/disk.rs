@@ -1493,11 +1493,8 @@ fn settle(
             Outcome::Failed {
                 reason: Reason::Holds(names),
                 ..
-            } if held(names).is_some_and(|held| {
-                (engine.effects).keeps(&engine.trees, &record.effect_id, &held)
-            }) =>
-            {
-                let held = held(names).unwrap_or_default();
+            } if (engine.effects).keeps(&engine.trees, &record.effect_id, &held(names)) => {
+                let held = held(names);
                 (engine.effects)
                     .kept(&mut engine.trees, &record.effect_id, &held)
                     .map_err(refused)?;
@@ -1603,9 +1600,9 @@ fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
     Ok(!folders.is_empty())
 }
 
-fn held(names: &[(OsString, Option<EntryKind>)]) -> Option<Vec<(&str, Option<Kind>)>> {
+fn held(names: &[(OsString, Option<EntryKind>)]) -> Vec<(&str, Option<Kind>)> {
     (names.iter())
-        .map(|(name, kind)| {
+        .filter_map(|(name, kind)| {
             let kind = kind.map(|kind| match kind {
                 EntryKind::File => Kind::File,
                 EntryKind::Dir => Kind::Dir,

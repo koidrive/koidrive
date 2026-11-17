@@ -987,3 +987,38 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     assert!(b.run(&mut remote).is_empty());
     assert_eq!(fs::read(site.root.join("work/build.log")).unwrap(), b"v1");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_remote_delete_of_a_folder_holding_a_symlink_with_a_name_that_is_not_utf8_keeps_the_folder() {
+    use std::os::unix::ffi::OsStrExt;
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("held")).unwrap();
+    a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let entry = site.root.join("held").join(std::ffi::OsStr::from_bytes(b"link\xff"));
+    std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap();
+    b.settle();
+
+    fs::remove_dir_all(site_a.root.join("held")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    assert!(fs::symlink_metadata(&entry).is_ok());
+    assert!(!site.root.join("held/a.txt").exists());
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+}
+
