@@ -748,3 +748,69 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
     trees.others = BTreeSet::from(["f".into()]);
     assert!(trees.is_discarded("x0"));
 }
+
+#[test]
+fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_and_go() {
+    let identity = FileIdentity {
+        ino: 7,
+        birth_ns: Some(1),
+    };
+    let local = |name: &str| LocalNode {
+        shape: Shape {
+            parent: "root".into(),
+            name: name.into(),
+            kind: Kind::File,
+            content: Some(Content {
+                size: 1,
+                manifest_digest: vec![1; 32],
+                ..Content::default()
+            }),
+        },
+        identity,
+        parked: false,
+        left_out_when_placed: false,
+        content_from_server: false,
+    };
+    let mut trees = Trees::new("root");
+    for (id, name) in [
+        ("b", "Notes"),
+        ("c", "notes"),
+        ("a", "NOTES"),
+        ("b", "Notes"),
+    ] {
+        trees.set_local(id.into(), local(name));
+    }
+    let held =
+        |trees: &Trees| -> Vec<NodeId> { trees.locals_with_identity(&identity).cloned().collect() };
+    assert_eq!(held(&trees), ["a", "b", "c"]);
+    let reversed: Vec<NodeId> = trees
+        .locals_with_identity(&identity)
+        .rev()
+        .cloned()
+        .collect();
+    assert_eq!(reversed, ["c", "b", "a"]);
+    assert_eq!(
+        trees.local_with_identity(&identity).map(String::as_str),
+        Some("c")
+    );
+    assert_eq!(
+        trees.local_child("root", "notes").map(String::as_str),
+        Some("c")
+    );
+    assert_eq!(
+        trees.local_child("root", "Notes").map(String::as_str),
+        Some("b")
+    );
+    trees.remove_local("c");
+    trees.remove_local("a");
+    assert_eq!(held(&trees), ["b"]);
+    assert_eq!(trees.local_child("root", "notes"), None);
+    assert_eq!(
+        trees.local_child("root", "Notes").map(String::as_str),
+        Some("b")
+    );
+    trees.remove_local("b");
+    assert!(held(&trees).is_empty());
+    assert_eq!(trees.local_with_identity(&identity), None);
+    assert_eq!(trees.local_child("root", "Notes"), None);
+}

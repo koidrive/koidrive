@@ -244,35 +244,73 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
 
 /// The nodes of a tree by parent and the `name_key` of their name.
 #[derive(Clone, Debug, Default)]
-struct ByName(BTreeMap<(NodeId, String), BTreeSet<NodeId>>);
+struct ByName(BTreeMap<(NodeId, String), Holders>);
 
 impl ByName {
     fn insert(&mut self, id: &str, shape: &Shape) {
         let key = (shape.parent.clone(), name_key(&shape.name));
-        self.0.entry(key).or_default().insert(id.to_owned());
+        (self.0.entry(key))
+            .and_modify(|ids| ids.insert(id.to_owned()))
+            .or_insert_with(|| Holders::One(id.to_owned()));
     }
 
     fn remove(&mut self, id: &str, shape: &Shape) {
         let key = (shape.parent.clone(), name_key(&shape.name));
-        if let Some(ids) = self.0.get_mut(&key) {
-            ids.remove(id);
-            if ids.is_empty() {
-                self.0.remove(&key);
-            }
+        if self.0.get_mut(&key).is_some_and(|ids| ids.remove(id)) {
+            self.0.remove(&key);
         }
     }
 
     /// The nodes under `parent` whose name has the `name_key` of `name`.
     fn holders<'a>(&'a self, parent: &str, name: &str) -> impl Iterator<Item = &'a NodeId> + 'a {
         let key = (parent.to_owned(), name_key(name));
-        self.0.get(&key).into_iter().flatten()
+        self.0.get(&key).into_iter().flat_map(Holders::iter)
     }
 
     fn children<'a>(&'a self, parent: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
         self.0
             .range((parent.to_owned(), String::new())..)
             .take_while(move |((of, _), _)| of == parent)
-            .flat_map(|(_, ids)| ids)
+            .flat_map(|(_, ids)| ids.iter())
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Holders {
+    One(NodeId),
+    Many(BTreeSet<NodeId>),
+}
+
+impl Holders {
+    fn insert(&mut self, id: NodeId) {
+        match self {
+            Holders::One(held) if *held == id => {}
+            Holders::One(held) => *self = Holders::Many(BTreeSet::from([std::mem::take(held), id])),
+            Holders::Many(ids) => {
+                ids.insert(id);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &str) -> bool {
+        match self {
+            Holders::One(held) => held == id,
+            Holders::Many(ids) => {
+                ids.remove(id);
+                if ids.len() == 1 {
+                    *self = Holders::One(ids.pop_first().expect("one ID is left"));
+                }
+                false
+            }
+        }
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &NodeId> {
+        let (one, many) = match self {
+            Holders::One(id) => (Some(id), None),
+            Holders::Many(ids) => (None, Some(ids)),
+        };
+        one.into_iter().chain(many.into_iter().flatten())
     }
 }
 
@@ -409,7 +447,7 @@ pub struct Trees {
     l_names: ByName,
     l_parked: ByName,
     /// Every node of L, placed or parked, by its identity.
-    l_identities: HashMap<FileIdentity, BTreeSet<NodeId>>,
+    l_identities: HashMap<FileIdentity, Holders>,
     /// The nodes of S.
     s_names: ByName,
     s_marks: BTreeMap<NodeId, String>,
@@ -767,7 +805,7 @@ impl Trees {
         key: &str,
     ) -> impl Iterator<Item = &'a NodeId> + use<'a> {
         let key = (parent.to_owned(), key.to_owned());
-        self.r_names.0.get(&key).into_iter().flatten()
+        self.r_names.0.get(&key).into_iter().flat_map(Holders::iter)
     }
 
     /// The nodes of S under `parent` whose name has the `name_key` of `name`.
@@ -788,7 +826,7 @@ impl Trees {
 
     /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
     pub fn local_with_identity(&self, identity: &FileIdentity) -> Option<&NodeId> {
-        self.l_identities.get(identity).and_then(|ids| ids.last())
+        (self.l_identities.get(identity)).and_then(|ids| ids.iter().next_back())
     }
 
     /// The nodes of L, placed or parked, with `identity`, in ID order.
@@ -796,7 +834,10 @@ impl Trees {
         &self,
         identity: &FileIdentity,
     ) -> impl DoubleEndedIterator<Item = &NodeId> {
-        self.l_identities.get(identity).into_iter().flatten()
+        self.l_identities
+            .get(identity)
+            .into_iter()
+            .flat_map(Holders::iter)
     }
 
     /// The placed nodes of L under `parent` whose name has the `name_key` of `name`.
@@ -1727,7 +1768,9 @@ impl Trees {
         if as_remote && self.discarded.contains_key(&id) {
             self.discarded.insert(id.clone(), node.shape.clone());
         }
-        (self.l_identities.entry(node.identity).or_default()).insert(id.clone());
+        (self.l_identities.entry(node.identity))
+            .and_modify(|ids| ids.insert(id.clone()))
+            .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
         self.count_held_trash(&id, false);
         self.l.insert(id.clone(), node);
@@ -1881,11 +1924,8 @@ impl Trees {
     }
 
     fn forget_identity(&mut self, id: &str, identity: &FileIdentity) {
-        if let Some(ids) = self.l_identities.get_mut(identity) {
-            ids.remove(id);
-            if ids.is_empty() {
-                self.l_identities.remove(identity);
-            }
+        if (self.l_identities.get_mut(identity)).is_some_and(|ids| ids.remove(id)) {
+            self.l_identities.remove(identity);
         }
     }
 

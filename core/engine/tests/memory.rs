@@ -14,8 +14,8 @@ const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
 const NOW: u64 = 1_794_268_740_000;
 const PACKAGES: usize = 600;
 const TARGET: u64 = 600;
-const FIRST_UPLOAD_CEILING: u64 = 4_100;
-const RESTART_CEILING: u64 = 4_300;
+const FIRST_UPLOAD_CEILING: u64 = 3_000;
+const RESTART_CEILING: u64 = 3_200;
 
 struct Live;
 
