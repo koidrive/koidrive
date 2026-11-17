@@ -262,6 +262,7 @@ fn run() -> Result<bool, String> {
     if args.peek().is_some_and(|arg| arg == OsStr::new("--")) {
         args.next();
     }
+    let list = args.next_if(|arg| arg == OsStr::new("--list")).is_some();
     let mut files: Vec<_> = args.map(PathBuf::from).collect();
     let default_scan = files.is_empty();
     if default_scan {
@@ -290,9 +291,14 @@ fn run() -> Result<bool, String> {
         let canonical = file
             .canonicalize()
             .map_err(|error| format!("cannot resolve {}: {error}", file.display()))?;
-        let inspection =
-            inspect_source(canonical.strip_prefix(&root).unwrap_or(&canonical), &source);
+        let relative = canonical.strip_prefix(&root).unwrap_or(&canonical);
+        let inspection = inspect_source(relative, &source);
         blocks += inspection.blocks;
+        if list {
+            for property in &inspection.properties {
+                println!("{}\t{property}", relative.display());
+            }
+        }
         for diagnostic in inspection.diagnostics {
             let start = diagnostic.span.start();
             let end = diagnostic.span.end();
@@ -313,7 +319,7 @@ fn run() -> Result<bool, String> {
             "repository scan found no proptest! blocks; verify tracked Rust file discovery".into(),
         );
     }
-    if default_scan && valid {
+    if default_scan && valid && !list {
         println!("Checked {blocks} proptest! blocks.");
     }
     Ok(valid)
@@ -472,6 +478,16 @@ mod tests {
         let inspection = inspect_source(Path::new("core/sim/tests/new.rs"), source);
         assert!(inspection.diagnostics.is_empty());
         assert_eq!(inspection.blocks, 0);
+    }
+
+    #[test]
+    fn properties_are_the_test_functions_of_every_block() {
+        let source = format!(
+            "fn helper() {{}} proptest! {{ {CONFIG} {PROPERTY} #[test] fn second(x in 0..1) {{ fn inner() {{}} }} }} mod m {{ proptest::proptest! {{ {CONFIG} #[test] fn third(x in 0..1) {{}} }} }}"
+        );
+        let inspection = inspect_source(Path::new("core/sim/tests/new.rs"), &source);
+        assert!(inspection.diagnostics.is_empty());
+        assert_eq!(inspection.properties, ["identity", "second", "third"]);
     }
 
     #[test]

@@ -8,8 +8,8 @@
 # Usage: scripts/battery.sh [--cases N] [--shards N] [--filter TEXT] [--mutations] [--wait] [REF]
 #   REF           branch or tag to test; defaults to the current branch, which
 #                 must be pushed (the battery tests what is on GitHub)
-#   --cases N     cases per opted-in stress property on each shard (default 8192)
-#   --shards N    number of shards, each with its own seed (default 24, at most 256)
+#   --cases N     cases per opted-in stress property on each shard (default 4096)
+#   --shards N    number of shards, each with its own seed (default 48, at most 256)
 #   --filter TEXT test name filter for the property test binaries
 #   --mutations   also run the mutation set (scripts/mutations.sh)
 #   --wait        wait for the run and exit with its result

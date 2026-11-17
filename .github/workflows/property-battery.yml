@@ -2,7 +2,7 @@
 
 name: Property battery
 
-run-name: ${{ inputs.triage_run && format('Property battery triage of run {0}', inputs.triage_run) || format('Property battery on {0} ({1} shards x {2} stress cases)', github.ref_name, inputs.shards || '24', inputs.cases || '8192') }}
+run-name: ${{ inputs.triage_run && format('Property battery triage of run {0}', inputs.triage_run) || format('Property battery on {0} ({1} shards x {2} stress cases)', github.ref_name, inputs.shards || '48', inputs.cases || '4096') }}
 
 on:
   workflow_dispatch:
@@ -12,11 +12,11 @@ on:
         type: string
         default: ''
       cases:
-        description: Cases per opted-in stress property on each shard; other properties keep their own budgets (empty means 8192)
+        description: Cases per opted-in stress property on each shard; other properties keep their own budgets (empty means 4096)
         type: string
         default: ''
       shards:
-        description: Number of shards, each with its own seed, 1 to 256 (empty means 24)
+        description: Number of shards, each with its own seed, 1 to 256 (empty means 48)
         type: string
         default: ''
       mutations:
@@ -34,9 +34,10 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
-  CASES: ${{ inputs.cases || '8192' }}
-  SHARDS: ${{ inputs.shards || '24' }}
+  CASES: ${{ inputs.cases || '4096' }}
+  SHARDS: ${{ inputs.shards || '48' }}
   FILTER: ${{ inputs.filter }}
+  ONCE_PACKAGES: koidrive-chunk koidrive-engine koidrive-ignore koidrive-sim koidrive-test-support
 
 defaults:
   run:
@@ -87,13 +88,20 @@ jobs:
             exit 1
           fi
           echo "Packages with property tests: ${packages[*]}"
+          for package in $ONCE_PACKAGES; do
+            if [[ " ${packages[*]} " != *" $package "* ]]; then
+              echo "::error::ONCE_PACKAGES names $package, which has no property tests. Remove it from the list."
+              exit 1
+            fi
+          done
           args=()
           for package in "${packages[@]}"; do args+=(-p "$package"); done
           cargo test --locked --profile checked --no-run --tests --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/build.json"
           scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"
           filter_args=()
           if [ -n "$FILTER" ]; then filter_args=("$FILTER"); fi
-          mkdir -p battery/bin
+          cargo run --quiet --locked --manifest-path scripts/check-proptest-persistence/Cargo.toml --target-dir target/check-proptest-persistence -- --list > "$RUNNER_TEMP/properties.tsv"
+          mkdir -p battery/bin battery/every battery/once
           : > battery/targets.tsv
           : > "$RUNNER_TEMP/covered.txt"
           while IFS=$'\t' read -r manifest selector executable; do
@@ -112,9 +120,28 @@ jobs:
               echo "::error::$package $selector: listing its tests with --list failed, so the battery cannot tell which tests it would run."
               exit 1
             fi
-            listed=$(grep -c ': test$' <<< "$listing" || true)
-            printf '%s\t%s\t%s\t%s\t%s\n' "$package" "$selector" "$dir" "$binary" "$listed" >> battery/targets.tsv
-            echo "$package $selector: $listed tests selected; property files: ${properties//$'\n'/ }"
+            every="battery/every/$(basename "$executable").txt"
+            once="battery/once/$(basename "$executable").txt"
+            if [[ " $ONCE_PACKAGES " == *" $package "* ]]; then spread=1; else spread=0; fi
+            : > "$every"
+            : > "$once"
+            awk -F'\t' 'FILENAME == ARGV[1] { files[$0]; next } $1 in files { print $2 }' <(echo "$properties") "$RUNNER_TEMP/properties.tsv" | sort -u > "$RUNNER_TEMP/names.txt"
+            sed -n 's/: test$//p' <<< "$listing" > "$RUNNER_TEMP/listed.txt"
+            ambiguous=$(awk -F'::' 'FILENAME == ARGV[1] { names[$0]; next } $NF in names { seen[$NF]++ } END { for (name in seen) if (seen[name] > 1) print name }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt" | sort)
+            if [ -n "$ambiguous" ]; then
+              echo "::error::$package $selector has several tests whose names end like these properties, so the battery cannot tell which one is the property: ${ambiguous//$'\n'/ }. Give each property a name that no other test in the binary ends with."
+              exit 1
+            fi
+            unlisted=$(awk -F'::' '{ print $NF }' "$RUNNER_TEMP/listed.txt" | sort -u | comm -23 "$RUNNER_TEMP/names.txt" -)
+            if [ -z "$FILTER" ] && [ -n "$unlisted" ]; then
+              echo "::error::$package $selector compiles these properties but does not list them, so no shard would run them: ${unlisted//$'\n'/ }"
+              exit 1
+            fi
+            awk -v every="$every" -v once="$once" -v spread="$spread" 'FILENAME == ARGV[1] { names[$0]; next } { n = split($0, path, "::"); if (spread && !(path[n] in names)) print > once; else print > every }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt"
+            every_count=$(wc -l < "$every")
+            once_count=$(wc -l < "$once")
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "$selector" "$dir" "$binary" "$every_count" "$once_count" >> battery/targets.tsv
+            echo "$package $selector: $every_count tests on every shard, $once_count tests once; property files: ${properties//$'\n'/ }"
           done < <(jq -r 'select(.reason == "compiler-artifact" and .executable != null) | [.manifest_path, (if (.target.kind | any(. == "test")) then "--test " + .target.name elif (.target.kind | any(. == "bin")) then "--bin " + .target.name else "--lib" end), .executable] | @tsv' "$RUNNER_TEMP/build.json")
           missing=$(for package in "${packages[@]}"; do
             dir=$(jq -r --arg name "$package" '.packages[] | select(.name == $name) | .manifest_path' "$RUNNER_TEMP/metadata.json" | xargs dirname | xargs realpath --relative-to="$GITHUB_WORKSPACE")
@@ -128,7 +155,8 @@ jobs:
             echo "::error::No test binary in ${packages[*]} compiles a file with a proptest! block."
             exit 1
           fi
-          selected=$(awk -F'\t' '{ n += $5 } END { print n + 0 }' battery/targets.tsv)
+          every=$(awk -F'\t' '{ n += $5 } END { print n + 0 }' battery/targets.tsv)
+          selected=$(awk -F'\t' '{ n += $5 + $6 } END { print n + 0 }' battery/targets.tsv)
           if [ "$selected" -eq 0 ]; then
             echo "::error::The filter '$FILTER' selects no test in the property test binaries, so the battery would run nothing."
             exit 1
@@ -136,9 +164,9 @@ jobs:
           {
             echo "### Property test targets"
             echo
-            echo "$selected tests selected per shard (filter: ${FILTER:-none})."
+            echo "$selected tests selected (filter: ${FILTER:-none}). Every shard runs $every tests with its own seed: each property test, and every test of the packages that ONCE_PACKAGES leaves out. The other $((selected - every)) tests, outside property blocks in $ONCE_PACKAGES, do not use the shard's seed, so each runs once, on one of the shards."
             echo
-            awk -F'\t' '{ print "- " $1 " " $2 ": " $5 " tests" }' battery/targets.tsv
+            awk -F'\t' '{ print "- " $1 " " $2 ": " $5 " tests on every shard, " $6 " tests once" }' battery/targets.tsv
           } | tee -a "$GITHUB_STEP_SUMMARY"
           tar -cf battery.tar battery
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -187,6 +215,7 @@ jobs:
       SHA: ${{ needs.build.outputs.sha }}
       SEED_BASE: ${{ needs.build.outputs.seed_base }}
       SHARD: ${{ matrix.shard }}
+      SHARDS: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,20 +230,20 @@ jobs:
           seed=$((SEED_BASE + SHARD))
           out="$RUNNER_TEMP/out"
           mkdir -p "$out/logs" "$out/regressions"
-          echo "Shard $SHARD: PROPTEST_RNG_SEED=$seed KOIDRIVE_BATTERY_CASES=$CASES for opted-in stress properties; filter='$FILTER' commit $SHA"
-          filter_args=()
-          repro_filter=""
-          if [ -n "$FILTER" ]; then
-            filter_args=("$FILTER")
-            repro_filter=" -- $(printf '%q' "$FILTER")"
-          fi
-          passed=0 failed=0 failing='[]'
-          while IFS=$'\t' read -r package selector dir binary expected; do
+          echo "Shard $SHARD of $SHARDS: PROPTEST_RNG_SEED=$seed KOIDRIVE_BATTERY_CASES=$CASES for opted-in stress properties; filter='$FILTER' commit $SHA"
+          passed=0 failed=0 failing='[]' offset=0 assigned=0
+          while IFS=$'\t' read -r package selector dir binary _ once_count; do
+            name=$(basename "$binary")
+            awk -v shard="$SHARD" -v shards="$SHARDS" -v offset="$offset" '(NR - 1 + offset) % shards == shard' "battery/once/$name.txt" | cat "battery/every/$name.txt" - > "$out/tests-$name.txt"
+            offset=$((offset + once_count))
+            mapfile -t tests < "$out/tests-$name.txt"
+            expected=${#tests[@]}
             [ "$expected" -gt 0 ] || continue
-            log="$out/logs/$(basename "$binary").log"
+            assigned=$((assigned + expected))
+            log="$out/logs/$name.log"
             echo "::group::$package $selector"
             set +e
-            (cd "$dir" && env -u PROPTEST_CASES CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" KOIDRIVE_BATTERY_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" "${filter_args[@]}") 2>&1 | tee "$log"
+            (cd "$dir" && env -u PROPTEST_CASES CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE/$dir" PROPTEST_RNG_SEED="$seed" KOIDRIVE_BATTERY_CASES="$CASES" "$GITHUB_WORKSPACE/battery/$binary" --exact "${tests[@]}") 2>&1 | tee "$log"
             code=${PIPESTATUS[0]}
             set -e
             echo "::endgroup::"
@@ -230,12 +259,15 @@ jobs:
               reason="ran $((p + f + i)) of the $expected tests listed for it"
             fi
             if [ -n "$reason" ]; then
-              repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked --profile checked -p $package $selector$repro_filter"
+              red=$(sed -nE 's/^test ([^ ]+) \.\.\. FAILED$/\1/p' "$log" | tr '\n' ' ')
+              repro_tests=""
+              [ -z "$red" ] || repro_tests=" -- --exact ${red% }"
+              repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked --profile checked -p $package $selector$repro_tests"
               failing=$(jq -c --arg target "$package $selector" --arg reason "$reason" --arg repro "$repro" '. + [{target: $target, reason: $reason, repro: $repro}]' <<< "$failing")
               echo "::error title=$package $selector failed on shard $SHARD::Seed $seed, stress budget $CASES, $reason. Reproduce: $repro"
             fi
           done < battery/targets.tsv
-          if [ "$passed" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$failing" = '[]' ]; then
+          if [ "$assigned" -gt 0 ] && [ "$passed" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$failing" = '[]' ]; then
             failing='[{"target": "all targets", "reason": "no test ran", "repro": ""}]'
             echo "::error::Shard $SHARD ran no tests, so it checked nothing."
           fi
@@ -245,7 +277,7 @@ jobs:
           jq -n --argjson shard "$SHARD" --argjson seed "$seed" --argjson cases "$CASES" --argjson passed "$passed" --argjson failed "$failed" --argjson failing "$failing" \
             '{shard: $shard, seed: $seed, cases: $cases, passed: $passed, failed: $failed, failing: $failing}' > "$out/result-$SHARD.json"
           if [ "$failing" = '[]' ]; then
-            echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; unit tests run once." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           jq -r '.[] | .repro' <<< "$failing" > "$out/repro.txt"
@@ -253,7 +285,7 @@ jobs:
           {
             echo "### Shard $SHARD failed"
             echo
-            echo "Seed $seed, stress budget $CASES, commit \`$SHA\`. Other properties keep their own budgets; unit tests run once. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
+            echo "Seed $seed, stress budget $CASES, commit \`$SHA\`. Other properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others. The seed, repro commands, logs and new regression files are in the \`failure-shard-$SHARD\` artifact. Reproduce:"
             echo
             jq -r '.[] | "```sh\n\(.repro)\n```"' <<< "$failing"
           } | tee -a "$GITHUB_STEP_SUMMARY"
@@ -371,7 +403,7 @@ jobs:
             echo
             echo "- Shards passed: $passing of $SHARDS"
             echo "- Stress budget: $CASES generated cases per selected, opted-in stress property on each passing shard, $((CASES * passing)) in total; saved regressions also replay"
-            echo "- Bounded properties keep their own case budgets; unit tests run once per shard"
+            echo "- Bounded properties keep their own case budgets; tests outside property blocks run once per battery, spread over the shards, in the packages ONCE_PACKAGES names, and on every shard in the others"
             echo "- Tests: $tests_passed passed and $tests_failed failed, summed over shards"
             echo
             echo "| Shard | Seed | Result | Tests passed | Tests failed | Job |"
@@ -396,7 +428,7 @@ jobs:
             echo "::error::Shards: $SHARD_RESULT (failed: ${failed_shards:-none recorded, see the table}), mutations: $MUTATIONS_RESULT. The job summary lists the seeds and repro commands."
             exit 1
           fi
-          echo "All $SHARDS shards passed, $((CASES * passing)) generated cases budgeted per selected, opted-in stress property. Bounded properties keep their own budgets; unit tests run once per shard."
+          echo "All $SHARDS shards passed, $((CASES * passing)) generated cases budgeted per selected, opted-in stress property. Bounded properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others."
 
   triage:
     name: triage

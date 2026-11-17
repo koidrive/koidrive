@@ -79,7 +79,7 @@ Add `--ignored` to run an ignored test.
 
 ## The property battery runs nightly and on demand
 
-The [property battery](../.github/workflows/property-battery.yml) runs every property test on GitHub Actions. It runs every night on `main` with 24 shards and a budget of 8192 generated cases per stress property. Only the two deadline-bound driver properties keep their own budgets, and unit tests run once per shard. CI rejects a property that does not use its recorded budget class. To start it for a branch, use `scripts/battery.sh`. It needs [gh](https://cli.github.com/) signed in to an account that can run workflows on the repository:
+The [property battery](../.github/workflows/property-battery.yml) runs every property test on GitHub Actions. It runs every night on `main` with 48 shards and a budget of 4096 generated cases per stress property on each shard. Only the two deadline-bound driver properties keep their own budgets. CI rejects a property that does not use its recorded budget class. To start it for a branch, use `scripts/battery.sh`. It needs [gh](https://cli.github.com/) signed in to an account that can run workflows on the repository:
 
 ```sh
 scripts/battery.sh                         # the current branch, as pushed
@@ -92,12 +92,12 @@ The script prints the run URL and returns. With `--wait` it follows the run and 
 | Option | Workflow input | Default |
 |---|---|---|
 | `REF` | The branch or tag to test | The current branch |
-| `--cases N` | `cases`, the `KOIDRIVE_BATTERY_CASES` budget for opted-in stress properties on each shard | 8192 |
-| `--shards N` | `shards`, at most 256 | 24 |
+| `--cases N` | `cases`, the `KOIDRIVE_BATTERY_CASES` budget for opted-in stress properties on each shard | 4096 |
+| `--shards N` | `shards`, at most 256 | 48 |
 | `--filter TEXT` | `filter`, a test name filter as for `cargo test` | None |
 | `--mutations` | `mutations`, which also runs the [mutation set](#the-mutation-set) | Off |
 
-The build job compiles every test binary that contains a `proptest!` block, including blocks pulled in with `mod` or `include!` and library unit tests. It fails if a `proptest!` block is in no binary or if the filter selects no test. Each shard then runs those binaries with its own seed, `PROPTEST_RNG_SEED` = run ID × 1000 + shard number, so every run covers new cases. A shard fails if a binary runs a different number of tests than it lists. The summary job lists each shard's seed, result and log.
+The build job compiles every test binary that contains a `proptest!` block, including blocks pulled in with `mod` or `include!` and library unit tests. It fails if a `proptest!` block is in no binary, if a binary does not list a property it compiles, if a property's name is also the last part of another test's name in the same binary, if `ONCE_PACKAGES` names a package without property tests, or if the filter selects no test. Every shard runs each property test, which is each test that the property-persistence check's `--list` mode finds in a `proptest!` block, with its own seed, `PROPTEST_RNG_SEED` = run ID × 1000 + shard number, so every run covers new cases. The workflow's `ONCE_PACKAGES` lists the packages whose other tests do not depend on the seed, timers, sockets or the order they run in. The shards split those tests, and each runs once per battery. Every other test runs on every shard, so a race between two driver or net tests in one process can still show up. A shard fails if a binary runs a different number of tests than the shard gave it. A failing shard's repro command names the tests that failed. The summary job lists each shard's seed, result and log.
 
 The workflow runs on the ref it tests, with that ref's own copy of the workflow file, so the ref must contain it. A branch's battery can then write only that branch's Actions cache, never `main`'s.
 
@@ -106,7 +106,7 @@ The workflow runs on the ref it tests, with that ref's own copy of the workflow 
 The shard's job summary prints one command per failing test target, for example:
 
 ```sh
-git checkout <commit> && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=8192 PROPTEST_RNG_SEED=<seed> cargo test --locked -p koidrive-sim --test engine_sync
+git checkout <commit> && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=4096 PROPTEST_RNG_SEED=<seed> cargo test --locked --profile checked -p koidrive-sim --test engine_sync -- --exact a_device_with_local_changes_converges_with_the_server_and_keeps_every_write
 ```
 
 The command reproduces the failure locally. The `failure-shard-<k>` artifact holds the seed, the commands, the test logs and any new `*.cases/cc-<seed>.txt` files, including their `# shrinks to` descriptions. Copy the case files into the same paths in the checkout, then run the failing property with `PROPTEST_CASES=0` to replay saved cases without generating random cases.
