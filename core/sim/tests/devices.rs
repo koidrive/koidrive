@@ -2799,8 +2799,6 @@ fn a_revival_at_an_unasked_name_or_parent_is_rejected() {
     }
 }
 
-/// A restore loses an edit, and another device's delete trashes the file after the restore. The
-/// author's lost edit gives way to the delete.
 #[test]
 fn a_restore_that_loses_an_edit_leaves_its_file_deleted() {
     let _red = expect_red(Check::DeleteUndone);
