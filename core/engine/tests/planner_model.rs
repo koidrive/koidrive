@@ -1700,6 +1700,7 @@ struct Report {
     classes: Vec<String>,
     size: usize,
     text: String,
+    sent: String,
 }
 
 fn show_runs(world: &World, runs: &[Run]) -> String {
@@ -2079,6 +2080,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         classes.push("clean".into());
     }
     let size = world.len() * 100 + world.changes() * 10 + planned;
+    let sent = show_runs(world, &runs);
     let text = if classes == ["clean"] {
         String::new()
     } else {
@@ -2086,7 +2088,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
             "{}{}{}{}",
             world.describe(),
             world.show_ranks(),
-            show_runs(world, &runs),
+            sent,
             notes
         )
     };
@@ -2096,6 +2098,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         classes,
         size,
         text,
+        sent,
     }
 }
 
@@ -2659,6 +2662,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     if classes.is_empty() {
         classes.push(format!("{prefix}: clean"));
     }
+    let sent = show_runs(&told, std::slice::from_ref(&full));
     let text = if hard.is_empty() && soft.is_empty() {
         String::new()
     } else {
@@ -2667,7 +2671,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
             told.describe(),
             told.show_ranks(),
             show_story(&told, story),
-            show_runs(&told, std::slice::from_ref(&full)),
+            sent,
             notes
         )
     };
@@ -2677,6 +2681,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         classes,
         size: told.len() * 100 + told.changes() * 10 + planned,
         text,
+        sent,
     })
 }
 
@@ -3639,8 +3644,8 @@ fn a_publish_answer_trashes_again_a_folder_it_gives_up_below_a_moved_folder() {
         .filter(|class| class.contains("gives up is live"))
         .collect();
     assert!(live.is_empty(), "{live:?}\n{}", report.text);
-    let sent = report.text.lines().nth(1).unwrap_or_default();
-    assert!(sent.contains("Delete d"), "{}", report.text);
+    let first = report.sent.lines().nth(1).unwrap_or_default();
+    assert!(first.contains("Delete d"), "{}", report.sent);
 }
 
 #[test]
