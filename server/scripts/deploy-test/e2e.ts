@@ -411,6 +411,12 @@ export function parseListing(text: string): Map<string, string> {
   }));
 }
 
+export function holdsAsExpected(held: string[], expected: string[] | undefined): boolean {
+  const holds = (path: string) => held.some((item) => item === path || item.endsWith("/" + path));
+  if (expected) return held.length === expected.length && expected.every(holds);
+  return AFTER_POINT.every((path) => path.split("/").some((_, at, names) => holds(names.slice(0, at + 1).join("/"))));
+}
+
 async function answerRewind(on: Device, token: "keep" | "discard", expected?: string[]): Promise<void> {
   let decision: Decision;
   try {
@@ -424,9 +430,8 @@ async function answerRewind(on: Device, token: "keep" | "discard", expected?: st
     throw error;
   }
   const held = decision.items.map((item) => item.path);
-  const holds = (path: string) => held.some((item) => item === path || item.endsWith("/" + path));
-  if (expected ? held.length !== expected.length || !expected.every(holds) : !AFTER_POINT.every(holds)) {
-    fail("the decision on " + on.name + " holds " + JSON.stringify(held) + ", not " + (expected ? "the files the rewind removed " + JSON.stringify(expected) : "the files written after the restore point " + JSON.stringify(AFTER_POINT)));
+  if (!holdsAsExpected(held, expected)) {
+    fail("the decision on " + on.name + " holds " + JSON.stringify(held) + ", not " + (expected ? "the nodes the rewind removed " + JSON.stringify(expected) : "the files written after the restore point " + JSON.stringify(AFTER_POINT)));
   }
   const answer = decision.answers.find((candidate) => candidate.token === token) ?? fail("the decision on " + on.name + " offers no " + token + " answer");
   koi(on, answer.argv.slice(1));
@@ -438,13 +443,14 @@ async function settled(on: Device, expected?: string): Promise<Map<string, strin
   let files = new Map<string, string>();
   try {
     await until("the folder on " + on.name + " to settle after the rewind", SYNC_MS, () => {
+      const status = folder(on);
+      if (status.state !== "up_to_date" || status.questions !== 0) return undefined;
       try {
         files = listing(on.folder);
       } catch {
         return undefined;
       }
-      const status = folder(on);
-      return status.state === "up_to_date" && status.questions === 0 && (expected === undefined || format(files) === expected) ? true : undefined;
+      return expected === undefined || format(files) === expected ? true : undefined;
     });
   } catch (error) {
     if (expected !== undefined) console.log("The expected tree:\n" + expected);
@@ -646,13 +652,14 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     let files = new Map<string, string>();
     try {
       await until("the folder on linux to follow the rewound space", SYNC_MS, () => {
+        const status = folder(linux);
+        if (status.state !== "up_to_date" || status.questions !== 0 || status.history_id !== String(result.historyId)) return undefined;
         try {
           files = listing(linux.folder);
         } catch {
           return undefined;
         }
-        const status = folder(linux);
-        return status.state === "up_to_date" && status.questions === 0 && status.history_id === String(result.historyId) && format(files) === expected ? true : undefined;
+        return format(files) === expected ? true : undefined;
       });
     } catch (error) {
       console.log("The server's tree after the rewind:\n" + expected);

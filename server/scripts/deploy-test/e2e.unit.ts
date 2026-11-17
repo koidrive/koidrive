@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommitRecordSchema, NodeKind, type NodeState, NodeStateSchema, NodeStatus } from "../../src/gen/koidrive/v1/model_pb";
-import { type Content, contents, format, keypair, listing, matches, parseListing, seal, startDaemon, trees, unseal } from "./e2e.ts";
+import { type Content, contents, format, holdsAsExpected, keypair, listing, matches, parseListing, seal, startDaemon, trees, unseal } from "./e2e.ts";
 import { removedByRewind, replay, rewindMismatch } from "./rewind.ts";
 
 const roots: string[] = [];
@@ -101,6 +101,17 @@ describe("what a rewind removed from the space", () => {
 
   it("holds a new folder as one item, without the files the restored seq holds at another place", () => {
     for (const seq of [3n, 4n]) expect(removedByRewind(e2e, seq)).toEqual({ items: ["after-point-mac.bin", "docs", conflict], files: ["after-point-mac.bin", "docs/after-point-linux.txt", conflict] });
+  });
+
+  it("is the decision a device that keeps them asks, at the restored seq the rewind landed on", () => {
+    const at = (path: string) => "/home/runner/koidrive/" + path;
+    for (const seq of [3n, 4n, 5n]) {
+      const { items } = removedByRewind(e2e, seq);
+      expect(holdsAsExpected(items.map(at), items)).toBe(true);
+      expect(holdsAsExpected(items.map(at), undefined)).toBe(true);
+      expect(holdsAsExpected(items.slice(1).map(at), items)).toBe(false);
+    }
+    expect(holdsAsExpected(["after-point-mac.bin", "notes"], undefined)).toBe(false);
   });
 
   it("names a file deleted and created again at its path after the restored seq, and not one trashed there and put back", () => {
