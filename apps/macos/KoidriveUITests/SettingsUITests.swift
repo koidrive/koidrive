@@ -18,30 +18,28 @@ final class SettingsUITests: XCTestCase {
     }
 
     @MainActor
-    private func assertToolbarShowsEveryTab(scenario: String, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertToolbarShowsEveryTab(scenario: String) {
         let app = XCUIApplication()
         app.launchArguments = ["-FakeScenario", scenario, "-settingsTab", "storage", "-OpenSharedLinks", "YES"]
         app.launch()
         addTeardownBlock { app.terminate() }
-        let links = app.windows["Shared Links"]
-        XCTAssert(links.waitForExistence(timeout: 20), file: file, line: line)
-        links.click()
+        XCTAssert(app.windows["Shared Links"].waitForExistence(timeout: 20), "no Shared Links window in \(scenario)")
         app.typeKey(",", modifierFlags: .command)
         let window = app.windows["Storage"]
-        XCTAssert(window.waitForExistence(timeout: 20), file: file, line: line)
+        XCTAssert(window.waitForExistence(timeout: 20), "Settings did not open in \(scenario); windows: \(app.windows.allElementsBoundByIndex.map(\.title))")
         let toolbar = window.toolbars.firstMatch
-        XCTAssert(toolbar.waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssert(toolbar.waitForExistence(timeout: 10), "no toolbar in \(scenario)")
 
         let titles = ["Folders", "Account", "Storage", "Problems", "General"]
-        XCTAssertEqual(toolbar.buttons.allElementsBoundByIndex.map(\.label), titles, file: file, line: line)
+        XCTAssertEqual(toolbar.buttons.allElementsBoundByIndex.map(\.label), titles, scenario)
         let frames = titles.map { toolbar.buttons[$0].frame }
         for (title, frame) in zip(titles, frames) {
-            XCTAssertGreaterThan(frame.width * frame.height, 0, "\(title) has no size", file: file, line: line)
+            XCTAssertGreaterThan(frame.width * frame.height, 0, "\(title) has no size in \(scenario)")
         }
         let gaps = zip(frames, frames.dropFirst()).map { $1.minX - $0.maxX }
-        XCTAssertLessThan(gaps.max()! - gaps.min()!, 2, "uneven toolbar gaps \(gaps)", file: file, line: line)
+        XCTAssertLessThan(gaps.max()! - gaps.min()!, 2, "uneven toolbar gaps \(gaps) in \(scenario)")
 
         toolbar.buttons["Problems"].click()
-        XCTAssert(app.windows["Problems"].waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssert(app.windows["Problems"].waitForExistence(timeout: 10), "Problems tab did not open in \(scenario)")
     }
 }
