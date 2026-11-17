@@ -180,13 +180,23 @@ def outcome(returncode, output):
         return {"result": "pass", "message": None}
     if returncode == 0 and re.search(r"^test result: ok\. 0 passed; 0 failed; 1 ignored;", output, re.M):
         return {"result": "ignored", "message": None}
-    return {"result": "fail", "message": failure_message(output) or f"exit code {returncode}"}
+    if returncode < 0:
+        return {"result": "fail", "message": failure_message(output) or f"killed by signal {-returncode}"}
+    if returncode != 0 and re.search(r"^test result: FAILED\.", output, re.M):
+        return {"result": "fail", "message": failure_message(output) or f"exit code {returncode}"}
+    return {"result": "error", "message": f"exit code {returncode} without a test result"}
 
 
 def replay_one(executable, package_dir, test, timeout):
     environment = replay_environment(package_dir)
-    listing = subprocess.run([executable, "--exact", test, "--list"], cwd=package_dir, env=environment,
-                             stdout=subprocess.PIPE, text=True)
+    try:
+        listing = subprocess.run([executable, "--exact", test, "--list"], cwd=package_dir, env=environment,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+                                 timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"result": "error", "message": f"--list gave no answer within {timeout} s"}
+    if listing.returncode != 0:
+        return {"result": "error", "message": f"--list exited with code {listing.returncode}"}
     if not re.search(rf"^{re.escape(test)}: test$", listing.stdout, re.M):
         return {"result": "missing", "message": None}
     try:
@@ -231,7 +241,8 @@ def build(checkout, package, selector):
                              and message["target"]["name"] == "koidrive_test_support"), None)
     triage_probe = subprocess.run([probe_executable, "--exact", TRIAGE_PROBE], stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True) if probe_executable else None
-    if triage_probe is None or not re.search(r"^test result: ok. 1 passed;", triage_probe.stdout, re.M):
+    if triage_probe is None or triage_probe.returncode != 0 or not re.search(
+            r"^test result: ok\. 1 passed;", triage_probe.stdout, re.M):
         return None, f"{TRIAGE_PROBE}, the runtime probe the triage added, did not pass in the build of {target}"
     executable = next((message["executable"] for message in map(json.loads, output.splitlines())
                        if message.get("reason") == "compiler-artifact" and message.get("executable")), None)

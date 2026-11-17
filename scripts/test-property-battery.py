@@ -336,7 +336,36 @@ class Triage(unittest.TestCase):
                          "ignored")
         self.assertEqual(triage.outcome(101, FAILING_LOG.format(case="a"))["message"].splitlines()[0],
                          "assertion failed: §(left == right)§".replace("§", chr(96)))
-        self.assertEqual(triage.outcome(101, "error: no such test"), {"result": "fail", "message": "exit code 101"})
+        self.assertEqual(triage.outcome(-6, "thread 'main' has overflowed its stack\n"),
+                         {"result": "fail", "message": "killed by signal 6"})
+
+    def test_an_outcome_without_a_harness_result_is_an_error(self):
+        for returncode, output in ((101, "error: no such test"), (127, ""), (0, ""), (0, "running 0 tests\n"),
+                                   (0, "test result: ok. 0 passed; 0 failed; 0 ignored; 1 filtered out")):
+            with self.subTest(returncode=returncode, output=output):
+                result = triage.outcome(returncode, output)
+                self.assertEqual(result["result"], "error")
+                self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2, [result] * 2), "unknown")
+                self.assertEqual(triage.verdict([result] * 2, [{"result": "fail", "message": "lost"}] * 2), "unknown")
+
+    def test_only_a_successful_listing_can_report_a_missing_test(self):
+        listings = (("listing exits 1", "echo 'devices_converge: test'; exit 1", "error"),
+                    ("listing killed", "kill -9 $$", "error"),
+                    ("listing without the test", "echo 'other: test'", "missing"),
+                    ("empty listing", "true", "missing"),
+                    ("listing with the test", "echo 'devices_converge: test'", "pass"))
+        for name, listing, expected in listings:
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "devices"
+                binary.write_text("#!/bin/sh\nif [ \"$3\" = --list ]; then " + listing + "; exit; fi\n"
+                                  "echo 'test result: ok. 1 passed; 0 failed;'\n")
+                binary.chmod(0o755)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = triage.replay_one(str(binary), Path(directory), "devices_converge", 10)
+                self.assertEqual(result["result"], expected)
+                if expected == "error":
+                    self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2, [result] * 2),
+                                     "unknown")
 
     def test_verdicts(self):
         def runs(result, message=None, times=2):
@@ -456,15 +485,16 @@ class Triage(unittest.TestCase):
                  ("weakened unit", False, True, 0, 0, "require-runtime-checks.sh"),
                  ("failing probe", True, True, 1, 0, "require-runtime-checks.sh"),
                  ("no probe binary", True, False, 0, 0, "require-runtime-checks.sh"),
-                 ("checkout's probe passes but the triage's fails", True, True, 0, 1, "triage_runtime_probe::"))
+                 ("checkout's probe passes but the triage's fails", True, True, 0, 1, "triage_runtime_probe::"),
+                 ("triage probe prints ok but exits nonzero", True, True, 0, 2, "triage_runtime_probe::"))
         for name, overflow_checks, probe_built, probe_exit, triage_exit, problem_names in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 probe = root / "probe"
                 probe.write_text("#!/bin/sh\ncase \"$2\" in triage_runtime_probe::*) failed=" + str(triage_exit)
                                  + " ;; *) failed=" + str(probe_exit) + " ;; esac\n"
-                                 "if [ $failed = 0 ]; then echo 'test result: ok. 1 passed;'; "
-                                 "else echo 'test result: FAILED. 0 passed; 1 failed;'; fi\n")
+                                 "if [ $failed = 0 ] || [ $failed = 2 ]; then echo 'test result: ok. 1 passed;'; "
+                                 "else echo 'test result: FAILED. 0 passed; 1 failed;'; fi\nexit $failed\n")
                 probe.chmod(0o755)
                 (root / "target.json").write_text(json.dumps(unit("koidrive_engine", "lib", overflow_checks)) + "\n"
                                                   + json.dumps(unit("devices", "test", executable="/bin/devices")) + "\n")
