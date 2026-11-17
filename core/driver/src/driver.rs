@@ -1349,14 +1349,11 @@ impl Driver {
             .map_err(store_error(&store_path))?;
         crate::timing::Timing::initialize(&store_path, link.linked_at_ms, &self.inner.telemetry);
         tracing::info!(space_id = link.space_id, path = %koidrive_fs::quoted(&link.root), "linked a folder");
-        let status = Arc::new(
-            crate::lifecycle::Lifecycle::open(
-                &store_path,
-                folder_status(&link, None, 0, 0),
-                self.inner.telemetry.clone(),
-            )
-            .map_err(io_error(&store_path))?,
-        );
+        let status = Arc::new(crate::lifecycle::Lifecycle::open(
+            &store_path,
+            folder_status(&link, None, 0, 0),
+            self.inner.telemetry.clone(),
+        ));
         let linked = roots(&folders);
         let mut folder = Folder {
             linked_started: Some(linked_started),
@@ -2284,14 +2281,11 @@ fn read_folders(
             tracing::warn!(path = %koidrive_fs::quoted(&path), "a store records no linked folder; ignoring it");
             continue;
         };
-        let status = Arc::new(
-            crate::lifecycle::Lifecycle::open(
-                &path,
-                folder_status(&link, cursor, nodes, questions as u64),
-                telemetry.clone(),
-            )
-            .map_err(io_error(&path))?,
-        );
+        let status = Arc::new(crate::lifecycle::Lifecycle::open(
+            &path,
+            folder_status(&link, cursor, nodes, questions as u64),
+            telemetry.clone(),
+        ));
         folders.push((link, status));
     }
     Ok(folders)
@@ -3565,14 +3559,102 @@ mod tests {
         drop(driver);
         let record = paths.store(SPACE).unwrap().with_file_name("lifecycle.json");
         fs::write(record, b"not json").unwrap();
-        assert!(matches!(
-            Driver::open(paths.clone()),
-            Err(DriverError::Io { .. })
-        ));
-        assert!(matches!(
-            Driver::linked_folders(&paths),
-            Err(DriverError::Io { .. })
-        ));
+        let listed = Driver::linked_folders(&paths).unwrap();
+        assert_eq!(listed[0].state, FolderState::Halted);
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        assert_eq!(driver.status().folders[0].state, FolderState::Halted);
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_lifecycle_record_halts_only_its_folder_until_a_restart() {
+        use crate::health::tests::{named, posthog, with_prefix};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let (broken, healthy) = (base.join("Broken"), base.join("Healthy"));
+        paired(&paths, "d1");
+        linked_to(
+            &paths,
+            &broken,
+            "d1",
+            "0190f0a0-0000-7000-8000-0000000000b1",
+        );
+        linked_to(
+            &paths,
+            &healthy,
+            "d1",
+            "0190f0a0-0000-7000-8000-0000000000b2",
+        );
+        let record = paths
+            .store("0190f0a0-0000-7000-8000-0000000000b1")
+            .unwrap()
+            .with_file_name("lifecycle.json");
+        fs::write(&record, br#"{"halt":null,"ro"#).unwrap();
+        let halted = Failure::Halted(Halted::Store);
+        let before = failures::count(halted);
+
+        let listed = Driver::linked_folders(&paths).unwrap();
+        let state = |folders: &[FolderStatus], space: &str| {
+            (folders
+                .iter()
+                .find(|folder| folder.space_id == space)
+                .unwrap())
+            .clone()
+        };
+        assert_eq!(
+            state(&listed, "0190f0a0-0000-7000-8000-0000000000b1").state,
+            FolderState::Halted
+        );
+        let recorder = koidrive_telemetry::Recorder::on();
+        let driver = Driver::open_with_telemetry(paths, recorder.clone()).unwrap();
+        driver.start();
+        let problem = state(
+            &driver.status().folders,
+            "0190f0a0-0000-7000-8000-0000000000b1",
+        )
+        .problem
+        .unwrap();
+        assert!(
+            problem.contains("lifecycle.json") && problem.contains("koi folder restart"),
+            "{problem}"
+        );
+        assert!(failures::count(halted) > before);
+        eventually("the healthy folder is claimed", || {
+            claim::owner(&healthy).unwrap().is_some()
+        })
+        .await;
+        assert_ne!(
+            state(
+                &driver.status().folders,
+                "0190f0a0-0000-7000-8000-0000000000b2"
+            )
+            .state,
+            FolderState::Halted
+        );
+        assert!(claim::owner(&broken).unwrap().is_none());
+
+        driver.record_health();
+        let events = posthog(recorder.take());
+        let report = named(&events, "hourly_report")[0];
+        assert_eq!(report["l.sync.halted"], 1);
+        assert_eq!(with_prefix(report, "l.halted."), [("l.halted.store", 1)]);
+
+        let restarted = driver.restart(&broken).await.unwrap();
+        assert_ne!(restarted.state, FolderState::Halted);
+        eventually("the restarted folder is claimed", || {
+            claim::owner(&broken).unwrap().is_some()
+        })
+        .await;
+        let cleared = named(&posthog(recorder.take()), "problem_cleared")
+            .into_iter()
+            .map(|event| event["problem"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(cleared, ["halted.store"]);
+        driver.stop().await;
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&record).unwrap()).unwrap();
     }
 
     #[tokio::test]
