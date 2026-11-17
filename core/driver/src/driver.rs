@@ -1352,6 +1352,7 @@ impl Driver {
             folder_status(&link, None, 0, 0),
             self.inner.telemetry.clone(),
         ));
+        status.settle_unreadable();
         let linked = roots(&folders);
         let mut folder = Folder {
             linked_started: Some(linked_started),
