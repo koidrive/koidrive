@@ -615,8 +615,9 @@ describe("RFC 0028 section 7.2: legacy intents", () => {
   });
 
   it("encodes a place key as the published vectors do", () => {
-    const [, root, folder] = legacyVectors.vectors;
-    expect(legacyPlaceKey(7, null, "a.txt")).toBe(root!.key);
+    const [, child, root, folder] = legacyVectors.vectors;
+    expect(legacyPlaceKey(7, "0190f5c2-0000-7000-8000-0000000000ff", "a.txt")).toBe(child!.key);
+    expect(legacyPlaceKey(1, null, "")).toBe(root!.key);
     expect(legacyPlaceKey(12, "0190f5c2-0000-7000-8000-000000000002", "Caf\u00e9.docx")).toBe(folder!.key);
   });
 
