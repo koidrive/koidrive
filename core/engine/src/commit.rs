@@ -5189,7 +5189,8 @@ impl<'a> Scratch<'a> {
                 let Some(up) = at else {
                     return false;
                 };
-                if self.moved.contains(up) && !answers.contains(up) {
+                if self.moved.contains(up) && !answers.contains(up) && !self.finishing.contains(up)
+                {
                     return true;
                 }
                 if up != id && !revived.contains(up) && !self.creating.contains_key(up) {
