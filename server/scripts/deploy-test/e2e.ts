@@ -12,7 +12,7 @@ import { addStats, readState } from "./state.ts";
 const SPACE = "e2e";
 const SYNC_MS = 5 * 60_000;
 const PEER_MS = 45 * 60_000;
-const HALT_MS = 10 * 60_000;
+const DECISION_MS = 10 * 60_000;
 const REWIND_MS = 5 * 60_000;
 const RESTORE_POINT_AGE_MS = 70_000;
 const RESTORE_POINT_GAP_MS = 10_000;
@@ -395,46 +395,33 @@ function passed(scenario: string, on: Device, files: Map<string, string>): void 
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, "| " + scenario + " | " + on.name + " | " + files.size + " | " + hash + " |\n");
 }
 
-function rewound(name: string): Device {
-  const on = device(name);
-  return { ...on, folder: join(on.dir, "rewound") };
+interface Decision {
+  kind: string;
+  group?: string;
+  items: { path: string }[];
+  answers: { token: string; argv: string[] }[];
 }
 
-const rewoundListingFile = (on: Device) => temp(on.name + "-rewound-listing");
+const AFTER_POINT = ["after-point-mac.bin", "docs/after-point-linux.txt"];
 
-async function recover(on: Device, expected?: string): Promise<void> {
-  const halted = await until("the rewind to halt the folder on " + on.name, HALT_MS, () => {
-    const status = folder(on);
-    return status.state === "halted" ? status : undefined;
-  });
-  console.log("The folder on " + on.name + " halted: " + halted.problem);
-  if (!halted.problem?.endsWith("this build cannot recover the folder yet")) fail("the folder on " + on.name + " halted for another reason");
-  koi(on, ["folder", "unlink", on.folder]);
-  const fresh = rewound(on.name);
-  mkdirSync(fresh.folder, { recursive: true, mode: 0o700 });
-  koi(fresh, ["folder", "link", fresh.folder, "--space", SPACE]);
-  let files = new Map<string, string>();
+async function answerRewind(on: Device, token: "keep" | "discard"): Promise<void> {
+  let decision: Decision;
   try {
-    await until("the new folder on " + on.name + " to hold the rewound space", SYNC_MS, () => {
-      files = listing(fresh.folder);
-      const status = folder(fresh);
-      return status.state === "up_to_date" && status.head_seq && (expected === undefined || format(files) === expected) ? true : undefined;
-    });
+    decision = await until("a decision on " + on.name + " about the files written after the restore point", DECISION_MS, () =>
+      (JSON.parse(koi(on, ["resolve", "--json"], null)) as { decisions: Decision[] }).decisions.find(
+        (candidate) => candidate.kind === "recovery" && candidate.group === "created_after_restore_point",
+      ),
+    );
   } catch (error) {
-    if (expected !== undefined) console.log("The server's tree after the rewind:\n" + expected);
-    explain(fresh, files);
+    explain(on, listing(on.folder));
     throw error;
   }
-  writeFileSync(rewoundListingFile(on), format(files));
-  passed("7. Rewind", fresh, files);
-}
-
-async function stillRewound(on: Device): Promise<Map<string, string>> {
-  await until("the new folder on " + on.name + " to be up to date", SYNC_MS, () => (folder(on).state === "up_to_date" ? true : undefined));
-  const files = listing(on.folder);
-  const then = readFileSync(rewoundListingFile(on), "utf8");
-  if (format(files) !== then) fail("the new folder on " + on.name + " changed after the rewind.\nThen:\n" + then + "Now:\n" + format(files));
-  return files;
+  const held = decision.items.map((item) => item.path);
+  if (held.length !== AFTER_POINT.length || !AFTER_POINT.every((path) => held.some((item) => item === path || item.endsWith("/" + path)))) {
+    fail("the decision on " + on.name + " holds " + JSON.stringify(held) + ", not the files written after the restore point " + JSON.stringify(AFTER_POINT));
+  }
+  const answer = decision.answers.find((candidate) => candidate.token === token) ?? fail("the decision on " + on.name + " offers no " + token + " answer");
+  koi(on, answer.argv.slice(1));
 }
 
 /**
@@ -593,14 +580,15 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     const mac = device("mac");
     await afterPeerStep(step);
     put(mac, "after-point-mac.bin", "afterMac");
-    await recover(mac);
+    passed("7. Writes after the restore point", mac, (await reach(mac, "afterPoint"))[1]);
   },
 
-  async "linux-7"() {
+  async "linux-7"(step) {
     const linux = device("linux");
     const point = Number(readFileSync(restorePointFile(), "utf8"));
     put(linux, "docs/after-point-linux.txt", "afterLinux");
     passed("7. Writes after the restore point", linux, (await reach(linux, "afterPoint"))[1]);
+    await afterPeerStep(step);
     await sleep(Math.max(0, point + RESTORE_POINT_AGE_MS - Date.now()));
     const { space_id, history_id } = folder(linux);
     checkRewind({ REWIND_CHECK: "before", SPACE_ID: space_id, HISTORY_ID: history_id ?? fail("the folder on linux has no history") });
@@ -619,22 +607,41 @@ const phases: Record<string, (step: string) => Promise<void>> = {
     console.log("Rewound the space to " + new Date(point).toISOString() + ": " + JSON.stringify(result));
     checkRewind({ REWIND_CHECK: "after", SPACE_ID: space_id, HISTORY_ID: String(result.historyId), RESTORE_SEQ: String(result.restoreSeq) });
     const expected = readFileSync(temp("rewound-server-listing.txt"), "utf8");
-    await recover(linux, expected);
+    await answerRewind(linux, "discard");
+    let files = new Map<string, string>();
+    try {
+      await until("the folder on linux to follow the rewound space", SYNC_MS, () => {
+        files = listing(linux.folder);
+        const status = folder(linux);
+        return status.state === "up_to_date" && status.questions === 0 && status.history_id === String(result.historyId) && format(files) === expected ? true : undefined;
+      });
+    } catch (error) {
+      console.log("The server's tree after the rewind:\n" + expected);
+      explain(linux, files);
+      throw error;
+    }
+    passed("7. Discard what the rewind removed", linux, files);
   },
 
-  async "mac-final"(step) {
-    const mac = rewound("mac");
+  async "mac-7-keep"(step) {
+    const mac = device("mac");
     await afterPeerStep(step);
-    const files = await stillRewound(mac);
+    await answerRewind(mac, "keep");
+    passed("7. Keep what the rewind removed", mac, (await reach(mac, "afterPoint"))[1]);
+  },
+
+  async "mac-final"() {
+    const mac = device("mac");
+    const [, files] = await reach(mac, "afterPoint");
     mkdirSync(temp("mac-listing"), { recursive: true });
     writeFileSync(temp("mac-listing", "listing.txt"), format(files));
     await stopDaemon(mac);
   },
 
   async "linux-final"(step) {
-    const linux = rewound("linux");
+    const linux = device("linux");
     await afterPeerStep(step);
-    const files = await stillRewound(linux);
+    const [, files] = await reach(linux, "afterPoint");
     await download("e2e-macos-listing", temp("mac-listing"));
     const mac = readFileSync(temp("mac-listing", "listing.txt"), "utf8");
     if (mac !== format(files)) fail("macOS and Linux ended with different trees.\nmacOS:\n" + mac + "Linux:\n" + format(files));
