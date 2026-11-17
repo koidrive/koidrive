@@ -831,8 +831,10 @@ impl World {
                 device.restored_ahead = false;
             }
         }
-        for names in &mut self.restored_names {
-            names.clear();
+        if !self.space.refuses() {
+            for names in &mut self.restored_names {
+                names.clear();
+            }
         }
         self.rolled_back.clear();
         let mut files: BTreeMap<i64, BTreeMap<NodeId, (usize, bool)>> = BTreeMap::new();
@@ -1386,7 +1388,10 @@ impl World {
         }
         for write in self.writers.keys() {
             let taken = (held_before.difference(&held_after)).any(|(_, held)| held == write);
-            if !taken && !lost_history.contains(write) {
+            let brought_back = (self.exposed.get(write)).is_some_and(|exposure| {
+                (exposure.nodes.keys()).any(|id| after.contains_key(id) && !before.contains_key(id))
+            });
+            if !taken && !lost_history.contains(write) && !brought_back {
                 continue;
             }
             if self.devices.iter().any(|device| device.disk.holds(*write)) {
@@ -2295,7 +2300,7 @@ impl World {
                 let held = self.space.nodes();
                 let finishes = |moved: &Move| {
                     (self.space.node(&moved.node_id)).is_some_and(|node| {
-                        node.status == NodeStatus::Live as i32
+                        (node.status == NodeStatus::Live as i32 || moved.from.is_some())
                             && node.parent_id == moved.new_parent_id
                             && (node.pending_for == moved.new_name || node.name == moved.new_name)
                     })
