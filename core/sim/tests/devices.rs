@@ -45,6 +45,8 @@ mod restore_write_history;
 mod restore_yielded_resend;
 #[path = "devices/unasked_names.rs"]
 mod unasked_names;
+#[path = "devices/undone_deletes.rs"]
+mod undone_deletes;
 
 fn action() -> impl Strategy<Value = Action> {
     (
@@ -224,6 +226,7 @@ fn reviving_an_owed_rename() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
 fn world(devices: usize) -> World {
     let mut world = World::new(devices);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
     world
 }
 

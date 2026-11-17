@@ -283,3 +283,10 @@ examples = ["phase 2, step 27 (Crash on device 0): WriteFile { at: At { base: Ro
 cases = [
   "d93bc61897d1",
 ]
+
+[[failure]]
+class = "I"
+issue = "GUN-864"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_converge_across_server_restores"]
+message = '''after phase <n>: the user of device <n> deleted write <n> or a later write made over it, and the server held it live from then on: the delete never reached the server\.'''
+examples = ["after phase 2: the user of device 0 deleted write 2 or a later write made over it, and the server held it live from then on: the delete never reached the server."]
