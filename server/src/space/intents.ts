@@ -211,10 +211,11 @@ function decodedChanges(record: ArrayBuffer): CommitRecord["changes"] {
   }
 }
 
-export function backfillMigratedIntents(sql: Sql): void {
-  if (sql.exec("SELECT 1 FROM meta WHERE key = ?", LEGACY_INTENTS_DUE).toArray().length === 0) return;
+export function backfillMigratedIntents(sql: Sql): boolean {
+  if (sql.exec("SELECT 1 FROM meta WHERE key = ?", LEGACY_INTENTS_DUE).toArray().length === 0) return false;
   backfillLegacyIntents(sql);
   sql.exec("DELETE FROM meta WHERE key = ?", LEGACY_INTENTS_DUE);
+  return true;
 }
 
 export function backfillLegacyIntents(sql: Sql): void {

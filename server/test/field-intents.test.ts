@@ -409,6 +409,22 @@ describe("RFC 0028 section 3.3: deletes with a view", () => {
     expect(copy.trashGroup).toBe(original.trashGroup);
   });
 
+  it("leaves a carried copy whose content a delete lists live when R7 keeps the whole subtree", async () => {
+    const { space, a, b, c, values, root } = await setup();
+    const nodeId = await file(a, root, "deck.key", values[0]!);
+    sync(a, b, c);
+    await a.commit([update(nodeId, values[1]!)]);
+    const replay = intent(b.session.deviceId, { replay: true });
+    const copied = await c.commit([sent(update(nodeId, values[2]!), replay)]);
+    const copyId = copied.results[0]!.nodeId;
+    sync(a, b, c);
+    await a.commit([sent(op.move(nodeId, root, "deck 2.key"), intent(a.session.deviceId))]);
+    const deleted = await b.commit([sent(del(nodeId, { held: [replay.id] }), intent(b.session.deviceId))]);
+    expect(deleted.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.LIVE);
+    expect((await stateOf(space, copyId))!.status).toBe(NodeStatus.LIVE);
+  });
+
   it("trashes such a copy when a later delete only adds its held to an existing trash", async () => {
     const { space, a, b, c, values, root } = await setup();
     const nodeId = await file(a, root, "deck.key", values[0]!);
@@ -534,6 +550,59 @@ describe("RFC 0028 section 3.4 and 3.5: replays reaching the trash", () => {
     });
   }
 
+  for (const rule of ["A", "B"] as const) {
+    it(`under rule ${rule}, answers a retried Move or Delete whose intent and value a trashed node holds APPLIED and changes nothing`, async () => {
+      const { space, a, b, values, root } = await setup();
+      await setRule(space, rule);
+      const nodeId = await file(a, root, "kept.txt", values[0]!);
+      const rename = intent(a.session.deviceId);
+      await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
+      sync(a, b);
+      const removal = intent(b.session.deviceId);
+      await b.commit([sent(del(nodeId), removal)]);
+      const before = (await stateOf(space, nodeId))!;
+      const moved = await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
+      const deleted = await b.commit([sent(del(nodeId, { held: [intentId()] }), removal)]);
+      for (const retried of [moved, deleted]) {
+        expect(retried.results[0]!.code).toBe(OpResult_Code.APPLIED);
+        expect(retried.changes).toEqual([]);
+      }
+      expect(await stateOf(space, nodeId)).toEqual(before);
+    });
+  }
+
+  it("under rule B, revives a trashed file for the author's replayed edit that the trash does not list, and supersedes one it lists", async () => {
+    const { space, a, b, values, root } = await setup();
+    await setRule(space, "B");
+    const nodeId = await file(a, root, "draft.txt", values[0]!);
+    sync(a, b);
+    const listed = intent(a.session.deviceId, { replay: true });
+    await b.commit([sent(del(nodeId, { held: [listed.id] }), intent(b.session.deviceId))]);
+    const known = await a.commit([sent(update(nodeId, values[1]!), listed)]);
+    expect(known.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.TRASHED);
+    const lostEdit = intent(a.session.deviceId, { replay: true });
+    const lost = await a.commit([sent(update(nodeId, values[2]!), lostEdit)]);
+    expect(lost.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    const revived = (await stateOf(space, nodeId))!;
+    expect(revived.status).toBe(NodeStatus.LIVE);
+    expect(idOf(revived.intents!.content)).toBe(idOf(lostEdit));
+  });
+
+  it("under rule B, supersedes the author's replayed Restore whose intent is the status the trash replaced", async () => {
+    const { space, a, b, values, root } = await setup();
+    await setRule(space, "B");
+    const nodeId = await file(a, root, "back.txt", values[0]!);
+    await a.commit([sent(del(nodeId), intent(a.session.deviceId))]);
+    const restore = intent(a.session.deviceId);
+    await a.commit([sent(op.restore(nodeId), restore)]);
+    sync(a, b);
+    await b.commit([sent(del(nodeId), intent(b.session.deviceId))]);
+    const replay = await a.commit([sent(op.restore(nodeId), create(IntentSchema, { ...restore, replay: true }))]);
+    expect(replay.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.TRASHED);
+  });
+
   it("under rule B, supersedes the author's replay whose intent the trash lists", async () => {
     const { space, a, b, values, root } = await setup();
     await setRule(space, "B");
@@ -619,6 +688,35 @@ describe("RFC 0028 section 7.2: legacy intents", () => {
     expect(legacyPlaceKey(7, "0190f5c2-0000-7000-8000-0000000000ff", "a.txt")).toBe(child!.key);
     expect(legacyPlaceKey(1, null, "")).toBe(root!.key);
     expect(legacyPlaceKey(12, "0190f5c2-0000-7000-8000-000000000002", "Caf\u00e9.docx")).toBe(folder!.key);
+  });
+
+  it("snapshots the backfilled intents, so an R2 restore holds them before the next commit", async () => {
+    const { space, a, root } = await setup();
+    const now = Date.now();
+    await setClock(space, now);
+    const dir = uuidv7();
+    await a.commit([op.mkdir(dir, root, "Docs")]);
+    await a.commit([op.move(dir, root, "Papers")]);
+    const exportAt = now + DAY_MS + 10 * 60_000;
+    await runSpaceAlarm(space.stub, exportAt);
+    await runSpaceAlarm(space.stub, exportAt + 60_000);
+    const headSeq = (await serverState(space.stub)).headSeq;
+    expect((await restoreFromR2(space.spaceId)).manifest!.start_seq).toBe(headSeq);
+    await runInDurableObject(space.stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      for (const table of ["field_intents", "trash_held", "tombstones"]) sql.exec(`DROP TABLE ${table}`);
+      sql.exec("ALTER TABLE nodes DROP COLUMN status_before");
+      sql.exec("ALTER TABLE nodes DROP COLUMN copy_mark");
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", MIGRATIONS.length - 1);
+    });
+    await evictDurableObject(space.stub);
+    const server = await serverState(space.stub);
+    expect(idOf((await stateOf(space, dir))!.intents!.status)).toBe(legacyIntentId(dir, "status", `live:${headSeq - 1}`));
+    await runSpaceAlarm(space.stub, exportAt + 2 * 60_000);
+    await runSpaceAlarm(space.stub, exportAt + 3 * 60_000);
+    const restored = await restoreFromR2(space.spaceId);
+    expect(restored.headSeq).toBe(headSeq);
+    expect(restored.nodes).toEqual(server.nodes);
   });
 
   it("gives every field of a store from before the migration its legacy intent, with the time of the commit at its revision", async () => {
