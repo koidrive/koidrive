@@ -298,11 +298,13 @@ fn a_recount_right_after_another_waits_for_a_wake_and_an_end_of_sync_clears_at_o
     assert_eq!(counts(&a), Some((1, 0, 0, 3)));
 
     a.folder.recount_progress(FolderState::CatchingUp);
+    assert!(a.folder.recount_at.is_some());
     assert_eq!(a.folder.next_change(), None);
+    a.folder.recount_at = Some(Instant::now() + Duration::from_secs(60));
     assert!(!a.folder.recount_progress(FolderState::CatchingUp));
     let wake = a.folder.next_change().expect("the folder wakes for the recount it put off");
-    assert!(wake <= crate::PROGRESS_INTERVAL, "{wake:?}");
-    std::thread::sleep(wake);
+    assert!(wake > Duration::from_secs(59) && wake <= Duration::from_secs(60), "{wake:?}");
+    a.folder.recount_at = Some(Instant::now());
     a.folder.recount_progress(FolderState::CatchingUp);
     assert_eq!(a.folder.next_change(), None);
 

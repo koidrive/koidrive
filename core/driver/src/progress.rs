@@ -134,21 +134,7 @@ impl Tracker {
             };
         }
         for (item, size) in wanted {
-            if self.entries.contains_key(&item) {
-                continue;
-            }
-            match item.direction {
-                Direction::Upload => self.uploads += 1,
-                Direction::Download => self.downloads += 1,
-            }
-            self.total += size;
-            let entry = Entry {
-                size,
-                done: 0,
-                credited: HashSet::new(),
-                path: None,
-            };
-            self.entries.insert(item, entry);
+            self.add(item, size);
         }
         let moved = match self.entries.is_empty() {
             true => std::mem::take(&mut self.finished),
@@ -160,6 +146,35 @@ impl Tracker {
 
     pub fn clear(&mut self) -> bool {
         self.track(BTreeMap::new(), |_| false)
+    }
+
+    fn register(&mut self, items: impl IntoIterator<Item = (Item, u64)>) {
+        let mut added = false;
+        for (item, size) in items {
+            added |= self.add(item, size);
+        }
+        if added {
+            self.publish(0);
+        }
+    }
+
+    fn add(&mut self, item: Item, size: u64) -> bool {
+        if self.entries.contains_key(&item) {
+            return false;
+        }
+        match item.direction {
+            Direction::Upload => self.uploads += 1,
+            Direction::Download => self.downloads += 1,
+        }
+        self.total += size;
+        let entry = Entry {
+            size,
+            done: 0,
+            credited: HashSet::new(),
+            path: None,
+        };
+        self.entries.insert(item, entry);
+        true
     }
 
     fn remove(&mut self, item: &Item) -> Entry {
@@ -218,6 +233,7 @@ impl Credit {
         path_of: impl Fn(&str) -> Option<PathBuf>,
     ) -> Credit {
         let mut credit = Credit::download(tracker, []);
+        let mut items = Vec::new();
         for op in &commit.ops {
             let (node, content) = match &op.op {
                 Some(op::Op::CreateFile(create)) => (&create.node_id, &create.content),
@@ -242,8 +258,15 @@ impl Credit {
                     None => holders.push((item.clone(), u64::from(chunk.size))),
                 }
             }
+            items.push((item, content.size));
         }
+        credit.register(items);
         credit
+    }
+
+    pub fn register(&self, items: impl IntoIterator<Item = (Item, u64)>) {
+        let Some(tracker) = &self.tracker else { return };
+        tracker.lock().unwrap().register(items);
     }
 
     pub fn download<'a>(
@@ -328,6 +351,22 @@ mod tests {
     fn shown(sum: &Arc<Mutex<Sum>>) -> Option<(u64, u64)> {
         let totals = sum.lock().unwrap().totals();
         totals.map(|totals| (totals.bytes_done, totals.bytes_total))
+    }
+
+    #[test]
+    fn a_transfer_that_starts_before_a_recount_counts_its_file_and_keeps_the_bytes_it_moves() {
+        let sum = Arc::default();
+        let mut a = folder("a", &sum);
+        a.tracker.register([(item("a"), 100)]);
+        a.credit("a", "1", 40);
+        a.tracker.register([(item("a"), 100)]);
+        assert_eq!(shown(&sum), Some((40, 100)));
+        a.want(&[("a", 100)], &[]);
+        assert_eq!(shown(&sum), Some((40, 100)));
+        a.credit("a", "2", 60);
+        assert_eq!(shown(&sum), Some((100, 100)));
+        a.want(&[], &["a"]);
+        assert_eq!(shown(&sum), None);
     }
 
     #[test]
