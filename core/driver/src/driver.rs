@@ -6,7 +6,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -36,7 +36,7 @@ use crate::paths::{Paths, PathsError};
 use crate::pending_claim;
 use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
-use crate::status::{Account, FolderState, FolderStatus, Status};
+use crate::status::{Account, Activity, FolderState, FolderStatus, Status};
 use crate::update::{self, Update, Updates};
 
 /// How long a sign-out waits for each call to the server before it goes on without it.
@@ -347,6 +347,7 @@ struct Folder {
     unlink: Option<Unlink>,
     store: Arc<RwLock<()>>,
     progress: Arc<Mutex<crate::progress::Tracker>>,
+    found: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -631,6 +632,10 @@ impl Driver {
                     FolderState::Bootstrapping | FolderState::CatchingUp
                 ) {
                     status.progress = None;
+                    status.activity = None;
+                }
+                if let Some(Activity::Scanning { files }) = &mut status.activity {
+                    *files = folder.found.load(Ordering::Relaxed);
                 }
                 status
             })
@@ -1367,6 +1372,7 @@ impl Driver {
             unlink: None,
             store: Arc::default(),
             progress: Arc::default(),
+            found: Arc::default(),
         };
         drop(lock);
         if self.syncs() {
@@ -2001,6 +2007,7 @@ impl Driver {
             auth,
             status: folder.status.clone(),
             progress: folder.progress.clone(),
+            found: folder.found.clone(),
             matcher: self.inner.matcher.clone(),
             local: self.inner.local.clone(),
             trash_cap: self.inner.trash_cap,
@@ -2219,6 +2226,7 @@ fn folder_status(
         wait: None,
         progress: None,
         held_disks: Vec::new(),
+        activity: None,
     }
 }
 
@@ -2239,6 +2247,7 @@ fn load_folders(
                     unlink: None,
                     store: Arc::default(),
                     progress: Arc::default(),
+                    found: Arc::default(),
                 },
             )
         })
@@ -6770,6 +6779,34 @@ mod tests {
         let paused = driver.status();
         assert_eq!(paused.folders[0].progress, None);
         assert_eq!(paused.progress, None);
+    }
+
+    #[tokio::test]
+    async fn the_status_shows_the_files_the_first_scan_has_found_so_far() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let paths = Paths::under(&base.join("profile"));
+        let (driver, gate) = paused_driver(&paths, &root).await;
+        let (status, found) = {
+            let folders = driver.inner.folders.lock().unwrap();
+            let folder = folders.values().next().unwrap();
+            (folder.status.clone(), folder.found.clone())
+        };
+        {
+            let mut shown = status.lock().unwrap();
+            shown.state = FolderState::CatchingUp;
+            shown.activity = Some(Activity::Scanning { files: 0 });
+        }
+        found.store(12_345, Ordering::Relaxed);
+        assert_eq!(
+            driver.status().folders[0].activity,
+            Some(Activity::Scanning { files: 12_345 })
+        );
+        status.lock().unwrap().state = FolderState::Offline;
+        assert_eq!(driver.status().folders[0].activity, None);
+        gate.open();
+        driver.stop().await;
     }
 
     #[tokio::test]

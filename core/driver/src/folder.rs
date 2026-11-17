@@ -19,6 +19,7 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -58,7 +59,9 @@ use crate::ignore::Matcher;
 use crate::observe::{FsObserver, Observer};
 use crate::policy::{self, Disposition};
 use crate::progress::{Credit, Direction, Item, Tracker};
-use crate::status::{FolderState, HeldDisk, HeldDiskKind, Unreachable, Wait, WaitKind, describe};
+use crate::status::{
+    Activity, FolderState, HeldDisk, HeldDiskKind, Unreachable, Wait, WaitKind, describe,
+};
 use crate::timing::{Time, Timing};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
@@ -151,6 +154,8 @@ pub(crate) struct Folder {
     progress: Arc<Mutex<Tracker>>,
     recount_at: Option<Instant>,
     recount_waits: bool,
+    unread: u64,
+    other_changes: u64,
     /// When the [`Work::RetryAfter`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
@@ -377,6 +382,8 @@ impl Folder {
             progress: Arc::default(),
             recount_at: None,
             recount_waits: false,
+            unread: 0,
+            other_changes: 0,
             retry_at: None,
             #[cfg(test)]
             crash_after: None,
@@ -561,6 +568,7 @@ impl Folder {
     /// One observation batch, with the number of entries the folder holds after it.
     pub fn observed(&mut self, batch: Batch, entries: u64) -> Result<Vec<Work>, Stop> {
         self.local_entries = Some(entries);
+        self.unread = batch.unread;
         let detached = batch.observation.detached.clone();
         self.disk
             .observed(batch, &mut self.engine, &mut self.store)?;
@@ -1408,17 +1416,20 @@ impl Folder {
             };
             wanted.insert(item, content.size);
         };
+        let mut other_changes = 0;
         for id in (trees.dirty().iter()).filter(|id| !stays_out(id) && !trees.held(id)) {
             let local = file(trees.local().live(id));
             let synced = file(trees.synced().live(id));
             let remote = file(trees.remote().live(id));
             let class = trees.class(id);
+            let mut moves = false;
             if let Some(local) = local
                 && matches!(class, Class::Local | Class::Concurrent)
                 && other(local, remote)
                 && (other(local, synced) || trees.unsent_edits().contains(id))
             {
                 want(Direction::Upload, id, local);
+                moves = true;
             }
             if let Some(remote) = remote
                 && matches!(class, Class::Remote | Class::Concurrent)
@@ -1426,8 +1437,11 @@ impl Folder {
                 && other(remote, local)
             {
                 want(Direction::Download, id, remote);
+                moves = true;
             }
+            other_changes += u64::from(!moves);
         }
+        drop(stays_out);
         let synced = |item: &Item| {
             let holds = match item.direction {
                 Direction::Upload => file(trees.synced().live(&item.node)),
@@ -1435,7 +1449,31 @@ impl Folder {
             };
             holds.is_some_and(|content| content.manifest_digest == item.digest)
         };
-        self.progress.lock().unwrap().track(wanted, synced)
+        let began_or_ended = self.progress.lock().unwrap().track(wanted, synced);
+        self.other_changes = other_changes;
+        began_or_ended
+    }
+
+    pub fn activity(&self, state: FolderState, found: u64) -> Option<Activity> {
+        if !matches!(state, FolderState::Bootstrapping | FolderState::CatchingUp) {
+            return None;
+        }
+        if !self.scanned {
+            return Some(Activity::Scanning { files: found });
+        }
+        if matches!(self.stream, Stream::Listing { .. } | Stream::Replaying(_)) {
+            return Some(Activity::Listing);
+        }
+        if self.unread > 0 {
+            return Some(Activity::Checking { files: self.unread });
+        }
+        if self.progress.lock().unwrap().progress().is_some() {
+            return None;
+        }
+        match self.other_changes {
+            0 => Some(Activity::CatchingUp),
+            changes => Some(Activity::Applying { changes }),
+        }
     }
 
     /// The path of a node relative to the root: where L holds it, or else where R does, as for a file whose download
@@ -2144,6 +2182,7 @@ pub(crate) struct FolderTask {
     pub progressed: Arc<watch::Sender<()>>,
     pub totals: Arc<Mutex<crate::progress::Sum>>,
     pub progress: Arc<Mutex<Tracker>>,
+    pub found: Arc<AtomicU64>,
     /// Notified when `Driver::restore` has recorded a request in the folder's store.
     pub requests: Arc<Notify>,
     #[cfg(test)]
@@ -2602,6 +2641,18 @@ impl FolderTask {
     ) -> mpsc::UnboundedReceiver<FromDisk> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let matcher = self.matcher.clone();
+        self.found.store(0, Ordering::Relaxed);
+        let found = self.found.clone();
+        let progressed = self.progressed.clone();
+        let last_shown = Mutex::new(Instant::now());
+        let counted = move |files: u64| {
+            found.store(files, Ordering::Relaxed);
+            let mut last = last_shown.lock().unwrap();
+            if last.elapsed() >= crate::driver::PROGRESS_INTERVAL {
+                *last = Instant::now();
+                progressed.send_replace(());
+            }
+        };
         #[cfg(test)]
         let fault = self.observe_fault.clone();
         let thread = std::thread::spawn(move || {
@@ -2614,6 +2665,7 @@ impl FolderTask {
                 previous,
                 matcher,
                 move || closed.is_closed(),
+                counted,
             );
             let mut observer = match started {
                 Ok(observer) => observer,
@@ -2683,6 +2735,7 @@ impl FolderTask {
         (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
         let began_or_ended = folder.recount_progress(view.state);
+        let activity = folder.activity(view.state, self.found.load(Ordering::Relaxed));
         let asked = folder.take_questions_changed();
         let mut status = self.status.lock().unwrap();
         let shown = View {
@@ -2698,9 +2751,10 @@ impl FolderTask {
             recovery: status.recovery,
             held_disks: status.held_disks.clone(),
         };
-        if shown == view && !asked && !began_or_ended {
+        if shown == view && status.activity == activity && !asked && !began_or_ended {
             return;
         }
+        status.activity = activity;
         status.state = view.state;
         status.history_id = view.history_id;
         status.last_seq = view.last_seq;

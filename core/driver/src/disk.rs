@@ -215,6 +215,7 @@ impl Sections {
             stamp,
             answered: observer.answered().then_some(requests),
             observation,
+            unread: observer.unread(),
         }))
     }
 }
@@ -229,6 +230,7 @@ pub(crate) struct Batch {
     /// which scopes they read.
     pub answered: Option<Requests>,
     pub observation: Observation,
+    pub unread: u64,
 }
 
 /// The places a crash test stops an effect at, besides the steps of `core/fs`.
@@ -639,6 +641,7 @@ impl Disk {
             stamp,
             answered,
             observation,
+            unread: _,
         } = batch;
         if observation.scanned != Some(self.space.id()) {
             return Err(Stop::OtherRoot);

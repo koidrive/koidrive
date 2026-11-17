@@ -95,7 +95,7 @@ public final class AppModel {
     public static func launchScenario(in defaults: UserDefaults) -> FakeScenario? {
         #if DEBUG
         let all: [String: FakeScenario] = [
-            "firstRun": .firstRun, "upToDate": .upToDate, "syncing": .syncing, "paused": .paused,
+            "firstRun": .firstRun, "upToDate": .upToDate, "syncing": .syncing, "firstScan": .firstScan, "paused": .paused,
             "offline": .offline, "massDelete": .massDelete, "ambiguousDisappearance": .ambiguousDisappearance,
             "recovery": .recovery, "conflict": .conflict, "recoveredWithoutQuestions": .recoveredWithoutQuestions,
             "remoteMassDelete": .remoteMassDelete, "manyQuestions": .manyQuestions, "problems": .problems,

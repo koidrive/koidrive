@@ -1386,6 +1386,7 @@ mod tests {
             questions: 0,
             problem: None,
             progress: None,
+            activity: None,
             held_disks: Vec::new(),
             wait: None,
         }

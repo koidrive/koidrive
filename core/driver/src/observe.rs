@@ -164,6 +164,7 @@ pub struct FsObserver {
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
     stopped: Arc<dyn Fn() -> bool + Send + Sync>,
+    found: Arc<dyn Fn(u64) + Send + Sync>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -300,7 +301,8 @@ impl FsObserver {
     /// folder exclude. Once `stopped` holds, the scan walking the tree is left at its next entry and the file being
     /// read at its next chunk, and `observe` returns `None` without the rest, so a caller that stops waits neither
     /// for a walk of the whole tree nor for every file of a scan to be read. The observer's snapshot then counts
-    /// changes it never returned, so drop the observer.
+    /// changes it never returned, so drop the observer. Each scan calls `found` with the number of files it has found
+    /// so far, at each file it finds.
     pub fn start(
         root: &Path,
         space_id: &str,
@@ -308,17 +310,23 @@ impl FsObserver {
         previous: Snapshot,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
+        found: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Self, FsError> {
         let stopped: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(stopped);
+        let found: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(found);
         let (watcher, native): (Box<dyn Watcher + Send>, bool) =
             match NativeWatcher::start_with_rules(root, previous.clone(), scan_rules(&matcher)) {
-                Ok(watcher) => (Box::new(watcher.stopping_when(watching(&stopped))), true),
+                Ok(watcher) => {
+                    let watcher = watcher.stopping_when(watching(&stopped));
+                    (Box::new(watcher.counting(counting(&found))), true)
+                }
                 Err(FsError::Watch(error)) => {
                     tracing::warn!(%error, "the platform watcher is unavailable; rescanning periodically");
                     let rules = scan_rules(&matcher);
                     let watcher =
                         RescanWatcher::with_rules(root, previous, RESCAN_INTERVAL, rules)?;
-                    (Box::new(watcher.stopping_when(watching(&stopped))), false)
+                    let watcher = watcher.stopping_when(watching(&stopped));
+                    (Box::new(watcher.counting(counting(&found))), false)
                 }
                 Err(error) => return Err(error),
             };
@@ -335,7 +343,13 @@ impl FsObserver {
             reset: false,
             unread: Unread::default(),
             stopped,
+            found,
         })
+    }
+
+    /// The files whose content is still to be read: left to a later observation, or busy and read again later.
+    pub fn unread(&self) -> u64 {
+        self.unread.files.len() as u64
     }
 
     /// The root folder the latest scan opened, `None` until a scan has opened it. A folder with nothing to report
@@ -580,7 +594,8 @@ impl Observer for FsObserver {
                 let rules = scan_rules(&self.matcher);
                 let watcher =
                     RescanWatcher::with_rules(&self.root, snapshot, RESCAN_INTERVAL, rules)?;
-                self.watcher = Box::new(watcher.stopping_when(watching(&self.stopped)));
+                let watcher = watcher.stopping_when(watching(&self.stopped));
+                self.watcher = Box::new(watcher.counting(counting(&self.found)));
                 self.native = false;
                 self.first = true;
                 self.settling = true;
@@ -699,6 +714,11 @@ fn watching(stopped: &Arc<dyn Fn() -> bool + Send + Sync>) -> impl Fn() -> bool 
     move || stopped()
 }
 
+fn counting(found: &Arc<dyn Fn(u64) + Send + Sync>) -> impl Fn(u64) + Send + 'static {
+    let found = found.clone();
+    move |files| found(files)
+}
+
 /// The content of the file at `path` under `root`, or `None` when it is not the file the scan saw or changed while
 /// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds.
 pub(crate) fn read_content(
@@ -813,6 +833,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             || false,
+            |_| {},
         )
         .unwrap()
     }
@@ -842,6 +863,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             stopped,
+            |_| {},
         );
         let mut observer = started.unwrap();
         assert!(matches!(
@@ -1248,6 +1270,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(Unfiltered),
             stopped,
+            |_| {},
         );
         let mut observer = started.unwrap();
         observe_until(&mut observer, |seen| seen.len() >= 20);
@@ -1643,6 +1666,7 @@ mod tests {
             Snapshot::default(),
             Arc::new(IgnoredFolder),
             || false,
+            |_| {},
         )
         .unwrap();
         let (seen, _) = observe_until(&mut observer, |seen| !seen.is_empty());
@@ -1749,6 +1773,7 @@ mod tests {
             snapshot.clone(),
             Arc::new(Unfiltered),
             || false,
+            |_| {},
         )
         .unwrap();
         let proj = PathBuf::from("proj");
@@ -1933,8 +1958,16 @@ mod tests {
             dev: fs::metadata(root).unwrap().dev(),
             volume: None,
         };
-        let mut observer =
-            FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap();
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            previous,
+            Arc::new(Unfiltered),
+            || false,
+            |_| {},
+        )
+        .unwrap();
         let observation = observer.observe(Duration::from_secs(10)).unwrap().unwrap();
         let [Observed::Renamed { from, to, .. }] = &observation.changes[..] else {
             panic!("one move, no removal: {:?}", observation.changes);
@@ -1968,8 +2001,16 @@ mod tests {
             volume: None,
         };
         let matcher = crate::ignore::matcher(&sync).unwrap();
-        let mut observer =
-            FsObserver::start(root, SPACE, dev, Snapshot::default(), matcher, || false).unwrap();
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            Snapshot::default(),
+            matcher,
+            || false,
+            |_| {},
+        )
+        .unwrap();
         let observation = observer.observe(Duration::from_secs(10)).unwrap().unwrap();
         assert_eq!(
             paths(&observation.changes),

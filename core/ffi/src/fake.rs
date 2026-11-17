@@ -48,6 +48,9 @@ pub enum FakeScenario {
     UpToDate,
     /// Syncing, with progress and recent changes.
     Syncing,
+    /// Photos was just linked and its first scan has found 12,345 files so far; Documents is up to
+    /// date. Nothing is being transferred yet.
+    FirstScan,
     /// Paused by the person.
     Paused,
     /// The server cannot be reached, and no update check has answered.
@@ -971,6 +974,7 @@ impl Core for FakeCore {
                 space_name: space.name,
                 path: folder.to_string_lossy().into_owned(),
                 state: FolderState::UpToDate,
+                activity: None,
             };
             saved.folders.push(linked.clone());
             Ok(linked)

@@ -452,6 +452,8 @@ struct Scan<'c> {
     /// Whether the caller has stopped. The scan fails with [`Error::Stopped`]
     /// at the next entry once it holds.
     stopped: &'c dyn Fn() -> bool,
+    files: u64,
+    found: &'c dyn Fn(u64),
 }
 
 impl Scan<'_> {
@@ -498,6 +500,8 @@ impl Scan<'_> {
         }
         self.new.insert(rel.clone(), entry);
         if entry.kind == EntryKind::File {
+            self.files += 1;
+            (self.found)(self.files);
             return Ok(());
         }
         (self.cut)(Cut::OpeningDir(&rel));
@@ -739,6 +743,7 @@ impl Snapshot {
             None,
             Some(rules),
             &|| false,
+            &|_| {},
             &mut |_| {},
         )
     }
@@ -802,12 +807,14 @@ impl Snapshot {
         expected: Option<FileId>,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
-        self.rescan_under(root, paths, expected, None, &|| false, cut)
+        self.rescan_under(root, paths, expected, None, &|| false, &|_| {}, cut)
     }
 
     /// [`Snapshot::rescan_with`], leaving out what `rules` leave out, and
-    /// failing with [`Error::Stopped`] once `stopped` holds. A scan that fails
-    /// takes back what it changed in `rules`.
+    /// failing with [`Error::Stopped`] once `stopped` holds. As it walks, it
+    /// calls `found` with the number of files it has recorded so far. A scan
+    /// that fails takes back what it changed in `rules`.
+    #[allow(clippy::too_many_arguments)]
     fn rescan_under(
         &mut self,
         root: &Path,
@@ -815,6 +822,7 @@ impl Snapshot {
         expected: Option<FileId>,
         rules: Option<&mut Rules>,
         stopped: &dyn Fn() -> bool,
+        found: &dyn Fn(u64),
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
         let mut scan = Scan {
@@ -833,6 +841,8 @@ impl Snapshot {
             rules: rules.map(Pending::new),
             cut,
             stopped,
+            files: 0,
+            found,
         };
         let result = self.rescan_into(root, paths, expected, &mut scan);
         if result.is_err()
@@ -2106,6 +2116,7 @@ pub struct NativeWatcher {
     remount_checked: Instant,
     failed: Option<Error>,
     stopped: Box<dyn Fn() -> bool + Send>,
+    found: Box<dyn Fn(u64) + Send>,
     sender: mpsc::Sender<notify::Result<notify::Event>>,
     events: mpsc::Receiver<notify::Result<notify::Event>>,
     watcher: RecommendedWatcher,
@@ -2156,6 +2167,7 @@ impl NativeWatcher {
             remount_checked: Instant::now(),
             failed: None,
             stopped: Box::new(|| false),
+            found: Box::new(|_| {}),
             sender,
             events,
             watcher,
@@ -2171,6 +2183,16 @@ impl NativeWatcher {
     pub fn stopping_when(self, stopped: impl Fn() -> bool + Send + 'static) -> Self {
         Self {
             stopped: Box::new(stopped),
+            ..self
+        }
+    }
+
+    /// Calls `found` with the number of files a scan has found so far, at
+    /// each file it finds, so a caller can show how far a long scan has got.
+    /// Each scan counts from zero.
+    pub fn counting(self, found: impl Fn(u64) + Send + 'static) -> Self {
+        Self {
+            found: Box::new(found),
             ..self
         }
     }
@@ -2480,6 +2502,7 @@ impl Watcher for NativeWatcher {
                 expected,
                 self.rules.as_mut(),
                 &*self.stopped,
+                &*self.found,
                 &mut |_| {},
             ) {
                 Ok(rescan) => rescan,
@@ -2536,6 +2559,7 @@ pub struct RescanWatcher {
     interval: Duration,
     rules: Option<Rules>,
     stopped: Box<dyn Fn() -> bool + Send>,
+    found: Box<dyn Fn(u64) + Send>,
 }
 
 impl RescanWatcher {
@@ -2547,6 +2571,7 @@ impl RescanWatcher {
             interval,
             rules: None,
             stopped: Box::new(|| false),
+            found: Box::new(|_| {}),
         })
     }
 
@@ -2573,6 +2598,14 @@ impl RescanWatcher {
             ..self
         }
     }
+
+    /// Calls `found` as [`NativeWatcher::counting`] does.
+    pub fn counting(self, found: impl Fn(u64) + Send + 'static) -> Self {
+        Self {
+            found: Box::new(found),
+            ..self
+        }
+    }
 }
 
 impl Watcher for RescanWatcher {
@@ -2586,6 +2619,7 @@ impl Watcher for RescanWatcher {
                 None,
                 self.rules.as_mut(),
                 &*self.stopped,
+                &*self.found,
                 &mut |_| {},
             );
             let poll = match rescan {

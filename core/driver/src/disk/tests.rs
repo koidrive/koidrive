@@ -1616,6 +1616,7 @@ fn observe_until(
             if done(&seen) {
                 return Batch {
                     stamp,
+                    unread: 0,
                     answered: None,
                     observation: Observation {
                         changes: seen,
@@ -1633,7 +1634,16 @@ fn observer(root: &Path, previous: Snapshot) -> FsObserver {
         dev: fs::metadata(root).unwrap().dev(),
         volume: None,
     };
-    FsObserver::start(root, SPACE, dev, previous, Arc::new(Unfiltered), || false).unwrap()
+    FsObserver::start(
+        root,
+        SPACE,
+        dev,
+        previous,
+        Arc::new(Unfiltered),
+        || false,
+        |_| {},
+    )
+    .unwrap()
 }
 
 fn created(changes: &[Observed], name: &str) -> Option<(FileId, Option<Content>)> {

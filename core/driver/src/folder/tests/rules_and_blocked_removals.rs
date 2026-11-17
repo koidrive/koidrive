@@ -257,6 +257,7 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
     fs::write(site.root.join("b/a/.koiignore"), "*.log\n".repeat(200_000)).unwrap();
     let stale = Batch {
         stamp,
+        unread: 0,
         answered: None,
         observation: crate::observe::Observation {
             changes: vec![
@@ -983,6 +984,7 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     assert!(b.folder.disk.awaits_rules());
     let unrelated = Batch {
         stamp: sections.stamp(),
+        unread: 0,
         answered: Some(requests),
         observation: crate::observe::Observation {
             changes: Vec::new(),

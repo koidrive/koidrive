@@ -52,6 +52,18 @@ Until then, `bytes_done` never decreases, and `bytes_total` grows only when new 
 
 `status()` reports progress while a folder bootstraps or catches up, and none otherwise. A change of progress alone marks no `watch()` receiver unless progress begins or ends. `changes()` reports it at most once every 250 ms (`PROGRESS_INTERVAL`), so the daemon's `watch` socket, `koi status` and the app's `SessionEvent::Progress` carry the same numbers at a bounded rate, and an idle folder sends nothing. `status()` also sums them over the folders in `Status.progress`, which the app shows, while a folder syncs. A folder that finishes, abandons a file, goes offline or stops keeps the bytes it moved in that sum until no folder has a file left, so a paused driver reports no sum and shows the same one when it syncs again. Unlinking a folder or signing out takes the folder out of the sum. The sum takes each folder's own count of what synced and what left, so it stays exact however the watch snapshots coalesce.
 
+## A syncing folder says what it is doing
+
+A folder that bootstraps or catches up reports an `activity` beside its transfer progress, so every syncing folder has something to show. The activity is the first that applies:
+
+- `scanning { files }`: the first scan since the folder started walks the disk. `files` counts the files that scan has found so far. `status()` reads the count live, and the scan marks `changes()` at most once every `PROGRESS_INTERVAL` while it walks.
+- `listing`: the folder reads the space's tree from the server.
+- `checking { files }`: files the scans found whose content is still to be read.
+- `applying { changes }`: changes left to sync that move no content, such as new folders, renames, moves and removals. Reported only while the folder has no transfers.
+- `catching_up`: none of the above and no transfers, while the folder waits for the rest of the server's log or for the server to take its own commit.
+
+A folder whose only work is its transfers reports no activity. A folder that does not sync reports none.
+
 ## A rewound space halts its folders
 
 A rewound space halts each folder that syncs it, because the driver does not run the engine's recovery (§6.4) for it.

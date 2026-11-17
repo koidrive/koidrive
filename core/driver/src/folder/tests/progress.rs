@@ -335,3 +335,81 @@ fn a_recount_right_after_another_waits_for_a_wake_and_an_end_of_sync_clears_at_o
     assert_eq!(progress(&a), None);
 }
 
+fn activity(device: &Device) -> Option<Activity> {
+    let found = device.found.load(Ordering::Relaxed);
+    device.folder.activity(device.state(), found)
+}
+
+#[test]
+fn a_new_folder_says_it_scans_and_counts_the_files_its_first_scan_finds() {
+    let mut remote = Remote::new();
+    let site = Site::new(&remote, "a");
+    fs::create_dir(site.root.join("docs")).unwrap();
+    for name in ["one.txt", "docs/two.txt", "docs/three.txt"] {
+        fs::write(site.root.join(name), name).unwrap();
+    }
+    let mut a = site.start();
+    a.connect(&remote);
+    assert_eq!(a.state(), FolderState::Bootstrapping);
+    assert_eq!(activity(&a), Some(Activity::Scanning { files: 0 }));
+
+    let sections = a.folder.sections();
+    let batch = sections.observe(&mut a.observer, WAIT).unwrap().unwrap();
+    assert_eq!(activity(&a), Some(Activity::Scanning { files: 3 }));
+    let step = a.folder.observed(batch, 4);
+    a.take(step).unwrap();
+    let step = a.folder.scanned();
+    a.take(step).unwrap();
+    assert_eq!(activity(&a), Some(Activity::Listing));
+
+    a.rest(&mut remote);
+    assert_eq!(a.state(), FolderState::UpToDate);
+    assert_eq!(activity(&a), None);
+}
+
+#[test]
+fn files_left_to_read_show_as_checking_beside_the_uploads() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let many = crate::observe::READ_FILES + 20;
+    for file in 0..many {
+        fs::write(site.root.join(format!("{file}.txt")), file.to_string()).unwrap();
+    }
+    a.scan_until(|a| a.folder.unread > 0);
+    assert_eq!(a.state(), FolderState::CatchingUp);
+    let Some(Activity::Checking { files }) = activity(&a) else {
+        panic!("{:?}", activity(&a));
+    };
+    assert!(files > 0 && files < many as u64, "{files}");
+    assert!(counts(&a).is_some_and(|(up, ..)| up > 0));
+
+    a.scan_until(|a| a.folder.unread == 0);
+    assert_eq!(counts(&a).map(|(up, ..)| up), Some(many as u64));
+    assert_eq!(activity(&a), None);
+}
+
+#[test]
+fn changes_without_content_show_as_changes_to_apply() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("Projects")).unwrap();
+    fs::create_dir(site.root.join("Drafts")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    assert_eq!(a.state(), FolderState::CatchingUp);
+    assert_eq!(progress(&a), None);
+    assert_eq!(activity(&a), Some(Activity::Applying { changes: 2 }));
+    a.rest(&mut remote);
+    assert_eq!(activity(&a), None);
+}
+
+#[test]
+fn a_folder_that_does_not_sync_reports_no_activity() {
+    let remote = Remote::new();
+    let site = Site::new(&remote, "a");
+    let a = site.start();
+    assert_eq!(a.state(), FolderState::Connecting);
+    assert_eq!(activity(&a), None);
+    for state in [FolderState::Offline, FolderState::UpToDate, FolderState::Halted, FolderState::Stopped] {
+        assert_eq!(a.folder.activity(state, 5), None, "{state:?}");
+    }
+}

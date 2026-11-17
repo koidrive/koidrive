@@ -396,6 +396,7 @@ impl FolderData {
             wait: None,
             progress: None,
             held_disks: Vec::new(),
+            activity: None,
         }
     }
 

@@ -67,7 +67,7 @@ pub use question::{
 pub use restore::{RestoreRejection, RestoreRequest, RestoreState, RestoreStatus, RestoreWait};
 pub use share::{Expiry, LinkState, Revoked, Secret, SharedLink, Target, TargetKind};
 pub use status::{
-    Account, FolderState, FolderStatus, HeldDisk, HeldDiskKind, Progress, Status, Totals,
+    Account, Activity, FolderState, FolderStatus, HeldDisk, HeldDiskKind, Progress, Status, Totals,
     Unreachable, Wait, WaitKind, describe,
 };
 pub use update::Update;

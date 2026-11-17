@@ -1260,6 +1260,7 @@ fn a_failed_scan_leaves_the_rules_as_they_were() {
         None,
         Some(&mut rules),
         &|| false,
+        &|_| {},
         &mut |cut| {
             if let Cut::OpeningDir(path) = cut
                 && path == Path::new("m")
@@ -1365,6 +1366,7 @@ fn a_search_looks_at_a_bounded_number_of_entries_per_rescan_under_deep_and_wide_
                 None,
                 Some(&mut rules),
                 &|| false,
+                &|_| {},
                 &mut |cut| match cut {
                     Cut::Searching(path) | Cut::OpeningDir(path) if path.starts_with("ig") => {
                         looked += 1;
@@ -1414,6 +1416,7 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
             None,
             Some(&mut rules),
             &|| false,
+            &|_| {},
             &mut |cut| {
                 if !restored && matches!(cut, Cut::Confirming(path) if path == Path::new("sub")) {
                     fs::write(root.join("sub/hidden"), "returned during confirmation").unwrap();
@@ -1532,4 +1535,31 @@ fn a_folder_swapped_for_another_volume_while_it_opens_is_not_published() {
     assert_ne!(before.dev, after.dev);
     assert!(matches!(result, Err(Error::Changed)), "{result:?}");
     assert!(snapshot.entries.is_empty(), "{:?}", snapshot.entries);
+}
+
+#[test]
+fn a_scan_counts_the_files_it_finds_as_it_walks() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("a/b")).unwrap();
+    for file in ["one.txt", "a/two.txt", "a/b/three.txt"] {
+        fs::write(root.join(file), file).unwrap();
+    }
+    let counts = Arc::new(Mutex::new(Vec::new()));
+    let native = counts.clone();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::default())
+        .unwrap()
+        .counting(move |files| native.lock().unwrap().push(files));
+    watcher.poll(Duration::ZERO).unwrap();
+    assert_eq!(*counts.lock().unwrap(), [1, 2, 3]);
+
+    let rescanned = Arc::new(Mutex::new(Vec::new()));
+    let rescan = rescanned.clone();
+    let mut watcher = RescanWatcher::new(&root, Snapshot::default(), Duration::ZERO)
+        .unwrap()
+        .counting(move |files| rescan.lock().unwrap().push(files));
+    watcher.poll(Duration::ZERO).unwrap();
+    watcher.poll(Duration::ZERO).unwrap();
+    assert_eq!(*rescanned.lock().unwrap(), [1, 2, 3, 1, 2, 3]);
 }

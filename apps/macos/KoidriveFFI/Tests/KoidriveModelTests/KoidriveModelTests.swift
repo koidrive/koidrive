@@ -48,6 +48,36 @@ private final class Fetches {
         #expect(model.progressFraction == nil)
     }
 
+    @Test func aFolderOnItsFirstScanSaysHowManyFilesItFoundWhileNothingTransfers() throws {
+        let model = AppModel.fake(scenario: .firstScan)
+        model.start()
+        #expect(model.headline == .status(.syncing))
+        #expect(model.state.progress == nil)
+        let photos = try #require(model.folder(spaceID: "space-photos"))
+        #expect(photos.state == .syncing)
+        #expect(photos.activity == .scanning(files: 12_345))
+        #expect(model.folder(spaceID: "space-documents")?.activity == nil)
+
+        let further = model.state.folders.map { folder in
+            var folder = folder
+            if folder.spaceId == "space-photos" { folder.activity = .scanning(files: 20_000) }
+            return folder
+        }
+        model.apply(.folders(folders: further))
+        #expect(model.folder(spaceID: "space-photos")?.activity == .scanning(files: 20_000))
+    }
+
+    @Test func everySyncingScenarioReportsActivityOrTransfers() {
+        for scenario in [FakeScenario.syncing, .firstScan] {
+            let model = AppModel.fake(scenario: scenario)
+            model.start()
+            #expect(model.headline == .status(.syncing), "\(scenario)")
+            let reported = model.state.progress != nil
+                || model.state.folders.contains { $0.state == .syncing && $0.activity != nil }
+            #expect(reported, "\(scenario)")
+        }
+    }
+
     @Test func firstRunNeedsSetupAndStartsInTheSetupStep() {
         let model = AppModel.fake(scenario: .firstRun)
         model.start()
@@ -405,6 +435,7 @@ private final class Fetches {
         let expected: [(FakeScenario, Headline, IconBadge)] = [
             (.upToDate, .status(.idle), .none),
             (.syncing, .status(.syncing), .syncing),
+            (.firstScan, .status(.syncing), .syncing),
             (.paused, .status(.paused), .paused),
             (.offline, .status(.offline), .offline),
             (.massDelete, .questions, .question),
@@ -434,6 +465,7 @@ private final class Fetches {
             (.firstRun, false, false),
             (.upToDate, false, false),
             (.syncing, true, true),
+            (.firstScan, true, true),
             (.paused, false, false),
             (.offline, false, false),
             (.massDelete, false, false),

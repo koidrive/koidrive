@@ -368,6 +368,27 @@ pub struct LinkedFolder {
     /// The folder's absolute path.
     pub path: String,
     pub state: FolderState,
+    /// What the folder does while it syncs besides the transfers [`SyncProgress`] counts. A
+    /// [`FolderState::Syncing`] folder has an activity, transfers in the session's progress, or both;
+    /// any other folder has none.
+    pub activity: Option<FolderActivity>,
+}
+
+/// What a syncing folder is busy with besides moving file content (docs/design/driver.md, "A
+/// syncing folder says what it is doing").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderActivity {
+    /// The folder's first scan since sync started walks the disk. `files` counts the files it
+    /// has found so far.
+    Scanning { files: u64 },
+    /// The folder reads the space's file list from the server.
+    Listing,
+    /// Files the scans found whose content is still to be read, to learn what changed.
+    Checking { files: u64 },
+    /// Changes that move no file content, such as new folders, renames, moves and removals.
+    Applying { changes: u64 },
+    /// The folder waits for the rest of the server's changes or for the server to take its own.
+    CatchingUp,
 }
 
 /// What sync is doing for one linked folder.

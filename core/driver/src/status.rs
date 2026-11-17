@@ -73,6 +73,10 @@ pub struct FolderStatus {
     /// How far the folder's transfers have got, while it has files to send or fetch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// What the folder does while it syncs besides the transfers `progress` counts. None when those transfers are all
+    /// it has left, and while it does not sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Activity>,
     /// The disks inside the folder whose files the folder keeps as they were, while it is running.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_disks: Vec<HeldDisk>,
@@ -159,6 +163,23 @@ pub struct Progress {
     pub bytes_total: u64,
     /// The file whose content moved last, relative to the folder.
     pub current: Option<String>,
+}
+
+/// What a syncing folder is busy with besides moving file content (docs/design/driver.md, "A syncing folder says
+/// what it is doing"). A folder that bootstraps or catches up has an activity, its transfers, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Activity {
+    /// The first scan since the folder started walks the disk. `files` counts the files it has found so far.
+    Scanning { files: u64 },
+    /// The folder reads the space's tree from the server.
+    Listing,
+    /// Files the scans found whose content is still to be read, to learn what changed.
+    Checking { files: u64 },
+    /// Changes that move no file content, such as new folders, renames, moves and removals.
+    Applying { changes: u64 },
+    /// The folder waits for the rest of the server's changes or for the server to take its own.
+    CatchingUp,
 }
 
 /// The files every folder still sends or fetches and the bytes they moved, summed while any folder has a file left
