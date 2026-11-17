@@ -169,6 +169,30 @@ describe("RFC 0028 section 3.1: recording intents", () => {
     expect([second.committedAtMs - first.committedAtMs, third.committedAtMs - second.committedAtMs]).toEqual([1n, 1n]);
   });
 
+  it("stamps concurrent commits in seq order, each after the one before and none ahead of the clock", async () => {
+    const { space, a, b, c, root } = await setup();
+    const waits: number[] = [];
+    let atMs = Date.now() + DAY_MS;
+    await runInDurableObject(space.stub, (instance: SpaceDO) => {
+      instance.clock = () => atMs;
+      instance.sleep = async (ms) => {
+        waits.push(ms);
+        atMs += ms;
+      };
+    });
+    const part = await content("uploaded " + uuidv7());
+    const receipts = await a.uploadParts(part);
+    const results = await Promise.all([
+      a.commit([op.create(uuidv7(), root, "upload.bin", part.content)], { receipts }),
+      b.commit([op.mkdir(uuidv7(), root, "b")]),
+      c.commit([op.mkdir(uuidv7(), root, "c")]),
+    ]);
+    const stamps = results.sort((x, y) => Number(x.seq - y.seq)).map((result) => result.committedAtMs);
+    expect(stamps.slice(1).every((stamp, i) => stamp > stamps[i]!)).toBe(true);
+    expect(stamps.every((stamp) => stamp <= BigInt(atMs))).toBe(true);
+    expect(waits.length).toBeGreaterThan(0);
+  });
+
   it("answers an op whose intent and value the field holds APPLIED and changes nothing", async () => {
     const { space, a, b, values, root } = await setup();
     const sentIntent = intent(a.session.deviceId);
