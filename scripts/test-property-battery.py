@@ -452,16 +452,19 @@ class Triage(unittest.TestCase):
             return {"reason": "compiler-artifact", "package_id": name, "target": {"name": name, "kind": [kind]},
                     "profile": {"debug_assertions": True, "overflow_checks": overflow_checks, "test": True},
                     "executable": executable}
-        cases = (("checked", True, True, 0, None),
-                 ("weakened unit", False, True, 0, "koidrive_engine"),
-                 ("failing probe", True, True, 1, "the_build_keeps_debug_assertions_and_overflow_checks"),
-                 ("no probe binary", True, False, 0, "the_build_keeps_debug_assertions_and_overflow_checks"))
-        for name, overflow_checks, probe_built, probe_exit, problem_names in cases:
+        cases = (("checked", True, True, 0, 0, None),
+                 ("weakened unit", False, True, 0, 0, "require-runtime-checks.sh"),
+                 ("failing probe", True, True, 1, 0, "require-runtime-checks.sh"),
+                 ("no probe binary", True, False, 0, 0, "require-runtime-checks.sh"),
+                 ("checkout's probe passes but the triage's fails", True, True, 0, 1, "triage_runtime_probe::"))
+        for name, overflow_checks, probe_built, probe_exit, triage_exit, problem_names in cases:
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 probe = root / "probe"
-                probe.write_text(f"#!/bin/sh\necho 'test result: ok. 1 passed;'\nexit {probe_exit}\n"
-                                 if probe_exit == 0 else "#!/bin/sh\necho 'test result: FAILED. 0 passed; 1 failed;'\n")
+                probe.write_text("#!/bin/sh\ncase \"$2\" in triage_runtime_probe::*) failed=" + str(triage_exit)
+                                 + " ;; *) failed=" + str(probe_exit) + " ;; esac\n"
+                                 "if [ $failed = 0 ]; then echo 'test result: ok. 1 passed;'; "
+                                 "else echo 'test result: FAILED. 0 passed; 1 failed;'; fi\n")
                 probe.chmod(0o755)
                 (root / "target.json").write_text(json.dumps(unit("koidrive_engine", "lib", overflow_checks)) + "\n"
                                                   + json.dumps(unit("devices", "test", executable="/bin/devices")) + "\n")
@@ -482,26 +485,28 @@ class Triage(unittest.TestCase):
                     self.assertEqual((executable, problem), ("/bin/devices", None))
                     continue
                 self.assertIsNone(executable)
-                self.assertIn("require-runtime-checks.sh", problem)
                 self.assertIn(problem_names, problem)
                 self.assertEqual(triage.verdict([{"result": "fail", "message": "lost"}] * 2,
                                                 [{"result": "error", "message": problem}]), "unknown")
 
-    def test_a_checkout_without_the_runtime_probe_gets_this_one(self):
+    def test_every_checkout_gets_the_triage_probe_and_the_named_probe_when_missing(self):
         source = (ROOT / "core/test-support/src/lib.rs").read_text()
         probe = re.search(r"(?ms)^    #\[test\]\n    fn the_build_keeps_debug_assertions_and_overflow_checks\(\).*?^    \}\n", source)[0]
-        for name, before, after in (
+        own = "    #[test]\n    fn the_build_keeps_debug_assertions_and_overflow_checks() {}\n"
+        triage_module = "\n\n#[cfg(test)]\nmod triage_runtime_probe {\n" + probe + "}\n"
+        for name, before, after, missing in (
                 ("existing tests module", "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn b() {}\n}\n",
-                 "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "\n    #[test]\n    fn b() {}\n}\n"),
-                ("no tests module", "pub fn a() {}\n", "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "}\n")):
+                 "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "\n    #[test]\n    fn b() {}\n}" + triage_module, True),
+                ("no tests module", "pub fn a() {}\n",
+                 "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n" + probe + "}" + triage_module, True),
+                ("a weakened probe of its own", "#[cfg(test)]\nmod tests {\n" + own + "}\n",
+                 "#[cfg(test)]\nmod tests {\n" + own + "}" + triage_module, False)):
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 checkout = Path(directory)
                 lib = checkout / "core/test-support/src/lib.rs"
                 lib.parent.mkdir(parents=True)
                 lib.write_text(before)
-                self.assertTrue(triage.ensure_probe(checkout, source))
-                self.assertEqual(lib.read_text(), after)
-                self.assertFalse(triage.ensure_probe(checkout, source))
+                self.assertEqual(triage.add_probes(checkout, source), missing)
                 self.assertEqual(lib.read_text(), after)
 
     def test_checked_profile_is_copied_whole(self):
