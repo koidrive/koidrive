@@ -384,10 +384,12 @@ class ReleaseJourneys(unittest.TestCase):
                     self.assertEqual(response.headers["Link"], f'<{base}{DRIVER.RELEASE_LIST}?page=2>; rel="next"')
                 with self.assertRaises(urllib.error.HTTPError) as limited:
                     opener.open(base + DRIVER.RELEASE_LIST + "?limited=1", timeout=5)
-                self.assertEqual((limited.exception.code, limited.exception.headers["X-RateLimit-Remaining"]), (403, "0"))
+                with limited.exception as refused:
+                    self.assertEqual((refused.code, refused.headers["X-RateLimit-Remaining"]), (403, "0"))
                 with self.assertRaises(urllib.error.HTTPError) as other:
                     opener.open(base + "/user", timeout=5)
-                self.assertEqual(other.exception.code, 404)
+                with other.exception as missing:
+                    self.assertEqual(missing.code, 404)
             finally:
                 relay.shutdown()
                 relay.server_close()
