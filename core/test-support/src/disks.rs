@@ -311,9 +311,9 @@ fn device_for_image(info: &plist::Value, image: &Path) -> Result<Option<String>,
 #[cfg(target_os = "macos")]
 fn unmount(mounted: &Mounted) -> Result<(), String> {
     let started = std::time::Instant::now();
-    let mut diagnosed = false;
+    let mut busy = None;
     while let Some(device) = attached_device(&mounted.image)? {
-        if started.elapsed() >= std::time::Duration::from_secs(10) {
+        if started.elapsed() >= std::time::Duration::from_secs(30) {
             return Err(format!(
                 "{} remains attached as {device}",
                 mounted.image.display()
@@ -339,45 +339,24 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
                 &["detach".as_ref(), "-force".as_ref(), device.as_ref()],
             )
         });
-        match detached {
-            Ok(_) => {}
-            Err(failure) => {
-                if attached_device(&mounted.image)?.is_none() {
-                    return Ok(());
-                }
-                if !failure.contains("Resource busy") {
-                    return Err(failure);
-                }
-                if !diagnosed {
-                    let holders = Command::new("lsof")
-                        .args(["-nP", "+f", "--"])
-                        .arg(&mounted.at)
-                        .output();
-                    let system_holders = Command::new("sudo")
-                        .args(["-n", "lsof", "-nP", "+f", "--"])
-                        .arg(&mounted.at)
-                        .output();
-                    for out in [holders, system_holders] {
-                        let detail = out
-                            .map(|out| {
-                                format!(
-                                    "{}{}",
-                                    String::from_utf8_lossy(&out.stdout),
-                                    String::from_utf8_lossy(&out.stderr)
-                                )
-                            })
-                            .unwrap_or_else(|error| error.to_string());
-                        let _ = writeln!(
-                            std::io::stderr(),
-                            "{failure}; holders at {}:\n{detail}",
-                            mounted.at.display()
-                        );
-                    }
-                    diagnosed = true;
-                }
+        if let Err(failure) = detached {
+            if attached_device(&mounted.image)?.is_none() {
+                break;
             }
+            if !failure.contains("Resource busy") {
+                return Err(failure);
+            }
+            busy.get_or_insert_with(std::time::Instant::now);
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if let Some(busy) = busy {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{} detached after {:?} of Resource busy",
+            mounted.image.display(),
+            busy.elapsed()
+        );
     }
     Ok(())
 }
