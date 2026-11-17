@@ -10557,3 +10557,48 @@ fn a_device_that_linked_by_listing_sends_its_write_again_over_an_older_version_a
     assert!(world.seen.contains_key("resume finds the log truncated"));
     world.phase(1, &[(1, Step::Restore)]).unwrap();
 }
+
+#[test]
+fn a_late_device_keeps_a_bystanders_resend_when_author_and_bystander_are_gone_and_an_older_backup_returns()
+ {
+    let user = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    let sent = |device| {
+        [
+            (device, Step::Scan),
+            (device, Step::Commit(Reply::Served)),
+            (device, Step::Commit(Reply::Served)),
+            (device, Step::Deliver(0)),
+        ]
+    };
+    let mut world = world(3);
+    let mut steps = vec![
+        (0, Step::Connect),
+        (1, Step::Connect),
+        (0, Step::Backup),
+        (0, user(1)),
+    ];
+    steps.extend(sent(0));
+    steps.extend([(1, Step::Work(0)); 30]);
+    steps.extend([(0, Step::Backup), (0, user(2))]);
+    steps.extend(sent(0));
+    steps.extend([(1, Step::Work(0)); 30]);
+    steps.extend([
+        (0, Step::Leave),
+        (1, Step::RestoreEarlier),
+        (1, Step::Connect),
+    ]);
+    steps.extend([(1, Step::Work(0)); 40]);
+    steps.push((2, Step::Connect));
+    steps.extend([(2, Step::Work(0)); 40]);
+    steps.extend([(1, Step::Leave), (2, Step::Restore)]);
+    world.run(0, &steps).unwrap();
+    world.phase(1, &[(2, Step::Connect)]).unwrap();
+}
