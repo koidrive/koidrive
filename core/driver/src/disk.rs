@@ -663,7 +663,9 @@ impl Disk {
         self.still_current(store)?;
         let now_ms = crate::clock::unix_ms();
         let (space, batch) = (&self.space, self.batch);
-        self.merge_residue = observe_merge_residue(space, engine)?;
+        let residue = observe_merge_residue(space, engine)?;
+        engine.touched.get_mut().stepped |= residue != self.merge_residue;
+        self.merge_residue = residue;
         let hook = &mut self.hook;
         let pending = store.transaction(|tx| -> Result<_, Stop> {
             let blocked = engine.effects.blocked().len();
@@ -747,7 +749,9 @@ impl Disk {
             return Ok(Vec::new());
         };
         self.still_current(store)?;
-        self.merge_residue = observe_merge_residue(&self.space, engine)?;
+        let residue = observe_merge_residue(&self.space, engine)?;
+        engine.touched.get_mut().stepped |= residue != self.merge_residue;
+        self.merge_residue = residue;
         let staged: Vec<_> = (effects.iter())
             .filter_map(|(planned, _)| match planned.effect.action {
                 Action::WriteFile {
