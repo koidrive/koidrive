@@ -226,7 +226,9 @@ These cases replace `forget_lost` and the rules of design §4.4 "Commits the ser
 
 ### 5.5 History changes and store rollbacks
 
-Recovery after a history change or a store rollback (design §6.4) counts a node as changed on this device when a `local` or `sent` row covers it, or when L differs from the recovery's baseline. A `held` row does not count. The questions and answers of design §6.4 are unchanged.
+Recovery after a history change or a store rollback (design §6.4) counts a node as changed on this device when a `local` or `sent` row covers it, or when L differs from the recovery's baseline. A `held` row does not count, and neither does a row whose value the new R holds for the field: that row becomes `held` with the new R's intent as `held_as`, as an RFC 0016 no-op would make it.
+
+A Publish answer sends each row of the node as case 0 of §5.4 does, with the row's own wire base, so R3 keeps the new R's content beside the row's value when the user's change was not made over it (§3.8). A Discard answer ends the node's rows. A copy that a recovery answer makes takes the content intent of the value it keeps, carried with that intent's author, and place and status intents of its own. A copy that the new R lacks, whether the server or a recovery answer made it, is not created again when the new R holds its content intent on another node, whatever the answer for that node and in whichever order the answers come. The questions and answers of design §6.4 are otherwise unchanged.
 
 ## 6. Pending names
 
@@ -370,6 +372,7 @@ Rows marked † are cc families with no hand-written schedule.
 | GUN-968 | Whether a merged folder is a lost create after a loss | §5.2 `MERGED_INTO` moves the rows to the target, so no row names the merged folder |
 | GUN-1013 | Whether a delete is owed once another device's rename changed the shape | §5.1 status row with its seen list; §5.3 |
 | A delete or edit over a value a restore brought back (569589931b73, e86d658f) | Whether the restored value is older than the deleted or edited one | §5.3 the restored value is in the seen list; §5.1 an edit back to older bytes beats a later carried replay; §5.4 case 4 needs the old R's bytes |
+| A lost copy of a write that the server file holds, against this device's pending change of that file: a delete, an offline edit answered Publish or Discard before or after the copy, a same-bytes rewrite (GUN-1012) | Whether the copy yields to the server file or is sent again | §5.5: the copy is not created again while the new R holds its content intent; Publish keeps the server's value beside the edit (§3.8); a row the new R holds is `held`, so a later edit is made over that value; §5.3 and §3.3 for the delete |
 | GUN-690, GUN-701 | Whether a listed revision is this device's commit | §2 `intents` on listings; §5.2 |
 | GUN-931 | Whether a rekeyed folder's children changed here | §5.5 only `local` and `sent` rows count |
 | GUN-753 | (no field) | §6.2 `CreateFile.pending_for` |
