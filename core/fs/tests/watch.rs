@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
@@ -1104,4 +1104,56 @@ fn a_file_replaced_by_a_rename_is_modified_in_place() {
     fs::rename(root.join(".doc.tmp"), root.join("doc")).unwrap();
     let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
     assert_eq!(changes, [Change::Modified { path: "doc".into() }]);
+}
+
+/// A node mark changes nothing a scan compares, so a mark on a large folder must not walk everything below it again,
+/// even when the folder was made just before the watch began.
+#[test]
+fn a_mark_on_a_folder_rescans_nothing_below_it() {
+    #[cfg(target_vendor = "apple")]
+    const MARK: &str = "com.koidrive.node";
+    #[cfg(not(target_vendor = "apple"))]
+    const MARK: &str = "user.koidrive.node";
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for folder in 0..10 {
+        let folder = root.join(format!("deps/p{folder}"));
+        fs::create_dir_all(&folder).unwrap();
+        for file in 0..10 {
+            fs::write(folder.join(format!("f{file}")), "x").unwrap();
+        }
+    }
+    let found = Arc::new(AtomicU64::new(0));
+    let counted = found.clone();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap())
+        .unwrap()
+        .counting(move |files| {
+            counted.fetch_max(files, Ordering::Relaxed);
+        });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        found.store(0, Ordering::Relaxed);
+        watcher.poll(Duration::from_millis(500)).unwrap();
+        if found.load(Ordering::Relaxed) == 0 || Instant::now() > deadline {
+            break;
+        }
+    }
+
+    rustix::fs::setxattr(
+        root.join("deps"),
+        MARK,
+        b"n1",
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    for _ in 0..4 {
+        assert_eq!(
+            watcher.poll(Duration::from_millis(500)).unwrap().changes,
+            []
+        );
+    }
+    assert_eq!(found.load(Ordering::Relaxed), 0);
+
+    fs::write(root.join("deps/p3/f2"), "changed").unwrap();
+    expect(&mut watcher, &[modified("deps/p3/f2")]);
 }

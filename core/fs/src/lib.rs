@@ -100,7 +100,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode, EventKind};
+use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode};
 use rustix::fs::{FileType, Mode, OFlags, RawMode};
 
@@ -2208,6 +2208,9 @@ impl NativeWatcher {
         {
             return Ok(());
         }
+        if self.repeats_the_scan(&event) {
+            return Ok(());
+        }
         for path in event.paths {
             let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
             // An event for a left-out entry of an included folder is kept: the
@@ -2221,6 +2224,38 @@ impl NativeWatcher {
             }
         }
         Ok(())
+    }
+
+    fn repeats_the_scan(&self, event: &notify::Event) -> bool {
+        match event.kind {
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => true,
+            // FSEvents gives an event every flag its path collected lately, so a mark on a folder made moments before
+            // also reports the folder's creation:
+            // https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags
+            #[cfg(target_vendor = "apple")]
+            EventKind::Create(_) => (event.paths.iter()).all(|path| self.folder_as_scanned(path)),
+            // inotify reports an extended attribute written on a folder as a change of its attributes, as it does a
+            // change of its permissions.
+            #[cfg(target_os = "linux")]
+            EventKind::Modify(ModifyKind::Metadata(_)) => (event.paths.iter()).all(|path| {
+                use rustix::fs::Access;
+                self.folder_as_scanned(path)
+                    && path
+                        .strip_prefix(&self.root)
+                        .is_ok_and(|rel| !self.blocked.contains(rel))
+                    && rustix::fs::access(path, Access::READ_OK | Access::EXEC_OK).is_ok()
+            }),
+            _ => false,
+        }
+    }
+
+    fn folder_as_scanned(&self, path: &Path) -> bool {
+        let scanned = (path.strip_prefix(&self.root).ok())
+            .and_then(|rel| self.snapshot.entries.get(rel))
+            .filter(|entry| entry.kind == EntryKind::Dir);
+        scanned.is_some_and(|scanned| {
+            stat_path(path).is_ok_and(|stat| stat.entry().as_ref() == Some(scanned))
+        })
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<bool> {
