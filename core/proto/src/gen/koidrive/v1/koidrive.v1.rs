@@ -420,7 +420,7 @@ pub struct NodeState {
     /// The intent that set each field (RFC 0028). Empty from a server without field_intents.
     #[prost(message, optional, tag="14")]
     pub intents: ::core::option::Option<FieldIntents>,
-    /// On a trashed node: the held lists of the deletes that trashed it (RFC 0028).
+    /// On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0028).
     #[prost(bytes="vec", repeated, tag="15")]
     pub trash_held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
