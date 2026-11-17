@@ -54,6 +54,8 @@ def check_partitions(workflow):
     parser.add_argument("-p", "--package", action="append", default=[])
     parser.add_argument("--features", action="append", default=[])
     parser.add_argument("--locked", action="store_true")
+    parser.add_argument("--profile", choices=["$PROFILE"])
+    parser.add_argument("--no-fail-fast", action="store_true")
     remaining, unknown = parser.parse_known_args(remainder[2:])
     if unknown:
         raise ValueError("The remainder must not filter default test targets")
@@ -78,11 +80,15 @@ def check_partitions(workflow):
     features = re.findall(r"(?m)^          FEATURES: (.+)$", shards)
     if len(features) != 2 or features[0] != features[1]:
         raise ValueError("Inventory and execution must use identical feature expressions")
+    profiles = re.findall(r"(?m)^          PROFILE: (.+)$", shards)
+    if len(profiles) != 2 or profiles[0] != profiles[1]:
+        raise ValueError("Inventory and execution must use identical profile expressions")
+    resolve = ["cargo", "test", *(arg for arg in command[2:] if arg not in ("--profile", "$PROFILE", "--no-fail-fast"))]
     partitions = {"remainder": remainder}
     for package in packages:
         suite = package.removeprefix("koidrive-")
         values = {"koidrive-$SUITE": package, "$FEATURES": suite_features(features[0], suite)}
-        partitions[suite] = [values.get(arg, arg) for arg in command]
+        partitions[suite] = [values.get(arg, arg) for arg in resolve]
     return partitions
 
 

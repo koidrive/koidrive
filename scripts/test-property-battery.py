@@ -12,6 +12,18 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/property-battery.yml"
 HEAVY_WORKFLOW = ROOT / ".github/workflows/heavy-tests.yml"
+CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
+MANIFEST = ROOT / "Cargo.toml"
+
+
+def check_checked_profile(manifest):
+    section = re.search(r"(?ms)^\[profile\.checked\]\n(.*?)(?=^\[|\Z)", manifest)
+    if section is None:
+        raise ValueError("Cargo.toml has no [profile.checked]")
+    settings = dict(re.findall(r'(?m)^([a-z-]+) = "?([^"\n]+)"?$', section[1]))
+    required = {"inherits": "dev", "debug-assertions": "true", "overflow-checks": "true"}
+    if any(settings.get(key) != value for key, value in required.items()) or "panic" in settings:
+        raise ValueError(f"The checked profile must inherit dev and keep debug assertions, overflow checks and unwinding, got {settings}")
 
 
 def commands(workflow):
@@ -115,6 +127,36 @@ class PropertyBattery(unittest.TestCase):
                 self.assertIn("ordinary=unset stress=2 seed=17", output)
                 self.assertIn("arg=a filter", output)
             self.assertIn("arg=--test\narg=engine_sync", output)
+
+
+class CheckedProfile(unittest.TestCase):
+    def test_checked_profile_keeps_every_runtime_check(self):
+        check_checked_profile(MANIFEST.read_text())
+
+    def test_weakened_profile_is_rejected(self):
+        manifest = MANIFEST.read_text()
+        for original, weakened in (("debug-assertions = true", "debug-assertions = false"),
+                                   ("overflow-checks = true", "overflow-checks = false"),
+                                   ('inherits = "dev"', 'inherits = "release"'),
+                                   ("overflow-checks = true", 'overflow-checks = true\npanic = "abort"')):
+            with self.subTest(weakened=weakened), self.assertRaises(ValueError):
+                check_checked_profile(manifest.replace(original, weakened, 1))
+
+    def test_battery_builds_and_reproduces_with_the_checked_profile(self):
+        workflow = WORKFLOW.read_text()
+        _, repro = commands(workflow)
+        build = next(line for line in workflow.splitlines() if "--no-run --tests" in line)
+        for command in (build, repro):
+            self.assertIn("cargo test --locked --profile checked ", command)
+
+    def test_ci_selects_only_dev_or_checked(self):
+        for workflow in (WORKFLOW.read_text(), CI_WORKFLOW.read_text()):
+            for profile in re.findall(r"--profile (\S+)", workflow):
+                self.assertIn(profile, ("checked", '"$PROFILE"'))
+        expressions = re.findall(r"(?m)^ +PROFILE: (.+)$", CI_WORKFLOW.read_text())
+        self.assertTrue(expressions)
+        for expression in expressions:
+            self.assertEqual(set(re.findall(r"'([^']*)'", expression)) - {"sim"}, {"checked", "dev"})
 
 
 class HeavyTests(unittest.TestCase):

@@ -84,7 +84,7 @@ jobs:
           echo "Packages with property tests: ${packages[*]}"
           args=()
           for package in "${packages[@]}"; do args+=(-p "$package"); done
-          cargo test --locked --no-run --tests --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/build.json"
+          cargo test --locked --profile checked --no-run --tests --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/build.json"
           filter_args=()
           if [ -n "$FILTER" ]; then filter_args=("$FILTER"); fi
           mkdir -p battery/bin
@@ -224,7 +224,7 @@ jobs:
               reason="ran $((p + f + i)) of the $expected tests listed for it"
             fi
             if [ -n "$reason" ]; then
-              repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked -p $package $selector$repro_filter"
+              repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked --profile checked -p $package $selector$repro_filter"
               failing=$(jq -c --arg target "$package $selector" --arg reason "$reason" --arg repro "$repro" '. + [{target: $target, reason: $reason, repro: $repro}]' <<< "$failing")
               echo "::error title=$package $selector failed on shard $SHARD::Seed $seed, stress budget $CASES, $reason. Reproduce: $repro"
             fi
