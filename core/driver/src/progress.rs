@@ -289,7 +289,11 @@ impl Credit {
 
     pub fn moved(&self, bytes: u64) {
         let Some(tracker) = &self.tracker else { return };
-        tracker.lock().unwrap().moved += bytes;
+        let mut tracker = tracker.lock().unwrap();
+        tracker.moved += bytes;
+        if let Some(sink) = tracker.sink.as_ref().filter(|_| bytes > 0) {
+            sink.progressed.send_replace(());
+        }
     }
 
     pub fn chunk(&self, hash: &[u8]) {
@@ -512,5 +516,30 @@ mod tests {
         assert_eq!(shown(&sum), None);
         b.want(&[("b2", 10)], &[]);
         assert_eq!(shown(&sum), Some((0, 10)));
+    }
+
+    #[test]
+    fn bytes_moved_wake_the_readers_of_the_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let status: FolderStatus = serde_json::from_value(serde_json::json!({
+            "space_id": "a", "space_name": "a", "path": "/folder", "state": "catching_up",
+            "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,
+            "local_entries": null, "questions": 0, "problem": null,
+        }))
+        .unwrap();
+        let status = Arc::new(Lifecycle::open(&dir.path().join("store.sqlite"), status).unwrap());
+        let tracker = Arc::new(Mutex::new(Tracker::default()));
+        let progressed = Arc::new(watch::Sender::new(()));
+        let mut readers = progressed.subscribe();
+        (tracker.lock().unwrap()).publish_to(status, progressed, Arc::default(), "a".into());
+        let credit = Credit::download(&tracker, []);
+        credit.moved(0);
+        assert!(!readers.has_changed().unwrap());
+        credit.moved(4_096);
+        assert!(readers.has_changed().unwrap());
+        readers.mark_unchanged();
+        credit.moved(4_096);
+        assert!(readers.has_changed().unwrap());
+        assert_eq!(tracker.lock().unwrap().moved(), 8_192);
     }
 }

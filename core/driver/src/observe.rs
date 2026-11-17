@@ -564,8 +564,10 @@ impl FsObserver {
             let bytes = bytes.saturating_sub(read);
             (self.progress)(Observing::Reading { files, bytes });
         });
-        reads.left_files = files.saturating_sub(1);
-        reads.left_bytes = bytes.saturating_sub(entry.size);
+        if let Ok(Some(_)) = content {
+            reads.left_files = files.saturating_sub(1);
+            reads.left_bytes = bytes.saturating_sub(entry.size);
+        }
         (self.progress)(Observing::Reading {
             files: reads.left_files,
             bytes: reads.left_bytes,
@@ -1437,6 +1439,45 @@ mod tests {
         assert!(open_beneath(dir.path(), Path::new("file")).is_err());
         assert!(open_beneath(dir.path(), Path::new("../x")).is_err());
     }
+    #[test]
+    fn a_file_that_could_not_be_read_stays_in_what_is_left_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = marked();
+        let file = dir.path().join("locked");
+        fs::write(&file, b"content").unwrap();
+        fs::write(dir.path().join("open"), b"readable").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            assert!(rustix::process::geteuid().is_root());
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
+        let reports: Arc<std::sync::Mutex<Vec<Observing>>> = Arc::default();
+        let reported = reports.clone();
+        let dev = RootAt {
+            dev: fs::metadata(dir.path()).unwrap().dev(),
+            volume: None,
+        };
+        let mut observer = FsObserver::start(
+            dir.path(),
+            SPACE,
+            dev,
+            Snapshot::default(),
+            Arc::new(Unfiltered),
+            || false,
+            move |report| reported.lock().unwrap().push(report),
+        )
+        .unwrap();
+        observe_until(&mut observer, |seen| seen.len() >= 2);
+        assert_eq!(observer.unread(), (1, 7));
+        assert_eq!(
+            reports.lock().unwrap().last(),
+            Some(&Observing::Reading { files: 1, bytes: 7 })
+        );
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     #[test]
     fn a_file_that_could_not_be_read_is_read_again_once_it_can_be() {
         use std::os::unix::fs::PermissionsExt;

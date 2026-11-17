@@ -2652,6 +2652,7 @@ impl FolderTask {
             self.observing.clone(),
             self.progressed.clone(),
             walked.clone(),
+            crate::driver::PROGRESS_INTERVAL,
         );
         #[cfg(test)]
         let fault = self.observe_fault.clone();
@@ -2776,6 +2777,7 @@ fn reporter(
     observing: Arc<Mutex<Option<Observing>>>,
     progressed: Arc<watch::Sender<()>>,
     walked: Arc<AtomicBool>,
+    interval: Duration,
 ) -> impl Fn(Observing) + Send + Sync + 'static {
     let last_shown: Mutex<Option<Instant>> = Mutex::default();
     move |report: Observing| {
@@ -2795,7 +2797,7 @@ fn reporter(
             return;
         }
         let mut last = last_shown.lock().unwrap();
-        let due = last.is_none_or(|at| at.elapsed() >= crate::driver::PROGRESS_INTERVAL);
+        let due = last.is_none_or(|at| at.elapsed() >= interval);
         if due || phase != Some(std::mem::discriminant(&report)) {
             *last = Some(Instant::now());
             progressed.send_replace(());

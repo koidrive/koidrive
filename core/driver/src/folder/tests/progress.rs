@@ -502,45 +502,28 @@ fn a_large_first_file_shows_its_bytes_fall_once_the_walk_is_done() {
     let mut a = site.start();
     a.connect(&remote);
     let sections = a.folder.sections();
-    let Device {
-        folder,
-        observer,
-        reports,
-        ..
-    } = &mut a;
-    let mut shown = Vec::new();
-    let batch = std::thread::scope(|s| {
-        let observe = s.spawn(|| sections.observe(observer, WAIT));
-        while !observe.is_finished() {
-            let observing = reports.lock().unwrap().last().copied();
-            let now = Activity::live(folder.activity(FolderState::Bootstrapping), observing);
-            if shown.last() != Some(&now) {
-                shown.push(now);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        observe.join().unwrap().unwrap().unwrap()
-    });
-    let reading: Vec<u64> = (shown.iter())
-        .filter_map(|shown| match shown {
-            Some(Activity::Checking { bytes, .. }) => Some(*bytes),
-            _ => None,
+    let batch = sections.observe(&mut a.observer, WAIT).unwrap().unwrap();
+    let reports = a.reports.lock().unwrap().clone();
+    let walk_ends = reports.iter().position(|report| matches!(report, Observing::Reading { .. }));
+    let after_walk = &reports[walk_ends.unwrap()..];
+    assert!(
+        after_walk.iter().all(|report| matches!(report, Observing::Reading { .. })),
+        "{reports:?}"
+    );
+    let shown: Vec<_> = (after_walk.iter())
+        .map(|report| Activity::live(a.folder.activity(FolderState::Bootstrapping), Some(*report)))
+        .collect();
+    assert!(shown.iter().all(|shown| matches!(shown, Some(Activity::Checking { .. }))), "{shown:?}");
+    let bytes: Vec<u64> = (after_walk.iter())
+        .map(|report| match report {
+            Observing::Reading { bytes, .. } => *bytes,
+            Observing::Walking { .. } => unreachable!(),
         })
         .collect();
-    assert!(reading.len() > 2, "{shown:?}");
-    assert!(reading.windows(2).all(|pair| pair[1] < pair[0]), "{shown:?}");
-    assert!(reading[0] > size as u64 / 2, "{shown:?}");
-    let first_read = shown.iter().position(|shown| matches!(shown, Some(Activity::Checking { .. })));
-    assert!(
-        shown[first_read.unwrap()..]
-            .iter()
-            .all(|shown| !matches!(shown, Some(Activity::Scanning { .. }))),
-        "{shown:?}"
-    );
-    assert_eq!(
-        reports.lock().unwrap().last(),
-        Some(&Observing::Reading { files: 0, bytes: 0 })
-    );
+    assert!(bytes.windows(2).all(|pair| pair[1] <= pair[0]), "{bytes:?}");
+    let within_the_video = (bytes.iter()).filter(|left| (20..size as u64 + 20).contains(*left));
+    assert!(within_the_video.count() > 2, "{bytes:?}");
+    assert_eq!(bytes.last(), Some(&0));
     let step = a.folder.observed(batch, 22);
     a.take(step).unwrap();
 }
@@ -556,12 +539,18 @@ fn a_folder_whose_removals_wait_for_the_person_says_so() {
 }
 
 #[test]
-fn the_shown_numbers_change_at_most_four_times_a_second_except_when_the_walk_ends() {
+fn the_shown_numbers_change_at_most_once_an_interval_except_when_the_walk_ends() {
     let observing = Arc::default();
     let (progressed, mut marks) = watch::channel(());
-    let walked = Arc::new(AtomicBool::new(false));
-    let report = crate::folder::reporter(Arc::clone(&observing), Arc::new(progressed), walked.clone());
+    let progressed = Arc::new(progressed);
     let mut marked = || marks.has_changed().unwrap() && { marks.mark_unchanged(); true };
+    let walked = Arc::new(AtomicBool::new(false));
+    let report = crate::folder::reporter(
+        Arc::clone(&observing),
+        progressed.clone(),
+        walked.clone(),
+        Duration::from_secs(3_600),
+    );
     report(Observing::Walking { files: 1 });
     assert!(marked(), "the first count shows at once");
     for files in 2..1_000 {
@@ -575,12 +564,13 @@ fn the_shown_numbers_change_at_most_four_times_a_second_except_when_the_walk_end
     assert!(marked(), "the end of the walk shows at once");
     report(Observing::Reading { files: 2, bytes: 200 });
     assert!(!marked());
-    std::thread::sleep(crate::driver::PROGRESS_INTERVAL);
+
+    let observing = Arc::default();
+    let report = crate::folder::reporter(Arc::clone(&observing), progressed, walked.clone(), Duration::ZERO);
+    report(Observing::Reading { files: 2, bytes: 200 });
     report(Observing::Reading { files: 1, bytes: 100 });
     assert!(marked(), "a later number shows once the interval has passed");
-
     walked.store(true, Ordering::Relaxed);
-    std::thread::sleep(crate::driver::PROGRESS_INTERVAL);
     for files in 1..100 {
         report(Observing::Walking { files });
     }
