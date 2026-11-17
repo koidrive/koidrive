@@ -10464,3 +10464,87 @@ fn a_file_a_rolled_back_store_knows_under_an_old_id_is_linked_to_the_servers_cop
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn scratch_gun831_26af171a() {
+    let u = |kind, target, parent, name, text| Step::User(Action { kind, target, parent, name, text });
+    let phases = vec![
+        vec![(2, u(0, 0, 0, 0, 0)), (0, Step::CopyStore), (0, Step::Backup), (0, u(1, 0, 0, 2, 0))],
+        vec![(0, Step::Restore), (0, Step::RollBack), (0, u(3, 7254283745475955549, 0, 3, 0))],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+
+#[test]
+fn scratch_gun831_5b8ffbab() {
+    let u = |kind, target, parent, name, text| Step::User(Action { kind, target, parent, name, text });
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(1, 0, 0, 0, 0))],
+        vec![(0, Step::Backup), (0, Step::RestoreEarlier), (0, u(2, 0, 0, 0, 0))],
+        vec![(0, Step::Restore)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn scratch_gun831_9f3d8ac3() {
+    let u = |kind, target, parent, name, text| Step::User(Action { kind, target, parent, name, text });
+    let phases = vec![
+        vec![(0, Step::Backup), (0, u(1, 0, 0, 0, 0))],
+        vec![(0, Step::Backup), (1, u(2, 0, 0, 0, 0))],
+        vec![(0, Step::RestoreEarlier), (0, Step::Restore)],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn scratch_gun831_cac97d84() {
+    let u = |kind, target, parent, name, text| Step::User(Action { kind, target, parent, name, text });
+    let phases = vec![
+        vec![(0, u(0, 0, 0, 2, 0)), (0, u(1, 0, 0, 3, 0)), (0, Step::Backup)],
+        vec![(0, Step::Backup), (0, u(2, 5378694992268589099, 0, 0, 0)), (0, Step::RestoreEarlier)],
+        vec![(0, Step::Rewind)],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+
+#[test]
+#[ignore = "replays the corpus under tests/corpus case by case"]
+fn replay_corpus() {
+    use proptest::test_runner::{Config, FileFailurePersistence};
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus");
+    let scratch = std::env::temp_dir().join("koidrive-corpus");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    let properties: [(&str, Losses, fn(usize, &[Vec<(usize, Step)>]) -> Result<World, Failure>); 3] = [
+        ("devices_converge_across_restores_and_rewinds", Losses::RestoresAndRewinds, converge),
+        ("devices_lose_no_write_across_restores_and_rewinds", Losses::RestoresAndRewinds, keep),
+        ("devices_converge_across_server_restores", Losses::Restores, converge),
+    ];
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        let seed = text.split('#').next().unwrap().trim().to_owned();
+        let one = scratch.join("one.txt");
+        std::fs::write(&one, format!("{seed}\n")).unwrap();
+        for (name, losses, check) in properties {
+            let config = Config {
+                failure_persistence: Some(Box::new(FileFailurePersistence::Direct(Box::leak(one.to_string_lossy().into_owned().into_boxed_str())))),
+                max_shrink_iters: 0,
+                ..Config::with_cases(0)
+            };
+            let mut runner = TestRunner::new(config);
+            let result = runner.run(&(2..=3usize, phases(losses)), |(devices, phases)| {
+                check(devices, &phases).map(drop).map_err(|failure| TestCaseError::fail(failure.to_string()))
+            });
+            let verdict = match result {
+                Ok(()) => "pass".to_owned(),
+                Err(error) => format!("FAIL: {}", error.to_string().lines().next().unwrap_or("").replace('\t', " ")),
+            };
+            println!("REPLAY\t{}\t{name}\t{verdict}", &seed[3..]);
+        }
+    }
+}
+
