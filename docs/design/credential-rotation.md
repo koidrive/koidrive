@@ -20,11 +20,11 @@ After a rotation the server refuses the old credential. So a process uses one `A
 
 ## Readers retry until both files hold one state
 
-Only the process that holds the profile lock writes the files. A CLI command that calls the server directly, such as `koi device list` or `koi space usage`, uses `Auth::reloading` instead. When the server refuses its credential, it reads the files again once and presents the current and then the staged credential. It refuses a reloaded credential for another server or device.
+Only the process that holds the profile lock writes the files. A CLI command that calls the server directly, such as `koi device list` or `koi space usage`, uses `Auth::reloading` instead. When the server refuses its credential, the command reads the files again once and presents the current and then the staged credential. It refuses a reloaded credential for another server or device.
 
 `Credential::load_stored` reads both files as one state. It notes the identity of `credential.next` (device, inode and modification time) and reads it, reads `credential.json` and notes its identity, then checks both identities again. The writer replaces files by renaming new ones into place, so an unchanged identity means an unchanged file. If either changed, the reader starts over, at most 10 times, and then fails with an I/O error instead of reporting a sign-out.
 
-An older build that starts while `credential.next` exists uses `credential.json`. If the server already stored the staged credential, that build is refused and signed out. This only happens on a downgrade in the minute a rotation is in flight.
+An older build that starts while `credential.next` exists uses `credential.json`. If the server already stored the staged credential, that build is refused and signed out. That refusal happens only on a downgrade in the minute a rotation is in flight.
 
 ## Tests cover each step of the client and the server
 

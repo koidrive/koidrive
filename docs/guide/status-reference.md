@@ -23,7 +23,7 @@ While a folder bootstraps or syncs, a line under it shows the files it still sen
   120 files to upload; 310.5 MB of 1.2 GB; now Photos/IMG_0412.HEIC
 ```
 
-A file found meanwhile adds to the numbers at once. The bytes done never go backwards, and content the server holds already counts as done without being sent. `--json` returns the same numbers under `progress`.
+If Koidrive finds another file meanwhile, the numbers grow at once. The bytes done never go backwards, and content the server holds already counts as done without being sent. `--json` returns the same numbers under `progress`.
 
 `seq` counts the changes the space has had: how many this device has applied, and how many the server has. A second line under the folder shows a problem, or the last failure the folder is retrying. Below that come the folder's pending decisions. `--json` returns all of it.
 
@@ -31,7 +31,7 @@ A pause holds until `koi resume`. Without a running daemon, it takes effect when
 
 ## The server can put calls off
 
-Sometimes the server asks the device to wait, or a call keeps failing for a while. The folder keeps retrying. Once a call has failed for a minute, or at once when the server asks for a wait of a minute or more, the status shows it with the time of the next try:
+Sometimes the server asks the device to wait, or a call keeps failing for a while. The folder keeps retrying. The status shows the failure and the time of the next try once a call has failed for a minute. When the server asks for a wait of a minute or more, the status shows it at once:
 
 ```
   uploading a file's content failed: ...; trying again at 14:05 UTC
@@ -47,11 +47,11 @@ On the Workers Free plan, Cloudflare stops the server's Durable Objects for the 
 
 Nothing is lost while it waits. Changes on this device stay on disk and go out after the reset. In the first 30 minutes after midnight UTC the folder tries again every 5 minutes, because these errors can outlast the reset by a few minutes.
 
-When a space's storage on the server is full, the server answers "the server's storage is full", and the folder retries on the same schedule. That doesn't clear at midnight. On the Workers Free plan each space can store 1 GB of file tree, history and change log, and the Workers Paid plan raises that to 10 GB ([Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/)). File contents are in R2 and don't count toward it.
+When a space's storage on the server is full, the server answers "the server's storage is full", and the folder retries on the same schedule. Full storage doesn't clear at midnight. On the Workers Free plan each space can store 1 GB of file tree, history and change log, and the Workers Paid plan raises that to 10 GB ([Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/)). File contents are in R2 and don't count toward it.
 
 ## Decisions
 
-Some changes wait for you to decide. `koi status` shows each pending decision under its folder: what it holds, and for each answer what it does and the command that gives it:
+Some changes wait for you to decide. `koi status` shows each pending decision under its folder. It shows what the decision holds, and for each answer what the answer does and the command that gives it:
 
 ```
 /home/alice/Koidrive  space Koidrive (019a...)  UpToDate  seq 1210 of 1210, 3120 remote nodes, 2002 local entries, 1 needs you
@@ -62,7 +62,7 @@ Some changes wait for you to decide. `koi status` shows each pending decision un
     koi resolve 019b... restore
 ```
 
-While a decision is pending and the daemon runs, every other command ends with a line on stderr that says so. With `--json`, the envelope lists them under `decisions` instead. The daemon shows a desktop notification when a new decision opens: through the notification service of the desktop session on Linux, and in Notification Center on macOS. A daemon started without a desktop session, such as a system service or one started over SSH, shows none.
+While a decision is pending and the daemon runs, every other command ends with a line on stderr that says so. With `--json`, the envelope lists them under `decisions` instead. The daemon shows a desktop notification when a new decision opens. On Linux it uses the notification service of the desktop session, and on macOS it uses Notification Center. A daemon started without a desktop session, such as a system service or one started over SSH, shows none.
 
 ### A large delete waits for an answer
 
@@ -75,11 +75,11 @@ Sync asks before it deletes many files at once. It holds this device's deletions
 
 ### A large delete from another device opens a notice
 
-Deletions made on your other devices are applied here without asking, and the removed files go to this folder's [local trash](sync-rules.md#the-local-trash). When they cross the same limits, `koi status` and `koi resolve` show a notice once enough files are removed, which can be before a removed folder is gone. Its counts grow while more deletions arrive, and it waits until you answer `dismiss`, which only closes it. The rest of a deletion it counted, such as the rest of that folder, opens no new notice. To bring the files back, [restore](history.md#restore-a-deleted-file-or-folder) them from the space's trash.
+Sync applies deletions from your other devices here without asking, and moves the removed files to this folder's [local trash](sync-rules.md#the-local-trash). When they cross the same limits, `koi status` and `koi resolve` show a notice once enough files are removed. The notice can appear before a removed folder is gone. Its counts grow while more deletions arrive, and it waits until you answer `dismiss`, which only closes it. The rest of a deletion it counted, such as the rest of that folder, opens no new notice. To bring the files back, [restore](history.md#restore-a-deleted-file-or-folder) them from the space's trash.
 
 ### The first link can hold files
 
-Sync also asks after the first link of a folder, when the comparison holds some of the folder's files: files at a name the space's trash holds, or the folder's other files when it synced with the space before, as [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
+Sync also asks after the first link of a folder if it holds some of the folder's files. It holds files at a name the space's trash holds. If the folder synced with the space before, it also holds the folder's other files. [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes the comparison. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
 
 ### A conflict opens a decision
 

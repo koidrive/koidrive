@@ -4,7 +4,7 @@ The server in `server/` is one Worker with two Durable Object classes, `AccountD
 
 ## 1. `server/` builds on its own
 
-`koi` embeds a bundle packed from `server/` ([cli-setup.md](cli-setup.md)), and an owner who deploys by hand runs Wrangler in `server/` ([deploy.md](../deploy.md#deploy)). So `server/` builds without the rest of the repository: it has its own `package.json`, lockfile and license, commits its generated protobuf code, and imports nothing from outside. It lists no secrets, so a deploy asks the owner for none. `server/scripts/check-deploy.mjs` proves this in CI: it copies `server/` to an empty directory, installs from the lockfile, runs a dry-run deploy and claims a local server. The [deploy test](../deploy-test.md) covers the steps that need a real account.
+`koi` embeds a bundle packed from `server/` ([cli-setup.md](cli-setup.md)), and an owner who deploys by hand runs Wrangler in `server/` ([deploy.md](../deploy.md#deploy)). So `server/` builds without the rest of the repository. It has its own `package.json`, lockfile and license, commits its generated protobuf code, and imports nothing from outside. It lists no secrets, so a deploy asks the owner for none. `server/scripts/check-deploy.mjs` proves this in CI: it copies `server/` to an empty directory, installs from the lockfile, runs a dry-run deploy and claims a local server. The [deploy test](../deploy-test.md) covers the steps that need a real account.
 
 R2 must be enabled on the account first. That is a dashboard checkout that no API or deploy tool can do.
 

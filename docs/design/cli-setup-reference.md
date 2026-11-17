@@ -21,7 +21,7 @@ A command asks questions only with a terminal on stdin and stderr, and without `
 
 - Endpoints: `https://dash.cloudflare.com/oauth2/auth`, `/oauth2/token` and `/oauth2/revoke` ([Integrate](https://developers.cloudflare.com/fundamentals/oauth/integrate-with-cloudflare/)). The client id is `CLIENT_ID` in `core/cloudflare/src/oauth.rs`.
 - The listener binds `127.0.0.1` only, on `--port` or a free port. Cloudflare accepts any port on `http://127.0.0.1`.
-- The code is exchanged once. Exchanging a code twice, or reusing a rotated refresh token, revokes the whole grant.
+- The CLI exchanges the code once. Exchanging a code twice, or reusing a rotated refresh token, revokes the whole grant.
 - A token answer with fewer scopes than requested revokes the new grant and fails with `MissingScopes`.
 - `GET /client/v4/accounts` returns only the account picked on the consent page.
 
@@ -83,7 +83,7 @@ Migrations follow Wrangler's rule. A script with no tag gets every step. A scrip
 | Credential saved, key not deleted | Deletes the key |
 | Uninstalling | Continues the uninstall |
 
-Before a claim, the CLI sends a saved credential for this server to `POST /v1/token`. An access token means this device is set up, so the CLI skips the claim. `UNAUTHENTICATED` removes the credential and the claim goes on. Any other answer stops the run and changes nothing.
+Before a claim, the CLI sends a saved credential for this server to `POST /v1/token`. An access token means this device is set up, so the CLI skips the claim. On `UNAUTHENTICATED`, the CLI removes the credential and goes on with the claim. Any other answer stops the run and changes nothing.
 
 ## Delete (section 5)
 
@@ -98,4 +98,4 @@ Every R2 call sends `cf-r2-jurisdiction`. A 404 counts as done, and a missing bu
 
 ## Public OAuth client
 
-`CLIENT_ID` is the public client "Koidrive", owned by the account that holds the koidrive.com zone. Any Cloudflare user can authorize it. It allows the grants `authorization_code` and `refresh_token`, the token method `none`, the scopes above and the redirect `http://127.0.0.1:8976/oauth/callback`; Cloudflare accepts any port on `127.0.0.1`. Its client URL `https://koidrive.com` is verified by a DNS `TXT` record `cloudflare_oauth_client_publisher=…` on koidrive.com. Public visibility and the verified domain can't be undone or changed ([Create an OAuth client](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/)).
+`CLIENT_ID` is the public client "Koidrive", owned by the account that holds the koidrive.com zone. Any Cloudflare user can authorize it. It allows the grants `authorization_code` and `refresh_token`, the token method `none`, the scopes above and the redirect `http://127.0.0.1:8976/oauth/callback`. Cloudflare accepts any port on `127.0.0.1`. A DNS `TXT` record `cloudflare_oauth_client_publisher=…` on koidrive.com verifies its client URL `https://koidrive.com`. Public visibility and the verified domain can't be undone or changed ([Create an OAuth client](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/)).

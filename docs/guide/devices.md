@@ -14,7 +14,7 @@ This lists every device signed in to your server, revoked ones included, with it
 koi device revoke <id>
 ```
 
-Take the full ID from `koi device list`. The device stops syncing at once. The files already on it stay there, so revoking a stolen laptop stops new changes from reaching it but doesn't erase it. A device can't revoke itself, so revoke it from another device.
+Take the full ID from `koi device list`. The device stops syncing at once. The files already on the device stay there, so revoking a stolen laptop stops new changes from reaching it but doesn't erase the files on it. A device can't revoke itself, so revoke it from another device.
 
 A revoked device can't sync any more. To use that machine again, remove Koidrive from it as [Uninstall](uninstall.md#remove-koidrive-from-one-device) describes, then set it up again.
 
@@ -26,9 +26,9 @@ koi device leave
 
 This revokes the device on the server and unlinks every folder. The files stay where they are. If the server refuses because this is your account's last active device, Koidrive keeps the local pairing and folder links.
 
-If revocation is interrupted or the server doesn't answer, its outcome may be unknown. While the outcome is unknown, sync stays stopped and this device's account stays blocked. Run `koi device leave` again to resolve the saved sign-out.
+If something interrupts the revoke or the server doesn't answer, Koidrive may not know whether the server revoked the device. While the outcome is unknown, sync stays stopped and this device's account stays blocked. Run `koi device leave` again to finish the sign-out that Koidrive saved.
 
-Add `--last-device` to confirm signing out anyway. If the server is unreachable, this removes only the local pairing and links. The server may still accept the device's credential, so revoke it from another device when the server is reachable. If you sign out of every device, use [owner recovery](#if-you-lose-every-device) to sign in again.
+Add `--last-device` to confirm signing out anyway. If the server is unreachable, the command removes only the local pairing and links. The server may still accept the device's credential, so revoke it from another device when the server is reachable. If you sign out of every device, use [owner recovery](#if-you-lose-every-device) to sign in again.
 
 ## If you lose every device
 

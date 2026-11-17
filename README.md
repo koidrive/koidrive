@@ -21,15 +21,15 @@
 
 ## Why Koidrive
 
-**You pay for storage, not for seats.** Koidrive is free and open source. Cloudflare bills your account for the storage and requests you use, with no egress fee, as [What it costs](#what-it-costs) shows. Dropbox sells storage in fixed tiers, and its team plans charge for every person.
+**You pay for storage, not for seats.** Koidrive is free and open source. Cloudflare bills your account for the storage and requests you use, and charges no egress fee. [What it costs](#what-it-costs) lists the prices. Dropbox sells storage in fixed tiers, and its team plans charge for every person.
 
 **Your files stay in your account.** Koidrive stores your files as chunks in an R2 bucket you own. A Durable Object in the same account keeps each space's history. No other company stores your files. If you stop using Koidrive, every linked folder still holds ordinary files.
 
 **The same files on every machine.** An edit on your Mac reaches your Linux machine as soon as both are online, and the other way round. New files, edits, renames, moves and deletes all sync.
 
-**Mistakes you can undo.** When two machines edit the same file, Koidrive keeps both versions. When one machine deletes a file that another just edited, the edit stays. A large delete waits for your answer before it reaches your other machines. Deleted files and old versions stay in the trash for 30 days, and one command brings them back. Every pull request runs a simulation that loses, repeats and reorders messages and crashes devices, and it fails if any device loses a write.
+**Mistakes you can undo.** When two machines edit the same file, Koidrive keeps both versions. When one machine deletes a file that another just edited, the edit stays. A large delete waits for your answer before it reaches your other machines. Deleted files and old versions stay in the trash for 30 days, and one command brings them back. On every pull request, CI runs a simulation that loses, repeats and reorders messages and crashes devices. The simulation fails if any device loses a write.
 
-**Agents work in the same folder.** A linked folder holds plain files, so an agent that edits files can work in it, and Koidrive syncs its changes like yours. Every `koi` command prints JSON with `--json`, `koi status --check` reports problems through its exit status, and an agent can answer a held delete with `koi resolve`. See [Agents and scripts](docs/guide/agents.md).
+**Agents work in the same folder.** A linked folder holds plain files, so an agent that edits files can work in it, and Koidrive syncs its changes like yours. Every `koi` command prints JSON with `--json`, `koi status --check` reports problems through its exit status, and an agent can run `koi resolve` to answer a large delete that waits for approval. See [Agents and scripts](docs/guide/agents.md).
 
 ## Koidrive and Dropbox, side by side
 
@@ -72,7 +72,7 @@ Koidrive is free. Cloudflare runs it, at its own prices:
 
 | | What you pay Cloudflare |
 |---|---|
-| **The server** | $0 on the [Workers Free](https://developers.cloudflare.com/workers/platform/pricing/) plan, within its daily allowances. When a space reaches one, its folders wait until the allowance resets at 00:00 UTC, and your changes stay on disk until then. See [Limits](docs/guide/limits.md) |
+| **The server** | $0 on the [Workers Free](https://developers.cloudflare.com/workers/platform/pricing/) plan, within its daily allowances. When a space uses up an allowance, its folders wait until the allowance resets at 00:00 UTC. Your changes stay on disk until then. See [Limits](docs/guide/limits.md) |
 | **Storage** | The first 10 GB-month on [R2](https://developers.cloudflare.com/r2/pricing/) is free, then $0.015 per GB-month. 100 GB costs about $1.35 a month, and 500 GB about $7.35 |
 | **Requests** | R2 includes 1 million writes and 10 million reads a month, then charges $4.50 per million writes and $0.36 per million reads |
 | **Downloads** | No egress fee. Each download counts as read requests |
@@ -91,7 +91,7 @@ You need a Cloudflare account, and a Mac with Apple silicon or a Linux machine. 
    curl -fsSL https://koidrive.com/install.sh | sh
    ```
 
-   On macOS, the installer continues into `koi setup` and installs the Mac app. In an attended terminal, it configures `PATH` for zsh, bash, or fish. Start a new login shell to run `koi` by name. [Install](docs/guide/install.md) covers opting out and building from source.
+   On macOS, the installer continues into `koi setup` and installs the Mac app. When you run it in an interactive terminal, it configures `PATH` for zsh, bash, or fish. Start a new login shell to run `koi` by name. [Install](docs/guide/install.md) covers opting out and building from source.
 
 2. **Run `koi setup`** if the installer didn't start it. It logs in with Cloudflare, deploys your server or finds it, signs in this machine and links `~/Koidrive`. If your account has no workers.dev subdomain, setup suggests one. [koi setup](docs/guide/koi-setup.md) describes each question.
 
@@ -114,7 +114,7 @@ The install command above sets up the Mac app for you. To install it by hand:
 2. If you have no server, run the install command above instead. `koi setup` deploys one.
 3. Open Koidrive. The **Set Up Koidrive** window connects to your server, signs in this Mac and links a folder. For an existing account, use a pairing code from a signed-in device.
 
-**Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs for managing folders, devices, storage use, problems and app preferences. The [Mac app guide](docs/guide/macos.md) walks through setup and everyday use, including adding another Mac.
+**Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs. Use them to manage folders and devices, check storage use, review problems and set app preferences. The [Mac app guide](docs/guide/macos.md) walks through setup and everyday use, including adding another Mac.
 
 The [user guide](docs/guide/README.md) covers conflicts, the trash, devices, limits and how to remove everything. Ask questions in [Discussions](https://github.com/koidrive/koidrive/discussions) and report bugs in [Issues](https://github.com/koidrive/koidrive/issues).
 

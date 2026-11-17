@@ -4,7 +4,7 @@
 
 ## What you need
 
-- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Wrangler can't activate R2, and without it the bucket can't be created ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
+- A Cloudflare account with R2 activated. If you have never used R2, open the dashboard, go to **Storage & databases**, **R2**, **Overview**, and complete the checkout there. The checkout asks for a payment method. R2 includes free monthly usage and bills usage beyond it ([R2 get started](https://developers.cloudflare.com/r2/get-started/#before-you-begin), [Billing policy](https://developers.cloudflare.com/billing/understand/billing-policy/)). Wrangler can't activate R2, and it can't create the bucket until R2 is active ([workers-sdk#15468](https://github.com/cloudflare/workers-sdk/issues/15468)).
 - Git, Node.js 22.12 or later, and pnpm.
 - The [Mac app](guide/macos.md) or the [`koi` command](guide/install.md), to claim the server.
 
@@ -20,11 +20,11 @@ If the deploy stops with an error about the R2 subscription, R2 is not activated
 
 A new server has no owner until someone claims it, and the first valid claim makes that person the owner for good. Claim it right after you deploy.
 
-1. Run `koi setup` and choose **I deployed a server**, or open the setup window of the macOS app. Enter your server's address. Setup asks the server for a one-time claim code, valid for one hour, which the server writes to the Worker's log. Without either, open `<your server>/setup` in a browser to get the code.
+1. Run `koi setup` and choose **I deployed a server**, or open the setup window of the macOS app. Enter your server's address. Setup asks the server for a one-time claim code. The code is valid for one hour, and the server writes it to the Worker's log. If you have neither `koi` nor the app, open `<your server>/setup` in a browser to get the code.
 2. Open [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages), select your Worker, select **Observability** and search for `Koidrive claim code` ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/#view-logs-from-the-dashboard)). Or, before step 1, run `pnpm exec wrangler tail <your Worker>` in `server/` and read the code there.
 3. Enter the code in setup. Or claim the server with `koi server claim <your server> <code> --user "<your name>"`. That device becomes your first device ([Set up](guide/setup.md#deploy-a-server-and-claim-it)).
 
-If the code expired, `koi setup` asks the server for a new one. Otherwise open `/setup` again. If a claim stops before it finishes, run the same claim again within the hour with the same code. Someone who finds your address cannot see the code, and their wrong guesses do not affect yours.
+If the code expired, `koi setup` asks the server for a new one. If you got the code in a browser, open `/setup` again. If a claim stops before it finishes, run the same claim again within the hour with the same code. Someone who finds your address cannot see the code, and their wrong guesses do not affect yours.
 
 Anyone who can read your Worker's logs can read the code while it is valid, and could claim the server with it. That is anyone in your account, or any API token, with the Workers Metadata Read-Only role or higher ([Workers roles](https://developers.cloudflare.com/workers/authorization/workers/)). Workers Logs keeps logs for 3 days on Workers Free and 7 days on Workers Paid ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)), but a code is useless once the server has an owner or after an hour. The logs hide request query strings, so they never keep file download or upload links.
 
@@ -41,7 +41,7 @@ Recovery does not sign out your other devices. A lost device keeps working until
 
 ## Upgrade
 
-Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. `koi server upgrade` does this for you ([Set up](guide/setup.md#upgrade-the-server)). It stops if the new release is older than your server's data.
+Your server keeps working while you upgrade. Each part moves its stored data to the new layout the first time it starts on the new release, and you can skip releases. `koi server upgrade` runs the upgrade for you ([Set up](guide/setup.md#upgrade-the-server)). It stops if the new release is older than your server's data.
 
 Upgrade only to a newer release. To see what your server runs, run this in a terminal:
 

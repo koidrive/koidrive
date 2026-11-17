@@ -14,7 +14,7 @@ A Developer ID certificate signs software as you, so the secrets must reach only
 6. Under "Tag protections", select **Restrict creations**, **Restrict updates** and **Restrict deletions**, and keep **Block force pushes** selected.
 7. Click **Create**.
 
-Only repository admins can then create, move or delete `v*` tags. Everyone else, apps with write access included, is refused ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
+Only repository admins can then create, move or delete `v*` tags. GitHub refuses everyone else, apps with write access included ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
 
 ## Create the macos-release environment
 
@@ -28,7 +28,7 @@ Each signed run then waits on its run page for approval ([managing environments]
 
 ## The five secrets
 
-Add the secrets under **Environment secrets** of `macos-release`, or from a terminal with `gh secret set <NAME> --env macos-release`, which reads the value from standard input. Never add them as repository or organization secrets: a workflow run for a pull request from a branch of this repository receives those, so anyone who can push a branch could read them. A signed build needs all five:
+Add the secrets under **Environment secrets** of `macos-release`, or from a terminal with `gh secret set <NAME> --env macos-release`, which reads the value from standard input. Never add them as repository or organization secrets. A workflow run for a pull request from a branch of this repository receives those, so anyone who can push a branch could read them. A signed build needs all five:
 
 | Secret | Holds |
 |---|---|
@@ -42,12 +42,12 @@ Each run generates its own keychain password, so that is not a secret you set. G
 
 ## Create the Developer ID certificate
 
-Creating a Developer ID certificate needs the Account Holder role ([Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)).
+Only the Account Holder can create a Developer ID certificate ([Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)).
 
 1. On a Mac, open **Keychain Access** and choose **Keychain Access**, **Certificate Assistant**, **Request a Certificate From a Certificate Authority**. Enter your email address, choose **Saved to disk**, and save the `.certSigningRequest` file ([create a certificate signing request](https://developer.apple.com/help/account/certificates/create-a-certificate-signing-request/)).
 2. In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/certificates/list), click the add button, choose **Developer ID**, then **Developer ID Application**, upload the request and download the `.cer` file.
 3. Double-click the `.cer` file. It appears under **My Certificates** in Keychain Access, with the private key from step 1.
-4. In **My Certificates**, select "Developer ID Application: …". It must show the private key under it. Choose **File**, **Export Items**, save it as a `.p12`, and set a strong password.
+4. In **My Certificates**, select "Developer ID Application: …". The private key must show under the certificate. Choose **File**, **Export Items**, save it as a `.p12`, and set a strong password.
 5. Store both secrets:
 
    ```sh
@@ -61,7 +61,7 @@ If the secret is lost, create a new certificate. A team can have up to five Deve
 
 ## Create the App Store Connect API key
 
-`notarytool` needs a team API key. Individual API keys cannot use it ([creating API keys](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api)). Generating team keys needs the Admin role in App Store Connect, and the Account Holder must first request access to the App Store Connect API ([role permissions](https://developer.apple.com/help/app-store-connect/reference/account-management/role-permissions/)).
+`notarytool` needs a team API key and does not accept individual API keys ([creating API keys](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api)). To generate team keys, you need the Admin role in App Store Connect, and the Account Holder must first request access to the App Store Connect API ([role permissions](https://developer.apple.com/help/app-store-connect/reference/account-management/role-permissions/)).
 
 1. In [App Store Connect](https://appstoreconnect.apple.com/), open **Users and Access**, **Integrations**, **App Store Connect API**. If the page asks you to request access, do that first.
 2. On **Team Keys**, click **Generate API Key**, give it a name such as "Koidrive notarization", and choose the **Developer** role. If `notarytool` later reports that the key is not authorized, generate a key with the **App Manager** role and revoke the first one.
@@ -81,7 +81,7 @@ If the secret is lost, create a new certificate. A team can have up to five Deve
 
 Each release publishes `SHA256SUMS.sig`, an `ssh-keygen -Y sign` signature of `SHA256SUMS` in the namespace `koidrive-release`. The `sign-checksums` job signs with the secret `RELEASE_SIGNING_KEY` in the `release-signing` environment, and fails when that key does not match the public key in `.github/release-allowed-signers`. `publish-release.sh` refuses a signature that does not verify against the same file.
 
-Create the `release-signing` environment like `macos-release`, with only a **Tag** rule for `v*` under "Deployment branches and tags". It needs no reviewers: the job runs after `checksums`, which waits for the approved `macos-release` jobs.
+Create the `release-signing` environment like `macos-release`, with only a **Tag** rule for `v*` under "Deployment branches and tags". It needs no reviewers, because the job runs after `checksums`, which waits for the approved `macos-release` jobs.
 
 To create or replace the key:
 

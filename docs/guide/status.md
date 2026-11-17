@@ -49,7 +49,7 @@ A problem that ends with "this build cannot recover the folder yet" means the fo
 
 ## Send refused changes again
 
-When the server refuses a folder's changes for a reason that retrying won't fix, such as a device without access to the space, the folder halts. The problem line names the cause and what to run once it is fixed. After the daemon restarts, it gives only the server's numeric code, such as `code 2` when the device lacks access to the space or `code 3` when the server found the changes invalid. Run one of these two commands, not both.
+The folder halts when the server refuses its changes for a reason that retrying won't fix, such as a device without access to the space. The problem line names the cause and what to run once it is fixed. After the daemon restarts, the problem line gives only the server's numeric code, such as `code 2` when the device lacks access to the space or `code 3` when the server found the changes invalid. Run one of these two commands, not both.
 
 For a cause you fixed on the server, such as access restored to this device, send the changes again as they were:
 

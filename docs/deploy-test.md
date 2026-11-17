@@ -1,6 +1,6 @@
 # Testing a deploy on a real account
 
-The **Deploy test** workflow ([`deploy-test.yml`](../.github/workflows/deploy-test.yml)) deploys `server/` from `main` to the test Cloudflare account under a throwaway name, claims it, tests it, and deletes everything again. It checks what CI's dry run and `wrangler dev` cannot: Durable Objects and R2 on Cloudflare's network, the claim code in the Worker's own log, point-in-time recovery for a rewind, and an upgrade over existing data. Maintainers start it by hand, and each run waits for approval because it holds the account's API token.
+The **Deploy test** workflow ([`deploy-test.yml`](../.github/workflows/deploy-test.yml)) deploys `server/` from `main` to the test Cloudflare account under a throwaway name, claims it, tests it, and deletes everything again. It checks what CI's dry run and `wrangler dev` cannot: Durable Objects and R2 on Cloudflare's network, the claim code in the Worker's own log, point-in-time recovery for a rewind, and an upgrade over existing data. Maintainers start it by hand, and each run waits for approval because the workflow holds the account's API token.
 
 To run a smoke test, start the workflow from `main` and approve it on the run page:
 
@@ -27,17 +27,17 @@ gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f 
 
 **smoke** runs `smoke.ts`, a Vitest suite that stops at the first failure. It checks that:
 
-- `/v1/server` reports an owner, `/setup` keeps its notice, and a second claim is refused.
+- `/v1/server` reports an owner, `/setup` keeps its notice, and the server refuses a second claim.
 - A second device pairs and refreshes its own token, and both devices list a new space.
-- Chunks upload through the Worker into R2, which checks each SHA-256, and committed chunks are not uploaded again.
+- Chunks upload through the Worker into R2, which checks each SHA-256, and the client does not upload committed chunks again.
 - The second device reads the tree and downloads every file.
-- Share links serve a file without a password, and a folder only after its password. A revoked link serves nothing.
+- Share links serve a file without a password, and serve a folder only after the recipient enters its password. A revoked link serves nothing.
 - R2 holds the chunks and the space's export: `space.json` and the first log segment, which the server writes five minutes after the first commit ([RFC 0004](../spec/rfc/0004-r2-export-format.md)).
 - A rewind to a point between two commits ([RFC 0003](../spec/rfc/0003-space-rewind.md)) restores that tree, refuses commits from the old history, writes the new history's snapshot to R2, and takes a new commit.
 
-**upgrade** deploys the earlier release, writes a space with files and a share link from two devices (`upgrade-write.ts`), deploys this commit to the same Worker and bucket, and checks that the credentials, the space and the link still work (`upgrade-verify.ts`). `from_ref` is the release to upgrade from. Left empty, it is the newest tag before this commit. It must be an ancestor of this commit, at or after `8c9bf4a`, the first commit whose `server/` deploys on its own. Each Durable Object runs its missing schema steps when it first starts on new code ([Storage migrates when each object starts](design/deploy-and-upgrade.md#4-storage-migrates-when-each-object-starts)). When both commits have the same number of steps, none runs, and the run only shows that the data survives the new code. The `upgrade-verify.ts` log gives each class's step count before and after.
+**upgrade** deploys the earlier release, writes a space with files and a share link from two devices (`upgrade-write.ts`), deploys this commit to the same Worker and bucket, and checks that the credentials, the space and the link still work (`upgrade-verify.ts`). `from_ref` is the release to upgrade from. Left empty, it is the newest tag before this commit. It must be an ancestor of this commit, at or after `8c9bf4a`, the first commit whose `server/` deploys on its own. Each Durable Object runs its missing schema steps when it first starts on new code ([Storage migrates when each object starts](design/deploy-and-upgrade.md#4-storage-migrates-when-each-object-starts)). When both commits have the same number of steps, none runs, and the run shows only that the data survives the new code. The `upgrade-verify.ts` log gives each class's step count before and after.
 
-**e2e** runs a Linux device in the deploy job and a macOS device in a second job on a GitHub-hosted `macos-15` runner, which gets no secrets. Both build `koi` from this commit and run `koi _daemon` themselves (`e2e.ts`). The macOS device's pairing code reaches it as a run artifact sealed to a key that only its job holds. The scenarios run in order:
+**e2e** runs a Linux device in the deploy job and a macOS device in a second job on a GitHub-hosted `macos-15` runner, which gets no secrets. Both build `koi` from this commit and run `koi _daemon` themselves (`e2e.ts`). The deploy job sends the macOS device its pairing code as a run artifact sealed to a key that only the macOS job holds. The scenarios run in order:
 
 1. Create: each device writes files, among them a 3 MB and a 2 MB file.
 2. Edit: each device rewrites one of its own files.
@@ -47,9 +47,9 @@ gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f 
 6. Third device: a second `koi` profile on Linux pairs and downloads the whole tree.
 7. Rewind: after the owner rewinds the space, each folder halts with a problem ending in "this build cannot recover the folder yet". Each device then links a new, empty folder to the space, as the [owner guide](guide/status.md) says. Point-in-time recovery restores only approximately the requested point ([RFC 0003 §2](../spec/rfc/0003-space-rewind.md#2-admissible-restore-points)), so the run takes the expected tree from the server's log (`rewind-check.ts`), not from what the devices saw.
 
-A job moves on only when its folder holds exactly the expected tree. The last step fails unless the macOS and Linux trees match. Each job's summary gives every scenario's tree hash, the SHA-256 of a `sha256sum`-style listing of the tree. Approve an e2e run within about 45 minutes: the macOS job builds `koi` meanwhile and fails if it gets no pairing code by then.
+A job moves on only when its folder holds exactly the expected tree. The last step fails unless the macOS and Linux trees match. Each job's summary gives every scenario's tree hash, the SHA-256 of a `sha256sum`-style listing of the tree. Approve an e2e run within about 45 minutes. The macOS job builds `koi` in the meantime and fails if it gets no pairing code by then.
 
-**bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. Only `Transfer::upload`, with its hashing, planning, PUTs and retry waits, is timed. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
+**bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. The test times only `Transfer::upload`, with its hashing, planning, PUTs and retry waits. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
 
 ## Each run deploys, tests and deletes one server
 
@@ -58,9 +58,9 @@ Every run uses one name, `koidrive-test-<run id>-<run attempt>`, for its Worker 
 1. **Trust check.** A job without secrets refuses the run unless it started from `main` of `koidrive/koidrive` for a commit on `main`, and the `deploy-test` environment is [protected](#set-up-the-protected-environment). Only then does the job with the secrets wait for approval.
 2. **Preflight.** If a Worker or a bucket already has the run's name, the run stops before creating anything.
 3. **Deploy.** The run copies the tracked files of `server/`, sets the Worker and bucket names in `wrangler.jsonc` as an owner does before a Wrangler deploy, creates the bucket, and runs `pnpm run deploy` with a random `--tag`. The tag marks the Worker as this run's even if the deploy fails after the upload. The run then waits until the new version takes all traffic and `/v1/server` answers.
-4. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The code is never printed.
+4. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The run never prints the code.
 5. **Test**, in the chosen mode.
-6. **Teardown**, whatever happened before. It deletes the Worker only if a version carries the run's tag, which also deletes its Durable Objects, and the bucket only if its creation date is the one the run recorded. It fails the job if anything it created is left, or if something with the run's name was not its own.
+6. **Teardown**, whatever happened before. It deletes the Worker, and with it the Worker's Durable Objects, only if a version carries the run's tag. It deletes the bucket only if its creation date is the one the run recorded. It fails the job if anything it created is left, or if something with the run's name was not its own.
 7. **Usage summary**, in the log and on the summary page: the test client's requests and bytes, what R2 held at teardown, and Worker, Durable Object and R2 figures from the Analytics API. Those figures can lag by several minutes, and the Durable Object storage figure covers the whole test account.
 
 ## When a run fails
@@ -68,8 +68,8 @@ Every run uses one name, `koidrive-test-<run id>-<run attempt>`, for its Worker 
 The failing step's log names the cause. The common ones:
 
 - **The trust check refuses the run.** The run did not start from `main`, or the environment lost its protection. Check the environment against [Set up the protected environment](#set-up-the-protected-environment).
-- **"The deploy test needs the environment secrets ..."** One of the [secrets](#secrets) is missing. Nothing was deployed.
-- **"R2 is not activated for this account"** (code 10042). Activate R2 as [What you need](deploy.md#what-you-need) describes. Nothing was deployed.
+- **"The deploy test needs the environment secrets ..."** One of the [secrets](#secrets) is missing. The run deployed nothing.
+- **"R2 is not activated for this account"** (code 10042). Activate R2 as [What you need](deploy.md#what-you-need) describes. The run deployed nothing.
 - **"wrangler deploy printed no workers.dev address".** The account has no `workers.dev` subdomain. Open **Workers & Pages** in the dashboard once to create it.
 - **"a Worker named ... already exists" or "an R2 bucket named ... already exists".** Something has the run's name. The run created nothing and left it alone.
 - **"no query of this Worker's logs showed its request ..."** The token cannot read Workers Logs, or the logs are slow. The run did not open `/setup`, so no claim code was spent. Rerun the failed jobs.
@@ -93,14 +93,14 @@ The token can deploy and delete every Worker and bucket in the test account, so 
 1. Open the repository's **Settings**, then **Environments**, then **New environment**.
 2. Type `deploy-test` and click **Configure environment**.
 3. Select **Required reviewers**, add `gunwooterry` and nobody else, and leave **Prevent self-review** unselected, because the same person starts and approves runs. Any one listed reviewer can approve a run ([required reviewers](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#required-reviewers)), so the workflow refuses a list with anyone else on it. Click **Save protection rules**.
-4. Deselect **Allow administrators to bypass configured protection rules** and click **Save protection rules**. The API may not report this setting, so the workflow refuses a run only when it reports bypass as allowed. Check it by hand after every change to the environment.
+4. Deselect **Allow administrators to bypass configured protection rules** and click **Save protection rules**. The API may not report this setting, so the workflow refuses a run only when the API reports bypass as allowed. Check it by hand after every change to the environment.
 5. Under "Deployment branches and tags", choose **Selected branches and tags**, add a **Branch** rule for `main`, and add no other rule.
 
 Your approval of a run from `main` is the boundary. The workflow's own checks run code from the commit under test, so they are a second line of defence.
 
 ### Secrets
 
-Keep both secrets under **Environment secrets** of `deploy-test`. To replace one, for example when you roll the token, run `gh secret set <NAME> --env deploy-test`, which reads the value from standard input. Never add them as repository or organization secrets: a workflow run for a pull request from a branch of this repository receives those, so anyone who can push a branch could read them.
+Keep both secrets under **Environment secrets** of `deploy-test`. To replace one, for example when you roll the token, run `gh secret set <NAME> --env deploy-test`, which reads the value from standard input. Never add them as repository or organization secrets. A workflow run for a pull request from a branch of this repository receives those, so anyone who can push a branch could read them.
 
 | Secret | Holds |
 |---|---|

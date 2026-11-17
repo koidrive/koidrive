@@ -29,7 +29,7 @@ If you installed only the app, run `/Applications/Koidrive.app/Contents/Helpers/
 
 ## Remove everything
 
-This deletes the server: the Worker, its Durable Objects and the R2 bucket with every file stored on the server, including the trash and old versions. It can't be undone. The copies in your linked folders stay on each device. To keep a copy of the bucket first, see [Back up the server](backup.md).
+This deletes the server: the Worker, its Durable Objects and the R2 bucket with every file stored on the server, including the trash and old versions. You can't undo it. The copies in your linked folders stay on each device. To keep a copy of the bucket first, see [Back up the server](backup.md).
 
 Without the [Cloudflare login](koi-setup.md#the-cloudflare-login-and-what-it-may-do), delete the Worker and the R2 bucket in the Cloudflare dashboard. First check that no other Worker binds the bucket and that it holds nothing but the `spaces/` folder Koidrive writes, since emptying it deletes everything in it. R2 deletes a bucket only once it is empty ([Delete buckets](https://developers.cloudflare.com/r2/buckets/delete-buckets/)). Whether deleting the Worker in the dashboard also deletes its Durable Objects' data is unverified.
 

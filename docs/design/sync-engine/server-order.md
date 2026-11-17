@@ -34,7 +34,7 @@ A policy halt (RFC 0006 §1) works as follows:
 - A `Welcome` with *w* < *a* is a loss under the halt too, handled as in §2.8 while the halt stays: *a* := *w*, the refused commit is dropped, the seqs kept for the slots above *w* are dropped, and R is listed again (§4.4). A later `Welcome` finds *w* = *a*, so the loss is handled once. A `Resend` lift after such a loss has no commit left, and its changes are planned again.
 - Only a user action or a client update that knows the code ends it. Read-only differs: it follows from the device's format or role and ends with a `Welcome` that allows writes.
 
-A commit is abandoned only after an error that proves it was not applied. An unknown outcome is resolved by the stored result, never by inference from the current tree. When it cannot be resolved, because of another history or a store older than the device's history, the space enters recovery (§6.4). Abandoning forgets the in-flight record; S was not changed for it, so the same local changes are planned again.
+A commit is abandoned only after an error that proves it was not applied. An unknown outcome is resolved by the stored result, never by inference from the current tree. When it cannot be resolved, because of another history or a store older than the device's history, the space enters recovery (§6.4). Abandoning forgets the in-flight record. S was not changed for it, so the same local changes are planned again.
 
 ## 4.3 Rebase rewrites no op log
 
@@ -45,7 +45,7 @@ Local changes are kept as tree differences, not queued ops, so after new remote 
 ### Connecting
 
 - After `Connected`, the engine first compares `Welcome.history_id` with R's. If they differ, the space enters recovery (§6.4) before any bootstrap or planning, so R, S and L are kept as evidence.
-- Otherwise it sends `Resume{history_id, since_seq: last_seq}`, with the commit token at `last_seq` (RFC 0013), unless `last_seq` is above `head_seq` or below `log_floor_seq`; then it bootstraps with `ListTree` (spec §7.3 to §7.5).
+- Otherwise it sends `Resume{history_id, since_seq: last_seq}`, with the commit token at `last_seq` (RFC 0013). When `last_seq` is above `head_seq` or below `log_floor_seq`, it bootstraps with `ListTree` instead (spec §7.3 to §7.5).
 - The engine is caught up once `last_seq` reaches the `head_seq` of the last `CaughtUp`. It builds commits only when caught up.
 - An unknown change record type stops applying and committing, and the engine asks for an upgrade (spec §9.1).
 

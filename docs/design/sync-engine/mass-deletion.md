@@ -21,7 +21,7 @@ The guard holds deletions when either limit is crossed:
 
 The engine persists, in the store transaction of the commit or hold that changes them:
 
-- the ledger: for each topmost deleted node in the window, its `node_id`, the time it was planned, and its affected-file count. Keying by `node_id` makes a resent or re-planned commit, a restart, or a node planned twice count once. Each plan rewrites the affected-file count from the current S. An entry is removed when its node is present in L again, so a later deletion of the same node is new, and otherwise 10 minutes after its time. Time comes from the `now_ms` of inputs; an entry whose time is later than `now_ms` is treated as made at `now_ms`, which keeps it in the window longer, never shorter;
+- the ledger: for each topmost deleted node in the window, its `node_id`, the time it was planned, and its affected-file count. Keying by `node_id` makes a resent or re-planned commit, a restart, or a node planned twice count once. Each plan rewrites the affected-file count from the current S. An entry is removed when its node is present in L again, so a later deletion of the same node is new, and otherwise 10 minutes after its time. Time comes from the `now_ms` of inputs. An entry whose time is later than `now_ms` is treated as made at `now_ms`, which keeps it in the window longer, never shorter;
 - the held set: the topmost deleted nodes being held, each with its affected-file count and the revisions in R (`content_rev`, `meta_rev`) of every node in its subtree when it was held;
 - the question: an ID, the held set it asks about, the counts the person was shown, the thresholds crossed, also those of the questions it replaced, and its answer until the engine applies it;
 - the confirmed set: the deletions answered with Delete, planned without counting until the commit that makes them is acknowledged. A deletion split over several commits stays confirmed while each of its pending nodes keeps the revisions it was confirmed with. When one changes, what is left is held under a new question, also below the thresholds.
@@ -30,7 +30,7 @@ The engine persists, in the store transaction of the commit or hold that changes
 
 - The guard counts every deletion planning could make when a commit is built, not only those that fit in that commit, so a removal larger than one commit is asked about before any of it is sent.
 - When the deletions would cross a threshold, the engine holds all of them and emits `AskUser`. Everything else keeps syncing: other local changes, downloads and remote deletions.
-- Held nodes are excluded from planning; they are absent locally and stay present in R. A held node that changes remotely leaves the held set and is downloaded again, as the keep rule would do.
+- Held nodes are excluded from planning. They are absent locally and stay present in R. A held node that changes remotely leaves the held set and is downloaded again, as the keep rule would do.
 - Deletions planned while a question is open join the held set, and a new question replaces the old one, so an answer always refers to the set the user saw. A held set that shrinks is replaced by a new question too, also when the rest no longer crosses a threshold. The question ends only when nothing is left. A question whose held set does not change stays open until answered, also after its window ends.
 
 ### Open questions
@@ -50,9 +50,9 @@ Deletions are planned only from observations whose batch carries a passing root 
 
 ### Remote deletions
 
-Remote deletions are applied locally, since the server is authoritative, and go to the local trash. The guard counts them once applied, so its notice follows the removal; a restore (§6.3) brings back what the server still holds.
+Remote deletions are applied locally, since the server is authoritative, and go to the local trash. The guard counts them once applied, so its notice follows the removal. A restore (§6.3) brings back what the server still holds.
 
-- A remote deletion is one `Delete` op of another device. It trashes the live part of its node's subtree, except the nodes the server keeps (R7), and gives every node it trashes the op's trash group; a node trashed earlier keeps its own group.
+- A remote deletion is one `Delete` op of another device. It trashes the live part of its node's subtree, except the nodes the server keeps (R7), and gives every node it trashes the op's trash group. A node trashed earlier keeps its own group.
 - Each removal of a node R no longer holds belongs to the deletion that trashed it, named by its trash group in R's record. The deletion's topmost node is the outermost folder above the removed node, still in L, that R holds trashed in the same group, or the node itself. So a removed folder is one deletion with all its files, and a folder deleted above a deleted one does not take over the inner deletion's files.
 - When R holds no record of the node, as after a purge, the removal belongs to the deletion the guard counted or dismissed under a folder above it that R no longer holds. When there is none, it starts a deletion whose topmost node is the outermost of those folders, trashed at or before the seq up to which R holds every change. A record R learns later matches it when its seq is at or before that one and the removed node is under the topmost node.
 - Without a record, deletions count by folder with the same files: those of one folder as one, and one the server applied in part as one for each node it trashed under a folder it kept.
@@ -90,9 +90,9 @@ Every restore goes through the engine, because a `Restore` op committed by anyth
 
 - The app and the CLI ask the driver, which records the request in the folder's store and returns its ID. This works while the folder is stopped, offline or halted. The folder's task hands the request to the engine when it is recorded or when it next opens the folder.
 - The engine sends the op in the next commit (§2.6) and keeps the outcome (§2.7): restored, restored under another name, restored as a copy, rejected with the server's reason, or not fitting in one commit.
-- The driver lists pending requests and outcomes. A request whose node is a problem stays pending until the problem is cleared, and the list names that reason. A restore that waits for S (§2.6) has no reason in the list; a surface explains it as waiting for the folder to sync, shows the folder's problems, and does not promise that it goes through by itself.
+- The driver lists pending requests and outcomes. A request whose node is a problem stays pending until the problem is cleared, and the list names that reason. A restore that waits for S (§2.6) has no reason in the list. A surface explains it as waiting for the folder to sync, shows the folder's problems, and does not promise that it goes through by itself.
 - The store keeps the outcomes of the last 1,000 restores that ended and drops older ones.
-- A request cannot be cancelled, and a rejected one is not retried; asking again is a new request.
+- A request cannot be cancelled, and a rejected one is not retried. Asking again is a new request.
 - A malformed ID is refused when the request is made, because the server refuses a whole commit for one, and that refusal is a policy halt (§4.2).
 
 After `HISTORY_CHANGED` the engine never resyncs by path and content, which would turn a rename made after the restore point into two files and upload again the stale files the owner meant to roll back. It recovers as §6.4 says.
@@ -121,7 +121,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 3. Classify every node ID in R′, S₀ or L, and every intent in I₀, by whether this device changed it since its last sync (L against S₀), never by path or content. Ops a user could have taken more than one way are never inferred.
 4. Apply the certain cases at once through the ordinary planner: set S for those nodes as the table says, and let §2.3 produce the effects. Hold the rest.
 5. Resume normal sync for every node that is not held. Held nodes are excluded from planning, like guard holds (§6.1), and stay on disk exactly as they are.
-6. Ask the user about the held groups. Each answer applies to the group's listed nodes at the revisions and contents it showed; anything that changed since needs a new question.
+6. Ask the user about the held groups. Each answer applies to the group's listed nodes at the revisions and contents it showed. Anything that changed since needs a new question.
 7. Leave recovery when no held node and no undecided intent remains, and drop the evidence tables.
 
 ### Classification
@@ -140,7 +140,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 | deleted on this device | absent or trashed | yes | Nothing to do |
 | absent (not in S₀ or L) | live | yes | Download |
 
-- Held nodes are classified again, with the same table against S₀, whenever R′ or L changes for them. A question is dropped only when a certain row applies, such as the local version and R′(n) becoming equal; a node that merely reappears in R′ is not certain. If another device publishes n = C while this device holds n = B, then B ≠ C, or B = C at another position, stays held with its question refreshed to C's revision, and B = C at the same position becomes certain.
+- Held nodes are classified again, with the same table against S₀, whenever R′ or L changes for them. A question is dropped only when a certain row applies, such as the local version and R′(n) becoming equal. A node that merely reappears in R′ is not certain. If another device publishes n = C while this device holds n = B, then B ≠ C, or B = C at another position, stays held with its question refreshed to C's revision, and B = C at the same position becomes certain.
 - A recovery commit rejected with `ID_EXISTS` is classified again the same way instead of becoming a problem.
 - An excluded node (§5.10) stays excluded and is not classified.
 
@@ -153,7 +153,7 @@ An intent in I₀ whose result R′ already shows (the node live at the requeste
 An answer names a set of nodes, but an op can change others on the server: R8 revives the trash group of a node it touches, R2 merges directories, and a move carries its subtree.
 
 - Before sending an answer, the engine applies its ops to a copy of R′ with the server's rules (§7.1). Every node the result changes outside the answered set must end where it was meant to be: in its R′ state, or in the state the evidence shows this device's user chose. The engine adds the ops for that to the same commit only when the simulated result confirms them. When no such commit exists, the extra nodes join the question, which is asked again before anything is sent.
-- For example, S₀ has directory D with child F; the user moved D and deleted F; R′ has D and F trashed in one trash group. Publishing D revives both under R8, so the commit is `Move(D)` followed by `Delete(F)`, sent only if the simulation leaves F trashed.
+- For example, S₀ has directory D with child F. The user moved D and deleted F, and R′ has D and F trashed in one trash group. Publishing D revives both under R8, so the commit is `Move(D)` followed by `Delete(F)`, sent only if the simulation leaves F trashed.
 - An answer's commit sets `require_head` (RFC 0002 §4): the server applies it only if its head is still the `base_seq` the simulation used, and otherwise refuses the whole commit without applying anything. The engine then updates R′ and asks again.
 - Following R′ can remove many files at once, since a rewind removes everything created after the restore point. Those removals go to the local trash, trigger the remote-deletion notice of §6.1, and never touch held nodes. The guard applies to every `Delete` an answer produces.
 
