@@ -85,6 +85,12 @@ jobs:
           args=()
           for package in "${packages[@]}"; do args+=(-p "$package"); done
           cargo test --locked --profile checked --no-run --tests --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/build.json"
+          scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"
+          probe=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "koidrive_test_support" and .profile.test and .executable != null) | .executable' "$RUNNER_TEMP/build.json")
+          if [ -z "$probe" ] || ! "$probe" --exact tests::the_build_keeps_debug_assertions_and_overflow_checks | grep -q '^test result: ok\. 1 passed'; then
+            echo "::error::The battery build must run tests::the_build_keeps_debug_assertions_and_overflow_checks from koidrive-test-support and see it pass, so a debug_assert! and an integer overflow are known to panic in the binaries the shards run."
+            exit 1
+          fi
           filter_args=()
           if [ -n "$FILTER" ]; then filter_args=("$FILTER"); fi
           mkdir -p battery/bin

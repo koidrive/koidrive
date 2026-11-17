@@ -19,6 +19,8 @@ def job(workflow, name):
 
 def test_arguments(body, marker):
     commands = [shlex.split(line) for line in re.findall(r"cargo test[^\n]+", body) if marker in line]
+    builds = [command[:command.index(">")] if ">" in command else command for command in commands if "--no-run" in command]
+    commands = [command for command in commands if "--no-run" not in command]
     if len(commands) != 2:
         raise ValueError("Each partition must have one listing and one execution command")
     listing, execution = commands
@@ -26,6 +28,9 @@ def test_arguments(body, marker):
         raise ValueError("The inventory must list the executed tests")
     if listing[:listing.index("--")] != execution:
         raise ValueError("Inventory and execution must use identical Cargo arguments")
+    for build in builds:
+        if [arg for arg in build if arg != "--no-run" and not arg.startswith("--message-format=")] != execution:
+            raise ValueError("The checked build must use the execution's Cargo arguments")
     return execution
 
 
@@ -150,6 +155,11 @@ class RustPartitions(unittest.TestCase):
     def test_additional_shard_package_is_rejected(self):
         changed = self.workflow.replace('-p "koidrive-$SUITE"', '-p "koidrive-$SUITE" -p koidrive-cli')
         with self.assertRaisesRegex(ValueError, "execute its matrix package"):
+            check_partitions(changed)
+
+    def test_checked_build_with_other_arguments_is_rejected(self):
+        changed = self.workflow.replace('--features "$FEATURES" --no-run', '--features "$FEATURES" --release --no-run', 1)
+        with self.assertRaisesRegex(ValueError, "checked build must use the execution's Cargo arguments"):
             check_partitions(changed)
 
     def test_shard_target_filter_is_rejected(self):

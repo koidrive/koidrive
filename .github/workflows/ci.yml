@@ -458,7 +458,10 @@ jobs:
           SUITE: ${{ matrix.suite }}
           FEATURES: ${{ matrix.suite == 'engine' && 'serde' || matrix.suite == 'sim' && 'koidrive-engine/serde' || '' }}
           PROFILE: ${{ matrix.suite == 'sim' && 'checked' || 'dev' }}
-        run: cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES" -- --list --format terse > "$RUNNER_TEMP/inventory.txt"
+        run: |
+          cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES" --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
+          scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"
+          cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES" -- --list --format terse > "$RUNNER_TEMP/inventory.txt"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
