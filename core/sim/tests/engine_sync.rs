@@ -7,6 +7,7 @@ include!("engine_sync/parked_nodes.rs");
 include!("engine_sync/restores.rs");
 include!("engine_sync/rules_and_held_entries.rs");
 include!("engine_sync/waiting_updates.rs");
+include!("engine_sync/triage_s3.rs");
 
 proptest! {
     #![proptest_config(koidrive_test_support::battery_config(

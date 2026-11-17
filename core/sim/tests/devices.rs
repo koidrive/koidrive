@@ -29,6 +29,14 @@ mod restore_deleted_folder;
 mod restore_write_history;
 #[path = "devices/restore_yielded_resend.rs"]
 mod restore_yielded_resend;
+#[path = "devices/triage_s1.rs"]
+mod triage_s1;
+#[path = "devices/triage_s2.rs"]
+mod triage_s2;
+#[path = "devices/triage_s3.rs"]
+mod triage_s3;
+#[path = "devices/triage_s4.rs"]
+mod triage_s4;
 
 fn action() -> impl Strategy<Value = Action> {
     (

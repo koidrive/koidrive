@@ -21,3 +21,4 @@ include!("commit/refusal_and_reconnect.rs");
 include!("commit/refused_creates.rs");
 include!("commit/revived_trash_groups.rs");
 include!("commit/waiting_updates_and_removals.rs");
+include!("commit/triage_s2.rs");

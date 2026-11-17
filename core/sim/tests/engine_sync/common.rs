@@ -208,7 +208,7 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             None => return,
         },
         7 => {
-            let trashed = nodes_with(space, 2, Some(2));
+            let trashed = if std::env::var_os("TRIAGE_S3_PURGE_DIRS").is_some() { nodes_with(space, 2, None) } else { nodes_with(space, 2, Some(2)) };
             match target(&[trashed.as_slice(), files.as_slice()].concat()) {
                 Some(node_id) if trashed.contains(&node_id) => {
                     space.purge(&node_id, NOW);
@@ -1729,9 +1729,19 @@ fn run_ignoring_answering_after(
                             name,
                         },
                     ..
+                }
+                | Effect::Move {
+                    to:
+                        Location::At {
+                            base: Base::Root,
+                            dirs,
+                            name,
+                        },
+                    ..
                 },
                 Some(after),
             ) = (&record.effect, &record.after)
+                && (std::env::var_os("TRIAGE_S3_MOVE_CHECK").is_some() || !matches!(record.effect, Effect::Move { .. }))
             {
                 let path: Vec<&str> = (dirs.iter().map(|dir| dir.name.as_str()))
                     .chain([name.as_str()])

@@ -4793,3 +4793,137 @@ mod a_server_file_moved_into_an_asked_folder {
         assert!(sent.contains(&("move", "sf".to_owned())), "{sent:?}");
     }
 }
+
+#[test]
+fn triage_s3_gun859_a_file_moved_out_of_a_server_folder_in_a_discarded_folder_is_created_again_when_the_server_purges_it() {
+    let (sent, trees) = a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+        let mut moved = trees.local().get("c").unwrap().clone();
+        moved.shape.parent = ROOT.into();
+        trees.set_local_changed("c".into(), moved);
+        trees.remove_remote("c");
+    });
+    assert!(!trees.held("c"));
+    assert_eq!(sent, [("create file", "c".to_owned())]);
+}
+
+#[test]
+fn triage_s3_gun623_a_discarded_folder_parked_while_its_rules_were_unknown_returns_once_they_exclude_an_entry() {
+    let mut trees = trees(
+        &[("l-ss", dir(ROOT, "ss")), ("l-a", file("l-ss", "a", 1))],
+        &[("r-sharp-s", dir(ROOT, "ß")), ("r-c", file("r-sharp-s", "c.txt", 2))],
+    );
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle();
+    let asked = question(&commits);
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules_unknown("l-ss");
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    trees.set_rules_known("l-ss");
+    let root: [&str; 0] = [];
+    trees.set_rules(&root, Some(RuleFile::parse(b"a\n")));
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 200);
+    trees.settle();
+    assert!(!trees.local().get("l-ss").unwrap().parked, "{:?}", stuck(&trees, &effects, commits.in_flight()));
+}
+
+fn triage_s3_gun756_reclaimed_then_asked_again() -> (Commits, Trees, IdGen, Effects) {
+    let (mut commits, mut trees, mut ids, asked) =
+        a_folder_with_a_server_file_the_user_moved_in_while_the_rules_left_it_out();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_local("n".into(), local_node(file("f", "n", 6), 99));
+    trees.settle();
+    assert!(trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    (commits, trees, ids, effects)
+}
+
+#[test]
+fn triage_s3_gun756_publishing_a_reclaimed_folder_keeps_a_server_file_another_device_trashed_trashed() {
+    let (mut commits, mut trees, mut ids, _) = triage_s3_gun756_reclaimed_then_asked_again();
+    let mut trashed = trees.remote().get("x").unwrap().clone();
+    trashed.trashed = true;
+    trees.set_remote("x".into(), trashed);
+    trees.settle();
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(commits.decide(&question(&commits).id, Answer::Publish));
+    let first = ops(&mut commits, &mut trees, &mut ids);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let second = ops(&mut commits, &mut trees, &mut ids);
+    eprintln!("GUN756 trash first={first:?} second={second:?}");
+    let all: Vec<_> = first.iter().chain(&second).collect();
+    assert!(!all.iter().any(|(_, id)| id == "x"), "{all:?}");
+}
+
+#[test]
+fn triage_s3_gun756_publishing_a_reclaimed_folder_sends_an_edit_made_while_excluded_as_an_edit() {
+    let (mut commits, mut trees, mut ids, _) = triage_s3_gun756_reclaimed_then_asked_again();
+    let mut edited = trees.local().get("x").unwrap().clone();
+    edited.shape.content = Some(content(8));
+    trees.set_local_changed("x".into(), edited);
+    trees.settle();
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    assert!(commits.decide(&question(&commits).id, Answer::Publish));
+    let first = ops(&mut commits, &mut trees, &mut ids);
+    trees.set_rules(&[] as &[&str], None);
+    trees.settle();
+    let second = ops(&mut commits, &mut trees, &mut ids);
+    eprintln!("GUN756 edit first={first:?} second={second:?} edited={}", trees.edited("x"));
+    let all: Vec<_> = first.iter().chain(&second).cloned().collect();
+    assert!(all.contains(&("update", "x".to_owned())), "{all:?}");
+    assert!(!all.iter().any(|(kind, id)| *kind == "create file" && id != "n"), "{all:?}");
+}
+
+fn triage_s3_gun867_run(with_sub: bool) -> Vec<(&'static str, String)> {
+    let mut local = vec![("f", dir(ROOT, "new")), ("x", file(ROOT, "server", 9))];
+    if with_sub {
+        local.extend([("g", dir("f", "sub")), ("e", file("g", "e", 4))]);
+    } else {
+        local.push(("e", file("f", "e", 4)));
+    }
+    let mut trees = trees(&local, &[("x", file(ROOT, "server", 9))]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle();
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_local("n".into(), local_node(file("f", "n", 6), 99));
+    trees.settle();
+    assert!(trees.reclaimed("f"));
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    let reclaim_ops = ops(&mut commits, &mut trees, &mut ids);
+    let f_in_s = trees.synced().get("f").is_some();
+    trees.remove_local("n");
+    trees.settle();
+    let mut out = Vec::new();
+    if let Some(again) = commits.questions().first().cloned() {
+        assert!(commits.decide(&again.id, Answer::Discard));
+        trees.set_rules(&[] as &[&str], None);
+        trees.settle();
+        out = ops(&mut commits, &mut trees, &mut ids);
+    }
+    eprintln!("GUN867 with_sub={with_sub} reclaim_ops={reclaim_ops:?} f_in_s_after_reclaim={f_in_s} after_discard={out:?}");
+    out
+}
+
+#[test]
+fn triage_s3_gun867_discard_after_undoing_a_reclaim_sends_nothing() {
+    let a = triage_s3_gun867_run(false);
+    let b = triage_s3_gun867_run(true);
+    assert!(a.is_empty() && b.is_empty(), "{a:?} {b:?}");
+}

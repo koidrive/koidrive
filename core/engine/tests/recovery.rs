@@ -3728,3 +3728,6 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
 fn triage_replay() {
     koidrive_test_support::replay_each_case(include_str!("triage/engine_recovery.txt"));
 }
+
+#[path = "triage/s4_recovery.rs"]
+mod triage_s4;
