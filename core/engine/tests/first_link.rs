@@ -3272,6 +3272,7 @@ fn a_server_folder_holding_only_an_excluded_entry_the_user_deleted_goes_with_its
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(
@@ -3342,6 +3343,7 @@ fn a_server_folder_taken_along_by_a_discard_stays_discarded_when_the_user_moves_
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(
@@ -5136,6 +5138,7 @@ fn drive_until_quiet(
         let identity = FileIdentity {
             ino: 1000 + step as u128,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(
@@ -5308,6 +5311,7 @@ fn a_server_folder_holding_an_entry_an_earlier_discard_dropped_goes_with_its_fol
         identity: FileIdentity {
             ino: 99,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
