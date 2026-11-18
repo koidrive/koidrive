@@ -250,11 +250,18 @@ fn a_file_another_device_makes_at_a_kept_folders_place_downloads_beside_it_under
         let [copy] = names.as_slice() else {
             panic!("{names:?}");
         };
-        assert!(copy.starts_with(&format!("{name} (conflict from ")), "{copy}");
+        assert!(
+            copy.starts_with(&format!("{name} (conflict from ")),
+            "{copy}"
+        );
         assert_eq!(fs::read(site.root.join(copy)).unwrap(), b"a file now");
         let env = site.root.join("app/.env");
         assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
-        assert!(!remote.tree().keys().any(|path| path.ends_with(".env")), "{:?}", remote.tree());
+        assert!(
+            !remote.tree().keys().any(|path| path.ends_with(".env")),
+            "{:?}",
+            remote.tree()
+        );
         let view = b.folder.view();
         assert_eq!(view.state, FolderState::UpToDate);
         assert_eq!(view.problem, None);
@@ -325,11 +332,16 @@ fn two_devices_that_keep_a_folder_rename_a_file_made_at_its_name_once() {
         assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
     }
     assert!(!site_a.root.join("app").exists());
-    assert!(!remote.tree().keys().any(|path| path.ends_with(".env")), "{:?}", remote.tree());
+    assert!(
+        !remote.tree().keys().any(|path| path.ends_with(".env")),
+        "{:?}",
+        remote.tree()
+    );
 }
 
 #[test]
-fn a_restart_after_renaming_a_file_made_at_a_kept_folders_name_downloads_it_without_renaming_again() {
+fn a_restart_after_renaming_a_file_made_at_a_kept_folders_name_downloads_it_without_renaming_again()
+{
     let ignored = [".env"];
     let (mut remote, site_a, mut a, site, mut b, _) =
         deleted_with_ignored_entries(&["README.md"], &ignored);
