@@ -493,19 +493,19 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
 
 #[test]
 fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time() {
-    let took = |folders, waiting| {
+    use crate::tree::{ENTRIES_BUDGET, ENTRIES_READ};
+    let reads = |folders, waiting, budget: u64| {
         let (trees, ids) = a_server_folder_in_a_discarded_folder(folders, waiting);
-        let started = std::time::Instant::now();
+        let before = ENTRIES_READ.with(Cell::get);
+        ENTRIES_BUDGET.with(|limit| limit.set(before.saturating_add(budget)));
         assert!(ids.iter().all(|id| trees.is_discarded(id)));
         assert!(trees.discard_state("f") == Some(Discard::Kept));
-        started.elapsed()
+        ENTRIES_BUDGET.with(|limit| limit.set(u64::MAX));
+        ENTRIES_READ.with(Cell::get) - before
     };
     for waiting in [false, true] {
-        let (five_thousand, fifty_thousand) = (took(10, waiting), took(100, waiting));
-        assert!(
-            fifty_thousand < five_thousand * 30,
-            "checking 50,000 discarded server copies took {fifty_thousand:?}, and 5,000 took {five_thousand:?}, with S updates waiting: {waiting}"
-        );
+        let five_thousand = reads(10, waiting, u64::MAX);
+        reads(100, waiting, five_thousand * 11);
     }
 }
 
@@ -902,7 +902,7 @@ mod holders_against_a_rebuild {
             index.0,
             keys
         );
-        for (key, holders) in &index.0 {
+        for (key, holders) in index.0.iter() {
             if let Holders::Many(set) = holders {
                 assert!(set.len() >= 2, "Many with {} holders", set.len());
             }

@@ -3,7 +3,10 @@
 //! The three trees of the design (docs/design/sync-engine.md section 2.2): the remote tree R, the
 //! local tree L and the synced tree S, all keyed by `node_id` and sharing the root node.
 
+use std::borrow::Borrow;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeBounds;
 use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
@@ -11,6 +14,99 @@ use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
 use crate::names::{name_key, same_name};
 
 pub type NodeId = String;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ENTRIES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static ENTRIES_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+pub(crate) fn read_entries(count: usize) {
+    #[cfg(test)]
+    {
+        let read = ENTRIES_READ.with(|read| read.get() + count as u64);
+        ENTRIES_READ.with(|entries_read| entries_read.set(read));
+        let budget = ENTRIES_BUDGET.with(std::cell::Cell::get);
+        assert!(
+            read <= budget,
+            "read {read} entries, past the budget of {budget}"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn counted<I: Iterator>(entries: I) -> impl Iterator<Item = I::Item> {
+    entries.inspect(|_| read_entries(1))
+}
+
+#[cfg(not(test))]
+pub(crate) fn counted<I: Iterator>(entries: I) -> I {
+    entries
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
+
+impl<K, V> Default for CountedMap<K, V> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<K: Ord, V> CountedMap<K, V> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get(key)
+    }
+
+    pub(crate) fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get_mut(key)
+    }
+
+    pub(crate) fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.contains_key(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.0.insert(key, value)
+    }
+
+    pub(crate) fn entry(&mut self, key: K) -> Entry<'_, K, V> {
+        self.0.entry(key)
+    }
+
+    pub(crate) fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.remove(key)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        counted(self.0.iter())
+    }
+
+    pub(crate) fn range(&self, range: impl RangeBounds<K>) -> impl Iterator<Item = (&K, &V)> {
+        counted(self.0.range(range))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -235,14 +331,14 @@ pub enum TreeError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tree<N> {
     pub root: NodeId,
-    nodes: BTreeMap<NodeId, N>,
+    nodes: CountedMap<NodeId, N>,
 }
 
 impl<N: Node> Tree<N> {
     pub fn new(root: impl Into<NodeId>) -> Self {
         Self {
             root: root.into(),
-            nodes: BTreeMap::new(),
+            nodes: CountedMap::default(),
         }
     }
 
@@ -306,7 +402,6 @@ impl<N: Node> Tree<N> {
         }
         let mut seen = BTreeSet::new();
         let placed = self
-            .nodes
             .iter()
             .filter(|(_, node)| node.is_live() && node.is_placed());
         for (id, node) in placed {
@@ -330,7 +425,7 @@ impl<N: Node> Tree<N> {
                 });
             }
         }
-        for id in self.nodes.keys() {
+        for (id, _) in self.iter() {
             if self.live(id).is_some() && !self.reaches_root(id) {
                 return Err(TreeError::Cycle(id.clone()));
             }

@@ -2590,7 +2590,7 @@ impl Commits {
                     None => merged.get(id).unwrap_or(id),
                 })
                 .filter(|id| {
-                    let synced = match trees.waiting().get(*id) {
+                    let synced = match trees.waiting().get(id) {
                         Some(waiting) => waiting.shape.as_ref(),
                         None => trees.synced().live(id),
                     };
@@ -3566,7 +3566,7 @@ pub(crate) fn finishes<'a>(
             !skip.contains(*id)
                 && !trees.excluded(id)
                 && !trees.held(id)
-                && !trees.waiting().contains_key(*id)
+                && !trees.waiting().contains_key(id)
         })
         .filter_map(move |id| {
             let remote = trees.remote().get(id).filter(|node| !node.trashed)?;
@@ -4154,7 +4154,7 @@ fn plan(
     }
     let unsettled = |node: &&str| {
         skip.contains(*node)
-            || trees.waiting().contains_key(*node)
+            || trees.waiting().contains_key(node)
             || trees.class(node) == Class::Same
     };
     let (unsettled, settled): (Vec<&str>, Vec<&str>) = restored.into_iter().partition(unsettled);

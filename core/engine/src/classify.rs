@@ -17,8 +17,8 @@ use crate::state::{
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, TrackedTree,
-    Tree, TreeError, same, same_content,
+    Content, CountedMap, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape,
+    TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
 
 use release::Released;
@@ -149,24 +149,26 @@ pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a 
     None
 }
 
-trait Placed {
+pub trait Placed {
     fn parent(&self) -> Option<&NodeId>;
 }
 
 impl Placed for Shape {
     fn parent(&self) -> Option<&NodeId> {
+        read_entries(1);
         Some(&self.parent)
     }
 }
 
 impl Placed for Waiting {
     fn parent(&self) -> Option<&NodeId> {
+        read_entries(1);
         self.shape.as_ref().map(|shape| &shape.parent)
     }
 }
 
 #[derive(Clone, Debug)]
-struct ByParent<V> {
+pub struct ByParent<V> {
     entries: TrackedMap<NodeId, V>,
     below: BTreeMap<NodeId, BTreeSet<NodeId>>,
 }
@@ -182,7 +184,7 @@ impl<V> Default for ByParent<V> {
 
 impl<V: Placed + Clone + PartialEq> ByParent<V> {
     fn children(&self, id: &str) -> impl Iterator<Item = &NodeId> {
-        self.below.get(id).into_iter().flatten()
+        counted(self.below.get(id).into_iter().flatten())
     }
 
     fn insert(&mut self, id: NodeId, entry: V) {
@@ -239,11 +241,57 @@ impl<V: Placed + Clone + PartialEq> ByParent<V> {
     }
 }
 
-impl<V> std::ops::Deref for ByParent<V> {
-    type Target = BTreeMap<NodeId, V>;
+impl<V> ByParent<V> {
+    #[inline(always)]
+    pub fn get(&self, id: &str) -> Option<&V> {
+        self.entries.get(id)
+    }
 
-    fn deref(&self) -> &BTreeMap<NodeId, V> {
-        &self.entries
+    #[inline(always)]
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.entries.contains_key(id)
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[inline(always)]
+    pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &V)> {
+        counted(self.entries.iter())
+    }
+
+    #[inline(always)]
+    pub fn keys(&self) -> impl Iterator<Item = &NodeId> {
+        counted(self.entries.keys())
+    }
+
+    fn to_map(&self) -> BTreeMap<NodeId, V>
+    where
+        V: Clone,
+    {
+        read_entries(self.entries.len());
+        (*self.entries).clone()
+    }
+}
+
+impl<V> std::ops::Index<&str> for ByParent<V> {
+    type Output = V;
+
+    fn index(&self, id: &str) -> &V {
+        &self.entries[id]
+    }
+}
+
+impl<V: PartialEq> PartialEq for ByParent<V> {
+    fn eq(&self, other: &Self) -> bool {
+        *self.entries == *other.entries
     }
 }
 
@@ -264,7 +312,7 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
 
 /// The nodes of a tree by parent and the `name_key` of their name.
 #[derive(Clone, Debug, Default)]
-struct ByName(BTreeMap<(NodeId, String), Holders>);
+struct ByName(CountedMap<(NodeId, String), Holders>);
 
 impl ByName {
     fn insert(&mut self, id: &str, shape: &Shape) {
@@ -284,7 +332,7 @@ impl ByName {
     /// The nodes under `parent` whose name has the `name_key` of `name`.
     fn holders<'a>(&'a self, parent: &str, name: &str) -> impl Iterator<Item = &'a NodeId> + 'a {
         let key = (parent.to_owned(), name_key(name));
-        self.0.get(&key).into_iter().flat_map(Holders::iter)
+        counted(self.0.get(&key).into_iter().flat_map(Holders::iter))
     }
 
     fn children<'a>(&'a self, parent: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -4135,7 +4183,7 @@ impl Trees {
     /// layer makes each as soon as it fits, falls back to S's position once R and L have both left
     /// the waiting one, and drops one once neither L nor R holds the node; until then the node is
     /// left out of planning, unless L moved it away from the waiting position, where R still holds it.
-    pub fn waiting(&self) -> &BTreeMap<NodeId, Waiting> {
+    pub fn waiting(&self) -> &ByParent<Waiting> {
         &self.waiting
     }
 
@@ -4688,7 +4736,7 @@ impl Trees {
             .filter(|id| {
                 merged.contains_key(*id)
                     || self.s.get(id).is_some()
-                    || self.waiting.contains_key(*id)
+                    || self.waiting.contains_key(id)
                     || records.contains_key(*id)
             })
             .cloned()
@@ -4928,7 +4976,7 @@ impl Trees {
         let mut lost: BTreeSet<&str> = (self.s.iter())
             .filter(|(id, _)| !deleted.contains(*id))
             .filter(|(id, synced)| {
-                let synced = (self.waiting.get(*id))
+                let synced = (self.waiting.get(id))
                     .filter(|_| queued.contains(*id))
                     .and_then(|waiting| waiting.shape.as_ref())
                     .unwrap_or(*synced);
@@ -6203,12 +6251,12 @@ impl Trees {
             cycle_reverted: (*self.cycle_reverted).clone(),
             unobserved: (*self.unobserved).clone(),
             parked_as: (*self.parked_as).clone(),
-            waiting: (*self.waiting).clone(),
+            waiting: self.waiting.to_map(),
             watched: (*self.watched).clone(),
             watched_positions: (*self.watched_positions).clone(),
             trashed_here: (*self.trashed_here).clone(),
             removed_here: (*self.removed_here).clone(),
-            discarded: (*self.discarded).clone(),
+            discarded: self.discarded.to_map(),
             forgotten_shapes: (*self.forgotten_shapes).clone(),
             lost_shapes: (*self.lost_shapes).clone(),
             outside: (*self.outside).clone(),
