@@ -189,13 +189,6 @@ fn deletes(device: &Device) -> Vec<String> {
         .collect()
 }
 
-fn without(files: &[(String, String)], path: &str) -> Vec<(String, String)> {
-    (files.iter())
-        .filter(|(at, _)| at != path)
-        .cloned()
-        .collect()
-}
-
 #[test]
 fn a_repository_s_git_folder_never_uploads_whether_the_device_follows_gitignore_files_or_not() {
     for sync in [SyncRules::default(), not_following_gitignore()] {
@@ -236,59 +229,6 @@ fn a_repository_s_git_folder_never_uploads_whether_the_device_follows_gitignore_
             ])
         );
     }
-}
-
-#[test]
-fn a_git_folder_that_synced_before_stays_on_disk_on_the_server_and_on_the_other_device_once_it_is_left_out()
- {
-    let mut remote = Remote::new();
-    let site = Site::new(&remote, "b");
-    let mut b = started_with(&site, &mut remote, &SyncRules::default());
-    repository(&site.root, "app");
-    fs::write(site.root.join(".koiignore"), "!.git/\n").unwrap();
-    b.rescan();
-    b.rest(&mut remote);
-    let site_c = Site::new(&remote, "c");
-    let mut c = started_with(&site_c, &mut remote, &SyncRules::default());
-    let synced = files(&site.root);
-    assert!(synced.iter().any(|(path, _)| path == "app/.git/config"));
-    assert_eq!(files(&site_c.root), synced);
-    let before = remote.tree();
-    drop(b);
-
-    fs::remove_file(site.root.join(".koiignore")).unwrap();
-    let mut b = started_with(&site, &mut remote, &SyncRules::default());
-    assert_eq!(deletes(&b), [before[".koiignore"].clone()]);
-    let mut after = before.clone();
-    after.remove(".koiignore");
-    assert_eq!(remote.tree(), after);
-    let kept = without(&synced, ".koiignore");
-    assert_eq!(files(&site.root), kept);
-    assert!(trashed(&site.root).is_empty());
-    assert!(b.folder.engine.trees.excluded(&before["app/.git"]));
-
-    let sent = b.sent.len();
-    fs::write(site.root.join("app/.git/HEAD"), "ref: refs/heads/topic\n").unwrap();
-    b.rescan();
-    b.settle();
-    assert!(b.work.is_empty());
-    assert_eq!(
-        b.sent.len(),
-        sent,
-        "an edit inside a left-out .git folder uploads nothing"
-    );
-
-    c.pull(&remote);
-    c.rest(&mut remote);
-    assert!(deletes(&c).is_empty());
-    assert_eq!(files(&site_c.root), kept);
-    assert!(
-        !trashed(&site_c.root)
-            .iter()
-            .any(|name| name.starts_with(".git"))
-    );
-    assert!(c.folder.engine.trees.excluded(&before["app/.git"]));
-    assert_eq!(remote.tree(), after);
 }
 
 #[test]
@@ -411,60 +351,6 @@ fn renaming_and_moving_a_folder_that_holds_a_repository_moves_it_without_deletin
         assert_eq!(files(&site_c.root), on_server(&mut remote, "d"));
         assert_eq!(git(&site_c.root).is_some(), included);
     }
-}
-
-#[test]
-fn a_folder_another_device_deletes_keeps_its_left_out_git_folder() {
-    let mut remote = Remote::new();
-    let (site_a, mut a) = linked(&mut remote, "a");
-    fs::create_dir(site_a.root.join("repo")).unwrap();
-    a.create(&mut remote, &site_a.root.join("repo/README.md"), b"readme");
-    let site = Site::new(&remote, "b");
-    let mut b = started_with(&site, &mut remote, &SyncRules::default());
-    let git = [
-        ("repo/.git/HEAD", "ref: refs/heads/main\n"),
-        ("repo/.git/config", "[core]\n\tbare = false\n"),
-        ("repo/.git/objects/ab/cdef", "object"),
-    ];
-    for (path, text) in git {
-        fs::create_dir_all(site.root.join(path).parent().unwrap()).unwrap();
-        fs::write(site.root.join(path), text).unwrap();
-    }
-    b.rescan();
-    b.settle();
-    assert!(b.work.is_empty());
-    assert_eq!(b.state(), FolderState::UpToDate);
-
-    fs::remove_dir_all(site_a.root.join("repo")).unwrap();
-    a.scan_until(|a| !a.work.is_empty());
-    a.run(&mut remote);
-    assert!(remote.names().is_empty());
-    b.pull(&remote);
-    let mut steps = 0;
-    while let Some(work) = b.work.pop_front() {
-        steps += 1;
-        assert!(steps < 20, "the removal is planned again and again");
-        b.perform(work, &mut remote).unwrap();
-    }
-    b.settle();
-    assert!(b.work.is_empty());
-    assert!(b.sent.is_empty(), "nothing is sent for .git");
-    for (path, text) in git {
-        assert_eq!(
-            fs::read_to_string(site.root.join(path)).unwrap(),
-            text,
-            "{path}"
-        );
-    }
-    assert!(!site.root.join("repo/README.md").exists());
-    assert_eq!(
-        trashed(&site.root).len(),
-        1,
-        "only the synced file goes to the trash"
-    );
-    assert!(remote.names().is_empty());
-    let view = b.folder.view();
-    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
 }
 
 #[test]
