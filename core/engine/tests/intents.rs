@@ -1474,3 +1474,36 @@ fn r_holding_a_node_again_restarts_its_30_days() {
     trees.journal_mut().set_clock(1_000 + 31 * DAY_MS);
     assert_ne!(journal_of(&trees, "f"), []);
 }
+
+#[test]
+fn a_backfilled_delete_of_a_folder_l_lacks_sees_what_s_held_below_it() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    for (node, shape) in [("d", dir(ROOT, "d")), ("f", file("d", "a", 1))] {
+        trees.set_remote(node.into(), remote(shape.clone(), 1));
+        trees.set_synced(node.into(), Some(shape));
+    }
+    let state = trees.state();
+    trees.restore(state).unwrap();
+    trees.backfill(None, false, 1_000);
+    let seen: Vec<(&str, Field)> = (trees.journal().seen("d").iter())
+        .map(|entry| (entry.node.as_str(), entry.field))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("d", Field::Place),
+            ("d", Field::Status),
+            ("f", Field::Place),
+            ("f", Field::Content),
+            ("f", Field::Status)
+        ]
+    );
+    let (_, ops) = sent_with_intents(&mut trees);
+    let unseen: Vec<usize> = (ops.iter())
+        .filter_map(|op| match op {
+            op::Op::Delete(delete) => Some(delete.unseen.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unseen, [0]);
+}
