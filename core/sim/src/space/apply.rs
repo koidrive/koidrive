@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use koidrive_engine::names::{conflict_name, is_reserved_at_root, name_key, normalize_name};
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Content, CreateDir, CreateFile, Delete, Error, Move, NodeKind,
-    NodeStatus, Op, OpResult, Place, Restore, change_record, error, op, op_result,
+    NodePurged, NodeStatus, Op, OpResult, Place, Restore, change_record, error, op, op_result,
 };
 
 use super::intents::{
-    FIELDS, Field, FieldIntent, Incoming, IntentId, OpIntents, Sender, Tombstone, resolve,
+    FIELDS, Field, FieldIntent, Incoming, IntentId, NodeIntents, OpIntents, Sender, Tombstone,
+    resolve,
 };
 use super::{ChunkState, Node, Session, State, StoredResult, Version, fail};
 use crate::world::same_bytes;
@@ -85,6 +86,11 @@ fn applied(renamed: bool, name: &str) -> OpResult {
     result(code, "", name)
 }
 
+enum Deleted {
+    Trash(Box<Node>),
+    Purged(Box<Tombstone>),
+}
+
 pub(super) struct Applier<'a> {
     st: &'a mut State,
     ctx: Context<'a>,
@@ -94,6 +100,7 @@ pub(super) struct Applier<'a> {
     targets: BTreeSet<String>,
     named: BTreeSet<String>,
     revived_ancestors: BTreeMap<String, Node>,
+    purged: Vec<ChangeRecord>,
     intents: OpIntents,
 }
 
@@ -108,6 +115,7 @@ impl<'a> Applier<'a> {
             targets: BTreeSet::new(),
             named: BTreeSet::new(),
             revived_ancestors: BTreeMap::new(),
+            purged: Vec::new(),
             intents: OpIntents::default(),
         }
     }
@@ -135,14 +143,13 @@ impl<'a> Applier<'a> {
             }
         }
         self.retrash_unneeded_ancestors();
-        let changes = self
-            .touched
-            .iter()
+        let changes = (self.touched.iter())
             .map(|id| ChangeRecord {
                 change: Some(change_record::Change::Node(
                     self.st.node_state(&self.st.nodes[id]),
                 )),
             })
+            .chain(self.purged)
             .collect();
         Ok((results, changes))
     }
@@ -541,8 +548,13 @@ impl<'a> Applier<'a> {
         if let Some(parent) = self.node(parent_id) {
             return Some(parent);
         }
-        (self.st.tombstones.get(&self.id(parent_id)))
-            .map(|tombstone| self.nearest_live(tombstone.parent_id.as_deref()))
+        let tombstone = self.st.tombstones.get(&self.id(parent_id))?;
+        let live = self.nearest_live(tombstone.parent_id.as_deref());
+        if self.depth(&live) < MAX_DEPTH {
+            return Some(live);
+        }
+        let parent = live.parent_id.as_ref().expect("a deep folder has a parent");
+        Some(self.st.nodes[parent].clone())
     }
 
     fn parent_row(&self, parent_id: &str) -> Result<Result<Node, Reject>, Error> {
@@ -759,27 +771,116 @@ impl<'a> Applier<'a> {
             && self.holds_intents(&existing.node_id, fields)
     }
 
-    fn create_into_trash(
+    fn deleted_parent(&self, parent_id: &str) -> Option<Deleted> {
+        let (place, status) = (self.incoming(Field::Place), self.incoming(Field::Status));
+        if !self.client() || !place.intent.carried || !status.intent.carried {
+            return None;
+        }
+        if let Some(parent) = self.node(parent_id) {
+            return (parent.status == NodeStatus::Trashed && parent.kind == NodeKind::Dir)
+                .then(|| Deleted::Trash(Box::new(parent)));
+        }
+        (self.st.tombstones.get(&self.id(parent_id)))
+            .filter(|tombstone| {
+                tombstone.knows(place.intent.id) || tombstone.knows(status.intent.id)
+            })
+            .map(|tombstone| Deleted::Purged(Box::new(tombstone.clone())))
+    }
+
+    fn deleted_knows(&self, deleted: &Deleted, id: IntentId) -> bool {
+        match deleted {
+            Deleted::Trash(trash) => self.trash_knows(&trash.node_id, id),
+            Deleted::Purged(tombstone) => tombstone.knows(id),
+        }
+    }
+
+    fn create_into_deleted(
         &mut self,
-        parent: &Node,
+        node_id: &str,
+        parent_id: &str,
         name: &str,
         content: Option<(&Content, Vec<String>)>,
+        pending_for: Option<String>,
     ) -> Option<OpResult> {
-        if !self.client() || parent.status != NodeStatus::Trashed {
-            return None;
-        }
-        if !self.incoming(Field::Place).intent.carried {
-            return None;
+        let deleted = self.deleted_parent(parent_id)?;
+        match &deleted {
+            Deleted::Trash(trash) if content.is_none() && self.depth(trash) < MAX_DEPTH => {
+                let dev = self.dev().to_string();
+                self.insert_node(node_id, &trash.node_id, name, NodeKind::Dir, None, &dev);
+                let node = self
+                    .st
+                    .nodes
+                    .get_mut(node_id)
+                    .expect("the node was inserted");
+                node.status = NodeStatus::Trashed;
+                node.trash_group = trash.trash_group.clone();
+                node.trashed_at_ms = trash.trashed_at_ms;
+                self.set_incoming(node_id, Field::Place);
+                self.set_incoming(node_id, Field::Status);
+                self.mark(node_id, pending_for);
+                return Some(superseded());
+            }
+            Deleted::Trash(_) if content.is_some() => {}
+            _ => self.leave_tombstone(node_id, parent_id, name, &deleted, content.is_some()),
         }
         let intent = self.incoming(Field::Content).intent.clone();
-        let Some((content, made_over)) = content else {
+        let Some((content, made_over)) =
+            content.filter(|_| !self.deleted_knows(&deleted, intent.id))
+        else {
             return Some(superseded());
         };
-        if self.trash_knows(&parent.node_id, intent.id) {
-            return Some(superseded());
-        }
-        let home = self.nearest_live(Some(&parent.node_id));
+        let home = self.nearest_live(Some(&self.id(parent_id)));
         Some(self.conflict_copy(&home, name, content, &content.chunks, made_over, intent))
+    }
+
+    fn leave_tombstone(
+        &mut self,
+        node_id: &str,
+        parent_id: &str,
+        name: &str,
+        deleted: &Deleted,
+        file: bool,
+    ) {
+        let held: BTreeSet<IntentId> = match deleted {
+            Deleted::Trash(trash) => (self.st.trash_held_of(trash.trash_group.as_deref()))
+                .into_iter()
+                .collect(),
+            Deleted::Purged(tombstone) => tombstone.held.clone(),
+        };
+        let fields: &[Field] = if file {
+            &FIELDS
+        } else {
+            &[Field::Place, Field::Status]
+        };
+        let mut intents = NodeIntents::default();
+        for &field in fields {
+            let intent = self.incoming(field).intent.clone();
+            intents.set(
+                field,
+                FieldIntent {
+                    seq: self.ctx.seq,
+                    ..intent
+                },
+            );
+        }
+        let parent_id = self.id(parent_id);
+        self.purged.push(ChangeRecord {
+            change: Some(change_record::Change::Purged(NodePurged {
+                node_id: node_id.to_owned(),
+                last_parent_id: parent_id.clone(),
+                intents: intents.wire(None),
+                held: held.iter().map(|id| id.wire()).collect(),
+            })),
+        });
+        self.st.tombstones.insert(
+            node_id.to_owned(),
+            Tombstone {
+                parent_id: Some(parent_id),
+                name: name.to_owned(),
+                intents,
+                held,
+            },
+        );
     }
 
     fn create_dir(&mut self, op: &CreateDir) -> Result<OpResult, Error> {
@@ -801,15 +902,17 @@ impl<'a> Applier<'a> {
         {
             return Ok(superseded());
         }
+        if let Some(deleted) =
+            self.create_into_deleted(&op.node_id, &op.parent_id, &name, None, pending_for.clone())
+        {
+            return Ok(deleted);
+        }
         let found = match self.parent_row(&op.parent_id)? {
             Ok(found) => found,
             Err(reason) => return Ok(rejected(reason)),
         };
         if found.parent_id.is_none() && is_reserved_at_root(&name) {
             return Ok(rejected("INVALID_NAME"));
-        }
-        if let Some(trashed) = self.create_into_trash(&found, &name, None) {
-            return Ok(trashed);
         }
         let parent = self
             .parent_for(&op.parent_id)?
@@ -871,17 +974,21 @@ impl<'a> Applier<'a> {
         if self.held_elsewhere(&op.node_id, &FIELDS) {
             return Ok(superseded());
         }
+        if let Some(deleted) = self.create_into_deleted(
+            &op.node_id,
+            &op.parent_id,
+            &name,
+            Some((content, made_over.clone())),
+            None,
+        ) {
+            return Ok(deleted);
+        }
         let found = match self.parent_row(&op.parent_id)? {
             Ok(found) => found,
             Err(reason) => return Ok(rejected(reason)),
         };
         if found.parent_id.is_none() && is_reserved_at_root(&name) {
             return Ok(rejected("INVALID_NAME"));
-        }
-        if let Some(trashed) =
-            self.create_into_trash(&found, &name, Some((content, made_over.clone())))
-        {
-            return Ok(trashed);
         }
         let parent = self
             .parent_for(&op.parent_id)?
@@ -1105,12 +1212,6 @@ impl<'a> Applier<'a> {
         if target.kind != NodeKind::Dir {
             return Ok(rejected("PARENT_NOT_DIR"));
         }
-        if self.is_self_or_descendant(&target, &found.node_id) {
-            return Ok(rejected("CYCLE"));
-        }
-        if target.parent_id.is_none() && is_reserved_at_root(&name) {
-            return Ok(rejected("INVALID_NAME"));
-        }
         let live = found.status == NodeStatus::Live;
         let in_place =
             found.parent_id.as_deref() == Some(target.node_id.as_str()) && found.name == name;
@@ -1123,11 +1224,17 @@ impl<'a> Applier<'a> {
             {
                 return Ok(superseded());
             }
-            if (!live || target.status == NodeStatus::Trashed)
-                && self.incoming(Field::Place).intent.carried
+            if (!live && self.incoming(Field::Place).intent.carried)
+                || self.deleted_parent(&op.new_parent_id).is_some()
             {
                 return Ok(superseded());
             }
+        }
+        if self.is_self_or_descendant(&target, &found.node_id) {
+            return Ok(rejected("CYCLE"));
+        }
+        if target.parent_id.is_none() && is_reserved_at_root(&name) {
+            return Ok(rejected("INVALID_NAME"));
         }
         if let Some(from) = &op.from
             && !self.is_at(&found, from, &target)
