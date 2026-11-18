@@ -67,10 +67,12 @@ pub struct Observation {
     /// reports a `Modified` with the content once a read succeeds, unless a later change to the path replaces it
     /// (design §5.8).
     pub busy: Vec<PathBuf>,
-    /// Paths where the disk may hold what no observation has reported yet: scopes the scans could not settle, as a
-    /// removal they could not confirm or the search below left-out entries has not decided, and files whose content
-    /// is still to be read. Every batch lists all of them, and a batch is returned when they change.
+    /// The scopes the scans could not settle, as a removal they could not confirm or the search below left-out
+    /// entries has not decided. Every batch lists all of them.
     pub pending: Vec<PathBuf>,
+    /// The files that started (`true`) or stopped (`false`) waiting for their content to be read since the
+    /// previous batch.
+    pub waiting: BTreeMap<PathBuf, bool>,
     /// The folders whose `.koiignore` file the scans of this batch found changed, each with the rules it holds now.
     /// The engine takes them before the changes of the batch. The first batch of an observer follows its scan of the
     /// whole tree and lists every rules file there is, also when nothing else changed.
@@ -166,7 +168,6 @@ pub struct FsObserver {
     settling: bool,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
-    pending: Vec<PathBuf>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -194,13 +195,19 @@ struct Unread {
     files: BTreeMap<PathBuf, (Retry, u64)>,
     due: BTreeSet<(Instant, PathBuf)>,
     bytes: u64,
+    waiting: BTreeMap<PathBuf, bool>,
 }
 
 impl Unread {
     fn insert(&mut self, path: PathBuf, retry: Retry, size: u64) {
-        if let Some((old, old_size)) = self.files.insert(path.clone(), (retry, size)) {
-            self.due.remove(&(old.due, path.clone()));
-            self.bytes -= old_size;
+        match self.files.insert(path.clone(), (retry, size)) {
+            Some((old, old_size)) => {
+                self.due.remove(&(old.due, path.clone()));
+                self.bytes -= old_size;
+            }
+            None => {
+                self.waiting.insert(path.clone(), true);
+            }
         }
         self.bytes += size;
         self.due.insert((retry.due, path));
@@ -210,6 +217,7 @@ impl Unread {
         let (old, size) = self.files.remove(path)?;
         self.due.remove(&(old.due, path.to_path_buf()));
         self.bytes -= size;
+        self.waiting.insert(path.to_path_buf(), false);
         Some(old)
     }
 
@@ -372,7 +380,6 @@ impl FsObserver {
             first: true,
             settling: true,
             reset: false,
-            pending: Vec::new(),
             unread: Unread::default(),
             stopped,
             progress,
@@ -772,11 +779,6 @@ impl Observer for FsObserver {
             );
             self.settling = !poll.pending.is_empty();
         }
-        let pending: Vec<PathBuf> = (poll.pending.into_iter())
-            .chain(self.unread.files.keys().cloned())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
         if !first
             && !answers
             && !observed
@@ -785,13 +787,11 @@ impl Observer for FsObserver {
             && poll.read.is_empty()
             && poll.settled.is_empty()
             && rules.is_empty()
-            && pending == self.pending
         {
             return Ok(None);
         }
         self.first &= !first;
         self.reset &= !answers;
-        self.pending.clone_from(&pending);
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
         let entries = &self.watcher.snapshot().entries;
         let read = (changes.iter()).filter_map(|change| match change {
@@ -823,7 +823,8 @@ impl Observer for FsObserver {
             read: poll.read,
             scanned: self.scanned,
             busy: reads.busy,
-            pending,
+            pending: poll.pending,
+            waiting: std::mem::take(&mut self.unread.waiting),
             rules,
             all_rules: first,
             mounts: (self.watcher.snapshot().entries.iter())

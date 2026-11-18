@@ -741,11 +741,11 @@ impl Engine {
 
     /// Gives the trees the folders a scan listed, each at the path where it listed it, and the paths where the disk
     /// may hold what no scan has reported yet ([`Pending`]).
-    pub fn listed(&mut self, listed: &[PathBuf], pending: &[PathBuf]) {
+    pub fn listed(&mut self, listed: &[PathBuf], pending: Pending) {
         let listed: Vec<NodeId> = (listed.iter())
             .filter_map(|dir| local_at(&self.trees, dir))
             .collect();
-        self.trees.listed(&listed, pending_paths(pending));
+        self.trees.listed(&listed, pending);
     }
 
     /// The paths of the folders a scan saw moved here that a scan must list again ([`Trees::take_relist`]).
@@ -755,10 +755,10 @@ impl Engine {
     }
 
     /// Whether [`Engine::listed`] would change what the trees hold.
-    pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &[PathBuf]) -> bool {
+    pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {
         (self.trees).sees_unobserved(
             listed.iter().filter_map(|dir| local_at(&self.trees, dir)),
-            &pending_paths(pending),
+            pending,
         )
     }
 
@@ -1383,15 +1383,20 @@ fn path<N: Node>(tree: &Tree<N>, id: &str) -> String {
     names.join("/")
 }
 
-/// The placed node of L at `path`, or the root for the empty path.
-fn pending_paths(paths: &[PathBuf]) -> Pending {
+/// The [`Pending`] of the scopes no scan has settled and of the files that started or stopped waiting to be read.
+pub(crate) fn pending(scopes: &[PathBuf], waiting: &BTreeMap<PathBuf, bool>) -> Pending {
     Pending::new(
-        paths
+        scopes
             .iter()
             .map(|path| path.iter().map(|name| name.to_string_lossy())),
     )
+    .waiting(
+        (waiting.iter())
+            .map(|(path, waits)| (path.iter().map(|name| name.to_string_lossy()), *waits)),
+    )
 }
 
+/// The placed node of L at `path`, or the root for the empty path.
 fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
     let mut current = trees.local().root.clone();
     for component in path.components() {
@@ -4295,7 +4300,7 @@ mod tests {
                 .collect();
             engine.observe(&batch, 0);
             engine.read(&rescan.read, &rescan.unreadable);
-            engine.listed(&rescan.read, &rescan.unsettled);
+            engine.listed(&rescan.read, pending(&rescan.unsettled, &BTreeMap::new()));
             engine.trees.settle(&Default::default());
             rescan.unsettled
         }

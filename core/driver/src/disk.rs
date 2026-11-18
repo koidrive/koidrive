@@ -65,7 +65,7 @@ use koidrive_store::{Link, Store, Tx};
 use prost::Message;
 use rustix::fs::{Mode, OFlags};
 
-use crate::engine::{Engine, file_id, file_identity};
+use crate::engine::{Engine, file_id, file_identity, pending};
 use crate::failures::{self, Failure};
 use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
@@ -502,7 +502,7 @@ impl Disk {
                 &outcomes,
                 true,
                 &link.space_id,
-                &disk.unscanned.all(),
+                pending(&disk.unscanned.all(), &BTreeMap::new()),
                 engine,
                 store,
                 hook,
@@ -668,12 +668,12 @@ impl Disk {
                 .effects
                 .extend(scopes_of_batch.iter().cloned());
         }
-        let pending = self.unscanned.all();
+        let pending = pending(&self.unscanned.all(), &BTreeMap::new());
         let settled = acknowledge(
             &outcomes,
             false,
             &self.space_id,
-            &pending,
+            pending,
             engine,
             store,
             hook,
@@ -746,6 +746,7 @@ impl Disk {
                 "dropped an observation older than the effects the folder remembers, and reset the whole folder"
             );
             engine.read(&observation.read, &observation.unreadable);
+            engine.listed(&[], pending(&self.unscanned.all(), &observation.waiting));
             self.sections.request(engine.resets([PathBuf::new()]));
             return Ok(());
         }
@@ -792,7 +793,7 @@ impl Disk {
         self.unscanned.batch = (observation.pending.into_iter())
             .chain(dropped.iter().cloned())
             .collect();
-        let pending = self.unscanned.all();
+        let pending = pending(&self.unscanned.all(), &observation.waiting);
         if !changes.is_empty()
             || mounts.is_some()
             || !ctimes.is_empty()
@@ -808,7 +809,7 @@ impl Disk {
                 }
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
-                engine.listed(&listed, &pending);
+                engine.listed(&listed, pending);
                 engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)
             })?;
@@ -1635,7 +1636,7 @@ fn acknowledge(
     outcomes: &[(&EffectRecord, Outcome)],
     retry: bool,
     space_id: &str,
-    pending: &[PathBuf],
+    pending: koidrive_engine::classify::Pending,
     engine: &mut Engine,
     store: &mut Store,
     hook: &mut Hook,

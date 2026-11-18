@@ -378,39 +378,82 @@ struct Keeping {
 }
 
 /// The paths, from the root, where the disk may hold what no scan has reported yet: removals a scan has not
-/// settled, files whose content is not read yet, and folders an effect moved that no scan has listed since. A node
-/// at or below one stays unobserved and is not released until a scan settles it (section 5.10).
+/// settled, folders an effect moved that no scan has listed since, and files whose content is not read yet. A node
+/// at or below one stays unobserved and is not released until a scan settles it (section 5.10). The scopes come
+/// whole with every batch, and the files as the ones that started or stopped waiting since the last batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Pending(BTreeSet<Vec<String>>);
+pub struct Pending {
+    scopes: BTreeSet<Vec<String>>,
+    files: Vec<(Vec<String>, bool)>,
+}
 
 impl Pending {
-    pub fn new<P, S>(paths: impl IntoIterator<Item = P>) -> Self
+    pub fn new<P, S>(scopes: impl IntoIterator<Item = P>) -> Self
     where
         P: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Pending(
-            (paths.into_iter())
-                .map(|path| {
-                    path.into_iter()
-                        .map(|name| name_key(name.as_ref()))
-                        .collect()
-                })
-                .collect(),
-        )
+        Pending {
+            scopes: scopes.into_iter().map(keys).collect(),
+            files: Vec::new(),
+        }
+    }
+
+    pub fn waiting<P, S>(mut self, files: impl IntoIterator<Item = (P, bool)>) -> Self
+    where
+        P: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.files = (files.into_iter())
+            .map(|(path, waits)| (keys(path), waits))
+            .collect();
+        self
+    }
+}
+
+fn keys<S: AsRef<str>>(path: impl IntoIterator<Item = S>) -> Vec<String> {
+    path.into_iter()
+        .map(|name| name_key(name.as_ref()))
+        .collect()
+}
+
+#[derive(Clone, Debug, Default)]
+struct Unsettled {
+    scopes: BTreeSet<Vec<String>>,
+    files: BTreeSet<Vec<String>>,
+}
+
+impl Unsettled {
+    fn changed_by(&self, pending: &Pending) -> bool {
+        self.scopes != pending.scopes
+            || (pending.files.iter()).any(|(file, waits)| self.files.contains(file) != *waits)
+    }
+
+    fn take(&mut self, pending: Pending) -> bool {
+        let changed = self.changed_by(&pending);
+        self.scopes = pending.scopes;
+        for (file, waits) in pending.files {
+            match waits {
+                true => self.files.insert(file),
+                false => self.files.remove(&file),
+            };
+        }
+        changed
     }
 
     fn holds(&self, path: Option<(Vec<&str>, Kind)>) -> bool {
-        let Some((names, _)) = path.filter(|_| !self.0.is_empty()) else {
+        let Some((names, _)) = path.filter(|_| !self.scopes.is_empty() || !self.files.is_empty())
+        else {
             return false;
         };
         let mut keys = Vec::with_capacity(names.len());
-        if self.0.contains(&keys) {
+        let held = |keys: &Vec<String>| self.scopes.contains(keys) || self.files.contains(keys);
+        if held(&keys) {
             return true;
         }
         names.into_iter().any(|name| {
             keys.push(name_key(name));
-            self.0.contains(&keys)
+            held(&keys)
         })
     }
 }
@@ -536,7 +579,7 @@ pub struct Trees {
     gone_tops: BTreeSet<NodeId>,
     /// Whether anything changed since the last settle looked for vanished copies.
     release_due: bool,
-    pending: Pending,
+    pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
 }
 
@@ -638,7 +681,7 @@ impl Trees {
             copies_gone: BTreeSet::new(),
             gone_tops: BTreeSet::new(),
             release_due: true,
-            pending: Pending::default(),
+            pending: Unsettled::default(),
             held_for_scan: BTreeSet::new(),
         }
     }
@@ -3002,8 +3045,7 @@ impl Trees {
     /// settled yet: what L holds in them at an included position is observed, except at or below a path of
     /// `pending` (section 5.10).
     pub fn listed(&mut self, folders: &[NodeId], pending: Pending) {
-        if self.pending != pending {
-            self.pending = pending;
+        if self.pending.take(pending) {
             self.release_due = true;
         }
         if self.unobserved.is_empty() {
@@ -3013,7 +3055,7 @@ impl Trees {
             if self.awaits_relisting(folder) {
                 continue;
             }
-            for id in self.seen_in(folder, &self.pending) {
+            for id in self.seen_in(folder) {
                 self.clear_unobserved(&id);
             }
         }
@@ -3134,10 +3176,10 @@ impl Trees {
         folders: impl IntoIterator<Item = NodeId>,
         pending: &Pending,
     ) -> bool {
-        self.pending != *pending
+        self.pending.changed_by(pending)
             || !self.unobserved.is_empty()
                 && (folders.into_iter()).any(|folder| {
-                    !self.awaits_relisting(&folder) && !self.seen_in(&folder, pending).is_empty()
+                    !self.awaits_relisting(&folder) && !self.seen_in(&folder).is_empty()
                 })
     }
 
@@ -3161,14 +3203,14 @@ impl Trees {
         false
     }
 
-    fn seen_in(&self, folder: &NodeId, pending: &Pending) -> Vec<NodeId> {
+    fn seen_in(&self, folder: &NodeId) -> Vec<NodeId> {
         let mut scopes = HashMap::new();
         (std::iter::once(folder).chain(self.l_names.children(folder)))
             .filter(|id| {
                 self.unobserved.contains(*id)
                     && !self.recorded_local(id)
                     && self.placed_included(id, &mut scopes)
-                    && !pending.holds(path(&self.l, id))
+                    && !self.pending.holds(path(&self.l, id))
             })
             .cloned()
             .collect()
