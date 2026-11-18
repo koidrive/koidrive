@@ -560,6 +560,51 @@ fn rewinds_converge_from_the_saved_gun_551_cases() {
     );
 }
 
+fn on_coarse_volumes_from_the_saved_gun_1012_cases(
+    test: &'static str,
+    run: impl Fn(&[Precision], &[Vec<(usize, Step)>]) -> Result<World, Failure>,
+) {
+    let mut runner = TestRunner::new(ProptestConfig {
+        test_name: Some(test),
+        ..koidrive_test_support::regression_config(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/gun-1012.proptest-regressions"
+            ),
+            0,
+        )
+    });
+    let result = runner.run(
+        &(volumes(), phases(Losses::RestoresAndRewinds)),
+        |(volumes, phases)| {
+            run(&volumes, &phases)
+                .map(drop)
+                .map_err(|failure| TestCaseError::fail(failure.to_string()))
+        },
+    );
+    if let Err(error) = result {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore = "after restores on coarse volumes, one write is in two files on the server, or a restore took a write a disk held (GUN-1012)"]
+fn coarse_volumes_converge_from_the_saved_gun_1012_cases() {
+    on_coarse_volumes_from_the_saved_gun_1012_cases(
+        test_name!(coarse_volumes_converge_from_the_saved_gun_1012_cases),
+        converge_on,
+    );
+}
+
+#[test]
+#[ignore = "after restores on coarse volumes, a restore took a write a disk held and the server does not hold it again (GUN-1012)"]
+fn coarse_volumes_lose_no_write_from_the_saved_gun_1012_cases() {
+    on_coarse_volumes_from_the_saved_gun_1012_cases(
+        test_name!(coarse_volumes_lose_no_write_from_the_saved_gun_1012_cases),
+        keep_on,
+    );
+}
+
 fn two_rewinds_around_a_rolled_back_store() -> Vec<Vec<(usize, Step)>> {
     let act = |kind, target, parent, name| {
         Step::User(Action {
