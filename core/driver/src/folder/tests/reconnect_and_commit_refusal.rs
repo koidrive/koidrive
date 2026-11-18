@@ -51,7 +51,14 @@ fn the_first_session_that_announces_field_intents_reads_the_tree_again_once() {
         a.scan_until(|a| a.folder.scanned);
         ran.push(a.run(&mut remote));
     }
-    assert_eq!(ran, [vec!["subscribe"], vec!["list", "subscribe"], vec!["subscribe"]]);
+    assert_eq!(
+        ran,
+        [
+            vec!["subscribe"],
+            vec!["list", "subscribe"],
+            vec!["subscribe"]
+        ]
+    );
 }
 
 #[test]
