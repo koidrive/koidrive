@@ -127,8 +127,7 @@ by = ["koidrive-fs"]
 [[read]]
 globs = [
   "core/engine/tests/attribution.rs",
-  "core/engine/tests/attribution/model.rs",
-  "core/engine/tests/attribution/authors.rs",
+  "core/engine/tests/attribution/**",
 ]
 by = ["koidrive-engine"]
 
