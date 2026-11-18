@@ -5,6 +5,7 @@ from pathlib import Path
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -336,17 +337,64 @@ class HeavyTests(unittest.TestCase):
                     self.assertIn("arg=a filter", output)
                     self.assertIn("arg=koidrive-sim", output)
 
-    def test_output_is_shown_only_when_proptest_verbose_is_set(self):
-        lines = [line.strip() for line in self.workflow.splitlines()]
-        allowed = next(line for line in lines if line.startswith("allowed='"))
-        selection = [line for line in lines if line.startswith(("test_args=", '[ -z "$FILTER" ]', '[ "$IGNORED"'))
-                     or "PROPTEST_VERBOSE:-" in line]
-        script = "\n".join([allowed, "[[ PROPTEST_VERBOSE =~ $allowed ]]", *selection, 'printf "arg=%s\\n" "${test_args[@]}"'])
-        for verbose, expected in (("", ["arg=a"]), ("2", ["arg=a", "arg=--nocapture"])):
-            with self.subTest(verbose=verbose):
-                prefix = f"FILTER=a; IGNORED=false; {'PROPTEST_VERBOSE=' + verbose + '; ' if verbose else ''}"
-                output = subprocess.check_output(["bash", "-eu", "-c", prefix + script], text=True)
-                self.assertEqual(output.splitlines(), expected)
+    def step(self, name):
+        block = self.workflow.split(f"\n      - name: {name}\n", 1)[1]
+        lines = block.split("        run: |\n", 1)[1].splitlines()
+        return "\n".join(line[10:] for line in itertools.takewhile(lambda line: line.startswith(" " * 10) or not line, lines))
+
+    def check_env(self, extra_env):
+        environment = dict(os.environ, MODE="cargo", PARALLEL="1", CRATE="koidrive-chunk", TEST="", FILTER="", CASES="",
+                           REPEAT="1", SEED="", FEATURES="", IGNORED="false", RELEASE="false", EXTRA_ENV=extra_env, REF="", OS="ubuntu")
+        return subprocess.run(["bash", "-eo", "pipefail", "-c", self.step("Check the inputs")],
+                              env=environment, capture_output=True, text=True)
+
+    def run_tests(self, extra_env, output, code=0):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bin").mkdir()
+            (root / "bin/cargo").write_text(f'#!/bin/sh\nprintf "arg=%s\\n" "$@" > "{root}/argv"\ncat "{root}/output"\nexit {code}\n')
+            (root / "bin/git").write_text("#!/bin/sh\nexit 0\n")
+            for stub in ("cargo", "git"):
+                (root / "bin" / stub).chmod(0o755)
+            (root / "output").write_text(output)
+            (root / "temp").mkdir()
+            environment = dict(os.environ, PATH=f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}", RUNNER_TEMP=str(root / "temp"),
+                               RUNNER_OS="Linux", GITHUB_STEP_SUMMARY=str(root / "summary"), SHA="abc", SEED_BASE="17",
+                               CRATE="koidrive-chunk", TEST="", FILTER="", CASES="", REPEAT="1", FEATURES="", IGNORED="false",
+                               RELEASE="false", EXTRA_ENV=extra_env)
+            result = subprocess.run(["bash", "-eo", "pipefail", "-c", self.step("Run the tests")],
+                                    env=environment, capture_output=True, text=True)
+            return (result.returncode, (root / "argv").read_text().splitlines(),
+                    (root / "temp/heavy-tests/failed-tests.txt").read_text().splitlines())
+
+    def test_proptest_verbose_is_the_only_new_name_and_takes_a_level(self):
+        self.assertEqual(self.check_env("PROPTEST_VERBOSE=2 RUST_LOG=debug").returncode, 0)
+        for extra_env in ("PROPTEST_VERBOSE=x", "PROPTEST_VERBOSE=", "PROPTEST_VERBOSE=12", "PROPTEST_CASES=0"):
+            with self.subTest(extra_env=extra_env):
+                self.assertNotEqual(self.check_env(extra_env).returncode, 0)
+
+    def test_output_capture_is_turned_off_only_for_a_nonzero_proptest_verbose(self):
+        passing = "     Running tests/chunking.rs (target/debug/deps/chunking-0)\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        for extra_env, expected in (("", []), ("RUST_LOG=debug", []), ("PROPTEST_VERBOSE=0", []),
+                                    ("PROPTEST_VERBOSE=2", ["arg=--nocapture"])):
+            with self.subTest(extra_env=extra_env):
+                code, argv, _ = self.run_tests(extra_env, passing)
+                self.assertEqual(code, 0)
+                self.assertEqual(argv[argv.index("arg=--") + 1:], expected)
+
+    def test_failed_tests_come_from_the_closing_failures_list(self):
+        failing = ("     Running tests/chunking.rs (target/debug/deps/chunking-0)\n"
+                   "test a::first ... Test case passed\nFAILED\n"
+                   "test second ... ok\ntest third ... FAILED\n\n"
+                   "failures:\n\n---- third stdout ----\n    indented panic text\n\n"
+                   "failures:\n    a::first\n    third\n\n"
+                   "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out\n")
+        for extra_env in ("", "PROPTEST_VERBOSE=2 RUST_TEST_THREADS=1"):
+            with self.subTest(extra_env=extra_env):
+                code, _, failed = self.run_tests(extra_env, failing, code=101)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(failed, ["a::first", "third"])
+
 
 
 TRIAGE_SPEC = importlib.util.spec_from_file_location("triage", ROOT / "scripts/triage-battery.py")

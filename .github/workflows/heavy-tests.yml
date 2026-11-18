@@ -136,6 +136,8 @@ jobs:
               errors+=("env takes NAME=value pairs, not '$pair'.")
             elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
               errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS, RUST_MIN_STACK or PROPTEST_VERBOSE, and the cases input sets the case budget.")
+            elif [[ "$pair" == PROPTEST_VERBOSE=* && ! "$pair" =~ ^PROPTEST_VERBOSE=[0-9]$ ]]; then
+              errors+=("PROPTEST_VERBOSE takes a level from 0 to 9, such as 2, got '$pair'.")
             fi
           done
           for error in "${errors[@]}"; do echo "::error::$error"; done
@@ -252,7 +254,7 @@ jobs:
           test_args=()
           [ -z "$FILTER" ] || test_args+=("$FILTER")
           [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
-          [ -z "${PROPTEST_VERBOSE:-}" ] || test_args+=(--nocapture)
+          [ "${PROPTEST_VERBOSE:-0}" = 0 ] || test_args+=(--nocapture)
           unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
           [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
@@ -285,7 +287,7 @@ jobs:
             read -r passed failed ignored < <(sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored.*/\1 \2 \3/p' <<< "$plain" | awk '{ p += $1; f += $2; i += $3 } END { print p + 0, f + 0, i + 0 }')
             binaries=$(grep -cE '^ *(Running |Doc-tests )' <<< "$plain" || true)
             results=$(grep -cE '^test result: ' <<< "$plain" || true)
-            sed -nE 's/^test (.+) \.\.\. FAILED$/\1/p' <<< "$plain" >> "$out/failed-tests.txt"
+            awk '/^failures:$/ { list = 1; next } list && /^    [^ ]/ { print substr($0, 5); next } { list = 0 }' <<< "$plain" >> "$out/failed-tests.txt"
             git status --porcelain --untracked-files=all -- '*.proptest-regressions' '*/proptest-regressions/*.txt' '*.cases/*.txt' | cut -c4- | while read -r file; do
               mkdir -p "$out/regressions/run-$run/$(dirname "$file")"
               cp "$file" "$out/regressions/run-$run/$file"
