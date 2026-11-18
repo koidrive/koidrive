@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use std::time::{Duration, Instant};
 
+use koidrive_test_support::{Sandbox, sandboxed};
 use serde_json::Value;
 
 fn asset() -> String {
@@ -82,11 +83,11 @@ fn executable(path: &Path, script: &str) {
 }
 
 fn koi(home: &Path, github: &GitHub, args: &[&str]) -> Command {
-    koi_at(Path::new(env!("CARGO_BIN_EXE_koi")), home, github, args)
+    koi_at(Path::new(process::KOI), home, github, args)
 }
 
 fn koi_at(binary: &Path, home: &Path, github: &GitHub, args: &[&str]) -> Command {
-    let mut command = Command::new(binary);
+    let mut command = sandboxed(binary, home);
     command
         .args(args)
         .env("HOME", home)
@@ -144,7 +145,7 @@ const REPORT: &str = r#"{"schema_version":1,"command":"_reconcile","outcome":"ok
 fn copy_koi(path: &Path) -> PathBuf {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let status = Command::new("/bin/cp")
-        .arg(env!("CARGO_BIN_EXE_koi"))
+        .arg(process::KOI)
         .arg(path)
         .status()
         .unwrap();
@@ -252,7 +253,7 @@ const CHECKS: &str =
     "echo 'Signature verified for SHA256SUMS'\necho 'SHA256 verified for koidrive.tar.gz'\n";
 
 fn update_text(said: &str, args: &[&str], report: &str) -> Option<(Output, String)> {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let (binary, installer) = script_install_saying(home.path(), "99.0.0", report, said);
     let output = koi_at(&binary, home.path(), &github, args)

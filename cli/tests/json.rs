@@ -2,24 +2,28 @@
 
 use std::process::{Command, Output, Stdio};
 
+use koidrive_test_support::Sandbox;
 use serde_json::Value;
 
 mod schema;
 
+#[path = "support/process.rs"]
+mod process;
+
 struct Profile {
-    home: tempfile::TempDir,
+    home: Sandbox,
 }
 
 impl Profile {
     fn new() -> Self {
         Profile {
-            home: tempfile::tempdir().unwrap(),
+            home: Sandbox::new(),
         }
     }
 
     fn command(&self, args: &[&str]) -> Command {
         let home = self.home.path();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let mut command = process::koi(home);
         command
             .args(args)
             .current_dir(home)

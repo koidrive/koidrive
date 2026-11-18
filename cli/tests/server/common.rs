@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use koidrive_test_support::Sandbox;
 
 use koidrive_chunk::{ChunkerConfig, chunk_hash};
 
@@ -130,7 +131,7 @@ fn uuidv7() -> String {
 /// A machine's home for the device under test, with its XDG directories. Its config.toml turns the background service
 /// off, so that the tests run the daemon themselves and never touch the service manager of the machine running them.
 struct Machine {
-    home: tempfile::TempDir,
+    home: Sandbox,
     /// The background service is on, and the device uses the machine's own runtime directory, where its service
     /// manager listens.
     service: bool,
@@ -140,9 +141,9 @@ struct Machine {
 impl Machine {
     fn new() -> Self {
         let machine = Machine {
-            home: tempfile::tempdir().unwrap(),
+            home: Sandbox::new(),
             service: false,
-            koi: PathBuf::from(env!("CARGO_BIN_EXE_koi")),
+            koi: PathBuf::from(process::KOI),
         };
         machine.configure("");
         machine
@@ -151,9 +152,9 @@ impl Machine {
     #[cfg(target_os = "linux")]
     fn with_service() -> Self {
         Machine {
-            home: tempfile::tempdir().unwrap(),
+            home: Sandbox::new(),
             service: true,
-            koi: PathBuf::from(env!("CARGO_BIN_EXE_koi")),
+            koi: PathBuf::from(process::KOI),
         }
     }
 
@@ -194,7 +195,7 @@ impl Machine {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.koi);
+        let mut command = koidrive_test_support::sandboxed(&self.koi, self.home.path());
         command
             .args(args)
             .current_dir(self.home.path())

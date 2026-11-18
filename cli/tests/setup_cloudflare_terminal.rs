@@ -20,6 +20,7 @@ use koidrive_driver::{Credential, Driver, FolderState, FolderStatus, Paths};
 use koidrive_proto::v1::{
     AccessToken, CreateSpaceRequest, DeviceCredentials, ServerInfo, SpaceInfo, SpaceList,
 };
+use koidrive_test_support::{Sandbox, sandboxed};
 use prost::Message;
 use serde_json::{Value, json};
 use url::Url;
@@ -28,6 +29,9 @@ use url::Url;
 mod terminal;
 
 use terminal::Terminal;
+
+#[path = "support/process.rs"]
+mod process;
 
 const ROUTE: &str = "How do you want to connect?";
 const SPACES: &str = "Which shared folder should sync here?";
@@ -95,7 +99,7 @@ struct State {
 }
 
 struct Home {
-    dir: tempfile::TempDir,
+    dir: Sandbox,
     base: Url,
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
@@ -118,7 +122,7 @@ impl Drop for Running {
 
 impl Home {
     fn new(scripts: &[&str], spaces: &[&str]) -> Self {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let dir = Sandbox::in_dir(Path::new("/tmp"));
         let path = dir.path();
         let state_dir = path.join("state/koidrive");
         fs::create_dir_all(&state_dir).unwrap();
@@ -271,7 +275,7 @@ esac
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let mut command = process::koi(self.path());
         command
             .current_dir(self.path())
             .env("HOME", self.path())
@@ -1315,12 +1319,14 @@ fn uninstall_with_unreadable_credentials_only_waits_for_a_present_service() {
                     "{text}"
                 );
                 assert_eq!(fs::read_to_string(&path).unwrap(), before);
-                let mut stop =
-                    Command::new(home.path().join("bin").join(if cfg!(target_os = "macos") {
+                let mut stop = sandboxed(
+                    home.path().join("bin").join(if cfg!(target_os = "macos") {
                         "launchctl"
                     } else {
                         "systemctl"
-                    }));
+                    }),
+                    home.path(),
+                );
                 stop.env("HOME", home.path());
                 if cfg!(target_os = "macos") {
                     stop.args([

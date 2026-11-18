@@ -8,15 +8,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use std::os::unix::net::UnixListener;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use std::time::{Duration, Instant};
 
+use koidrive_test_support::{Sandbox, sandboxed};
 use serde_json::{Value, json};
 
 use prost::Message;
 
-struct Profile(tempfile::TempDir);
+struct Profile(Sandbox);
 
 struct Fixture(Option<std::thread::JoinHandle<()>>);
 
@@ -43,7 +44,7 @@ struct Capture {
 
 impl Profile {
     fn new() -> Self {
-        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let home = Sandbox::in_dir(std::path::Path::new("/tmp"));
         fs::create_dir_all(home.path().join("config/koidrive")).unwrap();
         fs::write(
             home.path().join("config/koidrive/config.toml"),
@@ -131,7 +132,7 @@ impl Profile {
         vars: &[(&str, &str)],
         width: u16,
     ) -> Capture {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let mut command = process::koi(self.0.path());
         command
             .args(args)
             .current_dir(self.0.path())

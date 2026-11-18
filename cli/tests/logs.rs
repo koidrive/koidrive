@@ -3,12 +3,17 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
+use koidrive_test_support::Sandbox;
+
 mod schema;
+
+#[path = "support/process.rs"]
+mod process;
 
 #[test]
 fn logs_to_a_pipe_are_plain_text() {
-    let home = tempfile::tempdir().unwrap();
-    let mut daemon = Command::new(env!("CARGO_BIN_EXE_koi"))
+    let home = Sandbox::new();
+    let mut daemon = process::koi(home.path())
         .arg("_daemon")
         .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path().join("config"))
@@ -32,9 +37,9 @@ fn logs_to_a_pipe_are_plain_text() {
 
 #[test]
 fn the_daemon_under_json_prints_its_lifecycle_as_json_lines() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let daemon = |json: bool| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let mut command = process::koi(home.path());
         command
             .arg("_daemon")
             .env("HOME", home.path())
@@ -122,9 +127,9 @@ fn the_daemon_under_json_prints_its_lifecycle_as_json_lines() {
 
 #[test]
 fn profiles_that_share_a_runtime_directory_run_daemons_side_by_side() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let start = |profile: &str| {
-        let mut daemon = Command::new(env!("CARGO_BIN_EXE_koi"))
+        let mut daemon = process::koi(home.path())
             .args(["_daemon", "--json"])
             .env("HOME", home.path())
             .env("XDG_CONFIG_HOME", home.path().join(profile).join("config"))

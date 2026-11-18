@@ -90,7 +90,7 @@ fn summary_regression_space_link_hints_are_copyable_and_terminal_safe() {
                     .map(|(_, word)| word)
             })
             .unwrap();
-        let parsed = Command::new("/bin/sh")
+        let parsed = sandboxed("/bin/sh", profile.0.path())
             .args(["-c", &format!("printf '%s' {command}")])
             .output()
             .unwrap();

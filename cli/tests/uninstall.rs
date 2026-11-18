@@ -4,12 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use koidrive_test_support::Sandbox;
 use serde_json::{Value, json};
 
 mod schema;
 
 #[path = "support/executable.rs"]
 mod fixture;
+#[path = "support/process.rs"]
+mod process;
 
 #[path = "support/terminal.rs"]
 mod terminal;
@@ -19,15 +22,15 @@ use terminal::Terminal;
 const PATH_LINE: &str = "; : 'koidrive PATH'";
 
 struct Machine {
-    _dir: tempfile::TempDir,
+    sandbox: Sandbox,
     home: PathBuf,
 }
 
 impl Machine {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let home = fs::canonicalize(dir.path()).unwrap();
-        Machine { _dir: dir, home }
+        let sandbox = Sandbox::new();
+        let home = fs::canonicalize(sandbox.path()).unwrap();
+        Machine { sandbox, home }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -49,7 +52,7 @@ impl Machine {
         let path = self.path(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let status = Command::new("/bin/cp")
-            .arg(env!("CARGO_BIN_EXE_koi"))
+            .arg(process::KOI)
             .arg(&path)
             .status()
             .unwrap();
@@ -78,7 +81,7 @@ impl Machine {
     }
 
     fn command(&self, koi: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new(koi);
+        let mut command = koidrive_test_support::sandboxed(koi, &self.home);
         command
             .args(args)
             .current_dir(&self.home)
@@ -332,7 +335,7 @@ fn a_profile_whose_last_sign_out_was_not_confirmed_names_the_device_to_revoke() 
 #[test]
 fn a_linked_state_folder_koidrive_did_not_make_keeps_the_users_files() {
     let machine = Machine::new();
-    let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
+    let koi = Path::new(process::KOI);
     let photo = machine.write("Backup/wedding.jpg", "jpg");
     fs::create_dir_all(machine.path("st")).unwrap();
     std::os::unix::fs::symlink(machine.path("Backup"), machine.path("st/koidrive")).unwrap();
@@ -384,7 +387,7 @@ fn a_state_folder_left_with_one_staged_file_is_removed() {
                 .any(|kept| kept["kind"] == "unrecognized"),
             "{name}: {envelope:#}"
         );
-        let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+        let (output, envelope) = machine.uninstall(Path::new(process::KOI));
         assert!(output.status.success(), "{name}: {envelope:#}");
         assert_eq!(
             removed(&envelope),
@@ -429,7 +432,7 @@ fn a_folder_with_only_subfolders_of_the_same_names_is_kept_whole() {
 #[test]
 fn a_state_folder_of_the_users_keeps_their_files_in_subfolders_named_like_koidrives() {
     let machine = Machine::new();
-    let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
+    let koi = Path::new(process::KOI);
     let ours = [
         format!("requests/{}.json", "ab".repeat(32)),
         "telemetry/settings.json".to_owned(),
@@ -941,7 +944,7 @@ fn a_link_to_a_file_keeps_the_file_and_the_link() {
             "{link}: {envelope:#}"
         );
     }
-    let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+    let (output, envelope) = machine.uninstall(Path::new(process::KOI));
     assert!(output.status.success(), "{envelope:#}");
 }
 
@@ -1035,7 +1038,7 @@ fn an_installer_copy_leaves_nothing_of_koidrive_and_every_file_of_the_user() {
         "{envelope:#}"
     );
 
-    let (output, again) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+    let (output, again) = machine.uninstall(Path::new(process::KOI));
     assert!(output.status.success(), "{again:#}");
     assert_eq!(again["outcome"], "unchanged", "{again:#}");
     assert_eq!(again["data"]["removed"], json!([]), "{again:#}");
@@ -1109,7 +1112,7 @@ fn a_cask_app_outside_the_applications_folders_is_handed_to_homebrew() {
         ),
     );
 
-    let (output, envelope) = machine.uninstall(Path::new(env!("CARGO_BIN_EXE_koi")));
+    let (output, envelope) = machine.uninstall(Path::new(process::KOI));
 
     assert!(output.status.success(), "{envelope:#}");
     assert_eq!(
@@ -1331,6 +1334,7 @@ fn the_launch_agent_of_a_temporary_profile_is_stopped_and_removed() {
         ("XDG_CONFIG_HOME", machine.path("config")),
         ("XDG_STATE_HOME", machine.path("state")),
         ("XDG_RUNTIME_DIR", machine.path("run")),
+        (koidrive_test_support::LIFELINE, machine.sandbox.lifeline().to_path_buf()),
     ]
     .iter()
     .map(|(key, value)| format!("<key>{key}</key><string>{}</string>", value.display()))

@@ -15,3 +15,6 @@ mod fixture;
 mod terminal;
 
 use terminal::Terminal;
+
+#[path = "support/process.rs"]
+mod process;

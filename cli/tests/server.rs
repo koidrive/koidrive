@@ -17,3 +17,6 @@ mod schema;
 #[cfg(target_os = "linux")]
 #[path = "support/executable.rs"]
 mod fixture;
+
+#[path = "support/process.rs"]
+mod process;

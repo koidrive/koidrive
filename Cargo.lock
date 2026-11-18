@@ -1451,6 +1451,7 @@ dependencies = [
  "koidrive-proto",
  "koidrive-store",
  "koidrive-telemetry",
+ "koidrive-test-support",
  "prost",
  "reqwest",
  "rustix",

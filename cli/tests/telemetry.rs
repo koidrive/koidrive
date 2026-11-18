@@ -7,6 +7,11 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use koidrive_test_support::Sandbox;
+
+#[path = "support/process.rs"]
+mod process;
+
 #[test]
 fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     use koidrive_telemetry::{
@@ -15,7 +20,7 @@ fn preview_round_trips_every_timing_field_and_drops_private_fixture_fields() {
     };
     use serde_json::{Value, json};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let recorder = Recorder::on();
     let hour = koidrive_telemetry::this_hour();
@@ -123,7 +128,7 @@ fn koi(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
 }
 
 fn command(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+    let mut command = process::koi(home);
     command
         .args(args)
         .env("HOME", home)
@@ -156,7 +161,7 @@ fn stdout(output: &Output) -> String {
 
 #[test]
 fn reports_are_off_until_someone_turns_them_on() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let status = stdout(&koi(home.path(), &["telemetry", "status"], &[]));
     assert!(
         status.contains("Usage reports: off (not asked yet)"),
@@ -172,7 +177,7 @@ fn noninteractive_setup_never_asks_about_reports() {
         (vec!["setup"], vec![("CI", "1")]),
         (vec!["setup", "--json"], vec![]),
     ] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let text = stdout(&koi(home.path(), &args, &vars));
         assert!(!text.contains("Send usage reports"), "{text}");
         assert!(!home.path().join("state/koidrive/telemetry").exists());
@@ -181,7 +186,7 @@ fn noninteractive_setup_never_asks_about_reports() {
 
 #[test]
 fn a_command_run_with_reports_on_is_counted_by_name_only() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     stdout(&koi(home.path(), &["telemetry", "status"], &[]));
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &[]));
@@ -196,7 +201,7 @@ fn a_command_run_with_reports_on_is_counted_by_name_only() {
 
 #[test]
 fn a_failed_command_is_an_event_with_its_group_and_code_only() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let failed = koi(home.path(), &["--json", "space", "list"], &[]);
     let envelope: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
@@ -217,7 +222,7 @@ fn a_failed_command_is_an_event_with_its_group_and_code_only() {
 fn a_daemon_that_cannot_start_is_counted_by_why() {
     use std::os::unix::fs::PermissionsExt;
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let runtime = home.path().join("run/koidrive");
     std::fs::create_dir_all(&runtime).unwrap();
@@ -233,7 +238,7 @@ fn a_daemon_that_cannot_start_is_counted_by_why() {
 
 #[test]
 fn off_deletes_the_id_and_what_waits_and_stays_off() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     stdout(&koi(home.path(), &["telemetry", "status"], &[]));
     stdout(&koi(home.path(), &["telemetry", "off"], &[]));
@@ -257,7 +262,7 @@ fn off_deletes_the_id_and_what_waits_and_stays_off() {
 
 #[test]
 fn do_not_track_and_the_variable_override_the_choice() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let status = stdout(&koi(
         home.path(),
@@ -281,7 +286,7 @@ fn do_not_track_and_the_variable_override_the_choice() {
 
 #[test]
 fn the_telemetry_flag_of_a_command_that_never_asks_stores_the_choice() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let joined = koi(
         home.path(),
         &["join", "not-a-code", "--telemetry", "on"],
@@ -302,7 +307,7 @@ fn the_telemetry_flag_of_a_command_that_never_asks_stores_the_choice() {
 
 #[test]
 fn the_variable_turns_reports_on_without_a_stored_choice() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let on = [("KOIDRIVE_TELEMETRY", "1")];
     stdout(&koi(home.path(), &["telemetry", "status"], &on));
     let preview = stdout(&koi(home.path(), &["telemetry", "preview"], &on));
@@ -311,7 +316,7 @@ fn the_variable_turns_reports_on_without_a_stored_choice() {
 
 #[test]
 fn reset_draws_a_new_id() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let id = |home: &Path| {
         let status = stdout(&koi(home, &["telemetry", "status"], &[]));
@@ -331,7 +336,7 @@ fn every_daemon_start_sends_the_reports_of_past_hours() {
     use koidrive_telemetry::schema::{Command as Name, Counter};
     use koidrive_telemetry::{Recorder, Store};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let store = Store::new(&home.path().join("state/koidrive"));
     let (url, bodies) = posthog(0);
@@ -385,7 +390,7 @@ fn a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops()
     use koidrive_telemetry::schema::{Event, SourceFile};
     use koidrive_telemetry::{Pending, Store};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let store = Store::new(&home.path().join("state/koidrive"));
     let today = koidrive_telemetry::now() / 86_400 * 86_400;
@@ -472,7 +477,7 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
     use koidrive_telemetry::{EventUuid, Pending, Store};
     use serde_json::{Value, json};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let dir = home.path().join("state/koidrive/telemetry");
     let settings: Value =
@@ -718,7 +723,7 @@ fn the_next_command_sends_a_crash_queued_before_it_but_preview_sends_nothing() {
     use koidrive_telemetry::schema::{Event, SourceFile};
     use koidrive_telemetry::{Pending, Store};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     stdout(&koi(home.path(), &["telemetry", "on"], &[]));
     let store = Store::new(&home.path().join("state/koidrive"));
     let pending = Pending {

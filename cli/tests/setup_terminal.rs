@@ -19,6 +19,7 @@ use koidrive_ipc::{Code, Reason, Response};
 use koidrive_proto::v1::{
     AccessToken, CreateSpaceRequest, Error as ProtoError, ServerInfo, SpaceInfo, SpaceList, error,
 };
+use koidrive_test_support::{Sandbox, sandboxed};
 use prost::Message;
 
 mod schema;
@@ -27,6 +28,9 @@ mod schema;
 mod terminal;
 
 use terminal::Terminal;
+
+#[path = "support/process.rs"]
+mod process;
 
 const ROUTE: &str = "How do you want to connect?";
 const ADDRESS: &str = "Server address";
@@ -123,7 +127,7 @@ fn no(rich: bool) -> String {
 }
 
 struct Home {
-    dir: tempfile::TempDir,
+    dir: Sandbox,
     server: String,
     spaces: Arc<Mutex<Vec<SpaceInfo>>>,
     linked: Arc<Mutex<Vec<FolderStatus>>>,
@@ -141,7 +145,7 @@ type RequestHook = Arc<Mutex<Option<Box<dyn FnMut(&str) + Send>>>>;
 
 impl Home {
     fn new(spaces: &[&str]) -> Home {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let dir = Sandbox::in_dir(Path::new("/tmp"));
         let state = dir.path().join("state/koidrive");
         fs::create_dir_all(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
@@ -657,7 +661,7 @@ fn session(
 }
 
 fn koi(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+    let mut command = process::koi(home);
     command
         .current_dir(home)
         .env("HOME", home)
@@ -723,7 +727,7 @@ fn terminal_run(
         } else {
             ""
         };
-        let mut wrapper = Command::new("python3");
+        let mut wrapper = sandboxed("python3", home);
         wrapper
             .args(["-c", &format!("import fcntl,os,sys,termios; os.setsid(); fcntl.ioctl(0,termios.TIOCSCTTY,0); fd=os.open('/dev/tty',os.O_RDONLY); os.dup2(fd,0); os.close(fd); {output} os.execv(sys.argv[1],sys.argv[1:])")])
             .arg(command.get_program())
@@ -1028,7 +1032,7 @@ fn signals_reap_helpers_and_restore_each_prompt() {
 
 #[test]
 fn rich_cancellation_is_not_repeated_in_verbose_output() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = Sandbox::in_dir(Path::new("/tmp"));
     let output = terminal_run(
         home.path(),
         &[step(ROUTE, "\u{3}"), step(TELEMETRY, no(true))],
@@ -1046,7 +1050,7 @@ fn rich_cancellation_is_not_repeated_in_verbose_output() {
 
 #[test]
 fn rich_cancellation_is_not_repeated_when_stdout_is_redirected() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = Sandbox::in_dir(Path::new("/tmp"));
     let output = terminal_run(
         home.path(),
         &[step(ROUTE, "\u{3}"), step(TELEMETRY, no(true))],
@@ -1197,7 +1201,7 @@ fn cancelled_reporting_returns_after_the_next_successful_interactive_command() {
         assert!(state.join("prompt.json").exists());
         assert!(!state.join("settings.json").exists());
         for args in [vec!["status", "--json"], vec!["status"]] {
-            let output = Command::new(env!("CARGO_BIN_EXE_koi"))
+            let output = process::koi(home.path())
                 .args(args)
                 .env("HOME", home.path())
                 .env("XDG_CONFIG_HOME", home.path().join("config"))

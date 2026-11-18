@@ -4,7 +4,7 @@
 async fn the_daemon_checks_for_a_release_and_koi_status_names_it() {
     use tokio::io::AsyncBufReadExt;
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let mut daemon = tokio::process::Command::from(koi_at(
@@ -106,7 +106,7 @@ async fn the_daemon_checks_for_a_release_and_koi_status_names_it() {
 
 #[test]
 fn without_a_daemon_status_reads_the_last_check_and_the_switch_turns_it_off() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let state = home.path().join("state/koidrive");
@@ -154,7 +154,7 @@ fn without_a_daemon_status_reads_the_last_check_and_the_switch_turns_it_off() {
 #[test]
 fn cached_status_names_brew_upgrade_for_a_formula_and_koi_update_for_a_cask() {
     for cask in [false, true] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let binary = homebrew_binary(home.path(), cask);
         let script = home.path().join(".local/bin/koi");
@@ -231,7 +231,7 @@ fn cached_status_names_brew_upgrade_for_a_formula_and_koi_update_for_a_cask() {
 
 #[test]
 fn an_installer_notice_names_its_real_binary_despite_another_koi_on_path() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join("standalone copy's/bin/koi"));
     let alias = home.path().join("installer-alias");

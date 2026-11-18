@@ -2,7 +2,9 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use koidrive_driver::{Config, Flock, Paths, Status};
@@ -12,6 +14,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::ipc;
+use crate::lifeline::LIFELINE;
 
 mod binary;
 mod command;
@@ -174,13 +177,60 @@ pub fn system() -> Box<dyn Manager> {
     }
 }
 
+pub fn account_home() -> Option<PathBuf> {
+    let mut buffer = vec![0_u8; 1024];
+    loop {
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut found = std::ptr::null_mut();
+        // SAFETY: every pointer is valid for the call, and `buffer` holds the strings `entry` points into.
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        match status {
+            libc::ERANGE => buffer.resize(buffer.len() * 2, 0),
+            0 if !found.is_null() => {
+                // SAFETY: getpwuid_r succeeded, so `found` points to `entry` and `pw_dir` to a string in `buffer`.
+                let dir = unsafe { std::ffi::CStr::from_ptr((*found).pw_dir) };
+                let dir = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+                return dir.is_absolute().then_some(dir);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// launchd's `gui/<uid>` domain and the systemd user manager are one per account, so only the default profile of the
+/// account's own home takes the unsuffixed name there.
+fn is_account_home(home: &Path) -> bool {
+    let Some(account) = account_home() else {
+        return true;
+    };
+    match (fs::metadata(home), fs::metadata(&account)) {
+        (Ok(home), Ok(account)) => (home.dev(), home.ino()) == (account.dev(), account.ino()),
+        _ => home == account,
+    }
+}
+
 pub fn this_service(paths: &Paths) -> Result<Service, String> {
     let home = (std::env::var_os("HOME").map(PathBuf::from))
         .filter(|home| home.is_absolute())
         .ok_or("HOME is not set to an absolute path")?;
     let binary =
         std::env::current_exe().map_err(|error| format!("cannot find the koi binary: {error}"))?;
-    Service::new(paths, &home, &binary)
+    let mut service = Service::new(paths, &home, &binary)?;
+    if !is_account_home(&home) {
+        service.suffix = Some(paths.state_key());
+    }
+    if let Some(lifeline) = std::env::var_os(LIFELINE).and_then(|dir| dir.into_string().ok()) {
+        service.env.push((LIFELINE, Some(lifeline)));
+    }
+    Ok(service)
 }
 
 fn background_off(paths: &Paths) -> Result<bool, String> {

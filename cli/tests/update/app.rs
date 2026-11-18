@@ -16,7 +16,7 @@ fn an_app_outside_the_installer_inventory_is_unchanged_above_the_target() {
 }
 
 fn custom_app_update(tag: &str, upgrading: bool) {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github(tag);
     let binary = copy_koi(
         &home
@@ -72,7 +72,7 @@ fn an_app_outside_the_installer_inventory_uses_the_running_version_without_probi
     if development_version() {
         return;
     }
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let binary = copy_koi(
         &home
             .path()
@@ -117,7 +117,7 @@ fn an_app_outside_the_installer_inventory_status_names_the_download_not_an_updat
     if development_version() {
         return;
     }
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(
         &home
@@ -173,7 +173,7 @@ fn an_app_outside_the_installer_inventory_status_names_the_download_not_an_updat
 
 #[test]
 fn koi_update_keeps_a_direct_app_helper_on_the_manual_download_path() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(
         &home
