@@ -647,7 +647,13 @@ fn an_uploaded_file_is_read_again_only_once_for_an_attribute_another_app_wrote()
     assert!(a.run(&mut remote).is_empty());
     drop(a);
     let mut snapshot = site.start().folder.snapshot();
-    assert_eq!(snapshot.rescan(&site.root, [PathBuf::new()]).unwrap().changes, []);
+    assert_eq!(
+        snapshot
+            .rescan(&site.root, [PathBuf::new()])
+            .unwrap()
+            .changes,
+        []
+    );
 }
 
 /// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan
@@ -1026,7 +1032,12 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
             let observed = Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
             if let Some(observation) = observed {
                 let unread = a.observer.unread();
-                let batch = crate::disk::Batch { stamp, answered: None, observation, unread };
+                let batch = crate::disk::Batch {
+                    stamp,
+                    answered: None,
+                    observation,
+                    unread,
+                };
                 let entries = a.observer.snapshot().entries.len() as u64;
                 let step = a.folder.observed(batch, entries);
                 a.take(step).unwrap();
@@ -1036,10 +1047,18 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
             fs::rename(site.root.join("notes.txt"), site.root.join("renamed.txt")).unwrap();
         }),
         ("a chmod", 0, |site, _, _| {
-            fs::set_permissions(site.root.join("notes.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(
+                site.root.join("notes.txt"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
         }),
         ("a link added", 0, |site, _, _| {
-            fs::hard_link(site.root.join("notes.txt"), site.root.with_file_name("outside.txt")).unwrap();
+            fs::hard_link(
+                site.root.join("notes.txt"),
+                site.root.with_file_name("outside.txt"),
+            )
+            .unwrap();
         }),
         ("a link removed", 1, |site, a, remote| {
             fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
@@ -1066,7 +1085,10 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
         while !a.folder.scanned || polls < 5 {
             polls += 1;
             let sections = a.folder.sections();
-            if let Some(batch) = sections.observe(&mut a.observer, Duration::from_millis(100)).unwrap() {
+            if let Some(batch) = sections
+                .observe(&mut a.observer, Duration::from_millis(100))
+                .unwrap()
+            {
                 seen.extend(batch.observation.changes.iter().cloned());
                 let entries = a.observer.snapshot().entries.len() as u64;
                 let step = a.folder.observed(batch, entries);
@@ -1079,15 +1101,24 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
         }
         let seen: Vec<PathBuf> = (seen.into_iter())
             .filter_map(|change| match change {
-                Observed::Modified { path, content: Some(_), .. }
-                | Observed::Created { path, content: Some(_), .. } => Some(path),
+                Observed::Modified {
+                    path,
+                    content: Some(_),
+                    ..
+                }
+                | Observed::Created {
+                    path,
+                    content: Some(_),
+                    ..
+                } => Some(path),
                 _ => None,
             })
             .collect();
         if live != read || !seen.is_empty() {
-            wrong.push(format!("{row}: {live} reads, {read} expected; after a restart {seen:?}"));
+            wrong.push(format!(
+                "{row}: {live} reads, {read} expected; after a restart {seen:?}"
+            ));
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
-
