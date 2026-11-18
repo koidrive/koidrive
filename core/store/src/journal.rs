@@ -112,6 +112,13 @@ impl Tx<'_> {
                     .transpose()?,
             });
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, since_ms FROM journal_absent")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.absent.insert(row.get(0)?, row.get(1)?);
+        }
         if let Some((listed, ids)) = self
             .0
             .query_row(
@@ -138,17 +145,6 @@ impl Tx<'_> {
         Ok(state)
     }
 
-    pub(crate) fn clear_journal(&self) -> Result<()> {
-        for table in ["journal", "delete_views", "intent_history"] {
-            self.0.execute(&format!("DELETE FROM {table}"), [])?;
-        }
-        self.0.execute(
-            "UPDATE journal_state SET listed = 0, ids = NULL WHERE id = 1",
-            [],
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn write_journal_changes(&self, changes: &JournalChanges) -> Result<()> {
         let JournalChanges {
             rows,
@@ -156,6 +152,7 @@ impl Tx<'_> {
             seen,
             listed,
             ids,
+            absent,
         } = changes;
         let mut remove = self
             .0
@@ -243,6 +240,19 @@ impl Tx<'_> {
                     entry.value.as_ref().map(json).transpose()?,
                 ])?;
             }
+        }
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM journal_absent WHERE node_id = ?1")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT INTO journal_absent (node_id, since_ms) VALUES (?1, ?2)
+             ON CONFLICT (node_id) DO UPDATE SET since_ms = excluded.since_ms",
+        )?;
+        for (node, since) in absent {
+            match since {
+                Some(since) => put.execute(params![node, since])?,
+                None => remove.execute([node])?,
+            };
         }
         if let Some(listed) = listed {
             self.0.execute(

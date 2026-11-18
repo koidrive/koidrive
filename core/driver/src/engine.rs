@@ -580,6 +580,9 @@ impl Engine {
                 at.seq
             )));
         }
+        self.trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         let Some(cursor) = &mut self.cursor else {
             return Err(Stop::Protocol(
                 "a commit arrived before the space's tree was read".into(),
@@ -669,6 +672,9 @@ impl Engine {
     /// of this device it lost, so that they are sent again. A tree that is not valid stops the task before anything is
     /// replaced.
     pub fn replace_remote(&mut self, tx: &Tx<'_>, staging: Staging) -> Result<(), Stop> {
+        self.trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         let behind = (self.cursor.as_ref()).is_some_and(|cursor| cursor.ahead_of_server);
         let trashed = self.trees.trashed_here();
         let edited = self.trees.edited_here();
@@ -709,6 +715,7 @@ impl Engine {
             self.trees
                 .set_remote_place_id(&NodeId::from(&state.node_id), RemoteNode::place_id(state));
         }
+        self.trees.listed_without_journal_nodes();
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         if !recovering {
             let commits = &self.commits;

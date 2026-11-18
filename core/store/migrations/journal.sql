@@ -35,6 +35,11 @@ CREATE TABLE intent_history (
     PRIMARY KEY (node_id, field, ord)
 ) STRICT, WITHOUT ROWID;
 
+CREATE TABLE journal_absent (
+    node_id TEXT PRIMARY KEY NOT NULL,
+    since_ms INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
 CREATE TABLE journal_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     listed INTEGER NOT NULL,

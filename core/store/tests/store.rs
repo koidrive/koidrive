@@ -1501,6 +1501,7 @@ fn journal_state() -> JournalState {
         .into(),
         listed: true,
         ids: Some(0x0123_4567_89ab_cdef),
+        absent: [("b".to_owned(), 1_700)].into(),
     }
 }
 

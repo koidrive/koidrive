@@ -401,6 +401,16 @@ impl Trees {
         for id in nodes {
             self.compact_journal(&id, Compact::AfterChange);
         }
+        self.listed_without_journal_nodes();
+    }
+
+    /// Starts the RFC 0029 §5.1 30 days of each node the journal keeps state for and R lacks, as a listing of R does.
+    pub fn listed_without_journal_nodes(&mut self) {
+        for id in self.journal.nodes() {
+            if self.r.get(&id).is_none() {
+                self.journal.r_lacks(&id);
+            }
+        }
     }
 
     fn local_values(&self, id: &str) -> Vec<(Field, Value)> {
