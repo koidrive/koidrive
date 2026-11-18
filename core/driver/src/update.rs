@@ -332,7 +332,8 @@ pub(crate) async fn ask(
     etag: Option<&str>,
     asset: &str,
 ) -> Answer {
-    tokio::time::timeout(TIMEOUT, async {
+    let mut answered = false;
+    let asked = tokio::time::timeout(TIMEOUT, async {
         let mut page = url.clone();
         let mut conditional = etag;
         let mut visited = HashSet::new();
@@ -354,7 +355,10 @@ pub(crate) async fn ask(
                 request = request.header(IF_NONE_MATCH, etag);
             }
             let response = match request.send().await {
-                Ok(response) => response,
+                Ok(response) => {
+                    answered = true;
+                    response
+                }
                 Err(_) if visited.len() == 1 => return Answer::Unreachable,
                 Err(_) => return Answer::Refused { until: None },
             };
@@ -401,8 +405,11 @@ pub(crate) async fn ask(
             conditional = None;
         }
     })
-    .await
-    .unwrap_or(Answer::Refused { until: None })
+    .await;
+    asked.unwrap_or(match answered {
+        true => Answer::Refused { until: None },
+        false => Answer::Unreachable,
+    })
 }
 
 fn next_page(endpoint: &Url, page: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {

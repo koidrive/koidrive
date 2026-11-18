@@ -890,6 +890,15 @@ async fn the_request_carries_only_the_headers_github_needs_and_the_etag_of_the_l
     assert_eq!(ask(&http, closed, None, ASSET).await, Answer::Unreachable);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_first_page_that_never_answers_is_unreachable() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let (url, _) = releases_url(Some(&base)).unwrap();
+    let http = reqwest::Client::new();
+    assert_eq!(ask(&http, url, None, ASSET).await, Answer::Unreachable);
+}
+
 #[tokio::test]
 async fn a_check_switched_off_removes_the_last_answer_and_sends_nothing() {
     let dir = tempfile::tempdir().unwrap();
