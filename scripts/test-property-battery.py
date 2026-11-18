@@ -532,6 +532,16 @@ cases = ["{1:064}"]
                         with self.subTest(entry=index, failure=entry["class"], test=test, case=case):
                             self.assertEqual(triage.matches(entries, test, example + " Then write 7 is lost too.", case), [])
 
+    def test_every_registry_entry_labels_its_example_after_the_assertion_moves_to_another_file(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        for index, entry in enumerate(entries):
+            for example in entry["examples"]:
+                moved = re.sub(r"[\w./-]*\.rs:", "core/sim/tests/moved/elsewhere.rs:", example)
+                for test in entry["tests"]:
+                    for case in entry.get("cases", [""]):
+                        with self.subTest(entry=index, failure=entry["class"], test=test, case=case):
+                            self.assertIn(entry, triage.matches(entries, test, moved, case))
+
     def test_every_registry_test_name_is_a_test_in_core(self):
         files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
                                stdout=subprocess.PIPE, text=True).stdout.split("\0")
@@ -705,7 +715,7 @@ class Triage(unittest.TestCase):
             (runs("fail", "lost at a.rs:12:3"), runs("ignored"), "PR-caused"),
             (runs("fail", "lost at a.rs:12:3"), runs("fail", "lost twice at a.rs:12:3"), "PR-caused"),
             (runs("fail", "lost at a.rs:12:3"), runs("fail", "lost at a.rs:12:3"), triage.SAME),
-            (runs("fail", "lost at a.rs:12"), runs("fail", "lost at b.rs:12"), "PR-caused"),
+            (runs("fail", "lost at a.rs:12"), runs("fail", "lost at b.rs:12"), triage.MOVED),
             (runs("fail", "node 01a1-1 lost"), runs("fail", "node 01a1-2 lost"), "PR-caused"),
             (runs("pass"), runs("fail", "lost"), "flaky or fixed"),
             (runs("pass"), runs("pass"), "flaky or fixed"),
@@ -725,6 +735,16 @@ class Triage(unittest.TestCase):
         base = [{"result": "fail", "message": "write is lost at invariant.rs:120:1"}] * 2
         self.assertEqual(triage.verdict(head, base), triage.MOVED)
         self.assertNotEqual(triage.MOVED, triage.SAME)
+
+    def test_the_same_message_from_another_file_is_moved_not_pr_caused(self):
+        head = [{"result": "fail", "message": "write 1 is lost at core/sim/tests/engine_sync/checks.rs:40."}] * 2
+        base = [{"result": "fail", "message": "write 1 is lost at core/sim/tests/engine_sync/common.rs:1869."}] * 2
+        self.assertEqual(triage.verdict(head, base), triage.MOVED)
+
+    def test_a_different_message_from_another_file_is_still_pr_caused(self):
+        head = [{"result": "fail", "message": "write 2 is lost at core/sim/tests/engine_sync/checks.rs:40."}] * 2
+        base = [{"result": "fail", "message": "write 1 is lost at core/sim/tests/engine_sync/common.rs:1869."}] * 2
+        self.assertEqual(triage.verdict(head, base), "PR-caused")
 
     def test_a_flaky_base_is_unstable_instead_of_either_verdict(self):
         head = [{"result": "fail", "message": "write is lost at invariant.rs:220:1"}] * 2
