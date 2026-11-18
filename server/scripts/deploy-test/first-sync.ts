@@ -1,27 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { download, invitation, keypair, peer, seal, unseal, until } from "./e2e.ts";
+import { download, invitation, keypair, peer, seal, unseal } from "./e2e.ts";
+import { readState } from "./state.ts";
 import {
   type Build,
   countTimeouts,
   type Inputs,
+  JOB_MINUTES,
   type PlannedEntry,
   planTree,
   pool,
   progress,
   readInputs,
-  RUN_OVERHEAD_MINUTES,
+  RESET_MINUTES,
+  RUNS_END_MINUTES,
   type Run,
   type RunResult,
   runOrder,
   runTable,
   SAMPLE_MS,
   type Sample,
+  SETUP_MINUTES,
   type Shape,
   shapeOf,
   type Status,
@@ -32,18 +36,18 @@ import {
 
 const SEED = 1;
 const DEFAULT_ENTRIES = 1_900_000;
-const KEY_WAIT_MS = 200 * 60_000;
-const JOIN_WAIT_MS = 120 * 60_000;
-const HOLD_MS = 350 * 60_000;
-const JOB_MS = 345 * 60_000;
+const MINUTE_MS = 60_000;
+const KEY_WAIT_MS = (SETUP_MINUTES.disk + SETUP_MINUTES.tree + 55) * MINUTE_MS;
+const CODES_WAIT_MS = SETUP_MINUTES.pairing * MINUTE_MS;
+const TEARDOWN_MINUTES = 15;
 const DAEMON_START_MS = 60_000;
 const DAEMON_STOP_MS = 60_000;
 const STATUS_TIMEOUT_MS = 15_000;
 const NODE_XATTR = "com.koidrive.node";
 const BLOCK_BYTES = 4096;
-const BUILD_DISK_BYTES = 4 * 2 ** 30;
 const STORE_DISK_BYTES = 4 * 2 ** 30;
 const GIB = 2 ** 30;
+const BUILD_ENV = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CARGO_HOME", "RUSTUP_HOME", "DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "SSL_CERT_FILE", "SSL_CERT_DIR", "RUSTC_WRAPPER", "CARGO_INCREMENTAL"];
 
 class Failed extends Error {}
 
@@ -88,6 +92,11 @@ function resolve(ref: string): string {
   fail("the ref " + JSON.stringify(ref) + " names no tag, branch or commit in this checkout");
 }
 
+function startedAt(): number {
+  const seconds = Number(process.env.FIRST_SYNC_JOB_START ?? "");
+  return seconds > 0 ? seconds * 1000 : Number.NaN;
+}
+
 function gib(bytes: number): string {
   return (bytes / GIB).toFixed(1) + " GiB";
 }
@@ -102,10 +111,24 @@ function readJson<T>(file: string, what: string): T {
 }
 
 interface BuiltKoi extends Build {
+  index: number;
   koi: string;
 }
 
-const builds = () => readJson<BuiltKoi[]>(work("builds.json"), "the list of koi builds");
+function builds(): BuiltKoi[] {
+  const { refs } = inputs();
+  const dir = work("bin");
+  const found = (existsSync(dir) ? readdirSync(dir) : []).map((name) => {
+    const build = readJson<BuiltKoi>(join(dir, name, "build.json"), "the build record of " + name);
+    const koi = join(dir, name, "koi");
+    chmodSync(koi, 0o755);
+    return { ...build, koi };
+  });
+  const ordered = refs.map((ref, index) => found.find((build) => build.index === index && build.ref === ref) ?? fail("no koi build for " + ref + " is under " + dir));
+  if (found.length !== refs.length) fail(dir + " holds " + found.length + " koi builds for " + refs.length + " refs");
+  return ordered;
+}
+
 const treeShape = () => readJson<Shape>(work("shape.json"), "the generated tree's shape");
 
 interface Profile {
@@ -130,10 +153,10 @@ function profile(index: number, koi: string): Profile {
   return { name: "first-sync-" + index, dir, koi, env };
 }
 
-function koi(on: Profile, args: string[], shown: string[] | null = args): string {
+function koi(on: Profile, args: string[], shown: string[] | null = args, input?: string): string {
   if (shown) console.log("\n$ koi " + shown.join(" ") + "   # " + on.name);
   try {
-    const out = execFileSync(on.koi, args, { env: on.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: STATUS_TIMEOUT_MS * 4 });
+    const out = execFileSync(on.koi, args, { env: on.env, encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], timeout: STATUS_TIMEOUT_MS * 4 });
     if (shown) process.stdout.write(out);
     return out;
   } catch (error) {
@@ -203,11 +226,37 @@ function storeBytes(on: Profile, spaceId: string): number {
   return ["store.sqlite", "store.sqlite-wal"].reduce((total, name) => total + (existsSync(join(dir, name)) ? statSync(join(dir, name)).size : 0), 0);
 }
 
-async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number): Promise<RunResult> {
+function failedRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number, failure: string): RunResult {
+  return {
+    index: run.index,
+    ref: build.ref,
+    sha: build.sha,
+    rep: run.rep,
+    order: run.order,
+    entries: shape.entries,
+    ended: "failed",
+    failure,
+    capSeconds: capMs / 1000,
+    elapsedSeconds: 0,
+    linkSeconds: 0,
+    syncedEntries: 0,
+    firstUploadSeconds: null,
+    syncedSeconds: null,
+    stallSeconds: 0,
+    stalls: 0,
+    longestStallSeconds: 0,
+    timeouts: { didNotMove: 0, noCompleteAnswer: 0, keptFailing: 0 },
+    cpuSeconds: null,
+    peakRssBytes: null,
+    storeBytes: 0,
+    storeBytesPerEntry: null,
+    samples: 0,
+  };
+}
+
+async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number, label: string): Promise<RunResult> {
   const on = profile(run.ref, build.koi);
   const tree = work("tree");
-  const label = "run-" + String(run.index + 1).padStart(2, "0");
-  console.log("\n## Run " + (run.index + 1) + ": " + build.ref + ", repetition " + (run.rep + 1) + ", position " + (run.order + 1));
   const resetAt = Date.now();
   resetTree(tree);
   console.log("Reset the tree in " + ((Date.now() - resetAt) / 1000).toFixed(1) + " s");
@@ -226,26 +275,30 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
   const pid = daemon.pid ?? fail("the daemon of " + on.name + " did not start");
   const samples: Sample[] = [{ seconds: 0, status: before, cpuSeconds: null, rssBytes: null }];
   let ended: RunResult["ended"] = "capped";
+  let failure: string | null = null;
   let store = 0;
   try {
-    await until(on.name + "'s daemon to answer", DAEMON_START_MS, () => {
-      if (!alive(pid)) fail(on.name + "'s daemon exited: " + readFileSync(log, "utf8").slice(-2000));
-      return folderStatus(on)?.running ? true : undefined;
-    });
+    while (!folderStatus(on)?.running) {
+      if (!alive(pid)) fail(on.name + "'s daemon exited before it answered: " + readFileSync(log, "utf8").slice(-2000));
+      if (Date.now() - started > DAEMON_START_MS) fail(on.name + "'s daemon did not answer within " + DAEMON_START_MS / 1000 + " s");
+      await sleep(1000);
+    }
     for (let tick = 1; ; tick++) {
       const status = folderStatus(on);
       const used = usage(pid);
-      samples.push({ seconds: (Date.now() - started) / 1000, status, cpuSeconds: used?.cpuSeconds ?? null, rssBytes: used?.rssBytes ?? null });
+      const seconds = (Date.now() - started) / 1000;
+      samples.push({ seconds, status, cpuSeconds: used?.cpuSeconds ?? null, rssBytes: used?.rssBytes ?? null });
       if (synced(status, shape.entries)) {
         ended = "synced";
         break;
       }
       if (!used) {
-        ended = "daemon exited";
+        ended = "failed";
+        failure = "the daemon exited after " + Math.round(seconds) + " s";
         break;
       }
       if (Date.now() - started >= capMs) break;
-      if (tick % 30 === 0) console.log(Math.round((Date.now() - started) / 1000) + " s: " + JSON.stringify(status));
+      if (tick % 30 === 0) console.log(Math.round(seconds) + " s: " + JSON.stringify(status));
       await sleep(Math.max(0, started + tick * SAMPLE_MS - Date.now()));
     }
   } finally {
@@ -274,6 +327,7 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
     order: run.order,
     entries: shape.entries,
     ended,
+    failure,
     capSeconds: capMs / 1000,
     elapsedSeconds: samples.at(-1)!.seconds,
     linkSeconds,
@@ -305,21 +359,38 @@ export async function sealCodes(): Promise<void> {
   const publicKey = readFileSync(work("key", "public.pem"), "utf8");
   mkdirSync(work("join"), { recursive: true });
   for (const index of refs.keys()) writeFileSync(work("join", "join-" + index + ".bin"), seal(publicKey, await invitation()));
+  writeFileSync(work("join", "server"), readState().url ?? fail("the deploy-test state names no server"));
+  const holdUntil = startedAt() + (JOB_MINUTES - TEARDOWN_MINUTES) * MINUTE_MS;
+  if (Number.isFinite(holdUntil)) writeFileSync(work("join", "hold-until"), String(holdUntil));
   console.log("Sealed " + refs.length + " pairing codes, one for each ref's device, to the macOS job's public key");
 }
 
-export function joinProfiles(): void {
+function holdUntil(file: string): number {
+  return existsSync(file) ? Number(readFileSync(file, "utf8")) : Number.POSITIVE_INFINITY;
+}
+
+function joinProfiles(): void {
   const privateKey = readFileSync(work("private.pem"), "utf8");
-  for (const [index, build] of builds().entries()) {
-    const on = profile(index, build.koi);
+  const server = readFileSync(work("join", "server"), "utf8");
+  for (const build of builds()) {
+    const on = profile(build.index, build.koi);
     rmSync(on.dir, { recursive: true, force: true });
     for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"]) mkdirSync(on.env[name]!, { recursive: true, mode: 0o700 });
     mkdirSync(join(on.env.XDG_CONFIG_HOME!, "koidrive"), { recursive: true, mode: 0o700 });
     writeFileSync(join(on.env.XDG_CONFIG_HOME!, "koidrive", "config.toml"), "[service]\nbackground = false\n");
-    const code = unseal(privateKey, readFileSync(work("join", "join-" + index + ".bin")));
-    koi(on, ["join", code, "--name", on.name], ["join", "<pairing code>", "--name", on.name]);
+    const code = unseal(privateKey, readFileSync(work("join", "join-" + build.index + ".bin")));
+    const args = ["join", "--code-stdin", "--server", server, "--name", on.name];
+    koi(on, args, args, code + "\n");
   }
+  if (existsSync(work("join", "hold-until"))) copyFileSync(work("join", "hold-until"), work("hold-until"));
   rmSync(work("join"), { recursive: true });
+}
+
+export function buildEnv(source: NodeJS.ProcessEnv, targetDir: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of BUILD_ENV) if (source[name] !== undefined) env[name] = source[name];
+  env.CARGO_TARGET_DIR = targetDir;
+  return env;
 }
 
 function writeSummary(text: string): void {
@@ -331,52 +402,43 @@ function writeSummary(text: string): void {
 
 const phases: Record<string, () => Promise<void>> = {
   async validate() {
-    const { refs, repetitions, minutes } = inputs();
+    const { refs, repetitions, rotation, minutes } = inputs();
     const shas = refs.map(resolve);
     refs.forEach((ref, i) => console.log(ref + " is " + shas[i]));
-    const order = runOrder(refs.length, repetitions).map((run) => refs[run.ref]);
+    const order = runOrder(refs.length, repetitions, rotation).map((run) => refs[run.ref]);
     console.log(order.length + " runs of up to " + minutes + " minutes, in this order: " + order.join(", "));
-  },
-
-  async disk() {
-    const { refs } = inputs();
-    const shape = shapeOf(planTree(SEED, entries()));
-    const need = shape.entries * BLOCK_BYTES + shape.bytes + BUILD_DISK_BYTES + STORE_DISK_BYTES;
-    mkdirSync(work(), { recursive: true });
-    const free = Number(execFileSync("df", ["-k", work()], { encoding: "utf8" }).trim().split("\n").at(-1)!.split(/\s+/)[3]) * 1024;
-    console.log("The tree will hold " + describe(shape) + ".");
-    console.log("Free: " + gib(free) + ". Needed: " + gib(need) + " for the tree in " + BLOCK_BYTES + "-byte blocks, one koi build at a time for " + refs.length + " refs, and the sync store.");
-    if (!(free >= need)) fail("only " + gib(free) + " is free under " + work() + ", but the tree, a koi build and the sync store need " + gib(need) + ". Free more space in the step before.");
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, "builds=" + JSON.stringify(refs.map((ref, index) => ({ index, ref, sha: shas[index] }))) + "\n");
   },
 
   async build() {
-    const { refs } = inputs();
-    const built: BuiltKoi[] = [];
-    for (const [index, ref] of refs.entries()) {
-      const sha = resolve(ref);
-      const src = work("src", String(index));
-      const target = work("target", String(index));
-      const koiPath = work("bin", String(index), "koi");
-      console.log("\n## Build koi from " + ref + " (" + sha + ")");
-      rmSync(src, { recursive: true, force: true });
-      git(["worktree", "prune"]);
-      git(["worktree", "add", "--detach", "--force", src, sha]);
-      try {
-        execFileSync("sh", ["-c", "rustup show active-toolchain || rustup toolchain install"], { cwd: src, stdio: "inherit" });
-        const at = Date.now();
-        execFileSync("cargo", ["build", "--release", "--locked", "-p", "koidrive-cli", "--bin", "koi"], { cwd: src, env: { ...process.env, CARGO_TARGET_DIR: target }, stdio: "inherit" });
-        console.log("Built in " + Math.round((Date.now() - at) / 1000) + " s");
-        mkdirSync(work("bin", String(index)), { recursive: true });
-        copyFileSync(join(target, "release", "koi"), koiPath);
-        execFileSync("chmod", ["755", koiPath]);
-      } finally {
-        rmSync(target, { recursive: true, force: true });
-        git(["worktree", "remove", "--force", src]);
-      }
-      console.log(execFileSync(koiPath, ["--version"], { encoding: "utf8" }).trim());
-      built.push({ ref, sha, koi: koiPath });
-    }
-    writeFileSync(work("builds.json"), JSON.stringify(built, null, 2));
+    const [source = "", out = ""] = process.argv.slice(3);
+    if (!source || !out) fail("usage: first-sync.ts build <checkout of the ref> <output directory>");
+    const index = Number(process.env.FIRST_SYNC_INDEX ?? fail("FIRST_SYNC_INDEX is not set"));
+    const ref = process.env.FIRST_SYNC_REF ?? fail("FIRST_SYNC_REF is not set");
+    const sha = process.env.FIRST_SYNC_SHA ?? fail("FIRST_SYNC_SHA is not set");
+    const head = git(["rev-parse", "HEAD"], source);
+    if (head !== sha) fail(source + " holds " + head + ", not " + sha + " that " + ref + " resolved to");
+    const target = work("target", String(index));
+    const env = buildEnv(process.env, target);
+    console.log("## Build koi from " + ref + " (" + sha + ") with only " + Object.keys(env).sort().join(", ") + " set");
+    execFileSync("sh", ["-c", "rustup show active-toolchain || rustup toolchain install"], { cwd: source, env, stdio: "inherit" });
+    const at = Date.now();
+    execFileSync("cargo", ["build", "--release", "--locked", "-p", "koidrive-cli", "--bin", "koi"], { cwd: source, env, stdio: "inherit" });
+    console.log("Built in " + Math.round((Date.now() - at) / 1000) + " s");
+    mkdirSync(out, { recursive: true });
+    copyFileSync(join(target, "release", "koi"), join(out, "koi"));
+    writeFileSync(join(out, "build.json"), JSON.stringify({ index, ref, sha }));
+    rmSync(target, { recursive: true, force: true });
+  },
+
+  async disk() {
+    const shape = shapeOf(planTree(SEED, entries()));
+    const need = shape.entries * BLOCK_BYTES + shape.bytes + STORE_DISK_BYTES;
+    mkdirSync(work(), { recursive: true });
+    const free = Number(execFileSync("df", ["-k", work()], { encoding: "utf8" }).trim().split("\n").at(-1)!.split(/\s+/)[3]) * 1024;
+    console.log("The tree will hold " + describe(shape) + ".");
+    console.log("Free: " + gib(free) + ". Needed: " + gib(need) + " for the tree in " + BLOCK_BYTES + "-byte blocks and the sync store.");
+    if (!(free >= need)) fail("only " + gib(free) + " is free under " + work() + ", but the tree and the sync store need " + gib(need) + ". Free more space in the step before.");
   },
 
   async generate() {
@@ -402,28 +464,45 @@ const phases: Record<string, () => Promise<void>> = {
     await sealCodes();
   },
 
+  async "fetch-codes"() {
+    await download("first-sync-macos-join", work("join"), CODES_WAIT_MS);
+  },
+
   async join() {
-    await download("first-sync-macos-join", work("join"), JOIN_WAIT_MS);
     joinProfiles();
   },
 
   async measure() {
-    const { repetitions, minutes } = inputs();
+    const { repetitions, rotation, minutes } = inputs();
     const built = builds();
     const shape = treeShape();
-    const start = Number(process.env.FIRST_SYNC_JOB_START ?? "");
-    const deadline = start > 0 ? start * 1000 + JOB_MS : Infinity;
+    const start = startedAt();
+    const deadline = Math.min(Number.isNaN(start) ? Number.POSITIVE_INFINITY : start + RUNS_END_MINUTES * MINUTE_MS, holdUntil(work("hold-until")));
     mkdirSync(work("results"), { recursive: true });
-    const runs = runOrder(built.length, repetitions);
+    const runs = runOrder(built.length, repetitions, rotation);
+    const failures: string[] = [];
     for (const run of runs) {
-      if (Date.now() + (minutes + RUN_OVERHEAD_MINUTES) * 60_000 > deadline) {
-        console.log("::warning::The job has too little time left for run " + (run.index + 1) + " of " + runs.length + ", so it stops here");
-        return;
+      if (Date.now() + (minutes + RESET_MINUTES) * MINUTE_MS > deadline) {
+        console.log("::warning::Run " + (run.index + 1) + " of " + runs.length + " could not finish before " + new Date(deadline).toISOString() + ", so the runs stop here");
+        break;
       }
-      const result = await measureRun(run, built[run.ref]!, shape, minutes * 60_000);
-      writeFileSync(work("results", "run-" + String(run.index + 1).padStart(2, "0") + ".json"), JSON.stringify(result, null, 2));
+      const build = built[run.ref]!;
+      const label = "run-" + String(run.index + 1).padStart(2, "0");
+      console.log("\n## Run " + (run.index + 1) + ": " + build.ref + ", repetition " + (run.rep + 1) + ", position " + (run.order + 1));
+      let result: RunResult;
+      try {
+        result = await measureRun(run, build, shape, minutes * MINUTE_MS, label);
+      } catch (error) {
+        result = failedRun(run, build, shape, minutes * MINUTE_MS, error instanceof Error ? error.message : String(error));
+      }
+      if (result.ended === "failed") {
+        failures.push("run " + (run.index + 1) + " (" + build.ref + "): " + result.failure);
+        console.log("::error::Run " + (run.index + 1) + " (" + build.ref + ") failed: " + result.failure);
+      }
+      writeFileSync(work("results", label + ".json"), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result));
     }
+    if (failures.length) fail(failures.length + " of " + runs.length + " runs failed: " + failures.join("; "));
   },
 
   async summarize() {
@@ -434,21 +513,28 @@ const phases: Record<string, () => Promise<void>> = {
     const results = (existsSync(dir) ? readdirSync(dir) : []).filter((name) => /^run-\d+\.json$/.test(name)).map((name) => readJson<RunResult>(join(dir, name), name));
     const head =
       "### First sync of " + shape.entries + " entries\n\n" +
-      "The tree holds " + describe(shape) + ". Each cell gives the median over the repetitions and, in parentheses, the lowest and highest value. ≥ marks a run stopped at its time cap before it was fully synced.\n\n";
+      "The tree holds " + describe(shape) + ". Each cell gives the median over the runs that did not fail and, in parentheses, the lowest and highest value. ≥ marks a run stopped at its time cap before it was fully synced.\n\n";
     writeSummary(head + summary(built, results, built.length * repetitions) + "\n#### Runs\n\n" + runTable(results));
   },
 
   async hold() {
-    const job = await until(
-      "the job " + process.env.E2E_PEER_JOB + " to end",
-      HOLD_MS,
-      async () => {
-        const found = await peer();
-        return found?.status === "completed" ? found : undefined;
-      },
-      60_000,
-    );
-    console.log("The job " + job.name + " ended (" + job.conclusion + "), so the Worker can go");
+    const deadline = holdUntil(work("join", "hold-until"));
+    for (;;) {
+      if (Date.now() >= deadline) {
+        console.log("::warning::The job " + process.env.E2E_PEER_JOB + " still runs at " + new Date(deadline).toISOString() + ", but this job's own limit leaves only the time to tear down");
+        return;
+      }
+      try {
+        const job = await peer();
+        if (job?.status === "completed") {
+          console.log("The job " + job.name + " ended (" + job.conclusion + "), so the Worker can go");
+          return;
+        }
+      } catch (error) {
+        console.log("::warning::Could not read the state of the job " + process.env.E2E_PEER_JOB + ": " + (error instanceof Error ? error.message : String(error)));
+      }
+      await sleep(Math.min(60_000, Math.max(0, deadline - Date.now())));
+    }
   },
 };
 
@@ -457,7 +543,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     await (phases[phase] ?? fail("usage: first-sync.ts " + Object.keys(phases).join(" | ")))();
   } catch (error) {
-    console.error("::error::first-sync " + phase + ": " + (error instanceof Failed ? error.message : String(error)));
+    console.error("::error::first-sync " + phase + ": " + (error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   }
 }

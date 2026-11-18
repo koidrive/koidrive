@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 export const MAX_REFS = 4;
-export const MAX_REPETITIONS = 5;
-export const MAX_MINUTES = 120;
-export const RUN_OVERHEAD_MINUTES = 5;
-export const BUILD_MINUTES = 35;
-export const BUDGET_MINUTES = 320;
+export const MAX_REPETITIONS = 4;
+export const MAX_MINUTES = 240;
+export const JOB_MINUTES = 360;
+export const RESET_MINUTES = 5;
+export const SETUP_MINUTES = { disk: 15, tree: 20, pairing: 40, summary: 10, spare: 5 } as const;
+export const RUNS_END_MINUTES = JOB_MINUTES - SETUP_MINUTES.summary - SETUP_MINUTES.spare;
 export const SAMPLE_MS = 2000;
 export const STALL_SECONDS = 5;
 export const TIMEOUT_MESSAGES = { didNotMove: "did not move for", noCompleteAnswer: "no complete answer within", keptFailing: "kept failing" } as const;
@@ -16,6 +17,7 @@ const REF = /^(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)(?!.*[./]$)[A-Za-z0-9_][A-Za-z0-9
 export interface Inputs {
   refs: string[];
   repetitions: number;
+  rotation: number;
   minutes: number;
 }
 
@@ -24,19 +26,27 @@ export function readInputs(env: Record<string, string | undefined>): Inputs {
   if (refs.length > MAX_REFS || new Set(refs).size !== refs.length || refs.some((ref) => !REF.test(ref))) {
     throw new Error("FIRST_SYNC_REFS must name 1 to " + MAX_REFS + " distinct branches, tags or commits separated by commas, not " + JSON.stringify(env.FIRST_SYNC_REFS ?? ""));
   }
-  const repetitions = env.FIRST_SYNC_REPETITIONS ?? "3";
+  const repetitions = env.FIRST_SYNC_REPETITIONS ?? "1";
   if (!new RegExp("^[1-" + MAX_REPETITIONS + "]$").test(repetitions)) throw new Error("FIRST_SYNC_REPETITIONS must be a whole number from 1 to " + MAX_REPETITIONS + ", not " + JSON.stringify(repetitions));
-  const minutes = env.FIRST_SYNC_MINUTES ?? "35";
+  if (repetitions !== "1" && Number(repetitions) % refs.length) {
+    throw new Error("FIRST_SYNC_REPETITIONS must be 1 or a multiple of the " + refs.length + " refs, so that each ref runs as often in each position, not " + repetitions);
+  }
+  const rotation = env.FIRST_SYNC_ROTATION ?? "0";
+  if (!/^(0|[1-9][0-9]?)$/.test(rotation) || Number(rotation) >= refs.length) {
+    throw new Error("FIRST_SYNC_ROTATION must be a whole number from 0 to " + (refs.length - 1) + ", the ref that runs first, not " + JSON.stringify(rotation));
+  }
+  const minutes = env.FIRST_SYNC_MINUTES ?? "80";
   if (!/^[1-9][0-9]{0,2}$/.test(minutes) || Number(minutes) > MAX_MINUTES) throw new Error("FIRST_SYNC_MINUTES must be a whole number from 1 to " + MAX_MINUTES + ", not " + JSON.stringify(minutes));
-  const inputs = { refs, repetitions: Number(repetitions), minutes: Number(minutes) };
+  const inputs = { refs, repetitions: Number(repetitions), rotation: Number(rotation), minutes: Number(minutes) };
   const runs = refs.length * inputs.repetitions;
-  const builds = refs.length * BUILD_MINUTES;
-  const needed = builds + runs * (inputs.minutes + RUN_OVERHEAD_MINUTES);
-  if (needed > BUDGET_MINUTES) {
-    const fit = Math.floor((BUDGET_MINUTES - builds) / runs) - RUN_OVERHEAD_MINUTES;
+  const setup = Object.values(SETUP_MINUTES).reduce((total, value) => total + value, 0);
+  const needed = setup + runs * (inputs.minutes + RESET_MINUTES);
+  if (needed > JOB_MINUTES) {
+    const fit = Math.floor((JOB_MINUTES - setup) / runs) - RESET_MINUTES;
     throw new Error(
-      refs.length + " builds of about " + BUILD_MINUTES + " minutes and " + runs + " runs of up to " + inputs.minutes + " minutes plus " + RUN_OVERHEAD_MINUTES + " minutes each to reset the tree take " + needed +
-        " minutes, but the macOS job has " + BUDGET_MINUTES + " minutes for them. Lower FIRST_SYNC_MINUTES to " + fit + " or run fewer refs or repetitions.",
+      runs + " runs of up to " + inputs.minutes + " minutes and " + RESET_MINUTES + " minutes each to reset the tree, with " + SETUP_MINUTES.disk + " minutes to free disk, " + SETUP_MINUTES.tree + " to generate the tree, " +
+        SETUP_MINUTES.pairing + " to wait for the approval and the pairing codes, " + SETUP_MINUTES.summary + " for the summary and " + SETUP_MINUTES.spare + " to spare, take " + needed + " minutes, more than the macOS job's " + JOB_MINUTES +
+        ". Lower FIRST_SYNC_MINUTES to " + fit + " or run fewer refs or repetitions.",
     );
   }
   return inputs;
@@ -49,10 +59,10 @@ export interface Run {
   order: number;
 }
 
-export function runOrder(refs: number, repetitions: number): Run[] {
+export function runOrder(refs: number, repetitions: number, rotation: number): Run[] {
   const runs: Run[] = [];
   for (let rep = 0; rep < repetitions; rep++) {
-    for (let order = 0; order < refs; order++) runs.push({ index: runs.length, ref: (rep + order) % refs, rep, order });
+    for (let order = 0; order < refs; order++) runs.push({ index: runs.length, ref: (rotation + rep + order) % refs, rep, order });
   }
   return runs;
 }
@@ -252,7 +262,8 @@ export interface RunResult extends Progress {
   rep: number;
   order: number;
   entries: number;
-  ended: "synced" | "capped" | "daemon exited";
+  ended: "synced" | "capped" | "failed";
+  failure: string | null;
   capSeconds: number;
   elapsedSeconds: number;
   linkSeconds: number;
@@ -306,14 +317,17 @@ export const SUMMARY_COLUMNS = ["Ref", "Synced", "First upload", "Fully synced",
 export function summary(builds: Build[], results: RunResult[], planned: number): string {
   const lines = ["| " + SUMMARY_COLUMNS.join(" | ") + " |", "|" + SUMMARY_COLUMNS.map(() => "---").join("|") + "|"];
   for (const build of builds) {
-    const runs = results.filter((result) => result.ref === build.ref);
-    const perRef = planned / builds.length;
+    const all = results.filter((result) => result.ref === build.ref);
+    const runs = all.filter((run) => run.ended !== "failed");
+    const failed = all.length - runs.length;
+    const notRun = planned / builds.length - all.length;
+    const notes = [failed ? failed + " failed" : "", notRun ? notRun + " not run" : ""].filter(Boolean);
     const cell = (pick: (run: RunResult) => Measured | null, unit: (value: number) => string) => spread(runs.map(pick), unit);
     lines.push(
       "| " +
         [
           "`" + build.ref + "` (" + build.sha.slice(0, 10) + ")",
-          runs.filter((run) => run.syncedSeconds !== null).length + " of " + runs.length + (runs.length < perRef ? " (" + (perRef - runs.length) + " not run)" : ""),
+          runs.filter((run) => run.syncedSeconds !== null).length + " of " + all.length + (notes.length ? " (" + notes.join(", ") + ")" : ""),
           cell((run) => plain(run.firstUploadSeconds), seconds),
           cell((run) => ({ value: run.syncedSeconds ?? run.elapsedSeconds, capped: run.syncedSeconds === null }), seconds),
           cell((run) => plain(run.stallSeconds), seconds),
@@ -344,7 +358,7 @@ export function runTable(results: RunResult[]): string {
           run.rep + 1,
           run.order + 1,
           or(run.firstUploadSeconds, seconds),
-          run.syncedSeconds === null ? "capped at " + seconds(run.elapsedSeconds) : seconds(run.syncedSeconds),
+          run.ended === "failed" ? "failed: " + (run.failure ?? "").replace(/\s+/g, " ").trim().replaceAll("|", "\\|") : run.syncedSeconds === null ? "capped at " + seconds(run.elapsedSeconds) : seconds(run.syncedSeconds),
           run.syncedEntries + " of " + run.entries,
           seconds(run.stallSeconds),
           run.stalls,

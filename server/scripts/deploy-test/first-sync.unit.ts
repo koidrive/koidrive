@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, expect, it } from "vitest";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildEnv } from "./first-sync.ts";
 import {
   countTimeouts,
   median,
@@ -31,47 +37,91 @@ const done = status(ENTRIES + 1, { state: "up_to_date", filesToUpload: 0 });
 
 describe("first-sync inputs", () => {
   it.each(["main", "v0.1.0-alpha.7", "main,fix/koi-938,v0.1.0-alpha.7", "a,b,c,d", "9808ff5e9"])("accepts the refs %s", (refs) => {
-    expect(readInputs({ FIRST_SYNC_REFS: refs, FIRST_SYNC_REPETITIONS: "1", FIRST_SYNC_MINUTES: "20" }).refs).toEqual(refs.split(","));
+    expect(readInputs({ FIRST_SYNC_REFS: refs, FIRST_SYNC_MINUTES: "60" }).refs).toEqual(refs.split(","));
   });
 
   it.each(["", "main,", "main,main", "a,b,c,d,e", "-x", "a b", "a;b", "a..b", "a/", "a//b", "a.lock", "$(id)", "../main"])("rejects the refs %j", (refs) => {
     expect(() => readInputs({ FIRST_SYNC_REFS: refs })).toThrow("FIRST_SYNC_REFS");
   });
 
-  it("uses three repetitions and 35 minutes when the inputs are left out", () => {
-    expect(readInputs({ FIRST_SYNC_REFS: "main,v0.1.0-alpha.7" })).toEqual({ refs: ["main", "v0.1.0-alpha.7"], repetitions: 3, minutes: 35 });
+  it("runs each ref once from the first, with 80 minutes each, when the inputs are left out", () => {
+    expect(readInputs({ FIRST_SYNC_REFS: "v0.1.0-alpha.7,main,fix" })).toEqual({ refs: ["v0.1.0-alpha.7", "main", "fix"], repetitions: 1, rotation: 0, minutes: 80 });
   });
 
-  it.each(["", "0", "6", "1.5", "01", "2;id"])("rejects %j repetitions", (repetitions) => {
-    expect(() => readInputs({ FIRST_SYNC_REFS: "main", FIRST_SYNC_REPETITIONS: repetitions })).toThrow("FIRST_SYNC_REPETITIONS");
+  it.each(["", "0", "5", "1.5", "01", "2;id"])("rejects %j repetitions", (repetitions) => {
+    expect(() => readInputs({ FIRST_SYNC_REFS: "main", FIRST_SYNC_REPETITIONS: repetitions, FIRST_SYNC_MINUTES: "10" })).toThrow("FIRST_SYNC_REPETITIONS");
   });
 
-  it.each(["", "0", "121", "1e2", "030", "30 "])("rejects %j minutes", (minutes) => {
+  it.each([
+    ["v0.1.0-alpha.7,main", "3"],
+    ["a,b,c", "2"],
+    ["a,b,c", "4"],
+    ["a,b,c,d", "2"],
+  ])("refuses %s with %s repetitions, which puts some refs first more often than others", (refs, repetitions) => {
+    expect(() => readInputs({ FIRST_SYNC_REFS: refs, FIRST_SYNC_REPETITIONS: repetitions, FIRST_SYNC_MINUTES: "5" })).toThrow("FIRST_SYNC_REPETITIONS must be 1 or a multiple of the " + refs.split(",").length + " refs");
+  });
+
+  it.each([
+    ["main", "3"],
+    ["a,b", "2"],
+    ["a,b", "4"],
+    ["a,b,c", "3"],
+    ["a,b,c", "1"],
+  ])("accepts %s with %s repetitions", (refs, repetitions) => {
+    expect(readInputs({ FIRST_SYNC_REFS: refs, FIRST_SYNC_REPETITIONS: repetitions, FIRST_SYNC_MINUTES: "5" }).repetitions).toBe(Number(repetitions));
+  });
+
+  it.each(["0", "1", "2"])("accepts rotation %s for three refs", (rotation) => {
+    expect(readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_ROTATION: rotation }).rotation).toBe(Number(rotation));
+  });
+
+  it.each(["", "3", "-1", "01", "1.0", "1;id"])("rejects rotation %j for three refs", (rotation) => {
+    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_ROTATION: rotation })).toThrow("FIRST_SYNC_ROTATION must be a whole number from 0 to 2");
+  });
+
+  it.each(["", "0", "241", "1e2", "030", "30 "])("rejects %j minutes", (minutes) => {
     expect(() => readInputs({ FIRST_SYNC_REFS: "main", FIRST_SYNC_MINUTES: minutes })).toThrow("FIRST_SYNC_MINUTES");
   });
 
-  it("refuses builds and runs that do not fit the macOS job and names the cap that fits", () => {
-    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_REPETITIONS: "3", FIRST_SYNC_MINUTES: "35" })).toThrow(
-      "3 builds of about 35 minutes and 9 runs of up to 35 minutes plus 5 minutes each to reset the tree take 465 minutes, but the macOS job has 320 minutes for them. Lower FIRST_SYNC_MINUTES to 18",
+  it("refuses runs that with the job's setup do not fit its 6 hours, and names the cap that fits", () => {
+    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c,d" })).toThrow(
+      "4 runs of up to 80 minutes and 5 minutes each to reset the tree, with 15 minutes to free disk, 20 to generate the tree, 40 to wait for the approval and the pairing codes, 10 for the summary and 5 to spare, take 430 minutes, more than the macOS job's 360. Lower FIRST_SYNC_MINUTES to 62 or run fewer refs or repetitions.",
     );
-    expect(readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_REPETITIONS: "3", FIRST_SYNC_MINUTES: "18" }).minutes).toBe(18);
-    expect(readInputs({ FIRST_SYNC_REFS: "a,b", FIRST_SYNC_REPETITIONS: "3", FIRST_SYNC_MINUTES: "35" }).minutes).toBe(35);
-    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c,d", FIRST_SYNC_REPETITIONS: "5", FIRST_SYNC_MINUTES: "10" })).toThrow("Lower FIRST_SYNC_MINUTES to 4 or run fewer refs or repetitions.");
-    expect(readInputs({ FIRST_SYNC_REFS: "a,b,c,d", FIRST_SYNC_REPETITIONS: "5", FIRST_SYNC_MINUTES: "4" }).minutes).toBe(4);
+    expect(readInputs({ FIRST_SYNC_REFS: "a,b,c,d", FIRST_SYNC_MINUTES: "62" }).minutes).toBe(62);
+    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c,d", FIRST_SYNC_MINUTES: "63" })).toThrow("take 362 minutes");
+    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_REPETITIONS: "3" })).toThrow("Lower FIRST_SYNC_MINUTES to 25");
+    expect(readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_MINUTES: "85" }).minutes).toBe(85);
+    expect(() => readInputs({ FIRST_SYNC_REFS: "a,b,c", FIRST_SYNC_MINUTES: "86" })).toThrow("take 363 minutes");
   });
 });
 
 describe("run order", () => {
-  it("runs every ref once per repetition and starts each repetition one ref later", () => {
-    const runs = runOrder(3, 3);
+  it("starts each dispatch's single round at its rotation, so three dispatches put each ref first once", () => {
+    const order = (rotation: number) => runOrder(3, 1, rotation).map((run) => "ABC"[run.ref]).join("");
+    expect([0, 1, 2].map(order)).toEqual(["ABC", "BCA", "CAB"]);
+  });
+
+  it("starts each repetition one ref later, continuing from the rotation", () => {
+    const runs = runOrder(3, 3, 0);
     expect(runs.map((run) => "ABC"[run.ref]).join("")).toBe("ABCBCACAB");
     expect(runs.map((run) => run.rep)).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2]);
     expect(runs.map((run) => run.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    for (const ref of [0, 1, 2]) expect(runs.filter((run) => run.ref === ref).map((run) => run.order).sort()).toEqual([0, 1, 2]);
+    expect(runOrder(3, 3, 2).map((run) => "ABC"[run.ref]).join("")).toBe("CABABCBCA");
+    expect(runOrder(2, 2, 1).map((run) => "AB"[run.ref]).join("")).toBe("BAAB");
   });
 
-  it("alternates two refs", () => {
-    expect(runOrder(2, 3).map((run) => run.ref)).toEqual([0, 1, 1, 0, 0, 1]);
+  it.each([
+    [2, 2],
+    [2, 4],
+    [3, 3],
+    [4, 4],
+  ])("puts each of %i refs in each position equally often over %i repetitions", (refs, repetitions) => {
+    for (let rotation = 0; rotation < refs; rotation++) {
+      const runs = runOrder(refs, repetitions, rotation);
+      for (let ref = 0; ref < refs; ref++) {
+        for (let order = 0; order < refs; order++) expect(runs.filter((run) => run.ref === ref && run.order === order)).toHaveLength(repetitions / refs);
+      }
+    }
   });
 });
 
@@ -192,6 +242,7 @@ describe("summary", () => {
       order: index % 2,
       entries: ENTRIES,
       ended: "synced",
+      failure: null,
       capSeconds: 600,
       elapsedSeconds: 100,
       linkSeconds: 1,
@@ -239,6 +290,24 @@ describe("summary", () => {
     expect(summary(builds, [result(0, "main", { syncedSeconds: 100 }), result(1, "main", capped), result(2, "main", capped)], 3)).toContain("| ≥ 600 s (100 s to ≥ 600 s) |");
   });
 
+  it("leaves a run whose daemon exited out of the statistics and gives the reason", () => {
+    const builds = [{ ref: "main", sha: "1111111111aaaa" }];
+    const failed = result(2, "main", { ended: "failed", failure: "the daemon exited after 50 s", syncedSeconds: null, elapsedSeconds: 50, cpuSeconds: 1, stalls: 9 });
+    const results = [result(0, "main", { syncedSeconds: 100 }), result(1, "main", { syncedSeconds: 200 }), failed];
+    expect(summary(builds, results, 3)).toContain("| `main` (1111111111) | 2 of 3 (1 failed) | 4 s (4 s to 4 s) | 150 s (100 s to 200 s) | 0 s (0 s to 0 s) | 0 (0 to 0) |");
+    expect(runTable(results)).toContain("| 3 | `main` | 2 | 1 | 4 s | failed: the daemon exited after 50 s |");
+  });
+
+  it("keeps a multi-line failure with pipes inside one table cell", () => {
+    const failed = result(0, "main", { ended: "failed", failure: "the daemon exited: a | b\nsecond line\n", syncedSeconds: null });
+    expect(runTable([failed])).toContain("| failed: the daemon exited: a \\| b second line | 1000 of 1000 |");
+  });
+
+  it("gives no statistics for a ref whose every run failed", () => {
+    const failed = result(0, "main", { ended: "failed", failure: "koi space create failed", syncedSeconds: null });
+    expect(summary([{ ref: "main", sha: "1111111111aaaa" }], [failed], 1)).toContain("| 0 of 1 (1 failed) | n/a | n/a |");
+  });
+
   it("says how many runs of a ref did not run", () => {
     const table = summary([{ ref: "main", sha: "1111111111aaaa" }], [result(0, "main")], 3);
     expect(table).toContain("| 1 of 1 (2 not run) |");
@@ -248,5 +317,120 @@ describe("summary", () => {
     const rows = runTable([result(1, "fix"), result(0, "main", { ended: "capped", syncedSeconds: null, elapsedSeconds: 600 })]).split("\n");
     expect(rows[2]).toBe("| 1 | `main` | 1 | 1 | 4 s | capped at 600 s | 1000 of 1000 | 0 s | 0 | 0 s | 0, 0, 0 | 50 s | 100 MiB | 2 MiB | 2000 B |");
     expect(rows[3]).toContain("| 2 | `fix` | 1 | 2 |");
+  });
+});
+
+const here = dirname(fileURLToPath(import.meta.url));
+const TOKENS = {
+  GH_TOKEN: "private-github-token",
+  GITHUB_TOKEN: "private-github-token",
+  ACTIONS_RUNTIME_TOKEN: "private-runtime-token",
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: "private-oidc-token",
+  CLOUDFLARE_API_TOKEN: "private-cloudflare-token",
+  CLOUDFLARE_ACCOUNT_ID: "private-cloudflare-account",
+  KOIDRIVE_DEPLOY_TEST_STATE: "/private/state.json",
+};
+
+describe("koi build", () => {
+  let work: string;
+  let source: string;
+  let sha: string;
+
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), "koidrive-first-sync-unit-"));
+    source = join(work, "source");
+    mkdirSync(join(work, "bin"));
+    mkdirSync(source);
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: source, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("commit", "-q", "--allow-empty", "-m", "ref under test");
+    sha = git("rev-parse", "HEAD");
+    for (const tool of ["cargo", "rustup"]) {
+      writeFileSync(
+        join(work, "bin", tool),
+        `#!${process.execPath}
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+writeFileSync(join(process.cwd(), "${tool}.json"), JSON.stringify({ args: process.argv.slice(2), env: process.env }));
+if ("${tool}" === "cargo") {
+  mkdirSync(join(process.env.CARGO_TARGET_DIR, "release"), { recursive: true });
+  writeFileSync(join(process.env.CARGO_TARGET_DIR, "release", "koi"), "koi built from the ref");
+}
+`,
+        { mode: 0o755 },
+      );
+    }
+  });
+
+  afterEach(() => rmSync(work, { recursive: true, force: true }));
+
+  function build(extra: NodeJS.ProcessEnv = {}): Promise<{ status: number | null; output: string }> {
+    const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [...flags, join(here, "first-sync.ts"), "build", source, join(work, "out")], {
+        env: { PATH: join(work, "bin") + delimiter + process.env.PATH, HOME: work, TMPDIR: work, FIRST_SYNC_WORK: join(work, "w"), FIRST_SYNC_INDEX: "1", FIRST_SYNC_REF: "fix/branch", FIRST_SYNC_SHA: sha, ...TOKENS, ...extra },
+      });
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => (output += chunk));
+      child.stderr.on("data", (chunk: Buffer) => (output += chunk));
+      child.on("error", reject);
+      child.on("close", (status) => resolve({ status, output }));
+    });
+  }
+
+  it("runs rustup and the release build of the checked-out ref without any token in their environment", async () => {
+    const result = await build();
+    expect(result.status, result.output).toBe(0);
+    const cargo = JSON.parse(readFileSync(join(source, "cargo.json"), "utf8"));
+    const rustup = JSON.parse(readFileSync(join(source, "rustup.json"), "utf8"));
+    expect(cargo.args).toEqual(["build", "--release", "--locked", "-p", "koidrive-cli", "--bin", "koi"]);
+    expect(rustup.args).toEqual(["show", "active-toolchain"]);
+    for (const seen of [cargo.env, rustup.env]) {
+      for (const name of Object.keys(TOKENS)) expect(seen).not.toHaveProperty(name);
+      expect(JSON.stringify(seen)).not.toContain("private-");
+      expect(seen.CARGO_TARGET_DIR).toBe(join(work, "w", "target", "1"));
+    }
+    expect(readFileSync(join(work, "out", "koi"), "utf8")).toBe("koi built from the ref");
+    expect(JSON.parse(readFileSync(join(work, "out", "build.json"), "utf8"))).toEqual({ index: 1, ref: "fix/branch", sha });
+    expect(existsSync(join(work, "w", "target", "1"))).toBe(false);
+  });
+
+  it("refuses a checkout at another commit than the ref resolved to", async () => {
+    const result = await build({ FIRST_SYNC_SHA: "0".repeat(40) });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("holds " + sha + ", not " + "0".repeat(40));
+    expect(existsSync(join(source, "cargo.json"))).toBe(false);
+  });
+
+  it("passes on only the variables a Rust build reads", () => {
+    expect(buildEnv({ PATH: "/bin", HOME: "/home", CARGO_HOME: "/cargo", DEVELOPER_DIR: "/xcode", ...TOKENS, GITHUB_REPOSITORY: "koidrive/koidrive" }, "/target")).toEqual({
+      PATH: "/bin",
+      HOME: "/home",
+      CARGO_HOME: "/cargo",
+      DEVELOPER_DIR: "/xcode",
+      CARGO_TARGET_DIR: "/target",
+    });
+  });
+});
+
+describe("deploy-test workflow", () => {
+  const workflow = readFileSync(join(here, "..", "..", "..", ".github", "workflows", "deploy-test.yml"), "utf8");
+  const jobs = Object.fromEntries([...workflow.split(/^jobs:\n/m)[1]!.matchAll(/^ {2}([a-z0-9-]+):\n((?: {4}.*\n|\n)*)/gm)].map((match) => [match[1]!, match[2]!]));
+  const steps = (job: string) => jobs[job]!.split(/^ {6}- /m).slice(1);
+
+  it("gives the build jobs, which run the refs' build scripts, no token, secret or environment", () => {
+    const job = jobs["first-sync-build"]!;
+    expect(job).toBeDefined();
+    expect(job).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|secrets\.|github\.token|environment:|actions: /);
+    expect(job).toContain("    permissions:\n      contents: read\n    strategy:");
+  });
+
+  it("hands the token in the macOS sync job only to the step that downloads the pairing codes", () => {
+    const job = jobs["first-sync-macos"]!;
+    expect(job.split("    steps:")[0]).not.toMatch(/GH_TOKEN|github\.token/);
+    expect(job).not.toMatch(/secrets\./);
+    const withToken = steps("first-sync-macos").filter((step) => /GH_TOKEN|github\.token/.test(step));
+    expect(withToken).toHaveLength(1);
+    expect(withToken[0]).toContain("run: node scripts/deploy-test/first-sync.ts fetch-codes\n");
   });
 });

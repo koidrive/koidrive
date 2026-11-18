@@ -44,14 +44,18 @@ on:
         description: "first-sync only: comma-separated branches, tags or commits to build the macOS client from, at most four."
         type: string
         default: 'v0.1.0-alpha.7,main'
-      first_sync_repetitions:
-        description: "first-sync only: runs per ref, integer 1 through 5."
+      first_sync_rotation:
+        description: "first-sync only: index of the ref that runs first, from 0. Dispatch once with each index so every ref runs first once."
         type: string
-        default: '3'
+        default: '0'
+      first_sync_repetitions:
+        description: "first-sync only: rounds of every ref, 1 or a multiple of the number of refs, at most 4."
+        type: string
+        default: '1'
       first_sync_minutes:
         description: "first-sync only: minutes each run may take before it stops unsynced."
         type: string
-        default: '35'
+        default: '80'
 
 permissions:
   contents: read
@@ -68,6 +72,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    outputs:
+      first_sync_builds: ${{ steps.first-sync.outputs.builds }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,16 +134,60 @@ jobs:
           KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
         run: node server/scripts/deploy-test/bench.ts small validate
       - name: Validate first-sync inputs before deployment
+        id: first-sync
         if: inputs.mode == 'first-sync'
         env:
           FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+          FIRST_SYNC_ROTATION: ${{ inputs.first_sync_rotation }}
           FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
           FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
         run: node server/scripts/deploy-test/first-sync.ts validate
 
+  first-sync-build:
+    name: first sync build (${{ matrix.ref }})
+    needs: trusted
+    if: inputs.mode == 'first-sync'
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.trusted.outputs.first_sync_builds) }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.sha }}
+          path: client-under-test
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Build koi from ${{ matrix.ref }}
+        env:
+          FIRST_SYNC_INDEX: ${{ matrix.index }}
+          FIRST_SYNC_REF: ${{ matrix.ref }}
+          FIRST_SYNC_SHA: ${{ matrix.sha }}
+        run: node scripts/deploy-test/first-sync.ts build "$GITHUB_WORKSPACE/client-under-test" "$RUNNER_TEMP/koi"
+      - name: Upload koi
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-sync-koi-${{ matrix.index }}
+          path: ${{ runner.temp }}/koi/
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
   deploy-test:
     name: deploy test (${{ inputs.mode }})
-    needs: trusted
+    needs: [trusted, first-sync-build]
+    if: ${{ !cancelled() && needs.trusted.result == 'success' && (needs.first-sync-build.result == 'success' || needs.first-sync-build.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: deploy-test
     timeout-minutes: ${{ inputs.mode == 'first-sync' && 360 || inputs.mode == 'bench-small' && 180 || (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
@@ -150,12 +200,17 @@ jobs:
       KOI: ${{ github.workspace }}/target/debug/koi
       E2E_PEER_JOB: ${{ inputs.mode == 'first-sync' && 'first sync (macOS)' || 'e2e (macOS)' }}
       FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+      FIRST_SYNC_ROTATION: ${{ inputs.first_sync_rotation }}
       FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
       FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
     defaults:
       run:
         working-directory: server
     steps:
+      - name: Record when the job started
+        if: inputs.mode == 'first-sync'
+        working-directory: .
+        run: echo "FIRST_SYNC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - name: Check the Cloudflare secrets
         id: secrets
         working-directory: .
@@ -349,7 +404,7 @@ jobs:
 
       - name: "first sync: seal a pairing code for each ref's macOS device"
         if: inputs.mode == 'first-sync'
-        timeout-minutes: 210
+        timeout-minutes: 95
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/deploy-test/first-sync.ts seal
@@ -464,7 +519,7 @@ jobs:
 
   first-sync-macos:
     name: first sync (macOS)
-    needs: trusted
+    needs: [trusted, first-sync-build]
     if: inputs.mode == 'first-sync'
     runs-on: macos-15
     timeout-minutes: 360
@@ -472,9 +527,9 @@ jobs:
       contents: read
       actions: read
     env:
-      GH_TOKEN: ${{ github.token }}
       E2E_PEER_JOB: deploy test (first-sync)
       FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+      FIRST_SYNC_ROTATION: ${{ inputs.first_sync_rotation }}
       FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
       FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
     defaults:
@@ -505,19 +560,20 @@ jobs:
           df -h "$RUNNER_TEMP"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+      - name: Download the koi builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: first-sync-koi-*
+          path: ${{ runner.temp }}/koidrive-first-sync/bin
       - name: Check the free disk space
         run: node scripts/deploy-test/first-sync.ts disk
-      - name: Build koi from each ref
-        timeout-minutes: 150
-        run: node scripts/deploy-test/first-sync.ts build
       - name: Generate the tree
         id: generate
-        timeout-minutes: 45
+        timeout-minutes: 20
         run: node scripts/deploy-test/first-sync.ts generate
       - name: Make the key the pairing codes are sealed to
         run: node scripts/deploy-test/first-sync.ts keygen
@@ -528,8 +584,12 @@ jobs:
           path: ${{ runner.temp }}/koidrive-first-sync/key/public.pem
           retention-days: 1
           if-no-files-found: error
+      - name: Download the sealed pairing codes
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/first-sync.ts fetch-codes
       - name: Pair a device for each ref
-        timeout-minutes: 130
         run: node scripts/deploy-test/first-sync.ts join
       - name: Measure the first syncs
         run: node scripts/deploy-test/first-sync.ts measure
