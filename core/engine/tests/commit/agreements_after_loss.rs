@@ -682,6 +682,36 @@ fn a_folder_resent_for_a_file_whose_s_update_waits_keeps_the_waiting_content_and
     assert!(!commit.iter().any(|op| matches!(op, op::Op::UpdateContent(_))), "{commit:?}");
 }
 
+#[test]
+#[ignore = "a resent folder waits on a file trashed in a folder S never held, GUN-1036"]
+fn a_folder_resent_for_a_file_the_user_renamed_in_it_is_created_when_another_device_deleted_the_file_in_a_deleted_folder() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
+        ("t", None, None, Some(trashed(dir(ROOT, "t")))),
+        ("f", Some(file("p", "a", 1)), Some(file("p", "a", 1)), Some(trashed(file("t", "c", 1)))),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
+}
+
+#[test]
+#[ignore = "a resent folder waits on a file another device trashed with its folder, GUN-1036"]
+fn a_folder_resent_for_a_file_the_user_renamed_in_it_is_created_when_another_device_deleted_the_file_and_its_folder() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
+        ("g", None, None, Some(trashed(dir(ROOT, "g")))),
+        ("f", Some(file("p", "a", 1)), Some(file("p", "a", 1)), Some(trashed(file("g", "c", 1)))),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
+}
+
 fn held_elsewhere_in_a_lost_folder() -> Trees {
     trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
