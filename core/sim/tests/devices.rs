@@ -12954,7 +12954,7 @@ mod planned_against_the_server {
     }
 
     fn trees(root: &str, rows: Vec<(&String, Option<Shape>, Option<RemoteNode>, Shape)>) -> Trees {
-        let mut trees = Trees::new(root);
+        let mut trees = Trees::new(root, &IdGen::new(0));
         for (ino, (id, synced, held, local)) in (1..).zip(rows) {
             let identity = FileIdentity {
                 ino,

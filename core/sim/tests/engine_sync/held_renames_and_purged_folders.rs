@@ -7,7 +7,7 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
     let root = space.space_id().to_owned();
     let holder = nodes_with(&space, 1, Some(1))[0].clone();
     let (_, old) = RemoteNode::from_state(&space.node(&holder).unwrap()).unwrap();
-    let mut trees = Trees::new(root.clone());
+    let mut trees = Trees::new(root.clone(), &IdGen::new(0));
     trees.set_synced(NodeId::from(&holder), Some(old.shape.clone()));
     trees.set_local(
         NodeId::from(&holder),

@@ -117,9 +117,8 @@ type Row = (
     Option<RemoteNode>,
 );
 
-/// Trees from (node, L, S, R) rows.
 fn trees(nodes: &[Row]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (i, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             trees.set_local((*id).into(), local(shape.clone(), i as u128 + 1));

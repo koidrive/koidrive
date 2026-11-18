@@ -52,8 +52,7 @@ impl Engine {
 
     pub fn new(root: &str, history: &str, seed: u64) -> Self {
         let ids = IdGen::new(seed);
-        let mut trees = Trees::new(root);
-        trees.journal_mut().seed(&ids);
+        let mut trees = Trees::new(root, &ids);
         trees.take_changes();
         Self {
             trees,
@@ -71,7 +70,7 @@ impl Engine {
     /// comes back equal. The store does not hold the ignore rules, so the device reads `rules`
     /// again, and a restart plans nothing before its full scan, so the rules count as read.
     pub fn reload(&self, rules: &Rules) -> Result<Engine, Failure> {
-        let mut trees = Trees::new(self.trees.remote().root.clone());
+        let mut trees = Trees::new(self.trees.remote().root.clone(), &self.ids);
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
             trees.set_remote_place_id(id, self.trees.remote_place_id(id));

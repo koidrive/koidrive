@@ -238,9 +238,10 @@ impl Trees {
     }
 
     /// Fills the journal of a store from an earlier release out of its legacy tables, in the order of RFC 0029 §7.1;
-    /// a later step never replaces a row an earlier one wrote. `in_flight` is the commit in flight and `lost` whether
-    /// the store records a loss.
-    pub fn backfill(&mut self, in_flight: Option<&proto::Commit>, lost: bool) {
+    /// a later step never replaces a row an earlier one wrote. `in_flight` is the commit in flight, `lost` whether
+    /// the store records a loss, and `now_ms` the time the intents it mints carry.
+    pub fn backfill(&mut self, in_flight: Option<&proto::Commit>, lost: bool, now_ms: u64) {
+        self.journal.set_clock(now_ms);
         let row = |intent, author, base, value, state, replay| Row {
             intent,
             author,

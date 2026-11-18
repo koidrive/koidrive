@@ -3,6 +3,7 @@
 //! The three trees and the classification table of docs/design/sync-engine.md sections 2.2 and 2.3.
 
 use koidrive_engine::classify::{Class, SETTLE_GROUP_LIMIT, Trees, classify};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{name_key, nfc};
 use koidrive_engine::state::MovedHere;
@@ -183,7 +184,7 @@ fn trashed_remote_nodes_count_as_absent() {
 #[test]
 fn trees_built_alike_print_alike() {
     let build = || {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for i in 0..32 {
             let id = format!("n{i}");
             let shape = file(ROOT, &id, 0);
@@ -300,7 +301,7 @@ fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
 
 #[test]
 fn settling_records_matching_changes_and_drops_nodes_in_sync() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let base = file(ROOT, "a", 1);
     let edited = file(ROOT, "a", 2);
     for id in ["same", "synced", "remote", "local"] {
@@ -368,7 +369,7 @@ fn a_move_to_another_parent_under_the_same_name_is_a_change() {
 
 #[test]
 fn settling_never_orphans_a_child_in_s() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("p".into(), Some(dir(ROOT, "p")));
     trees.set_synced("x".into(), Some(file("p", "x", 1)));
     trees.set_local("x".into(), local(file(ROOT, "a", 1), 1));
@@ -400,7 +401,7 @@ fn settling_never_orphans_a_child_in_s() {
 
 #[test]
 fn settling_waits_for_the_updates_it_depends_on() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("p".into(), Some(dir(ROOT, "p")));
     trees.set_synced("x".into(), Some(file("p", "x", 1)));
     trees.set_local("x".into(), local(file(ROOT, "x", 1), 1));
@@ -418,7 +419,7 @@ fn settling_waits_for_the_updates_it_depends_on() {
 
 #[test]
 fn settling_never_gives_two_siblings_one_name_key() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("a".into(), Some(file(ROOT, "Stra\u{df}e", 1)));
     trees.set_local("a".into(), local(file(ROOT, "y", 1), 1));
     trees.set_remote("a".into(), remote(file(ROOT, "z", 1)));
@@ -446,7 +447,7 @@ fn same_change(trees: &mut Trees, id: &str, from: Shape, to: Shape, ino: u128) {
 
 #[test]
 fn settling_takes_a_name_swap_made_on_both_sides_together() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     same_change(&mut trees, "a", file(ROOT, "x", 1), file(ROOT, "y", 1), 1);
     same_change(&mut trees, "b", file(ROOT, "y", 2), file(ROOT, "x", 2), 2);
     assert_eq!(trees.check(), Ok(()));
@@ -459,7 +460,7 @@ fn settling_takes_a_name_swap_made_on_both_sides_together() {
 
 #[test]
 fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("e".into(), Some(dir(ROOT, "a")));
     trees.set_local("e".into(), local(dir(ROOT, "x"), 1));
     let mut trashed = remote(dir(ROOT, "a"));
@@ -482,7 +483,7 @@ fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() 
 
 #[test]
 fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, old, new) in [
         ("a", dir(ROOT, "v"), dir(ROOT, "w")),
         ("b", dir(ROOT, "w"), dir(ROOT, "v")),
@@ -514,7 +515,7 @@ fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it(
 
 #[test]
 fn settling_a_rotation_beside_a_released_folder_searches_the_rotation_on_its_own() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for i in 0..11 {
         let from = dir(ROOT, &format!("y{i}"));
         let to = dir(ROOT, &format!("y{}", (i + 1) % 11));
@@ -538,7 +539,7 @@ fn settling_a_rotation_beside_a_released_folder_searches_the_rotation_on_its_own
 
 #[test]
 fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settle() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("e".into(), Some(dir(ROOT, "a")));
     trees.set_local("e".into(), local(dir(ROOT, "x"), 1));
     trees.set_remote("e".into(), remote(dir(ROOT, "b")));
@@ -572,7 +573,7 @@ fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settl
 
 #[test]
 fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));
     trees.set_local("d".into(), local(dir(ROOT, "d"), 9));
     trees.set_remote("d".into(), remote(dir(ROOT, "d")));
@@ -590,7 +591,7 @@ fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
 
 #[test]
 fn a_cycle_elsewhere_does_not_stop_a_swap_below_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     same_change(&mut trees, "a", dir("c", "x"), dir("c", "y"), 1);
     same_change(&mut trees, "b", dir("c", "y"), dir("c", "x"), 2);
     same_change(&mut trees, "c", dir(ROOT, "c"), dir("z", "c"), 3);
@@ -613,7 +614,7 @@ fn a_cycle_elsewhere_does_not_stop_a_swap_below_it() {
 
 #[test]
 fn a_cycle_through_one_swap_does_not_stop_another_swap_that_fits() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     same_change(&mut trees, "a", dir(ROOT, "A"), dir("y", "A"), 1);
     same_change(&mut trees, "b", dir("y", "A"), dir(ROOT, "A"), 2);
     same_change(&mut trees, "y", dir("p", "x"), dir("q", "x"), 3);
@@ -641,7 +642,7 @@ fn a_cycle_through_one_swap_does_not_stop_another_swap_that_fits() {
 
 #[test]
 fn a_create_and_a_move_into_it_settle_together_beside_a_cycle() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     same_change(&mut trees, "top", dir(ROOT, "x"), dir("new", "u"), 1);
     same_change(
         &mut trees,
@@ -675,7 +676,7 @@ fn a_create_and_a_move_into_it_settle_together_beside_a_cycle() {
 /// Renames `n` files in one directory in a ring, the same way on both sides, so that no update
 /// fits without all the others.
 fn rotation(n: usize) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for i in 0..n {
         let from = file(ROOT, &format!("x{i}"), 1);
         let to = file(ROOT, &format!("x{}", (i + 1) % n), 1);
@@ -703,7 +704,7 @@ fn a_group_larger_than_the_search_limit_stays_dirty_and_is_listed() {
 #[test]
 fn content_both_sides_agree_on_counts_as_the_server_s_whatever_the_size_of_its_group() {
     for n in [SETTLE_GROUP_LIMIT, SETTLE_GROUP_LIMIT + 1] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for i in 0..n {
             let from = file(ROOT, &format!("x{i}"), 1);
             let to = file(ROOT, &format!("x{}", (i + 1) % n), 2);
@@ -719,7 +720,7 @@ fn content_both_sides_agree_on_counts_as_the_server_s_whatever_the_size_of_its_g
 
 #[test]
 fn a_swap_that_would_clash_with_an_unsettled_sibling_waits() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     same_change(&mut trees, "a", file(ROOT, "x", 1), file(ROOT, "y", 1), 1);
     same_change(&mut trees, "b", file(ROOT, "y", 2), file(ROOT, "w", 2), 2);
     trees.set_synced("c".into(), Some(file(ROOT, "w", 3)));
@@ -830,7 +831,7 @@ fn apply(i: usize, s: &[Option<Shape>], change: &Change, out: &[Option<Shape>]) 
 /// remote delete, and so does a node R holds as S does.
 #[test]
 fn forgetting_what_the_server_lost_keeps_the_rest_of_s() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shapes = [
         ("albums", dir(ROOT, "albums")),
         ("photos", dir("albums", "photos")),
@@ -883,7 +884,7 @@ fn forgetting_what_the_server_lost_keeps_the_rest_of_s() {
 /// folder once the delete has taken the node out of it, and a node R lacks below it at once.
 #[test]
 fn a_remote_delete_below_a_folder_the_server_lost_stays_a_remote_delete() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shapes = [
         ("albums", dir(ROOT, "albums")),
         ("one", file("albums", "one", 1)),
@@ -924,7 +925,7 @@ fn a_remote_delete_below_a_folder_the_server_lost_stays_a_remote_delete() {
 }
 
 fn forgotten_after_a_loss() -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = file(ROOT, "b", 1);
     trees.set_local("a".into(), local(shape.clone(), 1));
     trees.set_synced("a".into(), Some(shape.clone()));
@@ -974,7 +975,7 @@ fn a_folder_resent_after_a_loss_with_a_file_marked_as_nothing() -> Trees {
 }
 
 fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape, ino) in [
         ("p", dir(ROOT, "p"), 1),
         ("f", dir("p", "f"), 2),
@@ -1040,7 +1041,7 @@ fn a_file_the_user_makes_in_a_resent_folder_keeps_it_from_a_delete() {
 }
 
 fn created_here_and_lost(moved: Vec<(NodeId, MovedHere)>) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = file(ROOT, "b", 1);
     trees.set_local("a".into(), local(shape.clone(), 1));
     trees.set_synced("a".into(), Some(shape.clone()));
@@ -1137,7 +1138,7 @@ proptest! {
             let next_r = apply(i, &s, remote_change, &r);
             r.push(next_r);
         }
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for i in 0..space.len() {
             let id = format!("n{i}");
             trees.set_synced(NodeId::from(&id), s[i].clone());
@@ -1185,7 +1186,7 @@ proptest! {
         let rule_dirs: [&[&str]; 3] = [&[], &["y"], &["y", "x"]];
         let mut rules_at = [None; 3];
         let n = start.len();
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for (i, shape) in draw_tree(&start).into_iter().enumerate() {
             let id = format!("n{i}");
             if let Some(shape) = &shape {
@@ -1236,7 +1237,7 @@ proptest! {
                 }
                 prop_assert_eq!(trees.check(), Ok(()));
             }
-            let mut everything = Trees::new(ROOT);
+            let mut everything = Trees::new(ROOT, &IdGen::new(0));
             for (folder, rules) in rule_dirs.iter().zip(rules_at) {
                 everything.set_rules(folder, Source::Koiignore, rules.map(|rules| RuleFile::parse(rules.as_bytes())));
             }
@@ -1338,7 +1339,7 @@ proptest! {
     fn settling_leaves_no_set_of_same_updates_that_fits(space in searches()) {
         let s = draw_tree(&space.iter().map(|node| node.0).collect::<Vec<_>>());
         let r = draw_tree(&space.iter().map(|node| node.1).collect::<Vec<_>>());
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for (i, (_, _, choice)) in space.iter().enumerate() {
             let id = format!("n{i}");
             trees.set_synced(NodeId::from(&id), s[i].clone());
@@ -1393,7 +1394,7 @@ proptest! {
 }
 
 fn a_release_below_a_folder_whose_copy_went(hold: impl FnOnce(&mut Trees)) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape, ino) in [("n0", dir(ROOT, "y"), 0), ("n1", file(ROOT, "X", 0), 1)] {
         trees.set_remote(id.into(), remote(shape.clone()));
         trees.set_local(id.into(), local(shape.clone(), ino));
@@ -1477,7 +1478,7 @@ fn a_path_that_awaits_a_scan_holds_what_r_places_there_later_and_nothing_else() 
 fn excluding_a_node_l_holds_below_itself_ends() {
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         trees.set_rules(
             &[] as &[&str],
             Source::Koiignore,

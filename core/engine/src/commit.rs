@@ -6842,7 +6842,7 @@ mod ancestry_size_tests {
 
     #[test]
     fn ancestry_heavy_batch_stays_within_the_estimated_record_limit() {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         for n in 0..300 {
             let id = version(n + 1000);
             let shape = Shape {
@@ -6971,7 +6971,7 @@ mod compensation_tests {
     #[test]
     fn a_bundle_that_leaves_a_folder_live_that_the_trash_gave_back_and_l_does_not_hold_is_refused()
     {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         let local = [
             ("a", dir("root", "new")),
             ("x", dir("root", "x")),

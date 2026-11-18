@@ -21,6 +21,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         made_over: Vec::new(),
         pending_for: None,
         pending_by: None,
+        intents: None,
     };
     let local = |name: &str| EngineLocalNode {
         left_out_when_placed: false,
@@ -34,7 +35,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         },
         parked: false,
     };
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_remote("n".into(), remote("x", 1, false));
     trees.set_local("n".into(), local("x"));
     trees.set_synced("n".into(), Some(engine_shape("root", "x")));

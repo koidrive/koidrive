@@ -159,7 +159,7 @@ impl World {
             lost: Vec::new(),
             seen: None,
             purged: BTreeMap::new(),
-            trees: Trees::new(ROOT),
+            trees: Trees::new(ROOT, &IdGen::new(0)),
             commits: Commits::default(),
             ids: IdGen::new(1),
             now: NOW,

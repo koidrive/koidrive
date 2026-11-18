@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_another_device_s_copy()
 {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let mut shape = engine_shape("root", "f");
     shape.content.as_mut().expect("a file").mtime_ns = 1_700_000_000_123_456_789;
     let renamed = EngineShape {
@@ -25,6 +25,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         trash_group: String::new(),
         pending_for: None,
         pending_by: None,
+        intents: None,
     };
     let identity = FileIdentity {
         ino: 1,
