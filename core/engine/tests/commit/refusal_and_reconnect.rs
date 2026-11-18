@@ -555,7 +555,7 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
     assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 7);
     let reissued = Welcome {
-        device_commit_id: "commit-at-7".into(),
+        device_commit_id: "commit-at-8".into(),
         device_committed_at_ms: 8,
         ..welcome(2)
     };
@@ -601,7 +601,14 @@ fn a_slot_kept_without_a_token_keeps_the_bound_of_the_newest_kept_slot() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let mut commits = Commits::from_state(CommitsState {
         accepted: 1,
-        slots: [(1, Base::from(3))].into(),
+        slots: [(
+            1,
+            Slot {
+                seq: 3,
+                ..Default::default()
+            },
+        )]
+        .into(),
         ..Default::default()
     })
     .unwrap();
@@ -696,7 +703,7 @@ fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(commits.own_record(9, &commit.commit_id, 90));
+    assert!(commits.own_record(9, &commit.commit_id));
     let holding = Welcome {
         device_commit_id: commit.commit_id.clone(),
         device_committed_at_ms: 90,
@@ -704,6 +711,55 @@ fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
     };
     assert_eq!(commits.connected(&holding), Reconnect::Resend);
     assert_eq!((commits.accepted(), commits.held_through()), (0, 9));
+}
+
+fn held_at(committed_at_ms: i64) -> (Trees, Commits, String) {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    commits
+        .received(CommitResult {
+            committed_at_ms,
+            ..result(9, vec![outcome(op_result::Code::Applied)])
+        })
+        .unwrap();
+    (trees, commits, commit.commit_id)
+}
+
+fn naming(commit_id: &str, committed_at_ms: i64) -> Welcome {
+    Welcome {
+        device_commit_id: commit_id.to_owned(),
+        device_committed_at_ms: committed_at_ms,
+        ..welcome(1)
+    }
+}
+
+#[test]
+fn a_result_without_a_time_bounds_at_its_slot_for_a_welcome_that_names_its_commit_with_one() {
+    let (mut trees, mut commits, commit_id) = held_at(0);
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!(commits.connected(&naming(&commit_id, 90)), Reconnect::Idle);
+    assert_eq!((commits.accepted(), commits.held_through()), (1, 9));
+}
+
+#[test]
+fn a_held_result_without_a_time_is_no_loss_for_a_welcome_that_names_its_commit_with_one() {
+    let (mut trees, mut commits, commit_id) = held_at(0);
+    assert_eq!(commits.connected(&naming(&commit_id, 90)), Reconnect::Idle);
+    assert!(commits.in_flight().is_some());
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!((commits.accepted(), commits.held_through()), (1, 9));
+}
+
+#[test]
+fn a_welcome_that_names_this_devices_commit_at_another_time_holds_it() {
+    let (mut trees, mut commits, commit_id) = held_at(90);
+    let applied_again = naming(&commit_id, 91);
+    assert_eq!(commits.connected(&applied_again), Reconnect::Idle);
+    assert!(commits.in_flight().is_some());
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!(commits.connected(&applied_again), Reconnect::Idle);
+    assert_eq!((commits.accepted(), commits.held_through()), (1, 9));
 }
 
 #[test]

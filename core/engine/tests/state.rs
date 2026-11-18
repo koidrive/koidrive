@@ -5,7 +5,7 @@
 //! the error that names it.
 
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
-use koidrive_engine::commit::{Base, Commits, Halt, InFlight, MAX_OPS};
+use koidrive_engine::commit::{Commits, Halt, InFlight, MAX_OPS, Slot};
 use koidrive_engine::effects::{Effect, EffectRecord, Effects, Location};
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::uuid_v7;
@@ -338,13 +338,18 @@ fn commits_state() -> CommitsState {
             outcome: Outcome::Rejected(Rejection::NotFound),
         }],
         slots: [
-            (2, Base::from(5)),
+            (
+                2,
+                Slot {
+                    seq: 5,
+                    ..Default::default()
+                },
+            ),
             (
                 3,
-                Base {
+                Slot {
                     seq: 8,
                     commit_id: "c3".into(),
-                    committed_at_ms: 3,
                 },
             ),
         ]

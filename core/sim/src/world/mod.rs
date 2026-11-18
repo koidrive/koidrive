@@ -2076,12 +2076,8 @@ impl World {
                         break;
                     }
                     if record.seq == engine.cursor.seq + 1 {
-                        let owned = (engine.commits).own_record(
-                            record.seq,
-                            &record.commit_id,
-                            record.committed_at_ms,
-                        );
-                        let made = owned.then_some(record.commit_id.as_str());
+                        let made = (engine.commits.own_record(record.seq, &record.commit_id))
+                            .then_some(record.commit_id.as_str());
                         engine.apply(&record.changes, made)?;
                         engine.cursor = Base {
                             seq: record.seq,

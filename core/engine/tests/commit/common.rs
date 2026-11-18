@@ -7,7 +7,7 @@ use koidrive_engine::classify::{
 };
 
 use koidrive_engine::commit::{
-    Base, Commits, Failure, Halt, Lift, LiftError, MAX_COMMIT_BYTES, MAX_OPS, Reconnect,
+    Commits, Failure, Halt, Lift, LiftError, MAX_COMMIT_BYTES, MAX_OPS, Reconnect, Slot,
 };
 
 use koidrive_engine::effects::{BatchLimit, Effect, EffectError, Effects, Location};
@@ -368,16 +368,14 @@ fn welcome_holding(commits: &Commits, device_seq: u64) -> Welcome {
     let slot = (commits.state().slots.get(&device_seq).cloned()).unwrap_or_default();
     Welcome {
         device_commit_id: slot.commit_id,
-        device_committed_at_ms: slot.committed_at_ms,
         ..welcome(device_seq)
     }
 }
 
-fn slot(seq: u64) -> Base {
-    Base {
+fn slot(seq: u64) -> Slot {
+    Slot {
         seq,
         commit_id: format!("commit-at-{seq}"),
-        committed_at_ms: seq as i64,
     }
 }
 

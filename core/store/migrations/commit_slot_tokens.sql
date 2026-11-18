@@ -1,2 +1,1 @@
 ALTER TABLE commit_slots ADD COLUMN commit_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE commit_slots ADD COLUMN committed_at_ms INTEGER NOT NULL DEFAULT 0;

@@ -1088,7 +1088,7 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
     trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
-    assert!(commits.own_record(2, &commit.commit_id, 0));
+    assert!(commits.own_record(2, &commit.commit_id));
     commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
     trees.set_local("f".into(), local(file(ROOT, "x", 1), 1));
     trees.settle(commits.aliases());
@@ -1138,7 +1138,7 @@ fn undone_move_then_edit_then_loss(peer: Option<&str>) -> Vec<(String, u8)> {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
     trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
-    assert!(commits.own_record(2, &commit.commit_id, 0));
+    assert!(commits.own_record(2, &commit.commit_id));
     commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
     if let Some(name) = peer {
         trees.set_remote("f".into(), remote_at(file(ROOT, name, 1), 3));
