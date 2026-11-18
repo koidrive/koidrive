@@ -263,7 +263,7 @@ jobs:
               repro_tests=""
               [ -z "$red" ] || repro_tests=" -- --exact ${red% }"
               repro="git checkout $SHA && env -u PROPTEST_CASES KOIDRIVE_BATTERY_CASES=$CASES PROPTEST_RNG_SEED=$seed cargo test --locked --profile checked -p $package $selector$repro_tests"
-              failing=$(jq -c --arg target "$package $selector" --arg reason "$reason" --arg repro "$repro" '. + [{target: $target, reason: $reason, repro: $repro}]' <<< "$failing")
+              failing=$(jq -c --arg target "$package $selector" --arg log "$name" --arg reason "$reason" --arg repro "$repro" '. + [{target: $target, log: $log, reason: $reason, repro: $repro}]' <<< "$failing")
               echo "::error title=$package $selector failed on shard $SHARD::Seed $seed, stress budget $CASES, $reason. Reproduce: $repro"
             fi
           done < battery/targets.tsv

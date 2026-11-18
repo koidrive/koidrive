@@ -118,8 +118,16 @@ def classify(rows, entries):
     return ambiguous
 
 
-def shard_number(directory):
-    return int(directory.name.rsplit("-", 1)[1])
+def shards(failures):
+    nested = [path for path in failures.glob("failure-shard-*") if path.is_dir()]
+    if nested:
+        return sorted((int(path.name.rsplit("-", 1)[1]), path) for path in nested)
+    if not ((failures / "logs").is_dir() or (failures / "regressions").is_dir()):
+        raise ValueError(f"{failures} holds no failure-shard artifact.")
+    results = sorted(failures.glob("result-*.json"))
+    if len(results) != 1:
+        raise ValueError(f"{failures} holds one shard's files but {len(results)} result-*.json files name its shard.")
+    return [(int(results[0].stem.rsplit("-", 1)[1]), failures)]
 
 
 def collect(failures):
@@ -141,8 +149,7 @@ def collect(failures):
         if shard not in case["shards"]:
             case["shards"].append(shard)
 
-    for shard_dir in sorted((path for path in failures.glob("failure-shard-*") if path.is_dir()), key=shard_number):
-        shard = shard_number(shard_dir)
+    for shard, shard_dir in shards(failures):
         regressions = shard_dir / "regressions"
         files = {path.relative_to(regressions).as_posix(): path
                  for path in regressions.rglob("cc-*.txt") if path.parent.suffix == ".cases"}
@@ -171,6 +178,30 @@ def collect(failures):
     return (sorted(cases.values(), key=lambda case: (case["path"], case["test"] or "")),
             [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"])}
              for (binary, test), other in sorted(others.items())])
+
+
+def target_logs(logs, failing):
+    if "log" in failing:
+        return [logs / f"{failing['log']}.log"]
+    package, _, selector = failing["target"].partition(" ")
+    named = re.match(r"--(?:test|bin) (\S+)$", selector)
+    binary = named[1] if named else package.replace("-", "_")
+    return [log for log in logs.glob("*.log") if log.stem.rsplit("-", 1)[0] == binary]
+
+
+def unattributed(failures):
+    found = []
+    for shard, shard_dir in shards(failures):
+        results = sorted(shard_dir.glob(f"result-{shard}.json"))
+        if not results:
+            found.append({"shard": shard, "target": None, "reason": f"the artifact has no result-{shard}.json",
+                          "repro": ""})
+            continue
+        found += [{"shard": shard, "target": failing["target"], "reason": failing["reason"], "repro": failing["repro"]}
+                  for failing in json.loads(results[0].read_text())["failing"]
+                  if not any(log.is_file() and SECTION.search(log.read_text(errors="replace"))
+                             for log in target_logs(shard_dir / "logs", failing))]
+    return found
 
 
 def checked_profile(manifest):
@@ -482,13 +513,20 @@ masked, and for an entry that lists cases, only by those cases, which come befor
                   "binary passes them on every head run, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
                   for other in others]
+    if spec.get("unattributed"):
+        lines += ["", "These targets failed, but their logs name no failing test, so triage replayed nothing for "
+                  "them (a crash, a signal or a timeout ends a test binary before it reports). Run their repro "
+                  "commands to see the failure:", ""]
+        lines += [f"- shard {failed['shard']}: {failed['target'] or 'the whole shard'}, {failed['reason']}"
+                  + (f": `{failed['repro']}`" if failed["repro"] else "")
+                  for failed in spec["unattributed"]]
     return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description="Replay a red property battery's new cases on its head and base.")
     commands = parser.add_subparsers(dest="command", required=True)
-    collect_parser = commands.add_parser("collect", help="map the cases in failure-shard-* artifacts to their tests")
+    collect_parser = commands.add_parser("collect", help="map the cases in failure-shard-* artifacts, or one artifact's files, to their tests")
     collect_parser.add_argument("--failures", type=Path, required=True)
     collect_parser.add_argument("--run", required=True)
     collect_parser.add_argument("--head", required=True)
@@ -511,15 +549,20 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.command == "collect":
-        cases, others = collect(arguments.failures)
+        try:
+            cases, others = collect(arguments.failures)
+            failed = unattributed(arguments.failures)
+        except ValueError as error:
+            sys.exit(f"::error::{error}")
         profile = (checked_profile(arguments.head_manifest.read_text())
                    or checked_profile(arguments.fallback_manifest.read_text()))
         if profile is None:
             sys.exit("Neither the head's Cargo.toml nor this checkout's has a [profile.checked] section.")
         spec = {"run": arguments.run, "head": arguments.head, "base": arguments.base,
-                "checked_profile": profile, "cases": cases, "others": others}
+                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed}
         arguments.out.write_text(json.dumps(spec, indent=2) + "\n")
-        print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case.")
+        print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case; "
+              f"{len(failed)} failing targets left no failing test in their logs.")
     elif arguments.command == "replay":
         spec = json.loads(arguments.cases.read_text())
         arguments.out.write_text(json.dumps(replay(spec, arguments.side, arguments.checkout, arguments.timeout),
@@ -539,6 +582,10 @@ def main():
             {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others},
             indent=2) + "\n")
         (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url, problem))
+        if spec.get("unattributed"):
+            sys.exit("::error::" + "; ".join(f"shard {failed['shard']}: {failed['target'] or 'the whole shard'} "
+                                             f"failed ({failed['reason']}) with no failing test in its log"
+                                             for failed in spec["unattributed"]))
         if problem:
             sys.exit(f"::error::No row has a class: {problem}")
         if ambiguous:
