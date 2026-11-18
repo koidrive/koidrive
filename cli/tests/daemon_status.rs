@@ -708,6 +708,11 @@ fn the_service_a_test_installs_stops_with_the_test() {
     };
     let definition = std::fs::read_to_string(&definition)
         .unwrap_or_else(|error| panic!("{}: {error}: {envelope:#}", definition.display()));
-    let lifeline = profile.home.lifeline().to_str().unwrap();
-    assert!(definition.contains(lifeline), "{definition}");
+    for (name, value) in profile.home.vars() {
+        let value = value.to_str().unwrap();
+        assert!(
+            definition.contains(name) && definition.contains(value),
+            "{definition}"
+        );
+    }
 }

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
 use koidrive_test_support::Sandbox;
@@ -135,7 +135,7 @@ fn a_koi_stops_when_the_test_process_that_started_it_is_killed() {
 }
 
 #[test]
-fn a_test_cannot_run_koi_against_this_account_s_home_or_installs() {
+fn a_test_cannot_run_koi_outside_its_sandbox() {
     let account = std::env::home_dir().unwrap();
     let sandbox = Sandbox::new();
     let set: Vec<_> = process::koi(sandbox.path())
@@ -153,31 +153,64 @@ fn a_test_cannot_run_koi_against_this_account_s_home_or_installs() {
             "{name} reaches a sandboxed koi"
         );
     }
-    let run = |name: &str, value: &Path| {
+    let decoy = tempfile::tempdir().unwrap();
+    let app = decoy.path().join("Applications/Koidrive.app");
+    std::fs::create_dir_all(&app).unwrap();
+    let linked = |name: &str, to: &Path| {
+        let link = sandbox.path().join(name);
+        std::os::unix::fs::symlink(to, &link).unwrap();
+        link
+    };
+    let real = std::fs::canonicalize(sandbox.path()).unwrap();
+    let up = PathBuf::from_iter(real.components().skip(1).map(|_| ".."));
+    let run = |args: &[&str], name: &str, value: &Path| {
         process::koi(sandbox.path())
-            .args(["help", "--json"])
+            .args(args)
             .env("HOME", sandbox.path())
             .env(name, value)
             .output()
             .unwrap()
     };
-    for (name, value) in [
-        ("HOME", account.clone()),
-        ("XDG_STATE_HOME", account.join(".local/state")),
-        ("XDG_CONFIG_HOME", account.join(".config")),
-        ("KOIDRIVE_TEST_INSTALL_INVENTORY", PathBuf::from("/")),
-        ("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")),
-    ] {
-        let output = run(name, &value);
+    let refused = |output: Output, case: String| {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(78), "{name}: {stderr}");
+        assert_eq!(output.status.code(), Some(78), "{case}: {stderr}");
         assert!(
             stderr.starts_with("koi: a test must not"),
-            "{name}: {stderr}"
+            "{case}: {stderr}"
         );
+    };
+    for (name, value) in [
+        ("HOME", account.clone()),
+        ("HOME", linked("home", &account)),
+        (
+            "HOME",
+            real.join(&up).join(account.strip_prefix("/").unwrap()),
+        ),
+        ("HOME", decoy.path().to_path_buf()),
+        ("XDG_STATE_HOME", account.join(".local/state")),
+        ("XDG_CONFIG_HOME", account.join(".config")),
+        ("XDG_RUNTIME_DIR", decoy.path().join("run")),
+        ("KOIDRIVE_TEST_INSTALL_INVENTORY", PathBuf::from("/")),
+        ("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")),
+        ("HOMEBREW_PREFIX", linked("brew", decoy.path())),
+    ] {
+        let case = format!("{name}={}", value.display());
+        refused(run(&["help", "--json"], name, &value), case);
     }
+    let escaped = sandbox
+        .path()
+        .join("..")
+        .join(decoy.path().file_name().unwrap());
+    let uninstall = ["uninstall", "--yes", "--last-device"];
+    let inventory = "KOIDRIVE_TEST_INSTALL_INVENTORY";
+    refused(
+        run(&uninstall, inventory, &escaped),
+        format!("{inventory}={}", escaped.display()),
+    );
+    assert!(app.exists());
+    let state = sandbox.path().join("state");
     assert!(
-        run("XDG_STATE_HOME", &sandbox.path().join("state"))
+        run(&["help", "--json"], "XDG_STATE_HOME", &state)
             .status
             .success()
     );

@@ -12,7 +12,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::ipc;
-use crate::lifeline::LIFELINE;
+use crate::lifeline::{INVENTORY, LIFELINE};
 
 mod binary;
 mod command;
@@ -182,9 +182,12 @@ pub fn this_service(paths: &Paths) -> Result<Service, String> {
     let binary =
         std::env::current_exe().map_err(|error| format!("cannot find the koi binary: {error}"))?;
     let mut service = Service::new(paths, &home, &binary)?;
-    if let Some(lifeline) = std::env::var_os(LIFELINE) {
+    if std::env::var_os(LIFELINE).is_some() {
         service.suffix = Some(paths.state_key());
-        service.env.push((LIFELINE, lifeline.into_string().ok()));
+        for name in [LIFELINE, INVENTORY] {
+            let value = std::env::var_os(name).and_then(|value| value.into_string().ok());
+            service.env.push((name, value));
+        }
     }
     Ok(service)
 }
