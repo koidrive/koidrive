@@ -1827,6 +1827,26 @@ describe("WebSocket session", () => {
     expect(Math.max(...sizes)).toBeLessThanOrEqual(1024 * 1024);
   });
 
+  it("answers a client's close at once with the client's code, so the client sees a clean close", async () => {
+    const owner = await getOwner();
+    const spaceId = await createSpace(owner);
+    for (const [code, reason] of [
+      [1000, "bye"],
+      [4000, "done"],
+      [undefined, undefined],
+    ] as const) {
+      const socket = await Socket.connect(spaceId, owner);
+      await socket.start();
+      expect((await socket.rpc({ case: "listTree", value: {} })).case).toBe("tree");
+      const startedMs = Date.now();
+      const closed = new Promise<CloseEvent>((resolve) => socket.ws.addEventListener("close", resolve));
+      socket.ws.close(code, reason);
+      const event = await closed;
+      expect({ code: event.code, wasClean: event.wasClean }).toEqual({ code: code ?? 1005, wasClean: true });
+      expect(Date.now() - startedMs).toBeLessThan(2000);
+    }
+  });
+
   it("closes a connection on a message over 8 MiB before parsing it, and refuses an RPC body over 8 MiB", async () => {
     const { a, spaceId } = await twoDevices();
     const exact = await Socket.connect(spaceId, a);

@@ -750,7 +750,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       };
     }
 
-    async webSocketClose(ws: Socket): Promise<void> {
+    async webSocketClose(ws: Socket, code: number, reason: string): Promise<void> {
+      if (ws.readyState === WebSocket.CLOSING) {
+        if (code === 1000 || (code >= 3000 && code <= 4999)) ws.close(code, reason);
+        else ws.close();
+      }
       await this.releaseUsage(ws);
     }
 
