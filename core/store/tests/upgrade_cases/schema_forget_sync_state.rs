@@ -70,7 +70,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
          guard_remote guard_remote_dismissed kept_entries kept_folders kept_nodes kept_originals local_changes local_nodes lost_creates \
          lost_positions lost_shapes moved_here node_maps node_sets open_question_items open_question_members \
          open_question_shapes open_questions past_positions pending_finishes published_nodes questions \
-         recorded_nodes remote_cursor remote_nodes removed_here replaced_versions resends synced_nodes \
+         recorded_nodes remote_cursor remote_nodes removed_from removed_here replaced_versions resends synced_nodes \
          taken_answers trashed_here unobserved unseen_changes unsent_creates unsent_edits unsent_marks unsent_moves waiting_updates \
          watched_contents watched_positions";
     let mut tables: Vec<&str> = kept.iter().copied().chain(forgotten.split_whitespace()).collect();

@@ -3380,8 +3380,12 @@ fn a_server_entry_deleted_inside_a_taken_along_folder(
     assert!(commits.decide(&asked.id, Answer::Discard));
     assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
     trees.set_rules(&[] as &[&str], None);
-    for (id, shape) in synced {
+    for (ino, (id, shape)) in (60..).zip(synced) {
+        trees.set_local((*id).into(), local_node(shape.clone(), ino));
         trees.set_synced((*id).into(), Some(shape.clone()));
+    }
+    for (id, _) in synced.iter().rev() {
+        trees.remove_local(id);
     }
     trees.settle(commits.aliases());
     (trees, commits, ids)

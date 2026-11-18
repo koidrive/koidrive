@@ -140,6 +140,7 @@ fn migrations_apply_from_empty() {
             "recorded_nodes",
             "remote_cursor",
             "remote_nodes",
+            "removed_from",
             "removed_here",
             "replaced_versions",
             "resends",
@@ -1347,6 +1348,7 @@ fn engine_state() -> EngineState {
             trashed_here: BTreeMap::from([("t".into(), 5)]),
             removed_here: BTreeMap::from([("r".into(), 6)]),
             discarded: BTreeMap::from([("d".into(), engine_shape("root", "d.txt"))]),
+            removed_from: BTreeMap::from([("gone".into(), "root".into())]),
             forgotten_shapes: BTreeMap::from([(
                 "forgotten".into(),
                 engine_shape("root", "forgotten.txt"),
@@ -1728,6 +1730,7 @@ const ENGINE_TABLES: [&str; 52] = [
     "lost_creates",
     "unseen_changes",
     "unobserved",
+    "removed_from",
 ];
 
 /// Counts each row inserted, updated or deleted in the engine's tables from now on in the table
@@ -4586,6 +4589,29 @@ fn a_store_from_before_kept_originals_were_recorded_opens_with_none_recorded() {
         .unwrap();
     drop(store);
     let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_removals_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "removed_from");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.removed_from.clear();
+    assert!(!after.trees.removed_from.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
 }
 

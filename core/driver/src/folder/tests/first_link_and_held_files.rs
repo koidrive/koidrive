@@ -744,6 +744,41 @@ fn a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rule
 }
 
 #[test]
+fn a_file_removed_while_stopped_is_recorded_as_the_users_removal_by_the_scan_at_start() {
+    for restart in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut b) = linked(&mut remote, "b");
+        fs::create_dir(site.root.join("server")).unwrap();
+        b.create(&mut remote, &site.root.join("server/gone.txt"), b"written on b");
+        let id = |b: &Device, name: &str| {
+            (b.folder.engine.trees.local().iter())
+                .find(|(_, node)| node.shape.name == name)
+                .map(|(id, _)| id.clone())
+                .unwrap()
+        };
+        let (folder, gone) = (id(&b, "server"), id(&b, "gone.txt"));
+        assert!(b.folder.engine.trees.state().removed_from.is_empty(), "{restart}");
+        fs::remove_file(site.root.join("server/gone.txt")).unwrap();
+        if restart {
+            drop(b);
+            b = site.start();
+            b.connect(&remote);
+            b.scan_until(|b| b.folder.scanned);
+        } else {
+            b.rescan();
+            b.scan_until(|b| b.folder.engine.trees.local().get(&gone).is_none());
+        }
+        assert_eq!(
+            b.folder.engine.trees.state().removed_from,
+            [(gone.clone(), folder.clone())].into(),
+            "{restart}"
+        );
+        b.rest(&mut remote);
+        assert!(b.folder.engine.trees.state().removed_from.is_empty(), "{restart}");
+    }
+}
+
+#[test]
 fn a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan()
  {
     for (adopted, restart) in [(false, false), (false, true), (true, false), (true, true)] {

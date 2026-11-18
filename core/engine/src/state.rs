@@ -219,6 +219,11 @@ pub struct TreesState {
     /// The nodes the person discarded in answer to a first-link question (section 6.4), each with
     /// the shape the question showed, while L, S or the S update waiting for them holds them.
     pub discarded: BTreeMap<NodeId, Shape>,
+    /// The nodes this device's user removed from the disk while R held them and the rules let
+    /// them sync, each with the folder L held it in, until L holds the node again or R no longer
+    /// holds it live. A server folder the user removed an entry from is the user's, so a Discard
+    /// does not take it along (section 6.4).
+    pub removed_from: BTreeMap<NodeId, NodeId>,
     /// The files S forgot after a server loss while L, S and R held their content alike, each with
     /// the shape S held, until L's content changes, S takes the node again or L no longer holds it.
     pub forgotten_shapes: BTreeMap<NodeId, Shape>,
@@ -453,6 +458,7 @@ pub struct TreesChanges {
     pub trashed_here: MapChanges<NodeId, u64>,
     pub removed_here: MapChanges<NodeId, u64>,
     pub discarded: MapChanges<NodeId, Shape>,
+    pub removed_from: MapChanges<NodeId, NodeId>,
     pub forgotten_shapes: MapChanges<NodeId, Shape>,
     pub lost_shapes: MapChanges<NodeId, Shape>,
     pub outside: SetChanges<NodeId>,
@@ -496,6 +502,7 @@ impl TreesChanges {
             trashed_here,
             removed_here,
             discarded,
+            removed_from,
             forgotten_shapes,
             lost_shapes,
             outside,
@@ -535,6 +542,7 @@ impl TreesChanges {
             trashed_here: map_changes(&before.trashed_here, trashed_here),
             removed_here: map_changes(&before.removed_here, removed_here),
             discarded: map_changes(&before.discarded, discarded),
+            removed_from: map_changes(&before.removed_from, removed_from),
             forgotten_shapes: map_changes(&before.forgotten_shapes, forgotten_shapes),
             lost_shapes: map_changes(&before.lost_shapes, lost_shapes),
             outside: set_changes(&before.outside, outside),
