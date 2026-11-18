@@ -91,6 +91,7 @@ pub struct Disks {
     mounted: Vec<Mounted>,
 }
 
+#[derive(Clone)]
 struct Mounted {
     at: PathBuf,
     image: PathBuf,
@@ -835,11 +836,11 @@ mod tests {
             drop(held);
         });
         #[cfg(target_os = "macos")]
-        let device = disks.mounted[0].device.clone();
+        let ejected = disks.mounted[0].clone();
         disks.detach(&at);
         assert_eq!(is_mount_point(&at), Ok(false));
         #[cfg(target_os = "macos")]
-        assert!(!Path::new(&device).exists(), "{device}");
+        assert_eq!(still_attached(&ejected), Ok(false), "{}", ejected.device);
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
             run(
@@ -868,15 +869,15 @@ mod tests {
         let at = disks.base().join("at");
         fs::create_dir(&at).unwrap();
         disks.attach(&spelled, &at);
-        let device = disks.mounted[0].device.clone();
-        let held = fs::File::open(&device).unwrap();
+        let ejected = disks.mounted[0].clone();
+        let held = fs::File::open(&ejected.device).unwrap();
         let release = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
             drop(held);
         });
         disks.detach(&at);
         release.join().unwrap();
-        assert!(!Path::new(&device).exists(), "{device}");
+        assert_eq!(still_attached(&ejected), Ok(false), "{}", ejected.device);
     }
 
     #[cfg(target_os = "macos")]
@@ -895,15 +896,15 @@ mod tests {
             drop(held);
             fs::rename(&old, &moved).unwrap();
             disks.moved(&old, &moved);
-            let first = disks.mounted[0].device.clone();
+            let first = disks.mounted[0].clone();
             disks.detach(&moved.join("mount"));
-            assert!(!Path::new(&first).exists(), "{format}");
+            assert_eq!(still_attached(&first), Ok(false), "{format}");
             disks.attach(&image, &moved.join("mount"));
             assert_eq!(fs::read(moved.join("mount/held.txt")).unwrap(), b"saved");
-            let second = disks.mounted[0].device.clone();
+            let second = disks.mounted[0].clone();
             let base = disks.base();
             drop(disks);
-            assert!(!Path::new(&second).exists(), "{format}");
+            assert_eq!(still_attached(&second), Ok(false), "{format}");
             assert!(!base.exists(), "{format}");
         }
     }
