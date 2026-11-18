@@ -144,6 +144,7 @@ fn migrations_apply_from_empty() {
             "taken_answers",
             "trashed_here",
             "unseen_changes",
+            "unsent_creates",
             "unsent_edits",
             "unsent_marks",
             "unsent_moves",
@@ -1370,6 +1371,7 @@ fn engine_state() -> EngineState {
             unsent_edits: nodes(["u"]),
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
+            unsent_creates: nodes(["c"]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -1604,7 +1606,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 44] = [
+const ENGINE_TABLES: [&str; 45] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1643,6 +1645,7 @@ const ENGINE_TABLES: [&str; 44] = [
     "dropped_edits",
     "cycle_reverted",
     "unsent_moves",
+    "unsent_creates",
     "removed_here",
     "unsent_marks",
     "pending_finishes",
@@ -4751,6 +4754,31 @@ fn volume_mounts_keep_their_exact_names_and_start_empty_in_a_store_from_before_t
     let one = BTreeMap::from([(PathBuf::from("Disk"), Mount::Unidentified)]);
     store.transaction(|tx| tx.set_volume_mounts(&one)).unwrap();
     assert_eq!(store.transaction(|tx| tx.volume_mounts()).unwrap(), one);
+}
+
+#[test]
+fn a_store_from_before_unsent_creates_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "unsent_creates");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.unsent_creates.clear();
+    assert!(!after.trees.unsent_creates.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
 }
 
 #[test]

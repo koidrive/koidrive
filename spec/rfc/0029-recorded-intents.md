@@ -253,7 +253,7 @@ One migration adds:
 
 It fills them in this order. A later step does not overwrite a row an earlier one wrote, except that step 3 writes the row for L's value when the user changed a field again after an op step 2 read, with that op's intent as its base:
 
-1. `resends` and `lost_creates`: a carried row with an empty author, whose intent is the legacy intent (§7.2) of L's value, for each field where L differs from R, and for every field when R lacks the node. Neither table records who made the value. The rows are carried by their author (§3.2), so they are never sent as user changes.
+1. `resends`, `lost_creates` and `unsent_creates`: a carried row with an empty author, whose intent is the legacy intent (§7.2) of L's value, for each field where L differs from R, and for every field when R lacks the node. None of these tables records who made the value. The rows are carried by their author (§3.2), so they are never sent as user changes.
 2. The commit in flight, in state `sent`. An own row for an op whose node `local_changes`, `edited_here` or `moved_here` holds and that has no `resend`, `from` other than a pending finish, or `source_version_id`. A carried row with an empty author for every other op. The op's provenance decides the author, never the device that sent it. A value whose author the store can't show is carried, which can cost a conflict copy but never a write. Then `unsent_edits`: own `local` rows. Each row gets `replay` when the store records a loss.
 3. Every other field where L differs from the acknowledged value (the waiting update when one waits, else S; `Trees::acknowledged`), and every node L lacks and that value holds: an own `local` row with a new intent, whose base is the legacy intent of the acknowledged value. A waiting acknowledged op goes to step 4.
 4. `edited_here`, `moved_here`, `trashed_here` and waiting acknowledged ops: own `held` rows whose intent and `held_as` are the field's legacy intent, and whose base is the legacy intent of the `replaced_versions` or `past_positions` entry the change replaced, or of the status before the delete.
@@ -263,7 +263,7 @@ On first contact with a server that announces `field_intents`, a migrated store 
 
 A store with a loss recorded but not yet listed keeps the record, and the bootstrap that follows recovers with these rows.
 
-A later migration, in the change that switches recovery to §5.4, drops `resends`, `lost_creates`, `lost_positions`, `lost_shapes`, `forgotten_shapes`, `dropped_edits`, `unsent_edits`, `unsent_moves`, `unsent_marks`, `pending_finishes`, `content_provenance`, `local_changes`, `edited_here`, `moved_here`, `past_positions`, `trashed_here`, `replaced_versions`, `unseen_changes`, `removed_here` and `waiting_updates.slot`. `commit_slots` stays for the device counter and its tokens, and `kept_originals` stays for RFC 0015.
+A later migration, in the change that switches recovery to §5.4, drops `resends`, `lost_creates`, `unsent_creates`, `lost_positions`, `lost_shapes`, `forgotten_shapes`, `dropped_edits`, `unsent_edits`, `unsent_moves`, `unsent_marks`, `pending_finishes`, `content_provenance`, `local_changes`, `edited_here`, `moved_here`, `past_positions`, `trashed_here`, `replaced_versions`, `unseen_changes`, `removed_here` and `waiting_updates.slot`. `commit_slots` stays for the device counter and its tokens, and `kept_originals` stays for RFC 0015.
 
 ### 7.2 Legacy intents
 

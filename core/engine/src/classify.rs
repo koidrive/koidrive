@@ -418,6 +418,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
+    unsent_creates: TrackedSet<NodeId>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     content_provenance: TrackedMap<NodeId, ContentProvenance>,
@@ -523,6 +524,7 @@ impl Trees {
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
+            unsent_creates: TrackedSet::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             content_provenance: TrackedMap::default(),
@@ -1071,6 +1073,7 @@ impl Trees {
             });
         self.mark(&id);
         self.lost_creates.remove(&id);
+        self.unsent_creates.remove(&id);
         if !node.trashed {
             self.unsent_moves.remove(&id);
         }
@@ -1290,6 +1293,7 @@ impl Trees {
     }
 
     pub(crate) fn end_resend(&mut self, id: &str) -> bool {
+        self.unsent_creates.remove(id);
         self.lost_creates.remove(id);
         self.lost_positions.remove(id);
         self.resends.remove(id)
@@ -1365,41 +1369,14 @@ impl Trees {
             .collect();
         folders.sort_by_key(|id| std::cmp::Reverse(self.local_chain(id).count()));
         for id in changed.into_iter().chain(folders.iter().cloned()) {
-            let mut below: Vec<NodeId> = Vec::new();
-            let mut walk: Vec<NodeId> = self.synced_children(&id).cloned().collect();
-            while let Some(child) = walk.pop() {
-                walk.extend(self.synced_children(&child).cloned());
-                below.push(child);
-            }
-            for child in below.into_iter().rev() {
-                let acknowledged = self.acknowledged(&child).cloned();
-                let moved_into = released.contains(&child)
-                    && self.local_chain(&child).skip(1).any(|at| *at == id)
-                    && (self.l.live(&child).zip(acknowledged.as_ref()))
-                        .is_some_and(|(local, acknowledged)| !local.same_position(acknowledged));
-                let (Some(remote), Some(acknowledged), true) = (
-                    self.r.get(&child).map(|node| &node.shape),
-                    acknowledged,
-                    moved_into,
-                ) else {
-                    continue;
-                };
-                let at = Shape {
-                    parent: remote.parent.clone(),
-                    name: remote.name.clone(),
-                    ..acknowledged
-                };
-                if let Some(waiting) = self.waiting.get(&child) {
-                    let origin = waiting.origin;
-                    self.wait(child, Some(at), origin);
-                } else if !self.set_synced_if_valid(child.clone(), Some(at.clone())) {
-                    self.wait(child, Some(at), Origin::Other);
-                }
-            }
-            if !self.set_synced_if_valid(id.clone(), None) {
-                self.wait(id, None, Origin::Other);
+            if self.unsent_creates.insert(id.clone()) {
+                self.mark(&id);
             }
         }
+        debug_assert!(
+            !(self.unsent_creates.iter()).any(|id| self.lost_positions.contains_key(id)),
+            "a node marked in unsent_creates never has a lost position"
+        );
         self.resends.extend(folders);
         self.yield_resends();
     }
@@ -3971,6 +3948,9 @@ impl Trees {
     /// same bytes.
     pub fn class_against(&self, id: &str, synced: Option<&Shape>) -> Class {
         let class = classify(self.l.live(id), synced, self.r.live(id));
+        if class == Class::Remote && self.unsent_creates.contains(id) {
+            return Class::Concurrent;
+        }
         if !self.unsent_edits.contains(id) && !self.unsent_moves.contains(id) {
             return class;
         }
@@ -4002,12 +3982,19 @@ impl Trees {
     }
 
     fn end_local_claim(&mut self, id: &str) -> bool {
+        let created = self.unsent_creates.remove(id);
         let edited = self.unsent_edits.remove(id);
-        self.unsent_moves.remove(id) || edited
+        self.unsent_moves.remove(id) || edited || created
     }
 
     pub(crate) fn sent_move(&mut self, id: &str) {
         if self.unsent_moves.remove(id) {
+            self.mark(id);
+        }
+    }
+
+    pub(crate) fn sent_create(&mut self, id: &str) {
+        if self.unsent_creates.remove(id) {
             self.mark(id);
         }
     }
@@ -4933,6 +4920,13 @@ impl Trees {
             "an unsent move of a node L does not hold or that L, S and R all hold"
         );
         debug_assert_eq!(
+            (self.unsent_creates.iter())
+                .find(|id| self.l.get(id).is_none() || self.r.get(id).is_some())
+                .cloned(),
+            None,
+            "an unsent create of a node L does not hold or that R holds"
+        );
+        debug_assert_eq!(
             (self.lost_shapes.keys())
                 .find(|id| self.s.get(id).is_some() || self.r.get(id).is_some())
                 .cloned(),
@@ -4969,6 +4963,7 @@ impl Trees {
             unsent_edits: (*self.unsent_edits).clone(),
             dropped_edits: (*self.dropped_edits).clone(),
             unsent_moves: (*self.unsent_moves).clone(),
+            unsent_creates: (*self.unsent_creates).clone(),
             unseen_changes: (*self.unseen_changes).clone(),
             replaced_versions: (*self.replaced_versions).clone(),
             content_provenance: (*self.content_provenance).clone(),
@@ -5013,6 +5008,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unsent_creates,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -5076,6 +5072,7 @@ impl Trees {
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
+            unsent_creates: unsent_creates.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             content_provenance: content_provenance.take_changes(),
@@ -5214,6 +5211,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unsent_creates,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -5253,6 +5251,7 @@ impl Trees {
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
+        self.unsent_creates = unsent_creates.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
         self.content_provenance = content_provenance.into();

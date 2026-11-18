@@ -214,6 +214,10 @@ pub struct TreesState {
     /// move into the folder would have. The server's ack of it ends the record, and so does R
     /// holding the node live or L dropping it.
     pub unsent_moves: BTreeSet<NodeId>,
+    /// The nodes S holds and R lacks after a server loss that a change of this device's user in or
+    /// below them needs. Each is created again while S keeps it and what it holds. R taking the
+    /// node, the server acknowledging its create, or L dropping it ends the record.
+    pub unsent_creates: BTreeSet<NodeId>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
     /// node's shape past a record that carries no user's change, so a delete never passes over a change its user did not
@@ -382,6 +386,7 @@ pub struct TreesChanges {
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
+    pub unsent_creates: SetChanges<NodeId>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub content_provenance: MapChanges<NodeId, ContentProvenance>,
@@ -420,6 +425,7 @@ impl TreesChanges {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            unsent_creates,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -454,6 +460,7 @@ impl TreesChanges {
             unsent_edits: set_changes(&before.unsent_edits, unsent_edits),
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
+            unsent_creates: set_changes(&before.unsent_creates, unsent_creates),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             content_provenance: map_changes(&before.content_provenance, content_provenance),
