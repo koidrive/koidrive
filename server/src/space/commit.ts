@@ -139,7 +139,7 @@ export class CommitApplier {
       this.parentBefore = new Map();
       this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs });
       const outcome = this.applyOp(op, index);
-      if (outcome.code === OpResult_Code.CONFLICT_COPY) this.madeCopies.add(outcome.nodeId);
+      if (outcome.code === OpResult_Code.CONFLICT_COPY && !this.incoming("content").carried) this.madeCopies.add(outcome.nodeId);
       if (!this.ctx.authorize(op, this.effect(op))) throw new CallFailure(Error_Code.FORBIDDEN, `op ${index} is not allowed for this device`);
       return outcome;
     });
