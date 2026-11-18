@@ -25,6 +25,7 @@ import {
   holdersOf,
   type Incoming,
   mintIntentId,
+  type NodeIntents,
   type OpIntents,
   readIntents,
   resolveIntents,
@@ -44,6 +45,7 @@ import {
   type NodeRow,
   nodeState,
   PAGE_CHUNKS,
+  purgedRecord,
   rows,
   tombstoneOf,
   versionChunks,
@@ -117,6 +119,7 @@ export class CommitApplier {
   private created = new Set<string>();
   private parentBefore = new Map<string, string | null>();
   private readonly trashed = new Set<string>();
+  private readonly purged: ChangeRecord[] = [];
   private intents!: OpIntents;
 
   constructor(
@@ -137,7 +140,7 @@ export class CommitApplier {
     const changes = [...this.touched].map((nodeId) =>
       create(ChangeRecordSchema, { change: { case: "node", value: nodeState(this.sql, getNode(this.sql, nodeId)!) } }),
     );
-    return { results, changes };
+    return { results, changes: [...changes, ...this.purged] };
   }
 
   private effect(op: Op): OpEffect {
@@ -231,8 +234,12 @@ export class CommitApplier {
     return this.intents.fields[field];
   }
 
+  private stored(intent: FieldIntent): FieldIntent {
+    return { id: intent.id, author: intent.author, carried: intent.carried, appliedAtMs: intent.appliedAtMs, seq: this.ctx.seq };
+  }
+
   private setIntent(nodeId: string, field: Field, intent: FieldIntent = this.incoming(field)): void {
-    writeIntent(this.sql, nodeId, field, { id: intent.id, author: intent.author, carried: intent.carried, appliedAtMs: intent.appliedAtMs, seq: this.ctx.seq });
+    writeIntent(this.sql, nodeId, field, this.stored(intent));
   }
 
   private minted(author: string, carried: boolean): FieldIntent {
@@ -545,13 +552,45 @@ export class CommitApplier {
     );
   }
 
-  private createIntoTrash(parent: NodeRow, name: string, content: { value: Content; madeOver: string[] } | undefined): OpResult | undefined {
-    if (!this.client || parent.status !== NodeStatusValue.TRASHED) return undefined;
+  private deletedParent(parentId: string): { trash?: NodeRow; knows: (intentId: string) => boolean; held: string[] } | undefined {
     const place = this.incoming("place");
-    if (!place.carried) return undefined;
+    if (!this.client || !place.carried) return undefined;
+    const parent = this.node(parentId);
+    if (parent) {
+      if (parent.status !== NodeStatusValue.TRASHED || parent.kind !== NodeKindValue.DIR) return undefined;
+      return { trash: parent, knows: (intentId) => this.trashKnows(parent, intentId), held: [] };
+    }
+    const tombstone = tombstoneOf(this.sql, this.id(parentId));
+    if (!tombstone || !(tombstone.knows.has(place.id) || tombstone.knows.has(this.incoming("status").id))) return undefined;
+    return { knows: (intentId) => tombstone.knows.has(intentId), held: tombstone.held };
+  }
+
+  private createIntoDeleted(nodeId: string, parentId: string, name: string, content: { value: Content; madeOver: string[] } | undefined): OpResult | undefined {
+    const deleted = this.deletedParent(parentId);
+    if (!deleted) return undefined;
+    if (deleted.trash && !content) {
+      this.insertNode(nodeId, deleted.trash.node_id, name, NodeKindValue.DIR, null, this.dev);
+      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", deleted.trash.trash_group, deleted.trash.trashed_at_ms, nodeId);
+      this.setIntent(nodeId, "place");
+      this.setIntent(nodeId, "status");
+      return superseded();
+    }
+    if (!deleted.trash) {
+      const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
+      const intents: NodeIntents = Object.fromEntries(fields.map((field) => [field, this.stored(this.incoming(field))]));
+      this.sql.exec(
+        "INSERT INTO tombstones (node_id, parent_id, name, intents, held) VALUES (?, ?, ?, ?, ?)",
+        nodeId,
+        this.id(parentId),
+        name,
+        JSON.stringify(intents),
+        JSON.stringify(deleted.held),
+      );
+      this.purged.push(create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(nodeId, this.id(parentId), intents, deleted.held) } }));
+    }
     const intent = this.incoming("content");
-    if (!content || this.trashKnows(parent, intent.id)) return superseded();
-    return this.conflictCopy(this.nearestLive(parent.node_id), name, content.value, content.value.chunks, content.madeOver, intent);
+    if (!content || deleted.knows(intent.id)) return superseded();
+    return this.conflictCopy(this.nearestLive(this.id(parentId)), name, content.value, content.value.chunks, content.madeOver, intent);
   }
 
   private createDir(op: CreateDir): OpResult {
@@ -563,11 +602,11 @@ export class CommitApplier {
     if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? unchanged(existing) : rejected("ID_EXISTS");
     if (this.purgedReplay(op.nodeId, true)) return superseded();
     if (this.heldElsewhere(op.nodeId, ["place", "status"])) return superseded();
+    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, undefined);
+    if (deleted) return deleted;
     const found = this.parentRow(op.parentId);
     if (typeof found === "string") return rejected(found);
     if (!found.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
-    const trashed = this.createIntoTrash(found, name, undefined);
-    if (trashed) return trashed;
     const parent = this.parentFor(op.parentId) as NodeRow;
     const existingDir = this.liveWithName(parent.node_id, nameKey(name), "");
     if (existingDir?.kind === NodeKindValue.DIR) {
@@ -596,11 +635,11 @@ export class CommitApplier {
       return this.conflictCopy(this.nearestLive(tombstone.parent_id), name, op.content!, op.content!.chunks, madeOver, intent);
     }
     if (this.heldElsewhere(op.nodeId, ["place", "content", "status"])) return superseded();
+    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, { value: op.content!, madeOver });
+    if (deleted) return deleted;
     const found = this.parentRow(op.parentId);
     if (typeof found === "string") return rejected(found);
     if (!found.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
-    const trashed = this.createIntoTrash(found, name, { value: op.content!, madeOver });
-    if (trashed) return trashed;
     const parent = this.parentFor(op.parentId) as NodeRow;
     const picked = this.pickName(parent.node_id, name, "");
     const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks, madeOver);
@@ -694,17 +733,16 @@ export class CommitApplier {
     const target = this.placeIn(op.newParentId);
     if (!target) return rejected("NOT_FOUND");
     if (target.kind !== NodeKindValue.DIR) return rejected("PARENT_NOT_DIR");
-    if (this.isSelfOrDescendant(target, found.node_id)) return rejected("CYCLE");
-    if (!target.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
     const place = this.incoming("place");
     const live = found.status === NodeStatusValue.LIVE;
     if (this.client) {
       if (found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return unchanged(found);
       if (this.heldElsewhere(found.node_id, ["place"])) return superseded();
       if (!this.overHeld(found, "place")) return superseded();
-      const trash = !live ? found : target.status === NodeStatusValue.TRASHED ? target : undefined;
-      if (trash && place.carried) return superseded();
+      if ((!live && place.carried) || this.deletedParent(op.newParentId)) return superseded();
     }
+    if (this.isSelfOrDescendant(target, found.node_id)) return rejected("CYCLE");
+    if (!target.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
     if (op.from && !this.isAt(found, op.from, target)) return superseded();
     const yields = op.from !== undefined || (this.client && place.carried);
     if (live && found.parent_id === target.node_id && found.name === name) {

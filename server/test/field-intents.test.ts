@@ -705,6 +705,28 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect(listed.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
   });
 
+  it("stores a carried folder that a trashed folder's view supersedes in that folder's trash group, copies a carried child created in it as the trash would, and brings it back on restore", async () => {
+    const { space, a, b, values, root } = await setup();
+    const dir = uuidv7();
+    await a.commit([op.mkdir(dir, root, "Gone")]);
+    const lost = intent(b.session.deviceId, { replay: true });
+    await a.commit([sent(del(dir, { held: [lost.id] }), intent(a.session.deviceId))]);
+    const [folder, child] = [uuidv7(), uuidv7()];
+    const created = await b.commit([sent(op.mkdir(folder, dir, "Old"), lost)]);
+    expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect(created.changes.map(changedId)).toEqual([folder]);
+    const trashed = (await stateOf(space, dir))!;
+    expect(await stateOf(space, folder)).toMatchObject({ parentId: dir, status: NodeStatus.TRASHED, trashGroup: trashed.trashGroup });
+    expect(idOf((await stateOf(space, folder))!.intents!.place)).toBe(idOf(lost));
+    const later = await b.commit([sent(op.create(child, folder, "z.txt", values[0]!), intent(b.session.deviceId, { replay: true }))]);
+    expect(later.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
+    expect(await stateOf(space, later.results[0]!.nodeId)).toMatchObject({ parentId: root, status: NodeStatus.LIVE });
+    expect(await stateOf(space, child)).toBeUndefined();
+    const restored = await a.commit([sent(op.restore(dir), intent(a.session.deviceId))]);
+    expect(restored.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect(await stateOf(space, folder)).toMatchObject({ parentId: dir, name: "Old", status: NodeStatus.LIVE });
+  });
+
   it("revives a folder for a create whose place is not carried (R8)", async () => {
     const { space, a, b, values, root } = await setup();
     const dir = uuidv7();
