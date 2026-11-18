@@ -1126,7 +1126,10 @@
     "fn:a_resend_merged_into_a_folder_l_holds_keeps_the_rename_in_it": "agreements_after_loss",
     "fn:a_resent_folder_whose_rename_waits_in_s_is_created_where_l_holds_it": "agreements_after_loss",
     "fn:a_resent_folder_whose_other_child_waits_to_leave_s_is_created_with_the_rename": "agreements_after_loss",
-    "fn:a_folder_whose_create_was_in_flight_at_a_loss_is_created_again_as_this_device_s_own": "agreements_after_loss"
+    "fn:a_folder_whose_create_was_in_flight_at_a_loss_is_created_again_as_this_device_s_own": "agreements_after_loss",
+    "fn:a_held_resend_the_server_lost_is_kept_as_a_copy_that_is_still_a_resend": "agreements_after_loss",
+    "fn:a_copy_of_a_resend_beside_another_devices_later_edit_is_no_change_of_this_devices_user": "agreements_after_loss",
+    "fn:a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_sends_a_rejected_move_again": "commit_results_and_conflicts"
   },
   "core/sim/tests/engine_sync.rs": {
     "use:std :: collections :: { BTreeMap , BTreeSet }": "common",
@@ -1582,7 +1585,9 @@
     "fn:an_unverified_invocation_never_enters_installer_replacement": "homebrew",
     "fn:adversarial_brew": "common",
     "fn:adversarial_a_failed_tap_refresh_is_never_reported_as_the_newest_release": "homebrew",
-    "fn:adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service": "homebrew"
+    "fn:adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service": "homebrew",
+    "fn:serve": "common",
+    "fn:koi_update_uses_githubs_answer_from_the_last_day_when_github_refuses_the_list": "installer"
   },
   "cli/tests/output_terminal.rs": {
     "use:std :: fs": "common",
@@ -1806,8 +1811,7 @@
     "fn:invocation_hints_must_resolve_to_the_running_binary": "inventory",
     "fn:a_homebrew_receipt_blocks_installer_fallback_without_an_owning_prefix": "inventory",
     "use:super :: { open_log , refuse_root }": "common",
-    "fn:the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another_log": "process",
-    "use:super :: refuse_root": "common"
+    "fn:the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another_log": "process"
   },
   "core/net/src/chunks/tests.rs": {
     "use:std :: net :: SocketAddr": "common",
