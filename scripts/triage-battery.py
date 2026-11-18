@@ -180,6 +180,27 @@ def collect(failures):
              for (binary, test), other in sorted(others.items())])
 
 
+def target_binary(target):
+    package, _, selector = target.partition(" ")
+    test = re.match(r"--test (\S+)$", selector)
+    return test[1] if test else package.replace("-", "_")
+
+
+def unattributed(failures, cases, others):
+    found = []
+    for shard, shard_dir in shards(failures):
+        results = sorted(shard_dir.glob(f"result-{shard}.json"))
+        if not results:
+            found.append({"shard": shard, "target": None, "reason": f"the artifact has no result-{shard}.json",
+                          "repro": ""})
+            continue
+        seen = ({case["binary"] for case in cases if shard in case["shards"]}
+                | {other["binary"] for other in others if shard in other["shards"]})
+        found += [{"shard": shard, **failing} for failing in json.loads(results[0].read_text())["failing"]
+                  if target_binary(failing["target"]) not in seen]
+    return found
+
+
 def checked_profile(manifest):
     section = CHECKED_PROFILE.search(manifest)
     return section[0].rstrip("\n") + "\n" if section else None
@@ -489,6 +510,13 @@ masked, and for an entry that lists cases, only by those cases, which come befor
                   "binary passes them on every head run, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
                   for other in others]
+    if spec.get("unattributed"):
+        lines += ["", "These targets failed, but their logs name no failing test, so triage replayed nothing for "
+                  "them (a crash, a signal or a timeout ends a test binary before it reports). Run their repro "
+                  "commands to see the failure:", ""]
+        lines += [f"- shard {failed['shard']}: {failed['target'] or 'the whole shard'}, {failed['reason']}"
+                  + (f": `{failed['repro']}`" if failed["repro"] else "")
+                  for failed in spec["unattributed"]]
     return "\n".join(lines) + "\n"
 
 
@@ -520,6 +548,7 @@ def main():
     if arguments.command == "collect":
         try:
             cases, others = collect(arguments.failures)
+            failed = unattributed(arguments.failures, cases, others)
         except ValueError as error:
             sys.exit(f"::error::{error}")
         profile = (checked_profile(arguments.head_manifest.read_text())
@@ -527,9 +556,10 @@ def main():
         if profile is None:
             sys.exit("Neither the head's Cargo.toml nor this checkout's has a [profile.checked] section.")
         spec = {"run": arguments.run, "head": arguments.head, "base": arguments.base,
-                "checked_profile": profile, "cases": cases, "others": others}
+                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed}
         arguments.out.write_text(json.dumps(spec, indent=2) + "\n")
-        print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case.")
+        print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case; "
+              f"{len(failed)} failing targets left no failing test in their logs.")
     elif arguments.command == "replay":
         spec = json.loads(arguments.cases.read_text())
         arguments.out.write_text(json.dumps(replay(spec, arguments.side, arguments.checkout, arguments.timeout),
@@ -549,6 +579,10 @@ def main():
             {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others},
             indent=2) + "\n")
         (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url, problem))
+        if spec.get("unattributed"):
+            sys.exit("::error::" + "; ".join(f"shard {failed['shard']}: {failed['target'] or 'the whole shard'} "
+                                             f"failed ({failed['reason']}) with no failing test in its log"
+                                             for failed in spec["unattributed"]))
         if problem:
             sys.exit(f"::error::No row has a class: {problem}")
         if ambiguous:

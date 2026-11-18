@@ -631,6 +631,39 @@ class Triage(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "0 result-\\*.json files name its shard"):
                 triage.collect(root / "failure-shard-5")
 
+    def test_a_target_whose_log_names_no_failing_test_is_unattributed_in_both_layouts(self):
+        crashed = {"target": "koidrive-sim --test engine_sync", "reason": "exit code 134", "repro": "cargo test"}
+        mapped = {"target": "koidrive-sim --test devices", "reason": "exit code 101", "repro": "cargo test"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.shard(root, 2, ["a" * 64])
+            shard = root / "failure-shard-2"
+            (shard / "logs/engine_sync-17c617fcdf6beb9f.log").write_text(
+                "running 1 test\n\nthread 'main' has overflowed its stack\nfatal runtime error: stack overflow\n")
+            (shard / "result-2.json").write_text(json.dumps({"shard": 2, "failing": [mapped, crashed]}))
+            for failures in (root, shard):
+                with self.subTest(failures=failures.name):
+                    cases, others = triage.collect(failures)
+                    self.assertEqual(triage.unattributed(failures, cases, others), [{"shard": 2, **crashed}])
+            self.shard(root, 6, [])
+            self.assertEqual(triage.unattributed(root, *triage.collect(root))[1:],
+                             [{"shard": 6, "target": None, "reason": "the artifact has no result-6.json", "repro": ""}])
+
+    def test_the_report_lists_unattributed_targets_and_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "checked_profile": "", "cases": [], "others": [],
+                    "unattributed": [{"shard": 2, "target": "koidrive-sim --test engine_sync",
+                                      "reason": "exit code 134", "repro": "cargo test -p koidrive-sim"}]}
+            (root / "cases.json").write_text(json.dumps(spec))
+            run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
+                                  "--cases", str(root / "cases.json"), "--run-url", "https://example.com/runs/7",
+                                  "--out", str(root / "out")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            text = (root / "out/triage.md").read_text()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("::error::shard 2: koidrive-sim --test engine_sync failed (exit code 134)", run.stdout)
+        self.assertIn("- shard 2: koidrive-sim --test engine_sync, exit code 134: `cargo test -p koidrive-sim`", text)
+
     def test_a_test_that_saved_nothing_gets_rows_for_its_shards_cases_that_fail_it(self):
         path = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
         spec = {"run": "7", "head": "h" * 40, "base": "b" * 40,
