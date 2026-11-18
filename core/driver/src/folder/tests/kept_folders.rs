@@ -1193,6 +1193,44 @@ fn a_kept_entry_stays_out_of_sync_when_the_rules_change_without_the_person() {
 }
 
 #[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_with_a_rules_edit_made_while_stopped() {
+    let (mut remote, _, _, site, b) = taken_over_with_rules(b".env\n");
+    drop(b);
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    assert!(remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    assert!(b.folder.view().kept_entries.is_empty(), "{:?}", b.folder.view().kept_entries);
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_with_local_lists_changed_while_stopped() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/.env")]);
+    drop(b);
+
+    let mut b = site.start_with(&SyncRules {
+        include: Vec::new(),
+        exclude: vec!["*.log".into()],
+    });
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    assert!(remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    assert!(b.folder.view().kept_entries.is_empty(), "{:?}", b.folder.view().kept_entries);
+}
+
+#[test]
 fn another_devices_file_at_a_kept_entrys_name_is_reported_and_the_kept_entry_stays_here() {
     let (mut remote, site_a, mut a, site, mut b, _) =
         deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);

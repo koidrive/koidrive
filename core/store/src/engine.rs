@@ -332,10 +332,17 @@ impl Tx<'_> {
                 .map_err(|error| invalid(format!("kept entries: {error}")))?;
             state.trees.kept_entries.insert(row.get(0)?, kept);
         }
-        let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_nodes")?;
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, cause FROM kept_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.kept_nodes.insert(row.get(0)?);
+            let bytes: Option<Vec<u8>> = row.get(1)?;
+            let cause = (bytes
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose())
+            .map_err(|error| invalid(format!("kept cause: {error}")))?;
+            state.trees.kept_nodes.insert(row.get(0)?, cause);
         }
         let mut stmt = self
             .0
@@ -853,11 +860,24 @@ impl Tx<'_> {
                 }
             }
         }
-        self.write_set(
-            kept_nodes,
-            "DELETE FROM kept_nodes WHERE node_id = ?1",
-            "INSERT OR IGNORE INTO kept_nodes (node_id) VALUES (?1)",
-        )?;
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM kept_nodes WHERE node_id = ?1")?;
+        let mut put = self
+            .0
+            .prepare_cached("INSERT OR REPLACE INTO kept_nodes (node_id, cause) VALUES (?1, ?2)")?;
+        for (node, kept) in kept_nodes {
+            match kept {
+                Some(cause) => {
+                    let bytes = (cause.as_ref().map(serde_json::to_vec).transpose())
+                        .map_err(|error| invalid(format!("kept cause: {error}")))?;
+                    put.execute(params![node, bytes])?;
+                }
+                None => {
+                    remove.execute([node])?;
+                }
+            }
+        }
         self.write_set(
             unseen_changes,
             "DELETE FROM unseen_changes WHERE node_id = ?1",

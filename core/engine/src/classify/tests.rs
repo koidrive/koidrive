@@ -1023,6 +1023,7 @@ fn with_a_kept_env() -> Trees {
             names: [".env".into()].into(),
             moved: BTreeSet::new(),
             listed: true,
+            causes: BTreeMap::new(),
         },
     );
     trees.set_local("env".into(), kept_local("app", ".env", Kind::File, 2));
@@ -1032,12 +1033,12 @@ fn with_a_kept_env() -> Trees {
 #[test]
 fn a_node_at_a_reserved_name_stays_kept_under_a_new_id_and_keeps_the_name_reserved() {
     let mut trees = with_a_kept_env();
-    assert!(trees.kept_nodes.contains("env"));
+    assert!(trees.kept_nodes.contains_key("env"));
 
     trees.rekey_local("env", "env-2", kept_local("app", ".env", Kind::File, 2));
 
     assert!(trees.ignored("env-2"));
-    assert_eq!(*trees.kept_nodes, BTreeSet::from(["env-2".to_owned()]));
+    assert_eq!(trees.kept_nodes.keys().collect::<Vec<_>>(), ["env-2"]);
     assert!(
         trees
             .kept_entries
@@ -1057,7 +1058,7 @@ fn a_kept_node_moved_off_its_reserved_name_stays_kept_under_a_new_id() {
     trees.rekey_local("env", "env-2", kept_local("other", "env", Kind::File, 2));
 
     assert!(trees.ignored("env-2"));
-    assert_eq!(*trees.kept_nodes, BTreeSet::from(["env-2".to_owned()]));
+    assert_eq!(trees.kept_nodes.keys().collect::<Vec<_>>(), ["env-2"]);
 }
 
 #[test]
@@ -1091,12 +1092,13 @@ fn a_synced_node_moved_onto_a_reserved_name_stays_synced() {
             names: ["notes".into()].into(),
             moved: BTreeSet::new(),
             listed: true,
+            causes: BTreeMap::new(),
         },
     );
     trees.set_local("notes".into(), kept_local("app", "notes", Kind::Dir, 4));
 
     assert!(!trees.ignored("notes"));
-    assert!(!trees.kept_nodes.contains("notes"));
+    assert!(!trees.kept_nodes.contains_key("notes"));
 }
 
 #[test]
@@ -1113,7 +1115,43 @@ fn a_kept_node_renamed_to_an_included_name_while_an_unrelated_rule_changes_stays
     );
     trees.settle(&BTreeMap::new());
 
-    assert!(trees.kept_nodes.contains("env"));
+    assert!(trees.kept_nodes.contains_key("env"));
+    assert!(trees.ignored("env"));
+}
+
+fn rules_file(parent: &str, version: u8, ino: u128) -> LocalNode {
+    let mut node = kept_local(parent, ".koiignore", Kind::File, ino);
+    node.shape.content = Some(Content {
+        size: 1,
+        manifest_digest: vec![version; 32],
+        ..Default::default()
+    });
+    node
+}
+
+#[test]
+fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits_the_rules_that_left_it_out()
+ {
+    let mut trees = with_a_kept_env();
+    trees.set_synced(
+        "app".into(),
+        Some(kept_local("root", "app", Kind::Dir, 1).shape),
+    );
+    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.settle(&BTreeMap::new());
+
+    trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n*.tmp\n")));
+    trees.settle(&BTreeMap::new());
+    trees.set_local("app-rules".into(), rules_file("app", 2, 4));
+    trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
+    trees.set_rules(&["app"], Some(RuleFile::parse(b"!.env\n")));
+    trees.settle(&BTreeMap::new());
+
+    assert!(!trees.ignores(&["app", ".env"], Kind::File));
+    assert!(trees.kept_nodes.contains_key("env"));
     assert!(trees.ignored("env"));
 }
 

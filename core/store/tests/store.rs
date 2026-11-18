@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
-    MovedHere, PendingFinish, TreesState,
+    Agreed, CommitsState, ContentValue, EffectsState, ExcludedBy, FinishOrigin, GivenUp,
+    KeptCause, KeptEntries, LostPosition, MovedHere, PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1199,6 +1199,21 @@ fn unknown(no_later_than: u64) -> Trash {
     Trash::Unknown { no_later_than }
 }
 
+fn kept_cause(excluded_by: ExcludedBy) -> KeptCause {
+    KeptCause {
+        path: vec!["e".into(), ".env".into()],
+        excluded_by,
+        rules_files: BTreeMap::from([(
+            "r".into(),
+            ContentValue {
+                size: 6,
+                manifest_digest: vec![7; 32],
+                executable: false,
+            },
+        )]),
+    }
+}
+
 fn nodes<const N: usize>(ids: [&str; N]) -> BTreeSet<String> {
     ids.into_iter().map(String::from).collect()
 }
@@ -1394,6 +1409,10 @@ fn engine_state() -> EngineState {
                         names: [".env".into(), "node_modules".into()].into(),
                         moved: [".env.local".into()].into(),
                         listed: true,
+                        causes: BTreeMap::from([(
+                            ".env".into(),
+                            kept_cause(ExcludedBy::LocalLists),
+                        )]),
                     },
                 ),
                 (
@@ -1402,10 +1421,17 @@ fn engine_state() -> EngineState {
                         names: [".env".into()].into(),
                         moved: Default::default(),
                         listed: false,
+                        causes: Default::default(),
                     },
                 ),
             ]),
-            kept_nodes: nodes(["n1"]),
+            kept_nodes: BTreeMap::from([
+                ("n1".into(), None),
+                (
+                    "n2".into(),
+                    Some(kept_cause(ExcludedBy::RulesFile("r".into()))),
+                ),
+            ]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),

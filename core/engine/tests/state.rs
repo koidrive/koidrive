@@ -146,10 +146,11 @@ fn trees_state() -> TreesState {
                 names: [".env".into()].into(),
                 moved: Default::default(),
                 listed: true,
+                causes: Default::default(),
             },
         )]
         .into(),
-        kept_nodes: ["n".into()].into(),
+        kept_nodes: [("n".into(), None)].into(),
         unseen_changes: ["b".into()].into(),
         resends: Default::default(),
         local_changes: ["b".into()].into(),

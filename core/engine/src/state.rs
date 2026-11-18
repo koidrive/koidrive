@@ -69,6 +69,30 @@ pub struct KeptEntries {
     pub names: BTreeSet<String>,
     pub moved: BTreeSet<String>,
     pub listed: bool,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub causes: BTreeMap<String, KeptCause>,
+}
+
+/// The rules that left a kept entry out at its place at the last settle with every rule known: the path, what excluded
+/// it there, and the content of each rules file in the folders above it. Only a change the person made on this device
+/// to those rules can release the entry, whether or not Koidrive was running when they made it (section 5.10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeptCause {
+    pub path: Vec<String>,
+    pub excluded_by: ExcludedBy,
+    pub rules_files: BTreeMap<NodeId, ContentValue>,
+}
+
+/// See [`KeptCause`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ExcludedBy {
+    LocalLists,
+    RulesFile(NodeId),
 }
 
 /// The held versions and unsent edit bases of a file, independent of R's current version.
@@ -237,13 +261,14 @@ pub struct TreesState {
     /// them, with the names of the entries a listing of each found there that L did not hold, before the rules of the
     /// deleted folder stopped applying, and the names whose entry the person moved away since. A node L holds at one of
     /// these names joins [`TreesState::kept_nodes`]. A name stays reserved until L no longer holds the node at it
-    /// (section 5.10).
+    /// (section 5.10). Each name L holds no node at carries its [`KeptCause`].
     pub kept_entries: BTreeMap<NodeId, KeptEntries>,
     /// The local nodes this device keeps out of sync whatever rules apply where they are (section 5.10): each entry a
     /// listing recorded in a kept folder another device took over, and each node L has held at one of the names
     /// [`TreesState::kept_entries`] reserves. A node stays until L no longer holds it, wherever the person moves it, or
-    /// until the person changes the rules so that rules that excluded it there include it.
-    pub kept_nodes: BTreeSet<NodeId>,
+    /// until the person changes the rules so that rules that excluded it there include it. Each carries its
+    /// [`KeptCause`], or none while no rule left it out at its place.
+    pub kept_nodes: BTreeMap<NodeId, Option<KeptCause>>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
     /// node's shape past a record that carries no user's change, so a delete never passes over a change its user did not
@@ -433,7 +458,7 @@ pub struct TreesChanges {
     pub unsent_creates: SetChanges<NodeId>,
     pub kept_folders: SetChanges<NodeId>,
     pub kept_entries: MapChanges<NodeId, KeptEntries>,
-    pub kept_nodes: SetChanges<NodeId>,
+    pub kept_nodes: MapChanges<NodeId, Option<KeptCause>>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub content_provenance: MapChanges<NodeId, ContentProvenance>,
@@ -515,7 +540,7 @@ impl TreesChanges {
             unsent_creates: set_changes(&before.unsent_creates, unsent_creates),
             kept_folders: set_changes(&before.kept_folders, kept_folders),
             kept_entries: map_changes(&before.kept_entries, kept_entries),
-            kept_nodes: set_changes(&before.kept_nodes, kept_nodes),
+            kept_nodes: map_changes(&before.kept_nodes, kept_nodes),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             content_provenance: map_changes(&before.content_provenance, content_provenance),
