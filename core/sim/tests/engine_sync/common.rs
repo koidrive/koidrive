@@ -788,7 +788,7 @@ impl Device {
                     self.acted.insert(folder.clone());
                     self.trees.ignore_local(folder);
                 }
-                for other in doomed {
+                for other in doomed.into_iter().rev() {
                     if let Some(node) = self.trees.local().get(&other) {
                         self.removed_from.insert(other.clone(), node.shape.parent.clone());
                     }

@@ -1307,7 +1307,7 @@ impl Engine {
                 gone.insert(path, (id.clone(), node.identity, kind));
             }
         }
-        for id in doomed {
+        for id in doomed.into_iter().rev() {
             match displaced.contains(&id) {
                 true => self.trees.displace_local(&id),
                 false => self.trees.remove_local(&id),
