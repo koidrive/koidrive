@@ -844,20 +844,20 @@ impl Driver {
     /// Pairs this profile with a server, using a code from a device that is already paired (`POST
     /// /v1/pair/complete`), and stores the credential. A profile is paired once. A pairing whose answer was lost is sent
     /// again with its first request ID when the same code is given, so the server answers it for the device it already
-    /// paired.
+    /// paired. It returns what the folders of a lost credential had set aside, as [`Driver::save_credential`] does.
     pub async fn pair(
         &self,
         server: &str,
         code: &str,
         device_name: &str,
-    ) -> Result<Account, DriverError> {
+    ) -> Result<(Account, SetAside), DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.check_unpaired()?;
         if device_name.trim().is_empty() {
             return Err(DriverError::EmptyName);
         }
         let file = NewCredentialFile::create(&self.inner.paths.credential())?;
-        self.unlink_folders_of_lost_credential().await?;
+        let set_aside = self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
         let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Pair { code });
         let held = pending.hold().map_err(io_error(pending.path()))?;
@@ -884,20 +884,21 @@ impl Driver {
             )
             .await?;
         pending_create::forget_sign_ins(&self.inner.paths);
-        Ok(account)
+        Ok((account, set_aside))
     }
 
     /// Claims a new server as its first device (`POST /v1/claim`), with the one-time code from the server's log,
     /// creating the user `user_name`, and stores the credential. Like pairing, it happens once per profile. A claim
     /// whose answer was lost is sent again with its first request ID when the same code is given, so the server answers
-    /// it for the device it already created.
+    /// it for the device it already created. It returns what the folders of a lost credential had set aside, as
+    /// [`Driver::save_credential`] does.
     pub async fn claim(
         &self,
         server: &str,
         code: &str,
         user_name: &str,
         device_name: &str,
-    ) -> Result<Account, DriverError> {
+    ) -> Result<(Account, SetAside), DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.check_unpaired()?;
         if user_name.trim().is_empty() {
@@ -907,7 +908,7 @@ impl Driver {
             return Err(DriverError::EmptyName);
         }
         let file = NewCredentialFile::create(&self.inner.paths.credential())?;
-        self.unlink_folders_of_lost_credential().await?;
+        let set_aside = self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
         let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Claim { code });
         let held = pending.hold().map_err(io_error(pending.path()))?;
@@ -941,7 +942,7 @@ impl Driver {
             )
             .await?;
         pending_create::forget_sign_ins(&self.inner.paths);
-        Ok(account)
+        Ok((account, set_aside))
     }
 
     /// Signs this device out: stops syncing, revokes the device on the server so that a copy of the credential stops
@@ -1328,23 +1329,24 @@ impl Driver {
     /// a device whose credential is gone, typically on a Mac restored from a backup, which leaves the credential out.
     /// Their stores and owner records belong to that device, so the new device links the folders again; their files
     /// stay.
-    async fn unlink_folders_of_lost_credential(&self) -> Result<(), DriverError> {
+    async fn unlink_folders_of_lost_credential(&self) -> Result<SetAside, DriverError> {
         let state = &self.inner.paths.state_dir;
+        let mut set_aside = SetAside::default();
         if Leaving::load(state)
             .map_err(io_error(&state.join("leaving")))?
             .is_some()
-            && let Some(failure) = self
-                .signing_out(false)
-                .await?
-                .not_removed
-                .into_iter()
-                .next()
         {
-            return Err(io_error(&failure.path)(io::Error::other(failure.error)));
+            let left = self.signing_out(false).await?;
+            if let Some(failure) = left.not_removed.into_iter().next() {
+                return Err(io_error(&failure.path)(io::Error::other(failure.error)));
+            }
+            set_aside = left.set_aside;
         }
         let roots = roots(&self.inner.folders.lock().unwrap());
         for root in roots {
-            self.unlink_folder(&root).await?;
+            let (_, unlinked) = self.unlink_folder(&root).await?;
+            set_aside.brought_back.extend(unlinked.brought_back);
+            set_aside.kept.extend(unlinked.kept);
         }
         let unplaced: Vec<_> = self
             .inner
@@ -1357,7 +1359,7 @@ impl Driver {
         for space_id in unplaced {
             self.forget_unplaced(&space_id)?;
         }
-        Ok(())
+        Ok(set_aside)
     }
 
     fn check_unpaired(&self) -> Result<(), DriverError> {
@@ -1405,15 +1407,19 @@ impl Driver {
 
     /// Stores a credential this profile was issued elsewhere, such as by `koi setup`'s claim, the same way
     /// [`Driver::pair`] and [`Driver::claim`] store theirs, unless another one was stored meanwhile. Like them, it first
-    /// unlinks the folders of a credential that was lost. The file is written before this returns, so a caller can clean
-    /// up after it. Like every change to the credential, it waits for the lifecycle lock, so a sign-out that checked the
-    /// slot finishes before a new credential appears.
-    pub async fn save_credential(&self, credential: Credential) -> Result<Account, DriverError> {
+    /// unlinks the folders of a credential that was lost, and returns what those folders had set aside. The file is
+    /// written before this returns, so a caller can clean up after it. Like every change to the credential, it waits for
+    /// the lifecycle lock, so a sign-out that checked the slot finishes before a new credential appears.
+    pub async fn save_credential(
+        &self,
+        credential: Credential,
+    ) -> Result<(Account, SetAside), DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.check_unpaired()?;
-        self.unlink_folders_of_lost_credential().await?;
+        let set_aside = self.unlink_folders_of_lost_credential().await?;
         let path = self.inner.paths.credential();
-        self.store_credential(credential, |credential| credential.save_new(&path))
+        let account = self.store_credential(credential, |credential| credential.save_new(&path))?;
+        Ok((account, set_aside))
     }
 
     /// Stores `credential` with `write` unless the slot holds one, while the caller holds the lifecycle lock.
@@ -4385,19 +4391,11 @@ mod tests {
         assert_eq!(held_aside(&root), Vec::<PathBuf>::new());
     }
 
-    #[tokio::test]
-    async fn an_unlink_brings_displaced_versions_back_under_recovered_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = fs::canonicalize(dir.path()).unwrap();
-        let paths = Paths::under(&base.join("profile"));
-        let root = base.join("Koidrive");
-        linked(&paths, &root, "d1");
-        let private = root.join(".koidrive");
-        fs::create_dir_all(private.join("parked")).unwrap();
-        fs::create_dir_all(private.join("quarantine/e7")).unwrap();
-        fs::write(private.join("parked/n1"), b"parked").unwrap();
-        fs::write(private.join("quarantine/e7/notes.txt"), b"quarantined").unwrap();
-        let identity = fs::metadata(private.join("parked/n1")).unwrap();
+    fn parked_report(paths: &Paths, root: &Path) {
+        let parked = root.join(".koidrive/parked/n1");
+        fs::create_dir_all(parked.parent().unwrap()).unwrap();
+        fs::write(&parked, b"parked").unwrap();
+        let identity = fs::metadata(&parked).unwrap();
         Store::open(paths.store(SPACE).unwrap())
             .unwrap()
             .transaction(|tx| {
@@ -4426,6 +4424,19 @@ mod tests {
                 })
             })
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unlink_brings_displaced_versions_back_under_recovered_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        parked_report(&paths, &root);
+        let private = root.join(".koidrive");
+        fs::create_dir_all(private.join("quarantine/e7")).unwrap();
+        fs::write(private.join("quarantine/e7/notes.txt"), b"quarantined").unwrap();
         let date = koidrive_fs::utc_date(SystemTime::now());
         let taken = root.join(format!("report (recovered {date}).docx"));
         fs::write(&taken, b"the user's").unwrap();
@@ -4790,6 +4801,36 @@ mod tests {
         assert!(!lost.exists());
         drop(driver);
         assert!(Driver::linked_folders(&paths).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn replacing_a_lost_credential_reports_the_versions_its_folders_had_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        parked_report(&paths, &root);
+        fs::remove_file(paths.credential()).unwrap();
+        let date = koidrive_fs::utc_date(SystemTime::now());
+        let driver = Driver::open(paths).unwrap();
+
+        let (account, set_aside) = driver.save_credential(credential("d2")).await.unwrap();
+        if koidrive_fs::utc_date(SystemTime::now()) != date {
+            eprintln!("SKIPPED: the UTC date changed during the test");
+            return;
+        }
+
+        let back = root.join(format!("report (recovered {date}).docx"));
+        assert_eq!(account.device_id, "d2");
+        assert_eq!(
+            set_aside,
+            SetAside {
+                brought_back: vec![back.clone()],
+                kept: Vec::new(),
+            }
+        );
+        assert_eq!(fs::read(back).unwrap(), b"parked");
     }
 
     #[tokio::test]
@@ -5864,7 +5905,7 @@ mod tests {
         ));
 
         let (server, served) = serve_once(issued("d1")).await;
-        let account = driver
+        let (account, _) = driver
             .claim(&server, "claim-code", "Ada", "laptop")
             .await
             .unwrap();
@@ -5903,7 +5944,7 @@ mod tests {
             ..Default::default()
         });
         let (server, served) = serve_once(reply).await;
-        let account = driver
+        let (account, _) = driver
             .claim(&server, "claim-code", "Retried name", "laptop")
             .await
             .unwrap();
@@ -5947,7 +5988,7 @@ mod tests {
             _ = first => {}
         }
         assert!(crate::claim_pending(&paths, &url));
-        let account = driver
+        let (account, _) = driver
             .claim(&server, "claim-code", "Ada", "laptop")
             .await
             .unwrap();
@@ -6080,7 +6121,7 @@ mod tests {
         assert!(!crate::claim_pending(&paths, &url));
         assert_eq!(std::fs::read(paths.pending_claim()).unwrap(), b"{not json");
 
-        let account = driver
+        let (account, _) = driver
             .claim(&server, "claim-code", "Ada", "laptop")
             .await
             .unwrap();
@@ -6108,7 +6149,7 @@ mod tests {
             &paths,
             &url::Url::parse(&server).unwrap()
         ));
-        let account = driver
+        let (account, _) = driver
             .claim(&server, "claim-code", "Ada", "laptop")
             .await
             .unwrap();
@@ -6148,7 +6189,7 @@ mod tests {
         let failed = driver.pair(&server, "ABCD-EFGH", "laptop").await;
         assert!(matches!(failed, Err(DriverError::Api(_))), "{failed:?}");
         assert_eq!(crate::pending_create::saved(&paths), 1);
-        let account = driver.pair(&server, "abcd efgh", "laptop").await.unwrap();
+        let (account, _) = driver.pair(&server, "abcd efgh", "laptop").await.unwrap();
 
         assert_eq!(account.device_id, "d1");
         let ids = request_ids(&served.await.unwrap(), |r: PairCompleteRequest| {
@@ -6361,7 +6402,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let driver = Driver::open(Paths::under(dir.path())).unwrap();
         let (server, served) = serve_once(issued("d2")).await;
-        let account = driver.pair(&server, "pair-code", "desktop").await.unwrap();
+        let (account, _) = driver.pair(&server, "pair-code", "desktop").await.unwrap();
         assert_eq!(served.await.unwrap().0, "/v1/pair/complete");
         assert_eq!(account.user_name, None);
         assert_eq!(account.device_name, "desktop");
@@ -6880,7 +6921,7 @@ mod tests {
         fs::remove_file(paths.credential()).unwrap();
         let driver = Driver::open(paths.clone()).unwrap();
 
-        let account = driver.save_credential(credential("d2")).await.unwrap();
+        let (account, _) = driver.save_credential(credential("d2")).await.unwrap();
 
         assert_eq!(account.device_id, "d2");
         assert!(driver.status().folders.is_empty());
@@ -6924,7 +6965,7 @@ mod tests {
         release.send(()).unwrap();
         holder.join().unwrap();
         stale.await.unwrap().unwrap();
-        assert_eq!(save.await.unwrap().unwrap().device_id, "d2");
+        assert_eq!(save.await.unwrap().unwrap().0.device_id, "d2");
         assert!(paths.credential().exists());
         assert_eq!(driver.status().account.unwrap().device_id, "d2");
     }
@@ -8503,7 +8544,7 @@ mod tests {
         assert!(still_waiting(&sign_out).await);
 
         held.release.send(()).unwrap();
-        assert_eq!(claim.await.unwrap().unwrap().device_id, "d1");
+        assert_eq!(claim.await.unwrap().unwrap().0.device_id, "d1");
         sign_out.await.unwrap().unwrap();
         assert_eq!(held.served.await.unwrap(), ["/v1/claim"]);
         assert_eq!(driver.status().account, None);
@@ -8529,7 +8570,7 @@ mod tests {
         assert!(still_waiting(&pair).await);
 
         held.release.send(()).unwrap();
-        assert_eq!(claim.await.unwrap().unwrap().device_id, "d1");
+        assert_eq!(claim.await.unwrap().unwrap().0.device_id, "d1");
         assert!(matches!(
             pair.await.unwrap(),
             Err(DriverError::AlreadyPaired { device_id }) if device_id == "d1"

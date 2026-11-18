@@ -163,6 +163,8 @@ pub enum Response {
     },
     Paired {
         account: Account,
+        #[serde(flatten)]
+        set_aside: SetAside,
     },
     Linked {
         folder: FolderStatus,

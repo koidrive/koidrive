@@ -1333,9 +1333,23 @@
             }
           ]
         },
+        "brought_back": {
+          "description": "Each one that Koidrive moved back into its folder, under a recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "folder": {
           "$ref": "#/$defs/FolderData",
           "description": "The linked folder, with the ID and name of the space it syncs with."
+        },
+        "kept": {
+          "description": "Each one that stays in `.koidrive`, because Koidrive could not bring it back.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "service": {
           "$ref": "#/$defs/Report"

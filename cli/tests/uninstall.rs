@@ -332,6 +332,64 @@ fn a_profile_whose_last_sign_out_was_not_confirmed_names_the_device_to_revoke() 
     );
 }
 
+fn signed_in_to_a_server_that_refuses_connections() -> (Machine, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let credential = machine.write(
+        "state/koidrive/credential.json",
+        r#"{"server":"http://127.0.0.1:1/","user_id":"u1","device_id":"d1","device_name":"Mac","refresh_credential":"x"}"#,
+    );
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+    (machine, koi, credential)
+}
+
+#[test]
+fn a_sign_out_the_server_never_took_needs_attention_and_names_how_to_revoke_the_device() {
+    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert_eq!(output.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["outcome"], "error", "{envelope:#}");
+    assert_eq!(
+        envelope["error"]["message"],
+        "the server may still list this device; to remove it, run koi device revoke d1 on another device",
+        "{envelope:#}"
+    );
+    let device = &envelope["data"]["device"];
+    assert_eq!(device["state"], "still_listed", "{envelope:#}");
+    assert_eq!(device["device_id"], "d1", "{envelope:#}");
+    assert!(!credential.exists(), "{envelope:#}");
+
+    let (machine, koi, _) = signed_in_to_a_server_that_refuses_connections();
+
+    let output = (machine.command(&koi, &["uninstall", "--yes", "--plain"]))
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("http://127.0.0.1:1/ may still list this device. To remove it, run this on another device signed in to http://127.0.0.1:1/: koi device revoke d1\nIf you have no other device, add one with koi server add-device --interactive and run the command there.\n"),
+        "{text}"
+    );
+
+    let (machine, koi, _) = signed_in_to_a_server_that_refuses_connections();
+
+    let (output, envelope) = machine
+        .envelope(machine.command(&koi, &["uninstall", "--yes", "--keep-signed-in", "--json"]));
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(envelope["outcome"], "ok", "{envelope:#}");
+    assert_eq!(
+        envelope["data"]["device"]["state"], "still_listed",
+        "{envelope:#}"
+    );
+}
+
 #[test]
 fn a_linked_state_folder_koidrive_did_not_make_keeps_the_users_files() {
     let machine = Machine::new();

@@ -883,14 +883,28 @@
         }
       ]
     },
-    "WithService_AccountData": {
+    "WithService_PairedData": {
       "description": "The data of a command that brings the background service in line with the profile, with the service's report.",
       "properties": {
+        "brought_back": {
+          "description": "Each one that Koidrive moved back into its folder, under a recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "device_id": {
           "type": "string"
         },
         "device_name": {
           "type": "string"
+        },
+        "kept": {
+          "description": "Each one that stays in `.koidrive`, because Koidrive could not bring it back.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "server": {
           "type": "string"
@@ -946,7 +960,7 @@
           "$ref": "#/$defs/HelpData"
         },
         {
-          "$ref": "#/$defs/WithService_AccountData"
+          "$ref": "#/$defs/WithService_PairedData"
         }
       ]
     },

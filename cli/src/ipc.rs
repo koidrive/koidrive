@@ -93,7 +93,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             .restores(&space_id)
             .map(|restores| Response::Restores { restores }),
         Request::Pair { server, code, name } => match driver.pair(&server, &code, &name).await {
-            Ok(account) => Ok(Response::Paired { account }),
+            Ok((account, set_aside)) => Ok(Response::Paired { account, set_aside }),
             Err(error) => return Response::from(CliError::code_refused(error)),
         },
         Request::Claim {
@@ -102,13 +102,13 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             user_name,
             name,
         } => match driver.claim(&server, &code, &user_name, &name).await {
-            Ok(account) => Ok(Response::Paired { account }),
+            Ok((account, set_aside)) => Ok(Response::Paired { account, set_aside }),
             Err(error) => return Response::from(CliError::code_refused(error)),
         },
         Request::SaveCredential { credential } => driver
             .save_credential(credential)
             .await
-            .map(|account| Response::Paired { account }),
+            .map(|(account, set_aside)| Response::Paired { account, set_aside }),
         Request::SignOut { device_id } => {
             driver
                 .sign_out_device(&device_id)

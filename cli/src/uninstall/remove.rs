@@ -38,6 +38,7 @@ pub(super) async fn sign_out(
     found: &Found,
     options: &Options,
     terminal: &Terminal,
+    run: &mut Run,
 ) -> (DeviceOutcome, Option<SetAside>) {
     let still_listed = |problem| (listed(found, problem), None);
     if !found.paired {
@@ -103,8 +104,13 @@ pub(super) async fn sign_out(
                 Some(set_aside),
             ),
         },
-        Ok(other) => still_listed(Some(format!("the daemon answered {other:?}"))),
-        Err(error) => still_listed(Some(error.message)),
+        failed => {
+            run.unrevoked = (found.owner.as_ref()).map(|owner| owner.device_id.clone());
+            still_listed(Some(match failed {
+                Ok(other) => format!("the daemon answered {other:?}"),
+                Err(error) => error.message,
+            }))
+        }
     }
 }
 
