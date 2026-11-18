@@ -727,6 +727,31 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect(await stateOf(space, folder)).toMatchObject({ parentId: dir, name: "Old", status: NodeStatus.LIVE });
   });
 
+  it("leaves a tombstone, reported as NodePurged, for a carried folder that a trashed folder at the depth limit supersedes, and answers ops into it from that tombstone's held alone", async () => {
+    const { space, a, b, root } = await setup();
+    const chain = Array.from({ length: MAX_DEPTH }, () => uuidv7());
+    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const deepest = chain.at(-1)!;
+    const lost = intent(b.session.deviceId, { replay: true });
+    const removal = intent(a.session.deviceId);
+    await a.commit([sent(del(deepest, { held: [lost.id] }), removal)]);
+    const folder = uuidv7();
+    const created = await b.commit([sent(op.mkdir(folder, deepest, "Old"), lost)]);
+    expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    const purged = created.changes.flatMap(({ change }) => (change.case === "purged" ? [change.value] : []));
+    expect(purged.map(({ nodeId, lastParentId, held }) => [nodeId, lastParentId, held.map(toHex)])).toEqual([[folder, deepest, [toHex(lost.id)]]]);
+    expect(await stateOf(space, folder)).toBeUndefined();
+    const later = intent(b.session.deviceId, { replay: true });
+    await a.commit([sent(del(deepest, { held: [lost.id, later.id] }), removal)]);
+    const [listed, unseen] = [uuidv7(), uuidv7()];
+    const children = await b.commit([sent(op.mkdir(listed, folder, "Listed"), later), sent(op.mkdir(unseen, folder, "Unseen"), intent(b.session.deviceId, { replay: true }))]);
+    expect(children.results.map(({ code }) => code)).toEqual([OpResult_Code.APPLIED, OpResult_Code.APPLIED]);
+    for (const child of [listed, unseen]) expect(await stateOf(space, child)).toMatchObject({ parentId: chain.at(-2), status: NodeStatus.LIVE });
+    await a.commit([sent(op.restore(deepest), intent(a.session.deviceId))]);
+    expect(await stateOf(space, deepest)).toMatchObject({ status: NodeStatus.LIVE });
+    expect(await stateOf(space, folder)).toBeUndefined();
+  });
+
   it("revives a folder for a create whose place is not carried (R8)", async () => {
     const { space, a, b, values, root } = await setup();
     const dir = uuidv7();

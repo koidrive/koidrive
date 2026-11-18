@@ -30,6 +30,7 @@ import {
   readIntents,
   resolveIntents,
   type Field,
+  trashHeld,
   writeIntent,
 } from "./intents";
 import { conflictName, isReservedAtRoot, nameKey, normalizeName } from "./names";
@@ -554,7 +555,7 @@ export class CommitApplier {
 
   private deletedParent(parentId: string): { trash?: NodeRow; knows: (intentId: string) => boolean; held: string[] } | undefined {
     const place = this.incoming("place");
-    if (!this.client || !place.carried) return undefined;
+    if (!this.client || !place.carried || !this.incoming("status").carried) return undefined;
     const parent = this.node(parentId);
     if (parent) {
       if (parent.status !== NodeStatusValue.TRASHED || parent.kind !== NodeKindValue.DIR) return undefined;
@@ -565,17 +566,26 @@ export class CommitApplier {
     return { knows: (intentId) => tombstone.knows.has(intentId), held: tombstone.held };
   }
 
-  private createIntoDeleted(nodeId: string, parentId: string, name: string, content: { value: Content; madeOver: string[] } | undefined): OpResult | undefined {
+  private createIntoDeleted(
+    nodeId: string,
+    parentId: string,
+    name: string,
+    content: { value: Content; madeOver: string[] } | undefined,
+    pendingFor: string | null = null,
+  ): OpResult | undefined {
     const deleted = this.deletedParent(parentId);
     if (!deleted) return undefined;
-    if (deleted.trash && !content) {
-      this.insertNode(nodeId, deleted.trash.node_id, name, NodeKindValue.DIR, null, this.dev);
-      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", deleted.trash.trash_group, deleted.trash.trashed_at_ms, nodeId);
+    const trash = deleted.trash;
+    if (trash && !content && this.depth(trash) < MAX_DEPTH) {
+      this.insertNode(nodeId, trash.node_id, name, NodeKindValue.DIR, null, this.dev);
+      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", trash.trash_group, trash.trashed_at_ms, nodeId);
       this.setIntent(nodeId, "place");
       this.setIntent(nodeId, "status");
+      this.mark(nodeId, pendingFor);
       return superseded();
     }
-    if (!deleted.trash) {
+    if (!trash || !content) {
+      const held = trash ? trashHeld(this.sql, trash.trash_group) : deleted.held;
       const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
       const intents: NodeIntents = Object.fromEntries(fields.map((field) => [field, this.stored(this.incoming(field))]));
       this.sql.exec(
@@ -584,9 +594,9 @@ export class CommitApplier {
         this.id(parentId),
         name,
         JSON.stringify(intents),
-        JSON.stringify(deleted.held),
+        JSON.stringify(held),
       );
-      this.purged.push(create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(nodeId, this.id(parentId), intents, deleted.held) } }));
+      this.purged.push(create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(nodeId, this.id(parentId), intents, held) } }));
     }
     const intent = this.incoming("content");
     if (!content || deleted.knows(intent.id)) return superseded();
@@ -602,7 +612,7 @@ export class CommitApplier {
     if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? unchanged(existing) : rejected("ID_EXISTS");
     if (this.purgedReplay(op.nodeId, true)) return superseded();
     if (this.heldElsewhere(op.nodeId, ["place", "status"])) return superseded();
-    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, undefined);
+    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, undefined, pendingFor);
     if (deleted) return deleted;
     const found = this.parentRow(op.parentId);
     if (typeof found === "string") return rejected(found);

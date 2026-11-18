@@ -20934,7 +20934,8 @@
                     "author": "b",
                     "replay": true,
                     "applied_at_ms": 1794268830000
-                  }
+                  },
+                  "pending_for": "Owed"
                 }
               }
             ]
@@ -21259,7 +21260,9 @@
               "node": "u",
               "status": "LIVE",
               "parent": "t",
-              "name": "Lost"
+              "name": "Lost",
+              "pending_for": "Owed",
+              "pending_by": "c"
             }
           ],
           "live": [
@@ -22707,6 +22710,2177 @@
               "status": "LIVE",
               "parent": "deep255"
             }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-carried-folder-that-a-trashed-folder-at-the-depth-limit-supersedes-leaves-a-tombstone-whose-held-it-keeps",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir_chain": {
+                  "prefix": "deep",
+                  "parent": "root",
+                  "count": 255
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "w",
+                  "parent": "root",
+                  "name": "Work",
+                  "intent": {
+                    "id": "iw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "deep1",
+              "deep2",
+              "deep3",
+              "deep4",
+              "deep5",
+              "deep6",
+              "deep7",
+              "deep8",
+              "deep9",
+              "deep10",
+              "deep11",
+              "deep12",
+              "deep13",
+              "deep14",
+              "deep15",
+              "deep16",
+              "deep17",
+              "deep18",
+              "deep19",
+              "deep20",
+              "deep21",
+              "deep22",
+              "deep23",
+              "deep24",
+              "deep25",
+              "deep26",
+              "deep27",
+              "deep28",
+              "deep29",
+              "deep30",
+              "deep31",
+              "deep32",
+              "deep33",
+              "deep34",
+              "deep35",
+              "deep36",
+              "deep37",
+              "deep38",
+              "deep39",
+              "deep40",
+              "deep41",
+              "deep42",
+              "deep43",
+              "deep44",
+              "deep45",
+              "deep46",
+              "deep47",
+              "deep48",
+              "deep49",
+              "deep50",
+              "deep51",
+              "deep52",
+              "deep53",
+              "deep54",
+              "deep55",
+              "deep56",
+              "deep57",
+              "deep58",
+              "deep59",
+              "deep60",
+              "deep61",
+              "deep62",
+              "deep63",
+              "deep64",
+              "deep65",
+              "deep66",
+              "deep67",
+              "deep68",
+              "deep69",
+              "deep70",
+              "deep71",
+              "deep72",
+              "deep73",
+              "deep74",
+              "deep75",
+              "deep76",
+              "deep77",
+              "deep78",
+              "deep79",
+              "deep80",
+              "deep81",
+              "deep82",
+              "deep83",
+              "deep84",
+              "deep85",
+              "deep86",
+              "deep87",
+              "deep88",
+              "deep89",
+              "deep90",
+              "deep91",
+              "deep92",
+              "deep93",
+              "deep94",
+              "deep95",
+              "deep96",
+              "deep97",
+              "deep98",
+              "deep99",
+              "deep100",
+              "deep101",
+              "deep102",
+              "deep103",
+              "deep104",
+              "deep105",
+              "deep106",
+              "deep107",
+              "deep108",
+              "deep109",
+              "deep110",
+              "deep111",
+              "deep112",
+              "deep113",
+              "deep114",
+              "deep115",
+              "deep116",
+              "deep117",
+              "deep118",
+              "deep119",
+              "deep120",
+              "deep121",
+              "deep122",
+              "deep123",
+              "deep124",
+              "deep125",
+              "deep126",
+              "deep127",
+              "deep128",
+              "deep129",
+              "deep130",
+              "deep131",
+              "deep132",
+              "deep133",
+              "deep134",
+              "deep135",
+              "deep136",
+              "deep137",
+              "deep138",
+              "deep139",
+              "deep140",
+              "deep141",
+              "deep142",
+              "deep143",
+              "deep144",
+              "deep145",
+              "deep146",
+              "deep147",
+              "deep148",
+              "deep149",
+              "deep150",
+              "deep151",
+              "deep152",
+              "deep153",
+              "deep154",
+              "deep155",
+              "deep156",
+              "deep157",
+              "deep158",
+              "deep159",
+              "deep160",
+              "deep161",
+              "deep162",
+              "deep163",
+              "deep164",
+              "deep165",
+              "deep166",
+              "deep167",
+              "deep168",
+              "deep169",
+              "deep170",
+              "deep171",
+              "deep172",
+              "deep173",
+              "deep174",
+              "deep175",
+              "deep176",
+              "deep177",
+              "deep178",
+              "deep179",
+              "deep180",
+              "deep181",
+              "deep182",
+              "deep183",
+              "deep184",
+              "deep185",
+              "deep186",
+              "deep187",
+              "deep188",
+              "deep189",
+              "deep190",
+              "deep191",
+              "deep192",
+              "deep193",
+              "deep194",
+              "deep195",
+              "deep196",
+              "deep197",
+              "deep198",
+              "deep199",
+              "deep200",
+              "deep201",
+              "deep202",
+              "deep203",
+              "deep204",
+              "deep205",
+              "deep206",
+              "deep207",
+              "deep208",
+              "deep209",
+              "deep210",
+              "deep211",
+              "deep212",
+              "deep213",
+              "deep214",
+              "deep215",
+              "deep216",
+              "deep217",
+              "deep218",
+              "deep219",
+              "deep220",
+              "deep221",
+              "deep222",
+              "deep223",
+              "deep224",
+              "deep225",
+              "deep226",
+              "deep227",
+              "deep228",
+              "deep229",
+              "deep230",
+              "deep231",
+              "deep232",
+              "deep233",
+              "deep234",
+              "deep235",
+              "deep236",
+              "deep237",
+              "deep238",
+              "deep239",
+              "deep240",
+              "deep241",
+              "deep242",
+              "deep243",
+              "deep244",
+              "deep245",
+              "deep246",
+              "deep247",
+              "deep248",
+              "deep249",
+              "deep250",
+              "deep251",
+              "deep252",
+              "deep253",
+              "deep254",
+              "deep255",
+              "w"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "child",
+                  "parent": "w",
+                  "name": "Child",
+                  "intent": {
+                    "id": "childi",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "child"
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 1
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "move": {
+                  "node": "w",
+                  "parent": "deep255",
+                  "name": "Work",
+                  "intent": {
+                    "id": "mw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268980000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "delete": {
+                  "node": "w",
+                  "held": [
+                    "childi"
+                  ],
+                  "intent": {
+                    "id": "dw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "child",
+                  "parent": "w",
+                  "name": "Child",
+                  "intent": {
+                    "id": "childi",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269100000,
+          "commit": {
+            "base_seq": 4,
+            "ops": [
+              {
+                "delete": {
+                  "node": "w",
+                  "held": [
+                    "childi",
+                    "listedi"
+                  ],
+                  "intent": {
+                    "id": "dw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 5,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269160000,
+          "commit": {
+            "base_seq": 5,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "listed",
+                  "parent": "child",
+                  "name": "Listed",
+                  "intent": {
+                    "id": "listedi",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "unseen",
+                  "parent": "child",
+                  "name": "Unseen",
+                  "intent": {
+                    "id": "unseeni",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 6,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "listed",
+              "unseen"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269220000,
+          "commit": {
+            "base_seq": 6,
+            "ops": [
+              {
+                "restore": {
+                  "node": "w",
+                  "intent": {
+                    "id": "rw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 7,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "w",
+              "status": "LIVE",
+              "parent": "deep255"
+            },
+            {
+              "node": "child",
+              "absent": true
+            },
+            {
+              "node": "listed",
+              "status": "LIVE",
+              "parent": "deep255"
+            },
+            {
+              "node": "unseen",
+              "status": "LIVE",
+              "parent": "deep255"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-create-into-a-deleted-folder-whose-place-or-status-intent-is-its-own-users-is-applied",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "w",
+                  "parent": "root",
+                  "name": "Work",
+                  "intent": {
+                    "id": "iw",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "p",
+                  "parent": "w",
+                  "name": "Plans",
+                  "intent": {
+                    "id": "ip",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "k",
+                  "parent": "w",
+                  "name": "x.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "ik",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "m",
+                  "parent": "root",
+                  "name": "m.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "im",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "n",
+                  "parent": "root",
+                  "name": "n.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "in",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w",
+              "p",
+              "k",
+              "m",
+              "n"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "p",
+                  "held": [
+                    "hx",
+                    "hy",
+                    "hm",
+                    "hs"
+                  ],
+                  "intent": {
+                    "id": "idel",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "p"
+            ]
+          }
+        },
+        {
+          "purge": {
+            "at_ms": 1796947320000
+          }
+        },
+        {
+          "head": 3,
+          "nodes": [
+            {
+              "node": "p",
+              "absent": true
+            }
+          ],
+          "live": [
+            "w",
+            "k",
+            "m",
+            "n"
+          ]
+        },
+        {
+          "device": "c",
+          "at_ms": 1796947380000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "v1",
+                  "parent": "p",
+                  "name": "Own place",
+                  "intent": {
+                    "id": "hs",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  },
+                  "fields": {
+                    "place": {
+                      "id": "pv1",
+                      "author": "c"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "v1"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1796947440000,
+          "commit": {
+            "base_seq": 4,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "v2",
+                  "parent": "p",
+                  "name": "Own status",
+                  "intent": {
+                    "id": "hy",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  },
+                  "fields": {
+                    "status": {
+                      "id": "sv2",
+                      "author": "c"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 5,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "v2"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1796947500000,
+          "commit": {
+            "base_seq": 5,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "t",
+                  "parent": "w",
+                  "name": "Trashed",
+                  "intent": {
+                    "id": "it",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 6,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "t"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1796947560000,
+          "commit": {
+            "base_seq": 6,
+            "ops": [
+              {
+                "delete": {
+                  "node": "t",
+                  "held": [
+                    "ht"
+                  ],
+                  "intent": {
+                    "id": "dt",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 7,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "t"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1796947620000,
+          "commit": {
+            "base_seq": 7,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "v3",
+                  "parent": "t",
+                  "name": "Own status",
+                  "intent": {
+                    "id": "ht",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  },
+                  "fields": {
+                    "status": {
+                      "id": "sv3",
+                      "author": "c"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 8,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "t",
+              "v3"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "v1",
+              "status": "LIVE",
+              "parent": "w"
+            },
+            {
+              "node": "v2",
+              "status": "LIVE",
+              "parent": "w"
+            },
+            {
+              "node": "t",
+              "status": "LIVE",
+              "parent": "w"
+            },
+            {
+              "node": "v3",
+              "status": "LIVE",
+              "parent": "t"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-carried-folder-into-a-purged-folder-merges-into-a-live-folder-of-its-name-at-the-nearest-live-ancestor",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "w",
+                  "parent": "root",
+                  "name": "Work",
+                  "intent": {
+                    "id": "iw",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "p",
+                  "parent": "w",
+                  "name": "Plans",
+                  "intent": {
+                    "id": "ip",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "k",
+                  "parent": "w",
+                  "name": "x.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "ik",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "m",
+                  "parent": "root",
+                  "name": "m.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "im",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "n",
+                  "parent": "root",
+                  "name": "n.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "in",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w",
+              "p",
+              "k",
+              "m",
+              "n"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794268830000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "g",
+                  "parent": "p",
+                  "name": "Unseen",
+                  "intent": {
+                    "id": "lg",
+                    "author": "c"
+                  }
+                }
+              },
+              {
+                "move": {
+                  "node": "m",
+                  "parent": "p",
+                  "name": "m-unseen.txt",
+                  "intent": {
+                    "id": "lm",
+                    "author": "c"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "g",
+              "m"
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 1
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "p",
+                  "held": [
+                    "hx",
+                    "hy",
+                    "hm",
+                    "hs"
+                  ],
+                  "intent": {
+                    "id": "idel",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "p"
+            ]
+          }
+        },
+        {
+          "purge": {
+            "at_ms": 1796947320000
+          }
+        },
+        {
+          "head": 3,
+          "nodes": [
+            {
+              "node": "p",
+              "absent": true
+            }
+          ],
+          "live": [
+            "w",
+            "k",
+            "m",
+            "n"
+          ]
+        },
+        {
+          "device": "a",
+          "at_ms": 1796947380000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "delete": {
+                  "node": "w",
+                  "intent": {
+                    "id": "dw",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w",
+              "k"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1796947410000,
+          "commit": {
+            "base_seq": 4,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "uf",
+                  "parent": "root",
+                  "name": "Unseen",
+                  "intent": {
+                    "id": "iuf",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 5,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "uf"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1796947440000,
+          "commit": {
+            "base_seq": 5,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "g",
+                  "parent": "p",
+                  "name": "Unseen",
+                  "intent": {
+                    "id": "lg",
+                    "author": "c",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              },
+              {
+                "move": {
+                  "node": "m",
+                  "parent": "p",
+                  "name": "m-unseen.txt",
+                  "intent": {
+                    "id": "lm",
+                    "author": "c",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 6,
+            "results": [
+              {
+                "code": "MERGED_INTO",
+                "node": "uf"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "m"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "p",
+              "absent": true
+            },
+            {
+              "node": "w",
+              "status": "TRASHED"
+            },
+            {
+              "node": "g",
+              "absent": true
+            },
+            {
+              "node": "uf",
+              "status": "LIVE",
+              "parent": "root",
+              "name": "Unseen"
+            },
+            {
+              "node": "m",
+              "status": "LIVE",
+              "parent": "root",
+              "name": "m-unseen.txt"
+            }
+          ],
+          "live": [
+            "uf",
+            "m",
+            "n"
           ]
         }
       ]
