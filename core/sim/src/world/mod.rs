@@ -45,6 +45,14 @@
 //!   took a write out of the server's live tree that the user
 //!   of its device never overwrote or deleted.
 //! - No node keeps a pending name that no user gave.
+//! - With [`World::revived_deletes`] set, a delete a user made while the server held the deleted
+//!   file reaches the server when a restore of the server came before or after it in the same
+//!   history. Once the devices are quiet, the server holds neither the deleted write nor one it
+//!   was made over live, unless the last restore since the delete took them from the server, the
+//!   author resent a write the server lacked at the delete, the delete was only in a store that
+//!   rolled back or on a device that left before sending it, or a server commit carried another
+//!   device's change, unseen by the deleting user, to the file or to a folder above it that the
+//!   delete removed.
 //! - No write is in two files of the server, except one a restore took from the server while a
 //!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
 //!   node that held it, or for each device that held it in a node the restore rolled back to
@@ -61,6 +69,7 @@
 //! - Every write was in the server's live tree at some time, unless the user who made it
 //!   overwrote or deleted it first.
 
+mod deletes;
 pub mod device;
 pub mod disk;
 
@@ -82,6 +91,7 @@ use koidrive_proto::v1::{
 };
 use sha2::{Digest, Sha256};
 
+use self::deletes::{Deletion, live_nodes};
 use self::device::{Device, Engine, Link, Message};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
@@ -623,6 +633,9 @@ pub struct World {
     /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
     /// server from before RFC 0002's `device_commit_id` does.
     pub tokenless_welcome: bool,
+    /// Fails a phase when a file a user deleted before or after a restore of the server is live on
+    /// the server again with no restore that took the delete.
+    pub revived_deletes: bool,
     /// The tag of the last write.
     writes: i64,
     /// The device whose user made each write.
@@ -666,7 +679,7 @@ pub struct World {
     held_before_a_loss: Vec<Vec<BTreeMap<NodeId, u128>>>,
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
-    touched_nodes: Vec<BTreeMap<NodeId, u128>>,
+    touched_nodes: Vec<BTreeMap<NodeId, Vec<u128>>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, (u128, Change)>>,
     scanned: Vec<Observed>,
@@ -680,6 +693,7 @@ pub struct World {
     /// The writes a person discarded in answer to a recovery question, which go to the local trash.
     discarded: BTreeSet<i64>,
     discards: Vec<BTreeSet<i64>>,
+    deletions: Vec<Deletion>,
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
@@ -735,6 +749,8 @@ struct Spent {
     device: usize,
     ino: u128,
     at: u64,
+    revived: BTreeSet<NodeId>,
+    reparented: BTreeSet<NodeId>,
 }
 
 impl World {
@@ -787,6 +803,7 @@ impl World {
             seen: BTreeMap::new(),
             trace: false,
             tokenless_welcome: false,
+            revived_deletes: false,
             writes: 0,
             writers: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -819,6 +836,7 @@ impl World {
             discarded: BTreeSet::new(),
             discards: vec![BTreeSet::new(); count],
             binned_copies: BTreeSet::new(),
+            deletions: Vec::new(),
             answers: 0,
         }
     }
@@ -927,6 +945,7 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
+                self.forget_unsent_deletes(d);
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -970,6 +989,7 @@ impl World {
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
+                    self.forget_unsent_deletes(d);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1062,6 +1082,7 @@ impl World {
             .collect();
         let write = self.writes + 1;
         let mut touched: Vec<u128> = Vec::new();
+        let mut saved = None;
         match (act, target) {
             (Act::MakeDir, _) => {
                 if let Some(new) = disk.create(place, name, None) {
@@ -1104,8 +1125,10 @@ impl World {
                 }
             }
             (Act::Delete, Some(ino)) => {
+                let gone = disk.subtree(ino);
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(tag));
+                self.record_delete(d, ino, &gone, &deleted);
             }
             (Act::Copy, Some(ino)) => {
                 if let Some(new) = disk.copy(ino, place, name) {
@@ -1116,6 +1139,7 @@ impl World {
             }
             (Act::Save { keeps_mark }, Some(ino)) => {
                 if let Some(new) = disk.save(ino, keeps_mark) {
+                    saved = Some((new, ino));
                     touched = std::iter::once(new)
                         .chain(itself.into_iter().skip(1))
                         .collect();
@@ -1134,8 +1158,20 @@ impl World {
         }
         for ino in touched {
             self.touches[d].entry(ino).or_default().insert(self.clock);
-            if let Some((node, _)) = local.iter().find(|(_, node)| node.identity.ino == ino) {
-                self.touched_nodes[d].insert(node.clone(), ino);
+            let known = (saved.filter(|(new, _)| *new == ino)).map_or(ino, |(_, old)| old);
+            let node = (local.iter().find(|(_, node)| node.identity.ino == known))
+                .map(|(node, _)| node.clone())
+                .or_else(|| {
+                    (self.touched_nodes[d]
+                        .iter()
+                        .find(|(_, touched)| touched.last() == Some(&known)))
+                    .map(|(node, _)| node.clone())
+                });
+            if let Some(node) = node {
+                let inos = self.touched_nodes[d].entry(node).or_default();
+                if inos.last() != Some(&ino) {
+                    inos.push(ino);
+                }
             }
         }
     }
@@ -1180,6 +1216,7 @@ impl World {
             .copied()
             .collect();
         self.space.rewind(&backup.space, self.server_now());
+        self.deletions.retain(|deletion| deletion.reached);
         self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.placements.clone_from(&backup.placements);
@@ -1341,6 +1378,9 @@ impl World {
         if !down {
             device.persist()?;
         }
+        if matches!(answer, Answer::Restore) {
+            self.forget_restored_deletes(d, question.holds());
+        }
         Ok(true)
     }
 
@@ -1428,6 +1468,11 @@ impl World {
         }
         self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
+        let live = live_nodes(&self.space);
+        for deletion in &mut self.deletions {
+            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
+            deletion.restored(backup.space.head_seq());
+        }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
         self.rewound
@@ -2545,7 +2590,7 @@ impl World {
                             let synced = self.devices[d].engine.trees.synced();
                             let ino = |node: &str| {
                                 (local.get(node).map(|node| node.identity.ino))
-                                    .or_else(|| self.touched_nodes[d].get(node).copied())
+                                    .or_else(|| self.touched_nodes[d].get(node)?.last().copied())
                             };
                             let restored: BTreeSet<&str> = (sent.ops.iter())
                                 .filter_map(|op| match &op.op {
@@ -2673,6 +2718,24 @@ impl World {
                                 })
                                 .map(|(at, _)| *at)
                                 .collect();
+                            let revived: BTreeSet<NodeId> = (self.space.nodes().into_iter())
+                                .filter(|node| {
+                                    node.status == NodeStatus::Live as i32
+                                        && trashed.contains(&node.node_id)
+                                })
+                                .map(|node| node.node_id)
+                                .collect();
+                            let parents_before: BTreeMap<&str, &str> = (held.iter())
+                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                                .collect();
+                            let reparented: BTreeSet<NodeId> = (nodes.iter())
+                                .filter(|node| {
+                                    parents_before
+                                        .get(node.node_id.as_str())
+                                        .is_some_and(|parent| *parent != node.parent_id)
+                                })
+                                .map(|node| node.node_id.clone())
+                                .collect();
                             for (ino, times) in &mut self.touches[d] {
                                 for at in &carried {
                                     if times.remove(at) {
@@ -2681,6 +2744,8 @@ impl World {
                                             device: d,
                                             ino: *ino,
                                             at: *at,
+                                            revived: revived.clone(),
+                                            reparented: reparented.clone(),
                                         });
                                     }
                                 }
@@ -2825,6 +2890,30 @@ impl World {
                                     )));
                                 };
                                 self.unasked.get_or_insert(why);
+                            }
+                            let live = live_nodes(&self.space);
+                            let deleted: BTreeSet<&str> = (sent.ops.iter())
+                                .zip(&committed.result.results)
+                                .filter(|(_, outcome)| {
+                                    outcome.code != op_result::Code::Rejected as i32
+                                })
+                                .filter_map(|(op, _)| match &op.op {
+                                    Some(op::Op::Delete(op)) => Some(op.node_id.as_str()),
+                                    _ => None,
+                                })
+                                .collect();
+                            let parents: BTreeMap<&str, &str> = (held.iter())
+                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                                .collect();
+                            for deletion in &mut self.deletions {
+                                if deletion.device == d {
+                                    deletion.carried(record.seq, &deleted, &parents);
+                                }
+                                deletion.reached |= deletion
+                                    .held(&live, |write, _, _, at_node| {
+                                        !at_node && self.copied.contains(&write)
+                                    })
+                                    .is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
@@ -3477,13 +3566,13 @@ impl World {
                 && !same_bytes_on_server(**write, **writer)
                 && !kept_by_a_departed_writer(**write, **writer)
         });
-        match lost {
-            Some((write, writer)) => Err(Failure::Diverged(format!(
+        if let Some((write, writer)) = lost {
+            return Err(Failure::Diverged(format!(
                 "write {write} of device {writer} was never in the server's tree, and its user never \
                  overwrote or deleted it"
-            ))),
-            None => Ok(()),
+            )));
         }
+        self.revived_delete()
     }
 }
 fn made_up_name<'a>(

@@ -1,0 +1,19 @@
+474
+# These tests pin the check that reports a delete a server restore took back and the devices never sent again, on both sides.
+# Each false-negative test restores the server to a copy from before the delete, is green on the real server and red under one named server mutant: KEEPALL (a sibling
+# edit after the deleting device leaves, a file added to the deleted folder, a folder rename the server kept),
+# PATCHB (an unsent edit after the device leaves, an unseen rename of a folder above, the two carried-delete
+# shapes), R8GROUP (a file added after the delete), and KEEPALL plus PATCHB (a rename to a folder between).
+# Each false-positive test pins a legitimate revive that a rule version in this change or one ablated rule
+# clause reports: another device's save, rename, move, folder rename or rollback, a conflict copy or copy,
+# a restore its user chose, and a folder another device moves back under the server's last-writer-wins rule.
+# Ten of them restore the server around the delete, so the check judges the revived file, and each goes red when the
+# rule clause that excuses its revive is removed. Two of them check the file survives on both devices.
+# Three negative tests pin what the check excuses: a user copy another device made after the delete that is left on the
+# server when the deleting device leaves, every inode another device's node had before that device leaves, and a copy the
+# engine makes after a store rollback.
+# One false-negative test pins that a delete made before its device hears of a restore is judged: the engine
+# downloads the file again, and without the check at the delete that restore would leave it unjudged.
+# The ignored tests replay saved battery cases of the open engine bug GUN-864.
+# The devices properties can't stand in for them: they run this check only inside the property battery, where
+# a missed delete is one case among thousands and a false positive turns the whole battery red.

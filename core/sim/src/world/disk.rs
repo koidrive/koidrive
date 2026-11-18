@@ -378,15 +378,17 @@ impl Disk {
         Ok(())
     }
 
-    /// Deletes an entry with everything in it and returns the contents of the deleted files.
-    pub fn delete(&mut self, ino: u128) -> Vec<Content> {
-        let doomed: Vec<u128> = self
-            .entries
+    pub fn subtree(&self, ino: u128) -> BTreeSet<u128> {
+        self.entries
             .iter()
             .filter(|(other, entry)| **other == ino || self.inside(&entry.place, ino))
             .map(|(other, _)| *other)
-            .collect();
-        doomed
+            .collect()
+    }
+
+    /// Deletes an entry with everything in it and returns the contents of the deleted files.
+    pub fn delete(&mut self, ino: u128) -> Vec<Content> {
+        self.subtree(ino)
             .iter()
             .filter_map(|ino| self.entries.remove(ino)?.content)
             .collect()

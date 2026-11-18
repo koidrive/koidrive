@@ -1,0 +1,42 @@
+class = "I"
+issue = "GUN-864"
+tests = ["devices_converge_across_restores_and_rewinds"]
+message = '''after phase <n>: the user of device <n> deleted write <n> or a later write made over it, and the server held it live from then on: the delete never reached the server\.'''
+examples = ["after phase 2: the user of device 0 deleted write 2 or a later write made over it, and the server held it live from then on: the delete never reached the server."]
+cases = [
+  "0767b395b052",
+  "1088b6300dd5",
+  "12aade2dd3d6",
+  "295c4169db4c",
+  "2a909aca4d9b",
+  "3a81d288a35b",
+  "4019b3583946",
+  "413d15181e4c",
+  "4561d03a09b6",
+  "458ee4056397",
+  "51e6ad7ec51c",
+  "5e048dc6277b",
+  "6275914e1925",
+  "6efbdc16bb94",
+  "77980a713b56",
+  "7d9b037c53d3",
+  "84969d0389d8",
+  "9c82f160e10c",
+  "a014f16f6c24",
+  "a04dea1adcec",
+  "a5d5b0c7e4f8",
+  "aca72f7792fa",
+  "ae6886b1cda3",
+  "b0fc2fe8cb64",
+  "b131a8a60aca",
+  "bc74efe8a587",
+  "be34d956e780",
+  "bee64a80ae8c",
+  "c730819c567f",
+  "d1af16cea21e",
+  "d7939e6b728e",
+  "d8ce9289cebb",
+  "e0da9189788e",
+  "e85ec567feac",
+  "f2c67afb6269",
+]
