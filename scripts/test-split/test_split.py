@@ -56,6 +56,13 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(first, {path: path.read_bytes() for path in self.root.rglob("*.rs")})
         self.assertEqual(mtimes, {path: path.stat().st_mtime_ns for path in first})
 
+    def test_a_source_without_a_header_starts_with_its_includes(self):
+        self.source = self.source.removeprefix(split.LICENSE)
+        self.generate()
+        self.assertTrue(self.path.read_bytes().startswith(b'include!("tests/common.rs");'))
+        with patch.object(split, "git_source", return_value=self.source):
+            split.verify(self.executable, self.mapping, "base")
+
     def test_unmapped_items_do_not_write(self):
         del self.mapping["tests.rs"]["fn:one"]
         with self.assertRaisesRegex(ValueError, "assign these items"):
