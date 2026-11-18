@@ -11,7 +11,7 @@ struct GitignoreSettingTests {
 
     @Test func turningOffAsksFirstWithTheCountAndCancelKeepsFollowing() async throws {
         let (app, session) = scripted()
-        let gitignore = GitignoreSettingModel(app: app)
+        let gitignore = GitignoreSettingModel(app: app, countWait: .seconds(30))
         #expect(app.followsGitignore)
 
         await gitignore.set(follow: false)
@@ -153,7 +153,7 @@ struct GitignoreSettingTests {
     @Test func aTurnedOnCountThatFailsLeavesNoLineForALaterTurnOff() async throws {
         let (app, session) = scripted()
         try session.setGitignore(follow: false)
-        let gitignore = GitignoreSettingModel(app: app)
+        let gitignore = GitignoreSettingModel(app: app, countWait: .seconds(30))
         await gitignore.recount()
 
         session.failNext(.gitignoreOnly)
