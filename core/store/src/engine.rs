@@ -416,6 +416,13 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, trash_group FROM trash_groups")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.commits.trash_groups.insert(row.get(0)?, row.get(1)?);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -593,6 +600,7 @@ impl Tx<'_> {
             halted,
             cap,
             split,
+            trash_groups,
             aliases,
             restores,
             resolved,
@@ -1045,6 +1053,12 @@ impl Tx<'_> {
         if let Some(questions) = questions {
             self.set_open_questions(questions)?;
         }
+        self.write_map(
+            trash_groups,
+            "DELETE FROM trash_groups WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO trash_groups (node_id, trash_group) VALUES (?1, ?2)",
+            |put, node, group| put.execute(params![node, group]),
+        )?;
         self.write_set(
             published,
             "DELETE FROM published_nodes WHERE node_id = ?1",

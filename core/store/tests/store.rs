@@ -1415,6 +1415,7 @@ fn engine_state() -> EngineState {
             halted: Some(Halt::Policy { code: 42 }),
             cap: Some(8),
             split: nodes(["big"]),
+            trash_groups: BTreeMap::from([("big".into(), "commit:3".into())]),
             aliases: BTreeMap::from([("twin".into(), "kept".into())]),
             restores: BTreeMap::from([
                 (id(100), from_trash(1)),

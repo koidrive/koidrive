@@ -79,6 +79,9 @@ message Delete {
   repeated bytes unseen = 3;
   // Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0029).
   repeated bytes held = 4;
+  // The trash group of an earlier Delete of the same deletion, when one deletion takes several ops (RFC 0031). The
+  // nodes this Delete trashes join it. Empty for a Delete's own group.
+  string trash_group = 5;
 }
 
 // A node at the revisions of its NodeState.

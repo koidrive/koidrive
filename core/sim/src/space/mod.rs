@@ -915,6 +915,7 @@ impl SpaceDo {
             now_ms,
             committer: session,
             copies_created_files: self.copies_created_files,
+            results: &self.results,
         };
         let (results, changes) = Applier::new(&mut state, ctx).apply(&commit.ops)?;
         let record = CommitRecord {

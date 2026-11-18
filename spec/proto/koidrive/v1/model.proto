@@ -59,8 +59,8 @@ message NodeState {
   NodeStatus status = 5;
   uint64 content_rev = 6;
   uint64 meta_rev = 7;
-  // The trash group of a trashed node, `<commit_id>:<op index>` of the Delete that trashed it
-  // (RFC 0012). Clients compare groups only for equality.
+  // The trash group of a trashed node, `<commit_id>:<op index>` of the Delete that opened it
+  // (RFC 0012, RFC 0031). Clients compare groups only for equality.
   string trash_group = 8;
   VersionInfo current = 9;
   // The name the node waits to take, set by the CreateDir or Move that gave it a stand-in name (RFC 0017).

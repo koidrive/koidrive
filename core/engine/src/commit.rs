@@ -189,6 +189,7 @@ pub struct Commits {
     cap: Marked<Option<usize>>,
     /// Folders whose delete did not fit alone, deleted contents first.
     split: TrackedSet<NodeId>,
+    trash_groups: TrackedMap<NodeId, String>,
     /// Folders merged into one L holds elsewhere, by the folder they were merged into. Creates and
     /// moves into them go to that folder, and the nodes they bring are reverted, so on disk they
     /// follow into it. An alias ends with its folder's revert: a folder the user moves elsewhere
@@ -253,6 +254,7 @@ impl Commits {
             halted: *self.halted,
             cap: *self.cap,
             split: (*self.split).clone(),
+            trash_groups: (*self.trash_groups).clone(),
             aliases: (*self.aliases).clone(),
             restores: (*self.restores).clone(),
             resolved: (*self.resolved).clone(),
@@ -275,6 +277,7 @@ impl Commits {
             halted,
             cap,
             split,
+            trash_groups,
             aliases,
             restores,
             resolved,
@@ -296,6 +299,7 @@ impl Commits {
             halted: halted.take_changed().copied(),
             cap: cap.take_changed().copied(),
             split: split.take_changes(),
+            trash_groups: trash_groups.take_changes(),
             aliases: aliases.take_changes(),
             restores: restores.take_changed().cloned(),
             resolved: resolved.take_changed().cloned(),
@@ -364,6 +368,7 @@ impl Commits {
             halted,
             cap,
             split,
+            trash_groups,
             aliases,
             restores,
             resolved,
@@ -382,6 +387,7 @@ impl Commits {
             halted: halted.into(),
             cap: cap.into(),
             split: split.into(),
+            trash_groups: trash_groups.into(),
             aliases: aliases.into(),
             restores: restores.into(),
             resolved: resolved.into(),
@@ -537,6 +543,7 @@ impl Commits {
         if commit_id.is_empty() {
             return;
         }
+        (self.trash_groups).retain(|_, group| group.rsplit_once(':').is_none_or(|(id, _)| id != commit_id));
         let ids = self.given_up.get_or_insert_with(slot, Vec::new);
         if !ids.contains(&commit_id) {
             ids.push(commit_id);
@@ -742,6 +749,7 @@ impl Commits {
         self.problems.clear();
         self.cap.set(None);
         self.split.clear();
+        self.trash_groups.clear();
         self.aliases.clear();
         self.published.clear();
         self.given_up_nodes.clear();
@@ -1328,6 +1336,8 @@ impl Commits {
         }
         self.hold(trees);
         self.split.retain(|id| trees.synced().live(id).is_some());
+        self.trash_groups
+            .retain(|id, _| trees.synced().live(id).is_some() && trees.local().get(id).is_none());
         self.given_up_nodes.retain(|id, given| {
             let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
                 return false;
@@ -1378,7 +1388,7 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, reverts, cycle_reverts, given_up, retrashed) = loop {
+        let (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1591,6 +1601,18 @@ impl Commits {
             .filter(|(_, removed)| !removed.is_empty())
             .collect();
         let commit_id = ids.uuid_v7(now_ms);
+        for (index, op) in ops.iter_mut().enumerate() {
+            let Some(op::Op::Delete(delete)) = &mut op.op else {
+                continue;
+            };
+            let deletion = deletions.get(&delete.node_id).unwrap_or(&delete.node_id);
+            if deletion == &delete.node_id && !self.trash_groups.contains_key(deletion) {
+                continue;
+            }
+            let group = (self.trash_groups)
+                .get_or_insert_with(deletion.clone(), || format!("{commit_id}:{index}"));
+            delete.trash_group = group.clone();
+        }
         for mut question in released {
             if let QuestionKind::Recovery { sent_in, .. } = &mut question.kind {
                 *sent_in = Some(commit_id.clone());
@@ -3789,6 +3811,7 @@ enum Want {
     Delete {
         id: NodeId,
         members: BTreeSet<NodeId>,
+        deletion: Option<NodeId>,
     },
     /// Trashing again the nodes under `id` that an answer's op brought back from the trash with
     /// their trash group (R8) outside what the person answered (section 6.4): a move of each to
@@ -3840,6 +3863,7 @@ type Compensation = (Vec<(usize, Option<Want>)>, Vec<Want>);
 type Planned = (
     Vec<proto::Op>,
     BTreeMap<NodeId, Vec<NodeId>>,
+    BTreeMap<NodeId, NodeId>,
     Vec<NodeId>,
     Vec<NodeId>,
     BTreeSet<NodeId>,
@@ -4009,10 +4033,10 @@ fn plan(
             Some(parent) if deleted.contains(parent) => {
                 children.entry(parent).or_default().push(id)
             }
-            _ => tops.push(id),
+            _ => tops.push((id, None)),
         }
     }
-    while let Some(id) = tops.pop() {
+    while let Some((id, root)) = tops.pop() {
         let mut members = BTreeSet::new();
         let mut below = vec![id];
         while let Some(node) = below.pop() {
@@ -4028,12 +4052,14 @@ fn plan(
         });
         match children.get(id.as_str()) {
             Some(kids) if kept || bytes > MAX_COMMIT_BYTES || split.contains(id) => {
-                tops.extend(kids)
+                let root = if kept { root } else { root.or(Some(id)) };
+                tops.extend(kids.iter().map(|kid| (*kid, root)))
             }
             _ if kept => {}
             _ => wants.push(Want::Delete {
                 id: id.clone(),
                 members,
+                deletion: root.cloned(),
             }),
         }
     }
@@ -4179,6 +4205,7 @@ fn plan(
     let mut wants: Vec<Option<Want>> = wants.into_iter().map(Some).collect();
     let mut ops = Vec::new();
     let mut deletes = BTreeMap::new();
+    let mut deletions = BTreeMap::new();
     let mut retrashed = false;
     let removed = |id: &NodeId| {
         trees.local().get(id).is_none()
@@ -4273,9 +4300,16 @@ fn plan(
                     content: Some(content),
                 })
             }
-            Want::Delete { id, members } => {
+            Want::Delete {
+                id,
+                members,
+                deletion,
+            } => {
                 scratch.trash(&id);
                 deletes.insert(id.clone(), members.into_iter().collect());
+                if let Some(deletion) = deletion {
+                    deletions.insert(id.clone(), deletion);
+                }
                 let requires = trees.kept_original(&id).map(|kept| {
                     let held = trees.remote().get(kept);
                     proto::NodeRevisions {
@@ -4702,6 +4736,7 @@ fn plan(
         (
             ops,
             deletes,
+            deletions,
             reverts,
             cycle_reverts,
             deferred_retrash,
@@ -5033,7 +5068,7 @@ impl<'a> Scratch<'a> {
             } => self.fit_at(id, parent, name),
             Want::Content { id, .. } if moving.contains(id) => Fit::Wait,
             Want::Content { .. } => Fit::Valid,
-            Want::Delete { id, members } | Want::Retrash { id, members } => {
+            Want::Delete { id, members, .. } | Want::Retrash { id, members } => {
                 let subtree = self.subtree(id);
                 if !subtree.iter().all(|node| members.contains(node)) {
                     Fit::Wait

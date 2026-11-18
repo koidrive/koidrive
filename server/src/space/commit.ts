@@ -125,6 +125,7 @@ export class CommitApplier {
   private readonly trashed = new Set<string>();
   private readonly madeCopies = new Set<string>();
   private readonly purged: ChangeRecord[] = [];
+  private trashings = 0;
   private intents!: OpIntents;
 
   constructor(
@@ -831,6 +832,7 @@ export class CommitApplier {
   }
 
   private trashNode(node: NodeRow, group: string): void {
+    this.trashings++;
     this.sql.exec(
       `UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ?,
          status_before = ? WHERE node_id = ?`,
@@ -972,11 +974,12 @@ export class CommitApplier {
     ) {
       return superseded();
     }
-    const group = `${this.ctx.commitId}:${index}`;
+    const group = this.joinedGroup(op.trashGroup, index) ?? `${this.ctx.commitId}:${index}`;
     if (this.client) {
       const view: DeleteView = { baseSeq: this.ctx.baseSeq, unseen: new Set(op.unseen.map(toHex)), held: new Set(held), seenContent: new Set() };
+      const before = this.trashings;
       const kept = this.trashByView(node, group, view);
-      if (this.sql.exec("SELECT 1 FROM nodes WHERE trash_group = ? LIMIT 1", group).toArray().length === 0) return superseded();
+      if (this.trashings === before) return superseded();
       for (const intentId of held) this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING", group, intentId);
       this.trashCopies([...view.held, ...view.seenContent], group);
       if (kept) return superseded();
@@ -985,6 +988,16 @@ export class CommitApplier {
       this.sql.exec("UPDATE nodes SET parent_rev = ?, parent_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, required.node_id);
     }
     return result(OpResult_Code.APPLIED);
+  }
+
+  private joinedGroup(group: string, index: number): string | undefined {
+    const at = group.lastIndexOf(":");
+    const [commitId, opIndex] = [group.slice(0, at), Number(group.slice(at + 1))];
+    if (at < 0 || !Number.isSafeInteger(opIndex) || opIndex < 0 || `${commitId}:${opIndex}` !== group) return undefined;
+    if (commitId === this.ctx.commitId) return opIndex <= index ? group : undefined;
+    const own = this.sql.exec("SELECT 1 FROM commits WHERE commit_id = ? AND device_id = ?", commitId, this.dev).toArray().length > 0;
+    const held = own && this.sql.exec("SELECT 1 FROM nodes WHERE trash_group = ? LIMIT 1", group).toArray().length > 0;
+    return held ? group : undefined;
   }
 
   private restore(op: Restore): OpResult {

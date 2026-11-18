@@ -347,6 +347,7 @@ fn commits_state() -> CommitsState {
         halted: Some(Halt::Recovery(RecoveryCause::rewind(4, 1_700_000_000_000))),
         cap: Some(4),
         split: ["s".into()].into(),
+        trash_groups: [("s".into(), "commit:0".into())].into(),
         aliases: [("f".into(), "g".into())].into(),
         restores: [("r1".into(), restore(1)), ("r2".into(), restore(2))].into(),
         resolved: vec![Resolved {

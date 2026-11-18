@@ -255,6 +255,8 @@ struct Bench {
     cut_commits: BTreeSet<String>,
     /// How many of the next commits the server refuses with `INTERNAL` before it reads them.
     refused: usize,
+    /// Whether the server ignores the trash group a `Delete` names, as a server before RFC 0031 does.
+    ignores_groups: bool,
 }
 
 impl Bench {
@@ -272,6 +274,7 @@ impl Bench {
             cut: Cut::None,
             cut_commits: BTreeSet::new(),
             refused: 0,
+            ignores_groups: false,
         };
         let mut folders = Vec::new();
         for name in path {
@@ -429,7 +432,12 @@ impl Bench {
                 continue;
             }
             let receipts = upload(&mut self.space, &me, &commit.ops);
-            let request = Commit { receipts, ..commit };
+            let mut request = Commit { receipts, ..commit };
+            for op in request.ops.iter_mut().filter(|_| self.ignores_groups) {
+                if let Some(op::Op::Delete(delete)) = &mut op.op {
+                    delete.trash_group.clear();
+                }
+            }
             let committed = match self.space.commit(&me, NOW, &request) {
                 Ok(committed) => committed,
                 Err(error) => {
@@ -580,4 +588,25 @@ fn a_big_restore_brings_back_every_file_after_its_parent_is_renamed() {
     assert_eq!(bench.outcomes(), [Outcome::Restored]);
     let big = (bench.space.nodes().into_iter()).find(|node| node.node_id == folders[1]);
     assert_eq!(big.unwrap().parent_id, folders[0]);
+}
+
+/// A server before RFC 0031 gives each `Delete` of a big deletion its own trash group, and so did
+/// every server for trash from before it. Nothing fails: the restore brings back the folder with
+/// what its own group holds, and syncing goes on.
+#[test]
+fn a_big_deletion_trashed_one_group_per_delete_restores_without_an_error() {
+    for restored_by_old_server in [true, false] {
+        let (mut bench, folders) = Bench::large_files(&["big"], 8);
+        bench.ignores_groups = true;
+        bench.delete(&folders[0], |_| {});
+        bench.ignores_groups = restored_by_old_server;
+        bench.restore(&folders[0], |_| {});
+        assert_eq!(bench.commits.halted(), None);
+        assert_eq!(bench.outcomes(), [Outcome::Restored]);
+        assert!(
+            (1..8).contains(&bench.live_files()),
+            "{}",
+            bench.live_files()
+        );
+    }
 }

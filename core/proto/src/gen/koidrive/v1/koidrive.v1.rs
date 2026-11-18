@@ -433,8 +433,8 @@ pub struct NodeState {
     pub content_rev: u64,
     #[prost(uint64, tag="7")]
     pub meta_rev: u64,
-    /// The trash group of a trashed node, `<commit_id>:<op index>` of the Delete that trashed it
-    /// (RFC 0012). Clients compare groups only for equality.
+    /// The trash group of a trashed node, `<commit_id>:<op index>` of the Delete that opened it
+    /// (RFC 0012, RFC 0031). Clients compare groups only for equality.
     #[prost(string, tag="8")]
     pub trash_group: ::prost::alloc::string::String,
     #[prost(message, optional, tag="9")]
@@ -723,6 +723,10 @@ pub struct Delete {
     /// Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0029).
     #[prost(bytes="vec", repeated, tag="4")]
     pub held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    /// The trash group of an earlier Delete of the same deletion, when one deletion takes several ops (RFC 0031). The
+    /// nodes this Delete trashes join it. Empty for a Delete's own group.
+    #[prost(string, tag="5")]
+    pub trash_group: ::prost::alloc::string::String,
 }
 /// A node at the revisions of its NodeState.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

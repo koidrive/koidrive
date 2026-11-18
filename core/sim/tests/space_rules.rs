@@ -1691,3 +1691,78 @@ fn a_token_below_the_floor_claims_nothing() {
     assert_eq!(based(&mut s, 1, tokens[1].clone()).unwrap().seq, 4);
     assert_eq!(based(&mut s, 2, tokens[2].clone()).unwrap().seq, 5);
 }
+
+fn delete_into(id: &str, group: &str) -> Op {
+    wrap(op::Op::Delete(Delete {
+        node_id: id.into(),
+        trash_group: group.into(),
+        ..Default::default()
+    }))
+}
+
+#[test]
+fn rfc0031_a_deletion_over_several_commits_trashes_into_one_group_and_restores_whole() {
+    let mut s = Space::new();
+    let mut a = s.client("A");
+    let (root, dir) = (s.root(), s.id());
+    s.commit(&mut a, vec![mkdir(&dir, &root, "Big")], vec![]);
+    let files: Vec<String> = ["a", "b", "c"]
+        .into_iter()
+        .map(|name| s.create_file(&mut a, &dir, name, name).0)
+        .collect();
+    let first = s.id();
+    let group = format!("{first}:0");
+    let ops = vec![delete(&files[0]), delete_into(&files[1], &group)];
+    let trashed = s
+        .commit_raw(&a, ops, a.base_seq, vec![], Some(first))
+        .unwrap();
+    a.base_seq = trashed.seq;
+    let last = s.commit(&mut a, vec![delete_into(&dir, &group)], vec![]);
+    assert_eq!(codes(&last), [op_result::Code::Applied]);
+    for id in files.iter().chain([&dir]) {
+        assert_eq!(s.get(id).trash_group, group, "{id}");
+    }
+    s.commit(&mut a, vec![restore(&dir, "")], vec![]);
+    assert!(files.iter().chain([&dir]).all(|id| s.live(id)));
+}
+
+#[test]
+fn rfc0031_a_delete_keeps_its_own_group_unless_this_device_opened_the_one_it_names() {
+    let mut s = Space::new();
+    let (mut a, b) = (s.client("A"), s.client("B"));
+    let (root, first, opened) = (s.root(), s.id(), s.id());
+    s.commit(&mut a, vec![mkdir(&first, &root, "First")], vec![]);
+    let trashed = s.commit_raw(
+        &a,
+        vec![delete(&first)],
+        a.base_seq,
+        vec![],
+        Some(opened.clone()),
+    );
+    a.base_seq = trashed.unwrap().seq;
+    type Named = fn(&str, &str) -> String;
+    let named: [(bool, Named); 5] = [
+        (true, |opened, _| format!("{opened}:0")),
+        (false, |_, sent| format!("{sent}:1")),
+        (false, |_, sent| format!("{sent}:00")),
+        (false, |_, _| {
+            "0190a6b2-0000-7000-8000-000000000009:0".into()
+        }),
+        (false, |_, _| "forged".into()),
+    ];
+    for (by_b, group) in named {
+        let dir = s.id();
+        s.commit(
+            &mut a,
+            vec![mkdir(&dir, &root, &group(&opened, &dir))],
+            vec![],
+        );
+        let device = if by_b { &b } else { &a };
+        let sent = s.id();
+        let ops = vec![delete_into(&dir, &group(&opened, &sent))];
+        let head = s.space.head_seq();
+        let result = s.commit_raw(device, ops, head, vec![], Some(sent.clone()));
+        assert_eq!(codes(&result.unwrap()), [op_result::Code::Applied]);
+        assert_eq!(s.get(&dir).trash_group, format!("{sent}:0"));
+    }
+}
