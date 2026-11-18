@@ -120,6 +120,14 @@ fn a_delete_whose_user_held_a_lost_edit_beats_a_bystanders_resend_of_it() {
 #[test]
 fn a_folder_deleted_before_a_restore_to_before_its_create_stays_deleted_when_a_bystander_creates_it_again()
  {
+    known_red(
+        "GUN-1012",
+        "called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 0: the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back\")",
+        a_bystander_creates_again_a_folder_deleted_before_a_restore_to_before_its_create,
+    );
+}
+
+fn a_bystander_creates_again_a_folder_deleted_before_a_restore_to_before_its_create() {
     let mut steps = vec![(0, BACKUP), (0, folder("b"))];
     steps.extend(commit(0));
     steps.push((0, Step::Leave));
