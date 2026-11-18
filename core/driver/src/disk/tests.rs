@@ -2071,6 +2071,49 @@ fn kinds_map_one_to_one() {
     assert_eq!(kinds, ["create", "replace", "park", "remove"]);
 }
 
+#[test]
+fn a_folder_removal_expects_each_file_it_takes_along_at_its_own_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [dir.path().join("first"), dir.path().join("second")];
+    fs::write(&files[0], b".env\n").unwrap();
+    fs::write(&files[1], b"build/\n").unwrap();
+    let identity = FileIdentity {
+        ino: 2,
+        birth_ns: Some(3),
+    };
+    let at = |name: &str| EngineLocation::At {
+        base: EngineBase::Root,
+        dirs: Vec::new(),
+        name: name.into(),
+    };
+    let effect = EngineEffect::RemoveDir {
+        at: at("app"),
+        identity,
+        along: vec![
+            EngineDisplaced {
+                at: at(".koiignore"),
+                identity,
+                content: disk_content(&files[0]),
+            },
+            EngineDisplaced {
+                at: at(".KOIIGNORE"),
+                identity,
+                content: disk_content(&files[1]),
+            },
+        ],
+    };
+    let (_, mut expected) = translate(&record(effect)).unwrap();
+    let mut holds = |index: usize, file: usize| {
+        expected
+            .along(index, &fs::File::open(&files[file]).unwrap())
+            .unwrap()
+    };
+    assert_eq!(
+        [holds(0, 0), holds(1, 1), holds(0, 1), holds(1, 0)],
+        [true, true, false, false]
+    );
+}
+
 /// Passes the resets the disk requested to the observer, and returns them.
 fn catch_up(watching: &mut FsObserver, sections: &Sections) -> Vec<Reset> {
     let (resets, _) = sections.take_resets();
