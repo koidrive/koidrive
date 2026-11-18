@@ -1355,3 +1355,36 @@ fn a_kept_folder_inside_a_kept_folder_takes_the_folder_another_device_makes_at_i
     assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"made again");
     assert!(site.root.join("app/sub/.env").exists(), "{:?}", files(&site.root));
 }
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_while_another_devices_new_rules_file_lands() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"*.tmp\n");
+    b.pull(&remote);
+    b.run(&mut remote);
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    settled(&mut b, &mut remote);
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n*.bak\n").unwrap();
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_renames_the_rules_that_left_it_out_away() {
+    let (mut remote, _, _, site, mut b) = taken_over_with_rules(b".env\n");
+    fs::rename(
+        site.root.join("app/.koiignore"),
+        site.root.join("app/koiignore.off"),
+    )
+    .unwrap();
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}

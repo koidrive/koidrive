@@ -30,19 +30,16 @@ pub struct InvalidLine {
 pub struct RuleFile<K> {
     rules: Vec<Rule>,
     invalid: Vec<InvalidLine>,
-    fingerprint: u64,
+    source: Vec<u8>,
     key: PhantomData<fn() -> K>,
 }
-
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 impl<K> Clone for RuleFile<K> {
     fn clone(&self) -> Self {
         Self {
             rules: self.rules.clone(),
             invalid: self.invalid.clone(),
-            fingerprint: self.fingerprint,
+            source: self.source.clone(),
             key: PhantomData,
         }
     }
@@ -68,7 +65,7 @@ impl<K> Default for RuleFile<K> {
         Self {
             rules: Vec::new(),
             invalid: Vec::new(),
-            fingerprint: FNV_OFFSET,
+            source: Vec::new(),
             key: PhantomData,
         }
     }
@@ -88,9 +85,7 @@ impl<K: NameKey> RuleFile<K> {
             lines.pop();
         }
         let mut file = Self {
-            fingerprint: (bytes.iter()).fold(FNV_OFFSET, |hash, &byte| {
-                (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
-            }),
+            source: bytes.to_vec(),
             ..Self::default()
         };
         for (index, line) in lines.into_iter().enumerate() {
@@ -116,10 +111,9 @@ impl<K: NameKey> RuleFile<K> {
         &self.invalid
     }
 
-    /// The 64-bit FNV-1a hash of the bytes the rules were parsed from, after the byte order mark. Two parses of
-    /// the same bytes have the same fingerprint.
-    pub fn fingerprint(&self) -> u64 {
-        self.fingerprint
+    /// The bytes the rules were parsed from, after the byte order mark.
+    pub fn source(&self) -> &[u8] {
+        &self.source
     }
 
     pub(crate) fn last_match(

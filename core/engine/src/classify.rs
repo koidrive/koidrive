@@ -11,9 +11,9 @@ use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
-    Agreed, ContentProvenance, ContentValue, ContentVersion, ExcludedBy, FinishOrigin, KeptCause,
-    KeptEntries, KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError,
-    TreesChanges, TreesState, made_over,
+    Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
+    KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges,
+    TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -118,6 +118,16 @@ fn below<N: Node>(tree: &Tree<N>, id: &str, folders: &BTreeSet<NodeId>) -> bool 
         }
     }
     false
+}
+
+fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
+    kinds.iter().any(|kind| {
+        let kind = match kind {
+            Kind::Dir => koidrive_ignore::Kind::Dir,
+            Kind::File => koidrive_ignore::Kind::File,
+        };
+        matcher.status(path, kind) != Status::Included
+    })
 }
 
 pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a str>, Kind)> {
@@ -3631,7 +3641,8 @@ impl Trees {
             if self.held(&id) {
                 continue;
             }
-            let cause = self.kept_cause(&node.shape.parent, &names, &[kind]);
+            let cause = (self.kept_cause(&node.shape.parent, &names, &[kind]))
+                .or_else(|| self.kept_nodes.get(&id).cloned().flatten());
             if self.kept_nodes.get(&id) != Some(&cause) {
                 self.kept_nodes.insert(id, cause);
             }
@@ -3651,7 +3662,8 @@ impl Trees {
                 .filter_map(|name| {
                     let mut entry = above.clone();
                     entry.push(name.as_str());
-                    let cause = self.kept_cause(&folder, &entry, &[Kind::File, Kind::Dir])?;
+                    let cause = (self.kept_cause(&folder, &entry, &[Kind::File, Kind::Dir]))
+                        .or_else(|| kept.causes.get(name).cloned())?;
                     Some((name.clone(), cause))
                 })
                 .collect();
@@ -3673,22 +3685,8 @@ impl Trees {
     }
 
     fn kept_cause(&self, parent: &str, path: &[&str], kinds: &[Kind]) -> Option<KeptCause> {
-        let excluded_by = kinds.iter().find_map(|kind| {
-            let kind = match kind {
-                Kind::Dir => koidrive_ignore::Kind::Dir,
-                Kind::File => koidrive_ignore::Kind::File,
-            };
-            match self.ignore.status(path, kind) {
-                Status::Excluded(koidrive_ignore::Reason::Local) => Some(ExcludedBy::LocalLists),
-                Status::Excluded(koidrive_ignore::Reason::Rule { depth, .. }) => {
-                    Some(ExcludedBy::RulesFile { depth })
-                }
-                _ => None,
-            }
-        })?;
-        Some(KeptCause {
+        excluded(&self.ignore, path, kinds).then(|| KeptCause {
             path: path.iter().map(|name| name.to_string()).collect(),
-            excluded_by,
             rules: self.kept_rules(parent, path),
         })
     }
@@ -3700,8 +3698,8 @@ impl Trees {
                     on_server: self.r.get(&id).is_some(),
                     id,
                 }),
-                fingerprint: (self.ignore.rules_file(&path[..depth]))
-                    .map(|rules| rules.fingerprint()),
+                rules: (self.ignore.rules_file(&path[..depth]))
+                    .map(|rules| rules.source().to_vec()),
             })
             .collect()
     }
@@ -3724,37 +3722,34 @@ impl Trees {
     }
 
     fn let_in_by_the_person(&self, cause: &KeptCause, parent: &str, kinds: &[Kind]) -> bool {
-        if kinds.iter().any(|kind| self.ignores(&cause.path, *kind)) {
-            return false;
-        }
         let path: Vec<&str> = cause.path.iter().map(String::as_str).collect();
         let now = self.kept_rules(parent, &path);
-        if now.len() != cause.rules.len() {
+        if now.len() != cause.rules.len() || excluded(&self.ignore, &path, kinds) {
             return false;
         }
-        let changed: Vec<usize> = (0..now.len())
-            .filter(|depth| now[*depth].fingerprint != cause.rules[*depth].fingerprint)
-            .collect();
-        let cause_changed = match cause.excluded_by {
-            ExcludedBy::LocalLists => true,
-            ExcludedBy::RulesFile { depth } => changed.contains(&depth),
-        };
-        cause_changed
-            && changed.iter().all(
-                |depth| match (&now[*depth].file, &cause.rules[*depth].file) {
-                    (Some(file), _) => {
-                        self.edited(&file.id) || self.local_changes.contains(&file.id)
-                    }
-                    (None, Some(file)) => {
-                        self.l.get(&file.id).is_none()
-                            && match self.r.get(&file.id) {
-                                Some(_) => self.r.live(&file.id).is_some(),
-                                None => !file.on_server,
-                            }
-                    }
-                    (None, None) => false,
-                },
-            )
+        let mut without_others = self.ignore.clone();
+        for (depth, (now, then)) in now.iter().zip(&cause.rules).enumerate() {
+            if now.rules == then.rules || self.changed_by_the_person(now, then) {
+                continue;
+            }
+            let rules = then.rules.as_deref().map(RuleFile::parse);
+            without_others.set_rules(&path[..depth], rules, std::iter::empty());
+        }
+        !excluded(&without_others, &path, kinds)
+    }
+
+    fn changed_by_the_person(&self, now: &KeptRules, then: &KeptRules) -> bool {
+        match (&now.file, &then.file) {
+            (Some(file), _) => self.edited(&file.id) || self.local_changes.contains(&file.id),
+            (None, Some(file)) if self.l.get(&file.id).is_some() => {
+                self.local_changes.contains(&file.id)
+            }
+            (None, Some(file)) => match self.r.get(&file.id) {
+                Some(_) => self.r.live(&file.id).is_some(),
+                None => !file.on_server,
+            },
+            (None, None) => false,
+        }
     }
 
     fn release_kept_entries_the_person_let_in(&mut self) {

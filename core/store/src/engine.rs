@@ -338,10 +338,7 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let bytes: Option<Vec<u8>> = row.get(1)?;
-            let cause = (bytes
-                .map(|bytes| serde_json::from_slice(&bytes))
-                .transpose())
-            .map_err(|error| invalid(format!("kept cause: {error}")))?;
+            let cause = bytes.and_then(|bytes| serde_json::from_slice(&bytes).ok());
             state.trees.kept_nodes.insert(row.get(0)?, cause);
         }
         let mut stmt = self

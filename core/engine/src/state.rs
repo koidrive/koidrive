@@ -76,35 +76,24 @@ pub struct KeptEntries {
     pub causes: BTreeMap<String, KeptCause>,
 }
 
-/// The rules that left a kept entry out at its place at the last settle with every rule known: the path, what excluded
-/// it there, and the rules in force in each folder from the root to the entry's. Only a change the person made on this
-/// device to those rules can release the entry, whether or not Koidrive was running when they made it (section 5.10).
+/// The rules that last left a kept entry out at its place, at a settle with every rule known: the path, and the rules in
+/// force in each folder from the root to the entry's. The entry is released only when the rules let it in with every
+/// change another device made since put back as it was, whether or not Koidrive was running when the person made
+/// theirs (section 5.10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptCause {
     pub path: Vec<String>,
-    pub excluded_by: ExcludedBy,
     pub rules: Vec<KeptRules>,
 }
 
-/// See [`KeptCause`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ExcludedBy {
-    LocalLists,
-    /// The rules file of the folder at this depth on the entry's path, 0 being the root.
-    RulesFile {
-        depth: usize,
-    },
-}
-
-/// The rules of one folder on a kept entry's path: the rules file L held there, and the fingerprint of the rules the
-/// matcher applied there.
+/// The rules of one folder on a kept entry's path: the rules file L held there, and the bytes of the rules the matcher
+/// applied there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptRules {
     pub file: Option<KeptRulesFile>,
-    pub fingerprint: Option<u64>,
+    pub rules: Option<Vec<u8>>,
 }
 
 /// A rules file L held on a kept entry's path, and whether R held it when the cause was recorded.

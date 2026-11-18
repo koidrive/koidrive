@@ -1156,43 +1156,94 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
 }
 
 #[test]
-fn a_kept_entry_is_released_when_the_person_deletes_a_rules_file_only_this_device_held_and_lets_it_in()
+fn a_kept_entry_is_released_when_the_person_deletes_the_rules_file_that_left_it_out_and_only_this_device_held()
  {
     let mut trees = with_a_kept_env();
-    let none: [&str; 0] = [];
-    trees.set_local_rules(LocalRules::new(&none, &[".env"]).unwrap());
-    trees.settle(&BTreeMap::new());
     trees.set_local_changed("root-rules".into(), rules_file("root", 0, 3));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
     trees.settle(&BTreeMap::new());
 
     trees.remove_local("root-rules");
     trees.set_rules(&[] as &[&str], None);
-    trees.set_local_rules(LocalRules::new(&none, &none).unwrap());
     trees.settle(&BTreeMap::new());
 
     assert!(!trees.kept_nodes.contains_key("env"));
 }
 
 #[test]
-fn a_kept_entry_stays_kept_when_the_server_drops_a_rules_file_it_held_and_the_person_lifts_a_local_list()
- {
+fn a_kept_entry_stays_kept_when_the_server_drops_the_rules_file_that_left_it_out() {
     let mut trees = with_a_kept_env();
-    let none: [&str; 0] = [];
-    trees.set_local_rules(LocalRules::new(&none, &[".env"]).unwrap());
     trees.set_local("root-rules".into(), rules_file("root", 0, 3));
     trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
     trees.set_remote("root-rules".into(), remote(rules_file("root", 0, 3).shape));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
     trees.settle(&BTreeMap::new());
 
     trees.remove_remote("root-rules");
     trees.remove_local("root-rules");
     trees.set_rules(&[] as &[&str], None);
-    trees.set_local_rules(LocalRules::new(&none, &none).unwrap());
     trees.settle(&BTreeMap::new());
 
     assert!(trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
+fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the_person_edits_the_rules_that_left_it_out()
+ {
+    let mut trees = with_a_kept_env();
+    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.settle(&BTreeMap::new());
+
+    trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n*.tmp\n")));
+    trees.set_local("app-rules".into(), rules_file("app", 2, 4));
+    trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
+    trees.set_rules(&["app"], Some(RuleFile::parse(b"!.env\n")));
+    trees.settle(&BTreeMap::new());
+    trees.settle(&BTreeMap::new());
+
+    assert!(trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
+fn a_kept_entry_is_released_when_the_person_lets_it_in_in_the_settle_another_devices_rules_file_lands()
+ {
+    let mut trees = with_a_kept_env();
+    trees.set_local("app-rules".into(), rules_file("app", 0, 4));
+    trees.set_synced("app-rules".into(), Some(rules_file("app", 0, 4).shape));
+    trees.set_rules(&["app"], Some(RuleFile::parse(b".env\n")));
+    trees.settle(&BTreeMap::new());
+
+    trees.set_local("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_synced("root-rules".into(), Some(rules_file("root", 1, 3).shape));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.set_local_changed("app-rules".into(), rules_file("app", 2, 4));
+    trees.set_rules(&["app"], Some(RuleFile::parse(b"*.log\n")));
+    trees.settle(&BTreeMap::new());
+
+    assert!(!trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
+fn a_kept_entry_another_device_let_in_is_released_once_the_person_lets_it_in_too() {
+    let mut trees = with_a_kept_env();
+    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b".env\n")));
+    trees.settle(&BTreeMap::new());
+    trees.set_local("app-rules".into(), rules_file("app", 2, 4));
+    trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
+    trees.set_rules(&["app"], Some(RuleFile::parse(b"!.env\n")));
+    trees.settle(&BTreeMap::new());
+    assert!(trees.kept_nodes.contains_key("env"));
+
+    trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.settle(&BTreeMap::new());
+
+    assert!(!trees.kept_nodes.contains_key("env"));
 }
 
 #[test]
