@@ -1346,6 +1346,27 @@ impl Trees {
             .collect();
         folders.sort_by_key(|id| std::cmp::Reverse(self.local_chain(id).count()));
         for id in changed.into_iter().chain(folders.iter().cloned()) {
+            let mut below: Vec<NodeId> = self.synced_children(&id).cloned().collect();
+            while let Some(child) = below.pop() {
+                let moved_into = released.contains(&child)
+                    && self.local_chain(&child).skip(1).any(|at| *at == id)
+                    && (self.l.live(&child).zip(self.s.live(&child)))
+                        .is_some_and(|(local, synced)| !local.same_position(synced));
+                let (Some(remote), Some(synced), true) =
+                    (self.r.live(&child), self.s.live(&child), moved_into)
+                else {
+                    below.extend(self.synced_children(&child).cloned());
+                    continue;
+                };
+                let at = Shape {
+                    parent: remote.parent.clone(),
+                    name: remote.name.clone(),
+                    ..synced.clone()
+                };
+                if !self.set_synced_if_valid(child.clone(), Some(at.clone())) {
+                    self.wait(child, Some(at), Origin::Other);
+                }
+            }
             if !self.set_synced_if_valid(id.clone(), None) {
                 self.wait(id, None, Origin::Other);
             }

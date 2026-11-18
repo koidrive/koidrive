@@ -614,6 +614,34 @@ fn a_resend_into_a_lost_folder_l_still_holds_is_created_in_it() {
 }
 
 #[test]
+fn a_folder_resent_for_a_file_the_user_renamed_in_it_is_created_with_the_rename() {
+    let mut trees = held_elsewhere_in_a_lost_folder();
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(create), moved] if create.node_id == "p" && *moved == mv("f", "p", "b")));
+}
+
+#[test]
+fn a_folder_resent_for_a_file_the_user_moved_into_a_new_folder_in_it_is_created_with_both() {
+    let mut trees = held_elsewhere_in_a_lost_folder();
+    trees.set_local_changed("q".into(), local(dir("p", "q"), 3));
+    trees.set_local_changed("f".into(), local(file("q", "a", 1), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(p), op::Op::CreateDir(q), moved] if p.node_id == "p" && q.node_id == "q" && *moved == mv("f", "q", "a")));
+}
+
+fn held_elsewhere_in_a_lost_folder() -> Trees {
+    trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
+        ("f", Some(file("p", "a", 1)), Some(file("p", "a", 1)), Some(remote(file(ROOT, "c", 1)))),
+    ])
+}
+
+#[test]
 fn a_resend_edited_before_it_is_sent_is_created_where_the_server_held_it() {
     let (mut trees, mut commits, mut ids) = renamed_elsewhere_then_lost();
     trees.set_local("f".into(), local(file(ROOT, "a", 2), 1));
