@@ -241,7 +241,7 @@ impl World {
         let dropped = (self.deletions.iter())
             .filter(|deletion| !deletion.reached && !deletion.gone)
             .find_map(|deletion| {
-                let write = deletion.held(&live, |write, node, file, _| {
+                let write = deletion.held(&live, |write, node, file, at_node| {
                     let changed_since = |spent: &Spent| {
                         let is = |id: &NodeId| {
                             self.inos_of(spent.device, id).any(|ino| ino == spent.ino)
@@ -260,6 +260,7 @@ impl World {
                     };
                     !deletion.around_restore
                         || deletion.resendable.contains(&write)
+                        || (!at_node && self.copied.contains(&write))
                         || self.spent.iter().any(changed_since)
                 })?;
                 Some((write, deletion.device))
