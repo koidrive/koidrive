@@ -5,5 +5,5 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''assertion failed: `\(left == right\)` left: `\("<id>", ".*"\)`, right: `\("<id>", ".*\(pending( <n>)?\)"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
+message = '''assertion failed: `\(left == right\)` left: `\("<id>", ".*"\)`, right: `\("<id>", ".* \(pending( <n>)?\)"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
 examples = ["assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7d6b-8097-314d939736f8\", \"ß\")`, \n right: `(\"01a1c2c0-39a0-7d6b-8097-314d939736f8\", \"ß (pending)\")`: 01a1c2c0-39a0-775c-844c-3cd7f43c661c is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1262."]
