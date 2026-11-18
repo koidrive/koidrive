@@ -538,7 +538,6 @@ fn a_lost_folder_keeps_each_write_in_one_file_from_seed_710440() {
 }
 
 #[test]
-#[ignore = "a commit sends another device's lost move into a restored folder only as that device's carried move (unasked moves)"]
 fn a_lost_folder_leaves_no_node_parked_from_seed_706476() {
     converge(
         3,

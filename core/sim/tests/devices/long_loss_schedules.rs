@@ -80,7 +80,6 @@ fn a_delete_stays_across_server_restores_around_a_replaced_folder() {
 }
 
 #[test]
-#[ignore = "a delete comes undone across server restores (GUN-917)"]
 fn a_delete_stays_across_server_restores() {
     use Reply::*;
     use Step::*;
@@ -113,7 +112,6 @@ fn a_delete_stays_across_server_restores() {
 }
 
 #[test]
-#[ignore = "a device that never gave a folder its pending name finishes it after the folder is deleted and brought back (GUN-755)"]
 fn only_the_namer_finishes_a_pending_name_of_a_folder_deleted_and_brought_back() {
     use Reply::*;
     use Step::*;
