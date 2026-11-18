@@ -19,12 +19,14 @@ In the browser, open **Actions**, **Deploy test**, **Run workflow**, keep `main`
 | `e2e` | A macOS and a Linux device sync one space with `koi` |
 | `bench` | Rust chunk upload speed at several concurrency values |
 | `bench-small` | Upload time, request count and Worker CPU for many small files, with and without bundles |
+| `first-sync` | How a macOS client built from several refs syncs 1.9 million small entries for the first time |
 
 ```sh
 gh workflow run deploy-test.yml --ref main -f mode=upgrade -f from_ref=<commit or tag>
 gh workflow run deploy-test.yml --ref main -f mode=e2e
 gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f bench_repetitions=3
 gh workflow run deploy-test.yml --ref main -f mode=bench-small -f bench_small_files=20000 -f bench_small_kib=16 -f bench_small_runs=3
+gh workflow run deploy-test.yml --ref main -f mode=first-sync -f first_sync_refs=v0.1.0-alpha.7,main -f first_sync_repetitions=3 -f first_sync_minutes=35
 ```
 
 **smoke** runs `smoke.ts`, a Vitest suite that stops at the first failure. It checks that:
@@ -54,6 +56,12 @@ A job moves on only when its folder holds exactly the expected tree. The last st
 **bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. The test times only `Transfer::upload`, with its hashing, planning, PUTs and retry waits. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
 
 **bench-small** runs the Rust release test `small_file_benchmark` in the same file. `bench_small_files` takes 32 to 50,000, `bench_small_kib` takes 1 to 255, and `bench_small_runs` takes 1 to 5. Each run uploads that many fresh files of that size twice, each time to a new space and through its own HTTP connection pool: once with bundles, and once with one PUT per chunk. Odd runs start with bundles and even runs with puts. For each run and side the summary gives the upload time, files per second, the upload requests the client sent with retries included, and chunks per request, then each side's median time, time range and median request count. After the test, `bench.ts` asks the Cloudflare GraphQL Analytics API for the Worker's invocations and CPU time p50 and p99 in each side's time window, retrying for up to 10 minutes in all while the analytics catch up. On the bundles side, CPU per invocation is CPU per bundle. If the token lacks Account Analytics Read or the query fails, the summary says so and the run still passes with the upload numbers.
+
+**first-sync** deploys the Worker from `main` and measures a first sync on a GitHub-hosted `macos-15` runner, which gets no secrets (`first-sync.ts`). The macOS job builds `koi` in release mode from each ref in `first_sync_refs` (at most four), so the client under test can be an older tag or a branch that is not on `main`. It generates one seeded tree of 1,900,000 entries shaped like a code workspace: about 300 projects, each with a `node_modules` of 150 to 450 packages, folders up to 8 levels deep, mostly files of 2 KiB or less and a few up to 64 KiB, about 2.4 GiB in all. The deploy job pairs one device for each ref, as in e2e, and keeps the Worker until the macOS job ends.
+
+Each ref runs `first_sync_repetitions` times. Every repetition runs each ref once and starts one ref later than the one before, so with refs A, B and C the order is A B C, B C A, C A B. Before each run the job removes `.koidrive` and the `com.koidrive.node` mark from the tree and checks that none is left. Then it creates a new space, links the tree, starts `koi _daemon`, and reads `koi status --json` and the daemon's CPU time and memory every 2 seconds. A run ends when the server holds every entry and nothing is left to upload, or after `first_sync_minutes`. The validation step counts about 35 minutes for each ref's build and refuses inputs whose builds and runs do not fit the job's 6 hours. The macOS job waits up to 2 hours after its builds for the pairing codes, so approve the run within that time.
+
+For each run the job records the time to the first upload and to a full sync, the stalls (5 seconds or more in which the uploaded entries, bytes and commits did not grow while work remained), the daemon log's local timeouts ("did not move for", "no complete answer within", "kept failing"), the daemon's CPU seconds and peak memory, and the size of `store.sqlite` and its WAL per synced entry. The `first-sync-results` artifact holds each run's JSON, its samples and its daemon log. The summary gives each ref's median and the lowest and highest value across repetitions.
 
 ## Each run deploys, tests and deletes one server
 

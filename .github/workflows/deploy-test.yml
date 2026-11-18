@@ -12,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke: test HTTPS. upgrade: check earlier data. e2e: sync Linux and macOS. bench: measure Rust chunk uploads. bench-small: measure many small files with and without bundles."
+        description: "smoke: test HTTPS. upgrade: check earlier data. e2e: sync Linux and macOS. bench: measure Rust chunk uploads. bench-small: measure many small files with and without bundles. first-sync: measure a macOS first sync of 1.9M entries."
         type: choice
-        options: [smoke, upgrade, e2e, bench, bench-small]
+        options: [smoke, upgrade, e2e, bench, bench-small, first-sync]
         default: smoke
       from_ref:
         description: "upgrade only: the commit or tag to upgrade from. Empty means the newest tag before this commit."
@@ -40,6 +40,18 @@ on:
         description: "bench-small only: runs, integer 1 through 5. Runs alternate which side goes first."
         type: string
         default: '3'
+      first_sync_refs:
+        description: "first-sync only: comma-separated branches, tags or commits to build the macOS client from, at most four."
+        type: string
+        default: 'v0.1.0-alpha.7,main'
+      first_sync_repetitions:
+        description: "first-sync only: runs per ref, integer 1 through 5."
+        type: string
+        default: '3'
+      first_sync_minutes:
+        description: "first-sync only: minutes each run may take before it stops unsynced."
+        type: string
+        default: '35'
 
 permissions:
   contents: read
@@ -99,7 +111,7 @@ jobs:
           [ "$policies" = "branch:main" ] || refuse "The deploy-test environment must allow the main branch only, but allows: ${policies:-nothing}."
           echo "The deploy-test environment lists gunwooterry as its only required reviewer, allows main only, and does not report administrator bypass as allowed. These checks are defence in depth: the boundary is the required reviewer's approval of each run, with administrator bypass turned off by hand as docs/deploy-test.md describes."
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: inputs.mode == 'bench' || inputs.mode == 'bench-small'
+        if: inputs.mode == 'bench' || inputs.mode == 'bench-small' || inputs.mode == 'first-sync'
         with:
           node-version: 24
       - name: Validate benchmark inputs before deployment
@@ -115,13 +127,20 @@ jobs:
           KOIDRIVE_BENCH_SMALL_KIB: ${{ inputs.bench_small_kib }}
           KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
         run: node server/scripts/deploy-test/bench.ts small validate
+      - name: Validate first-sync inputs before deployment
+        if: inputs.mode == 'first-sync'
+        env:
+          FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+          FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
+          FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
+        run: node server/scripts/deploy-test/first-sync.ts validate
 
   deploy-test:
     name: deploy test (${{ inputs.mode }})
     needs: trusted
     runs-on: ubuntu-latest
     environment: deploy-test
-    timeout-minutes: ${{ inputs.mode == 'bench-small' && 180 || (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
+    timeout-minutes: ${{ inputs.mode == 'first-sync' && 360 || inputs.mode == 'bench-small' && 180 || (inputs.mode == 'e2e' || inputs.mode == 'bench') && 90 || 60 }}
     permissions:
       contents: read
       actions: read
@@ -129,7 +148,10 @@ jobs:
       KOIDRIVE_TEST_NAME: koidrive-test-${{ github.run_id }}-${{ github.run_attempt }}
       WRANGLER_SEND_METRICS: "false"
       KOI: ${{ github.workspace }}/target/debug/koi
-      E2E_PEER_JOB: e2e (macOS)
+      E2E_PEER_JOB: ${{ inputs.mode == 'first-sync' && 'first sync (macOS)' || 'e2e (macOS)' }}
+      FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+      FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
+      FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
     defaults:
       run:
         working-directory: server
@@ -325,6 +347,27 @@ jobs:
         run: |
           node scripts/deploy-test/e2e.ts linux-final "e2e: upload the macOS tree"
 
+      - name: "first sync: seal a pairing code for each ref's macOS device"
+        if: inputs.mode == 'first-sync'
+        timeout-minutes: 210
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/first-sync.ts seal
+      - name: "first sync: upload the sealed pairing codes"
+        if: inputs.mode == 'first-sync'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-sync-macos-join-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/koidrive-first-sync/join/
+          retention-days: 1
+          if-no-files-found: error
+      - name: "first sync: keep the Worker until the macOS job ends"
+        if: inputs.mode == 'first-sync'
+        timeout-minutes: 355
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/first-sync.ts hold
+
       - name: Tear down the Worker, its Durable Objects and the R2 bucket
         if: always() && steps.secrets.outcome == 'success'
         timeout-minutes: 10
@@ -417,4 +460,87 @@ jobs:
           name: e2e-macos-listing-${{ github.run_attempt }}
           path: ${{ runner.temp }}/koidrive-e2e/mac-listing/listing.txt
           retention-days: 1
+          if-no-files-found: error
+
+  first-sync-macos:
+    name: first sync (macOS)
+    needs: trusted
+    if: inputs.mode == 'first-sync'
+    runs-on: macos-15
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      E2E_PEER_JOB: deploy test (first-sync)
+      FIRST_SYNC_REFS: ${{ inputs.first_sync_refs }}
+      FIRST_SYNC_REPETITIONS: ${{ inputs.first_sync_repetitions }}
+      FIRST_SYNC_MINUTES: ${{ inputs.first_sync_minutes }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Record when the job started
+        working-directory: .
+        run: echo "FIRST_SYNC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Free disk space
+        working-directory: .
+        timeout-minutes: 30
+        run: |
+          df -h "$RUNNER_TEMP"
+          selected="$(xcode-select -p)"
+          selected="${selected%/Contents/Developer}"
+          remove=()
+          for app in /Applications/Xcode*.app; do
+            [ -L "$app" ] || [ "$app" = "$selected" ] || remove+=("$app")
+          done
+          for dir in "${ANDROID_HOME:-}" "$HOME/Library/Android" "$HOME/.dotnet" /usr/local/share/dotnet "$HOME/.ghcup" /usr/local/miniconda "${AGENT_TOOLSDIRECTORY:-$HOME/hostedtoolcache}/CodeQL" "$HOME/Library/Developer/CoreSimulator/Caches"; do
+            [ -n "$dir" ] && [ -e "$dir" ] && remove+=("$dir")
+          done
+          echo "Keeping $selected and removing:"
+          printf '  %s\n' "${remove[@]}"
+          xcrun simctl runtime delete all || echo "::warning::xcrun simctl runtime delete all failed, so the simulator runtimes stay"
+          printf '%s\0' "${remove[@]}" | xargs -0 -n 1 -P 4 sudo rm -rf
+          df -h "$RUNNER_TEMP"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Check the free disk space
+        run: node scripts/deploy-test/first-sync.ts disk
+      - name: Build koi from each ref
+        timeout-minutes: 150
+        run: node scripts/deploy-test/first-sync.ts build
+      - name: Generate the tree
+        id: generate
+        timeout-minutes: 45
+        run: node scripts/deploy-test/first-sync.ts generate
+      - name: Make the key the pairing codes are sealed to
+        run: node scripts/deploy-test/first-sync.ts keygen
+      - name: Upload the public key
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-sync-macos-key-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/koidrive-first-sync/key/public.pem
+          retention-days: 1
+          if-no-files-found: error
+      - name: Pair a device for each ref
+        timeout-minutes: 130
+        run: node scripts/deploy-test/first-sync.ts join
+      - name: Measure the first syncs
+        run: node scripts/deploy-test/first-sync.ts measure
+      - name: Summarize the runs
+        if: always() && steps.generate.outcome == 'success'
+        run: node scripts/deploy-test/first-sync.ts summarize
+      - name: Upload the measurements
+        if: always() && steps.generate.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-sync-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/koidrive-first-sync/results/
+          retention-days: 30
           if-no-files-found: error

@@ -157,7 +157,7 @@ async function github(path: string, init: RequestInit = {}): Promise<Response> {
   return response;
 }
 
-async function peer(): Promise<Job | undefined> {
+export async function peer(): Promise<Job | undefined> {
   const response = await github("/actions/runs/" + env("GITHUB_RUN_ID") + "/attempts/" + env("GITHUB_RUN_ATTEMPT") + "/jobs?per_page=100");
   return ((await response.json()) as { jobs: Job[] }).jobs.find((job) => job.name === env("E2E_PEER_JOB"));
 }
@@ -171,7 +171,7 @@ async function checkPeer(): Promise<void> {
   if (job?.status === "completed" && job.conclusion !== "success") fail("the job " + job.name + " ended (" + job.conclusion + ") while this one still needed it");
 }
 
-async function until<T>(what: string, ms: number, check: () => T | undefined | Promise<T | undefined>, everyMs = 1000): Promise<T> {
+export async function until<T>(what: string, ms: number, check: () => T | undefined | Promise<T | undefined>, everyMs = 1000): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
     const value = await check();
@@ -200,11 +200,11 @@ async function afterPeerStep(step: string): Promise<void> {
   console.log("The job " + name + " finished its step \"" + step + "\"");
 }
 
-async function download(name: string, dir: string): Promise<void> {
+export async function download(name: string, dir: string, ms = PEER_MS): Promise<void> {
   const artifact = name + "-" + env("GITHUB_RUN_ATTEMPT");
   const id = await until(
     "the artifact " + artifact,
-    PEER_MS,
+    ms,
     async () => {
       const response = await github("/actions/runs/" + env("GITHUB_RUN_ID") + "/artifacts?name=" + encodeURIComponent(artifact));
       return ((await response.json()) as { artifacts: { id: number }[] }).artifacts[0]?.id;
@@ -238,7 +238,7 @@ async function asOwner(method: string, path: string, body?: unknown): Promise<Re
   return send(path, { method, headers: { ...json, Authorization: "Bearer " + (token ?? fail("POST /v1/token returned no token")) }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
-async function invitation(): Promise<string> {
+export async function invitation(): Promise<string> {
   const response = await asOwner("POST", "/v1/pair/start");
   if (!response.ok) fail("POST /v1/pair/start returned HTTP " + response.status);
   const { code } = (await response.json()) as { code?: string };
