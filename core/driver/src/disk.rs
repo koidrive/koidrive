@@ -1009,6 +1009,7 @@ pub(crate) fn relink_with_hook(
     let next = koidrive_fs::new_token();
     let questions = store.transaction(|tx| -> Result<_, Stop> {
         let current = tx.root_tokens()?.current;
+        let answered = tx.questions()?;
         tx.forget_sync_state()?;
         if let Some(stored) = tx.link()? {
             tx.set_link(&Link {
@@ -1023,6 +1024,11 @@ pub(crate) fn relink_with_hook(
             .map_or(0, |since| since.as_millis() as u64);
         (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
         engine.ask(tx, &link.space_id)?;
+        for row in &answered {
+            if let Some(given) = &row.answer {
+                tx.answer_question(&row.question_id, given)?;
+            }
+        }
         engine.checkpoint(tx)?;
         tx.set_root_tokens(&RootTokens {
             current,

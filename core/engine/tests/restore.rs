@@ -4,6 +4,7 @@ use koidrive_engine::classify::{Class, Trees};
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects};
 use koidrive_engine::ids::{IdGen, uuid_v7};
+use koidrive_engine::question::Answer;
 use koidrive_engine::restore::{
     Malformed, Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreIntent,
 };
@@ -927,6 +928,38 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
         commits.resolved()[1],
         ended(&id(100), &first, Outcome::Restored)
     );
+}
+
+#[test]
+fn a_second_reset_keeps_the_restore_question_only_while_it_holds_the_same_restores() {
+    let (first, second) = (from_trash(&id(1)), from_trash(&id(2)));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let mut trees = trees(&[]);
+    commits.restore(id(100), first.clone());
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let mut reset = Commits::default();
+    reset.restore(id(100), first.clone());
+    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    reset.restore(id(101), second.clone());
+    build(&mut reset, &mut trees, &mut ids).unwrap();
+    let asked = reset.questions()[0].id.clone();
+    assert!(reset.decide(&asked, Answer::Cancel));
+
+    let mut again = Commits::default();
+    again.restore(id(100), first.clone());
+    again.ask_unsettled_restores(&reset, &mut ids, 0);
+    assert_eq!(again.questions(), reset.questions());
+
+    let mut wider = Commits::default();
+    wider.restore(id(100), first);
+    wider.restore(id(101), second);
+    wider.ask_unsettled_restores(&reset, &mut ids, 0);
+    let [question] = wider.questions() else {
+        panic!("one question: {:?}", wider.questions());
+    };
+    assert_ne!(question.id, asked);
+    assert_eq!(question.answer, None);
+    assert!(question.held.keys().eq([&id(100), &id(101)]));
 }
 
 #[test]

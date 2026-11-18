@@ -556,14 +556,25 @@ impl Commits {
         let unsettled: BTreeSet<RestoreId> = (sent.chain(held))
             .filter(|id| self.restores.contains_key(id))
             .collect();
-        let question = recovery::ask_intents(&unsettled, None, ids, now_ms);
-        self.questions.get_mut().extend(question);
+        let asked = (before.intents_questions()).find(|question| {
+            matches!(question.kind, QuestionKind::Recovery { sent_in: None, .. })
+                && question.held.keys().eq(&unsettled)
+        });
+        match asked {
+            Some(question) => self.questions.get_mut().push(question.clone()),
+            None => (self.questions.get_mut())
+                .extend(recovery::ask_intents(&unsettled, None, ids, now_ms)),
+        }
     }
 
-    fn asked_again(&self) -> impl Iterator<Item = &RestoreId> {
+    fn intents_questions(&self) -> impl Iterator<Item = &Question> {
         let intents = RecoveryGroup::RequestedBeforeReset;
         (self.questions.iter())
             .filter(move |question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
+    }
+
+    fn asked_again(&self) -> impl Iterator<Item = &RestoreId> {
+        self.intents_questions()
             .flat_map(|question| question.held.keys())
     }
 

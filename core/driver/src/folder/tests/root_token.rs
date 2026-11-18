@@ -850,56 +850,79 @@ fn a_relinked_copy_of_a_device_that_only_downloaded_holds_its_own_new_files() {
 
 #[test]
 fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answers() {
-    let mut remote = Remote::new();
-    let (site, mut a) = linked(&mut remote, "a");
-    let path = site.root.join("notes.txt");
-    a.create(&mut remote, &path, b"the first words");
-    fs::write(&path, b"and the second").unwrap();
-    a.scan_until(|a| !a.work.is_empty());
-    a.run(&mut remote);
-    let node = node_named(&a, "notes.txt");
-    let request = ListVersions {
-        node_id: node.clone(),
-        ..Default::default()
-    };
-    let first = remote.space.list_versions(&request).unwrap().versions[1]
-        .version_id
-        .clone();
-    let id = ask(&site, &RestoreIntent::version(node, first).unwrap());
-    let step = a.folder.requested();
-    a.take(step).unwrap();
-    let Some(Work::Send(commit)) = a.work.pop_front() else {
-        panic!("the restore is sent");
-    };
-    remote.commit(&a.caller, &commit).unwrap();
-    drop(a);
-    let head = remote.space.head_seq();
-    let mut marker = marker_of(&site);
-    marker.token = Some("0".repeat(32));
-    koidrive_fs::write_marker(&site.root, &marker).unwrap();
+    for retried in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let path = site.root.join("notes.txt");
+        a.create(&mut remote, &path, b"the first words");
+        fs::write(&path, b"and the second").unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        let node = node_named(&a, "notes.txt");
+        let request = ListVersions {
+            node_id: node.clone(),
+            ..Default::default()
+        };
+        let first = remote.space.list_versions(&request).unwrap().versions[1]
+            .version_id
+            .clone();
+        let id = ask(&site, &RestoreIntent::version(node, first).unwrap());
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        let Some(Work::Send(commit)) = a.work.pop_front() else {
+            panic!("the restore is sent");
+        };
+        remote.commit(&a.caller, &commit).unwrap();
+        drop(a);
+        let head = remote.space.head_seq();
+        let mut marker = marker_of(&site);
+        marker.token = Some("0".repeat(32));
+        koidrive_fs::write_marker(&site.root, &marker).unwrap();
 
-    assert_eq!(relink(&site).unwrap(), 1);
-    let mut a = restarted(&site, &mut remote);
-    a.rest(&mut remote);
-    assert_eq!(remote.space.head_seq(), head);
-    assert!(a.folder.engine.commits.restores().contains_key(&id));
-    drop(a);
+        let blocked = site.root.join(".koidrive/space.json.tmp");
+        if retried {
+            let blocking = blocked.clone();
+            let cut = move |cut| {
+                if cut == disk::Cut::TokenPended {
+                    fs::create_dir(&blocking).unwrap();
+                }
+            };
+            assert!(relink_until(&site, Box::new(cut)).is_err());
+            assert!(halts_as_a_copy(&site));
+        } else {
+            assert_eq!(relink(&site).unwrap(), 1);
+            let mut a = restarted(&site, &mut remote);
+            a.rest(&mut remote);
+            assert_eq!(remote.space.head_seq(), head);
+            assert!(a.folder.engine.commits.restores().contains_key(&id));
+            drop(a);
+        }
 
-    let held = (shown(&site).into_iter())
-        .find(|question| question.items.iter().any(|item| item.node_id == id))
-        .expect("a question holds the restore");
-    let given = koidrive_store::GivenAnswer {
-        answer: Answer::Cancel.as_str().into(),
-        answered_at_ms: NOW,
-    };
-    (Store::open(&site.db).unwrap())
-        .transaction(|tx| tx.answer_question(&held.id, &given))
-        .unwrap();
-    let mut a = restarted(&site, &mut remote);
-    a.rest(&mut remote);
-    assert_eq!(remote.space.head_seq(), head);
-    let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
-    assert_eq!(ended(&site), [(id, cancelled)]);
+        let held = (shown(&site).into_iter())
+            .find(|question| question.items.iter().any(|item| item.node_id == id))
+            .expect("a question holds the restore");
+        let given = koidrive_store::GivenAnswer {
+            answer: Answer::Cancel.as_str().into(),
+            answered_at_ms: NOW,
+        };
+        (Store::open(&site.db).unwrap())
+            .transaction(|tx| tx.answer_question(&held.id, &given))
+            .unwrap();
+        if retried {
+            fs::remove_dir(&blocked).unwrap();
+            assert_eq!(relink(&site).unwrap(), 1);
+        }
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(remote.space.head_seq(), head);
+        let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
+        assert_eq!(ended(&site), [(id.clone(), cancelled)], "retried: {retried}");
+        let taken = (Store::open(&site.db).unwrap())
+            .transaction(|tx| tx.taken_question(&held.id))
+            .unwrap();
+        assert_eq!(taken.and_then(|taken| taken.answer), Some(given));
+        assert!(shown(&site).iter().all(|question| question.items.iter().all(|item| item.node_id != id)));
+    }
 }
 
 #[test]
