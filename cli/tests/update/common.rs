@@ -87,12 +87,9 @@ fn koi(home: &Path, github: &GitHub, args: &[&str]) -> Command {
 }
 
 fn koi_at(binary: &Path, home: &Path, github: &GitHub, args: &[&str]) -> Command {
-    let temporary = home.join("tmp");
-    std::fs::create_dir_all(&temporary).unwrap();
     let mut command = sandboxed(binary, home);
     command
         .args(args)
-        .env("TMPDIR", temporary)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_STATE_HOME", home.join("state"))

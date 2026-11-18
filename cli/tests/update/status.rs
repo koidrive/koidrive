@@ -319,11 +319,11 @@ async fn the_daemon_never_hands_its_service_to_a_koi_outside_its_sandbox() {
     let opt = home.path().join("brew/opt/koidrive/bin/koi");
     std::fs::create_dir_all(opt.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&newer, &opt).unwrap();
-    let scanned = home.path().join("scanned");
+    let took = home.path().join("took");
     let installed = home
         .path()
         .join("Applications/Koidrive.app/Contents/Helpers/koi");
-    executable(&installed, &logging(&scanned, "0.0.1"));
+    executable(&installed, &logging(&took, "98.0.0"));
     let paths = koidrive_driver::Paths::from_vars(|name| match name {
         "HOME" => Some(home.path().into()),
         "XDG_CONFIG_HOME" => Some(home.path().join("config").into()),
@@ -361,12 +361,12 @@ async fn the_daemon_never_hands_its_service_to_a_koi_outside_its_sandbox() {
             .spawn()
             .unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
-        while !scanned.exists() {
+        while !std::fs::read_to_string(&took).is_ok_and(|calls| calls.contains("_reconcile")) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the daemon looks for a newer koi when it starts");
+    .expect("the daemon hands its service to the newest koi inside its sandbox");
     daemon.kill().await.unwrap();
     daemon.wait().await.unwrap();
     assert!(

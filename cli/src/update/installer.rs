@@ -48,12 +48,14 @@ pub(super) async fn installer(
         .bytes()
         .await
         .map_err(unreachable)?;
-    let file = tempfile::Builder::new()
-        .prefix("koidrive-install")
-        .suffix(".sh")
-        .tempfile()
-        .and_then(|mut file| file.write_all(&script).map(|()| file))
-        .map_err(|error| failed(format!("install.sh cannot be saved: {error}")))?;
+    let mut staged = tempfile::Builder::new();
+    staged.prefix("koidrive-install").suffix(".sh");
+    let file = match crate::lifeline::sandbox() {
+        Some(sandbox) => staged.tempfile_in(sandbox),
+        None => staged.tempfile(),
+    }
+    .and_then(|mut file| file.write_all(&script).map(|()| file))
+    .map_err(|error| failed(format!("install.sh cannot be saved: {error}")))?;
     let passed = |path| {
         crate::program::Confined::new(path)
             .map_err(|error| failed(format!("install.sh did not run: {error}")))

@@ -315,15 +315,20 @@ pub(super) async fn reconcile_updated(
     let actual = reached(koi, actual, target)?;
     let service = service.map_err(failed)?;
     binary.check(deadline).await?;
-    let within = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let left = || deadline.saturating_duration_since(tokio::time::Instant::now());
     let args = ["_reconcile", "--json"];
-    let output = match crate::program::found_async(koi) {
-        _ if within.is_zero() => Ok(None),
-        Ok(mut command) => {
+    let command = match left().is_zero() {
+        true => Ok(None),
+        false => crate::program::found_async(koi).map(Some),
+    };
+    let within = left();
+    let output = match command {
+        Ok(Some(mut command)) if !within.is_zero() => {
             command.args(args);
             (echo.run(command, within, Child::Reconcile).await)
                 .map(|output| output.map(|(status, printed, _)| (status, printed)))
         }
+        Ok(_) => Ok(None),
         Err(error) => Err(error),
     };
     let app = output

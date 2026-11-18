@@ -87,6 +87,10 @@ fn tie(dir: &Path) -> Result<(File, File), Refusal> {
     Ok((alive, held))
 }
 
+pub(crate) fn sandbox() -> Option<&'static Path> {
+    SANDBOX.get().map(PathBuf::as_path)
+}
+
 pub(crate) fn confine(path: &Path) -> io::Result<()> {
     refuse_outside("change", path, |root| {
         (path.parent().zip(path.file_name()))

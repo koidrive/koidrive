@@ -85,6 +85,8 @@ pub(super) async fn stage_copy(
     let mut data = receipt.data();
     let version = Version::parse(&data.target).map_err(io_error)?;
     unchanged_directory(root, root_fd)?;
+    crate::lifeline::confine_passed(root).map_err(io_error)?;
+    let copied = passed(source)?;
     let parent = tempfile::Builder::new()
         .prefix(".koidrive-retired-")
         .tempdir_in(root)
@@ -110,12 +112,7 @@ pub(super) async fn stage_copy(
     parent_fd.sync_all().map_err(io_error)?;
     root_fd.sync_all().map_err(io_error)?;
     receipt.save(&data)?;
-    process(
-        &config.ditto,
-        &[passed(source)?, passed(&staged_path)?],
-        control,
-    )
-    .await?;
+    process(&config.ditto, &[copied, passed(&staged_path)?], control).await?;
     let staged = verify(config, &staged_path, Some(&version), control).await?;
     if staged.identity != bundle {
         return Err(failure(

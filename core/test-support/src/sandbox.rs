@@ -145,7 +145,7 @@ fn ended(alive: &Path) -> bool {
 
 /// A command that runs `program` with the lifeline of the sandbox `within` lies in, so that any koi it starts, with
 /// whatever environment it is given, stops with that sandbox. The command keeps koi's install inventory in the sandbox
-/// and leaves out this account's XDG directories and Homebrew prefix.
+/// and leaves out this account's XDG directories, session bus, Git repository and Homebrew prefix.
 pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
     let found = (OPEN.lock().unwrap().iter())
         .find(|open| open.roots.iter().any(|root| within.starts_with(root)))
@@ -157,13 +157,23 @@ pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
         )
     });
     let mut command = Command::new(program);
-    command
-        .env(LIFELINE, lifeline)
-        .env(INVENTORY, root)
-        .env_remove("HOMEBREW_PREFIX")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_STATE_HOME")
-        .env_remove("XDG_RUNTIME_DIR");
+    command.env(LIFELINE, lifeline).env(INVENTORY, root);
+    for inherited in [
+        "HOMEBREW_PREFIX",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ] {
+        command.env_remove(inherited);
+    }
     command
 }
 

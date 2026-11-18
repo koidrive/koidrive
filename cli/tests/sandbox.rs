@@ -324,11 +324,15 @@ fn every_program_koi_starts_goes_through_its_program_runner() {
             || file.file_name().is_some_and(|name| name == "tests.rs")
     };
     let mut found = Vec::new();
-    for file in files.iter().filter(|file| !tests(file)) {
-        let tree = syn::parse_file(&std::fs::read_to_string(file).unwrap()).unwrap();
+    for file in files.iter().map(|file| file.strip_prefix(&src).unwrap()) {
+        if tests(file) {
+            continue;
+        }
+        let tree = syn::parse_file(&std::fs::read_to_string(src.join(file)).unwrap()).unwrap();
         Runner {
-            file: file.strip_prefix(&src).unwrap(),
+            file,
             found: &mut found,
+            tainted: Vec::new(),
         }
         .visit_file(&tree);
     }
@@ -342,6 +346,7 @@ fn every_program_koi_starts_goes_through_its_program_runner() {
 struct Runner<'a> {
     file: &'a Path,
     found: &'a mut Vec<String>,
+    tainted: Vec<String>,
 }
 
 impl Runner<'_> {
@@ -353,6 +358,19 @@ impl Runner<'_> {
 
     fn runner(&self) -> bool {
         self.file == Path::new("program.rs")
+    }
+
+    fn configures(&self) -> bool {
+        self.runner() || self.file == Path::new("app_install/macos/control.rs")
+    }
+
+    fn stringified(&self, expr: &syn::Expr) -> Option<proc_macro2::Span> {
+        let mut text = Stringified {
+            found: None,
+            tainted: &self.tainted,
+        };
+        text.visit_expr(expr);
+        text.found
     }
 
     fn uses(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>) {
@@ -369,7 +387,18 @@ impl Runner<'_> {
             {
                 self.flag(ident.span(), format!("{}::Command", prefix.join("::")));
             }
-            syn::UseTree::Rename(rename) if rename.ident == "process" => {
+            syn::UseTree::Name(syn::UseName { ident })
+            | syn::UseTree::Rename(syn::UseRename { ident, .. })
+                if ident == "configured_async" && !self.configures() =>
+            {
+                self.flag(
+                    ident.span(),
+                    "configured_async outside app_install's control".to_owned(),
+                );
+            }
+            syn::UseTree::Rename(rename)
+                if rename.ident == "process" || (module && rename.ident == "self") =>
+            {
                 self.flag(rename.ident.span(), "a renamed process module".to_owned());
             }
             syn::UseTree::Glob(glob) if module => {
@@ -386,9 +415,7 @@ impl Runner<'_> {
 
     fn texts(&mut self, args: impl IntoIterator<Item = impl std::borrow::Borrow<syn::Expr>>) {
         for arg in args {
-            let mut text = Stringified(None);
-            text.visit_expr(arg.borrow());
-            if let Some(span) = text.0 {
+            if let Some(span) = self.stringified(arg.borrow()) {
                 self.flag(span, "a path passed as text".to_owned());
             }
         }
@@ -396,11 +423,22 @@ impl Runner<'_> {
 }
 
 fn test_only(attrs: &[syn::Attribute]) -> bool {
+    fn requires_test(meta: &syn::Meta) -> bool {
+        match meta {
+            syn::Meta::Path(path) => path.is_ident("test"),
+            syn::Meta::List(list) if list.path.is_ident("all") => list
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .is_ok_and(|all| all.iter().any(requires_test)),
+            _ => false,
+        }
+    }
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
-                .parse_args::<syn::Ident>()
-                .is_ok_and(|cfg| cfg == "test")
+                .parse_args::<syn::Meta>()
+                .is_ok_and(|cfg| requires_test(&cfg))
     })
 }
 
@@ -439,7 +477,30 @@ impl<'ast> Visit<'ast> for Runner<'_> {
                 format!("{} hands out a raw process::Command", item.sig.ident),
             );
         }
+        let outer = std::mem::take(&mut self.tainted);
         syn::visit::visit_item_fn(self, item);
+        self.tainted = outer;
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        let outer = std::mem::take(&mut self.tainted);
+        syn::visit::visit_impl_item_fn(self, item);
+        self.tainted = outer;
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        let pat = match &local.pat {
+            syn::Pat::Type(typed) => &*typed.pat,
+            pat => pat,
+        };
+        if let syn::Pat::Ident(binding) = pat {
+            let name = binding.ident.to_string();
+            self.tainted.retain(|tainted| *tainted != name);
+            if (local.init.as_ref()).is_some_and(|init| self.stringified(&init.expr).is_some()) {
+                self.tainted.push(name);
+            }
+        }
+        syn::visit::visit_local(self, local);
     }
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
@@ -455,8 +516,7 @@ impl<'ast> Visit<'ast> for Runner<'_> {
         }
         let last = path.segments.last().map(|segment| &segment.ident);
         if let Some(ident) = last.filter(|ident| *ident == "configured_async")
-            && self.file != Path::new("app_install/macos/control.rs")
-            && !self.runner()
+            && !self.configures()
         {
             self.flag(
                 ident.span(),
@@ -528,14 +588,34 @@ const STRINGIFY: [&str; 5] = [
     "into_os_string",
 ];
 
-struct Stringified(Option<proc_macro2::Span>);
+struct Stringified<'a> {
+    found: Option<proc_macro2::Span>,
+    tainted: &'a [String],
+}
 
-impl<'ast> Visit<'ast> for Stringified {
+impl<'ast> Visit<'ast> for Stringified<'_> {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if STRINGIFY.iter().any(|method| call.method == method) {
-            self.0.get_or_insert(call.method.span());
+            self.found.get_or_insert(call.method.span());
         }
         syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let confined = matches!(&*call.func, syn::Expr::Path(func)
+            if func.path.segments.len() >= 2
+                && func.path.segments.iter().rev().take(2).map(|segment| segment.ident.to_string()).eq(["new", "Confined"]));
+        if !confined {
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if let Some(name) = path.path.get_ident()
+            && self.tainted.iter().any(|tainted| name == tainted)
+        {
+            self.found.get_or_insert(name.span());
+        }
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
@@ -551,7 +631,7 @@ impl<'ast> Visit<'ast> for Stringified {
             })
         }
         if let Some(span) = find(mac.tokens.clone()) {
-            self.0.get_or_insert(span);
+            self.found.get_or_insert(span);
         }
     }
 }
