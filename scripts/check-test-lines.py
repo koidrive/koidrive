@@ -274,7 +274,7 @@ def report(base, head, allowance, pr=None):
     for message in messages:
         encoded = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::warning title=Test-line budget::{encoded}")
-        summary += f"\n> [!WARNING]\n> {message}\n"
+        summary += f"\n> [!WARNING]\n> {' '.join(message.splitlines())}\n"
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:

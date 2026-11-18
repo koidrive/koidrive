@@ -71,6 +71,7 @@ class TestLines(unittest.TestCase):
         result = subprocess.run([sys.executable, CHECK, base, head, *args], cwd=self.repo, capture_output=True, text=True,
                                 env={**os.environ, "GITHUB_STEP_SUMMARY": summary})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.stdout = result.stdout
         with open(summary) as f:
             self.assertIn("## Rust test lines", f.read())
         return [line.split("::", 2)[2] for line in result.stdout.splitlines() if line.startswith("::warning")]
@@ -279,6 +280,7 @@ class TestLines(unittest.TestCase):
         result = self.run_check({}, {"core/a/tests/a\n::error::forged.rs": "fn broken( {\n"})
         self.assertEqual(len(result), 1, result)
         self.assertIn("%0A::error::forged.rs", result[0])
+        self.assertFalse([line for line in self.stdout.splitlines() if line.startswith("::error")], self.stdout)
 
     def test_an_inline_module_gated_by_an_inner_cfg_test_is_test_code(self):
         counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\nmod checks {\n    #![cfg(test)]\n    mod cases;\n}\n",
