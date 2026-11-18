@@ -180,13 +180,16 @@ def collect(failures):
              for (binary, test), other in sorted(others.items())])
 
 
-def target_binary(target):
-    package, _, selector = target.partition(" ")
-    test = re.match(r"--test (\S+)$", selector)
-    return test[1] if test else package.replace("-", "_")
+def target_logs(logs, failing):
+    if "log" in failing:
+        return [logs / f"{failing['log']}.log"]
+    package, _, selector = failing["target"].partition(" ")
+    named = re.match(r"--(?:test|bin) (\S+)$", selector)
+    binary = named[1] if named else package.replace("-", "_")
+    return [log for log in logs.glob("*.log") if log.stem.rsplit("-", 1)[0] == binary]
 
 
-def unattributed(failures, cases, others):
+def unattributed(failures):
     found = []
     for shard, shard_dir in shards(failures):
         results = sorted(shard_dir.glob(f"result-{shard}.json"))
@@ -194,10 +197,10 @@ def unattributed(failures, cases, others):
             found.append({"shard": shard, "target": None, "reason": f"the artifact has no result-{shard}.json",
                           "repro": ""})
             continue
-        seen = ({case["binary"] for case in cases if shard in case["shards"]}
-                | {other["binary"] for other in others if shard in other["shards"]})
-        found += [{"shard": shard, **failing} for failing in json.loads(results[0].read_text())["failing"]
-                  if target_binary(failing["target"]) not in seen]
+        found += [{"shard": shard, "target": failing["target"], "reason": failing["reason"], "repro": failing["repro"]}
+                  for failing in json.loads(results[0].read_text())["failing"]
+                  if not any(log.is_file() and SECTION.search(log.read_text(errors="replace"))
+                             for log in target_logs(shard_dir / "logs", failing))]
     return found
 
 
@@ -548,7 +551,7 @@ def main():
     if arguments.command == "collect":
         try:
             cases, others = collect(arguments.failures)
-            failed = unattributed(arguments.failures, cases, others)
+            failed = unattributed(arguments.failures)
         except ValueError as error:
             sys.exit(f"::error::{error}")
         profile = (checked_profile(arguments.head_manifest.read_text())

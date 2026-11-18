@@ -632,21 +632,31 @@ class Triage(unittest.TestCase):
                 triage.collect(root / "failure-shard-5")
 
     def test_a_target_whose_log_names_no_failing_test_is_unattributed_in_both_layouts(self):
-        crashed = {"target": "koidrive-sim --test engine_sync", "reason": "exit code 134", "repro": "cargo test"}
-        mapped = {"target": "koidrive-sim --test devices", "reason": "exit code 101", "repro": "cargo test"}
+        crashed = {"target": "koidrive-engine --test recovery", "log": "recovery-1111111111111111",
+                   "reason": "exit code 134", "repro": "cargo test -p koidrive-engine"}
+        named = {"target": "koidrive-sim --test recovery", "log": "recovery-2222222222222222",
+                 "reason": "exit code 101", "repro": "cargo test -p koidrive-sim"}
+        unlabelled_bin = {"target": "koidrive-cli --bin koi", "reason": "exit code 101", "repro": "cargo test"}
+        mapped = {"target": "koidrive-sim --test devices", "log": "devices-09cbc274e49e4fd7",
+                  "reason": "exit code 101", "repro": "cargo test"}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.shard(root, 2, ["a" * 64])
             shard = root / "failure-shard-2"
-            (shard / "logs/engine_sync-17c617fcdf6beb9f.log").write_text(
+            (shard / "logs/recovery-1111111111111111.log").write_text(
                 "running 1 test\n\nthread 'main' has overflowed its stack\nfatal runtime error: stack overflow\n")
-            (shard / "result-2.json").write_text(json.dumps({"shard": 2, "failing": [mapped, crashed]}))
+            (shard / "logs/recovery-2222222222222222.log").write_text(
+                "failures:\n\n---- restore_keeps_writes stdout ----\npanicked\n\nfailures:\n")
+            (shard / "logs/koi-3333333333333333.log").write_text(
+                "failures:\n\n---- prints_help stdout ----\npanicked\n\nfailures:\n")
+            (shard / "result-2.json").write_text(
+                json.dumps({"shard": 2, "failing": [mapped, crashed, named, unlabelled_bin]}))
             for failures in (root, shard):
                 with self.subTest(failures=failures.name):
-                    cases, others = triage.collect(failures)
-                    self.assertEqual(triage.unattributed(failures, cases, others), [{"shard": 2, **crashed}])
+                    self.assertEqual(triage.unattributed(failures),
+                                     [{"shard": 2, **{key: crashed[key] for key in ("target", "reason", "repro")}}])
             self.shard(root, 6, [])
-            self.assertEqual(triage.unattributed(root, *triage.collect(root))[1:],
+            self.assertEqual(triage.unattributed(root)[1:],
                              [{"shard": 6, "target": None, "reason": "the artifact has no result-6.json", "repro": ""}])
 
     def test_the_report_lists_unattributed_targets_and_fails(self):
