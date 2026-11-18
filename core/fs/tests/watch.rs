@@ -1541,6 +1541,8 @@ fn moved_out_of_a_folder_that_then_becomes_unreadable(to: &str, locked: &str, sc
     );
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap(), "{case}");
 }
+
+#[test]
 fn a_link_made_to_a_file_in_a_folder_that_then_becomes_unreadable_is_created_beside_it() {
     let (_dir, root) = moved_and_removed();
     let mut snapshot = Snapshot::scan(&root).unwrap();
