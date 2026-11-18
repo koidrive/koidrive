@@ -837,7 +837,7 @@ impl Core for DaemonCore {
     fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, SessionError> {
         let path = (self.lock().sent.folders.iter())
             .find(|folder| folder.space_id == space_id)
-            .map(|folder| folder.path.clone())
+            .and_then(|folder| folder.path.clone())
             .ok_or(SessionError::FolderNotLinked)?;
         let counted_at_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

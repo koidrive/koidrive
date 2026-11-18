@@ -115,14 +115,16 @@ fn set_done(follows: bool, already: bool) -> Done {
 }
 
 async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFolderData>, CliError> {
-    let mut folders = match ipc::run(paths, Request::Status).await? {
-        Response::Status { status } => status.folders,
+    let mut folders: Vec<(String, String)> = match ipc::run(paths, Request::Status).await? {
+        Response::Status { status } => (status.folders.into_iter())
+            .filter_map(|folder| Some((folder.space_id, folder.path?)))
+            .collect(),
         other => return Err(unexpected(other)),
     };
     if let Some(only) = only {
         let canonical = std::fs::canonicalize(only).ok();
-        folders.retain(|folder| {
-            let path = Path::new(&folder.path);
+        folders.retain(|(_, path)| {
+            let path = Path::new(path);
             path == only || canonical.as_deref() == Some(path)
         });
         if folders.is_empty() {
@@ -130,9 +132,9 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
         }
     }
     let mut counted = Vec::new();
-    for folder in folders {
+    for (space_id, path) in folders {
         let request = Request::GitignoreOnly {
-            folder: PathBuf::from(&folder.path),
+            folder: PathBuf::from(&path),
         };
         match ipc::run(paths, request).await? {
             Response::GitignoreOnly {
@@ -140,8 +142,8 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
                 bytes,
                 unreadable,
             } => counted.push(GitignoreFolderData {
-                space_id: folder.space_id,
-                path: folder.path,
+                space_id,
+                path,
                 files,
                 bytes,
                 unreadable: (unreadable.iter())
