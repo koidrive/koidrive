@@ -4842,6 +4842,81 @@ fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kep
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
+fn given_up_with_a_restore(queued_before_the_answer: bool) -> (Trees, Commits, IdGen) {
+    const D: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a01";
+    const E: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a02";
+    const F: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a03";
+    let mut trees = trees(
+        &[(D, dir(ROOT, "new"))],
+        &[
+            (D, dir(ROOT, "old")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            Remote(D, dir(ROOT, "old"), true, 1),
+            Remote(E, dir(D, "e"), true, 1),
+            Remote(F, file(E, "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    let intent = RestoreIntent::from_trash(E.into(), None, None).unwrap();
+    if queued_before_the_answer {
+        assert!(commits.restore("restore".into(), intent.clone()));
+    }
+    let answer = ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        answer.contains(&("restore", E.into())),
+        queued_before_the_answer
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            (D, dir(ROOT, "new"), false),
+            (E, dir(D, "e"), false),
+            (F, file(E, "child", 1), false),
+        ],
+    );
+    if !queued_before_the_answer {
+        assert!(commits.restore("restore".into(), intent));
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("delete", E.into()), ("restore", E.into())]
+        );
+        applied(
+            &mut commits,
+            &mut trees,
+            3,
+            &[(E, dir(D, "e"), false), (F, file(E, "child", 1), false)],
+        );
+    }
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_given_up_folder_the_user_restores_after_the_answer_is_not_trashed_again() {
+    let (mut trees, mut commits, mut ids) = given_up_with_a_restore(false);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(commits.state().given_up_nodes.is_empty());
+}
+
+#[test]
+fn a_given_up_folder_the_user_restores_in_the_answers_commit_is_not_trashed_again() {
+    let (mut trees, mut commits, mut ids) = given_up_with_a_restore(true);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(commits.state().given_up_nodes.is_empty());
+}
+
 #[test]
 fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
     let mut trees = trees(

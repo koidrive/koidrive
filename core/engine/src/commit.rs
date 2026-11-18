@@ -2353,6 +2353,7 @@ impl Commits {
                 self.problems.insert(node.clone());
             }
         }
+        let mut brought_back = BTreeSet::new();
         for (index, (op, outcome)) in flight.commit.ops.iter().zip(&result.results).enumerate() {
             let Some(op::Op::Restore(restore)) = &op.op else {
                 continue;
@@ -2376,10 +2377,14 @@ impl Commits {
                 .flatten()
                 .chain(deleted)
             {
+                brought_back.insert(id.clone());
                 if trees.local().get(id).is_none() && trees.remote().live(id).is_some() {
                     synced.set(id, None);
                 }
             }
+        }
+        for id in &brought_back {
+            self.given_up_nodes.remove(id);
         }
         let revived: Vec<NodeId> = (trees.pending_finishes().iter())
             .filter(|(id, finish)| finish.sending && !placed.contains(id))
@@ -2388,7 +2393,10 @@ impl Commits {
         for id in revived {
             trees.restart_finish(&id, result.seq);
         }
-        for (id, given) in &given_up {
+        for (id, given) in given_up
+            .iter()
+            .filter(|(id, _)| !brought_back.contains(*id))
+        {
             if !given.held_here
                 && trees.local().get(id).is_none()
                 && synced.get(trees, id).is_none()
