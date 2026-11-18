@@ -17,7 +17,7 @@ python3 scripts/split-tests.py split --source-ref <unsplit-revision>
 python3 scripts/split-tests.py verify --source-ref <unsplit-revision>
 ```
 
-`split` without `--source-ref` reads the working tree, including files already split. Repeating either form with the same inputs produces identical files. Edit `mapping.json` to assign a new item or change its scenario. Ordinary test changes can edit their scenario files directly.
+`split` without `--source-ref` reads the working tree, including files already split. Repeating either form with the same inputs produces identical files. Edit `mapping.json` to change an item's scenario. Ordinary test changes can edit their scenario files directly; then run `python3 scripts/split-tests.py map`, which assigns each item the mapping lacks to the file that holds it and drops entries for items that no longer exist. CI runs `verify --source-ref HEAD` on every pull request, so a test added without `map` fails there. `cargo fmt` does not follow `include!`, so CI also runs `split-tests.py check-format`, which runs rustfmt on the fragments a change touches.
 
 Capture the test inventory before and after the split with the same command and environment:
 

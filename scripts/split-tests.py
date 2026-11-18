@@ -3,6 +3,7 @@
 
 import argparse
 from collections import Counter
+import difflib
 import json
 from pathlib import Path
 import re
@@ -222,10 +223,71 @@ def port(executable, mapping, base_ref, branch_ref):
     write(executable, render(executable, mapping, sources))
 
 
-def require_assigned(path, assignments, found):
+def require_assigned(path, assignments, found, fix=""):
     unknown = [item["name"] for item in found if item["name"] not in assignments]
     if unknown:
-        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
+        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}{fix}")
+
+
+MAP_FIX = "; run `python3 scripts/split-tests.py map` to assign each one to the file that holds it, then commit mapping.json"
+
+
+def scenario_files(path):
+    directory = output_path(path, "common").parent
+    return [(ROOT / path, "root")] + [(moved, moved.relative_to(directory).with_suffix("").as_posix())
+                                      for moved in sorted(directory.rglob("*.rs"))]
+
+
+def unformatted_lines(source):
+    formatted = subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"],
+                               input=source, capture_output=True, check=True).stdout
+    lines = set()
+    matcher = difflib.SequenceMatcher(None, source.decode().splitlines(), formatted.decode().splitlines(), autojunk=False)
+    for tag, start, end, _, _ in matcher.get_opcodes():
+        if tag != "equal":
+            lines.update(range(start + 1, max(end, start + 1) + 1))
+    return lines
+
+
+def changed_lines(base):
+    diff = subprocess.check_output(["git", "diff", "-U0", "--diff-filter=d", base, "HEAD"], cwd=ROOT, text=True)
+    changed, current = {}, None
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            current = changed.setdefault(line.removeprefix("+++ b/"), set())
+        elif line.startswith("@@") and current is not None:
+            start, _, count = re.search(r"\+(\d+)(,(\d+))?", line).groups()
+            current.update(range(int(start), int(start) + int(count if count is not None else 1)))
+    return changed
+
+
+def check_format(mapping, changed):
+    fragments = {moved.relative_to(ROOT).as_posix() for path in mapping for moved, scenario in scenario_files(path)
+                 if scenario != "root"}
+    checked = sorted(fragments & changed.keys())
+    problems = [f"{name} lines {lines}" for name in checked
+                if (lines := sorted(unformatted_lines((ROOT / name).read_bytes()) & changed[name]))]
+    if problems:
+        raise ValueError(f"cargo fmt does not reach include! fragments, and these lines this change wrote are not formatted: "
+                         f"{'; '.join(problems)}; `rustfmt --edition 2024 --emit stdout < FILE | diff FILE -` "
+                         f"shows the formatting, so apply its hunks at those lines")
+    print(f"PASS rustfmt: changed lines in {len(checked)} fragments")
+
+
+def map_items(executable, mapping):
+    for path, assignments in mapping.items():
+        found = {item["name"]: scenario for moved, scenario in scenario_files(path)
+                 for item in items(executable, moved.read_bytes(), fragment=scenario != "root")}
+        require_properties_in_place(path, {name: assignments[name] for name in found if name in assignments},
+                                    property_files(executable, path))
+        gone = [name for name in assignments if name not in found]
+        for name in gone:
+            del assignments[name]
+        placed = [name for name in found if assignments.get(name) != found[name]]
+        for name in placed:
+            assignments[name] = found[name]
+        print(f"{path}: assigned {len(placed)} items, dropped {len(gone)}")
+    MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
 
 
 def verify(executable, mapping, revision):
@@ -235,7 +297,7 @@ def verify(executable, mapping, revision):
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
         original_items = items(executable, original)
-        require_assigned(path, assignments, original_items)
+        require_assigned(path, assignments, original_items, MAP_FIX)
         reference_files = property_files(executable, path, revision)
         require_properties_in_place(path, assignments, reference_files)
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
@@ -254,7 +316,7 @@ def verify(executable, mapping, revision):
         if set(paths[1:]) != {output_path(path, scenario) for scenario in scenarios}:
             raise ValueError(f"{path}: scenario file set differs from the mapping")
         found = {moved: items(executable, moved.read_bytes(), fragment=moved != ROOT / path) for moved in paths}
-        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items])
+        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items], MAP_FIX)
         for moved, moved_items in found.items():
             source = moved.read_bytes()
             for item in moved_items:
@@ -264,7 +326,7 @@ def verify(executable, mapping, revision):
                 if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
                     raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
                 if moved != scenario_file(path, assignments[name]):
-                    raise ValueError(f"wrong scenario for {name}: {moved}")
+                    raise ValueError(f"wrong scenario for {name}: {moved}{MAP_FIX}")
                 after[name] = source[item["start"]:item["end"]]
         if before != after:
             missing = set(before) - set(after)
@@ -298,6 +360,9 @@ def main():
     replay.add_argument("--base-ref", required=True)
     replay.add_argument("--branch-ref", required=True)
     replay.add_argument("--assign", action="append", default=[], metavar="PATH::ITEM=SCENARIO")
+    commands.add_parser("map")
+    formatting = commands.add_parser("check-format")
+    formatting.add_argument("--base-ref", required=True)
     listing = commands.add_parser("compare-lists")
     listing.add_argument("before")
     listing.add_argument("after")
@@ -305,10 +370,15 @@ def main():
     if args.command == "compare-lists":
         compare_lists(args.before, args.after)
         return
+    if args.command == "check-format":
+        check_format(json.loads(MAPPING.read_text()), changed_lines(args.base_ref))
+        return
     executable = parser()
     mapping = json.loads(MAPPING.read_text())
     if args.command == "split":
         split(executable, mapping, args.source_ref)
+    elif args.command == "map":
+        map_items(executable, mapping)
     elif args.command == "port":
         for assignment in args.assign:
             key, scenario = assignment.rsplit("=", 1)
@@ -321,4 +391,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ValueError as error:
+        raise SystemExit(f"error: {error}")

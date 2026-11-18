@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -230,6 +231,46 @@ class SplitTests(unittest.TestCase):
         with patch.object(split, "git_source", return_value=self.source):
             with self.assertRaisesRegex(ValueError, r"assign these items.*fn:added"):
                 split.verify(self.executable, self.mapping, "base")
+
+    def test_map_assigns_an_added_test_to_the_file_that_holds_it(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n#[test]\nfn added() {}\n")
+        with self.assertRaisesRegex(ValueError, r"fn:added.*split-tests\.py map"):
+            split.verify(self.executable, self.mapping, None)
+        self.mapping["tests.rs"]["fn:removed"] = "scenario"
+        split.map_items(self.executable, self.mapping)
+        written = json.loads(split.MAPPING.read_text())["tests.rs"]
+        self.assertEqual(written["fn:added"], "scenario")
+        self.assertNotIn("fn:removed", written)
+        split.verify(self.executable, self.mapping, None)
+
+    def test_check_format_covers_only_the_lines_a_change_wrote(self):
+        self.generate()
+        common = self.root / "tests/common.rs"
+        self.assertTrue(split.unformatted_lines(common.read_bytes()))
+        common.write_bytes(common.read_bytes() + b"\nfn added() {}\n")
+        split.check_format(self.mapping, {"tests/common.rs": {len(common.read_bytes().splitlines())}})
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\nfn  spaced(){}\n")
+        spaced = len(scenario.read_bytes().splitlines())
+        split.check_format(self.mapping, {"tests.rs": {1}, "tests/scenario.rs": {1}})
+        with self.assertRaisesRegex(ValueError, rf"tests/scenario\.rs lines \[{spaced}\].*rustfmt --edition 2024 --emit stdout"):
+            split.check_format(self.mapping, {"tests/scenario.rs": {spaced}})
+
+    def test_map_follows_a_test_moved_between_scenarios(self):
+        self.generate()
+        common = self.root / "tests/common.rs"
+        scenario = self.root / "tests/scenario.rs"
+        helper = b"fn helper() -> usize { 1 }\n"
+        self.assertIn(helper, common.read_bytes())
+        common.write_bytes(common.read_bytes().replace(helper, b""))
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + helper)
+        with self.assertRaisesRegex(ValueError, r"wrong scenario for fn:helper.*split-tests\.py map"):
+            split.verify(self.executable, self.mapping, None)
+        split.map_items(self.executable, self.mapping)
+        self.assertEqual(json.loads(split.MAPPING.read_text())["tests.rs"]["fn:helper"], "scenario")
+        split.verify(self.executable, self.mapping, None)
 
     def test_a_proptest_block_never_leaves_its_file(self):
         original = self.source

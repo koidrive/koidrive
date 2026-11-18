@@ -1008,6 +1008,35 @@ jobs:
           fi
           python3 scripts/check-test-lines.py ${PR:+--pr "$PR"} HEAD^1 HEAD
 
+  test-split-mapping:
+    name: test split mapping
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: scripts/test-split
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Fail when mapping.json does not assign every item of a split test source
+        run: python3 scripts/split-tests.py verify --source-ref HEAD
+      - name: Fail when a changed include! fragment is not rustfmt-formatted
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$EVENT" = merge_group ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+          else
+            BASE=$(git rev-parse HEAD^1)
+          fi
+          python3 scripts/split-tests.py check-format --base-ref "$BASE"
+
   store-upgrade:
     if: github.event_name != 'push'
     name: Store upgrade
@@ -1075,7 +1104,7 @@ jobs:
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, rust-lint, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos, rust-special-linux, rust-special-macos, rust-sim, rust-report, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
+    needs: [changes, rust-lint, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos, rust-special-linux, rust-special-macos, rust-sim, rust-report, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, test-split-mapping, store-upgrade, state-io, test-lines]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled
