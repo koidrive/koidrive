@@ -10,3 +10,8 @@ mod schema;
 
 #[path = "support/executable.rs"]
 mod fixture;
+
+#[path = "support/terminal.rs"]
+mod terminal;
+
+use terminal::Terminal;

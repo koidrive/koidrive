@@ -1,27 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process};
-use rustix::termios::{LocalModes, tcgetattr};
+use rustix::termios::LocalModes;
+
+#[path = "support/terminal.rs"]
+mod terminal;
+
+use terminal::Terminal;
 
 #[test]
 fn ctrl_c_at_either_password_prompt_exits_and_restores_terminal_echo() {
     for confirm in [false, true] {
         let home = tempfile::tempdir().unwrap();
-        let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
-        rustix::pty::grantpt(&master).unwrap();
-        rustix::pty::unlockpt(&master).unwrap();
-        let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-        let slave = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(name.to_str().unwrap())
-            .unwrap();
-        let before = tcgetattr(&slave).unwrap();
+        let terminal = Terminal::open(80, 24);
+        let before = terminal.attributes();
         assert!(before.local_modes.contains(LocalModes::ECHO));
         let mut child = Command::new(env!("CARGO_BIN_EXE_koi"))
             .args(["share", "create", ".", "--password", "--json"])
@@ -30,18 +26,13 @@ fn ctrl_c_at_either_password_prompt_exits_and_restores_terminal_echo() {
             .env("XDG_STATE_HOME", home.path().join("state"))
             .env_remove("XDG_RUNTIME_DIR")
             .env("DO_NOT_TRACK", "1")
-            .stdin(slave.try_clone().unwrap())
+            .stdin(terminal.slave())
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut terminal = File::from(master);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while tcgetattr(&slave)
-            .unwrap()
-            .local_modes
-            .contains(LocalModes::ECHO)
-        {
+        while terminal.attributes().local_modes.contains(LocalModes::ECHO) {
             if Instant::now() > deadline || child.try_wait().unwrap().is_some() {
                 let _ = child.kill();
                 panic!("the password prompt did not hide input");
@@ -58,7 +49,7 @@ fn ctrl_c_at_either_password_prompt_exits_and_restores_terminal_echo() {
                     let _ = sender.send(std::mem::take(&mut text));
                 }
             });
-            terminal.write_all(b"a password\n").unwrap();
+            terminal.write(b"a password\n");
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let text = prompt.recv_timeout(deadline.saturating_duration_since(Instant::now()));
@@ -91,7 +82,7 @@ fn ctrl_c_at_either_password_prompt_exits_and_restores_terminal_echo() {
         assert_eq!(output.status.code(), Some(130));
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(json["error"]["code"], "interrupted");
-        assert_eq!(tcgetattr(&slave).unwrap().local_modes, before.local_modes);
-        terminal.write_all(b"\n").unwrap();
+        assert_eq!(terminal.attributes().local_modes, before.local_modes);
+        terminal.write(b"\n");
     }
 }

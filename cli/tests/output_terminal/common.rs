@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, File};
+use std::fs;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 
@@ -153,72 +153,35 @@ impl Profile {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let reader = if tty {
-            let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
-            rustix::pty::grantpt(&master).unwrap();
-            rustix::pty::unlockpt(&master).unwrap();
-            let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-            let slave = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(name.to_str().unwrap())
-                .unwrap();
-            rustix::termios::tcsetwinsize(
-                &slave,
-                rustix::termios::Winsize {
-                    ws_row: 32,
-                    ws_col: width,
-                    ws_xpixel: 0,
-                    ws_ypixel: 0,
-                },
-            )
-            .unwrap();
-            command.stderr(slave.try_clone().unwrap());
+        let mut terminal = tty.then(|| Terminal::open(width, 32));
+        if let Some(terminal) = &terminal {
+            command.stderr(terminal.slave());
             if !pipe_stdout {
-                command.stdout(slave);
+                command.stdout(terminal.slave());
             }
-            Some(File::from(master))
-        } else {
-            None
-        };
-        let mut child = command.spawn().unwrap();
-        drop(command);
-        let reader = reader.map(|mut master| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let mut buffer = [0; 4096];
-                loop {
-                    match master.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                        Err(error)
-                            if error.raw_os_error()
-                                == Some(rustix::io::Errno::IO.raw_os_error()) =>
-                        {
-                            break;
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                        Err(error) => panic!("{error}"),
-                    }
-                }
-                String::from_utf8(bytes).unwrap().replace("\r\n", "\n")
-            })
-        });
+        }
+        let mut child = terminal::spawn(&mut command);
         let deadline = Instant::now() + Duration::from_secs(15);
-        let mut timed_out = false;
-        while child.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                timed_out = true;
-                break;
+        match &mut terminal {
+            Some(terminal) => while terminal.read(&mut child, deadline) {},
+            None => {
+                while child.try_wait().unwrap().is_none() {
+                    if Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        panic!("koi {args:?} did not exit");
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
         let output = child.wait_with_output().unwrap();
-        let terminal = reader
-            .map(|reader| reader.join().unwrap())
+        let terminal = terminal
+            .map(|terminal| {
+                String::from_utf8(terminal.output().to_vec())
+                    .unwrap()
+                    .replace("\r\n", "\n")
+            })
             .unwrap_or_default();
-        assert!(!timed_out, "koi {args:?} did not exit");
         Capture {
             exit: output.status.code().unwrap(),
             stdout: String::from_utf8(output.stdout).unwrap(),

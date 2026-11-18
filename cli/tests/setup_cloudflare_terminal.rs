@@ -2,7 +2,7 @@
 
 #![cfg(unix)]
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +23,11 @@ use koidrive_proto::v1::{
 use prost::Message;
 use serde_json::{Value, json};
 use url::Url;
+
+#[path = "support/terminal.rs"]
+mod terminal;
+
+use terminal::Terminal;
 
 const ROUTE: &str = "How do you want to connect?";
 const SPACES: &str = "Which shared folder should sync here?";
@@ -785,58 +790,23 @@ fn terminal_with_stdout(
     redirected: bool,
     interrupt: Option<rustix::process::Signal>,
 ) -> Output {
-    let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
-    rustix::pty::grantpt(&master).unwrap();
-    rustix::pty::unlockpt(&master).unwrap();
-    let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-    let slave = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().unwrap())
-        .unwrap();
-    rustix::termios::tcsetwinsize(
-        &master,
-        rustix::termios::Winsize {
-            ws_row: 30,
-            ws_col: 100,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        },
-    )
-    .unwrap();
-    let flags = rustix::fs::fcntl_getfl(&master).unwrap();
-    rustix::fs::fcntl_setfl(&master, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
-    let mut master = File::from(master);
+    let mut terminal = Terminal::open(100, 30);
     let mut stdout = redirected.then(|| tempfile::tempfile().unwrap());
     command
-        .stdin(slave.try_clone().unwrap())
+        .stdin(terminal.slave())
         .stdout(match &stdout {
             Some(file) => file.try_clone().unwrap(),
-            None => slave.try_clone().unwrap(),
+            None => terminal.slave(),
         })
-        .stderr(slave);
+        .stderr(terminal.slave());
     let mut child = Running(command.process_group(0).spawn().unwrap());
-    let mut raw = Vec::new();
     let mut answered = 0;
     let mut seen = 0;
     let mut called_back = false;
     let mut paste: Option<Url> = None;
     let deadline = Instant::now() + Duration::from_secs(45);
-    loop {
-        let mut bytes = [0; 8192];
-        match master.read(&mut bytes) {
-            Ok(0) => break,
-            Ok(count) => raw.extend_from_slice(&bytes[..count]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if child.0.try_wait().unwrap().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(error) if error.raw_os_error() == Some(5) => break,
-            Err(error) => panic!("PTY read: {error}"),
-        }
-        let raw_text = String::from_utf8_lossy(&raw);
+    while terminal.read(&mut child.0, deadline) {
+        let raw_text = String::from_utf8_lossy(terminal.output()).into_owned();
         let text = console::strip_ansi_codes(&raw_text);
         if !called_back && let Some(home) = home {
             let opened = fs::read_to_string(home.join("browser-url"))
@@ -875,7 +845,7 @@ fn terminal_with_stdout(
                 .any(|prompt| text[at..].contains(prompt))
         {
             std::thread::sleep(Duration::from_millis(50));
-            master.write_all(format!("{address}\r").as_bytes()).unwrap();
+            terminal.write(format!("{address}\r").as_bytes());
             paste = None;
         }
         if let Some((question, answer)) = steps.get(answered)
@@ -883,14 +853,12 @@ fn terminal_with_stdout(
         {
             seen += at + question.len();
             std::thread::sleep(Duration::from_millis(50));
-            master.write_all(answer.as_bytes()).unwrap();
+            terminal.write(answer.as_bytes());
             answered += 1;
-        }
-        if Instant::now() > deadline {
-            panic!("setup timed out after answering {answered} prompts: {text}");
         }
     }
     let status = child.0.wait().unwrap();
+    let mut raw = terminal.output().to_vec();
     assert_eq!(answered, steps.len(), "{}", String::from_utf8_lossy(&raw));
     if let Some(stdout) = &mut stdout {
         stdout.rewind().unwrap();
