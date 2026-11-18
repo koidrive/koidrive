@@ -12,7 +12,7 @@ upgrade_case!(kept_causes, |store| {
             let cause = koidrive_engine::state::KeptCause {
                 path: vec!["report.txt".into()],
                 excluded_by: koidrive_engine::state::ExcludedBy::LocalLists,
-                rules_files: Default::default(),
+                rules: Vec::new(),
             };
             state.trees.kept_nodes.insert(report.node_id.clone(), Some(cause.clone()));
             state.trees.kept_nodes.insert("left".into(), None);

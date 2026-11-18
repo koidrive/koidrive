@@ -77,14 +77,14 @@ pub struct KeptEntries {
 }
 
 /// The rules that left a kept entry out at its place at the last settle with every rule known: the path, what excluded
-/// it there, and the content of each rules file in the folders above it. Only a change the person made on this device
-/// to those rules can release the entry, whether or not Koidrive was running when they made it (section 5.10).
+/// it there, and the rules in force in each folder from the root to the entry's. Only a change the person made on this
+/// device to those rules can release the entry, whether or not Koidrive was running when they made it (section 5.10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptCause {
     pub path: Vec<String>,
     pub excluded_by: ExcludedBy,
-    pub rules_files: BTreeMap<NodeId, ContentValue>,
+    pub rules: Vec<KeptRules>,
 }
 
 /// See [`KeptCause`].
@@ -92,7 +92,19 @@ pub struct KeptCause {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExcludedBy {
     LocalLists,
-    RulesFile(NodeId),
+    /// The rules file of the folder at this depth on the entry's path, 0 being the root.
+    RulesFile {
+        depth: usize,
+    },
+}
+
+/// The rules of one folder on a kept entry's path: the rules file L held there, and the fingerprint of the rules the
+/// matcher applied there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeptRules {
+    pub file: Option<NodeId>,
+    pub fingerprint: Option<u64>,
 }
 
 /// The held versions and unsent edit bases of a file, independent of R's current version.

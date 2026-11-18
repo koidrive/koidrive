@@ -12,8 +12,8 @@ use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, ExcludedBy, FinishOrigin, KeptCause,
-    KeptEntries, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges, TreesState,
-    made_over,
+    KeptEntries, KeptRules, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges,
+    TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -3681,7 +3681,7 @@ impl Trees {
             match self.ignore.status(path, kind) {
                 Status::Excluded(koidrive_ignore::Reason::Local) => Some(ExcludedBy::LocalLists),
                 Status::Excluded(koidrive_ignore::Reason::Rule { depth, .. }) => {
-                    Some(ExcludedBy::RulesFile(self.rules_file_above(parent, depth)?))
+                    Some(ExcludedBy::RulesFile { depth })
                 }
                 _ => None,
             }
@@ -3689,8 +3689,18 @@ impl Trees {
         Some(KeptCause {
             path: path.iter().map(|name| name.to_string()).collect(),
             excluded_by,
-            rules_files: self.rules_files_above(parent),
+            rules: self.kept_rules(parent, path),
         })
+    }
+
+    fn kept_rules(&self, parent: &str, path: &[&str]) -> Vec<KeptRules> {
+        (0..path.len())
+            .map(|depth| KeptRules {
+                file: self.rules_file_above(parent, depth),
+                fingerprint: (self.ignore.rules_file(&path[..depth]))
+                    .map(|rules| rules.fingerprint()),
+            })
+            .collect()
     }
 
     fn rules_file_above(&self, parent: &str, depth: usize) -> Option<NodeId> {
@@ -3705,51 +3715,35 @@ impl Trees {
         }
         folders.reverse();
         let folder = *folders.get(depth)?;
-        (self.local_children(folder))
-            .find(|child| {
-                (self.l.get(child.as_str())).is_some_and(|node| is_rules_file(&node.shape.name))
-            })
+        (self.local_holders(folder, koidrive_ignore::RULES_FILE))
+            .next()
             .cloned()
-    }
-
-    fn rules_files_above(&self, parent: &str) -> BTreeMap<NodeId, ContentValue> {
-        let mut files = BTreeMap::new();
-        let mut current = parent;
-        for _ in 0..=self.l.len() {
-            for file in self.local_holders(current, koidrive_ignore::RULES_FILE) {
-                let content = self
-                    .l
-                    .get(file)
-                    .and_then(|node| node.shape.content.as_ref());
-                if let Some(content) = content {
-                    files.insert(file.clone(), content.into());
-                }
-            }
-            match self.l.get(current) {
-                Some(node) if current != self.l.root => current = &node.shape.parent,
-                _ => break,
-            }
-        }
-        files
     }
 
     fn let_in_by_the_person(&self, cause: &KeptCause, parent: &str, kinds: &[Kind]) -> bool {
         if kinds.iter().any(|kind| self.ignores(&cause.path, *kind)) {
             return false;
         }
-        let now = self.rules_files_above(parent);
-        let changed: BTreeSet<&NodeId> = (cause.rules_files.keys().chain(now.keys()))
-            .filter(|file| cause.rules_files.get(*file) != now.get(*file))
+        let path: Vec<&str> = cause.path.iter().map(String::as_str).collect();
+        let now = self.kept_rules(parent, &path);
+        if now.len() != cause.rules.len() {
+            return false;
+        }
+        let changed: Vec<usize> = (0..now.len())
+            .filter(|depth| now[*depth].fingerprint != cause.rules[*depth].fingerprint)
             .collect();
-        let cause_changed = match &cause.excluded_by {
+        let cause_changed = match cause.excluded_by {
             ExcludedBy::LocalLists => true,
-            ExcludedBy::RulesFile(file) => changed.contains(file),
+            ExcludedBy::RulesFile { depth } => changed.contains(&depth),
         };
         cause_changed
-            && changed.iter().all(|file| match self.l.get(file.as_str()) {
-                Some(_) => self.edited(file) || self.local_changes.contains(file.as_str()),
-                None => self.r.live(file).is_some(),
-            })
+            && changed.iter().all(
+                |depth| match (&now[*depth].file, &cause.rules[*depth].file) {
+                    (Some(file), _) => self.edited(file) || self.local_changes.contains(file),
+                    (None, Some(file)) => self.l.get(file).is_none() && self.r.live(file).is_some(),
+                    (None, None) => false,
+                },
+            )
     }
 
     fn release_kept_entries_the_person_let_in(&mut self) {

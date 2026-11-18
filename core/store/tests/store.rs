@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, ContentValue, EffectsState, ExcludedBy, FinishOrigin, GivenUp,
-    KeptCause, KeptEntries, LostPosition, MovedHere, PendingFinish, TreesState,
+    Agreed, CommitsState, EffectsState, ExcludedBy, FinishOrigin, GivenUp, KeptCause,
+    KeptEntries, KeptRules, LostPosition, MovedHere, PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1203,14 +1203,16 @@ fn kept_cause(excluded_by: ExcludedBy) -> KeptCause {
     KeptCause {
         path: vec!["e".into(), ".env".into()],
         excluded_by,
-        rules_files: BTreeMap::from([(
-            "r".into(),
-            ContentValue {
-                size: 6,
-                manifest_digest: vec![7; 32],
-                executable: false,
+        rules: vec![
+            KeptRules {
+                file: Some("r".into()),
+                fingerprint: Some(7),
             },
-        )]),
+            KeptRules {
+                file: None,
+                fingerprint: None,
+            },
+        ],
     }
 }
 
@@ -1429,7 +1431,7 @@ fn engine_state() -> EngineState {
                 ("n1".into(), None),
                 (
                     "n2".into(),
-                    Some(kept_cause(ExcludedBy::RulesFile("r".into()))),
+                    Some(kept_cause(ExcludedBy::RulesFile { depth: 0 })),
                 ),
             ]),
             unseen_changes: nodes(["u"]),

@@ -27,7 +27,7 @@ upgrade_case!(kept_folders, |store| {
             assert_eq!(stored.kept_folders, report);
             assert_eq!(stored.kept_entries.keys().cloned().collect::<std::collections::BTreeSet<_>>(), report);
             assert_eq!(stored.kept_entries.values().collect::<Vec<_>>(), [&kept]);
-            assert_eq!(stored.kept_nodes.keys().cloned().collect::<std::collections::BTreeSet<_>>(), report);
+            assert_eq!(stored.kept_nodes, report.iter().map(|node| (node.clone(), None)).collect());
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();
