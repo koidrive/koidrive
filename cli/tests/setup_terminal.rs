@@ -2117,6 +2117,52 @@ fn a_space_create_whose_answer_is_lost_is_sent_again_with_its_first_request_id()
 }
 
 #[test]
+fn a_space_create_whose_answer_is_lost_is_sent_again_while_two_spaces_have_its_name() {
+    let home = Home::new(&[]);
+    home.connect();
+    home.lose_create.store(true, Ordering::Relaxed);
+    home.refuse_create.store(true, Ordering::Relaxed);
+    let create = || {
+        let output = (koi(home.path()).args(["--json", "space", "create", "Notes"]))
+            .output()
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(create()["outcome"], "error");
+    let made = home.spaces.lock().unwrap()[0].clone();
+    let other = space(1, "Notes");
+    home.spaces.lock().unwrap().push(other);
+    home.refuse_create.store(false, Ordering::Relaxed);
+
+    let created = create();
+
+    assert_eq!(created["outcome"], "ok", "{created:#}");
+    assert_eq!(created["data"]["space_id"], made.space_id, "{created:#}");
+    let ids = home.create_ids.lock().unwrap().clone();
+    assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+    assert_eq!(saved_creates(&home), 0);
+}
+
+#[test]
+fn a_space_create_with_nothing_pending_is_refused_while_two_spaces_have_its_name() {
+    let home = Home::new(&["Notes", "Notes"]);
+    home.connect();
+
+    let output = (koi(home.path()).args(["--json", "space", "create", "Notes"]))
+        .output()
+        .unwrap();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["outcome"], "error", "{envelope:#}");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("several spaces are called"),
+        "{message}"
+    );
+    assert!(home.create_ids.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_space_create_refused_for_good_forgets_its_request_id() {
     let home = Home::new(&[]);
     home.connect();

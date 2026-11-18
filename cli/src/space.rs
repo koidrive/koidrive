@@ -102,8 +102,8 @@ pub(crate) async fn named_space(
     spaces: &[SpaceInfo],
     name: &str,
 ) -> Result<Named, CliError> {
-    if let Some(space) = existing_space(spaces, name)?
-        && !koidrive_driver::space_create_pending(paths, auth, name)
+    if !koidrive_driver::space_create_pending(paths, auth, name)
+        && let Some(space) = existing_space(spaces, name)?
     {
         return Ok(Named::Existing(space));
     }

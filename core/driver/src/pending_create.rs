@@ -38,6 +38,14 @@ pub(crate) enum Intent<'a> {
     },
 }
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_AN_UNREADABLE_LOAD: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+    static BEFORE_A_REPAIR_LOCK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 const CLAIM: &str = "claim";
 const PAIR: &str = "pair";
 
@@ -178,10 +186,33 @@ impl PendingCreate {
     }
 
     fn save_if_absent(&self) -> io::Result<Option<String>> {
-        let publish = match load(&self.path) {
+        let repairing = match load(&self.path) {
             Ok(Some(_)) => return Ok(None),
-            Ok(None) => Publish::Create,
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => Publish::Replace,
+            Ok(None) => None,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                #[cfg(test)]
+                if let Some(hook) = AFTER_AN_UNREADABLE_LOAD.take() {
+                    hook();
+                }
+                let file = match File::open(&self.path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error),
+                };
+                #[cfg(test)]
+                if let Some(hook) = BEFORE_A_REPAIR_LOCK.take() {
+                    hook();
+                }
+                match Flock::take(file)? {
+                    Some(lock)
+                        if still_at(&lock, &self.path)?
+                            && serde_json::from_reader::<_, Saved>(&*lock).is_err() =>
+                    {
+                        Some(lock)
+                    }
+                    _ => return Ok(None),
+                }
+            }
             Err(error) => return Err(error),
         };
         let legacy = (self.legacy_claim.as_ref()).and_then(|(path, code_sha256)| {
@@ -202,6 +233,10 @@ impl PendingCreate {
         stage
             .as_file()
             .write_all(&serde_json::to_vec(&fresh).expect("a pending create serializes"))?;
+        let publish = match repairing {
+            Some(_) => Publish::Replace,
+            None => Publish::Create,
+        };
         match stage.finish(publish) {
             Ok(_) => Ok(Some(fresh.request_id)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
@@ -884,6 +919,57 @@ mod tests {
         assert!(!claim_pending(&paths, &server()));
         assert!(!claim.pending() && !pair.pending() && space.pending());
         assert_eq!(saved(&paths), 1);
+    }
+
+    #[tokio::test]
+    async fn runs_that_repair_one_unreadable_create_at_once_send_one_request_id() {
+        type Seam = std::thread::LocalKey<std::cell::Cell<Option<Box<dyn FnOnce()>>>>;
+        let seams: [&'static Seam; 2] = [&AFTER_AN_UNREADABLE_LOAD, &BEFORE_A_REPAIR_LOCK];
+        for (seam, other_keeps_it) in seams
+            .into_iter()
+            .flat_map(|seam| [(seam, true), (seam, false)])
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::under(dir.path());
+            let notes = || Intent::Space {
+                user_id: "u1",
+                name: "Notes",
+            };
+            let pending = PendingCreate::new(&paths, &server(), notes());
+            pending.hold().unwrap();
+            fs::write(pending.path(), b"{not json").unwrap();
+            let other = PendingCreate::new(&paths, &server(), notes());
+            let repaired_first = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let stash = repaired_first.clone();
+            seam.set(Some(Box::new(move || {
+                let held = other.hold().unwrap();
+                *stash.borrow_mut() = Some((held.saved.clone(), other_keeps_it.then_some(held)));
+            })));
+
+            let second = pending.hold().unwrap();
+
+            let (first, kept) = repaired_first.borrow_mut().take().unwrap();
+            let sent = std::cell::RefCell::new(Vec::new());
+            for held in kept.iter().chain([&second]) {
+                let answered: Result<(), DriverError> = pending
+                    .send(
+                        held,
+                        || {
+                            sent.borrow_mut().push(held.saved.request_id.clone());
+                            async { Ok(()) }
+                        },
+                        Ok,
+                    )
+                    .await;
+                answered.unwrap();
+            }
+            let sent = sent.into_inner();
+            assert!(
+                sent.iter().all(|id| *id == first.request_id),
+                "{sent:?} {first:?}"
+            );
+            assert_eq!(second.joined(), other_keeps_it);
+        }
     }
 
     #[test]
