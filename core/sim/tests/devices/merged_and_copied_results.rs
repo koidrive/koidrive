@@ -134,3 +134,28 @@ fn a_rename_made_while_a_conflicting_edit_is_in_flight_keeps_the_users_name_on_t
         );
     }
 }
+
+#[test]
+fn a_conflict_copy_keeps_its_place_when_another_device_renamed_the_original_before_a_restore() {
+    use Step::*;
+    let phases = vec![
+        vec![(1, u(1, 0, 0, 1, 3))],
+        vec![
+            (2, u(3, 0, 0, 0, 0)),
+            (0, Backup),
+            (1, u(2, 0, 0, 0, 0)),
+            (0, u(2, 0, 0, 0, 0)),
+        ],
+        vec![
+            (0, u(3, 0, 0, 2, 1)),
+            (0, Restore),
+            (0, u(0, 0, 0, 0, 0)),
+            (1, u(2, 3460126477107675283, 0, 0, 3)),
+            (1, Work(0)),
+            (1, Connect),
+            (1, Deliver(0)),
+            (1, Work(3091807929981066713)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

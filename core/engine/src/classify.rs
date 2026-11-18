@@ -3141,17 +3141,6 @@ impl Trees {
         }
     }
 
-    pub(crate) fn remote_position_at(&self, id: &str, seq: u64) -> Option<(NodeId, String)> {
-        let remote = self.r.get(id).filter(|remote| !remote.trashed)?;
-        if remote.meta_rev <= seq {
-            return Some((remote.shape.parent.clone(), remote.shape.name.clone()));
-        }
-        (self.past_positions.get(id).into_iter().flatten())
-            .filter(|past| past.rev <= seq)
-            .max_by_key(|past| past.rev)
-            .map(|past| (past.parent.clone(), past.name.clone()))
-    }
-
     /// Records that a create or a move of this device, in the commit at `seq`, set the position of
     /// `id`, if R holds the position of that commit, or held it and holds the same position again.
     pub fn record_moved(&mut self, id: &str, seq: u64) {

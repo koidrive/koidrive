@@ -1960,45 +1960,25 @@ impl Commits {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
                         let copied = edited.or_else(|| {
-                            (flight.commit.ops.iter().zip(&result.results).rev())
-                                .find_map(|(op, outcome)| match &op.op {
-                                    Some(op::Op::Move(moved)) if moved.node_id == *id => {
-                                        Some((moved, outcome))
-                                    }
-                                    _ => None,
-                                })
-                                .map(|(moved, outcome)| {
-                                    (moved, Code::try_from(outcome.code), outcome)
-                                })
-                                .filter(|(_, code, _)| {
-                                    matches!(code, Ok(Code::Applied | Code::AppliedRenamed))
-                                })
-                                .map(|(moved, code, outcome)| Shape {
-                                    parent: parent(&moved.new_parent_id),
-                                    name: match code == Ok(Code::AppliedRenamed)
-                                        && !outcome.name.is_empty()
-                                    {
-                                        true => outcome.name.clone(),
-                                        false => moved.new_name.clone(),
+                            let (moved, outcome) =
+                                (flight.commit.ops.iter().zip(&result.results).rev()).find_map(
+                                    |(op, outcome)| match &op.op {
+                                        Some(op::Op::Move(moved)) if moved.node_id == *id => {
+                                            Some((moved, outcome))
+                                        }
+                                        _ => None,
                                     },
-                                    kind: Kind::File,
-                                    content: None,
-                                })
-                                .or_else(|| {
-                                    let (parent, name) =
-                                        trees.remote_position_at(id, flight.commit.base_seq)?;
-                                    Some(Shape {
-                                        parent,
-                                        name,
-                                        kind: Kind::File,
-                                        content: None,
-                                    })
-                                })
-                                .map(|shape| Shape {
-                                    kind: Kind::File,
-                                    content: update.content.clone(),
-                                    ..shape
-                                })
+                                )?;
+                            let applied = matches!(
+                                Code::try_from(outcome.code),
+                                Ok(Code::Applied | Code::AppliedRenamed)
+                            );
+                            applied.then(|| Shape {
+                                parent: parent(&moved.new_parent_id),
+                                name: moved.new_name.clone(),
+                                kind: Kind::File,
+                                content: update.content.clone(),
+                            })
                         });
                         synced.set(&outcome.node_id, copied);
                         synced.set(id, None);
