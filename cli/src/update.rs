@@ -84,8 +84,10 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
 }
 
 fn open_log(paths: &Paths, log: &Path, json: bool, verbose: bool) -> Echo {
-    if log.parent() == Some(paths.state_dir.as_path()) {
-        let _ = paths.create_state_dir(&paths.state_dir);
+    if log.parent() == Some(paths.state_dir.as_path())
+        && paths.create_state_dir(&paths.state_dir).is_err()
+    {
+        return Echo::console(json, verbose);
     }
     Echo::open(log, json, verbose)
 }

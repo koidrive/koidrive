@@ -36,6 +36,7 @@ fn the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another
         false,
     ));
     assert!(koidrive_state_file::made(&paths.state_dir));
+    assert!(paths.state_dir.join("update.log").is_file());
 
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());

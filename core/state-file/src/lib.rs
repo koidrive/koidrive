@@ -202,6 +202,10 @@ pub const MADE: &str = ".koidrive-state";
 /// Creates `dir`, which is `root` or a folder inside it, and any missing folders on the way as private folders. When
 /// this call creates `root` itself, it records in `root` that Koidrive made it; see [`made`].
 pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
+    let root = match root.as_os_str().is_empty() {
+        true => Path::new("."),
+        false => root,
+    };
     if let Some(parent) = root
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -213,8 +217,12 @@ pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
     }
     match DirBuilder::new().mode(0o700).create(root) {
         Ok(()) => {
-            let folder = std::fs::metadata(root)?;
-            write(&root.join(MADE), made_record(&folder).as_bytes())?;
+            let recorded = std::fs::metadata(root)
+                .and_then(|folder| write(&root.join(MADE), made_record(&folder).as_bytes()));
+            if let Err(error) = recorded {
+                let _ = std::fs::remove_dir(root);
+                return Err(error);
+            }
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),

@@ -1841,7 +1841,7 @@ impl Driver {
         let paused = tokio::spawn(async move {
             let _pausing = pausing;
             let path = driver.inner.paths.paused();
-            fs::write(&path, b"paused\n").map_err(io_error(&path))?;
+            koidrive_state_file::write(&path, b"paused\n").map_err(io_error(&path))?;
             let changed = !driver.inner.paused.swap(true, Ordering::SeqCst);
             if changed {
                 driver.stop_folders().await;
