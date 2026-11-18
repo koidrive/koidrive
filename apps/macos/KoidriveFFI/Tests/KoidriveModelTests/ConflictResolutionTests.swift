@@ -19,13 +19,13 @@ private struct ConflictError: Error {}
 
     @Test func locatesBothFilesInTheLinkedFolder() throws {
         let (model, resolution) = try conflict()
-        let folder = try #require(model.folder(spaceID: resolution.question.spaceId))
+        let root = try #require(model.folder(spaceID: resolution.question.spaceId)?.path)
         #expect(resolution.original.role == .original)
         #expect(resolution.original.name == "Budget 2027.xlsx")
         #expect(resolution.original.directory == "")
-        #expect(resolution.original.url?.path(percentEncoded: false) == folder.path + "/Budget 2027.xlsx")
+        #expect(resolution.original.url?.path(percentEncoded: false) == root + "/Budget 2027.xlsx")
         #expect(resolution.copy.role == .copy)
-        #expect(resolution.copy.url?.deletingLastPathComponent().path(percentEncoded: false) == folder.path + "/")
+        #expect(resolution.copy.url?.deletingLastPathComponent().path(percentEncoded: false) == root + "/")
         #expect(resolution.original.answer == .keepOriginal)
         #expect(resolution.copy.answer == .keepCopy)
         #expect(resolution.phase == .choosing)

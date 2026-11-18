@@ -402,7 +402,7 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
             .any(|item| item.path == "budget.xlsx")
             .then_some(trash)
     });
-    assert_eq!(trash.folder, linked.path);
+    assert_eq!(Some(&trash.folder), linked.path.as_ref());
     let deleted = &trash.items[0];
     assert_eq!(
         (deleted.kind, deleted.files, deleted.bytes),
@@ -515,7 +515,7 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
             new.link.state,
         ),
         (
-            Some(linked.path.as_str()),
+            linked.path.as_deref(),
             Some("budget.xlsx"),
             Some(NodeKind::File),
             true,

@@ -11,7 +11,7 @@ private func history(_ app: AppModel, _ versions: [FileVersion]) throws -> Versi
     try #require(app.session.fakeCore()).setVersions(
         spaceId: folder.spaceId, versions: FileVersions(path: "Review.txt", nodeId: "node-review", versions: versions)
     )
-    return VersionHistoryModel(app: app, file: folder.url.appending(path: "Review.txt"))
+    return VersionHistoryModel(app: app, file: try #require(folder.url).appending(path: "Review.txt"))
 }
 
 private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVersion {
@@ -33,7 +33,7 @@ private func saved(_ id: String, at ms: Int64, current: Bool = false) -> FileVer
         #expect(files.selectedEntry?.isRequested == true)
         #expect(files.hasPendingRestores)
         await files.restoreSelected()
-        let requests = try session.base.restoreRequests(path: entry.folder.url.path(percentEncoded: false))
+        let requests = try session.base.restoreRequests(path: try #require(entry.folder.path))
         #expect(requests.count == 1)
 
         try #require(session.fakeCore()).finishRestore(requestId: requests[0].id, state: .restored)

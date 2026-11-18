@@ -73,12 +73,12 @@ public final class SetupModel {
     public var canLink: Bool {
         guard !isBusy, folderPath != nil else { return false }
         guard let selectedSpaceID else { return !newSpaceName.trimmed.isEmpty }
-        return linkedPath(ofSpace: selectedSpaceID) == nil
+        return linkedFolder(ofSpace: selectedSpaceID) == nil
     }
 
     /// The folder on this Mac that a space syncs with, or nil while the space can be linked here.
-    public func linkedPath(ofSpace spaceID: String) -> String? {
-        app.folder(spaceID: spaceID)?.path
+    public func linkedFolder(ofSpace spaceID: String) -> LinkedFolder? {
+        app.folder(spaceID: spaceID)
     }
 
     public func connect() async {
@@ -138,7 +138,7 @@ public final class SetupModel {
 
     private func reloadSpaces() async throws {
         spaces = try await app.spaces()
-        let unlinked = spaces.filter { linkedPath(ofSpace: $0.spaceId) == nil }
+        let unlinked = spaces.filter { linkedFolder(ofSpace: $0.spaceId) == nil }
         if !unlinked.contains(where: { $0.spaceId == selectedSpaceID }) {
             selectedSpaceID = unlinked.first?.spaceId
         }

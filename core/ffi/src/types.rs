@@ -368,8 +368,8 @@ pub struct NewShareLink {
 pub struct LinkedFolder {
     pub space_id: String,
     pub space_name: String,
-    /// The folder's absolute path.
-    pub path: String,
+    /// The folder's absolute path, or none when this device no longer knows where the folder is.
+    pub path: Option<String>,
     pub state: FolderState,
     /// What the folder does while it syncs besides the transfers [`SyncProgress`] counts. A
     /// [`FolderState::Syncing`] folder has an activity, transfers in the session's progress, or both,

@@ -30,7 +30,7 @@ private func folder(_ model: AppModel, _ name: String) throws -> LinkedFolder {
 
 @MainActor
 private func report(in app: AppModel) throws -> URL {
-    try folder(app, "Documents").url.appending(path: "Reports/Annual Report.docx")
+    try #require(folder(app, "Documents").url).appending(path: "Reports/Annual Report.docx")
 }
 
 @MainActor
@@ -120,7 +120,7 @@ private func report(in app: AppModel) throws -> URL {
 
     @Test func aFolderIsSharedAsAFolder() async throws {
         let app = AppModel.fake(scenario: .upToDate)
-        let seoul = try folder(app, "Photos").url.appending(path: "2026/Seoul", directoryHint: .isDirectory)
+        let seoul = try #require(folder(app, "Photos").url).appending(path: "2026/Seoul", directoryHint: .isDirectory)
         let share = ShareLinkModel(app: app, item: seoul)
         #expect(share.isFolder)
         #expect(share.name == "Seoul")
@@ -175,8 +175,8 @@ private func report(in app: AppModel) throws -> URL {
 @Suite struct SharedLinksModelTests {
     private func seeded() throws -> AppModel {
         let app = AppModel.fake(scenario: .upToDate)
-        let documents = try folder(app, "Documents").path
-        let photos = try folder(app, "Photos").path
+        let documents = try #require(folder(app, "Documents").path)
+        let photos = try #require(folder(app, "Photos").path)
         func link(_ id: String, _ folder: String?, _ path: String?, _ kind: NodeKind?, created: Int64, expires: Int64?,
                   password: Bool = false, _ state: ShareState = .active) -> ShareLink {
             ShareLink(id: id, folder: folder, path: path, kind: kind, createdAtMs: nowMs + created,
@@ -323,7 +323,7 @@ private func report(in app: AppModel) throws -> URL {
         let app = AppModel.fake(scenario: .upToDate)
         let links = SharedLinksModel(app: app, clock: fixedClock)
         #expect(links.canShare(try report(in: app)))
-        #expect(links.canShare(try folder(app, "Photos").url))
+        #expect(links.canShare(try #require(folder(app, "Photos").url)))
         #expect(!links.canShare(FileManager.default.temporaryDirectory.appending(path: "Elsewhere/a.docx")))
     }
 }

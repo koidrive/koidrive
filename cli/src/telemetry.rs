@@ -964,7 +964,7 @@ mod tests {
             recovery: None,
             space_id: "s".into(),
             space_name: "Alice Notes".into(),
-            path: "/home/alice/Notes".into(),
+            path: Some("/home/alice/Notes".into()),
             state: koidrive_driver::FolderState::UpToDate,
             history_id: None,
             last_seq: None,

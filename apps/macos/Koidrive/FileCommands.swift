@@ -39,7 +39,7 @@ enum FilePicker {
         }
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = folders.first?.url
+        panel.directoryURL = folders.lazy.compactMap(\.url).first
         return (panel, filter)
     }
 }
@@ -49,7 +49,7 @@ private final class LinkedFolderFilter: NSObject, NSOpenSavePanelDelegate {
     private let refusal: String
 
     init(folders: [LinkedFolder], refusal: String) {
-        roots = folders.map { resolvedPath($0.url) }
+        roots = folders.compactMap(\.url).map(resolvedPath)
         self.refusal = refusal
     }
 

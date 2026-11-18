@@ -179,7 +179,10 @@ fn while_no_daemon_answers_the_state_is_what_koi_status_reads() {
         state.account.unwrap().server_url,
         "https://files.example.com"
     );
-    assert_eq!(state.folders[0].path, "/Users/ada/Documents");
+    assert_eq!(
+        state.folders[0].path.as_deref(),
+        Some("/Users/ada/Documents")
+    );
     let [question] = state.questions.as_slice() else {
         panic!("one question expected: {:?}", state.questions);
     };

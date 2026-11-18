@@ -194,13 +194,13 @@ pub(crate) async fn finish_setup(
                         if let Some(state) = state {
                             terminal.message(&format!(
                                 "Sync is {state} for {}.",
-                                setup::shown_folder(Path::new(&folder.path))
+                                crate::output::folder(folder)
                             ));
                         }
                         if folder.questions > 0 {
                             terminal.message(&format!(
                                 "Review pending decisions for {}: koi resolve",
-                                setup::shown_folder(Path::new(&folder.path))
+                                crate::output::folder(folder)
                             ));
                         }
                         if let Some(problem) = &folder.problem {

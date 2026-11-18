@@ -124,7 +124,7 @@ public final class SharedLinksModel {
     private func item(of link: ShareLink) -> SharedItem {
         let folderName = link.folder.map { path in
             let root = plainPath(URL(filePath: path, directoryHint: .isDirectory))
-            return app.state.folders.first { plainPath($0.url) == root }?.spaceName ?? URL(filePath: path).lastPathComponent
+            return app.state.folders.first { $0.url.map(plainPath) == root }?.spaceName ?? URL(filePath: path).lastPathComponent
         }
         guard let path = link.path else { return .gone(folder: folderName) }
         let shown = [folderName, path.isEmpty ? nil : path].compactMap(\.self).joined(separator: "/")

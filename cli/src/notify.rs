@@ -12,7 +12,7 @@ pub fn decisions(driver: Driver) -> impl Future<Output = ()> {
                 continue;
             };
             let folders: BTreeMap<String, String> = (driver.status().folders.into_iter())
-                .map(|folder| (folder.space_id, folder.path))
+                .filter_map(|folder| Some((folder.space_id, folder.path?)))
                 .collect();
             for question in opened(&open, &questions) {
                 let folder = (folders.get(&question.space_id)).map_or_else(

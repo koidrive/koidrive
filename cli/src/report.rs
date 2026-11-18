@@ -579,7 +579,7 @@ impl WaitData {
 impl FolderData {
     pub fn of(folder: &FolderStatus) -> Self {
         FolderData {
-            path: folder.path.clone(),
+            path: folder.path.clone().unwrap_or_default(),
             space_id: folder.space_id.clone(),
             space_name: folder.space_name.clone(),
             state: match folder.state {
@@ -788,7 +788,7 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
         found.push(Condition::NotSetUp);
     }
     for folder in &status.folders {
-        let path = folder.path.clone();
+        let path = folder.path.clone().unwrap_or_default();
         match folder.state {
             FolderState::Halted => found.push(Condition::Halted {
                 folder: path,
@@ -804,7 +804,7 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
         }
         if let Some(wait) = folder.wait.as_ref().and_then(WaitData::of) {
             found.push(Condition::Waiting {
-                folder: folder.path.clone(),
+                folder: folder.path.clone().unwrap_or_default(),
                 wait,
             });
         }
@@ -1433,7 +1433,7 @@ mod tests {
             recovery: None,
             space_id: format!("space-{path}"),
             space_name: path.to_owned(),
-            path: format!("/home/ada/{path}"),
+            path: Some(format!("/home/ada/{path}")),
             state,
             history_id: None,
             last_seq: None,

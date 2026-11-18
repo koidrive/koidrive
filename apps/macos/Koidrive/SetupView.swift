@@ -310,8 +310,8 @@ struct FolderStep: View {
                     .foregroundStyle(Color.text2)
                 Picker("Space", selection: $setup.selectedSpaceID) {
                     ForEach(setup.spaces, id: \.spaceId) { space in
-                        if let path = setup.linkedPath(ofSpace: space.spaceId) {
-                            Text("\(space.name) — linked to \(abbreviatingHome(path))")
+                        if let folder = setup.linkedFolder(ofSpace: space.spaceId) {
+                            Text("\(space.name) — linked to \(folder.path.map(abbreviatingHome) ?? "")")
                                 .tag(Optional(space.spaceId))
                                 .selectionDisabled()
                         } else {
@@ -412,7 +412,7 @@ private struct DoneStep: View {
                         Text(folder.spaceName)
                             .fontWeight(.medium)
                             .foregroundStyle(Color.text)
-                        Text(verbatim: abbreviatingHome(folder.path))
+                        Text(verbatim: folder.path.map(abbreviatingHome) ?? "")
                             .font(.callout.monospaced())
                             .foregroundStyle(Color.text2)
                             .lineLimit(1)

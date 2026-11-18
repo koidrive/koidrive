@@ -69,8 +69,8 @@ extension AppModel {
 
     func location(ofRealPath path: String?) -> (folder: LinkedFolder, below: [String])? {
         guard let path else { return nil }
-        return state.folders.flatMap { folder in
-            let stored = plainPath(folder.url)
+        return state.folders.compactMap { folder in folder.url.map { (folder, $0) } }.flatMap { folder, url in
+            let stored = plainPath(url)
             return Set([stored, realRoot(stored)].compactMap { $0 }).compactMap { root in
                 if path == root { return (folder: folder, root: root, below: [String]()) }
                 guard path.hasPrefix(root + "/") else { return nil }
@@ -161,13 +161,13 @@ extension AppModel {
     public func url(ofDisplayPath path: String) -> URL? {
         state.folders.lazy.compactMap { folder -> URL? in
             guard path.hasPrefix(folder.spaceName + "/") else { return nil }
-            return folder.url.appending(path: String(path.dropFirst(folder.spaceName.count + 1)))
+            return folder.url?.appending(path: String(path.dropFirst(folder.spaceName.count + 1)))
         }.first
     }
 }
 
 extension LinkedFolder {
-    public var url: URL { URL(filePath: path, directoryHint: .isDirectory) }
+    public var url: URL? { path.map { URL(filePath: $0, directoryHint: .isDirectory) } }
 }
 
 extension Date {

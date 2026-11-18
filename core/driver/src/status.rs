@@ -44,12 +44,31 @@ pub struct Account {
     pub device_name: String,
 }
 
+mod unknown_path {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        path: &Option<String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(path.as_deref().unwrap_or_default())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<String>, D::Error> {
+        Ok(Some(String::deserialize(deserializer)?).filter(|path| !path.is_empty()))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderStatus {
     pub space_id: String,
     pub space_name: String,
-    /// The folder's absolute path, or empty when neither its sync database nor the copy of its link can be read.
-    pub path: String,
+    /// The folder's absolute path, or none when neither its sync database nor the copy of its link can be read. The
+    /// wire carries an unknown path as an empty string.
+    #[serde(with = "unknown_path")]
+    pub path: Option<String>,
     pub state: FolderState,
     /// The server history and the last seq whose changes are in the store.
     pub history_id: Option<String>,

@@ -3016,7 +3016,7 @@ fn metadata_only_setup_links_with_the_real_driver_without_upload_consent() {
         let status = driver.status();
         assert_eq!(status.folders.len(), 1);
         assert_eq!(
-            Path::new(&status.folders[0].path),
+            Path::new(status.folders[0].path.as_deref().unwrap()),
             fs::canonicalize(&root).unwrap()
         );
         assert!(root.join(".koidrive/space.json").is_file());
@@ -3093,7 +3093,7 @@ fn a_default_creation_collision_requires_a_choice_and_fresh_file_consent() {
             };
             assert_eq!(status.folders.len(), 1);
             assert_eq!(
-                Path::new(&status.folders[0].path),
+                Path::new(status.folders[0].path.as_deref().unwrap()),
                 fs::canonicalize(linked).unwrap()
             );
             assert_eq!(root.join(".koidrive/device.json").exists(), sync_files);
@@ -3185,7 +3185,7 @@ fn metadata_does_not_hide_ordinary_files_from_real_driver_setup_consent() {
             let status = driver.status();
             assert_eq!(status.folders.len(), 1);
             assert_eq!(
-                Path::new(&status.folders[0].path),
+                Path::new(status.folders[0].path.as_deref().unwrap()),
                 fs::canonicalize(&linked).unwrap()
             );
             assert_eq!(root.join(".koidrive/device.json").exists(), sync_files);

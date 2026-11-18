@@ -37,6 +37,34 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
+fn a_halted_folder_whose_place_is_unknown_gets_no_command_for_a_path() {
+    let status: Status = serde_json::from_value(serde_json::json!({
+        "account":null, "running":true, "folders":[{
+            "space_id":"s1", "space_name":"Work", "path":"", "state":"halted",
+            "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+            "problem":"the folder cannot be read: Permission denied (os error 13)"
+        }]
+    })).unwrap();
+    let service: service::Report = serde_json::from_value(
+        serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+    )
+    .unwrap();
+    let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+
+    let summary = status_summary(&status, &[], &service, &notice);
+
+    assert!(
+        summary.contains("The folder of space s1: Sync stopped."),
+        "{summary}"
+    );
+    assert!(!summary.contains("koi folder restart"), "{summary}");
+    assert_eq!(
+        serde_json::to_value(&status).unwrap()["folders"][0]["path"],
+        ""
+    );
+}
+
+#[test]
 fn concise_halted_status_gives_a_restart_after_commandless_problems() {
     for problem in [
         "the folder cannot be read: Permission denied (os error 13)",
@@ -423,7 +451,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         recovery: None,
         space_id: "s\u{1b}[2J".into(),
         space_name: "Home\u{202e}gpj.exe".into(),
-        path: "/home/ada/\u{1b}]0;owned\u{7}Docs\nFake: up to date".into(),
+        path: Some("/home/ada/\u{1b}]0;owned\u{7}Docs\nFake: up to date".into()),
         state: FolderState::Halted,
         history_id: None,
         last_seq: None,
@@ -472,7 +500,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
         recovery: None,
         space_id: "s1".into(),
         space_name: "Home".into(),
-        path: "/home/ada/Docs".into(),
+        path: Some("/home/ada/Docs".into()),
         state: FolderState::UpToDate,
         history_id: None,
         last_seq: None,
@@ -521,7 +549,7 @@ fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
         recovery: None,
         space_id: "s1".into(),
         space_name: "Home".into(),
-        path: "/home/ada/Docs".into(),
+        path: Some("/home/ada/Docs".into()),
         state: FolderState::UpToDate,
         history_id: None,
         last_seq: None,
@@ -568,7 +596,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         kept_entries: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
-        path: "/home/ada/Docs".into(),
+        path: Some("/home/ada/Docs".into()),
         state: FolderState::UpToDate,
         history_id: None,
         last_seq: None,
@@ -602,7 +630,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         kept_entries: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
-        path: "/home/ada/Docs".into(),
+        path: Some("/home/ada/Docs".into()),
         state: FolderState::UpToDate,
         history_id: None,
         last_seq: None,
@@ -637,7 +665,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         recovery: None,
         space_id: "s1".into(),
         space_name: "Home".into(),
-        path: "/home/ada/Docs\u{1b}[31m\nFORGED".into(),
+        path: Some("/home/ada/Docs\u{1b}[31m\nFORGED".into()),
         state,
         history_id: None,
         last_seq: None,

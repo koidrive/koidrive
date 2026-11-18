@@ -640,9 +640,9 @@ impl Core for DaemonCore {
             .find(|folder| folder.space_id == space_id)
             .map(|folder| folder.path.clone())
             .ok_or(SessionError::FolderNotLinked)?;
-        let args: [&str; 4] = match path.is_empty() {
-            true => ["folder", "unlink", "--space", space_id],
-            false => ["folder", "unlink", "--", &path],
+        let args: [&str; 4] = match &path {
+            None => ["folder", "unlink", "--space", space_id],
+            Some(path) => ["folder", "unlink", "--", path],
         };
         match self.change(&args)?.outcome {
             Outcome::Unchanged => Err(SessionError::FolderNotLinked),

@@ -255,7 +255,7 @@ private func twoFoldersWithDeletions() throws -> AppModel {
         try fakeCore(app).setVersions(spaceId: documents.spaceId, versions: FileVersions(
             path: "Reports/Launch plan.key", nodeId: "node-plan", versions: fourVersions
         ))
-        let history = VersionHistoryModel(app: app, file: documents.url.appending(path: "Reports/Launch plan.key"), clock: halfPastMidnight)
+        let history = VersionHistoryModel(app: app, file: try #require(documents.url).appending(path: "Reports/Launch plan.key"), clock: halfPastMidnight)
         await history.load()
         history.selection = "v3"
         await history.restoreSelected()
@@ -295,7 +295,7 @@ private func reportWithVersions(_ versions: [FileVersion], clock: HistoryClock =
     try fakeCore(app).setVersions(spaceId: documents.spaceId, versions: FileVersions(
         path: "Reports/Launch plan.key", nodeId: "node-plan", versions: versions
     ))
-    let file = documents.url.appending(path: "Reports/Launch plan.key")
+    let file = try #require(documents.url).appending(path: "Reports/Launch plan.key")
     return (app, VersionHistoryModel(app: app, file: file, clock: clock))
 }
 
@@ -388,7 +388,7 @@ private let fourVersions = [
 
     @Test func aFileTheServerDoesNotHaveIsNotSyncedYet() async throws {
         let app = AppModel.fake(scenario: .upToDate)
-        let file = try folder(app, "Documents").url.appending(path: "New draft.docx")
+        let file = try #require(folder(app, "Documents").url).appending(path: "New draft.docx")
         let history = VersionHistoryModel(app: app, file: file, clock: halfPastMidnight)
         await history.load()
         #expect(history.isNotSyncedYet)
@@ -434,7 +434,7 @@ private let fourVersions = [
         async let first: Void = history.restoreSelected()
         async let second: Void = history.restoreSelected()
         _ = await (first, second)
-        let requests = try await app.restoreRequests(in: folder(app, "Documents").url)
+        let requests = try await app.restoreRequests(in: #require(folder(app, "Documents").url))
         #expect(requests.count == 1)
         #expect(history.requestedVersion?.versionId == "v3")
     }
@@ -466,7 +466,7 @@ private let fourVersions = [
         #expect(history.folder == nil)
         #expect(history.content == .failed(refused))
         #expect(!history.canRestore)
-        #expect(try await app.restoreRequests(in: photos.url).isEmpty)
+        #expect(try await app.restoreRequests(in: #require(photos.url)).isEmpty)
 
         let share = ShareLinkModel(app: app, item: file)
         await share.create()
@@ -509,11 +509,13 @@ private let fourVersions = [
     @Test func aPathStartingWithAFolderNameIsAFileInThatFolder() throws {
         let app = AppModel.fake(scenario: .upToDate)
         let documents = try folder(app, "Documents")
-        #expect(app.url(ofDisplayPath: "Documents/Reports/Annual Report.docx") == documents.url.appending(path: "Reports/Annual Report.docx"))
+        let root = try #require(documents.url)
+        let path = try #require(documents.path)
+        #expect(app.url(ofDisplayPath: "Documents/Reports/Annual Report.docx") == root.appending(path: "Reports/Annual Report.docx"))
         #expect(app.url(ofDisplayPath: "Elsewhere/Notes.md") == nil)
-        #expect(app.folder(containing: documents.url.appending(path: "Reports/Annual Report.docx")) == documents)
-        #expect(app.folder(containing: documents.url) == documents)
-        #expect(app.folder(containing: URL(filePath: documents.path + " copy/Notes.md")) == nil)
+        #expect(app.folder(containing: root.appending(path: "Reports/Annual Report.docx")) == documents)
+        #expect(app.folder(containing: root) == documents)
+        #expect(app.folder(containing: URL(filePath: path + " copy/Notes.md")) == nil)
     }
 
     @Test func aFileReachedThroughASymbolicLinkIsInItsLinkedFolder() async throws {
@@ -548,6 +550,18 @@ private let fourVersions = [
         let app = AppModel.fake(scenario: .upToDate)
         app.apply(.folders(folders: [folder]))
         return (app, base, root, folder)
+    }
+
+    @Test func aFolderWhosePlaceIsUnknownHoldsNoFile() throws {
+        let (app, base, root, folder) = try linkedTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let unplaced = LinkedFolder(spaceId: "space-unplaced", spaceName: "Unplaced", path: nil, state: .upToDate, activity: nil, bytesMoved: 0)
+        app.apply(.folders(folders: [unplaced, folder]))
+        let workingDirectory = URL(filePath: FileManager.default.currentDirectoryPath, directoryHint: .isDirectory)
+
+        #expect(app.folder(containing: workingDirectory.appending(path: "Plan.key")) == nil)
+        #expect(app.folder(containing: root.appending(path: "Docs/Plan.key")) == folder)
+        #expect(app.url(ofDisplayPath: "Unplaced/Plan.key") == nil)
     }
 
     @Test func aFinderAliasOfAFileIsThatFile() throws {
@@ -701,7 +715,7 @@ private let fourVersions = [
             Issue.record("not requested: \(history.restore)")
             return
         }
-        #expect(try await app.restoreRequests(in: photos.url).map(\.id) == [requestID])
+        #expect(try await app.restoreRequests(in: #require(photos.url)).map(\.id) == [requestID])
         try fake.finishRestore(requestId: requestID, state: .restored)
         await history.refreshRestore()
         #expect(history.restore == .restored(old, .restored))

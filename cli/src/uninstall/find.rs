@@ -30,8 +30,8 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
         && let Ok(Ok(Response::Status { status })) =
             tokio::time::timeout(STATUS, ipc::run(paths, Request::Status)).await
     {
-        for folder in status.folders {
-            let folder = PathBuf::from(folder.path);
+        for folder in status.folders.into_iter().filter_map(|folder| folder.path) {
+            let folder = PathBuf::from(folder);
             if !folders.contains(&folder) {
                 folders.push(folder);
             }

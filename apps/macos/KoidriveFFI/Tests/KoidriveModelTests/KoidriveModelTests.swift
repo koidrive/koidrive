@@ -604,7 +604,7 @@ private final class Fetches {
 
     private func documents(_ model: AppModel) throws -> URL {
         let folder = try #require(model.state.folders.first { $0.spaceName == "Documents" })
-        return URL(filePath: folder.path, directoryHint: .isDirectory)
+        return try #require(folder.url)
     }
 
     @Test func aDeletedFileComesBackOnceItsRestoreIsFinished() async throws {
@@ -825,7 +825,7 @@ private final class Fetches {
         await setup.loadSpaces()
 
         #expect(setup.spaces.map(\.name) == ["Shared", "Projects"])
-        #expect(setup.spaces.allSatisfy { setup.linkedPath(ofSpace: $0.spaceId) == nil })
+        #expect(setup.spaces.allSatisfy { setup.linkedFolder(ofSpace: $0.spaceId) == nil })
         #expect(setup.selectedSpaceID == setup.spaces.first?.spaceId)
         setup.selectedSpaceID = projects.spaceId
         setup.folderPath = "/tmp"
@@ -847,8 +847,8 @@ private final class Fetches {
         await setup.loadSpaces()
 
         #expect(setup.spaces.map(\.name) == ["Koidrive", "Projects"])
-        #expect(setup.linkedPath(ofSpace: linked.spaceId) == linked.path)
-        #expect(setup.linkedPath(ofSpace: projects.spaceId) == nil)
+        #expect(setup.linkedFolder(ofSpace: linked.spaceId) == linked)
+        #expect(setup.linkedFolder(ofSpace: projects.spaceId) == nil)
         #expect(setup.selectedSpaceID == projects.spaceId)
 
         setup.folderPath = second.path(percentEncoded: false)
@@ -876,7 +876,7 @@ private final class Fetches {
         await setup.loadSpaces()
 
         #expect(setup.spaces.count == 2)
-        #expect(setup.spaces.allSatisfy { setup.linkedPath(ofSpace: $0.spaceId) != nil })
+        #expect(setup.spaces.allSatisfy { setup.linkedFolder(ofSpace: $0.spaceId) != nil })
         #expect(setup.selectedSpaceID == nil)
         #expect(setup.newSpaceName == "Koidrive 3")
 

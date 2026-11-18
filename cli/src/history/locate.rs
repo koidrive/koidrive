@@ -21,29 +21,39 @@ pub(super) async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, C
     }
 }
 
-pub(super) async fn locate(
-    paths: &Paths,
-    path: &Path,
-) -> Result<(FolderStatus, Vec<String>), CliError> {
+#[derive(Debug)]
+pub(super) struct Located {
+    pub(super) folder: FolderStatus,
+    pub(super) root: String,
+    pub(super) below: Vec<String>,
+}
+
+pub(super) async fn locate(paths: &Paths, path: &Path) -> Result<Located, CliError> {
     let folders = linked_folders(paths).await?;
     let typed = lexical(&crate::absolute(path)?);
     real_path(&typed)
         .and_then(|real| {
             folders
                 .iter()
-                .flat_map(|folder| {
-                    let stored = PathBuf::from(&folder.path);
+                .filter_map(|folder| Some((folder, folder.path.as_deref()?)))
+                .flat_map(|(folder, root)| {
+                    let stored = PathBuf::from(root);
                     let resolved = real_path(&stored);
                     [Some(stored), resolved]
                         .into_iter()
                         .flatten()
-                        .filter_map(|root| {
-                            Some((folder, root.as_os_str().len(), below(&root, &real)?))
+                        .filter_map(|candidate| {
+                            let below = below(&candidate, &real)?;
+                            Some((folder, root, candidate.as_os_str().len(), below))
                         })
                         .collect::<Vec<_>>()
                 })
-                .max_by_key(|(_, length, _)| *length)
-                .map(|(folder, _, names)| (folder.clone(), names))
+                .max_by_key(|(_, _, length, _)| *length)
+                .map(|(folder, root, _, below)| Located {
+                    folder: folder.clone(),
+                    root: root.to_owned(),
+                    below,
+                })
         })
         .ok_or_else(|| {
             CliError::usage(format!(
