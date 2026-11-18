@@ -488,6 +488,12 @@ impl<'ast> Visit<'ast> for Runner<'_> {
         self.tainted = outer;
     }
 
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let outer = self.tainted.clone();
+        syn::visit::visit_block(self, block);
+        self.tainted = outer;
+    }
+
     fn visit_local(&mut self, local: &'ast syn::Local) {
         let pat = match &local.pat {
             syn::Pat::Type(typed) => &*typed.pat,
@@ -495,8 +501,10 @@ impl<'ast> Visit<'ast> for Runner<'_> {
         };
         if let syn::Pat::Ident(binding) = pat {
             let name = binding.ident.to_string();
+            let stringified =
+                (local.init.as_ref()).is_some_and(|init| self.stringified(&init.expr).is_some());
             self.tainted.retain(|tainted| *tainted != name);
-            if (local.init.as_ref()).is_some_and(|init| self.stringified(&init.expr).is_some()) {
+            if stringified {
                 self.tainted.push(name);
             }
         }

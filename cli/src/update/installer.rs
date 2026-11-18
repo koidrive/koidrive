@@ -65,6 +65,9 @@ pub(super) async fn installer(
         .arg(passed(file.path())?)
         .env("KOIDRIVE_INSTALL_DIR", passed(dir)?)
         .env("KOIDRIVE_VERSION", format!("v{version}"));
+    if let Some(sandbox) = crate::lifeline::sandbox() {
+        command.env("TMPDIR", passed(sandbox)?);
+    }
     let (status, _, _) = (echo.run(command, INSTALLER, Child::Progress).await)
         .map_err(|error| failed(format!("install.sh did not run: {error}")))?
         .ok_or_else(|| {

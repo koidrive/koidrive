@@ -99,10 +99,11 @@ fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
     assert_eq!(
         std::fs::read_to_string(binary.parent().unwrap().join("installer.calls")).unwrap(),
         format!(
-            "{}|v99.0.0\n",
+            "{}|v99.0.0|{}\n",
             std::fs::canonicalize(binary.parent().unwrap())
                 .unwrap()
-                .display()
+                .display(),
+            std::fs::canonicalize(home.path()).unwrap().display()
         )
     );
     assert!(!calls.exists());
@@ -661,8 +662,9 @@ fn koi_update_through_a_script_alias_installs_into_the_canonical_directory() {
     assert_eq!(
         std::fs::read_to_string(directory.join("installer.calls")).unwrap(),
         format!(
-            "{}|v99.0.0\n",
-            std::fs::canonicalize(&directory).unwrap().display()
+            "{}|v99.0.0|{}\n",
+            std::fs::canonicalize(&directory).unwrap().display(),
+            std::fs::canonicalize(home.path()).unwrap().display()
         )
     );
     assert!(

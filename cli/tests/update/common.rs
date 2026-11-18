@@ -168,7 +168,7 @@ fn script_install_saying(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\ncase \"$1\" in\n--version) echo 'koi {version}' ;;\n_reconcile) echo '{report}' ;;\nesac\n"
     );
     let installer = http(format!(
-        "{said}printf '%s|%s\\n' \"$KOIDRIVE_INSTALL_DIR\" \"$KOIDRIVE_VERSION\" >> \"$KOIDRIVE_INSTALL_DIR/installer.calls\"\nprintf '%s' '{}' > \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nchmod +x \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nmv \"$KOIDRIVE_INSTALL_DIR/koi.new\" \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
+        "{said}printf '%s|%s|%s\\n' \"$KOIDRIVE_INSTALL_DIR\" \"$KOIDRIVE_VERSION\" \"$TMPDIR\" >> \"$KOIDRIVE_INSTALL_DIR/installer.calls\"\nprintf '%s' '{}' > \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nchmod +x \"$KOIDRIVE_INSTALL_DIR/koi.new\"\nmv \"$KOIDRIVE_INSTALL_DIR/koi.new\" \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
         helper.replace('\'', "'\\''")
     ));
     (binary, installer)
