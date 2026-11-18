@@ -381,6 +381,17 @@ impl FsObserver {
         self.unread.totals()
     }
 
+    /// The files still to be read whose change time has not settled. The next poll scans them again.
+    pub fn racy_reads(&self) -> Vec<PathBuf> {
+        let entries = &self.watcher.snapshot().entries;
+        (self.unread.files.keys())
+            .filter(|path| {
+                (entries.get(*path)).is_some_and(|entry| matches!(entry.ctime, Ctime::Racy { .. }))
+            })
+            .cloned()
+            .collect()
+    }
+
     fn size(&self, path: &Path) -> u64 {
         self.watcher
             .snapshot()
@@ -658,13 +669,7 @@ impl Observer for FsObserver {
             Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
             None => timeout,
         };
-        let entries = &self.watcher.snapshot().entries;
-        let racy = (self.unread.files.keys())
-            .filter(|path| {
-                (entries.get(*path)).is_some_and(|entry| matches!(entry.ctime, Ctime::Racy { .. }))
-            })
-            .cloned()
-            .collect();
+        let racy = self.racy_reads();
         self.watcher.revisit(racy);
         let poll = match self.watcher.poll(timeout) {
             Err(FsError::Watch(error)) if self.native => {
