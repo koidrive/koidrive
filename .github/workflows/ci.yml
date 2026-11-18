@@ -771,10 +771,28 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: scripts/fn-docs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the Rust parser the counter uses
+        id: parser
+        continue-on-error: true
+        run: |
+          cargo build --release --locked --manifest-path scripts/fn-docs/Cargo.toml
+          echo "FN_DOCS=$PWD/scripts/fn-docs/target/release/fn-docs" >> "$GITHUB_ENV"
       - name: Test the test-line counter
         if: needs.changes.outputs.test_lines == 'true'
         run: python3 scripts/test-check-test-lines.py -v
+      - name: Say the test-line report is unavailable
+        if: steps.parser.outcome == 'failure'
+        run: |
+          echo "::warning title=Test-line budget::The Rust parser did not build, so this run has no test-line report."
+          echo "The test-line report is unavailable because the Rust parser did not build." >> "$GITHUB_STEP_SUMMARY"
       - name: Report the test lines this change adds
+        if: steps.parser.outcome == 'success'
         continue-on-error: true
         env:
           PR: ${{ github.event.pull_request.number }}

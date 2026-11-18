@@ -19,6 +19,10 @@ def load():
     return check
 
 
+def setUpModule():
+    load().fn_docs()
+
+
 class TestLines(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -67,6 +71,7 @@ class TestLines(unittest.TestCase):
         result = subprocess.run([sys.executable, CHECK, base, head, *args], cwd=self.repo, capture_output=True, text=True,
                                 env={**os.environ, "GITHUB_STEP_SUMMARY": summary})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.stdout = result.stdout
         with open(summary) as f:
             self.assertIn("## Rust test lines", f.read())
         return [line.split("::", 2)[2] for line in result.stdout.splitlines() if line.startswith("::warning")]
@@ -245,8 +250,8 @@ class TestLines(unittest.TestCase):
         self.assertEqual(self.net({}, after), 417)
 
     def test_standalone_test_functions_are_test_code(self):
-        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\n#[test]\nfn checks_a() {}\n#[tokio::test]\nasync fn checks_b() {}\n"})
-        self.assertEqual((counts["test"], counts["implementation"]), (4, 1))
+        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\n#[test]\nfn checks_a() {}\n#[tokio::test]\nasync fn checks_b() {}\n#[tokio::test(flavor = \"multi_thread\")]\nasync fn checks_c() {}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (6, 1))
 
     def test_workspace_member_globs_cover_their_packages(self):
         before = {"core/a/Cargo.toml": "", "core/a/tests/t.rs": self.lines(3)}
@@ -256,6 +261,39 @@ class TestLines(unittest.TestCase):
             tree = self.check.Tree(self.tree({**before, "Cargo.toml": '[workspace]\nmembers = ["core/*"]\n'}))
             self.assertEqual(tree.scope[:1], ("core/a/",))
             self.assertEqual(self.check.count(tree)["test"], 3)
+        finally:
+            os.chdir(cwd)
+
+    def test_a_file_that_does_not_parse_warns_and_counts_as_implementation(self):
+        warnings = self.run_check({}, {"core/a/src/lib.rs": "#[cfg(test)]\nfn broken( {\n"})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("core/a/src/lib.rs:", warnings[0])
+        self.assertIn("does not parse, so its lines count as implementation", warnings[0])
+        broken = {"core/a/tests/t.rs": "#[test]\nfn broken( {\n", "core/a/tests/fixtures/f.rs": "fn broken( {\n"}
+        warnings = self.run_check({}, broken)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("core/a/tests/t.rs:", warnings[0])
+        counts = self.counts({"core/a/src/lib.rs": None, **broken})
+        self.assertEqual((counts["test"], counts["implementation"], counts["fixture"]), (0, 2, 1))
+
+    def test_a_path_that_does_not_parse_cannot_start_a_workflow_command(self):
+        result = self.run_check({}, {"core/a/tests/a\n::error::forged.rs": "fn broken( {\n"})
+        self.assertEqual(len(result), 1, result)
+        self.assertIn("%0A::error::forged.rs", result[0])
+        self.assertFalse([line for line in self.stdout.splitlines() if line.startswith("::error")], self.stdout)
+
+    def test_an_inline_module_gated_by_an_inner_cfg_test_is_test_code(self):
+        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\nmod checks {\n    #![cfg(test)]\n    mod cases;\n}\n",
+                              "core/a/src/checks/cases.rs": self.lines(4)})
+        self.assertEqual((counts["test"], counts["implementation"]), (8, 1))
+
+    def test_workspace_globs_with_brackets_and_excludes_cover_the_right_packages(self):
+        files = {"core/a/Cargo.toml": "", "core/b/Cargo.toml": "", "core/vendor/Cargo.toml": "",
+                 "Cargo.toml": '[workspace]\nmembers = [\n    "core/[ab]",\n    "core/*",\n]\nexclude = [\n    # "core/a" stays a member\n    \'core/vendor\',\n]\n'}
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            self.assertEqual(self.check.Tree(self.tree(files)).scope[:3], ("core/a/", "core/b/", "spec/testdata/"))
         finally:
             os.chdir(cwd)
 

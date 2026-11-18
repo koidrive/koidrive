@@ -64,7 +64,7 @@ globs = [
 jobs = ["rust_engine"]
 
 [[path]]
-globs = ["scripts/check-test-lines.py", "scripts/test-check-test-lines.py"]
+globs = ["scripts/check-test-lines.py", "scripts/test-check-test-lines.py", "scripts/fn-docs/**"]
 jobs = ["test_lines"]
 
 [[path]]
@@ -104,7 +104,6 @@ globs = [
   "scripts/test-state-io.py",
   "scripts/state-io/**",
   "scripts/test-fixtures/**",
-  "scripts/fn-docs/**",
   "scripts/test-install.sh",
   "scripts/test-install-journey.py",
   "scripts/test-ci-workflow.py",
