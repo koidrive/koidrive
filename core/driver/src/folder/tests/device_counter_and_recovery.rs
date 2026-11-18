@@ -282,7 +282,6 @@ fn an_upload_that_ends_after_a_recovery_leaves_the_next_commit_in_flight() {
 #[test]
 fn a_synced_store_recovers_when_the_server_counts_a_commit_it_does_not_hold() {
     let mut remote = Remote::new();
-    // The old store read the space and committed nothing: it holds a cursor, and its count is 0 like a new store's.
     let (old, a) = linked(&mut remote, "a");
     assert!(a.folder.engine.cursor.is_some());
     drop(a);

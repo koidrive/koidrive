@@ -189,9 +189,6 @@ pub(crate) fn new_id(now_ms: u64) -> String {
     uuid_v7(now_ms, random() << 64 | random())
 }
 
-/// Every restore the store knows in the space whose root node is `root`: first those that ended, in the order they
-/// ended, then those that wait, in request order. A restore the engine has taken and one it has not are both pending,
-/// and either says so when its node is a problem.
 pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidrive_store::Error> {
     let (queued, resolved) = tx.restores()?;
     let problems = tx.problem_nodes()?;

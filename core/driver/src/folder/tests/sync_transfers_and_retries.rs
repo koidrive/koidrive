@@ -581,7 +581,6 @@ fn a_node_the_server_refused_is_committed_again_after_the_scan_of_the_next_start
     a.take(step).unwrap();
     assert_eq!(a.folder.engine.commits.problems().len(), 1);
 
-    // Neither an edit of the file nor the scans of the running folder bring the node back.
     fs::write(site.root.join("notes.txt"), b"edited on a").unwrap();
     a.settle();
     assert!(a.work.is_empty(), "the refused node stays out of commits");
@@ -599,8 +598,6 @@ fn a_node_the_server_refused_is_committed_again_after_the_scan_of_the_next_start
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
-/// GUN-318. An effect that failed was never planned again while the engine planned the same effect, so a name that
-/// was taken for a moment kept the node from syncing for good.
 #[test]
 fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_wait() {
     let mut remote = Remote::new();
@@ -613,7 +610,6 @@ fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_w
     assert!(b.work.is_empty(), "the node waits");
     assert_eq!(b.folder.engine.effects.blocked().len(), 1);
 
-    // The name is taken again when the effect is retried, and the next wait is longer.
     let step = b.folder.retry();
     b.take(step).unwrap();
     let Some(Work::Stage(pending)) = b.work.pop_front() else {

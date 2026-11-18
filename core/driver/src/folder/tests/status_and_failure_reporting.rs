@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/// GUN-388. The status named only how many items could not be synced, so the user could not tell which ones or why.
 #[test]
 fn the_status_names_a_node_the_server_rejected_an_op_for_and_why() {
     let mut remote = Remote::new();
@@ -37,7 +36,6 @@ fn the_status_names_a_node_the_server_rejected_an_op_for_and_why() {
     );
 }
 
-/// GUN-388, for a commit the server refused as a whole: the node it leaves out of commits is named with the refusal.
 #[test]
 fn the_status_names_a_node_of_a_refused_commit_and_the_refusal() {
     let mut remote = Remote::new();
@@ -323,7 +321,6 @@ fn a_listing_that_halts_is_counted_by_its_cause() {
     }
 }
 
-/// GUN-388, for an effect that failed: the node is named with why the effect failed.
 #[test]
 fn the_status_names_a_node_whose_effect_failed_and_why() {
     let mut remote = Remote::new();
@@ -336,8 +333,6 @@ fn the_status_names_a_node_whose_effect_failed_and_why() {
     );
 }
 
-/// GUN-388, for a node L does not hold yet: a write the server made in a folder fails, and the status names the
-/// write by its whole path, not by its name alone.
 #[test]
 fn the_status_names_a_failed_write_in_a_folder_by_its_whole_path() {
     let mut remote = Remote::new();
@@ -372,7 +367,6 @@ fn the_status_names_a_failed_write_in_a_folder_by_its_whole_path() {
     );
 }
 
-/// GUN-388. A node whose effect failed and that the server also left out of commits is one item, with both reasons.
 #[test]
 fn the_status_names_a_node_stuck_for_two_reasons_once() {
     let mut remote = Remote::new();
@@ -399,8 +393,6 @@ fn the_status_names_a_node_stuck_for_two_reasons_once() {
     );
 }
 
-/// GUN-388. A result that waits for the log keeps the server's reason through the first scan of a start, so the
-/// node it leaves out of commits once the log reaches it is named with that reason.
 #[test]
 fn the_reason_of_a_result_that_waits_for_the_log_outlasts_the_first_scan() {
     let mut remote = Remote::new();

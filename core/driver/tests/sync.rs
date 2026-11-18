@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Two devices syncing one space through the real Worker in `server/`, run by
-//! `core/driver/scripts/integration-test.sh`, which starts `wrangler dev` and sets `KOIDRIVE_TEST_SERVER` (its URL)
-//! and `KOIDRIVE_TEST_SERVER_LOG` (its output, where the Worker prints the claim code). Each device is a [`Driver`]
-//! with a profile and a folder of its own, and both run in the test's process.
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -21,7 +16,6 @@ use koidrive_proto::v1::{ClaimRequest, CreateSpaceRequest, SpaceInfo};
 use tokio::sync::OnceCell;
 use url::Url;
 
-/// How long two devices may take to hold the same tree.
 const WAIT: Duration = Duration::from_secs(30);
 
 fn server_url() -> Url {
@@ -37,14 +31,11 @@ fn api() -> Api {
 
 static OWNER: OnceCell<Credentials> = OnceCell::const_new();
 
-/// The deployment's owner, claimed once for every test in this binary. It creates the spaces and starts the
-/// pairings, and it syncs nothing.
 async fn owner() -> Arc<Auth> {
     let credentials = OWNER.get_or_init(claim).await.clone();
     Arc::new(Auth::new(api(), credentials))
 }
 
-/// Claims the deployment with the code the Worker prints to its log.
 async fn claim() -> Credentials {
     let log =
         std::env::var("KOIDRIVE_TEST_SERVER_LOG").expect("KOIDRIVE_TEST_SERVER_LOG is not set");
@@ -76,7 +67,6 @@ async fn claim() -> Credentials {
     Credentials::from(&api().claim(&request).await.expect("the claim succeeds"))
 }
 
-/// The claim code on a Worker log line that mentions one, such as `ABCD-EFGH-JKLM`.
 fn claim_code(line: &str) -> Option<String> {
     if !line.to_ascii_lowercase().contains("claim code") {
         return None;
@@ -93,7 +83,6 @@ fn claim_code(line: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Shows the driver's log lines with a failed test.
 fn log() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "koidrive_driver=debug,koidrive_net=info".into());
@@ -103,7 +92,6 @@ fn log() {
         .try_init();
 }
 
-/// A new space of the owner. Each test syncs a space of its own.
 async fn new_space(owner: &Arc<Auth>, name: &str) -> SpaceInfo {
     let request = CreateSpaceRequest {
         name: name.into(),
@@ -112,14 +100,12 @@ async fn new_space(owner: &Arc<Auth>, name: &str) -> SpaceInfo {
     owner.api().create_space(owner, &request).await.unwrap()
 }
 
-/// One device: a profile directory, a folder, and the driver that syncs the folder.
 struct Device {
     home: tempfile::TempDir,
     driver: Option<Driver>,
 }
 
 impl Device {
-    /// A new device that the owner's device paired, with an empty folder linked to `space`, syncing.
     async fn linked(owner: &Arc<Auth>, space: &SpaceInfo, name: &str) -> Device {
         let home = tempfile::tempdir().unwrap();
         fs::create_dir(home.path().join("folder")).unwrap();
@@ -152,13 +138,11 @@ impl Device {
         driver.status().folders.remove(0)
     }
 
-    /// Stops syncing and closes the profile, before the test removes the device's directories.
     async fn stop(&mut self) {
         let driver = self.driver.take().expect("the device is running");
         driver.stop().await;
     }
 
-    /// Opens the profile of a stopped device and starts syncing from what is on disk.
     fn start(&mut self) {
         assert!(self.driver.is_none(), "the device is stopped");
         let driver = self.open();
@@ -166,7 +150,6 @@ impl Device {
         self.driver = Some(driver);
     }
 
-    /// Stops the driver, closes the profile and starts again from what is on disk.
     async fn restart(&mut self) {
         self.stop().await;
         self.start();
@@ -193,8 +176,6 @@ impl fmt::Debug for Entry {
 
 type Tree = BTreeMap<PathBuf, Entry>;
 
-/// Everything under `root` except `.koidrive`, by relative path, with each file's bytes. An error means the folder
-/// changed while it was read.
 fn tree(root: &Path) -> io::Result<Tree> {
     fn walk(root: &Path, dir: &Path, tree: &mut Tree) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
@@ -220,8 +201,6 @@ fn tree(root: &Path) -> io::Result<Tree> {
     Ok(tree)
 }
 
-/// Waits until both folders hold the same entries with the same bytes and both devices report that nothing is left
-/// to sync at the same seq. Returns the tree and the seq.
 async fn converged(a: &Device, b: &Device) -> (Tree, u64) {
     let started = Instant::now();
     loop {
@@ -242,7 +221,6 @@ async fn converged(a: &Device, b: &Device) -> (Tree, u64) {
     }
 }
 
-/// `len` bytes that do not repeat, the same on every run.
 fn generated(len: usize) -> Vec<u8> {
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     let mut bytes = Vec::with_capacity(len + 8);
@@ -428,7 +406,6 @@ async fn a_rename_moves_the_file_on_the_other_device() {
     b.stop().await;
 }
 
-/// The names of the nodes in the trash of `space`, read through a session of the owner.
 async fn trashed(owner: &Arc<Auth>, space: &SpaceInfo) -> Vec<String> {
     let config = SessionConfig::new(&space.space_id, "driver sync test", "0", 1);
     let (session, mut events) = Session::start(owner.clone(), config).unwrap();
@@ -671,7 +648,6 @@ fn put_in_trash(device: &Device, name: &str, entry: &str, when: std::time::Syste
         .unwrap();
 }
 
-/// Waits until the local trash of `device` no longer holds `entry`.
 async fn reclaimed(device: &Device, entry: &str) {
     let path = device.folder().join(".koidrive/trash").join(entry);
     let started = Instant::now();

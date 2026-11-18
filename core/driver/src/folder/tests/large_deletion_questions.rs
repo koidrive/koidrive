@@ -52,8 +52,6 @@ fn a_removed_folder_that_holds_most_of_the_space_is_deleted_when_the_person_says
     assert_eq!(a.folder.view().questions, 0);
 }
 
-/// GUN-384 review: device b's person dismisses the notice while b is still removing the folder device a deleted.
-/// The rest of the folder opens no new notice, and the server's log does not move.
 #[test]
 fn dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one() {
     let mut remote = Remote::new();
@@ -305,8 +303,6 @@ fn a_notice_whose_counts_grow_marks_the_questions_changed() {
     }
 }
 
-/// GUN-384 review: while a mass-delete question holds the folder, two more local deletions make the guard ask again
-/// under a new id. The number of questions stays 1, and the folder still marks the questions changed for the status.
 #[test]
 fn a_question_asked_again_under_a_new_id_marks_the_questions_changed() {
     let mut remote = Remote::new();
@@ -335,8 +331,6 @@ fn a_question_asked_again_under_a_new_id_marks_the_questions_changed() {
     assert!(a.folder.take_questions_changed());
 }
 
-/// Device a deletes the folder `d`, which holds 15 of the 20 files, and the person confirms it there. Device b removes
-/// the folder and its store holds a notice about it (design §6.1) until the person dismisses it.
 #[test]
 fn another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismissed() {
     use crate::question::{Limit, QuestionKind};

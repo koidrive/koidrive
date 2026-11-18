@@ -912,8 +912,6 @@ fn a_welcome_queued_before_a_finished_send_is_taken_first() {
     assert_eq!(a.folder.engine.commits.accepted(), 3);
 }
 
-/// A commit in flight when the task stopped has a slot the restored server cannot account for. It is dropped
-/// rather than sent, and what it held is planned again once the tree is listed.
 #[test]
 fn a_commit_in_flight_when_the_server_lost_this_devices_commits_is_planned_again() {
     let mut remote = Remote::new();
@@ -934,9 +932,6 @@ fn a_commit_in_flight_when_the_server_lost_this_devices_commits_is_planned_again
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
-/// The session reports that it did not send the commit in flight again before the folder has taken the \`Welcome\`
-/// with the server's lower count. The folder waits for that \`Welcome\` instead of stopping, and then goes on as
-/// above.
 #[test]
 fn a_commit_the_session_did_not_send_again_to_a_server_that_lost_commits_waits_for_the_welcome() {
     let mut remote = Remote::new();
