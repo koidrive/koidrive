@@ -7,6 +7,9 @@ on:
   merge_group:
   push:
     branches: [main]
+  schedule:
+    - cron: '23 16 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -54,6 +57,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: scripts/ci-select
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the job selector
         id: selector
         continue-on-error: true
@@ -66,6 +70,15 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            echo "$EVENT run: every Linux and macOS job runs, so a run on main saves every Rust cache that pull requests and the merge queue restore."
+            {
+              echo "site_only=false"
+              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration rust_macos server_macos spec_macos macos_app
+              echo 'rust_suites=["driver","engine","sim"]'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" = push ]; then
             echo "Push to main: every Linux job runs."
             {
@@ -228,6 +241,8 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify Rust workspace feature parity
         run: python3 scripts/test-ci-rust-partitions.py FeatureParity -v
       - name: List the remaining test inventory
@@ -299,6 +314,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           key: ${{ matrix.suite }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: ${{ !cancelled() && matrix.suite == 'engine' }}
         run: cargo fmt --all --check
       - if: ${{ !cancelled() && matrix.suite == 'engine' }}
@@ -409,8 +425,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test --reporter=verbose
@@ -433,8 +448,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - name: Check Worker launchers and deploy startup without a deployment
         run: |
           nice -n 10 python3 scripts/test-worker-launchers.py -v
@@ -470,14 +484,15 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: server/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test koidrive-net against the Worker under wrangler dev
@@ -495,14 +510,15 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: server/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test two drivers against the Worker under wrangler dev
@@ -520,14 +536,15 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: server/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Start a systemd user instance for the runner user
@@ -556,14 +573,15 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: server/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test the app's session against the Worker under wrangler dev
@@ -637,6 +655,8 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Show Xcode and Swift versions
         run: xcodebuild -version && swift --version
       - name: Build the Rust core, the Swift bindings and the app (unsigned)
@@ -751,6 +771,8 @@ jobs:
       - name: Install Rust
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test the guard
         run: python3 scripts/test-check-store-upgrades.py
       - name: Check and run upgrade cases
@@ -784,6 +806,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           key: state-io
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prove the lints reject the unsafe writers and borrowed locks
         run: nice -n 10 python3 scripts/test-state-io.py -v
       - name: Reject new raw state-file writes

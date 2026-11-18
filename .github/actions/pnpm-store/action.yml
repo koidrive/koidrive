@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: pnpm store
+description: Restore the pnpm store for server/pnpm-lock.yaml, falling back to the newest store saved from main, and save it only from main.
+runs:
+  using: composite
+  steps:
+    - id: store
+      shell: bash
+      run: echo "path=$(pnpm --dir server store path --silent)" >> "$GITHUB_OUTPUT"
+    - if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-${{ runner.arch }}-
+    - if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-${{ runner.arch }}-

@@ -172,13 +172,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .heavy-harness
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            .github/actions
           persist-credentials: false
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: heavy-tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
         if: env.MODE == 'worker'
         with:
@@ -188,8 +191,8 @@ jobs:
         if: env.MODE == 'worker'
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.heavy-harness/.github/actions/pnpm-store
+        if: env.MODE == 'worker'
       - name: Install the Worker dependencies
         if: env.MODE == 'worker'
         working-directory: server

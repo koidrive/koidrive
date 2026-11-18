@@ -101,6 +101,16 @@ class ChangesJob(unittest.TestCase):
         for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
             self.assertEqual(outputs[job], "true", job)
 
+    def test_scheduled_and_manual_runs_run_every_job_on_both_systems(self):
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result, outputs = self.run_script(inline_script("changes"), {"EVENT": event})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for job in (*SELECTED, "rust_macos", "server_macos", "spec_macos", "macos_app"):
+                    self.assertEqual(outputs[job], "true", job)
+                self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
+                self.assertEqual(outputs["site_only"], "false")
+
     def run_changes(self, changed, selected=(), event="pull_request", selector_fails=False, selector_build="success"):
         self.write_executable("git", """
             import os
@@ -182,6 +192,75 @@ class ChangesJob(unittest.TestCase):
         self.assertIn("id: selector\n", build)
         self.assertIn("continue-on-error: true\n", build)
         self.assertIn("SELECTOR_BUILD: ${{ steps.selector.outcome }}", body)
+
+
+class Caches(unittest.TestCase):
+    FROM_MAIN = "github.ref == 'refs/heads/main'"
+    FILES = sorted([*(ROOT / ".github/workflows").glob("*.yml"), *(ROOT / ".github/actions").glob("*/action.yml")])
+
+    def steps(self, text):
+        found = []
+        for indent, first, rest in re.findall(r"(?m)^( *)- (.*)\n((?:\1  .*\n)*)", text):
+            step = f"{indent}  {first}\n{rest}"
+            uses = re.search(rf"(?m)^{indent}  uses: (\S+)", step)
+            if uses:
+                cond = re.search(rf"(?m)^{indent}  if: (.*)$", step)
+                found.append((indent, cond and cond[1], uses[1], step))
+        return found
+
+    def test_only_runs_on_main_save_caches(self):
+        for path in self.FILES:
+            for _, cond, action, body in self.steps(path.read_text()):
+                with self.subTest(file=path.relative_to(ROOT).as_posix(), action=action):
+                    if action.startswith("Swatinem/rust-cache@"):
+                        saves = re.findall(r"(?m)^ *save-if: (.*)$", body)
+                        self.assertIn(saves, ([f"${{{{ {self.FROM_MAIN} }}}}"], ["false"]))
+                    elif action.startswith(("actions/cache@", "actions/cache/save@")):
+                        self.assertEqual(cond, self.FROM_MAIN)
+                    elif action.startswith("actions/setup-"):
+                        self.assertNotRegex(body, r"(?m)^ *cache:")
+                    else:
+                        self.assertTrue(action.endswith("/.github/actions/pnpm-store") or action.startswith("actions/cache/restore@")
+                                        or "cache" not in action.lower(), "unreviewed cache action")
+
+    def test_a_branch_run_restores_the_cache_a_main_run_saves(self):
+        text = (ROOT / ".github/actions/pnpm-store/action.yml").read_text()
+        caches = {action.split("@")[0]: (cond, body) for _, cond, action, body in self.steps(text)}
+        self.assertEqual(caches["actions/cache"][0], self.FROM_MAIN)
+        self.assertEqual(caches["actions/cache/restore"][0], "github.ref != 'refs/heads/main'")
+        inputs = {name: body.split("  with:\n", 1)[1] for name, (_, body) in caches.items()}
+        self.assertEqual(inputs["actions/cache"], inputs["actions/cache/restore"])
+        self.assertIn("restore-keys:", inputs["actions/cache"])
+
+    def test_local_actions_come_from_the_workflow_commit(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            steps = self.steps(path.read_text())
+            checkouts = [body for _, _, a, body in steps if a.startswith("actions/checkout@")]
+            root_moves = any(re.search(r"(?m)^ *ref: ", body) and not re.search(r"(?m)^ *path: ", body)
+                             and "ref: ${{ github.sha }}" not in body for body in checkouts)
+            harness = {}
+            for body in checkouts:
+                where = re.search(r"(?m)^ *path: (\S+)$", body)
+                if where and "ref: ${{ github.sha }}" in body:
+                    sparse = body.split("sparse-checkout:", 1)[1] if "sparse-checkout:" in body else ""
+                    harness[where[1]] = [p.strip() for p in sparse.replace("|", "").split("\n") if p.strip()] or None
+            for _, _, action, _ in steps:
+                if not action.startswith("./") or not root_moves:
+                    continue
+                with self.subTest(workflow=path.name, action=action):
+                    top, _, rest = action[2:].partition("/")
+                    self.assertIn(top, harness, "a local action resolves from the checkout under test, which may predate it")
+                    self.assertTrue(harness[top] is None or any(rest.startswith(p) for p in harness[top]))
+
+    def test_workflows_that_restore_on_pull_requests_run_on_main_every_day(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = path.read_text()
+            triggers = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+            cached = any(a.startswith("Swatinem/rust-cache@") or a.endswith("/.github/actions/pnpm-store") for _, _, a, _ in self.steps(text))
+            if not cached or "  pull_request:" not in triggers:
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertRegex(triggers, r"\n  schedule:\n    - cron: '\d+ \d+ \* \* \*'")
 
 
 class Runners(unittest.TestCase):
