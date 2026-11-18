@@ -5212,12 +5212,21 @@ fn a_server_folder_the_user_removed_an_entry_from_before_the_rules_left_it_out_i
         trees.set_rules(&[] as &[&str], None);
         let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
         assert_eq!(
+            sent,
+            [
+                ("create dir", "f".to_owned()),
+                ("move", "x".to_owned()),
+                ("delete", "e".to_owned())
+            ],
+            "{restart}"
+        );
+        assert_eq!(
             local(&trees),
             [
                 ("f".into(), ROOT.into(), "new".into()),
                 ("x".into(), "f".into(), "ignored".into())
             ],
-            "{restart}: {sent:?}"
+            "{restart}"
         );
     }
 }
