@@ -1,0 +1,3 @@
+30
+# a_renamed_server_entry_keeps_its_name_when_its_taken_along_folder_is_discarded_again pins the filesystem.md rule that a second Discard takes along a server entry the user renamed in place and syncs only its new name.
+# No other engine test renames an entry inside a taken-along folder before the second Discard, and the sim properties answer every question with one fixed answer, so they never reach a second Discard after a rename.

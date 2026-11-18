@@ -5299,3 +5299,47 @@ fn a_discarded_folder_renamed_and_added_to_then_discarded_again_sends_nothing() 
     assert!(sent.is_empty(), "{sent:?}");
     assert_eq!(local(&trees), [("x".into(), ROOT.into(), "server".into())]);
 }
+
+#[test]
+fn a_renamed_server_entry_keeps_its_name_when_its_taken_along_folder_is_discarded_again() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("c", file("x", "child", 3)),
+        ],
+        &[("x", dir(ROOT, "server")), ("c", file("x", "child", 3))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    let mut moved = trees.local().get("x").unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle(commits.aliases());
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let asked = question(&commits);
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_local_changed("m".into(), local_node(file("f", "added", 4), 99));
+    let mut renamed = trees.local().get("c").unwrap().clone();
+    renamed.shape.name = "renamed".into();
+    trees.set_local_changed("c".into(), renamed);
+    trees.settle(commits.aliases());
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let asked = question(&commits);
+    assert!(commits.decide(&asked.id, Answer::Discard));
+    let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+    trees.set_rules(&[] as &[&str], None);
+    sent.extend(drive_until_quiet(&mut commits, &mut trees, &mut ids));
+    assert_eq!(sent, [("move", "c".into())]);
+    assert_eq!(trees.remote().get("c").unwrap().shape.name, "renamed");
+    assert_eq!(
+        local(&trees),
+        [
+            ("c".into(), "x".into(), "renamed".into()),
+            ("x".into(), ROOT.into(), "server".into()),
+        ]
+    );
+}
