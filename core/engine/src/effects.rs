@@ -830,7 +830,7 @@ pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
         .filter(|id| candidate(trees, id) && !trees.held(id) && !trees.ignored(id))
         .filter(|id| {
             trees.local().get(id).is_none()
-                && !trees.waiting().contains_key(*id)
+                && !trees.waiting().contains_key(id)
                 && !trees.pending_finishes().contains_key(*id)
         })
         .filter_map(|id| {

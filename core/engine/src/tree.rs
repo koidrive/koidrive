@@ -3,7 +3,10 @@
 //! The three trees of the design (docs/design/sync-engine.md section 2.2): the remote tree R, the
 //! local tree L and the synced tree S, all keyed by `node_id` and sharing the root node.
 
+use std::borrow::Borrow;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeBounds;
 use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
@@ -11,6 +14,77 @@ use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
 use crate::names::{name_key, same_name};
 
 pub type NodeId = String;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ENTRIES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+pub(crate) fn read_entries(count: usize) {
+    #[cfg(test)]
+    ENTRIES_READ.with(|read| read.set(read.get() + count as u64));
+}
+
+#[cfg(test)]
+pub(crate) fn counted<I: Iterator>(entries: I) -> impl Iterator<Item = I::Item> {
+    entries.inspect(|_| read_entries(1))
+}
+
+#[cfg(not(test))]
+pub(crate) fn counted<I: Iterator>(entries: I) -> I {
+    entries
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
+
+impl<K, V> Default for CountedMap<K, V> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<K: Ord, V> CountedMap<K, V> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get(key)
+    }
+
+    pub(crate) fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get_mut(key)
+    }
+
+    pub(crate) fn entry(&mut self, key: K) -> Entry<'_, K, V> {
+        self.0.entry(key)
+    }
+
+    pub(crate) fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.remove(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        counted(self.0.iter())
+    }
+
+    pub(crate) fn range(&self, range: impl RangeBounds<K>) -> impl Iterator<Item = (&K, &V)> {
+        counted(self.0.range(range))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -271,7 +345,7 @@ impl<N: Node> Tree<N> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &N)> {
-        self.nodes.iter()
+        counted(self.nodes.iter())
     }
 
     pub fn len(&self) -> usize {
