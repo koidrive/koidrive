@@ -124,18 +124,22 @@ impl Engine {
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L
-    /// row and the S row of every node whose entry changed since the last checkpoint ([`Trees::take_changed`]), what
+    /// row of every node whose L entry changed and the S row of every node whose S entry changed since the last
+    /// checkpoint ([`Trees::take_changed`]), what
     /// changed in the engine state, and the ID generator. A row of a node the tree no longer holds is removed. A
     /// transaction that fails ends the task, which loads the engine again from the store.
     pub fn checkpoint(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
         self.trees.settle(self.commits.aliases());
-        for id in &self.trees.take_changed() {
+        let changed = self.trees.take_changed();
+        for id in &changed.local {
             match self.trees.local().get(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
                 None => {
                     tx.remove_local_node(id)?;
                 }
             }
+        }
+        for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
                     node_id: id.clone(),
@@ -3886,5 +3890,97 @@ mod tests {
         };
         let staging = Staging::new("h".into(), vec![page], vec![trash]);
         assert_eq!(staging.nodes.get("d").map(|d| d.content_rev), Some(10));
+    }
+
+    #[test]
+    fn a_commit_ack_writes_no_row_of_l() {
+        use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+        let (dir, mut store) = store();
+        let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        engine.trees.rules_scanned();
+        let ids: Vec<String> = (0..20).map(|n| format!("dir{n:02}")).collect();
+        for (n, id) in ids.iter().enumerate() {
+            let local = LocalNode {
+                shape: Shape {
+                    parent: ROOT.into(),
+                    name: id.clone(),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                identity: FileIdentity {
+                    ino: n as u128 + 1,
+                    birth_ns: Some(1),
+                },
+                parked: false,
+                left_out_when_placed: false,
+                content_from_server: false,
+            };
+            engine.trees.set_local(id.clone(), local);
+        }
+        store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+        let conn = rusqlite::Connection::open(dir.path().join("store.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE l_writes (n INTEGER NOT NULL);
+             INSERT INTO l_writes VALUES (0);
+             CREATE TRIGGER l_insert AFTER INSERT ON local_nodes BEGIN UPDATE l_writes SET n = n + 1; END;
+             CREATE TRIGGER l_update AFTER UPDATE ON local_nodes BEGIN UPDATE l_writes SET n = n + 1; END;
+             CREATE TRIGGER l_delete AFTER DELETE ON local_nodes BEGIN UPDATE l_writes SET n = n + 1; END;",
+        )
+        .unwrap();
+
+        let commit = (engine.commits)
+            .build(&mut engine.trees, &mut engine.ids, 1, "h", "me", 0)
+            .cloned()
+            .unwrap();
+        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
+            let op::Op::CreateDir(create) = op else {
+                panic!("the commit only creates folders: {op:?}");
+            };
+            let node = RemoteNode {
+                shape: Shape {
+                    parent: create.parent_id.clone(),
+                    name: create.name.clone(),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                made_over: Vec::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+            };
+            engine
+                .trees
+                .set_remote_made_here(create.node_id.clone(), node);
+        }
+        let applied = proto::OpResult {
+            code: proto::op_result::Code::Applied as i32,
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![applied; commit.ops.len()],
+            ..Default::default()
+        };
+        engine.commits.received(result).unwrap();
+        assert!(engine.commits.acknowledge(&mut engine.trees, 1));
+        store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+
+        let synced: Vec<&String> = ids
+            .iter()
+            .filter(|id| engine.trees.synced().get(id).is_some())
+            .collect();
+        assert_eq!(synced.len(), ids.len(), "the ack put every folder in S");
+        let written: i64 =
+            (conn.query_row("SELECT n FROM l_writes", [], |row| row.get(0))).unwrap();
+        assert_eq!(
+            written, 0,
+            "the ack changed no node of L, so it writes no row of L"
+        );
     }
 }
