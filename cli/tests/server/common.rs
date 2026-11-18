@@ -131,14 +131,14 @@ fn uuidv7() -> String {
 /// A machine's home for the device under test, with its XDG directories. Its config.toml turns the background service
 /// off, so that the tests run the daemon themselves and never touch the service manager of the machine running them.
 struct Machine {
-    home: Sandbox,
+    sandbox: Sandbox,
     koi: PathBuf,
 }
 
 impl Machine {
     fn new() -> Self {
         let machine = Machine {
-            home: Sandbox::new(),
+            sandbox: Sandbox::new(),
             koi: PathBuf::from(process::KOI),
         };
         machine.configure("");
@@ -148,14 +148,15 @@ impl Machine {
     #[cfg(target_os = "linux")]
     fn with_service() -> Self {
         let machine = Machine {
-            home: Sandbox::new(),
+            sandbox: Sandbox::new(),
             koi: PathBuf::from(process::KOI),
         };
+        fs::create_dir_all(machine.home()).unwrap();
         let manager = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
-        fs::create_dir_all(machine.path("run/systemd")).unwrap();
+        fs::create_dir_all(machine.runtime().join("systemd")).unwrap();
         std::os::unix::fs::symlink(
             manager.join("systemd/private"),
-            machine.path("run/systemd/private"),
+            machine.runtime().join("systemd/private"),
         )
         .unwrap();
         machine
@@ -171,15 +172,23 @@ impl Machine {
         .unwrap();
     }
 
+    fn home(&self) -> PathBuf {
+        self.sandbox.path().join("home")
+    }
+
+    fn runtime(&self) -> PathBuf {
+        self.sandbox.path().join("run")
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
-        self.home.path().join(rel)
+        self.home().join(rel)
     }
 
     fn socket(&self) -> PathBuf {
         let vars = [
             ("XDG_CONFIG_HOME", self.path("config")),
             ("XDG_STATE_HOME", self.path("state")),
-            ("XDG_RUNTIME_DIR", self.path("run")),
+            ("XDG_RUNTIME_DIR", self.runtime()),
         ];
         koidrive_driver::Paths::from_vars(|name| {
             (vars.iter())
@@ -198,15 +207,15 @@ impl Machine {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = koidrive_test_support::sandboxed(&self.koi, self.home.path());
+        let mut command = koidrive_test_support::sandboxed(&self.koi, self.sandbox.path());
         command
             .args(args)
-            .current_dir(self.home.path())
-            .env("HOME", self.home.path())
+            .current_dir(self.home())
+            .env("HOME", self.home())
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env_remove("KOIDRIVE_LOG")
-            .env("XDG_RUNTIME_DIR", self.path("run"))
+            .env("XDG_RUNTIME_DIR", self.runtime())
             .env("KOIDRIVE_UPDATE_CHECK", "0");
         command
     }

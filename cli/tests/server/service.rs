@@ -198,7 +198,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
     );
     assert!(!systemctl(&["is-active", "--quiet", &unit]).status.success());
     assert!(!systemctl(&["cat", &unit]).status.success());
-    let mut left: Vec<String> = fs::read_dir(machine.home.path())
+    let mut left: Vec<String> = fs::read_dir(machine.home())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
