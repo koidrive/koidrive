@@ -197,17 +197,17 @@ class SplitTests(unittest.TestCase):
         with patch.object(split, "git_source", return_value=branch):
             split.verify(self.executable, self.mapping, "branch")
 
-    def test_proptest_blocks_split_port_and_verify_in_a_scenario(self):
+    def property_source(self, base, path=b"proptest", config=b""):
+        return base + path + b"! {\n" + config + b"    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n"
+
+    def test_proptest_blocks_split_port_and_verify_in_root(self):
         original = self.source
         for path in [b"proptest", b"proptest::proptest"]:
             with self.subTest(path=path):
-                self.source = original + path + (
-                    b'! {\n    #![proptest_config(koidrive_test_support::battery_config("cases.txt", 4))]\n'
-                    b'    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n'
-                )
-                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                self.source = self.property_source(original, path)
+                self.mapping["tests.rs"]["proptest:holds"] = "root"
                 self.generate()
-                self.assertIn(path + b"! {", (self.root / "tests/scenario.rs").read_bytes())
+                self.assertIn(path + b"! {", self.path.read_bytes())
                 with patch.object(split, "git_source", return_value=self.source):
                     split.verify(self.executable, self.mapping, "base")
                 branch = self.source.replace(b"x < 4", b"x <= 3")
@@ -231,58 +231,52 @@ class SplitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"assign these items.*fn:added"):
                 split.verify(self.executable, self.mapping, "base")
 
-    def property_source(self, base, config):
-        return base + b"proptest::proptest! {\n" + config + (
-            b"    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n"
-        )
-
-    def test_a_proptest_whose_regression_path_depends_on_its_file_stays_in_root(self):
+    def test_a_proptest_block_never_leaves_its_file(self):
         original = self.source
+        self.generate()
         for config in [
             b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n',
-            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(module_path!(), ".txt"), 1))]\n',
-            b'    #![proptest_config(koidrive_test_support::battery_config(concat!("cases", line!()), 1))]\n',
-            b'    #![proptest_config(koidrive_test_support::battery_config(REGRESSIONS, 1))]\n',
-            b'    #![proptest_config(koidrive_test_support::battery_config(concat!("tests/", "cases.txt"), 1))]\n',
-            b'    #![proptest_config(ProptestConfig::with_cases(4))]\n',
-            b'    #![proptest_config(ProptestConfig { failure_persistence: None, ..koidrive_test_support::battery_config("cases.txt", 1) })]\n',
-            b"",
+            b'    #![proptest_config(koidrive_test_support::regression_config(concat!(env!("CARGO_MANIFEST_DIR"), "/cases.txt"), 8))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(env!("CARGO_MANIFEST_DIR"), "/cases.txt"), 1))]\n',
         ]:
             with self.subTest(config=config):
-                self.source = original
-                self.mapping["tests.rs"].pop("proptest:holds", None)
-                self.generate()
-                anchored = self.property_source(original, config)
+                source = self.property_source(original, b"proptest::proptest", config)
                 self.mapping["tests.rs"]["proptest:holds"] = "scenario"
-                with self.assertRaisesRegex(ValueError, "keep proptest:holds in root"):
-                    split.render(self.executable, self.mapping, {"tests.rs": anchored})
-                with patch.object(split, "git_source", side_effect=lambda ref, path: original if ref == "base" else anchored):
-                    with self.assertRaisesRegex(ValueError, "keep proptest:holds in root"):
+                with patch.object(split, "git_source", return_value=source):
+                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+                        split.split(self.executable, self.mapping, "base")
+                with patch.object(split, "git_source", side_effect=lambda ref, path: original if ref == "base" else source):
+                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
                         split.port(self.executable, self.mapping, "base", "branch")
-                self.mapping["tests.rs"]["proptest:holds"] = "root"
-                self.source = anchored
-                self.generate()
-                block = anchored[anchored.index(b"proptest::proptest!"):]
-                self.path.write_bytes(self.path.read_bytes().replace(block, b""))
                 scenario = self.root / "tests/scenario.rs"
-                scenario.write_bytes(scenario.read_bytes() + b"\n" + block)
-                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
-                with patch.object(split, "git_source", return_value=anchored):
-                    with self.assertRaisesRegex(ValueError, "keep proptest:holds in tests.rs"):
+                before = scenario.read_bytes()
+                scenario.write_bytes(before + b"\n" + source[len(original):])
+                with patch.object(split, "git_source", return_value=source):
+                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
                         split.verify(self.executable, self.mapping, "base")
+                scenario.write_bytes(before)
 
-    def test_a_proptest_whose_regression_path_ignores_its_file_moves(self):
-        original = self.source
-        for config in [
-            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/", "cases.txt"), 1))]\n',
-            b'    #![proptest_config(ProptestConfig { max_shrink_iters: 4, ..koidrive_test_support::regression_config("cases.txt", 8) })]\n',
-        ]:
-            with self.subTest(config=config):
-                self.source = self.property_source(original, config)
-                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
-                self.generate()
-                with patch.object(split, "git_source", return_value=self.source):
-                    split.verify(self.executable, self.mapping, "base")
+    def test_a_proptest_block_in_a_scenario_keeps_its_file(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        reference = lambda ref, path: layout[self.root / path]
+        with patch.object(split, "git_source", side_effect=reference):
+            split.verify(self.executable, self.mapping, "base")
+            split.split(self.executable, self.mapping, "base")
+            self.assertEqual(scenario.read_bytes(), layout[scenario])
+            branch = split.load_source(self.executable, "tests.rs", "base").replace(b"x < 4", b"x <= 3")
+        with patch.object(split, "git_source", side_effect=lambda ref, path: branch if ref == "branch" else reference(ref, path)):
+            split.port(self.executable, self.mapping, "base", "branch")
+        self.assertIn(b"x <= 3", scenario.read_bytes())
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        with patch.object(split, "git_source", side_effect=reference):
+            with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
+                split.split(self.executable, self.mapping, "base")
+            with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
+                split.verify(self.executable, self.mapping, "base")
 
 
 if __name__ == "__main__":

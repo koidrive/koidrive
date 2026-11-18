@@ -2,73 +2,9 @@
 
 use std::io::{self, Read};
 
-use proc_macro2::TokenStream;
 use quote::ToTokens;
 use serde_json::json;
-use syn::parse::{ParseStream, Parser};
-use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Attribute, Expr, Lit, LitStr, Token};
-
-fn string(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lit(literal) if matches!(literal.lit, Lit::Str(_)))
-}
-
-fn independent_of_source(path: &Expr) -> bool {
-    let Expr::Macro(concat) = path else {
-        return string(path);
-    };
-    let Ok(parts) = concat
-        .mac
-        .parse_body_with(Punctuated::<Expr, Token![,]>::parse_terminated)
-    else {
-        return false;
-    };
-    let mut parts = parts.iter();
-    concat.mac.path.is_ident("concat")
-        && parts.next().is_some_and(|first| {
-            matches!(first, Expr::Macro(env) if env.mac.path.is_ident("env")
-                && env.mac.parse_body::<LitStr>().is_ok_and(|name| name.value() == "CARGO_MANIFEST_DIR"))
-        })
-        && parts.all(string)
-}
-
-fn persists_beside_source(tokens: TokenStream) -> bool {
-    let Ok(attrs) = (|input: ParseStream| {
-        let attrs = input.call(Attribute::parse_inner)?;
-        input.parse::<TokenStream>()?;
-        Ok(attrs)
-    })
-    .parse2(tokens) else {
-        return true;
-    };
-    let Some(Ok(config)) = attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("proptest_config"))
-        .map(|attr| attr.parse_args::<Expr>())
-    else {
-        return true;
-    };
-    let base = match &config {
-        Expr::Struct(update)
-            if !update.fields.iter().any(|field| {
-                matches!(&field.member, syn::Member::Named(name) if name == "failure_persistence")
-            }) =>
-        {
-            update.rest.as_deref()
-        }
-        Expr::Struct(_) => None,
-        other => Some(other),
-    };
-    let Some(Expr::Call(call)) = base else {
-        return true;
-    };
-    let persisting = matches!(call.func.as_ref(), Expr::Path(function)
-    if function.path.segments.last().is_some_and(|segment| {
-        segment.ident == "battery_config" || segment.ident == "regression_config"
-    }));
-    !(persisting && call.args.first().is_some_and(independent_of_source))
-}
 
 fn main() {
     let mut source = String::new();
@@ -144,15 +80,12 @@ fn main() {
             }
             other => panic!("unsupported item: {}", other.to_token_stream()),
         };
-        let anchored = matches!(&item, syn::Item::Macro(m)
-            if kind == "property" && persists_beside_source(m.mac.tokens.clone()));
         let span = item.span();
         let start = span.start();
         let end = span.end();
         items.push(json!({
             "name": name,
             "kind": kind,
-            "anchored": anchored,
             "start": offset(start),
             "end": offset(end),
         }));

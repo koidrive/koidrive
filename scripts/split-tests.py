@@ -27,15 +27,16 @@ def include_path(path, name):
     return included
 
 
-def load_source(executable, path, revision=None):
-    def read(name):
-        return git_source(revision, name) if revision else (ROOT / name).read_bytes()
+def read_source(revision, path):
+    return git_source(revision, path) if revision else (ROOT / path).read_bytes()
 
-    source = read(path)
+
+def load_source(executable, path, revision=None):
+    source = read_source(revision, path)
 
     for item in reversed(includes(executable, source)):
         included = include_path(path, item["name"].removeprefix("include:"))
-        text = read(str(included)).removeprefix(LICENSE).rstrip()
+        text = read_source(revision, str(included)).removeprefix(LICENSE).rstrip()
         source = source[:item["start"]] + text + source[item["end"]:]
     return source
 
@@ -101,8 +102,6 @@ def render(executable, mapping, sources):
             scenario = assignments[item["name"]]
             if not re.fullmatch(r"[a-z][a-z0-9_]*", scenario):
                 raise ValueError(f"invalid scenario: {scenario}")
-            if item["anchored"] and scenario != "root":
-                raise ValueError(f"keep {item['name']} in root: its regression file path depends on the source file")
             if item["kind"] == "module" and scenario != "root":
                 raise ValueError("keep modules in root to preserve relative paths")
             prefix = source[previous:item["start"]].strip(b"\n")
@@ -140,7 +139,27 @@ def write(executable, planned):
         path.unlink()
 
 
+def property_files(executable, path, revision=None):
+    root = read_source(revision, path)
+    files = {item["name"]: "root" for item in items(executable, root) if item["kind"] == "property"}
+    for included in includes(executable, root):
+        scenario = include_path(path, included["name"].removeprefix("include:"))
+        for item in items(executable, read_source(revision, str(scenario)), fragment=True):
+            if item["kind"] == "property":
+                files[item["name"]] = scenario.stem
+    return files
+
+
+def require_properties_in_place(path, assignments, files):
+    for name, scenario in files.items():
+        if assignments.get(name, scenario) != scenario:
+            held = path if scenario == "root" else output_path(path, scenario).relative_to(ROOT)
+            raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
+
+
 def split(executable, mapping, revision):
+    for path, assignments in mapping.items():
+        require_properties_in_place(path, assignments, property_files(executable, path, revision))
     sources = {path: load_source(executable, path, revision) for path in mapping}
     write(executable, render(executable, mapping, sources))
 
@@ -177,6 +196,8 @@ def merge(base, branch, current, name):
 def port(executable, mapping, base_ref, branch_ref):
     sources = {}
     for path in mapping:
+        files = property_files(executable, path, branch_ref) | property_files(executable, path)
+        require_properties_in_place(path, mapping[path], files)
         base_header, base = records(executable, load_source(executable, path, base_ref))
         branch_header, branch = records(executable, load_source(executable, path, branch_ref))
         current_header, current = records(executable, load_source(executable, path))
@@ -205,6 +226,7 @@ def verify(executable, mapping, revision):
         root_items = parsed(executable, root)
         original_items = items(executable, original)
         require_assigned(path, assignments, original_items)
+        require_properties_in_place(path, assignments, property_files(executable, path, revision))
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
         expected_includes = Counter(f'{Path(path).stem}/{scenario}.rs' for scenario in scenarios)
         actual_includes = Counter(item["name"].removeprefix("include:")
@@ -228,8 +250,6 @@ def verify(executable, mapping, revision):
                 name = item["name"]
                 if name in after:
                     raise ValueError(f"duplicated item in {path}: {name}")
-                if item["anchored"] and moved != ROOT / path:
-                    raise ValueError(f"keep {name} in {path}: its regression file path depends on the source file")
                 expected = ROOT / path if assignments[name] == "root" else output_path(path, assignments[name])
                 if moved != expected:
                     raise ValueError(f"wrong scenario for {name}: {moved}")
