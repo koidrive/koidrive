@@ -1288,11 +1288,7 @@ fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values
     assert!(trees.journal().listed());
 }
 
-#[test]
-fn an_edit_superseded_on_a_trashed_file_ends_and_leaves_the_delete_to_reach_l() {
-    let mut trees = Trees::new(ROOT);
-    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
-    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+fn sent_with_intents(trees: &mut Trees) -> (Commits, Vec<op::Op>) {
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
     commits.connected(&Welcome {
         features: vec!["field_intents".into()],
@@ -1305,20 +1301,61 @@ fn an_edit_superseded_on_a_trashed_file_ends_and_leaves_the_delete_to_reach_l() 
         commit_id: String::new(),
         committed_at_ms: 1_700,
     };
-    (commits.build(&mut trees, &mut IdGen::new(1), 0, "history", "me", base)).unwrap();
-    let trashed = RemoteNode {
-        trashed: true,
-        meta_rev: 2,
-        ..remote(file(ROOT, "a", 1), 1)
-    };
-    trees.set_remote("f".into(), trashed);
-    let result = proto::CommitResult {
-        seq: 2,
-        results: vec![outcome(op_result::Code::Superseded)],
+    let commit = (commits.build(trees, &mut IdGen::new(1), 0, "history", "me", base)).unwrap();
+    let ops = commit.ops.iter().filter_map(|op| op.op.clone()).collect();
+    (commits, ops)
+}
+
+fn acknowledge_superseded_move(
+    trees: &mut Trees,
+    commits: &mut Commits,
+    results: Vec<proto::OpResult>,
+    now: Shape,
+    place_applied_at_ms: i64,
+) {
+    trees.set_remote("f".into(), remote(now.clone(), 2));
+    let place = proto::FieldIntents {
+        place: Some(wire(id(9), place_applied_at_ms)),
         ..Default::default()
     };
+    let result = proto::CommitResult {
+        seq: 2,
+        ..answered(results, vec![node_state("f", &now, 2, Some(place))])
+    };
     commits.received(result).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
+    assert!(commits.acknowledge(trees, 2));
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_superseded_move_whose_node_a_later_op_of_its_commit_brings_back_ends() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 2)));
+    let (mut commits, ops) = sent_with_intents(&mut trees);
+    assert!(
+        matches!(&ops[..], [op::Op::Move(_), op::Op::UpdateContent(_)]),
+        "{ops:?}"
+    );
+    let results = vec![
+        outcome(op_result::Code::Superseded),
+        outcome(op_result::Code::AppliedRenamed),
+    ];
+    let revived = file(ROOT, "a (conflict)", 2);
+    acknowledge_superseded_move(&mut trees, &mut commits, results, revived, 1_900);
     assert!(commits.problems().is_empty(), "{:?}", commits.problems());
-    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "a", 2)));
+}
+
+#[test]
+fn a_superseded_move_whose_live_node_holds_an_earlier_place_does_not_end() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    let (mut commits, ops) = sent_with_intents(&mut trees);
+    assert!(matches!(&ops[..], [op::Op::Move(_)]), "{ops:?}");
+    let results = vec![outcome(op_result::Code::Superseded)];
+    acknowledge_superseded_move(&mut trees, &mut commits, results, file(ROOT, "c", 1), 1_000);
+    let row = trees.journal_row("f", Field::Place).unwrap();
+    assert!(matches!(row.state, RowState::Local { .. }), "{row:?}");
+    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "a", 1)));
 }
