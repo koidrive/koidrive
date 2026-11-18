@@ -114,6 +114,7 @@ fn migrations_apply_from_empty() {
             "guard_remote_dismissed",
             "kept_entries",
             "kept_folders",
+            "kept_nodes",
             "kept_originals",
             "link",
             "local_changes",
@@ -1385,19 +1386,20 @@ fn engine_state() -> EngineState {
                     "e".into(),
                     KeptEntries {
                         names: [".env".into(), "node_modules".into()].into(),
+                        moved: [".env.local".into()].into(),
                         listed: true,
-                        nodes: [("n1".into(), ".env".into())].into(),
                     },
                 ),
                 (
                     "f".into(),
                     KeptEntries {
                         names: [".env".into()].into(),
+                        moved: Default::default(),
                         listed: false,
-                        nodes: Default::default(),
                     },
                 ),
             ]),
+            kept_nodes: nodes(["n1"]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -1638,7 +1640,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 47] = [
+const ENGINE_TABLES: [&str; 48] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1681,6 +1683,7 @@ const ENGINE_TABLES: [&str; 47] = [
     "removed_here",
     "kept_folders",
     "kept_entries",
+    "kept_nodes",
     "unsent_marks",
     "pending_finishes",
     "lost_positions",
@@ -4831,8 +4834,10 @@ fn a_store_from_before_kept_folders_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.kept_folders.clear();
     before.trees.kept_entries.clear();
+    before.trees.kept_nodes.clear();
     assert!(!after.trees.kept_folders.is_empty());
     assert!(!after.trees.kept_entries.is_empty());
+    assert!(!after.trees.kept_nodes.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

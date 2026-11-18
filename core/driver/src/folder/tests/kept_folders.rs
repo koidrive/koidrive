@@ -1039,3 +1039,185 @@ fn a_kept_entry_moved_out_of_its_folder_stays_out_of_sync_after_the_folder_is_de
         assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from(".env")], "{deleted_by}");
     }
 }
+
+#[test]
+fn a_kept_folder_deleted_again_after_a_takeover_without_rules_takes_the_next_folder_made_at_its_place() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    for round in ["cloned again", "cloned a third time"] {
+        fs::create_dir(site_a.root.join("app")).unwrap();
+        a.create(&mut remote, &site_a.root.join("app/README.md"), round.as_bytes());
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+        assert_eq!(fs::read(site.root.join("app/README.md")).unwrap(), round.as_bytes());
+        assert!(site.root.join("app/.env").exists(), "{round}: {:?}", b.folder.view().problem);
+        assert!(!remote.tree().contains_key("app/.env"), "{round}: {:?}", remote.tree());
+        if round == "cloned again" {
+            fs::remove_dir_all(site_a.root.join("app")).unwrap();
+            a.scan_until(|a| !a.work.is_empty());
+            a.run(&mut remote);
+            for _ in 0..3 {
+                b.pull(&remote);
+                b.run(&mut remote);
+                b.settle();
+            }
+            assert!(site.root.join("app/.env").exists(), "{:?}", b.folder.view().problem);
+            assert!(nothing_parked(&site), "{:?}", files(&site.root));
+        }
+    }
+    assert_eq!(b.folder.view().problem, None);
+    assert!(nothing_parked(&site), "{:?}", files(&site.root));
+}
+
+#[test]
+fn a_kept_entry_moved_into_a_folder_another_device_deletes_and_makes_again_stays_out_of_sync() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/notes.md"), b"notes");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+
+    fs::rename(site.root.join("app/.env"), site.root.join("other/.env")).unwrap();
+    for _ in 0..2 {
+        b.settle();
+        b.run(&mut remote);
+    }
+    fs::remove_dir_all(site_a.root.join("other")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert!(site.root.join("other/.env").exists(), "{:?}", b.folder.view().problem);
+
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/notes.md"), b"made again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(fs::read(site.root.join("other/notes.md")).unwrap(), b"made again");
+    fs::write(site.root.join("other/.env"), b"SECRET=after the takeover").unwrap();
+    for _ in 0..2 {
+        b.settle();
+        b.run(&mut remote);
+    }
+    assert_eq!(fs::read(site.root.join("other/.env")).unwrap(), b"SECRET=after the takeover");
+    assert!(nothing_parked(&site), "{:?}", files(&site.root));
+    assert!(!remote.tree().contains_key("other/.env"), "{:?}", remote.tree());
+    assert_eq!(b.folder.view().problem, None);
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("other/.env")]);
+}
+
+fn nothing_parked(site: &Site) -> bool {
+    fs::read_dir(site.root.join(".koidrive/parked")).map_or(true, |mut entries| entries.next().is_none())
+}
+
+fn taken_over_with_rules(rules: &[u8]) -> (Remote, Site, Device, Site, Device) {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), rules);
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(fs::read(site.root.join("app/.koiignore")).unwrap(), rules);
+    assert!(!remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    (remote, site_a, a, site, b)
+}
+
+fn settled(b: &mut Device, remote: &mut Remote) {
+    for _ in 0..3 {
+        b.settle();
+        b.run(remote);
+    }
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_edits_the_rules_that_left_it_out_to_let_it_in() {
+    let (mut remote, _, _, site, mut b) = taken_over_with_rules(b".env\n");
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/.env")]);
+
+    fs::write(site.root.join("app/.koiignore"), b".env\n*.log\n").unwrap();
+    settled(&mut b, &mut remote);
+    assert!(!remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/.env")]);
+
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    settled(&mut b, &mut remote);
+    assert!(remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    assert!(b.folder.view().kept_entries.is_empty(), "{:?}", b.folder.view().kept_entries);
+}
+
+#[test]
+fn a_kept_entry_stays_out_of_sync_when_the_rules_change_without_the_person() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    fs::write(site_a.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(fs::read(site.root.join("app/.koiignore")).unwrap(), b"*.log\n");
+    assert!(!remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+
+    drop(b);
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    assert!(!remote.tree().contains_key("app/.env"), "{:?}", remote.tree());
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/.env")]);
+}
+
+#[test]
+fn another_devices_file_at_a_kept_entrys_name_is_reported_and_the_kept_entry_stays_here() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let kept = fs::read_to_string(site.root.join("app/.env")).unwrap();
+
+    a.create(&mut remote, &site_a.root.join("app/.env"), b"SHARED=from a");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let problem = b.folder.view().problem.unwrap_or_default();
+    assert!(problem.contains("\"app/.env\" (its name here is taken"), "{problem}");
+    assert_eq!(fs::read_to_string(site.root.join("app/.env")).unwrap(), kept);
+    assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from("app/.env")]);
+    assert!(nothing_parked(&site), "{:?}", files(&site.root));
+    for _ in 0..3 {
+        a.pull(&remote);
+        a.run(&mut remote);
+        a.settle();
+    }
+    assert_eq!(fs::read_to_string(site_a.root.join("app/.env")).unwrap(), "SHARED=from a");
+    let on_a = files(&site_a.root);
+    assert!(on_a.iter().all(|(_, content)| *content != kept), "{on_a:?}");
+}
+

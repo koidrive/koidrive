@@ -309,6 +309,11 @@ impl Tx<'_> {
                 .map_err(|error| invalid(format!("kept entries: {error}")))?;
             state.trees.kept_entries.insert(row.get(0)?, kept);
         }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_nodes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.kept_nodes.insert(row.get(0)?);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
@@ -507,6 +512,7 @@ impl Tx<'_> {
             "unsent_creates",
             "kept_folders",
             "kept_entries",
+            "kept_nodes",
             "unseen_changes",
             "replaced_versions",
             "content_provenance",
@@ -579,6 +585,7 @@ impl Tx<'_> {
             unsent_creates,
             kept_folders,
             kept_entries,
+            kept_nodes,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -801,6 +808,11 @@ impl Tx<'_> {
                 }
             }
         }
+        self.write_set(
+            kept_nodes,
+            "DELETE FROM kept_nodes WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO kept_nodes (node_id) VALUES (?1)",
+        )?;
         self.write_set(
             unseen_changes,
             "DELETE FROM unseen_changes WHERE node_id = ?1",

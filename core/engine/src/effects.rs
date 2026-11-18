@@ -668,7 +668,8 @@ impl Effects {
 
     /// Whether the effect in flight removes a folder that R holds trashed and this device syncs no entry of `held`,
     /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
-    /// file or folder, and an entry of no kind, such as a symlink, is never synced. [`Effects::kept`] then keeps it.
+    /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
+    /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
     pub fn keeps(&self, trees: &Trees, effect_id: &str, held: &[(&str, Option<Kind>)]) -> bool {
         let Some(record) = self.flight(effect_id) else {
             return false;
@@ -682,6 +683,7 @@ impl Effects {
                 let mut entry = folder.clone();
                 entry.push(name);
                 kind.is_none_or(|kind| trees.ignores(&entry, kind))
+                    || (trees.local_holders(&record.node, name)).any(|id| trees.ignored(id))
             })
     }
 
@@ -1165,8 +1167,9 @@ impl<'a> View<'a> {
                 _ => &[],
             };
             return self.trees.local_children(&record.node).all(|child| {
-                (self.trees.local().get(child))
-                    .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+                self.trees.excluded(child)
+                    || (self.trees.local().get(child))
+                        .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
             });
         };
         let kept = match &record.effect {
@@ -1266,7 +1269,8 @@ impl<'a> View<'a> {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
-        if children.iter().any(|child| !self.trees.carried(child)) {
+        if (children.iter()).any(|child| !self.trees.carried(child) && !self.trees.excluded(child))
+        {
             return Step::Blocked(None);
         }
         let Some(at) = self.location(id) else {
@@ -1277,6 +1281,7 @@ impl<'a> View<'a> {
                 at,
                 identity: local.identity,
                 along: match (children.iter())
+                    .filter(|child| self.trees.carried(child))
                     .map(|child| {
                         let file = self.trees.local().get(child)?;
                         self.displaced(self.location(child)?, file)

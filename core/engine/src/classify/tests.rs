@@ -992,3 +992,94 @@ fn holders_take_no_more_room_than_a_set() {
         std::mem::size_of::<BTreeSet<NodeId>>()
     );
 }
+
+fn kept_local(parent: &str, name: &str, kind: Kind, ino: u128) -> LocalNode {
+    LocalNode {
+        shape: Shape {
+            parent: parent.into(),
+            name: name.into(),
+            kind,
+            content: None,
+        },
+        identity: FileIdentity {
+            ino,
+            birth_ns: Some(0),
+        },
+        parked: false,
+        left_out_when_placed: false,
+        content_from_server: false,
+    }
+}
+
+fn with_a_kept_env() -> Trees {
+    let mut trees = Trees::new("root");
+    trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));
+    trees.kept_entries.insert(
+        "app".into(),
+        KeptEntries {
+            names: [".env".into()].into(),
+            moved: BTreeSet::new(),
+            listed: true,
+        },
+    );
+    trees.set_local("env".into(), kept_local("app", ".env", Kind::File, 2));
+    trees
+}
+
+#[test]
+fn a_node_at_a_reserved_name_stays_kept_under_a_new_id_and_keeps_the_name_reserved() {
+    let mut trees = with_a_kept_env();
+    assert!(trees.kept_nodes.contains("env"));
+
+    trees.rekey_local("env", "env-2", kept_local("app", ".env", Kind::File, 2));
+
+    assert!(trees.ignored("env-2"));
+    assert_eq!(*trees.kept_nodes, BTreeSet::from(["env-2".to_owned()]));
+    assert!(
+        trees
+            .kept_entries
+            .get("app")
+            .unwrap()
+            .names
+            .contains(".env")
+    );
+}
+
+#[test]
+fn a_kept_node_stays_kept_wherever_it_moves_until_l_drops_it() {
+    let mut trees = with_a_kept_env();
+    trees.set_local("other".into(), kept_local("root", "other", Kind::Dir, 3));
+
+    trees.set_local(
+        "env".into(),
+        kept_local("other", ".env.local", Kind::File, 2),
+    );
+    trees.remove_local("app");
+
+    assert!(trees.ignored("env"));
+    assert_eq!(trees.kept_entry_paths(), [vec!["other", ".env.local"]]);
+    trees.remove_local("env");
+    assert!(trees.kept_nodes.is_empty());
+    assert!(trees.kept_entry_paths().is_empty());
+}
+
+#[test]
+fn a_synced_node_moved_onto_a_reserved_name_stays_synced() {
+    let mut trees = with_a_kept_env();
+    trees.set_remote("notes".into(), remote(dir("root", "notes")));
+    trees.set_local("notes".into(), kept_local("root", "notes", Kind::Dir, 4));
+
+    trees.remove_local("env");
+    trees.kept_entries.insert(
+        "app".into(),
+        KeptEntries {
+            names: ["notes".into()].into(),
+            moved: BTreeSet::new(),
+            listed: true,
+        },
+    );
+    trees.set_local("notes".into(), kept_local("app", "notes", Kind::Dir, 4));
+
+    assert!(!trees.ignored("notes"));
+    assert!(!trees.kept_nodes.contains("notes"));
+}
