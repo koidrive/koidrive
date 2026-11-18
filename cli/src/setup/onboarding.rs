@@ -22,7 +22,8 @@ use crate::output::Tone;
 use crate::pairing::Invitation;
 use crate::printable;
 use crate::report::{
-    AccountData, Choice, ChoicesData, Done, FolderData, Outcome, SetAsideData, SetupData,
+    AccountData, Choice, ChoicesData, Done, FolderData, Outcome, PairedData, SetAsideData,
+    SetupData,
 };
 use crate::terminal::{Progress, Terminal, read_line};
 
@@ -787,18 +788,34 @@ async fn scripted(
             ));
         }
     };
-    if local == Local::Missing {
-        create(&folder)?;
-    }
-    let directory = directory
-        .map(Ok)
-        .unwrap_or_else(|| directory_identity(&folder))?;
-    let approval = LinkApproval {
-        directory,
-        accept_existing_files: script.accept_existing_files,
+    let linking = async {
+        if local == Local::Missing {
+            create(&folder)?;
+        }
+        let directory = directory
+            .map(Ok)
+            .unwrap_or_else(|| directory_identity(&folder))?;
+        let approval = LinkApproval {
+            directory,
+            accept_existing_files: script.accept_existing_files,
+        };
+        crate::link(paths, folder.clone(), space.to_owned(), Some(approval)).await
     };
-    let (status, outcome) =
-        crate::link(paths, folder.clone(), space.to_owned(), Some(approval)).await?;
+    let (status, outcome) = match linking.await {
+        Ok(linked) => linked,
+        Err(mut error) if error.partial.is_none() && set_aside != SetAsideData::default() => {
+            let recovered = set_aside.lines();
+            let data = PairedData {
+                account: AccountData::of(&account),
+                set_aside,
+            };
+            error.partial = Some(Box::new(
+                Done::ok(data, recovered.clone()).human(recovered, ""),
+            ));
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
     let recovered = set_aside.lines();
     let tone = match set_aside.kept.is_empty() {
         true => Tone::Neutral,

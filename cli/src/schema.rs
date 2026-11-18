@@ -31,6 +31,7 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "setup" => &[
             of::<WithApp<WithService<ChoicesData>>>,
             of::<WithApp<WithService<SetupData>>>,
+            of::<PairedData>,
             of::<WithApp<WithService<Empty>>>,
         ],
         "join" | "server claim" => &[of::<WithService<PairedData>>],
