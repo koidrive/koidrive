@@ -545,6 +545,7 @@ impl SpaceDo {
                 stored.device_id == session.device_id && stored.request.device_seq == device_seq
             })
             .map(|(commit_id, stored)| (commit_id.clone(), stored.result.committed_at_ms))
+            .filter(|(_, committed_at_ms)| *committed_at_ms != 0)
             .unwrap_or_default();
         Welcome {
             proto: 0,
