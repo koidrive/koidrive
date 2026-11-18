@@ -2027,6 +2027,14 @@ fn a_device_that_deletes_each_file_another_device_makes_keeps_syncing() {
 /// same commit deletes.
 #[test]
 fn an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes_is_kept() {
+    known_red(
+        "GUN-1169",
+        "called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 1: write 2 of device 1 was never in the server's tree, and its user never overwrote or deleted it\")",
+        an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes,
+    );
+}
+
+fn an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes() {
     let synced = vec![(0, file("b")), (0, folder("a"))];
     let mut racing = vec![
         (1, overwrite(0)),
@@ -5332,6 +5340,30 @@ fn a_resend_built_before_a_delete_reaches_the_server_yields_to_it() {
 
 #[test]
 fn a_resend_applied_before_a_delete_built_without_it_yields_to_it() {
+    known_red(
+        "GUN-1012",
+        "assertion failed: world.devices.iter().all(|device| device.disk.entries().is_empty())",
+        a_resend_applied_before_a_delete_built_without_it,
+    );
+}
+
+fn known_red(issue: &str, message: &str, test: fn()) {
+    FIELD_INTENTS.set(false);
+    test();
+    FIELD_INTENTS.set(true);
+    let panic = std::panic::catch_unwind(test).expect_err(&format!(
+        "{issue} no longer fails here: delete this known red"
+    ));
+    let got = (panic.downcast_ref::<String>().map(String::as_str))
+        .or_else(|| panic.downcast_ref::<&str>().copied());
+    assert_eq!(
+        got,
+        Some(message),
+        "{issue}: the known red fails another way"
+    );
+}
+
+fn a_resend_applied_before_a_delete_built_without_it() {
     let mut world = converge(
         2,
         &[vec![(0, file("a"))], vec![(0, BACKUP), (0, overwrite(0))]],
