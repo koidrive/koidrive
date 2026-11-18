@@ -118,6 +118,7 @@ export function getNode(sql: Sql, nodeId: string): NodeRow | undefined {
 export interface Tombstone {
   parent_id: string | null;
   name: string;
+  held: string[];
   knows: Set<string>;
 }
 
@@ -129,6 +130,7 @@ export function tombstoneOf(sql: Sql, nodeId: string): Tombstone | undefined {
   return {
     parent_id: row.parent_id === null ? null : String(row.parent_id),
     name: String(row.name),
+    held,
     knows: new Set([...Object.values(intents).map((intent) => intent.id), ...held]),
   };
 }
