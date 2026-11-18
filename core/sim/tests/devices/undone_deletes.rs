@@ -407,3 +407,41 @@ fn a_move_another_device_made_to_a_folder_moved_into_the_deleted_folder_keeps_it
     )
     .unwrap();
 }
+
+#[test]
+fn another_devices_change_that_never_reaches_the_server_leaves_the_delete_checked() {
+    let failure = checked(
+        2,
+        &[
+            vec![(0, file("a")), (0, BACKUP)],
+            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
+            vec![(1, rename(0, 0, "c.txt"))],
+            vec![
+                (0, delete(0)),
+                (1, overwrite(0)),
+                (1, Step::Leave),
+                (0, Step::RestoreEarlier),
+                (0, RESTORE),
+            ],
+        ],
+    )
+    .err();
+    assert!(failure.is_some_and(|f| {
+        f.to_string()
+            .contains("the delete never reached the server")
+    }));
+}
+
+#[test]
+fn an_edit_of_the_file_that_another_device_never_sends_leaves_the_delete_checked() {
+    let mut renamed = vec![(1, rename(0, 0, "ss"))];
+    renamed.extend(commit(1));
+    renamed.push((0, delete(1)));
+    renamed.extend(commit(0));
+    renamed.extend([(1, overwrite(1)), (1, Step::Leave)]);
+    checked(
+        2,
+        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+    )
+    .unwrap();
+}
