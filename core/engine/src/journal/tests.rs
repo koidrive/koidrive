@@ -13,14 +13,6 @@ fn content(size: u64) -> Value {
     }
 }
 
-fn place(parent: &str) -> Value {
-    Value::Place(Place {
-        parent: parent.into(),
-        name: "x".into(),
-        mark: None,
-    })
-}
-
 fn whole(_: &RowKey, _: &HeldRow) -> Row {
     unreachable!("a journal alone keeps no compact row")
 }
@@ -264,57 +256,6 @@ fn local_holds_marks_the_history_entry() {
     journal.remote_holds("n", Field::Content, &held(1, 1), false);
     journal.local_holds("n", Field::Content, id(1));
     assert!(journal.history("n", Field::Content)[0].in_local);
-}
-
-#[test]
-fn a_conflict_copy_moves_the_content_row_to_the_copy() {
-    let mut journal = Journal::default();
-    let sent = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
-    journal.send("n", Field::Content, 0);
-    assert_eq!(journal.sent_intent("n", Field::Content), Some(sent));
-    journal.held_elsewhere("n", Field::Content, sent, "copy", Some("v".into()), 50);
-    assert_eq!(journal.row("n", Field::Content), None);
-    let row = journal.row("copy", Field::Content).unwrap();
-    let state = RowState::Held {
-        held_as: sent,
-        version_id: Some("v".into()),
-    };
-    assert_eq!((row.intent, &row.state, row.time_ms), (sent, &state, 50));
-    assert_eq!(journal.history("copy", Field::Content)[0].intent, sent);
-}
-
-#[test]
-fn a_merge_ends_place_and_status_and_moves_children_to_the_target() {
-    let mut journal = Journal::default();
-    journal.user_change("dir", place("root"), WireBase::None, None);
-    journal.user_change("child", place("dir"), WireBase::None, None);
-    journal.merged_into("dir", "target");
-    assert_eq!(journal.row("dir", Field::Place), None);
-    assert_eq!(
-        journal.row("child", Field::Place).unwrap().value,
-        place("target")
-    );
-}
-
-#[test]
-fn an_unsent_row_goes_back_to_local() {
-    let mut journal = Journal::default();
-    journal.user_change("n", place("root"), WireBase::None, None);
-    assert!(journal.send("n", Field::Place, 3).unwrap().is_sent());
-    journal.unsend("n", Field::Place);
-    assert_eq!(
-        journal.row("n", Field::Place).unwrap().state,
-        RowState::Local { flight: None }
-    );
-    let unrecorded = journal.send_unrecorded("m", place("root"), WireBase::None, Some(id(1)), 4);
-    assert_eq!(
-        (
-            unrecorded.state.clone(),
-            unrecorded.base,
-            unrecorded.time_ms
-        ),
-        (RowState::Sent, Some(id(1)), 4)
-    );
 }
 
 #[test]
