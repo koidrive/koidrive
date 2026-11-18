@@ -831,50 +831,110 @@ impl Snapshot {
         paths: impl IntoIterator<Item = PathBuf>,
         listed: &BTreeSet<PathBuf>,
         expected: Option<FileId>,
-        rules: Option<&mut Rules>,
+        mut rules: Option<&mut Rules>,
         stopped: &dyn Fn() -> bool,
         found: &dyn Fn(u64),
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
-        let mut scan = Scan {
-            new: BTreeMap::new(),
-            bindings: Vec::new(),
-            replaced: Vec::new(),
-            unreadable: Vec::new(),
-            left_out: BTreeMap::new(),
-            mounts: (self.entries.iter())
-                .filter(|(path, entry)| {
-                    entry.mount.is_some() || self.detached.get(*path) == Some(&Detached::Covered)
-                })
-                .map(|(path, entry)| (path.clone(), *entry))
-                .collect(),
-            detached: Vec::new(),
-            rules: rules.map(Pending::new),
-            cut,
-            stopped,
-            files: 0,
-            found,
-        };
-        let result = self.rescan_into(root, paths, listed, expected, &mut scan);
-        if result.is_err()
-            && let Some(rules) = scan.rules
-        {
-            rules.undo();
+        let mut paths: Vec<PathBuf> = paths.into_iter().collect();
+        let mut bound = None;
+        let mut widened = false;
+        loop {
+            let mut scan = Scan {
+                new: BTreeMap::new(),
+                bindings: Vec::new(),
+                replaced: Vec::new(),
+                unreadable: Vec::new(),
+                left_out: BTreeMap::new(),
+                mounts: (self.entries.iter())
+                    .filter(|(path, entry)| {
+                        entry.mount.is_some()
+                            || self.detached.get(*path) == Some(&Detached::Covered)
+                    })
+                    .map(|(path, entry)| (path.clone(), *entry))
+                    .collect(),
+                detached: Vec::new(),
+                rules: rules.as_deref_mut().map(Pending::new),
+                cut: &mut *cut,
+                stopped,
+                files: 0,
+                found,
+            };
+            let scanned =
+                (self.scan_scopes(root, &paths, listed, expected, &mut scan)).and_then(|stat| {
+                    match bound {
+                        Some((dev, id)) if !stat.is_at(dev, &id) => Err(Error::RootReplaced),
+                        _ => Ok(stat),
+                    }
+                });
+            let unscanned = match &scanned {
+                Ok(_) => self.known_elsewhere(&scan, &paths),
+                Err(_) => Vec::new(),
+            };
+            let whole = paths.iter().any(|path| path.as_os_str().is_empty());
+            if let Ok(stat) = &scanned
+                && !unscanned.is_empty()
+                && !whole
+            {
+                bound = Some((stat.dev, stat.id));
+                if let Some(rules) = scan.rules {
+                    rules.undo();
+                }
+                paths = if widened {
+                    vec![PathBuf::new()]
+                } else {
+                    [paths, unscanned].concat()
+                };
+                widened = true;
+                continue;
+            }
+            let result = scanned.and_then(|stat| self.publish(root, &stat, &mut scan));
+            if result.is_err()
+                && let Some(rules) = scan.rules
+            {
+                rules.undo();
+            }
+            return result;
         }
-        result
     }
 
-    /// Scans the given paths into `scan` and applies what it found to the
-    /// snapshot and to the rules of `scan`. Nothing after the last step that
-    /// can fail changes either.
-    fn rescan_into(
-        &mut self,
+    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<PathBuf> {
+        let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
+        for (path, now) in &scan.new {
+            if (self.entries.get(path))
+                .is_none_or(|before| (before.id, before.kind) != (now.id, now.kind))
+            {
+                arrived.entry((now.id, now.kind)).or_default().push(path);
+            }
+        }
+        if arrived.is_empty() {
+            return Vec::new();
+        }
+        let covered: HashSet<&Path> = (scan.replaced.iter().chain(scopes))
+            .map(PathBuf::as_path)
+            .collect();
+        (self.entries.iter())
+            .filter(|(known, entry)| {
+                (arrived.get(&(entry.id, entry.kind))).is_some_and(|at| {
+                    at.iter().any(|at| {
+                        volume_of(at, &scan.new, &self.entries)
+                            == volume_of(known, &self.entries, &self.entries)
+                    })
+                })
+            })
+            .filter(|(known, _)| !known.ancestors().any(|above| covered.contains(above)))
+            .map(|(known, _)| known.clone())
+            .collect()
+    }
+
+    fn scan_scopes(
+        &self,
         root: &Path,
-        paths: impl IntoIterator<Item = PathBuf>,
+        paths: &[PathBuf],
         listed: &BTreeSet<PathBuf>,
         expected: Option<FileId>,
         scan: &mut Scan<'_>,
-    ) -> Result<Rescan> {
+    ) -> Result<Stat> {
         let root_dir = open_root(root)?;
         let root_stat = stat_fd(root_dir.as_fd())?;
         if expected.is_some_and(|expected| root_stat.id != expected) {
@@ -883,7 +943,7 @@ impl Snapshot {
         (scan.cut)(Cut::RootOpened);
 
         let mut scopes = Vec::new();
-        for path in paths {
+        for path in paths.iter().cloned() {
             if path
                 .components()
                 .any(|c| !matches!(c, Component::Normal(_)))
@@ -952,7 +1012,10 @@ impl Snapshot {
                 scan.unless_denied(&parent, result)?;
             }
         }
+        Ok(root_stat)
+    }
 
+    fn publish(&mut self, root: &Path, root_stat: &Stat, scan: &mut Scan<'_>) -> Result<Rescan> {
         let again = open_root(root)?;
         if !stat_fd(again.as_fd())?.is_at(root_stat.dev, &root_stat.id) {
             return Err(Error::RootReplaced);

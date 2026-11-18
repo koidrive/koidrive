@@ -9,6 +9,171 @@ use super::*;
 
 const WAIT: Duration = Duration::from_secs(10);
 
+#[test]
+fn a_root_replaced_while_a_rescan_widens_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let replacement = dir.path().join("replacement");
+    for path in [&root, &replacement] {
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("a"), "a").unwrap();
+        fs::write(path.join("b"), "b").unwrap();
+    }
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let before = snapshot.clone();
+    for (from, to) in [("a", "tmp"), ("b", "a"), ("tmp", "b")] {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    let mut replaced = false;
+    let result = snapshot.rescan_with(&root, [PathBuf::from("a")], None, &mut |cut| {
+        if matches!(cut, Cut::RootOpened) && !replaced {
+            replaced = true;
+            fs::rename(&root, dir.path().join("previous")).unwrap();
+            fs::rename(&replacement, &root).unwrap();
+        }
+    });
+    assert!(matches!(result, Err(Error::RootReplaced)), "{result:?}");
+    assert_eq!(snapshot, before);
+}
+
+#[test]
+fn a_rotation_seen_from_one_path_takes_at_most_three_scans() {
+    const FILES: u64 = 64;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for i in 0..FILES {
+        fs::write(root.join(i.to_string()), i.to_string()).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut whole = snapshot.clone();
+    fs::rename(root.join("0"), root.join("tmp")).unwrap();
+    for i in 1..FILES {
+        fs::rename(root.join(i.to_string()), root.join((i - 1).to_string())).unwrap();
+    }
+    fs::rename(root.join("tmp"), root.join((FILES - 1).to_string())).unwrap();
+    let found = std::cell::Cell::new(0);
+    let mut scans = 0;
+    let rescan = snapshot
+        .rescan_under(
+            root,
+            [PathBuf::from("0")],
+            &BTreeSet::new(),
+            None,
+            None,
+            &|| false,
+            &|_| found.set(found.get() + 1),
+            &mut |cut| scans += u64::from(matches!(cut, Cut::RootOpened)),
+        )
+        .unwrap();
+    assert_eq!(
+        rescan.changes,
+        whole.rescan(root, [PathBuf::new()]).unwrap().changes
+    );
+    assert_eq!(rescan.changes.len() as u64, FILES);
+    assert_eq!(snapshot, whole);
+    assert!(scans <= 3, "{scans} scans");
+    assert!(found.get() <= FILES + 3, "{} files found", found.get());
+}
+
+#[test]
+fn a_file_moved_over_another_from_a_folder_that_turns_unreadable_reads_as_modified() {
+    moved_from_a_folder_that_turns_unreadable(
+        "a_file_moved_over_another_from_a_folder_that_turns_unreadable_reads_as_modified",
+        "doc",
+        Change::Modified {
+            path: PathBuf::from("doc"),
+        },
+    );
+}
+
+#[test]
+fn a_file_moved_to_a_new_name_from_a_folder_that_turns_unreadable_reads_as_created() {
+    moved_from_a_folder_that_turns_unreadable(
+        "a_file_moved_to_a_new_name_from_a_folder_that_turns_unreadable_reads_as_created",
+        "moved",
+        Change::Created {
+            path: PathBuf::from("moved"),
+            kind: EntryKind::File,
+        },
+    );
+}
+
+fn moved_from_a_folder_that_turns_unreadable(test: &str, to: &str, moved: Change) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let locked = root.join("d");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("f"), "report v2").unwrap();
+    fs::write(root.join("doc"), "report v1").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(locked.join("f"), root.join(to)).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let probe = fs::read_dir(&locked).map(|_| ());
+    if !blocks_reads(test, probe) {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let first = snapshot.rescan(root, [PathBuf::from(to)]);
+    let whole = snapshot.rescan(root, [PathBuf::new()]);
+    fs::write(root.join(to), "report v3, edited").unwrap();
+    let edited = snapshot.rescan(root, [PathBuf::from(to)]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    let first = first.unwrap();
+    assert_eq!(first.changes, [moved]);
+    assert_eq!(first.unsettled, Vec::<PathBuf>::new());
+    let whole = whole.unwrap();
+    assert_eq!(whole.changes, []);
+    assert_eq!(whole.unsettled, Vec::<PathBuf>::new());
+    assert_eq!(
+        edited.unwrap().changes,
+        [Change::Modified {
+            path: PathBuf::from(to),
+        }]
+    );
+}
+
+#[test]
+fn a_folder_swapped_for_one_it_cannot_list_keeps_both_identities() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for name in ["x", "y"] {
+        fs::create_dir(root.join(name)).unwrap();
+        fs::write(root.join(name).join("note"), name).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let before = snapshot.clone();
+    for (from, to) in [("x", "tmp"), ("y", "x"), ("tmp", "y")] {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o000)).unwrap();
+    let probe = fs::read_dir(root.join("x")).map(|_| ());
+    if !blocks_reads(
+        "a_folder_swapped_for_one_it_cannot_list_keeps_both_identities",
+        probe,
+    ) {
+        fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let rescan = snapshot.rescan(root, [PathBuf::from("y")]);
+    fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o700)).unwrap();
+    let rescan = rescan.unwrap();
+    assert_eq!(rescan.unreadable, [PathBuf::from("x")]);
+    assert_ne!(
+        snapshot.entries[Path::new("x")].id,
+        snapshot.entries[Path::new("y")].id
+    );
+    let mut whole = before;
+    let expected = whole.rescan(root, [PathBuf::new()]).unwrap().changes;
+    let mut actual = rescan.changes;
+    actual.extend(snapshot.rescan(root, rescan.unsettled).unwrap().changes);
+    assert_eq!(actual, expected);
+    assert_eq!(snapshot, whole);
+}
+
 fn blocks_reads<T: std::fmt::Debug>(test: &str, probe: std::io::Result<T>) -> bool {
     use std::io::Write;
 
