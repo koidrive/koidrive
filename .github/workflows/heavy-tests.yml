@@ -1,87 +1,37 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: Heavy tests
+name: Test value
 
-run-name: Heavy tests of ${{ inputs.crate }}${{ inputs.test && format(' --test {0}', inputs.test) || '' }}${{ inputs.filter && format(' {0}', inputs.filter) || '' }} on ${{ inputs.ref || github.ref_name }} (${{ inputs.os }}, ${{ inputs.repeat || '1' }} runs)
+run-name: Test value of the ${{ inputs.sample }} sample on ${{ inputs.ref || github.ref_name }} (${{ inputs.shards }} shards)
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or commit to test (empty tests the ref the run starts from)
+        description: Branch, tag or commit to measure (empty measures the ref the run starts from)
         type: string
         default: ''
-      crate:
-        description: Workspace package to test, such as koidrive-sim
-        type: string
+      sample:
+        description: Tests and the code they mutate, as defined in scripts/test-value.py
+        type: choice
+        options: [driver, guard, commit]
         required: true
-      test:
-        description: Integration test target, as for cargo test --test (empty runs every target of the package)
+      shards:
+        description: Number of mutant shards, 1 to 40; at most 10 run at once
         type: string
-        default: ''
-      filter:
-        description: Test name filter, as for cargo test (empty runs every test of the selected targets)
+        default: '8'
+      slow:
+        description: Baseline seconds from which a test runs only on the mutants the faster tests miss
         type: string
-        default: ''
-      cases:
-        description: Cases per opted-in stress property; deadline-bound properties keep their own budgets (empty keeps each property's own count)
-        type: string
-        default: ''
-      repeat:
-        description: Number of times to run the selection on each OS, 1 to 100
-        type: string
-        default: '1'
-      parallel:
-        description: Repetitions running at once on the same host, 1 to 8
-        type: string
-        default: '1'
-      mode:
-        description: Cargo tests or fresh local Worker integration launchers
-        type: choice
-        options: [cargo, worker]
-        default: cargo
-      seed:
-        description: PROPTEST_RNG_SEED of the first run; run k uses seed + k - 1 (empty derives it from the run ID)
-        type: string
-        default: ''
-      features:
-        description: Cargo features, comma-separated, such as koidrive-engine/serde
-        type: string
-        default: ''
-      ignored:
-        description: Also run the tests marked #[ignore]
-        type: boolean
-        default: false
-      release:
-        description: Build the tests with the release profile
-        type: boolean
-        default: false
-      env:
-        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
-        type: string
-        default: ''
-      os:
-        description: Operating systems to run on
-        type: choice
-        options: [both, ubuntu, macos]
-        default: both
+        default: '10'
 
 permissions: {}
 
 env:
-  CARGO_TERM_COLOR: always
-  CRATE: ${{ inputs.crate }}
-  TEST: ${{ inputs.test }}
-  FILTER: ${{ inputs.filter }}
-  CASES: ${{ inputs.cases }}
-  REPEAT: ${{ inputs.repeat || '1' }}
-  SEED: ${{ inputs.seed }}
-  FEATURES: ${{ inputs.features }}
-  IGNORED: ${{ inputs.ignored }}
-  PARALLEL: ${{ inputs.parallel || '1' }}
-  MODE: ${{ inputs.mode || 'cargo' }}
-  RELEASE: ${{ inputs.release }}
-  EXTRA_ENV: ${{ inputs.env }}
+  CARGO_TERM_COLOR: never
+  SAMPLE: ${{ inputs.sample }}
+  SLOW: ${{ inputs.slow || '10' }}
+  OUT: ${{ github.workspace }}/.test-value
 
 defaults:
   run:
@@ -91,236 +41,128 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 90
     permissions:
       contents: read
     outputs:
-      sha: ${{ steps.plan.outputs.sha }}
-      seed: ${{ steps.plan.outputs.seed }}
+      sha: ${{ steps.pin.outputs.sha }}
+      shards: ${{ steps.pin.outputs.shards }}
     steps:
       - name: Check the inputs
         env:
           REF: ${{ inputs.ref }}
+          SHARDS: ${{ inputs.shards }}
         run: |
           errors=()
           [[ "$REF" != -* ]] || errors+=("ref must be a branch, tag or commit, not an option: '$REF'.")
-          [[ "$CRATE" =~ ^[A-Za-z0-9_-]+$ ]] || errors+=("crate must be a package name such as koidrive-sim, got '$CRATE'.")
-          [[ "$TEST" =~ ^[A-Za-z0-9_-]*$ ]] || errors+=("test must be an integration test target name such as engine_sync, got '$TEST'.")
-          [[ "$FILTER" != -* ]] || errors+=("filter must be a test name, not an option: '$FILTER' starts with '-'.")
-          [[ "$CASES" =~ ^[0-9]{0,7}$ ]] || errors+=("cases must be empty or a whole number up to 9999999, got '$CASES'.")
-          [[ "$REPEAT" =~ ^([1-9][0-9]?|100)$ ]] || errors+=("repeat must be a whole number from 1 to 100, got '$REPEAT'.")
-          [[ "$PARALLEL" =~ ^[1-8]$ ]] || errors+=("parallel must be a whole number from 1 to 8, got '$PARALLEL'.")
-          [[ "$MODE" == cargo || "$MODE" == worker ]] || errors+=("mode must be cargo or worker.")
-          if [ "$MODE" = worker ]; then
-            case "$CRATE" in
-              koidrive-net) worker_test=server ;;
-              koidrive-driver) worker_test=sync ;;
-              *) worker_test=; errors+=("worker mode supports koidrive-net and koidrive-driver.") ;;
-            esac
-            [[ -z "$TEST" || "$TEST" == "$worker_test" ]] || errors+=("worker mode runs --test $worker_test, not '$TEST'.")
-          fi
-          [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
-          [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
-          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK)$'
-          reserved='^(KOIDRIVE_BATTERY_CASES|KOIDRIVE_PROPTEST_DETERMINISTIC)$'
-          [[ "$EXTRA_ENV" != *$'\n'* ]] || errors+=("env must be one line of NAME=value pairs.")
-          [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1.")
-          read -ra pairs <<< "$EXTRA_ENV"
-          for pair in ${pairs[@]+"${pairs[@]}"}; do
-            if [[ ! "$pair" =~ ^([A-Z_][A-Z0-9_]*)=[^[:space:]]*$ ]]; then
-              errors+=("env takes NAME=value pairs, not '$pair'.")
-            elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
-              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS or RUST_MIN_STACK, and the cases input sets the case budget.")
-            fi
-          done
+          [[ "$SHARDS" =~ ^([1-9]|[1-3][0-9]|40)$ ]] || errors+=("shards must be a whole number from 1 to 40, got '$SHARDS'.")
+          [[ "$SLOW" =~ ^[0-9]{1,4}(\.[0-9]+)?$ ]] || errors+=("slow must be a number of seconds, got '$SLOW'.")
           for error in "${errors[@]}"; do echo "::error::$error"; done
           [ "${#errors[@]}" -eq 0 ]
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - name: Pin the commit and the seeds
-        id: plan
+      - name: Pin the commit and the shards
+        id: pin
+        env:
+          SHARDS: ${{ inputs.shards }}
         run: |
-          sha=$(git rev-parse HEAD)
-          seed=${SEED:-$((GITHUB_RUN_ID * 1000))}
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "seed=$seed" >> "$GITHUB_OUTPUT"
-          echo "Commit $sha, $REPEAT runs on each OS, run k uses PROPTEST_RNG_SEED=$seed + k - 1."
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "shards=$(seq 0 $((SHARDS - 1)) | jq -cs .)" >> "$GITHUB_OUTPUT"
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-value-${{ inputs.sample }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.152
+          fallback: none
+      - name: List the mutants
+        run: |
+          mkdir -p "$OUT"
+          python3 scripts/test-value.py plan --sample "$SAMPLE" --out "$OUT/mutants.json"
+      - name: Run the tests three times without mutations
+        run: python3 scripts/test-value.py baseline --sample "$SAMPLE" --out "$OUT/baseline.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-value-plan
+          path: ${{ env.OUT }}
+          retention-days: 30
+          if-no-files-found: ignore
 
-  test:
-    name: test (${{ matrix.os }})
+  mutants:
+    name: mutants (${{ matrix.shard }})
     needs: plan
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
-        os: ${{ fromJSON(inputs.os == 'ubuntu' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-15"]' || '["ubuntu-latest","macos-15"]') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 340
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
     permissions:
       contents: read
     env:
-      SHA: ${{ needs.plan.outputs.sha }}
-      SEED_BASE: ${{ needs.plan.outputs.seed }}
+      SHARD: ${{ matrix.shard }}/${{ inputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: env.MODE == 'worker' || env.PARALLEL != '1'
-        with:
-          ref: ${{ github.sha }}
-          path: .heavy-harness
-          sparse-checkout: scripts
-          persist-credentials: false
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: heavy-tests
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
-        if: env.MODE == 'worker'
+          shared-key: test-value-${{ inputs.sample }}
+          save-if: false
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
         with:
-          package_json_file: server/package.json
-          dest: ${{ runner.tool_cache }}/setup-pnpm
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        if: env.MODE == 'worker'
+          tool: cargo-nextest@0.9.152
+          fallback: none
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
-      - name: Install the Worker dependencies
-        if: env.MODE == 'worker'
-        working-directory: server
-        run: pnpm install --frozen-lockfile && pnpm build:web
-      - name: Build the tests
+          name: test-value-plan
+          path: ${{ env.OUT }}
+      - name: Run every mutant of the shard against the sample's tests
         run: |
-          if ! cargo metadata --format-version 1 --locked --no-deps | jq -e --arg crate "$CRATE" 'any(.packages[]; .name == $crate)' > /dev/null; then
-            echo "::error::$CRATE is not a package of the workspace at $SHA."
-            exit 1
-          fi
-          if [ "$MODE" = worker ]; then
-            case "$CRATE" in
-              koidrive-net) TEST=server ;;
-              koidrive-driver) TEST=sync ;;
-            esac
-          fi
-          profile=()
-          [ "$RELEASE" != "true" ] || profile=(--release)
-          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
-      - name: Run parallel or Worker repetitions
-        if: env.MODE == 'worker' || env.PARALLEL != '1'
-        run: |
-          python3 .heavy-harness/scripts/stress-test-servers.py \
-            --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/heavy-tests" \
-            --mode "$MODE" --crate "$CRATE" --test "$TEST" --filter "$FILTER" \
-            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" \
-            --repeat "$REPEAT" --parallel "$PARALLEL" --seed "$SEED_BASE"
-      - name: Run the tests
-        if: env.MODE == 'cargo' && env.PARALLEL == '1'
-        run: |
-          read -ra pairs <<< "$EXTRA_ENV"
-          for pair in ${pairs[@]+"${pairs[@]}"}; do
-            export "${pair?}"
-          done
-          out="$RUNNER_TEMP/heavy-tests"
-          mkdir -p "$out/logs" "$out/regressions"
-          cargo_args=(--locked --no-fail-fast -p "$CRATE")
-          [ "$RELEASE" != "true" ] || cargo_args+=(--release)
-          [ -z "$FEATURES" ] || cargo_args+=(--features "$FEATURES")
-          [ -z "$TEST" ] || cargo_args+=(--test "$TEST")
-          test_args=()
-          [ -z "$FILTER" ] || test_args+=("$FILTER")
-          [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
-          unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
-          [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
-          repro_args=$(printf ' %q' "${cargo_args[@]}")
-          repro_env=""
-          [ "${#pairs[@]}" -eq 0 ] || repro_env=$(printf ' %q' "${pairs[@]}")
-          [ "${#test_args[@]}" -eq 0 ] || repro_args+=" --$(printf ' %q' "${test_args[@]}")"
-          repro="git checkout $SHA && env -u PROPTEST_CASES -u KOIDRIVE_BATTERY_CASES PROPTEST_RNG_SEED=<seed>${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES}$repro_env cargo test$repro_args"
-          {
-            echo "### $RUNNER_OS: cargo test$repro_args"
-            echo
-            echo "Commit $SHA, stress budget KOIDRIVE_BATTERY_CASES=${CASES:-unset, so each property runs its own count}. Deadline-bound properties keep their own budgets; unit tests run once per repetition."
-            echo
-            echo "| Run | Seed | Result | Passed | Failed | Ignored | Minutes |"
-            echo "|---|---|---|---|---|---|---|"
-          } >> "$out/summary.md"
-          green=0 red=0 broken=0 total_passed=0 total_failed=0
-          : > "$out/failed-tests.txt"
-          for run in $(seq 1 "$REPEAT"); do
-            seed=$((10#$SEED_BASE + run - 1))
-            log="$out/logs/run-$run.log"
-            echo "::group::Run $run of $REPEAT, PROPTEST_RNG_SEED=$seed"
-            started=$SECONDS
-            set +e
-            PROPTEST_RNG_SEED=$seed cargo test "${cargo_args[@]}" -- ${test_args[@]+"${test_args[@]}"} 2>&1 | tee "$log"
-            code=${PIPESTATUS[0]}
-            set -e
-            echo "::endgroup::"
-            minutes=$(( (SECONDS - started + 30) / 60 ))
-            plain=$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log")
-            read -r passed failed ignored < <(sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored.*/\1 \2 \3/p' <<< "$plain" | awk '{ p += $1; f += $2; i += $3 } END { print p + 0, f + 0, i + 0 }')
-            binaries=$(grep -cE '^ *(Running |Doc-tests )' <<< "$plain" || true)
-            results=$(grep -cE '^test result: ' <<< "$plain" || true)
-            sed -nE 's/^test (.+) \.\.\. FAILED$/\1/p' <<< "$plain" >> "$out/failed-tests.txt"
-            git status --porcelain --untracked-files=all -- '*.proptest-regressions' '*/proptest-regressions/*.txt' '*.cases/*.txt' | cut -c4- | while read -r file; do
-              mkdir -p "$out/regressions/run-$run/$(dirname "$file")"
-              cp "$file" "$out/regressions/run-$run/$file"
-              if git ls-files --error-unmatch -- "$file" > /dev/null 2>&1; then
-                git checkout --quiet -- "$file"
-              else
-                rm "$file"
-              fi
-            done
-            total_passed=$((total_passed + passed))
-            total_failed=$((total_failed + failed))
-            if [ "$code" -eq 0 ] && [ $((passed + failed)) -gt 0 ]; then
-              result=pass
-              green=$((green + 1))
-            elif [ "$code" -eq 0 ]; then
-              result="ran no test"
-              broken=$((broken + 1))
-            elif [ "$failed" -gt 0 ] && [ "$results" -ge "$binaries" ]; then
-              result=fail
-              red=$((red + 1))
-            else
-              result="error: exit $code, $results of $binaries test binaries finished"
-              broken=$((broken + 1))
-            fi
-            echo "| $run | $seed | $result | $passed | $failed | $ignored | $minutes |" >> "$out/summary.md"
-            if [ "$result" != pass ]; then
-              echo "::error title=Run $run: $result::Reproduce: ${repro/<seed>/$seed}"
-            fi
-          done
-          {
-            echo
-            echo "**$green of $REPEAT runs passed, $red failed, $broken did not finish cleanly.** $total_passed tests passed and $total_failed failed across all runs."
-            if [ -s "$out/failed-tests.txt" ]; then
-              echo
-              echo "| Failed test | Runs it failed in |"
-              echo "|---|---|"
-              sort "$out/failed-tests.txt" | uniq -c | sort -rn | while read -r count name; do printf '| <code>%s</code> | %s |\n' "$name" "$count"; done
-            fi
-            if [ $((red + broken)) -gt 0 ]; then
-              echo
-              echo "Reproduce a run with its seed from the table:"
-              echo
-              echo '```sh'
-              echo "$repro"
-              echo '```'
-              echo
-              echo "Each run starts from the case files in the commit, so its seed reproduces it on a clean checkout. The heavy-tests-$RUNNER_OS artifact holds this summary, each run's log, and under regressions/run-<k>/ the proptest case files run k saved. To replay a saved case, copy its file to the same path in the checkout and run the command with PROPTEST_CASES=0."
-            fi
-          } >> "$out/summary.md"
-          tee -a "$GITHUB_STEP_SUMMARY" < "$out/summary.md"
-          [ "$green" -eq "$REPEAT" ]
+          python3 scripts/test-value.py run --sample "$SAMPLE" --mutants "$OUT/mutants.json" \
+            --baseline "$OUT/baseline.json" --slow "$SLOW" --shard "$SHARD" --out "$OUT/results-${{ matrix.shard }}.jsonl"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: heavy-tests-${{ runner.os }}
-          path: ${{ runner.temp }}/heavy-tests
-          retention-days: 7
+          name: test-value-results-${{ matrix.shard }}
+          path: ${{ env.OUT }}/results-*
+          retention-days: 30
           if-no-files-found: ignore
+
+  report:
+    name: report
+    needs: [plan, mutants]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-value-*
+          path: ${{ env.OUT }}
+          merge-multiple: true
+      - name: Count each test's kills and unique kills
+        run: |
+          python3 scripts/test-value.py report --sample "$SAMPLE" --mutants "$OUT/mutants.json" --baseline "$OUT/baseline.json" \
+            --slow "$SLOW" --results "$OUT"/results-*.jsonl --out "$OUT/report"
+          cat "$OUT/report/$SAMPLE-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-value-report
+          path: ${{ env.OUT }}/report
+          retention-days: 30
