@@ -1,6 +1,6 @@
 169
 # GUN-795: uninstall deleted user files from state folders. Each test reproduces a distinct
-# way that happened in review (KOI-1081, KOI-1082): a folder the user made, one reached through
+# way that happened in review: a folder the user made, one reached through
 # a link, a linked backup, an older release's state, user files named like Koidrive's entries,
 # the systemd unit and the update log creating the folder first, and copied ownership records.
 # Unit tests cover the shapes a journey can't reach (a folder named lock, a file named creates),
