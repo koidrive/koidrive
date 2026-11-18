@@ -1,0 +1,9 @@
+2791
+# The RFC 0029 journal is new, so no test on main covers it. Redundant tests were merged and each kept test turned red under at least one mutant of the code it covers.
+# Engine journal unit tests: the §5.1 row states (a change over a sent or held row, a value returning to the one in flight), each §5.2 result holding, superseding or ending rows, the bounded history, delete seen lists, replays after a loss, the persisted id generator, and the legacy id vectors.
+# Engine intents: the row each scan, create, edit, move and delete writes; commits naming intents only when the server announces them; every result kind (APPLIED, APPLIED_RENAMED, SUPERSEDED, CONFLICT_COPY, MERGED_INTO, ID_EXISTS); compact held rows written out unchanged on every trigger and through the store; the backfill of a store from an earlier release; the first listing that names intents.
+# Engine commit: an op the server supersedes ends for each op kind unless the journal sends it again, a later local edit survives it, and an edit after a conflict copy names the copy's version.
+# Sim conformance: the harness checks intents, lineage and storage restores, so the RFC 0029 scenarios that main's reference space skips run.
+# Sim space rules: the reference space's intent rules: legacy ids for the root, malformed intents refused, garbage collection and purged nodes, a storage restore minting intents, and the field_intents announcement.
+# Sim devices and recovery: rewinds, rollbacks, lost edits and lost renames across restores with intents on, the GUN-1012 known red with its exact message, and resends that go out without an intent.
+# Store: the journal tables, the intents of R and S and the backfill marker survive a reopen and an upgrade.
