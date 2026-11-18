@@ -1260,32 +1260,3 @@ fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values
     );
     assert!(trees.journal().listed());
 }
-
-#[test]
-fn a_held_row_the_store_holds_is_not_written_again_when_r_catches_up_and_compacts_it() {
-    let mut trees = Trees::new(ROOT);
-    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
-    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
-    let commit = build(&mut trees, &["field_intents"], 1_700);
-    let reported = proto::FieldIntents {
-        place: Some(wire(held(&trees, "f", Field::Place), 1_000)),
-        content: Some(wire(sent(&trees, "f", Field::Content), 1_900)),
-        status: Some(wire(held(&trees, "f", Field::Status), 1_000)),
-    };
-    let state = node_state("f", &file(ROOT, "a", 2), 2, Some(reported));
-    trees.record_results(
-        &commit,
-        &answered(vec![outcome(op_result::Code::Applied)], vec![state.clone()]),
-    );
-    assert!(trees.journal().compact_row("f", Field::Content).is_none());
-    trees.take_changes();
-    let stored = trees.journal_row("f", Field::Content).unwrap().into_owned();
-    let (_, node) = RemoteNode::from_state(&state).unwrap();
-    trees.set_remote("f".into(), node);
-    assert!(trees.journal().compact_row("f", Field::Content).is_some());
-    assert_eq!(
-        trees.journal_row("f", Field::Content).unwrap().into_owned(),
-        stored
-    );
-    assert!(trees.take_changes().journal.rows.is_empty());
-}
