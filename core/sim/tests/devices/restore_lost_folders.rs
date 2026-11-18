@@ -263,7 +263,10 @@ fn a_delete_in_a_folder_the_server_lost_leaves_every_device_alike() {
 
 #[test]
 fn an_edited_file_in_a_lost_folder_is_one_file_after_earlier_restores() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"A\" of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f, which the user of device 0 never gave it",
+    );
     converge(
         3,
         &[
@@ -334,7 +337,10 @@ fn an_edited_file_in_a_lost_folder_is_one_file_after_earlier_restores() {
 
 #[test]
 fn a_lost_folder_keeps_each_write_in_one_file_from_seed_705006() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"A\" of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f, which the user of device 0 never gave it",
+    );
     converge(
         3,
         &[
@@ -820,7 +826,10 @@ fn a_lost_folder_keeps_each_write_in_one_file_from_seed_705206() {
 
 #[test]
 fn a_lost_folder_keeps_each_write_in_one_file_from_seed_709609() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"A\" of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f, which the user of device 0 never gave it",
+    );
     converge(
         2,
         &[
@@ -1054,8 +1063,14 @@ fn a_lost_folder_keeps_each_write_in_one_file_from_seed_709609() {
 
 #[test]
 fn a_lost_folder_keeps_each_write_in_one_file_from_seed_710440() {
-    let _owner = expect_red(Check::OwnerFinish);
-    let _delete = expect_red(Check::DeleteUndone);
+    let _owner = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"A\" of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f, which the user of device 0 never gave it",
+    );
+    let _delete = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7588-93fe-e48d3ca5aea8 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     converge(
         3,
         &[

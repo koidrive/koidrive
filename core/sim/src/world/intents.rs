@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::names::{name_key, nfc};
@@ -26,55 +26,93 @@ pub enum Check {
     IntentKept,
 }
 
-thread_local! {
-    static EXPECTED: RefCell<BTreeMap<Check, bool>> = const { RefCell::new(BTreeMap::new()) };
+impl Check {
+    pub const ALL: [Check; 5] = [
+        Check::OwnerFinish,
+        Check::DeleteUndone,
+        Check::PlaceKept,
+        Check::WriteKept,
+        Check::IntentKept,
+    ];
 }
 
-/// A check that the engine on main fails on this test's schedule. The check reports nothing on
-/// this thread while the guard lives, and every other check still runs. Dropping the guard panics
-/// when the check never fired, so the change that fixes the engine removes the expectation.
+struct Expectation {
+    check: Check,
+    why: Option<String>,
+    fired: BTreeSet<String>,
+}
+
+thread_local! {
+    static EXPECTED: RefCell<BTreeMap<u64, Expectation>> = const { RefCell::new(BTreeMap::new()) };
+    static NEXT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Keeps failures of one check quiet on this thread while it lives. A guard from [`expect_red`]
+/// matches one exact message and panics on drop when that failure never happened, so the change
+/// that fixes the engine removes it. Every other failure still reports.
 #[must_use]
 pub struct ExpectedRed {
-    check: Check,
+    id: u64,
     must_fire: bool,
 }
 
-pub fn expect_red(check: Check) -> ExpectedRed {
-    EXPECTED.with(|expected| expected.borrow_mut().insert(check, false));
-    ExpectedRed {
+fn guard(check: Check, why: Option<String>, must_fire: bool) -> ExpectedRed {
+    let id = NEXT.with(|next| next.replace(next.get() + 1));
+    let expectation = Expectation {
         check,
-        must_fire: true,
-    }
+        why,
+        fired: BTreeSet::new(),
+    };
+    EXPECTED.with(|expected| expected.borrow_mut().insert(id, expectation));
+    ExpectedRed { id, must_fire }
 }
 
-/// Like [`expect_red`], for generated schedules that may or may not fail the check.
+pub fn expect_red(check: Check, why: &str) -> ExpectedRed {
+    guard(check, Some(why.to_owned()), true)
+}
+
+/// Keeps every failure of the check quiet, whatever its message, and asks for none.
 pub fn allow_red(check: Check) -> ExpectedRed {
-    EXPECTED.with(|expected| expected.borrow_mut().insert(check, false));
-    ExpectedRed {
-        check,
-        must_fire: false,
+    guard(check, None, false)
+}
+
+impl ExpectedRed {
+    /// Ends the guard and returns the messages of the failures it kept quiet.
+    pub fn fired(self) -> BTreeSet<String> {
+        let expectation = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.id));
+        expectation
+            .map(|expectation| expectation.fired)
+            .unwrap_or_default()
     }
 }
 
 impl Drop for ExpectedRed {
     fn drop(&mut self) {
-        let fired = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.check));
+        let expectation = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.id));
+        let Some(expectation) = expectation else {
+            return;
+        };
         if self.must_fire && !std::thread::panicking() {
-            assert_eq!(
-                fired,
-                Some(true),
-                "{:?} passed on a schedule expected to fail it",
-                self.check
+            assert!(
+                !expectation.fired.is_empty(),
+                "{:?} did not fail with {:?} on a schedule expected to fail it so",
+                expectation.check,
+                expectation.why
             );
         }
     }
 }
 
-pub(super) fn expected(check: Check) -> bool {
+pub(super) fn expected(check: Check, why: &str) -> bool {
     EXPECTED.with(|expected| {
-        (expected.borrow_mut().get_mut(&check))
-            .map(|fired| *fired = true)
-            .is_some()
+        let mut hit = false;
+        for expectation in expected.borrow_mut().values_mut() {
+            if expectation.check == check && expectation.why.as_deref().is_none_or(|w| w == why) {
+                expectation.fired.insert(why.to_owned());
+                hit = true;
+            }
+        }
+        hit
     })
 }
 
@@ -619,13 +657,6 @@ impl Intents {
                     && self.saw(i, j)
                     && self.holds(j, server, false)
             });
-            if match intent.value {
-                Value::Place { .. } if seen_back => expected(Check::PlaceKept),
-                Value::Content { .. } => expected(Check::WriteKept),
-                _ => expected(Check::IntentKept),
-            } {
-                continue;
-            }
             let node = self.nodes(i).next().expect("checked above");
             let kind = intent.kind;
             let why = match &intent.value {
@@ -649,6 +680,14 @@ impl Intents {
                      no delete that saw it and no rule for lost changes settles it"
                 ),
             };
+            let check = match intent.value {
+                Value::Place { .. } if seen_back => Check::PlaceKept,
+                Value::Content { .. } => Check::WriteKept,
+                _ => Check::IntentKept,
+            };
+            if expected(check, &why) {
+                continue;
+            }
             return Err((why, matches!(intent.value, Value::Content { .. })));
         }
         Ok(())

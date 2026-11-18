@@ -98,16 +98,20 @@ impl Deletion {
         if roots.is_empty() || saved.into_iter().any(|id| roots.contains(id)) {
             return None;
         }
-        let deleted = (subtree.iter()).flat_map(|ino| intents.nodes_of(author, *ino));
-        let live: Vec<&NodeId> = deleted.filter(|id| server.live(id).is_some()).collect();
-        live.into_iter().find_map(|node| {
+        let deleted: Vec<&NodeId> = (subtree.iter())
+            .flat_map(|ino| intents.nodes_of(author, *ino))
+            .collect();
+        let live = deleted.iter().filter(|id| server.live(id).is_some());
+        live.copied().find_map(|node| {
             let brings_back = |j: usize| {
                 let other = intents.intent(j);
                 let carries = other.value.field() != Field::Content && !other.answer;
                 intents.nodes(j).any(|id| {
                     id == node
                         || server.live(id).is_some() && server.above(id).contains(&node.as_str())
-                        || carries && server.above(node).contains(&id.as_str())
+                        || carries
+                            && deleted.contains(&id)
+                            && server.above(node).contains(&id.as_str())
                 })
             };
             let excused = (0..intents.len()).any(|j| {
@@ -271,20 +275,21 @@ impl World {
             let Some(node) = deletion.undone(&self.intents, server, gone) else {
                 continue;
             };
-            if expected(Check::DeleteUndone) {
+            let d = deletion.device;
+            let why = format!(
+                "the delete of node {node} on device {d} came undone, and no change its user did \
+                 not see brought the node back"
+            );
+            if expected(Check::DeleteUndone, &why) {
                 continue;
             }
-            let d = deletion.device;
             return Err(Failure::Diverged(
                 match self.revived(deletion, &live) {
                     Some(write) => format!(
                         "the user of device {d} deleted write {write} or a later write made over it, \
                      and the server held it live from then on: the delete never reached the server"
                     ),
-                    None => format!(
-                        "the delete of node {node} on device {d} came undone, and no change its user \
-                     did not see brought the node back"
-                    ),
+                    None => why,
                 },
             ));
         }

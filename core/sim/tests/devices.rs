@@ -9,7 +9,9 @@
 //! refuses a state. `devices_converge_once_the_faults_stop` also asks that every disk reaches the
 //! server's tree and that no commit makes a change the user of its device never made.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
@@ -17,12 +19,12 @@ use koidrive_engine::tree::Content;
 use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
-    Action, Check, Cut, ExpectedRed, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS,
-    World, allow_red, expect_red, tag,
+    Action, Check, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
+    allow_red, expect_red, tag,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
-use proptest::test_runner::{RngSeed, TestRunner};
+use proptest::test_runner::{FailurePersistence, PersistedSeed, RngSeed, TestRunner};
 
 #[path = "devices/deletes_across_losses.rs"]
 mod deletes_across_losses;
@@ -337,10 +339,142 @@ const DEVICES_CASES: &str = concat!(
     "/tests/devices.proptest-regressions"
 );
 
+const SAVED_CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices.cases");
+
 const ORACLE_REDS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/devices-oracle-reds.proptest-regressions"
+    "/tests/devices-oracle-reds.cases"
 );
+
+const RECORDED_REDS: &str = include_str!("devices-oracle-reds.tsv");
+
+#[derive(Clone, Debug, PartialEq)]
+struct SavedCase(PersistedSeed);
+
+impl FailurePersistence for SavedCase {
+    fn load_persisted_failures2(&self, _: Option<&'static str>) -> Vec<PersistedSeed> {
+        vec![self.0.clone()]
+    }
+
+    fn save_persisted_failure2(
+        &mut self,
+        _: Option<&'static str>,
+        _: PersistedSeed,
+        _: &dyn std::fmt::Debug,
+    ) {
+    }
+
+    fn box_clone(&self) -> Box<dyn FailurePersistence> {
+        Box::new(self.clone())
+    }
+
+    fn eq(&self, other: &dyn FailurePersistence) -> bool {
+        other.as_any().downcast_ref::<Self>() == Some(self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+struct NewCases(Box<dyn FailurePersistence>);
+
+impl FailurePersistence for NewCases {
+    fn load_persisted_failures2(&self, _: Option<&'static str>) -> Vec<PersistedSeed> {
+        Vec::new()
+    }
+
+    fn save_persisted_failure2(
+        &mut self,
+        source: Option<&'static str>,
+        seed: PersistedSeed,
+        value: &dyn std::fmt::Debug,
+    ) {
+        self.0.save_persisted_failure2(source, seed, value);
+    }
+
+    fn box_clone(&self) -> Box<dyn FailurePersistence> {
+        Box::new(NewCases(self.0.box_clone()))
+    }
+
+    fn eq(&self, other: &dyn FailurePersistence) -> bool {
+        (other.as_any().downcast_ref::<Self>())
+            .is_some_and(|other| FailurePersistence::eq(&*self.0, &*other.0))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+struct Reds {
+    test: &'static str,
+    recorded: BTreeMap<&'static str, BTreeSet<(Check, String)>>,
+    wrong: Vec<String>,
+}
+
+impl Reds {
+    fn new(test: &'static str, kind: &str) -> Self {
+        let mut recorded: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        for line in RECORDED_REDS.lines() {
+            let fields: Vec<&str> = line.splitn(4, '\t').collect();
+            let [name, case, check, why] = fields[..] else {
+                panic!(
+                    "devices-oracle-reds.tsv: {line:?} is not a test, a case, a check and a message"
+                );
+            };
+            let Some(check) = (Check::ALL.into_iter()).find(|c| format!("{c:?}") == check) else {
+                panic!("devices-oracle-reds.tsv: {line:?} names no check");
+            };
+            if name == test && case.starts_with(kind) {
+                recorded
+                    .entry(case)
+                    .or_default()
+                    .insert((check, why.to_owned()));
+            }
+        }
+        Reds {
+            test,
+            recorded,
+            wrong: Vec::new(),
+        }
+    }
+
+    fn case(&mut self, case: &str, run: impl FnOnce() -> Result<(), Failure>) {
+        let guards = Check::ALL.map(|check| (check, allow_red(check)));
+        let result = run();
+        let failed: BTreeSet<(Check, String)> = (guards.into_iter())
+            .flat_map(|(check, guard)| guard.fired().into_iter().map(move |why| (check, why)))
+            .collect();
+        let recorded = self.recorded.remove(case).unwrap_or_default();
+        let test = self.test;
+        if let Err(failure) = result {
+            self.wrong
+                .push(format!("{test} case {case} fails: {failure}"));
+        }
+        for (check, why) in failed.difference(&recorded) {
+            self.wrong
+                .push(format!("not recorded: {test}\t{case}\t{check:?}\t{why}"));
+        }
+        for (check, why) in recorded.difference(&failed) {
+            self.wrong.push(format!(
+                "recorded but passed: {test}\t{case}\t{check:?}\t{why}"
+            ));
+        }
+    }
+
+    fn finish(self) -> Vec<String> {
+        let test = self.test;
+        let mut wrong = self.wrong;
+        wrong.extend(
+            self.recorded
+                .keys()
+                .map(|case| format!("{test} never ran case {case}")),
+        );
+        wrong
+    }
+}
 
 macro_rules! test_name {
     ($test:ident) => {
@@ -349,12 +483,37 @@ macro_rules! test_name {
 }
 
 fn converges_from(test: &'static str, seed: u64, cases: u32) {
-    converges_with(ProptestConfig {
-        rng_seed: RngSeed::Fixed(seed),
-        failure_persistence: None,
-        test_name: Some(test),
-        ..ProptestConfig::with_cases(cases)
+    let wrong = generates(
+        test,
+        ProptestConfig {
+            rng_seed: RngSeed::Fixed(seed),
+            failure_persistence: None,
+            test_name: Some(test),
+            ..ProptestConfig::with_cases(cases)
+        },
+        &(2..=3usize, phases(Losses::Rewinds)),
+        &|(devices, phases)| converge(devices, &phases).map(drop),
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn generates<S: Strategy>(
+    test: &'static str,
+    config: ProptestConfig,
+    strategy: &S,
+    run: &impl Fn(S::Value) -> Result<(), Failure>,
+) -> Vec<String> {
+    let reds = RefCell::new(Reds::new(test, "case-"));
+    let count = Cell::new(0);
+    let result = TestRunner::new(config).run(strategy, |value| {
+        let case = format!("case-{}", count.replace(count.get() + 1));
+        reds.borrow_mut().case(&case, || run(value));
+        Ok(())
     });
+    if let Err(error) = result {
+        panic!("{error}");
+    }
+    reds.into_inner().finish()
 }
 
 fn converges_from_saved_cases(test: &'static str, file: &'static str) {
@@ -385,55 +544,77 @@ fn holds<S: Strategy>(
     strategy: S,
     run: impl Fn(S::Value) -> Result<(), Failure>,
 ) {
-    let saved = TestRunner::new(ProptestConfig {
-        test_name: Some(test),
-        ..koidrive_test_support::regression_config(DEVICES_CASES, 0)
-    });
-    let config = koidrive_test_support::battery_config(DEVICES_CASES, 256);
-    let generated = TestRunner::new(ProptestConfig {
+    let mut wrong = replays(test, SAVED_CASES, &strategy, &run);
+    let mut config = koidrive_test_support::battery_config(DEVICES_CASES, 256);
+    let saved = config.failure_persistence.take();
+    let battery = std::env::var_os("KOIDRIVE_BATTERY_CASES").is_some();
+    if !battery {
+        let config = ProptestConfig {
+            test_name: Some(test),
+            rng_seed: RngSeed::Fixed(seed.unwrap_or(0)),
+            ..config
+        };
+        wrong.extend(generates(test, config, &strategy, &run));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    if !battery {
+        return;
+    }
+    let mut generated = TestRunner::new(ProptestConfig {
         test_name: Some(test),
         rng_seed: seed.map_or(config.rng_seed, RngSeed::Fixed),
+        failure_persistence: saved.map(|saved| Box::new(NewCases(saved)) as _),
         ..config
     });
-    let reds = [
-        Check::OwnerFinish,
-        Check::DeleteUndone,
-        Check::PlaceKept,
-        Check::WriteKept,
-        Check::IntentKept,
-    ];
-    for (mut runner, checks) in [(saved, &[][..]), (generated, &reds[..])] {
-        let battery = std::env::var_os("KOIDRIVE_BATTERY_CASES").is_some();
-        let _allowed: Vec<ExpectedRed> = (checks.iter())
-            .filter(|_| !battery)
-            .map(|check| allow_red(*check))
-            .collect();
-        let result = runner.run(&strategy, |value| {
-            run(value).map_err(|failure| TestCaseError::fail(failure.to_string()))
-        });
-        if let Err(error) = result {
-            panic!("{error}");
-        }
-    }
-}
-
-fn holds_on_the_oracle_reds_but<S: Strategy>(
-    test: &'static str,
-    reds: &[Check],
-    strategy: S,
-    run: impl Fn(S::Value) -> Result<(), Failure>,
-) {
-    let _reds: Vec<ExpectedRed> = reds.iter().map(|check| expect_red(*check)).collect();
-    let mut runner = TestRunner::new(ProptestConfig {
-        test_name: Some(test),
-        ..koidrive_test_support::regression_config(ORACLE_REDS, 0)
-    });
-    let result = runner.run(&strategy, |value| {
+    let result = generated.run(&strategy, |value| {
         run(value).map_err(|failure| TestCaseError::fail(failure.to_string()))
     });
     if let Err(error) = result {
         panic!("{error}");
     }
+}
+
+fn replays<S: Strategy>(
+    test: &'static str,
+    saved: &str,
+    strategy: &S,
+    run: &impl Fn(S::Value) -> Result<(), Failure>,
+) -> Vec<String> {
+    let mut cases: Vec<_> = (fs::read_dir(saved).expect("read the saved cases"))
+        .map(|entry| entry.expect("read a saved case").path())
+        .collect();
+    cases.sort();
+    let reds = RefCell::new(Reds::new(test, "cc-"));
+    for path in cases {
+        let line = fs::read_to_string(&path).expect("read a saved case");
+        let seed = (line.split('#').next()).and_then(|seed| seed.trim().parse().ok());
+        let Some(seed) = seed else {
+            panic!("{} holds no seed", path.display());
+        };
+        let case = (path.file_stem().and_then(|stem| stem.to_str())).expect("a case is named");
+        let mut runner = TestRunner::new(ProptestConfig {
+            test_name: Some(test),
+            failure_persistence: Some(Box::new(SavedCase(seed))),
+            ..ProptestConfig::with_cases(0)
+        });
+        let result = runner.run(strategy, |value| {
+            reds.borrow_mut().case(case, || run(value));
+            Ok(())
+        });
+        if let Err(error) = result {
+            panic!("{error}");
+        }
+    }
+    reds.into_inner().finish()
+}
+
+fn holds_on_the_oracle_reds<S: Strategy>(
+    test: &'static str,
+    strategy: S,
+    run: impl Fn(S::Value) -> Result<(), Failure>,
+) {
+    let wrong = replays(test, ORACLE_REDS, &strategy, &run);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]
@@ -468,9 +649,8 @@ fn devices_converge_when_folders_are_rescanned_alone() {
 
 #[test]
 fn devices_lose_no_write_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_lose_no_write_on_the_oracle_reds),
-        &[],
         (2..=3usize, phases(Losses::None)),
         |(devices, phases)| keep(devices, &phases).map(drop),
     );
@@ -488,9 +668,8 @@ fn devices_converge_once_the_faults_stop() {
 
 #[test]
 fn devices_converge_once_the_faults_stop_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_once_the_faults_stop_on_the_oracle_reds),
-        &[Check::OwnerFinish],
         (2..=3usize, phases(Losses::None)),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -508,9 +687,8 @@ fn devices_converge_around_a_folder_another_device_replaces() {
 
 #[test]
 fn devices_converge_around_a_folder_another_device_replaces_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_around_a_folder_another_device_replaces_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::OwnerFinish],
         replaced_folder(),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -528,9 +706,8 @@ fn devices_converge_around_an_owed_rename() {
 
 #[test]
 fn devices_converge_around_an_owed_rename_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_around_an_owed_rename_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::OwnerFinish, Check::PlaceKept],
         (2..=3usize, owing_a_rename(Losses::None)),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -548,9 +725,8 @@ fn devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back() {
 
 #[test]
 fn devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::OwnerFinish],
         reviving_an_owed_rename(),
         |phases| converge(3, &phases).map(drop),
     );
@@ -568,9 +744,8 @@ fn devices_lose_no_write_across_server_restores() {
 
 #[test]
 fn devices_lose_no_write_across_server_restores_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_lose_no_write_across_server_restores_on_the_oracle_reds),
-        &[],
         (2..=3usize, phases(Losses::Restores)),
         |(devices, phases)| keep(devices, &phases).map(drop),
     );
@@ -588,9 +763,8 @@ fn devices_converge_across_server_restores() {
 
 #[test]
 fn devices_converge_across_server_restores_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_across_server_restores_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::PlaceKept],
         (2..=3usize, phases(Losses::Restores)),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -608,9 +782,8 @@ fn devices_lose_no_write_across_rewinds_and_rollbacks() {
 
 #[test]
 fn devices_lose_no_write_across_rewinds_and_rollbacks_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_lose_no_write_across_rewinds_and_rollbacks_on_the_oracle_reds),
-        &[Check::WriteKept],
         (2..=3usize, phases(Losses::Rewinds)),
         |(devices, phases)| keep(devices, &phases).map(drop),
     );
@@ -628,9 +801,8 @@ fn devices_converge_across_rewinds_and_rollbacks() {
 
 #[test]
 fn devices_converge_across_rewinds_and_rollbacks_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_across_rewinds_and_rollbacks_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::WriteKept],
         (2..=3usize, phases(Losses::Rewinds)),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -648,9 +820,8 @@ fn devices_lose_no_write_across_restores_and_rewinds() {
 
 #[test]
 fn devices_lose_no_write_across_restores_and_rewinds_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_lose_no_write_across_restores_and_rewinds_on_the_oracle_reds),
-        &[],
         (2..=3usize, phases(Losses::RestoresAndRewinds)),
         |(devices, phases)| keep(devices, &phases).map(drop),
     );
@@ -668,9 +839,8 @@ fn devices_converge_across_restores_and_rewinds() {
 
 #[test]
 fn devices_converge_across_restores_and_rewinds_on_the_oracle_reds() {
-    holds_on_the_oracle_reds_but(
+    holds_on_the_oracle_reds(
         test_name!(devices_converge_across_restores_and_rewinds_on_the_oracle_reds),
-        &[Check::DeleteUndone, Check::PlaceKept],
         (2..=3usize, phases(Losses::RestoresAndRewinds)),
         |(devices, phases)| converge(devices, &phases).map(drop),
     );
@@ -764,50 +934,26 @@ fn the_coarse_volume_schedules_keep_downloads_at_coarser_times() {
 
 #[test]
 fn rewinds_converge_from_seed_122() {
-    let _reds = [
-        expect_red(Check::DeleteUndone),
-        expect_red(Check::WriteKept),
-        expect_red(Check::PlaceKept),
-    ];
     converges_from(test_name!(rewinds_converge_from_seed_122), 122, 4096);
 }
 
 #[test]
 fn rewinds_converge_from_seed_605() {
-    let _reds = [
-        expect_red(Check::DeleteUndone),
-        expect_red(Check::WriteKept),
-        expect_red(Check::PlaceKept),
-        expect_red(Check::IntentKept),
-    ];
     converges_from(test_name!(rewinds_converge_from_seed_605), 605, 4096);
 }
 
 #[test]
 fn rewinds_converge_from_seed_301() {
-    let _reds = [
-        expect_red(Check::DeleteUndone),
-        expect_red(Check::WriteKept),
-        expect_red(Check::PlaceKept),
-    ];
     converges_from(test_name!(rewinds_converge_from_seed_301), 301, 4096);
 }
 
 #[test]
 fn rewinds_converge_from_seed_313() {
-    let _reds = [
-        expect_red(Check::DeleteUndone),
-        expect_red(Check::WriteKept),
-    ];
     converges_from(test_name!(rewinds_converge_from_seed_313), 313, 4096);
 }
 
 #[test]
 fn rewinds_converge_from_seed_319() {
-    let _reds = [
-        expect_red(Check::DeleteUndone),
-        expect_red(Check::WriteKept),
-    ];
     converges_from(test_name!(rewinds_converge_from_seed_319), 319, 4096);
 }
 
@@ -949,7 +1095,16 @@ fn the_owed_rename_schedules_reach_both_answers() {
 
 #[test]
 fn the_revival_schedules_bring_back_a_folder_at_its_pending_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = [
+        expect_red(
+            Check::OwnerFinish,
+            "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+        ),
+        expect_red(
+            Check::OwnerFinish,
+            "a commit of device 2 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 2 never gave it",
+        ),
+    ];
     reaches(
         reviving_an_owed_rename(),
         &["a node at a pending name comes back from the trash"],
@@ -981,7 +1136,10 @@ fn the_rewind_schedules_reach_every_recovery() {
 
 #[test]
 fn the_mixed_schedules_restore_across_a_rewind() {
-    let _red = expect_red(Check::WriteKept);
+    let _red = expect_red(
+        Check::WriteKept,
+        "write 3 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+    );
     reaches(
         phases(Losses::RestoresAndRewinds),
         &[
@@ -2403,8 +2561,11 @@ fn a_rewind_to_a_copy_taken_mid_swap_ends_at_the_swapped_name() {
 }
 
 #[test]
-fn a_pending_folder_the_user_deletes_during_a_recovery_comes_back_at_its_name() {
-    let _red = expect_red(Check::DeleteUndone);
+fn a_pending_folder_the_user_deletes_during_a_recovery_stays_deleted() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     converge(
         2,
         &[
@@ -2443,7 +2604,10 @@ fn a_device_that_left_still_takes_a_backup_of_the_server() {
 
 #[test]
 fn a_pending_folder_whose_device_never_returns_is_renamed_by_another_device() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = converge(
         2,
         &[
@@ -2491,7 +2655,10 @@ fn a_folder_another_device_finished_then_rewound_before_its_disk_followed_is_ren
 
 #[test]
 fn a_swap_split_over_commits_ends_at_its_names_while_another_device_finishes_on_disk() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"b\" of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4, which the user of device 1 never gave it",
+    );
     let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
     let mut finished_elsewhere = 0;
     for between in 0..16 {
@@ -2533,7 +2700,10 @@ fn a_swap_split_over_commits_ends_at_its_names_while_another_device_finishes_on_
 #[test]
 fn a_finish_another_device_sent_before_the_setter_finished_and_its_user_renamed_again_keeps_the_newer_name()
  {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"b\" of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4, which the user of device 1 never gave it",
+    );
     let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
     for between in 0..16 {
         let mut swap = vec![
@@ -2580,7 +2750,10 @@ fn a_finish_another_device_sent_before_the_setter_finished_and_its_user_renamed_
 
 #[test]
 fn a_store_rolled_back_after_finishing_another_devices_mark_publishes_no_pending_folder() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let mut lost = vec![
         (1, Step::CopyStore),
         (0, folder("A")),
@@ -2801,7 +2974,10 @@ fn a_revival_at_an_unasked_name_or_parent_is_rejected() {
 
 #[test]
 fn a_restore_that_loses_an_edit_leaves_its_file_deleted() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let u = |kind, target, parent, name, text| {
         Step::User(Action {
             kind,
@@ -4363,7 +4539,10 @@ fn a_lost_file_created_again_edited_and_deleted_stays_deleted() {
 
 #[test]
 fn a_folder_sent_at_a_pending_name_that_an_edit_brings_back_takes_its_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9, which the user of device 1 never gave it",
+    );
     let phases = vec![
         vec![(0, file("a"))],
         vec![
@@ -4651,7 +4830,10 @@ fn a_file_a_restore_moves_back_stays_deleted_when_a_user_deletes_it_after() {
 
 #[test]
 fn an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_deleted() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = converge(2, &[vec![(0, folder("a"))]]).unwrap();
     let mut steps = vec![(0, BACKUP), (1, user(1, 0, 1, "b"))];
     steps.extend(commit(1));
@@ -5162,7 +5344,10 @@ fn no_device_holds_a_file(world: &World) -> bool {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_another_devices_resend()
 {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT)]);
@@ -5175,7 +5360,10 @@ fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_anot
 #[test]
 fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author_sends_it_after_a_resend()
  {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT)]);
@@ -5187,7 +5375,10 @@ fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author
 
 #[test]
 fn a_file_deleted_at_the_restored_version_by_a_user_who_held_the_lost_edit_stays_deleted() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT), (2, COMMIT)]);
@@ -5253,7 +5444,10 @@ fn an_unasked_delete_of_restored_content_is_rejected_after_an_older_overwrite() 
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_resend() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT)]);
@@ -5291,21 +5485,30 @@ fn an_owed_rename_in_flight_while_another_device_changes_it(change: Step) -> Wor
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_past_a_resend_it_planned_against()
  {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     a_delete_pulled_after_the_authors_edit(true);
 }
 
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_when_it_pulls_the_resend()
  {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     a_delete_pulled_after_the_authors_edit(false);
 }
 
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_when_the_author_sends_it_after_a_resend()
  {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN)]);
@@ -5396,13 +5599,19 @@ fn the_authors_edit_after_two_losses(resend_first: bool) -> World {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss_after_another_devices_resend()
 {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     the_authors_edit_after_two_losses(true);
 }
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
     the_authors_edit_after_two_losses(false);
 }
 
@@ -6161,7 +6370,10 @@ fn a_lost_create_sent_again_under_a_new_name_is_taken_by_a_device_that_downloade
 
 #[test]
 fn a_lost_rename_can_resend_the_conflict_name_its_own_commit_received() {
-    let _red = expect_red(Check::PlaceKept);
+    let _red = expect_red(
+        Check::PlaceKept,
+        "the move on device 0 that puts node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 at \"b\" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it",
+    );
     converge(
         3,
         &[
@@ -6544,7 +6756,10 @@ fn owe_a_folder_its_name_after_downloads(
 
 #[test]
 fn a_folder_deleted_at_any_point_before_its_owed_rename_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     for downloads in 0..=8 {
         for lose_answer in [false, true] {
             let world = owe_a_folder_its_name_after_downloads(lose_answer, delete(1), downloads)
@@ -6575,28 +6790,40 @@ fn disk_names(world: &World) -> Vec<Vec<&str>> {
 
 #[test]
 fn a_folder_deleted_before_its_creator_hears_it_landed_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = owe_a_folder_its_name_while_another_device_changes_it(true, delete(1));
     assert_eq!(disk_names(&world), [Vec::<&str>::new(), vec![]]);
 }
 
 #[test]
 fn a_folder_deleted_before_it_takes_its_own_name_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = owe_a_folder_its_name_while_another_device_changes_it(false, delete(1));
     assert_eq!(disk_names(&world), [Vec::<&str>::new(), vec![]]);
 }
 
 #[test]
 fn a_folder_renamed_before_it_takes_its_own_name_keeps_that_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = owe_a_folder_its_name_while_another_device_changes_it(false, rename(1, 0, "b"));
     assert_eq!(disk_names(&world), [["a", "b"], ["a", "b"]]);
 }
 
 #[test]
 fn a_folder_renamed_before_its_creator_hears_it_landed_keeps_that_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = owe_a_folder_its_name_while_another_device_changes_it(true, rename(1, 0, "b"));
     assert_eq!(disk_names(&world), [["a", "b"], ["a", "b"]]);
 }
@@ -6627,7 +6854,10 @@ fn a_folder_renamed_to_its_owed_name_and_back_while_the_disk_takes_it_keeps_the_
 
 #[test]
 fn a_folder_renamed_back_once_its_owed_rename_is_built_keeps_the_pending_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = rename_a_folder_to_its_owed_name_and_back(7, 1);
     assert_eq!(
         disk_names(&world),
@@ -6637,7 +6867,10 @@ fn a_folder_renamed_back_once_its_owed_rename_is_built_keeps_the_pending_name() 
 
 #[test]
 fn a_folder_renamed_back_once_its_owed_rename_is_sent_keeps_the_pending_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = rename_a_folder_to_its_owed_name_and_back(7, 2);
     assert_eq!(
         disk_names(&world),
@@ -6647,7 +6880,10 @@ fn a_folder_renamed_back_once_its_owed_rename_is_sent_keeps_the_pending_name() {
 
 #[test]
 fn a_folder_renamed_twice_while_its_owed_rename_is_in_flight_keeps_the_pending_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = rename_a_folder_to_its_owed_name_and_back(8, 1);
     assert_eq!(
         disk_names(&world),
@@ -6657,7 +6893,10 @@ fn a_folder_renamed_twice_while_its_owed_rename_is_in_flight_keeps_the_pending_n
 
 #[test]
 fn a_folder_deleted_while_its_creator_writes_into_it_takes_its_own_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
     let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
     steps.extend([(0, Step::Work(0)); 3]);
@@ -7408,7 +7647,10 @@ fn a_lost_folder_is_not_created_again_inside_a_folder_deleted_while_it_waited() 
 
 #[test]
 fn a_kept_child_of_a_lost_folder_stays_deleted_after_a_crash_mid_effect() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-760a-bbe1-ae4b9fee2e6e on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let u = |kind, target, parent, name, text| {
         Step::User(Action {
             kind,
@@ -7583,7 +7825,10 @@ fn a_conflict_copy_the_engine_names_is_no_change_once_the_server_holds_it() {
 
 #[test]
 fn a_folder_deleted_while_its_owed_rename_is_in_flight_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = an_owed_rename_in_flight_while_another_device_changes_it(delete(1));
     for device in &world.devices {
         assert!(
@@ -7596,7 +7841,10 @@ fn a_folder_deleted_while_its_owed_rename_is_in_flight_stays_deleted() {
 
 #[test]
 fn a_folder_renamed_while_its_owed_rename_is_in_flight_keeps_that_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let world = an_owed_rename_in_flight_while_another_device_changes_it(rename(1, 0, "b"));
     for device in &world.devices {
         let mut names: Vec<&str> = (device.disk.entries().values())
@@ -7622,7 +7870,10 @@ fn an_owed_rename_landed_before_another_devices_change(change: Step, heard: usiz
 
 #[test]
 fn a_folder_deleted_before_its_owed_rename_landed_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     for heard in [0, 8] {
         let world = an_owed_rename_landed_before_another_devices_change(delete(1), heard);
         assert_eq!(names(&world), [[""; 0]; 2], "heard {heard}");
@@ -7631,7 +7882,10 @@ fn a_folder_deleted_before_its_owed_rename_landed_stays_deleted() {
 
 #[test]
 fn a_folder_renamed_before_its_owed_rename_landed_keeps_that_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     for heard in [0, 8] {
         let world = an_owed_rename_landed_before_another_devices_change(rename(1, 0, "b"), heard);
         assert_eq!(names(&world), [["a", "b"]; 2], "heard {heard}");
@@ -7653,7 +7907,10 @@ fn a_folder_deleted_on_a_device_that_hears_its_owed_rename_first_stays_deleted()
 
 #[test]
 fn a_folder_deleted_while_its_owed_rename_waits_for_a_reconnect_stays_deleted() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let wide = |kind, parent| {
         Step::User(Action {
             kind,
@@ -7729,7 +7986,10 @@ fn a_folder_deleted_before_a_restore_stays_deleted_when_its_owed_rename_is_sent_
 
 #[test]
 fn a_folder_deleted_after_its_rename_was_sent_stays_deleted_past_an_owed_rename() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
     let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
     steps.extend([(0, Step::Work(0)); 5]);
@@ -7749,7 +8009,10 @@ fn a_folder_deleted_after_its_rename_was_sent_stays_deleted_past_an_owed_rename(
 
 #[test]
 fn a_folder_revived_before_its_owed_rename_is_answered_keeps_converging() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let mut world = converge(3, &[vec![(0, file("a"))]]).unwrap();
     let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
     steps.extend([(0, Step::Work(0)); 5]);
@@ -7860,7 +8123,10 @@ fn an_edit_whose_commit_a_restore_took_before_its_result_is_sent_again_where_ano
 #[test]
 fn a_folder_owing_its_name_that_another_device_deletes_and_a_third_brings_back_leaves_its_pending_name()
  {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let mut steps = vec![(0, folder("A")), (0, rename(0, 1, "a"))];
     steps.extend([(0, Step::Work(0)); 5]);
     steps.extend([(1, Step::Work(0)); 8]);
@@ -8384,7 +8650,10 @@ fn a_removal_done_before_a_crash_stays_the_engines_when_the_user_renames_its_fol
 
 #[test]
 fn a_removal_done_before_a_crash_stays_the_engines_when_the_user_moves_things_before_the_restart() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     use Step::*;
     let cases = [
         (
@@ -8736,8 +9005,14 @@ fn a_removal_done_before_a_crash_stays_the_engines_when_the_user_renamed_its_fol
 #[test]
 fn a_folder_a_restore_loses_and_another_device_resends_at_its_pending_name_takes_its_owed_name() {
     let _reds = [
-        expect_red(Check::OwnerFinish),
-        expect_red(Check::DeleteUndone),
+        expect_red(
+            Check::OwnerFinish,
+            "a commit of device 1 finishes the pending name \"c.txt\" of node 01a1c2c0-39a0-7236-8163-e644f27cf0e2, which the user of device 1 never gave it",
+        ),
+        expect_red(
+            Check::DeleteUndone,
+            "the delete of node 01a1c2c0-39a0-7236-8163-e644f27cf0e2 on device 0 came undone, and no change its user did not see brought the node back",
+        ),
     ];
     converge(
         2,
@@ -8970,7 +9245,10 @@ fn a_folder_kept_before_a_second_rewind_is_asked_about_again_with_the_file_moved
 
 #[test]
 fn a_folder_keeps_no_pending_name_through_rewinds_and_store_rollbacks() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"A\" of node 01a1c2c0-39a0-77dd-9144-778c081599e9, which the user of device 0 never gave it",
+    );
     use Reply::*;
     use Step::*;
     let phases: Vec<Vec<(usize, Step)>> = vec![
@@ -9118,7 +9396,10 @@ fn a_node_keeps_no_pending_name_after_a_store_copy_rolls_back() {
 
 #[test]
 fn a_folder_keeps_no_pending_name_after_a_rewind_on_two_devices() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"ss\" of node 01a1c2c0-39a0-7d25-8fe4-7b56bf4ebefd, which the user of device 1 never gave it",
+    );
     use Reply::*;
     use Step::*;
     let phases = vec![
@@ -9387,7 +9668,10 @@ fn a_download_may_trash_a_save_of_bytes_the_server_held_on_the_same_node() {
 
 #[test]
 fn a_node_named_with_a_sharp_s_keeps_no_pending_name() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 0 finishes the pending name \"ß\" of node 01a1c2c0-39a0-7224-a2dd-41264c2feceb, which the user of device 0 never gave it",
+    );
     use Reply::*;
     use Step::*;
     let phases = vec![
@@ -10041,7 +10325,16 @@ fn conflict_copies_another_user_deleted_stay_deleted() {
 
 #[test]
 fn owed_renames_that_once_revived_deletes_made_up_names_or_kept_pending_names_converge() {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = [
+        expect_red(
+            Check::OwnerFinish,
+            "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+        ),
+        expect_red(
+            Check::OwnerFinish,
+            "a commit of device 0 finishes the pending name \"c.txt\" of node 01a1c2c0-39a0-76e0-8154-88fadaba5cdd, which the user of device 0 never gave it",
+        ),
+    ];
     use Cut::*;
     use koidrive_sim::world::{Reply::*, Step::*};
     let u = |kind, target, parent, name, text| {
@@ -10634,7 +10927,10 @@ fn a_folder_another_user_deleted_stays_deleted_across_server_copies() {
 #[test]
 fn a_file_renamed_by_the_server_stays_deleted_after_another_device_renames_it_the_same_way_and_deletes_it()
  {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     use koidrive_sim::world::{Reply::*, Step::*};
     let u = |kind, target, parent, name, text| {
         User(Action {
@@ -10691,7 +10987,10 @@ fn a_file_renamed_by_the_server_stays_deleted_after_another_device_renames_it_th
 #[test]
 fn a_file_renamed_by_the_server_stays_deleted_after_another_device_renames_it_the_same_way_and_deletes_it_while_its_name_is_taken_again()
  {
-    let _red = expect_red(Check::OwnerFinish);
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     use koidrive_sim::world::{Reply::*, Step::*};
     let u = |kind, target, parent, name, text| {
         User(Action {
@@ -11456,7 +11755,10 @@ fn a_file_a_restore_took_after_a_rollback_and_created_again_stays_one_file() {
 
 #[test]
 fn a_rename_a_restore_lost_gives_way_to_the_delete_of_its_file() {
-    let _red = expect_red(Check::DeleteUndone);
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let mut world = world(2);
     world.phase(0, &[(0, BACKUP), (0, file("a"))]).unwrap();
     let mut lost = vec![(0, rename(0, 0, "A"))];

@@ -327,6 +327,22 @@ fn upload(
         .collect()
 }
 
+fn trashed_under(nodes: &[NodeState], write: i64, folders: &BTreeSet<&str>) -> bool {
+    let Some(file) = nodes.iter().find(|node| {
+        let content = (node.current.as_ref()).and_then(|version| version.content.as_ref());
+        node.status != NodeStatus::Live as i32 && content.is_some_and(|c| c.mtime_ns == write)
+    }) else {
+        return false;
+    };
+    std::iter::successors(Some(file.parent_id.as_str()), |parent| {
+        (nodes.iter())
+            .find(|node| node.node_id == *parent)
+            .map(|above| above.parent_id.as_str())
+    })
+    .take(nodes.len())
+    .any(|parent| folders.contains(parent))
+}
+
 /// The writes the server's live tree holds, each with the node that holds it.
 fn live_writes(space: &SpaceDo) -> BTreeMap<i64, NodeId> {
     (space.nodes().into_iter())
@@ -1078,18 +1094,19 @@ impl World {
                 });
                 let own = moved.from.is_none() || finish;
                 let (id, parent, name) = (&moved.node_id, &moved.new_parent_id, &moved.new_name);
+                let finishes = format!(
+                    "a commit of device {d} finishes the pending name {name:?} of node {id}, which \
+                     the user of device {d} never gave it"
+                );
                 if (self.intents).placed(own.then_some(d), id, parent, name, root)
                     || finish
                         && (self.intents).placed(None, id, parent, name, root)
-                        && intents::expected(Check::OwnerFinish)
+                        && intents::expected(Check::OwnerFinish, &finishes)
                 {
                     return None;
                 }
                 Some(match (finish, own) {
-                    (true, _) => format!(
-                        "a commit of device {d} finishes the pending name {name:?} of node {id}, \
-                         which the user of device {d} never gave it"
-                    ),
+                    (true, _) => finishes,
                     (false, true) => format!(
                         "a commit of device {d} moves node {id} to {name:?}, a place the user of \
                          device {d} never gave it"
@@ -2462,6 +2479,11 @@ impl World {
                     ),
                 };
                 let before = live_writes(&self.space);
+                let resends: BTreeSet<NodeId> = (self.space.nodes().into_iter())
+                    .filter(|node| node.status == NodeStatus::Live as i32)
+                    .filter(|node| node.edit_rev < node.content_rev)
+                    .map(|node| node.node_id)
+                    .collect();
                 let session = device.session.clone();
                 let sent = Commit { receipts, ..commit };
                 let held = self.space.nodes();
@@ -2586,6 +2608,61 @@ impl World {
                                     self.recovery_copies
                                         .insert(create.node_id.clone(), copy.clone());
                                 }
+                            }
+                            let folders: BTreeSet<&str> = (sent.ops.iter())
+                                .filter_map(|op| match &op.op {
+                                    Some(op::Op::Delete(delete)) => Some(delete.node_id.as_str()),
+                                    _ => None,
+                                })
+                                .collect();
+                            let nodes = self.space.nodes();
+                            let parents: BTreeMap<&str, &str> = (nodes.iter())
+                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                                .collect();
+                            let gone = before.iter().filter(|(w, node)| {
+                                let digest = self.held.get(*node).and_then(|held| held.get(*w));
+                                !after.contains_key(w) && digests.get(*node) != digest
+                            });
+                            for (lost, node) in gone {
+                                let writes = self.held.get(node);
+                                let digest = writes.and_then(|writes| writes.get(lost));
+                                let replaced = |write: &i64| {
+                                    std::iter::successors(self.overwrote.get(write), |write| {
+                                        self.overwrote.get(write)
+                                    })
+                                    .any(|write| write == lost)
+                                };
+                                let asked = |removed: &BTreeSet<i64>| {
+                                    (removed.iter()).any(|write| {
+                                        write == lost
+                                            || replaced(write)
+                                                && writes.is_some_and(|w| w.contains_key(write))
+                                            || digest.is_some()
+                                                && writes.and_then(|w| w.get(write)) == digest
+                                    })
+                                };
+                                let trashed_with_a_folder = resends.contains(node)
+                                    && (nodes.iter()).any(|trashed| {
+                                        trashed.node_id == *node
+                                            && trashed.status != NodeStatus::Live as i32
+                                    })
+                                    && std::iter::successors(Some(node.as_str()), |id| {
+                                        parents.get(id).copied()
+                                    })
+                                    .any(|id| folders.contains(id))
+                                    && (self.removed[d].iter())
+                                        .any(|write| writes.is_some_and(|w| w.contains_key(write)));
+                                if self.removed.iter().any(asked)
+                                    || trashed_with_a_folder
+                                    || trashed_under(&nodes, *lost, &folders)
+                                {
+                                    continue;
+                                }
+                                return Err(Failure::Broken(format!(
+                                    "a commit of device {d} took write {lost} out of the server's \
+                                     tree, and no user overwrote or deleted it: {:?}",
+                                    sent.ops
+                                )));
                             }
                             let live = live_nodes(&self.space);
                             for deletion in &mut self.deletions {
@@ -4176,10 +4253,9 @@ mod tests {
         trees.set_synced(id, Some(shape));
         trees.settle(&Default::default());
         world.devices[1].persist().unwrap();
-        send(&mut world, 1).unwrap();
-        let removed = world.quiesce();
+        let removed = send(&mut world, 1);
         assert!(
-            matches!(&removed, Err(Failure::Broken(why)) if why.starts_with("write 2 ")),
+            matches!(&removed, Err(Failure::Broken(why)) if why.contains("write 2")),
             "{removed:?}"
         );
     }
