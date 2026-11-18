@@ -707,8 +707,16 @@ impl Disk {
             .filter(|(_, stale)| !stale)
             .map(|(change, _)| change)
             .collect();
+        let listed: Vec<PathBuf> = (read.iter())
+            .filter(|folder| {
+                !scopes
+                    .iter()
+                    .any(|at| at.parent() == Some(folder.as_path()))
+            })
+            .cloned()
+            .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
-        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&read) {
+        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&listed) {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);
@@ -719,7 +727,7 @@ impl Disk {
                 }
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
-                engine.listed(&read);
+                engine.listed(&listed);
                 Ok(engine.checkpoint(tx)?)
             })?;
         } else {
