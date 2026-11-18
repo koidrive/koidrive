@@ -264,6 +264,9 @@ jobs:
         run: cargo fmt --all --check
       - if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- -D warnings
+      - name: Run the doctests, which nextest does not run
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: cargo test --doc --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
       - name: Verify Rust workspace feature parity
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: python3 scripts/test-ci-rust-partitions.py FeatureParity -v
@@ -563,14 +566,29 @@ jobs:
           pattern: rust-junit-*
           path: ${{ runner.temp }}/junit
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
-          pattern: rust-test-inventory-*
-          path: ${{ runner.temp }}/inventory
+          name: rust-test-inventory-ubuntu-latest
+          path: ${{ runner.temp }}/inventory/rust-test-inventory-ubuntu-latest
+      - if: needs.changes.outputs.rust_macos == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: rust-test-inventory-macos
+          path: ${{ runner.temp }}/inventory/rust-test-inventory-macos
       - name: Check that the shards ran every test once, and report timings and flaky tests
+        env:
+          RUST_MACOS: ${{ needs.changes.outputs.rust_macos }}
         run: |
           status=0
-          for os in ubuntu-latest macos; do
-            if [ ! -f "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" ]; then continue; fi
+          oses=ubuntu-latest
+          if [ "$RUST_MACOS" = true ]; then oses="$oses macos"; fi
+          for os in $oses; do
+            if [ ! -f "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" ]; then
+              echo "::error::rust build ($os) uploaded no test inventory, so its shards cannot be checked."
+              status=1
+              continue
+            fi
             mkdir -p "$RUNNER_TEMP/by-os/$os"
             mv "$RUNNER_TEMP/junit/rust-junit-$os-"* "$RUNNER_TEMP/by-os/$os/" || true
             python3 scripts/ci-rust-tests.py report --os "$os" --list "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" \

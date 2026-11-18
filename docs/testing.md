@@ -4,8 +4,8 @@
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory -- -D warnings
-cargo test --workspace --locked --features koidrive-cli/test-install-inventory
+cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- -D warnings
+cargo test --workspace --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
 ```
 
 ## CI runs these jobs
@@ -14,12 +14,12 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 
 | Job | What it checks | Run it locally |
 |---|---|---|
-| `rust lint` (macOS) | Workspace fmt and clippy, and on Ubuntu the property-persistence check and the tests of the CI tools | The commands above and the [property-persistence check](#property-tests) below |
+| `rust lint` (macOS) | Workspace clippy with the `test-install-inventory` and `test-setup` features; on Ubuntu also fmt, the doctests, the property-persistence check and the tests of the CI tools | The fmt and clippy commands above, `cargo test --doc --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup`, and the [property-persistence check](#property-tests) below |
 | `rust build` (macOS) | Builds every selected test binary once into a [nextest archive](https://nexte.st/docs/ci-features/archiving/) | `cargo nextest archive --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup --archive-file tests.tar.zst` |
-| `rust tests` (macOS) | Runs the archive's tests in shards, [balanced by measured test time](#shards-follow-measured-test-times) | `cargo nextest run --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup` |
+| `rust tests` (macOS) | Runs the archive's tests in shards, [balanced by measured test time](#shards-follow-measured-test-times) | To rerun shard N, download the run's `rust-tests-<os>` artifact into `rust-tests/`, then `cargo nextest run --archive-file rust-tests/archive.tar.zst --extract-to . --extract-overwrite --config-file rust-tests/shards.toml --profile shard-N`. Without shards: `cargo nextest run --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup` |
 | `rust special` (macOS) | The tests that need mounted disks, saved-case replays without random cases, or a release version stamped into the CLI | The commands in the job's steps |
 | `rust tests (…, sim)` (macOS) | `koidrive-sim` in the `checked` profile | `cargo test -p koidrive-sim --profile checked --features koidrive-engine/serde` |
-| `rust test report` | Every listed test ran in exactly one shard; per-test timings and flaky tests | `python3 scripts/ci-rust-tests.py report --help` |
+| `rust test report` | Every listed test ran in exactly one shard; per-test timings and flaky tests | Download the run's `rust-test-inventory-<os>` artifact into `inventory/` and its `rust-junit-<os>-*` artifacts into `junit/`, then `python3 scripts/ci-rust-tests.py report --os <os> --list inventory/list.json --junit junit --out report` |
 | `server` | Type checks, the Worker's Vitest suite, and the unit tests of the deploy-test scripts | In `server/`: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, then `pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts run.unit e2e.unit load.unit bench.unit` |
 | `server deploy check` | A copy of `server/` deploys on its own (a dry run, then `wrangler dev` and a claim), and the server bundle that the CLI embeds packs cleanly | `node server/scripts/check-deploy.mjs` |
 | `net integration`, `driver integration`, `cli integration`, `ffi integration` | The tests whose `#[ignore]` reason says they need the Worker, against the Worker under `wrangler dev` | After `pnpm install` in `server/`: `core/net/scripts/integration-test.sh`, `core/driver/scripts/integration-test.sh`, `cli/scripts/integration-test.sh` or `core/ffi/scripts/integration-test.sh` |

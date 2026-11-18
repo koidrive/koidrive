@@ -66,6 +66,12 @@ def sim_command(workflow):
         raise ValueError("The checked build must use the execution's Cargo arguments")
     if execution.count("-p") != 1 or execution[execution.index("-p") + 1] != "koidrive-sim":
         raise ValueError("The sim job must execute koidrive-sim alone")
+    rest = iter(execution[2:])
+    for arg in rest:
+        if arg in ("--profile", "-p", "--features"):
+            next(rest)
+        elif arg not in ("--locked", "--no-fail-fast"):
+            raise ValueError(f"The sim job must not filter default test targets, but passes {arg}")
     return execution
 
 
@@ -77,21 +83,23 @@ def check_partitions(workflow, selector=None, archive_args=CI_RUST_TESTS.archive
     if "ci-rust-tests.py archive-args" not in job(workflow, "rust-build-linux"):
         raise ValueError("The archive must be built from ci-rust-tests.py archive-args")
     workspace = members()
-    partitions = {}
-    for size in range(1, len(ARCHIVED) + 1):
-        for subset in itertools.combinations(ARCHIVED, size):
-            args = archive_args(set(subset))
-            selected_packages(args, workspace)
-            partitions["+".join(subset)] = ["cargo", "test", "--locked", *args]
     archived = selected_packages(archive_args(set(ARCHIVED)), workspace)
     sim = sim_command(workflow)
     if "koidrive-sim" in archived:
         raise ValueError("Every package must run in exactly one Rust partition, but koidrive-sim is in the archive and the sim job")
     if archived | {"koidrive-sim"} != workspace:
         raise ValueError(f"Every package must run in exactly one Rust partition, but {sorted(workspace - archived - {'koidrive-sim'})} runs in none")
-    for package, job_name in (("koidrive-driver", "rust_driver"), ("koidrive-engine", "rust_engine")):
-        if package not in selected_packages(archive_args({job_name}), workspace):
-            raise ValueError(f"{job_name} alone must archive {package}")
+    partitions = {}
+    for size in range(1, len(ARCHIVED) + 1):
+        for subset in itertools.combinations(ARCHIVED, size):
+            args = archive_args(set(subset))
+            expected = {CI_RUST_TESTS.SUITES[name] for name in subset if name in CI_RUST_TESTS.SUITES}
+            if "rust" in subset:
+                expected |= workspace - set(CI_RUST_TESTS.SUITES.values()) - {"koidrive-sim"}
+            actual = selected_packages(args, workspace)
+            if actual != expected:
+                raise ValueError(f"The {'+'.join(subset)} archive must hold {sorted(expected)}, but misses {sorted(expected - actual)} and adds {sorted(actual - expected)}")
+            partitions["+".join(subset)] = ["cargo", "test", "--locked", *args]
     partitions["sim"] = [arg for arg in sim if arg not in ("--profile", "checked", "--no-fail-fast")]
     return partitions
 
@@ -147,12 +155,25 @@ class RustPartitions(unittest.TestCase):
     def test_an_archive_that_drops_a_suite_is_rejected(self):
         def archive(selected):
             return CI_RUST_TESTS.archive_args({"rust_driver"} if selected == {"rust_engine"} else selected)
-        with self.assertRaisesRegex(ValueError, "rust_engine alone must archive koidrive-engine"):
+        with self.assertRaisesRegex(ValueError, r"rust_engine archive must hold \['koidrive-engine'\], but misses \['koidrive-engine'\]"):
+            check_partitions(self.workflow, archive_args=archive)
+
+    def test_a_partition_that_drops_a_package_only_the_full_archive_holds_is_rejected(self):
+        def archive(selected):
+            args = CI_RUST_TESTS.archive_args(selected)
+            return [*args, "--exclude", "koidrive-fs"] if selected == {"rust"} else args
+        with self.assertRaisesRegex(ValueError, r"The rust archive must hold .*, but misses \['koidrive-fs'\]"):
             check_partitions(self.workflow, archive_args=archive)
 
     def test_a_target_filter_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "must not filter default test targets"):
             check_partitions(self.workflow, archive_args=lambda selected: [*CI_RUST_TESTS.archive_args(selected), "--lib"])
+
+    def test_a_sim_target_filter_is_rejected_even_when_every_command_agrees(self):
+        changed = self.workflow.replace("-p koidrive-sim --features koidrive-engine/serde", "-p koidrive-sim --lib --features koidrive-engine/serde")
+        self.assertEqual(changed.count("-p koidrive-sim --lib"), 3)
+        with self.assertRaisesRegex(ValueError, "sim job must not filter default test targets, but passes --lib"):
+            check_partitions(changed)
 
     def test_a_sim_job_on_another_package_is_rejected(self):
         changed = self.workflow.replace("-p koidrive-sim --features", "-p koidrive-chunk --features")

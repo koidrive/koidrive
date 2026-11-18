@@ -107,7 +107,7 @@ def command_report(args):
         for binary, name, case in cases(junit):
             ran[(binary, name)] = ran.get((binary, name), 0) + 1
             times[(binary, name)] = float(case.get("time") or 0)
-            if case.find("flakyFailure") is not None:
+            if case.find("flakyFailure") is not None or case.find("flakyError") is not None:
                 flaky.append((binary, name, junit.parent.name))
             elif case.find("failure") is not None or case.find("error") is not None:
                 failed.append((binary, name, junit.parent.name))
@@ -119,10 +119,12 @@ def command_report(args):
     grouped = {}
     for (binary, name), seconds in times.items():
         entry = grouped.setdefault(binary, {"total": 0.0, "count": 0, "tests": {}})
-        entry["total"] = round(entry["total"] + seconds, 1)
+        entry["total"] += seconds
         entry["count"] += 1
         if seconds >= SLOW:
             entry["tests"][name] = round(seconds, 1)
+    for entry in grouped.values():
+        entry["total"] = round(entry["total"], 1)
     (out / "rust-test-times.json").write_text(json.dumps({args.os: grouped}, indent=1, sort_keys=True) + "\n")
     with (out / "test-times.tsv").open("w") as tsv:
         tsv.write("seconds\tbinary\ttest\n")

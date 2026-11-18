@@ -115,13 +115,18 @@ class Report(unittest.TestCase):
     def test_a_complete_run_reports_timings_and_flaky_tests(self):
         status, out, files = self.run_report({
             "rust-junit-fixture-1": [("a", "x", "3.5", ""), ("a", "y", "0.1", '<flakyFailure message="boom"/>')],
-            "rust-junit-fixture-2": [("b", "z", "1.0", '<failure message="no"/>')],
-        }, [("a", "x"), ("a", "y"), ("b", "z")])
+            "rust-junit-fixture-2": [("b", "z", "1.0", '<failure message="no"/>'), ("b", "w", "0.2", '<flakyError message="crash"/>')],
+        }, [("a", "x"), ("a", "y"), ("b", "z"), ("b", "w")])
         self.assertEqual(status, 0)
         self.assertIn("| a | y | rust-junit-fixture-1 |", out)
-        self.assertIn("1 failed, 1 passed only on retry", out)
+        self.assertIn("| b | w | rust-junit-fixture-2 |", out)
+        self.assertIn("1 failed, 2 passed only on retry", out)
         times = json.loads((files / "rust-test-times.json").read_text())["fixture"]
         self.assertEqual(times["a"], {"total": 3.6, "count": 2, "tests": {"x": 3.5}})
+
+    def test_a_binary_total_is_rounded_once(self):
+        _, _, files = self.run_report({"s1": [("a", name, "0.04", "") for name in "xyz"]}, [("a", "x"), ("a", "y"), ("a", "z")])
+        self.assertEqual(json.loads((files / "rust-test-times.json").read_text())["fixture"]["a"]["total"], 0.1)
 
     def test_a_test_no_shard_ran_fails(self):
         status, out, _ = self.run_report({"s1": [("a", "x", "1", "")]}, [("a", "x"), ("a", "lost")])
