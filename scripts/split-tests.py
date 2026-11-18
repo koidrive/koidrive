@@ -165,7 +165,7 @@ def split_at(executable, path, revision):
 def pending(executable, mapping, revision):
     landed = [path for path in mapping if split_at(executable, path, revision)]
     for path in landed:
-        print(f"SKIP {path}: already split at {revision}; run \`python3 scripts/split-tests.py map\` to drop its entry")
+        print(f"SKIP {path}: already split at {revision}; run `python3 scripts/split-tests.py map` to drop its entry")
     return {path: assignments for path, assignments in mapping.items() if path not in landed}
 
 
@@ -291,7 +291,7 @@ def fragments(executable, changed, revision):
             root = read_source(revision, path.parent.with_suffix(".rs").as_posix())
         except subprocess.CalledProcessError:
             continue
-        if b"include!" in root and any(path.parent.parent / item["name"].removeprefix("include:") == path
+        if f'include!("{path.parent.name}/{path.name}")'.encode() in root and any(path.parent.parent / item["name"].removeprefix("include:") == path
                                        for item in includes(executable, root)):
             found.append(name)
     return found
@@ -423,7 +423,7 @@ def main():
     if args.command == "map":
         found = subprocess.run(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, capture_output=True, text=True)
         if found.returncode:
-            raise ValueError("map compares proptest blocks with `git merge-base origin/main HEAD`, which failed; "
+            raise ValueError("map drops sources already split at `git merge-base origin/main HEAD`, which failed; "
                              "run `git fetch origin main` and retry")
         base_ref = found.stdout.strip()
     if base_ref and subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],

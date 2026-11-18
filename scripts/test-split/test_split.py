@@ -318,7 +318,7 @@ class SplitTests(unittest.TestCase):
         module = self.root / "plain/child.rs"
         module.parent.mkdir()
         module.write_bytes(b"fn  spaced(){}\n")
-        (self.root / "plain.rs").write_bytes(b"mod child;\n")
+        (self.root / "plain.rs").write_bytes(b'mod child;\ninclude!(concat!(env!("OUT_DIR"), "/generated.rs"));\n')
         changed = {"tests/scenario.rs": {spaced}, "plain/child.rs": {1}}
         self.assertEqual(split.fragments(self.executable, changed, None), ["tests/scenario.rs"])
         with self.assertRaisesRegex(ValueError, r"lines \[%d\]" % spaced):
