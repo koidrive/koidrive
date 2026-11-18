@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use koidrive_engine::ignore::LocalRules;
-use koidrive_fs::Snapshot;
+use koidrive_fs::{RootProblem, Snapshot};
 use koidrive_net::{
     Auth, Backoff, CallError, ChunkError, Session, SessionConfig, StopReason, Transfer, UploadGate,
 };
@@ -102,6 +102,8 @@ enum Halt {
     /// Only a person can fix it. The task waits for a restart.
     #[error("{1}")]
     Person(Halted, String),
+    #[error("{1}")]
+    Older(Halted, String),
     #[error("reconnecting")]
     Reconnect,
 }
@@ -110,6 +112,9 @@ impl From<Stop> for Halt {
     fn from(stop: Stop) -> Self {
         let why = failures::halted(&stop);
         match stop {
+            Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. } => {
+                Halt::Older(why, stop.to_string())
+            }
             Stop::Withdrawn(_) | Stop::Root(_) | Stop::OtherRoot => {
                 Halt::Root(why, stop.to_string())
             }
@@ -129,9 +134,6 @@ impl FolderTask {
         transfer
     }
 
-    /// Syncs the folder until `stop` is set. After a [`Halt::Root`] it syncs again, waiting longer after each one up
-    /// to [`ROOT_RECHECK`]; after a [`Halt::Person`] it waits for `stop`. A sync after the first takes only the
-    /// folder the first one locked: another one at the path, even with the space's marker, waits for a restart.
     pub async fn run(self, mut stop: watch::Receiver<bool>) {
         let space_id = self.link.space_id.clone();
         let mut again = ROOT_AGAIN;
@@ -163,6 +165,11 @@ impl FolderTask {
                 Halt::Person(why, problem) => {
                     (*why, problem.clone(), crate::lifecycle::Recovery::Restart)
                 }
+                Halt::Older(why, problem) => (
+                    *why,
+                    format!("{problem}; checking the folder again"),
+                    crate::lifecycle::Recovery::Relink,
+                ),
                 Halt::Reconnect => unreachable!("handled above"),
             };
             self.status.halt(why, problem, recovery);
@@ -223,6 +230,12 @@ impl FolderTask {
             Ok(folder) => folder,
             Err(stop) => return stop.into(),
         };
+        if let Err(error) = self.status.opened() {
+            return Halt::Person(
+                Halted::Io,
+                format!("the folder's lifecycle cannot be saved: {error}"),
+            );
+        }
         if let Some(adopted) = adopted {
             let (proof, children) = match adopted {
                 Adopted::Volume => (RootProof::Volume, None),

@@ -158,3 +158,4 @@ include!("upgrade_cases/schema_remote_nodes_without_intents.rs");
 include!("upgrade_cases/kept_folders.rs");
 include!("upgrade_cases/commit_slot_tokens.rs");
 include!("upgrade_cases/schema_node_upserts.rs");
+include!("upgrade_cases/schema_forget_sync_state.rs");

@@ -64,6 +64,21 @@ fn concise_halted_status_gives_a_restart_after_commandless_problems() {
             "{summary}"
         );
     }
+    let status: Status = serde_json::from_value(serde_json::json!({"account":null, "running":true, "folders":[{
+        "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work", "state":"halted", "history_id":null, "last_seq":null,
+        "head_seq":null, "remote_nodes":0, "local_entries":null, "questions":0, "problem":"an older copy", "relinkable":true
+    }]})).unwrap();
+    let service = serde_json::from_value(
+        serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+    )
+    .unwrap();
+    let summary = status_summary(
+        &status,
+        &[],
+        &service,
+        &UpdateNoticeData::of(&status.update, "0.1.0", None),
+    );
+    assert!(summary.contains("If this copy is the one to keep, run koi folder relink /home/ada/Work. Nothing it lacks is deleted on the server.") && !summary.contains("restart"), "{summary}");
 }
 
 #[test]
@@ -417,6 +432,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         local_entries: None,
         questions: 0,
         problem: Some("cannot read \u{1b}[31mred\u{9b}31m".into()),
+        relinkable: false,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -465,6 +481,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
         local_entries: None,
         questions: 0,
         problem: None,
+        relinkable: false,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -513,6 +530,7 @@ fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
         local_entries: None,
         questions: 0,
         problem: None,
+        relinkable: false,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -559,6 +577,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         local_entries: None,
         questions: 1,
         problem: None,
+        relinkable: false,
         wait: None,
     };
     assert!(
@@ -592,6 +611,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         local_entries: None,
         questions: 1,
         problem: Some(problem.into()),
+        relinkable: false,
         wait: None,
     };
     let text = folder_text(&folder("a.txt waits to be read again"));
@@ -626,6 +646,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         local_entries: None,
         questions: 0,
         problem: problem.map(str::to_owned),
+        relinkable: false,
         progress: None,
         activity: None,
         bytes_moved: 0,

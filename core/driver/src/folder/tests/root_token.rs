@@ -243,6 +243,18 @@ fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
     assert!(matches!(opened(&site), Err(Stop::DiskBehind { .. })));
     assert_eq!(names(&site.root), ["before.txt"]);
     assert_eq!(remote.tree(), served);
+
+    let blocker = block_marker(&site);
+    assert!(matches!(
+        relink(&site),
+        Err(disk::RelinkError::Stop(Stop::Io(_)))
+    ));
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(remote.tree(), served);
+    assert_eq!(names(&site.root), ["before.txt", "two.txt"]);
 }
 
 #[test]
@@ -643,5 +655,351 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     disks.detach(&site.root);
 }
 
+fn relink(site: &Site) -> Result<u64, disk::RelinkError> {
+    relink_until(site, Box::new(|_| {}))
+}
 
+fn relink_until(
+    site: &Site,
+    hook: Box<dyn FnMut(disk::Cut) + Send>,
+) -> Result<u64, disk::RelinkError> {
+    let lock = claim::lock(&site.root)
+        .unwrap()
+        .expect("the folder is not locked");
+    disk::relink_with_hook(&lock, &site.link, &mut Store::open(&site.db).unwrap(), hook)
+}
 
+fn a_copy_from_before_an_add_an_edit_and_a_delete(remote: &mut Remote) -> Site {
+    let (site, mut a) = linked(remote, "a");
+    a.create(remote, &site.root.join("kept.txt"), b"kept");
+    a.create(remote, &site.root.join("edited.txt"), b"old");
+    a.create(remote, &site.root.join("gone.txt"), b"gone");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    a.create(remote, &site.root.join("after.txt"), b"after");
+    a.create(remote, &site.root.join("edited.txt"), b"new");
+    fs::remove_file(site.root.join("gone.txt")).unwrap();
+    a.rescan();
+    a.rest(remote);
+    drop(a);
+    assert_eq!(remote.names(), ["after.txt", "edited.txt", "kept.txt"]);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    site
+}
+
+#[test]
+fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_once_discarded() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let served = remote.tree();
+    let copied = marker_of(&site).token;
+    let stored = tokens_of(&site).current;
+    let private = site.root.join(koidrive_fs::PRIVATE_DIR);
+    for dir in [
+        koidrive_fs::STAGING_DIR,
+        koidrive_fs::QUARANTINE_DIR,
+        koidrive_fs::TRASH_DIR,
+    ] {
+        fs::create_dir_all(private.join(dir)).unwrap();
+        fs::write(private.join(dir).join("left.txt"), b"left").unwrap();
+    }
+
+    relink(&site).unwrap();
+    assert_rotated_from(&site, &[copied, stored]);
+    assert!(files(&private.join(koidrive_fs::QUARANTINE_DIR)).is_empty());
+    let back = (names(&site.root).into_iter())
+        .find(|name| name.starts_with("left (recovered "))
+        .expect("the quarantined file is back");
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(remote.tree(), served);
+    let file = |name: &str, text: &str| (name.to_owned(), text.to_owned());
+    assert_eq!(
+        files(&site.root),
+        [
+            file("after.txt", "after"),
+            file("edited.txt", "old"),
+            file("gone.txt", "gone"),
+            file("kept.txt", "kept"),
+            file(&back, "left"),
+        ]
+    );
+    let [question] = &shown(&site)[..] else {
+        panic!("one question");
+    };
+    let held: Vec<_> = (question.items.iter())
+        .map(|item| item.path.unquoted())
+        .collect();
+    assert_eq!(held, ["edited.txt", "gone.txt", back.as_str()]);
+    drop(a);
+
+    answer(&site, Answer::Discard);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(a.folder.view().questions, 0);
+    assert_eq!(remote.tree(), served);
+    assert_eq!(
+        files(&site.root),
+        [
+            file("after.txt", "after"),
+            file("edited.txt", "new"),
+            file("kept.txt", "kept"),
+        ]
+    );
+    let mut trashed: Vec<_> = (files(&private.join(koidrive_fs::TRASH_DIR)).into_iter())
+        .map(|(_, text)| text)
+        .filter(|text| !text.starts_with('{'))
+        .collect();
+    trashed.sort();
+    assert_eq!(trashed, ["gone", "left", "left", "old"]);
+}
+
+#[test]
+fn a_file_the_newer_copy_deleted_reaches_the_server_only_once_the_question_is_answered() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    drop(a);
+
+    answer(&site, Answer::Publish);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(remote.names().contains(&"gone.txt".to_owned()));
+    assert_eq!(a.folder.view().questions, 0);
+}
+
+#[test]
+fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own()
+{
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("one.txt"), b"one");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"notes");
+    let node = node_named(&a, "notes.txt");
+    fs::remove_file(site.root.join("notes.txt")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    drop(a);
+    let (marker, tokens) = (marker_of(&site), tokens_of(&site));
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+    assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
+    assert!(site.stored().cursor.is_some());
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(halts_as_a_copy(&site));
+    let id = ask(&site, &RestoreIntent::from_trash(node, None, None).unwrap());
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(a.folder.view().questions, 0);
+    assert_eq!(ended(&site), [(id, Outcome::Restored)]);
+    a.create(&mut remote, &site.root.join("two.txt"), b"two");
+    assert_eq!(remote.names(), ["notes.txt", "one.txt", "two.txt"]);
+    assert_eq!(names(&site.root), ["notes.txt", "one.txt", "two.txt"]);
+}
+
+#[test]
+fn relink_checks_the_folder_against_the_disk_identity_the_store_holds() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let stale = Link {
+        root_dev: site.link.root_dev + 1,
+        root_volume: None,
+        ..site.link.clone()
+    };
+    let lock = claim::lock(&site.root).unwrap().unwrap();
+    disk::relink(&lock, &stale, &mut Store::open(&site.db).unwrap()).unwrap();
+}
+
+#[test]
+fn a_relinked_copy_of_a_device_that_only_downloaded_holds_its_own_new_files() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.pull(&remote);
+    b.rest(&mut remote);
+    drop(b);
+    let copy = other.root.with_file_name("copy");
+    copy_folder(&other.root, &copy);
+    drop(other.start());
+    fs::rename(&other.root, other.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &other.root).unwrap();
+    fs::write(other.root.join("mine.txt"), b"mine").unwrap();
+    assert!(halts_as_a_copy(&other));
+
+    relink(&other).unwrap();
+    let mut b = restarted(&other, &mut remote);
+    b.rest(&mut remote);
+    assert_eq!(remote.names(), ["kept.txt"]);
+    assert_eq!(b.folder.view().questions, 1);
+}
+
+#[test]
+fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answers() {
+    for retried in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let path = site.root.join("notes.txt");
+        a.create(&mut remote, &path, b"the first words");
+        fs::write(&path, b"and the second").unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        let node = node_named(&a, "notes.txt");
+        let request = ListVersions {
+            node_id: node.clone(),
+            ..Default::default()
+        };
+        let first = remote.space.list_versions(&request).unwrap().versions[1]
+            .version_id
+            .clone();
+        let intent = RestoreIntent::version(node, first).unwrap();
+        let id = ask(&site, &intent);
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        let Some(Work::Send(commit)) = a.work.pop_front() else {
+            panic!("the restore is sent");
+        };
+        let sent: Vec<Option<op::Op>> = commit.ops.iter().map(|op| op.op.clone()).collect();
+        assert_eq!(sent, [Some(op::Op::Restore(intent.op().clone()))]);
+        let applied = koidrive_proto::v1::op_result::Code::Applied as i32;
+        assert_eq!(
+            remote.commit(&a.caller, &commit).unwrap().results[0].code,
+            applied
+        );
+        drop(a);
+        let head = remote.space.head_seq();
+        let mut marker = marker_of(&site);
+        marker.token = Some("0".repeat(32));
+        koidrive_fs::write_marker(&site.root, &marker).unwrap();
+
+        let blocked = site.root.join(".koidrive/space.json.tmp");
+        if retried {
+            let blocking = blocked.clone();
+            let cut = move |cut| {
+                if cut == disk::Cut::TokenPended {
+                    fs::create_dir(&blocking).unwrap();
+                }
+            };
+            assert!(relink_until(&site, Box::new(cut)).is_err());
+            assert!(halts_as_a_copy(&site));
+        } else {
+            assert_eq!(relink(&site).unwrap(), 1);
+            let mut a = restarted(&site, &mut remote);
+            a.rest(&mut remote);
+            assert_eq!(remote.space.head_seq(), head);
+            assert!(a.folder.engine.commits.restores().contains_key(&id));
+            drop(a);
+        }
+
+        let held = (shown(&site).into_iter())
+            .find(|question| question.items.iter().any(|item| item.node_id == id))
+            .expect("a question holds the restore");
+        let given = koidrive_store::GivenAnswer {
+            answer: Answer::Cancel.as_str().into(),
+            answered_at_ms: NOW,
+        };
+        (Store::open(&site.db).unwrap())
+            .transaction(|tx| tx.answer_question(&held.id, &given))
+            .unwrap();
+        if retried {
+            fs::remove_dir(&blocked).unwrap();
+            assert_eq!(relink(&site).unwrap(), 0);
+        }
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(remote.space.head_seq(), head);
+        let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
+        assert_eq!(
+            ended(&site),
+            [(id.clone(), cancelled)],
+            "retried: {retried}"
+        );
+        let taken = (Store::open(&site.db).unwrap())
+            .transaction(|tx| tx.taken_question(&held.id))
+            .unwrap();
+        assert_eq!(taken.and_then(|taken| taken.answer), Some(given));
+        assert!(
+            shown(&site)
+                .iter()
+                .all(|question| question.items.iter().all(|item| item.node_id != id))
+        );
+    }
+}
+
+#[test]
+fn a_crash_at_each_step_of_a_relink_leaves_the_copy_halted_or_relinked() {
+    for cut in [
+        disk::Cut::TokenPended,
+        disk::Cut::TokenWritten,
+        disk::Cut::TokenCommitted,
+    ] {
+        let mut remote = Remote::new();
+        let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+        let served = remote.tree();
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            relink_until(&site, crash_at(cut))
+        }));
+        assert!(crashed.is_err(), "{cut:?}");
+        if cut == disk::Cut::TokenPended {
+            assert!(halts_as_a_copy(&site), "{cut:?}");
+            relink(&site).unwrap();
+        }
+
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_ne!(a.state(), FolderState::Halted, "{cut:?}");
+        assert_eq!(remote.tree(), served, "{cut:?}");
+        assert!(
+            files(&site.root).contains(&("after.txt".into(), "after".into())),
+            "{cut:?}"
+        );
+    }
+}
+
+#[test]
+fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_halted() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let served = remote.tree();
+    let (marker, tokens) = (marker_of(&site), tokens_of(&site));
+    let lock = claim::lock(&site.root).unwrap().unwrap();
+    let parent = site.root.parent().unwrap();
+    let moved = parent.with_extension("moved");
+    fs::rename(parent, &moved).unwrap();
+    let mut store = Store::open(moved.join(site.db.file_name().unwrap())).unwrap();
+    let refused = disk::relink(&lock, &site.link, &mut store);
+    drop((store, lock));
+    fs::rename(&moved, parent).unwrap();
+    assert!(matches!(
+        refused,
+        Err(disk::RelinkError::Stop(Stop::Withdrawn(_)))
+    ));
+    assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
+    let blocker = block_marker(&site);
+
+    assert!(matches!(
+        relink(&site),
+        Err(disk::RelinkError::Stop(Stop::Io(_)))
+    ));
+    assert!(halts_as_a_copy(&site));
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(halts_as_a_copy(&site));
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(remote.tree(), served);
+}

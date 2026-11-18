@@ -28,6 +28,7 @@ use crate::credential::{
     Credential, CredentialError, CredentialFiles, NewCredentialFile, StoredCredential, api_for,
     next_path,
 };
+use crate::disk::{self, RelinkError, Stop};
 use crate::failures::Halted;
 use crate::folder::FolderTask;
 use crate::ignore::{Matcher, has_sync_entries, local_rules, matcher};
@@ -174,6 +175,13 @@ pub enum DriverError {
     InvalidRestore(&'static str),
     #[error("the folder holds no changes the server refused")]
     NothingToLift,
+    #[error(
+        "{} is not halted as an older copy of the linked folder, so it syncs as it is",
+        koidrive_fs::quoted(.0)
+    )]
+    NotACopy(PathBuf),
+    #[error("{} was not relinked: {why}", koidrive_fs::quoted(.path))]
+    NotRelinked { path: PathBuf, why: String },
     #[error("{} is not an absolute path", koidrive_fs::quoted(.0))]
     RelativePath(PathBuf),
     #[error("{} is not in a linked folder; koi status lists them", koidrive_fs::quoted(.0))]
@@ -229,6 +237,37 @@ pub(crate) fn store_error(path: &Path) -> impl FnOnce(koidrive_store::Error) -> 
         path: path.to_path_buf(),
         error,
     }
+}
+
+enum Fix {
+    Lift(Lift),
+    Relink,
+}
+
+fn relink(link: &Link, store: &Path) -> Result<u64, DriverError> {
+    let root = &link.root;
+    let lock = claim::lock(root)
+        .map_err(io_error(root))?
+        .ok_or_else(|| DriverError::FolderInUse(root.clone()))?;
+    match claim::owner(root).map_err(io_error(root))? {
+        Some(other) if other != owner_of(link) => {
+            return Err(DriverError::FolderOfOtherDevice {
+                device_id: other.device_id,
+                server: other.server,
+            });
+        }
+        _ => {}
+    }
+    let mut opened = Store::open_existing(store).map_err(store_error(store))?;
+    disk::relink(&lock, link, &mut opened).map_err(|error| match error {
+        RelinkError::NotACopy => DriverError::NotACopy(root.clone()),
+        RelinkError::Stop(Stop::Io(error)) => io_error(root)(error),
+        RelinkError::Stop(Stop::Store(error)) => store_error(store)(error),
+        RelinkError::Stop(stop) => DriverError::NotRelinked {
+            path: root.clone(),
+            why: stop.to_string(),
+        },
+    })
 }
 
 /// Lifts the policy halt the store at `path` holds (RFC 0006 section 1, point 5). No task may hold the store.
@@ -1928,22 +1967,38 @@ impl Driver {
     /// for the space's owner to confirm the changes, keeps its state, is restarted all the same, and the error
     /// says why nothing was lifted.
     pub async fn lift(&self, folder: &Path, lift: Lift) -> Result<FolderStatus, DriverError> {
-        self.restart_with(folder, Some(lift)).await
+        self.restart_with(folder, Some(Fix::Lift(lift))).await
+    }
+
+    /// Takes the folder at `folder`, halted as an older copy of the folder it links or after its store was restored on
+    /// its own, as it is now, and syncs it again as [`Driver::restart`] does. The next sync matches
+    /// it against the server's tree as a first link does: nothing it lacks is deleted on the server. Any other folder,
+    /// or one another process syncs, keeps its state, is restarted all the same, and the error says why.
+    pub async fn relink(&self, folder: &Path) -> Result<FolderStatus, DriverError> {
+        self.restart_with(folder, Some(Fix::Relink)).await
     }
 
     async fn restart_with(
         &self,
         folder: &Path,
-        lift: Option<Lift>,
+        fix: Option<Fix>,
     ) -> Result<FolderStatus, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         let _pausing = self.inner.pausing.lock().await;
         self.inner.startup_blocked.store(true, Ordering::SeqCst);
         let startup = BlockedStartup(self);
-        let space_id = find(&mut self.inner.folders.lock().unwrap(), folder)?
-            .link
-            .space_id
-            .clone();
+        let (link, unlinking) = {
+            let mut folders = self.inner.folders.lock().unwrap();
+            let found = find(&mut folders, folder)?;
+            (
+                found.link.clone(),
+                found.unlink.is_some() || found.status.unlinking(),
+            )
+        };
+        if unlinking && matches!(fix, Some(Fix::Relink)) {
+            return Err(DriverError::UnlinkUnfinished(link.root));
+        }
+        let space_id = link.space_id.clone();
         loop {
             let done = (self.inner.folders.lock().unwrap().get(&space_id))
                 .and_then(|folder| folder.run.as_ref().filter(|run| !run.ended()))
@@ -1958,17 +2013,30 @@ impl Driver {
             let _ = stopped.reached.send(());
             let _ = stopped.proceed.await;
         }
-        let lifted = match lift {
-            Some(lift) => (self.inner.paths.store(&space_id))
+        let fixed = match fix {
+            Some(Fix::Lift(lift)) => (self.inner.paths.store(&space_id))
                 .map_err(DriverError::from)
-                .and_then(|path| lift_halt(&path, lift)),
-            None => Ok(()),
+                .and_then(|path| lift_halt(&path, lift))
+                .map(|()| None),
+            Some(Fix::Relink) => (self.inner.paths.store(&space_id))
+                .map_err(DriverError::from)
+                .and_then(|path| relink(&link, &path))
+                .map(Some),
+            None => Ok(None),
         };
         let reset = {
             let mut folders = self.inner.folders.lock().unwrap();
             let folder = folders
                 .get_mut(&space_id)
                 .expect("only an unlink removes a folder, and it holds the lifecycle lock");
+            if let Ok(Some(questions)) = fixed {
+                let mut status = folder.status.lock().unwrap();
+                status.history_id = None;
+                status.last_seq = None;
+                status.remote_nodes = 0;
+                status.questions = questions;
+                status.recovery = None;
+            }
             if folder.run.as_ref().is_none_or(Running::ended) {
                 folder.run = None;
                 folder
@@ -1979,7 +2047,13 @@ impl Driver {
                 Ok(())
             }
         };
-        reset?;
+        if let Err(error) = reset {
+            if let Err(unfixed) = fixed {
+                tracing::warn!(%error, "the folder's lifecycle was not saved after its fix failed");
+                return Err(unfixed);
+            }
+            return Err(error);
+        }
         drop(startup);
         let credential = self.inner.credential.lock().unwrap().clone();
         let mut folders = self.inner.folders.lock().unwrap();
@@ -1993,7 +2067,7 @@ impl Driver {
         let status = folder.status.lock().unwrap().clone();
         drop(folders);
         self.changed();
-        lifted.map(|()| status)
+        fixed.map(|_| status)
     }
 
     /// Starts the task of `folder` unless it is being unlinked or its task still runs. `all` are the roots of every
@@ -2346,6 +2420,7 @@ fn stopped_status(space_id: &str) -> FolderStatus {
         local_entries: None,
         questions: 0,
         problem: None,
+        relinkable: false,
         wait: None,
         progress: None,
         held_disks: Vec::new(),
@@ -8184,7 +8259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linking_a_folder_whose_unlink_is_unfinished_is_refused() {
+    async fn linking_or_relinking_a_folder_whose_unlink_is_unfinished_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let root = base.join("Koidrive");
@@ -8204,6 +8279,11 @@ mod tests {
         assert!(
             matches!(linked, Err(DriverError::UnlinkUnfinished(ref folder)) if *folder == root),
             "{linked:?}"
+        );
+        let relinked = driver.relink(&root).await;
+        assert!(
+            matches!(relinked, Err(DriverError::UnlinkUnfinished(ref folder)) if *folder == root),
+            "{relinked:?}"
         );
         driver.sign_out(true).await.unwrap();
         signed_out(&driver, &paths, &root);

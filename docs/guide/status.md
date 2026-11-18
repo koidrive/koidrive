@@ -51,6 +51,16 @@ This stops the folder and syncs it again from the start. A folder that was moved
 
 A folder whose sync database can't be opened halts, and its files stay as they are. Run `koi folder restart` to try again, or unlink the folder and link it again. If `koi status` can't name the folder's path, it shows `(path unknown)` and the space's id instead. Remove that folder's state with `koi folder unlink --space <space id>`, then link the folder again.
 
+## Keep an older copy of the folder
+
+The folder halts when it holds an older copy of itself, such as a backup restored over it, so that files missing from the copy aren't deleted on the server. To sync this copy:
+
+```sh
+koi folder relink ~/Koidrive
+```
+
+Files the copy lacks download again, and files that differ from the server's wait for you in `koi resolve`.
+
 ## Send refused changes again
 
 The folder halts when the server refuses its changes for a reason that retrying won't fix, such as a device without access to the space. The problem line names the cause and what to run once it is fixed. After the daemon restarts, the problem line gives only the server's numeric code, such as `code 2` when the device lacks access to the space or `code 3` when the server found the changes invalid. Run one of these two commands, not both.

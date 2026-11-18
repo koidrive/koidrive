@@ -414,6 +414,7 @@ impl From<DriverError> for CliError {
             | DriverError::MarkerOfOtherSpace(_)
             | DriverError::UnsupportedFileSystem
             | DriverError::NothingToLift
+            | DriverError::NotACopy(_)
             | DriverError::RelativePath(_)
             | DriverError::ShareLinkAmbiguous(_)
             | DriverError::Paths(PathsError::BadSpaceId(_))
@@ -566,6 +567,14 @@ fn driver_human(error: &DriverError) -> Option<String> {
         }
         DriverError::NothingToLift => {
             "That folder has no refused changes to retry. Run koi status to see its current sync state."
+        }
+        DriverError::NotACopy(_) => {
+            "That folder did not halt as an older copy, so there is nothing to relink. Run koi status to see its current sync state."
+        }
+        DriverError::NotRelinked { why, .. } => {
+            return Some(format!(
+                "The folder could not be relinked because {why}. Fix that, then run koi folder relink again."
+            ));
         }
         DriverError::RelativePath(_) => "Use the full path to the file or folder, starting with /.",
         DriverError::OutsideLinkedFolders(_) => {

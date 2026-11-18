@@ -762,6 +762,7 @@ mod tests {
             local_entries: None,
             questions: 0,
             problem: None,
+            relinkable: false,
             wait: None,
             recovery: None,
             progress: None,

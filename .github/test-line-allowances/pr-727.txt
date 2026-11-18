@@ -1,0 +1,19 @@
+385
+# koi folder relink must take exactly the folders that start halts as an older copy, and lose
+# nothing it held. The disk test changes the marker while an effect in flight is recovered, the
+# only way to reach the second check of start; no folder test can stop there. The store test
+# lists every table as kept or forgotten, so a new migration has to choose. The folder tests
+# extend existing relink tests with a restore queued while halted, a quarantined file and a
+# moved ancestor; each of those asserts on state no other test reaches.
+# The review follow-up adds a version restore whose result is lost before a relink (applied twice
+# without the hold), a relink checked against the disk identity the store holds, a halted relink
+# replayed under its request ID, and extensions of existing lifecycle, unlink, status and error
+# tests. Each reaches a path the earlier tests leave untouched.
+# The second follow-up answers the relink's restore question through the store as koi resolve does,
+# relinks a copy of a device that only downloaded, keeps a read-only device's asked restores, and
+# fails a lifecycle save after a refused relink; each covers a fix no earlier test reaches.
+# The third follow-up retries a relink whose marker write failed after the person answered its restore
+# question, and checks that a second reset keeps that question only while it holds the same restores.
+# The fourth follow-up keeps a Repeat whose commit carried only an unrelated edit and asks again once
+# the commit carried the restore, and checks that the restore the relink drops was applied.
+# The last 12 lines are rustfmt's layout of the relink tests, which sit in an include! fragment that cargo fmt does not reach.

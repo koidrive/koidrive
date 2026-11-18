@@ -64,6 +64,9 @@ pub struct FolderStatus {
     pub questions: u64,
     /// Why the folder is halted, or what the last transient failure was.
     pub problem: Option<String>,
+    /// Whether `Driver::relink` resolves the halt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relinkable: bool,
     /// The call the folder puts off, as soon as it waits: why and until when. `problem` shows a wait only once it is
     /// long or keeps failing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,7 +323,8 @@ pub enum FolderState {
     UpToDate,
     /// The server cannot be reached; the session keeps retrying.
     Offline,
-    /// Stopped by a problem; `problem` says which. A folder that was moved away or fails its root check syncs again
-    /// on its own once it passes the check. Any other problem needs a person, and the folder waits for a restart.
+    /// Stopped by a problem; `problem` says which. A folder that was moved away or fails its root check, including one
+    /// that `relinkable` flags, syncs again on its own once it passes the check. Any other problem needs a person, and
+    /// the folder waits for a restart.
     Halted,
 }

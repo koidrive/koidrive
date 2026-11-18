@@ -47,7 +47,7 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Dir as EngineDir, Displaced as EngineDisplaced,
-    Effect as EngineEffect, EffectRecord, Location as EngineLocation, location_of,
+    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_of,
 };
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
@@ -360,7 +360,7 @@ impl Disk {
     /// 5. The effects in flight are recovered in one section without staging anything again, and acknowledged in one
     ///    transaction. An interrupted one is planned again; one that met another state on disk stays blocked, and so
     ///    does one that recovery found done where L shows another entry
-    ///    ([`koidrive_engine::effects::Effects::confirms`]). The marker must then equal *e*.
+    ///    ([`koidrive_engine::effects::Effects::confirms`]).
     /// 6. Staged files without an effect are deleted.
     ///
     /// The observer then resets the paths of the recovered effects to L, so it reads a file an effect placed before
@@ -408,39 +408,17 @@ impl Disk {
             .admits(&disk.space.root_at()?)
             .map_err(Stop::Root)?;
         let found = disk.marker()?;
-        let marker = found.effects;
-        let cleared = engine.effects.cleared();
-        let upper = cleared + engine.effects.in_flight().len() as u64;
-        if marker <= upper {
-            (store.transaction(|tx| tx.root_tokens())?)
-                .admits(&found)
-                .map_err(Stop::Root)?;
-        }
-        if marker > upper {
+        let tokens = store.transaction(|tx| tx.root_tokens())?;
+        if let Standing::StoreOlder = standing(&found, &tokens, &engine.effects)? {
             tracing::warn!(
                 space_id = link.space_id,
-                marker,
-                upper,
+                marker = found.effects,
+                cleared = engine.effects.cleared(),
                 "the store is older than the folder; recovering"
             );
-            let trees = &engine.trees;
-            let name = |held: &OsStr, found: FileId| {
-                let id = held.to_string_lossy();
-                let same = |node: &&LocalNode| {
-                    let identity = &node.identity;
-                    (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
-                };
-                (trees.local().iter().map(|(_, node)| node))
-                    .find(same)
-                    .or_else(|| trees.local().get(&id))
-                    .map(|node| node.shape.name.clone())
-                    .or_else(|| trees.synced().live(&id).map(|shape| shape.name.clone()))
-                    .or_else(|| trees.remote().get(&id).map(|node| node.shape.name.clone()))
-                    .map_or_else(|| held.to_owned(), OsString::from)
-            };
-            disk.space.bring_back_all(name, SystemTime::now())?;
+            bring_back_all(&disk.space, &engine.trees)?;
             store.transaction(|tx| -> Result<_, Stop> {
-                engine.effects.catch_up(marker);
+                engine.effects.catch_up(found.effects);
                 engine
                     .commits
                     .enter_recovery(RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk));
@@ -456,9 +434,6 @@ impl Disk {
             tracing::warn!(space_id = link.space_id, %err, "could not repair what a recovery brought back");
         }
         disk.brought_back = disk.space.brought_back()?;
-        if marker < cleared {
-            return Err(Stop::DiskBehind { marker, cleared });
-        }
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
@@ -479,9 +454,11 @@ impl Disk {
                 .collect();
             acknowledge(&outcomes, true, &link.space_id, engine, store, hook)?;
             disk.finish_rotation(store)?;
-            let (marker, cleared) = (disk.marker()?.effects, engine.effects.cleared());
-            if marker != cleared {
-                return Err(Stop::DiskBehind { marker, cleared });
+            if let Standing::StoreOlder = standing(&disk.marker()?, &disk.tokens, &engine.effects)?
+            {
+                return Err(Stop::Root(RootProblem::BadMarker(io::Error::other(
+                    "it changed while the folder's effects were recovered",
+                ))));
             }
             let scopes = (translated.iter().zip(&outcomes))
                 .flat_map(|((effect, _), (_, outcome))| scopes(&effect.action, outcome));
@@ -937,16 +914,142 @@ impl Disk {
 
     /// The marker, read through the locked descriptor, for a marker that names this space.
     fn marker(&self) -> Result<Marker, Stop> {
-        let marker = self
-            .space
-            .marker()
-            .map_err(|error| Stop::Root(RootProblem::BadMarker(error)))?
-            .ok_or(Stop::Root(RootProblem::NoMarker))?;
-        if marker.space_id != self.space_id {
-            return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
-        }
-        Ok(marker)
+        marker_of(&self.space, &self.space_id)
     }
+}
+
+enum Standing {
+    Current,
+    StoreOlder,
+}
+
+fn standing(found: &Marker, tokens: &RootTokens, effects: &Effects) -> Result<Standing, Stop> {
+    let (marker, cleared) = (found.effects, effects.cleared());
+    if marker > cleared + effects.in_flight().len() as u64 {
+        return Ok(Standing::StoreOlder);
+    }
+    tokens.admits(found).map_err(Stop::Root)?;
+    if marker < cleared {
+        return Err(Stop::DiskBehind { marker, cleared });
+    }
+    Ok(Standing::Current)
+}
+
+fn bring_back_all(space: &Space, trees: &Trees) -> io::Result<()> {
+    let name = |held: &OsStr, found: FileId| {
+        let id = held.to_string_lossy();
+        let same = |node: &&LocalNode| {
+            let identity = &node.identity;
+            (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
+        };
+        (trees.local().iter().map(|(_, node)| node))
+            .find(same)
+            .or_else(|| trees.local().get(&id))
+            .map(|node| node.shape.name.clone())
+            .or_else(|| trees.synced().live(&id).map(|shape| shape.name.clone()))
+            .or_else(|| trees.remote().get(&id).map(|node| node.shape.name.clone()))
+            .map_or_else(|| held.to_owned(), OsString::from)
+    };
+    space.bring_back_all(name, SystemTime::now())?;
+    Ok(())
+}
+
+fn marker_of(space: &Space, space_id: &str) -> Result<Marker, Stop> {
+    let marker = space
+        .marker()
+        .map_err(|error| Stop::Root(RootProblem::BadMarker(error)))?
+        .ok_or(Stop::Root(RootProblem::NoMarker))?;
+    if marker.space_id != space_id {
+        return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
+    }
+    Ok(marker)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RelinkError {
+    #[error("the folder is not halted as an older copy of the folder this link synced")]
+    NotACopy,
+    #[error(transparent)]
+    Stop(#[from] Stop),
+}
+
+pub(crate) fn relink(lock: &File, link: &Link, store: &mut Store) -> Result<u64, RelinkError> {
+    relink_with_hook(lock, link, store, Box::new(|_| {}))
+}
+
+pub(crate) fn relink_with_hook(
+    lock: &File,
+    link: &Link,
+    store: &mut Store,
+    mut hook: Hook,
+) -> Result<u64, RelinkError> {
+    let space = Space::bind(
+        OwnedFd::from(lock.try_clone().map_err(Stop::from)?),
+        &link.root,
+    )
+    .map_err(Stop::from)?;
+    if !space.held().map_err(Stop::from)? {
+        return Err(Stop::Withdrawn(link.root.clone()).into());
+    }
+    let (stored, before, tokens) = store.transaction(|tx| -> Result<_, Stop> {
+        Ok((
+            tx.link()?,
+            Engine::load(tx, &link.space_id)?,
+            tx.root_tokens()?,
+        ))
+    })?;
+    (stored.as_ref().unwrap_or(link).root_at())
+        .admits(&space.root_at().map_err(Stop::from)?)
+        .map_err(Stop::Root)?;
+    let marker = marker_of(&space, &link.space_id)?;
+    if standing(&marker, &tokens, &before.effects).is_ok() {
+        return Err(RelinkError::NotACopy);
+    }
+    bring_back_all(&space, &before.trees).map_err(Stop::from)?;
+    let next = koidrive_fs::new_token();
+    let questions = store.transaction(|tx| -> Result<_, Stop> {
+        let current = tx.root_tokens()?.current;
+        let answered = tx.questions()?;
+        tx.forget_sync_state()?;
+        if let Some(stored) = tx.link()? {
+            tx.set_link(&Link {
+                found_marker: true,
+                ..stored
+            })?;
+        }
+        let mut engine = Engine::load(tx, &link.space_id)?;
+        engine.effects.catch_up(marker.effects);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
+        engine.ask(tx, &link.space_id)?;
+        for row in &answered {
+            if let Some(given) = &row.answer {
+                tx.answer_question(&row.question_id, given)?;
+            }
+        }
+        engine.checkpoint(tx)?;
+        tx.set_root_tokens(&RootTokens {
+            current,
+            pending: Some(next.clone()),
+        })?;
+        let unanswered = tx
+            .questions()?
+            .into_iter()
+            .filter(|question| question.answer.is_none());
+        Ok(unanswered.count() as u64)
+    })?;
+    hook(Cut::TokenPended);
+    let relinked = Marker {
+        token: Some(next.clone()),
+        ..marker
+    };
+    space.write_marker(&relinked).map_err(Stop::from)?;
+    hook(Cut::TokenWritten);
+    commit_token(next, store)?;
+    hook(Cut::TokenCommitted);
+    Ok(questions)
 }
 
 fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {
@@ -1244,6 +1347,7 @@ pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Ad
     if let Some(stored) = store.transaction(|tx| tx.link())? {
         link.root_dev = stored.root_dev;
         link.root_volume = stored.root_volume;
+        link.found_marker = stored.found_marker;
     }
     let unreadable = |error| Stop::Root(RootProblem::Unreadable(error));
     let dir = open_root_folder(&link.root).map_err(Stop::Root)?;

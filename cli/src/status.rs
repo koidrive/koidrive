@@ -59,6 +59,9 @@ pub(crate) async fn status(paths: &Paths, check: bool) -> Result<Done, CliError>
     if status.paused {
         done = done.then(&["koi", "resume"]);
     }
+    for folder in (status.folders.iter()).filter(|folder| folder.relinkable) {
+        done = done.then(&["koi", "folder", "relink", &folder.path]);
+    }
     Ok(done)
 }
 
@@ -100,10 +103,14 @@ pub(crate) fn status_summary(
         }
         if let Some(problem) = &folder.problem {
             text.push_str(&format!("  {}\n", printable(problem)));
-            if folder.state == FolderState::Halted && !problem.contains("koi ") {
+            let path = output::command_path(Path::new(&folder.path));
+            if folder.state == FolderState::Halted && folder.relinkable {
                 text.push_str(&format!(
-                    "  Fix the problem above, then run koi folder restart {}\n",
-                    output::command_path(Path::new(&folder.path))
+                    "  If this copy is the one to keep, run koi folder relink {path}. Nothing it lacks is deleted on the server.\n"
+                ));
+            } else if folder.state == FolderState::Halted && !problem.contains("koi ") {
+                text.push_str(&format!(
+                    "  Fix the problem above, then run koi folder restart {path}\n"
                 ));
             }
         }

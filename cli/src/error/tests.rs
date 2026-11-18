@@ -441,6 +441,16 @@ fn pairing_and_unlinking_presentations_keep_original_actions() {
         [Next::of(&["koi", "folder", "unlink", "/Documents"])]
     );
     assert!(unfinished.human.unwrap().contains("Its files stay"));
+    let not_relinked = CliError::from(DriverError::NotRelinked {
+        path: PathBuf::from("/Documents"),
+        why: "the root marker is missing".into(),
+    });
+    assert!(
+        not_relinked
+            .human
+            .unwrap()
+            .contains("could not be relinked because the root marker is missing")
+    );
     let wrong = CliError::code_refused(DriverError::Api(refused_with(
         403,
         ServerCode::Forbidden,
@@ -687,6 +697,7 @@ fn argument_errors_are_usage_and_a_change_that_waits_for_the_owner_needs_auth() 
             device_id: "d1".into(),
         },
         DriverError::NothingToLift,
+        DriverError::NotACopy(PathBuf::from("/home/ada/Docs")),
         DriverError::Paths(PathsError::BadSpaceId("../x".into())),
         DriverError::Config(ConfigError::Invalid {
             path: PathBuf::from("/home/ada/.config/koidrive/config.toml"),

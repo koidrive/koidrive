@@ -48,6 +48,7 @@ async fn once(driver: &Driver, request_id: RequestId, key: Key, request: Request
             "share-link requests cannot use a request ID because their responses contain bearer URLs",
         ));
     }
+    let fixes = matches!(inner, Request::Relink { .. } | Request::Lift { .. });
     let claim = match request::begin(driver.paths(), &request_id, &key) {
         Ok(Begun::Claimed(claim)) => claim,
         Ok(Begun::Done(recorded)) => {
@@ -62,7 +63,7 @@ async fn once(driver: &Driver, request_id: RequestId, key: Key, request: Request
     let response = Box::pin(handle(driver, request)).await;
     let failed = match &response {
         Response::Error { .. } => true,
-        Response::Restarted { folder } => folder.state == FolderState::Halted,
+        Response::Restarted { folder } => !fixes && folder.state == FolderState::Halted,
         _ => false,
     };
     if failed {
@@ -163,6 +164,10 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             let lift = if replan { Lift::Replan } else { Lift::Resend };
             (driver.lift(&folder, lift).await).map(|folder| Response::Restarted { folder })
         }
+        Request::Relink { folder } => driver
+            .relink(&folder)
+            .await
+            .map(|folder| Response::Restarted { folder }),
         Request::Answer {
             question_id,
             answer,
@@ -1239,6 +1244,51 @@ pub(crate) mod tests {
             };
             assert_eq!(folder.state, FolderState::Halted, "{folder:?}");
             assert!(!crate::request::request_file(&paths, &request_id).exists());
+        }
+        driver.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_relink_that_leaves_the_folder_halted_is_recorded_so_its_id_replays_it() {
+        let (_dir, paths, root) = linked_profile();
+        let dir = fs::File::open(&root).unwrap();
+        let found = koidrive_fs::root_at(std::os::fd::AsFd::as_fd(&dir)).unwrap();
+        let token = |digit: &str| Some(digit.repeat(32));
+        let marker = koidrive_fs::Marker {
+            space_id: SPACE.into(),
+            effects: 0,
+            token: token("b"),
+        };
+        koidrive_fs::write_marker(&root, &marker).unwrap();
+        let mut store = koidrive_store::Store::open(paths.store(SPACE).unwrap()).unwrap();
+        store
+            .transaction(|tx| {
+                let link = tx.link()?.unwrap();
+                tx.set_link(&koidrive_store::Link {
+                    root_dev: found.dev,
+                    root_volume: found.volume,
+                    ..link
+                })?;
+                tx.set_root_tokens(&koidrive_fs::RootTokens {
+                    current: token("a"),
+                    pending: None,
+                })
+            })
+            .unwrap();
+        drop(store);
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        let request_id = RequestId::parse("r1").unwrap();
+        let relink = || {
+            let folder = root.clone();
+            Request::Relink { folder }.once(Some(request_id.clone()), Key::relink(&root))
+        };
+        for _ in 0..2 {
+            let Response::Restarted { folder } = handle(&driver, relink()).await else {
+                panic!("the relink failed");
+            };
+            assert_eq!(folder.state, FolderState::Halted, "{folder:?}");
+            assert!(crate::request::request_file(&paths, &request_id).exists());
         }
         driver.stop().await;
     }

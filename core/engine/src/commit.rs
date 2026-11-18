@@ -544,6 +544,44 @@ impl Commits {
         &self.restores
     }
 
+    /// Asks again about the restores `before` sent or held for an answer, once a reset of the sync state that
+    /// kept the restores dropped the commit in flight and the questions: the server may have applied them, so
+    /// none is sent again until the person answers. Restores `before` never sent stay queued.
+    pub fn ask_unsettled_restores(&mut self, before: &Commits, ids: &mut IdGen, now_ms: u64) {
+        let sent: BTreeSet<RestoreId> = (before.in_flight.as_ref())
+            .and_then(|flight| carried(&before.restores, &flight.commit.ops).ok())
+            .into_iter()
+            .flat_map(BTreeMap::into_values)
+            .collect();
+        let held = before.asked_again().cloned();
+        let unsettled: BTreeSet<RestoreId> = (sent.iter().cloned().chain(held))
+            .filter(|id| self.restores.contains_key(id))
+            .collect();
+        let asked = (before.intents_questions()).find(|question| {
+            question.held.keys().eq(&unsettled) && !question.held.keys().any(|id| sent.contains(id))
+        });
+        let Some(question) = asked else {
+            (self.questions.get_mut()).extend(recovery::ask_intents(&unsettled, None, ids, now_ms));
+            return;
+        };
+        let mut question = question.clone();
+        if let QuestionKind::Recovery { sent_in, .. } = &mut question.kind {
+            *sent_in = None;
+        }
+        self.questions.get_mut().push(question);
+    }
+
+    fn intents_questions(&self) -> impl Iterator<Item = &Question> {
+        let intents = RecoveryGroup::RequestedBeforeReset;
+        (self.questions.iter())
+            .filter(move |question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
+    }
+
+    fn asked_again(&self) -> impl Iterator<Item = &RestoreId> {
+        self.intents_questions()
+            .flat_map(|question| question.held.keys())
+    }
+
     /// The queued restores that wait because their node is a problem
     /// ([`RestoreIntent::held_by`]), so a surface can say why they are pending.
     pub fn held_restores(&self) -> impl Iterator<Item = &RestoreId> {
@@ -1031,8 +1069,9 @@ impl Commits {
             .expect("a Restore op in flight is queued")
             .into_values()
             .collect();
+        let asked: BTreeSet<&RestoreId> = self.asked_again().collect();
         let unsent: Vec<RestoreId> = (self.restores.keys())
-            .filter(|id| !sent.contains(*id))
+            .filter(|id| !sent.contains(*id) && !asked.contains(id))
             .cloned()
             .collect();
         for id in unsent {
@@ -1206,11 +1245,7 @@ impl Commits {
         self.split.retain(|id| trees.synced().live(id).is_some());
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
-        let intents = RecoveryGroup::RequestedBeforeReset;
-        let held_restores: BTreeSet<&RestoreId> = (self.questions.iter())
-            .filter(|question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
-            .flat_map(|question| question.held.keys())
-            .collect();
+        let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();
         let held_ops: Vec<&proto::Restore> = (self.restores.iter())
             .filter(|(id, _)| held_restores.contains(id))
             .map(|(_, intent)| intent.op())
