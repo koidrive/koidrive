@@ -51,6 +51,9 @@ SAMPLES = {
 STATUS = re.compile(
     r"^\s*(PASS|FAIL|TIMEOUT|LEAK|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[\s*([0-9.]+)s\]\s+(?:\(\s*\d+/\s*\d+\)\s+)?(\S+)\s+(\S+)\s*$")
 BUILD_FAILED = 101
+TESTS_FAILED = 100
+PASSING = ("PASS", "LEAK")
+ATTRIBUTED = ("killed", "survived")
 BASELINE_PERIOD = 600
 CASE_FILES = ("*.proptest-regressions", "*/proptest-regressions/*.txt", "*.cases/*.txt")
 TEST_ENV = {
@@ -194,12 +197,29 @@ def baseline(args):
                 sys.exit(f"Baseline run {run + 1} reported no tests (exit {code}); see {log.name}.")
             runs.append((results, seconds))
     tests = sorted(set().union(*(results for results, _ in runs)))
-    flaky = [test for test in tests if any(results.get(test, ("missing",))[0] != "PASS" for results, _ in runs)]
+    flaky = [test for test in tests if any(results.get(test, ("missing",))[0] not in PASSING for results, _ in runs)]
     durations = {test: statistics.median(results[test][1] for results, _ in runs if test in results) for test in tests}
     args.out.write_text(json.dumps({"sample": args.sample, "runs": args.runs,
                                     "walls": [round(seconds, 1) for _, seconds in runs],
                                     "durations": durations, "flaky": flaky}, indent=1) + "\n")
     print(f"{len(tests)} tests, {len(flaky)} not passing in every run, walls {[round(s) for _, s in runs]} s")
+
+
+def tier(root, sample, expression, config, limit, log):
+    code, results, incomplete, _ = nextest(root, sample, expression, config, "fail", limit, log)
+    killers = sorted(test for test, (status, _) in results.items() if status not in PASSING)
+    timeouts = sorted(test for test, (status, _) in results.items() if status == "TIMEOUT")
+    if code == BUILD_FAILED and not results:
+        status = "unviable"
+    elif incomplete:
+        status = "incomplete"
+    elif code == 0 and not killers:
+        status = "survived"
+    elif code == TESTS_FAILED and killers:
+        status = "killed"
+    else:
+        status = "error"
+    return {"status": status, "killers": killers, "timeouts": timeouts, "exit": code}
 
 
 def run(args):
@@ -227,23 +247,13 @@ def run(args):
             started = time.monotonic()
             applied = subprocess.run(["git", "apply", "-"], cwd=args.root, input=mutant["diff"], text=True,
                                      capture_output=True)
-            record = {"mutant": mutant["id"], "killers": [], "incomplete": False, "slow_tier": False}
+            record = {"mutant": mutant["id"], "killers": [], "slow_tier": False}
             if applied.returncode != 0:
                 record["status"] = "stale"
             else:
-                code, results, incomplete, _ = nextest(args.root, sample, fast_expression, config, "fail", limit, log)
-                killers = sorted(test for test, (status, _) in results.items() if status != "PASS")
-                if code == BUILD_FAILED and not results:
-                    record["status"] = "unviable"
-                else:
-                    if not killers and slow:
-                        record["slow_tier"] = True
-                        code, results, incomplete, _ = nextest(args.root, sample, slow_expression, config, "fail",
-                                                               limit, log)
-                        killers = sorted(test for test, (status, _) in results.items() if status != "PASS")
-                    record.update(status="killed" if killers or incomplete else "survived", killers=killers,
-                                  timeouts=sorted(t for t, (status, _) in results.items() if status == "TIMEOUT"),
-                                  incomplete=incomplete)
+                record.update(tier(args.root, sample, fast_expression, config, limit, log))
+                if record["status"] == "survived" and slow:
+                    record.update(tier(args.root, sample, slow_expression, config, limit, log), slow_tier=True)
                 restore(args.root, mutant["file"])
             record["seconds"] = round(time.monotonic() - started, 1)
             out.write(json.dumps(record) + "\n")
@@ -268,18 +278,20 @@ def property_tests(root):
     return names
 
 
-def cover(test, kills, others):
-    exact = [other for other in others if other != test and kills[test] <= kills[other]]
-    if exact:
-        return [min(exact, key=lambda other: (others[other], other))]
-    left, chosen = set(kills[test]), []
+def cover(kills, killed, candidates, durations):
+    left, chosen = set(killed), []
     while left:
-        best = max((other for other in others if other != test), key=lambda other: (len(left & kills[other]), -others[other]))
+        best = max(sorted(candidates), key=lambda other: (len(left & kills[other]), -durations.get(other, 0.0)))
         if not left & kills[best]:
             break
         chosen.append(best)
         left -= kills[best]
     return chosen
+
+
+def scope(mutants):
+    files = sorted({mutant["file"] for mutant in mutants})
+    return ", ".join(files) if len(files) <= 3 else f"{os.path.commonpath(files)} ({len(files)} files)"
 
 
 def analyse(runs, properties, slow_seconds, few):
@@ -292,32 +304,58 @@ def analyse(runs, properties, slow_seconds, few):
             mutants[(planned["sample"], mutant["id"])] = mutant
         for record in records:
             by_mutant[(planned["sample"], record["mutant"])] = record
+    measured = scope(mutants.values())
+    attributed = {key: record for key, record in by_mutant.items() if record["status"] in ATTRIBUTED}
+    provisional = len(attributed) + sum(record["status"] in ("unviable", "stale") for record in by_mutant.values()) < len(mutants)
     kills = {test: set() for test in durations}
-    for key, record in by_mutant.items():
+    for key, record in attributed.items():
         for test in record["killers"]:
             kills.setdefault(test, set()).add(key)
-    unique = {test: {key for key in killed if len(by_mutant[key]["killers"]) == 1} for test, killed in kills.items()}
+    killers = {key: set(record["killers"]) for key, record in attributed.items()}
+    unique = {test: {key for key in killed if len(killers[key]) == 1} for test, killed in kills.items()}
+
+    def kind(test):
+        return "property" if test.split(" ", 1)[-1].rsplit("::", 1)[-1] in properties else "unit"
+
+    def protected(test):
+        return test in flaky or kind(test) == "property"
+
+    merge_path = set(kills)
+    verdicts, covers, losses = {}, {}, {}
+    fast = [test for test in kills if durations.get(test, 0.0) < slow_seconds and kills[test] and not protected(test)]
+    for test in sorted(fast, key=lambda test: (-durations.get(test, 0.0), test)):
+        if all(killers[key] & merge_path - {test} for key in kills[test]):
+            merge_path.discard(test)
+            verdicts[test] = "delete or merge"
+            covers[test] = cover(kills, kills[test], merge_path, durations)
+    slow = [test for test in kills if durations.get(test, 0.0) >= slow_seconds and not protected(test)]
+    for test in sorted(slow, key=lambda test: (-durations.get(test, 0.0), test)):
+        lost = {key for key in kills[test] if not killers[key] & merge_path - {test}}
+        losses[test] = len(lost)
+        if len(lost) <= few:
+            merge_path.discard(test)
+            verdicts[test] = "move off the merge path"
+            covers[test] = cover(kills, kills[test] - lost, merge_path, durations)
     rows = []
     for test in sorted(kills):
         seconds = durations.get(test, 0.0)
-        kind = "property" if test.split(" ", 1)[-1].rsplit("::", 1)[-1] in properties else "unit"
-        covered = cover(test, kills, durations) if kills[test] and not unique[test] else []
         if test in flaky:
             verdict = "flaky in baseline: not measured"
-        elif kind == "property":
+        elif kind(test) == "property":
             verdict = "keep: property test"
-        elif seconds >= slow_seconds:
-            verdict = "keep" if len(unique[test]) > few else "move off the merge path"
-        elif not kills[test]:
+        elif test in verdicts:
+            verdict = verdicts[test]
+        elif not kills[test] and seconds < slow_seconds:
             verdict = "no kills in the mutated code"
-        elif not unique[test]:
-            verdict = "delete or merge"
         else:
             verdict = "keep"
-        rows.append({"test": test, "kind": kind, "seconds": round(seconds, 3),
+        if provisional:
+            verdict += " (provisional)"
+        rows.append({"test": test, "kind": kind(test), "seconds": round(seconds, 3),
                      "ran_on": "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant",
-                     "kills": len(kills[test]), "unique_kills": len(unique[test]), "covered_by": "; ".join(covered),
-                     "verdict": verdict})
+                     "kills": len(kills[test]), "unique_kills": len(unique[test]),
+                     "merge_path_loses": losses.get(test, ""), "covered_by": "; ".join(covers.get(test, [])),
+                     "verdict": verdict, "mutated": measured})
     mutant_rows = []
     for (sample, number), mutant in sorted(mutants.items()):
         record = by_mutant.get((sample, number))
@@ -327,12 +365,18 @@ def analyse(runs, properties, slow_seconds, few):
                             "slow_tier": bool(record and record.get("slow_tier")),
                             "killers": len(record["killers"]) if record else 0,
                             "killed_by": "; ".join(record["killers"][:5]) if record else ""})
-    return rows, mutant_rows
+    return rows, mutant_rows, measured, provisional
 
 
-def write_csv(path, rows):
+TEST_FIELDS = ["test", "kind", "seconds", "ran_on", "kills", "unique_kills", "merge_path_loses", "covered_by", "verdict",
+               "mutated"]
+MUTANT_FIELDS = ["sample", "id", "name", "file", "line", "function", "genre", "status", "slow_tier", "killers",
+                 "killed_by"]
+
+
+def write_csv(path, fields, rows):
     with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), lineterminator="\n")
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -348,11 +392,11 @@ def load_run(directory):
 def report(args):
     runs = [load_run(directory) for directory in args.runs]
     name = "-".join(planned["sample"] for planned, _, _ in runs)
-    rows, mutant_rows = analyse(runs, property_tests(args.root), args.slow, args.few)
+    rows, mutant_rows, measured, provisional = analyse(runs, property_tests(args.root), args.slow, args.few)
     args.out.mkdir(parents=True, exist_ok=True)
-    write_csv(args.out / f"{name}-tests.csv", rows)
-    write_csv(args.out / f"{name}-mutants.csv", mutant_rows)
-    write_csv(args.out / f"{name}-survivors.csv", [row for row in mutant_rows if row["status"] == "survived"])
+    write_csv(args.out / f"{name}-tests.csv", TEST_FIELDS, rows)
+    write_csv(args.out / f"{name}-mutants.csv", MUTANT_FIELDS, mutant_rows)
+    write_csv(args.out / f"{name}-survivors.csv", MUTANT_FIELDS, [row for row in mutant_rows if row["status"] == "survived"])
     statuses, verdicts = {}, {}
     for row in mutant_rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
@@ -360,6 +404,10 @@ def report(args):
         verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
     hours = sum(record["seconds"] for _, _, records in runs for record in records) / 3600
     summary = [f"### Test value: {name}", "",
+               f"Mutated code: {measured}. A verdict covers only what a test catches there; its value elsewhere is not measured.",
+               "",
+               *(["**Provisional:** some mutants have no result (not run, error or incomplete), so verdicts may change.", ""]
+                 if provisional else []),
                f"{len(mutant_rows)} mutants: " + ", ".join(f"{count} {status}" for status, count in sorted(statuses.items())),
                "",
                f"{len(rows)} tests: " + ", ".join(f"{count} {verdict}" for verdict, count in sorted(verdicts.items())),

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -52,59 +53,124 @@ class Selection(unittest.TestCase):
         self.assertEqual(test_value.selection(sample, set(), include=True), "none()")
 
 
+def planned(sample, count):
+    return {"sample": sample, "mutants": [
+        {"id": number, "name": f"m{number}", "file": f"core/x/src/{sample}.rs", "line": 1, "function": None,
+         "genre": "FnValue"} for number in range(count)]}
+
+
+def records(killers, status=None):
+    return [{"mutant": number, "status": status or ("killed" if tests else "survived"), "killers": tests, "seconds": 1}
+            for number, tests in enumerate(killers)]
+
+
 class Analysis(unittest.TestCase):
-    def analyse(self, killers, durations, properties=(), flaky=()):
-        planned = {"sample": "guard", "mutants": [
-            {"id": number, "name": f"m{number}", "file": "f.rs", "line": 1, "function": None, "genre": "FnValue"}
-            for number in range(len(killers))]}
+    def analyse(self, killers, durations, properties=(), flaky=(), few=2):
         base = {"durations": durations, "flaky": list(flaky)}
-        records = [{"mutant": number, "status": "killed" if tests else "survived", "killers": tests, "seconds": 1}
-                   for number, tests in enumerate(killers)]
-        rows, mutants = test_value.analyse([(planned, base, records)], set(properties), slow_seconds=10, few=2)
+        rows, mutants, _, _ = test_value.analyse([(planned("guard", len(killers)), base, records(killers))],
+                                                 set(properties), slow_seconds=10, few=few)
         return {row["test"]: row for row in rows}, mutants
 
-    def test_a_test_whose_kills_another_test_covers_is_a_deletion_candidate_naming_the_cheapest_cover(self):
-        rows, _ = self.analyse(
-            [["b x", "b y", "b z"], ["b y", "b z"], ["b z"]],
-            {"b x": 0.1, "b y": 0.5, "b z": 0.2})
-        self.assertEqual((rows["b x"]["unique_kills"], rows["b x"]["verdict"], rows["b x"]["covered_by"]),
-                         (0, "delete or merge", "b z"))
+    def test_a_test_whose_kills_another_test_covers_is_a_deletion_candidate_naming_its_cover(self):
+        rows, _ = self.analyse([["b x", "b y", "b z"], ["b y", "b z"], ["b z"]], {"b x": 0.1, "b y": 0.5, "b z": 0.2})
+        self.assertEqual((rows["b y"]["verdict"], rows["b y"]["covered_by"]), ("delete or merge", "b z"))
+        self.assertEqual((rows["b x"]["verdict"], rows["b x"]["covered_by"]), ("delete or merge", "b z"))
         self.assertEqual((rows["b z"]["kills"], rows["b z"]["unique_kills"], rows["b z"]["verdict"]), (3, 1, "keep"))
 
+    def test_two_tests_that_only_cover_each_other_leave_one_to_keep(self):
+        rows, _ = self.analyse([["b x", "b y"]], {"b x": 1, "b y": 2})
+        self.assertEqual((rows["b y"]["verdict"], rows["b y"]["covered_by"]), ("delete or merge", "b x"))
+        self.assertEqual(rows["b x"]["verdict"], "keep")
+
+    def test_applying_every_candidate_leaves_each_killed_mutant_a_killer(self):
+        killers = [["b a", "b b"], ["b b", "b c"], ["b c", "b a"], ["b a", "b b", "b c"], ["b d", "b a"]]
+        rows, _ = self.analyse(killers, {"b a": 1, "b b": 2, "b c": 3, "b d": 4})
+        kept = {test for test, row in rows.items() if row["verdict"] == "keep"}
+        self.assertTrue(all(set(tests) & kept for tests in killers))
+
     def test_a_cover_made_of_several_tests_lists_each(self):
-        rows, _ = self.analyse([["b x", "b y"], ["b x", "b z"], ["b y"], ["b z"]], {"b x": 1, "b y": 1, "b z": 1})
+        rows, _ = self.analyse([["b x", "b y"], ["b x", "b z"], ["b y"], ["b z"]], {"b x": 1, "b y": 0.5, "b z": 0.5})
         self.assertEqual(rows["b x"]["covered_by"], "b y; b z")
 
-    def test_a_slow_test_with_few_unique_kills_moves_off_the_merge_path(self):
-        rows, _ = self.analyse([["b slow"], ["b fast"]], {"b slow": 60, "b fast": 0.1, "b idle": 60})
-        self.assertEqual(rows["b slow"]["verdict"], "move off the merge path")
+    def test_slow_tests_move_only_while_the_merge_path_loses_at_most_few_mutants(self):
+        rows, _ = self.analyse([["b slow"], ["b slow", "b slower"], ["b slower"], ["b slower"], ["b fast"]],
+                               {"b slow": 60, "b slower": 90, "b fast": 0.1, "b idle": 60}, few=1)
+        self.assertEqual((rows["b slower"]["verdict"], rows["b slower"]["merge_path_loses"]), ("keep", 2))
+        self.assertEqual((rows["b slow"]["verdict"], rows["b slow"]["merge_path_loses"]), ("move off the merge path", 1))
         self.assertEqual(rows["b idle"]["verdict"], "move off the merge path")
         self.assertEqual(rows["b idle"]["ran_on"], "mutants the faster tests missed")
 
-    def test_property_tests_and_flaky_tests_are_never_deletion_candidates(self):
-        rows, _ = self.analyse([["b prop", "b x", "b flaky"]], {"b prop": 1, "b x": 1, "b flaky": 1},
+    def test_two_slow_tests_that_only_cover_each_other_do_not_both_move(self):
+        rows, _ = self.analyse([["b s1", "b s2"], ["b s1", "b s2"], ["b s1", "b s2"]], {"b s1": 60, "b s2": 70}, few=0)
+        self.assertEqual(sorted(row["verdict"] for row in rows.values()), ["keep", "move off the merge path"])
+
+    def test_property_tests_and_flaky_tests_are_never_candidates(self):
+        rows, _ = self.analyse([["b prop", "b x"]], {"b prop": 1, "b x": 0.5, "b flaky": 9},
                                properties={"prop"}, flaky={"b flaky"})
         self.assertEqual(rows["b prop"]["verdict"], "keep: property test")
         self.assertEqual(rows["b flaky"]["verdict"], "flaky in baseline: not measured")
+        self.assertEqual((rows["b x"]["verdict"], rows["b x"]["covered_by"]), ("delete or merge", "b prop"))
 
     def test_survivors_and_tests_without_kills_are_reported(self):
         rows, mutants = self.analyse([[], ["b x"]], {"b x": 1, "b idle": 1})
         self.assertEqual(rows["b idle"]["verdict"], "no kills in the mutated code")
         self.assertEqual([row["status"] for row in mutants], ["survived", "killed"])
 
+    def test_mutants_without_a_result_make_every_verdict_provisional_and_attribute_nothing(self):
+        base = {"durations": {"b x": 1, "b y": 1}, "flaky": []}
+        done = records([["b x", "b y"]]) + [{"mutant": 1, "status": "error", "killers": ["b y"], "seconds": 1}]
+        rows, _, measured, provisional = test_value.analyse([(planned("guard", 3), base, done)], set(), 10, 2)
+        rows = {row["test"]: row for row in rows}
+        self.assertTrue(provisional)
+        self.assertEqual(measured, "core/x/src/guard.rs")
+        self.assertEqual(rows["b y"]["kills"], 1)
+        self.assertTrue(all(row["verdict"].endswith("(provisional)") for row in rows.values()))
 
     def test_runs_of_several_samples_count_kills_together(self):
-        def run(sample, killers):
-            planned = {"sample": sample, "mutants": [
-                {"id": n, "name": f"m{n}", "file": "f.rs", "line": 1, "function": None, "genre": "FnValue"}
-                for n in range(len(killers))]}
-            records = [{"mutant": n, "status": "killed", "killers": tests, "seconds": 1} for n, tests in enumerate(killers)]
-            return planned, {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records
-        rows, mutants = test_value.analyse([run("guard", [["b x", "b y"]]), run("commit", [["b x"]])], set(), 10, 2)
+        base = {"durations": {"b x": 1, "b y": 1}, "flaky": []}
+        runs = [(planned("guard", 1), base, records([["b x", "b y"]])),
+                (planned("commit", 1), base, records([["b x"]]))]
+        rows, mutants, measured, _ = test_value.analyse(runs, set(), 10, 2)
         rows = {row["test"]: row for row in rows}
         self.assertEqual((rows["b x"]["kills"], rows["b x"]["unique_kills"]), (2, 1))
         self.assertEqual(rows["b y"]["verdict"], "delete or merge")
         self.assertEqual([(row["sample"], row["id"]) for row in mutants], [("commit", 0), ("guard", 0)])
+        self.assertEqual(measured, "core/x/src/commit.rs, core/x/src/guard.rs")
+
+
+class Report(unittest.TestCase):
+    def test_writes_headers_when_no_mutant_survived(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            run.mkdir()
+            (run / "mutants.json").write_text(json.dumps(planned("guard", 1)))
+            (run / "baseline.json").write_text(json.dumps({"durations": {"b x": 1}, "flaky": []}))
+            (run / "results-0.jsonl").write_text(json.dumps(records([["b x"]])[0]) + "\n")
+            test_value.main(["--root", directory, "report", "--sample", "guard", "--runs", str(run),
+                             "--out", str(Path(directory) / "out")])
+            survivors = (Path(directory) / "out/guard-survivors.csv").read_text()
+            self.assertEqual(survivors, ",".join(test_value.MUTANT_FIELDS) + "\n")
+
+
+class Tier(unittest.TestCase):
+    def tier(self, code, results, incomplete=False):
+        original = test_value.nextest
+        test_value.nextest = lambda *args: (code, results, incomplete, 1.0)
+        try:
+            return test_value.tier(None, None, "all()", None, 1, None)
+        finally:
+            test_value.nextest = original
+
+    def test_each_nextest_outcome_maps_to_one_status(self):
+        failing = {"b x": ("FAIL", 1.0), "b y": ("PASS", 1.0), "b z": ("LEAK", 1.0)}
+        self.assertEqual(self.tier(100, failing)["status"], "killed")
+        self.assertEqual(self.tier(100, failing)["killers"], ["b x"])
+        self.assertEqual(self.tier(0, {"b y": ("PASS", 1.0)})["status"], "survived")
+        self.assertEqual(self.tier(101, {})["status"], "unviable")
+        self.assertEqual(self.tier(100, {})["status"], "error")
+        self.assertEqual(self.tier(104, {})["status"], "error")
+        self.assertEqual(self.tier(0, {}, incomplete=True)["status"], "incomplete")
+        self.assertEqual(self.tier(None, failing, incomplete=True)["status"], "incomplete")
 
 
 class Sources(unittest.TestCase):
