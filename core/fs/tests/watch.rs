@@ -1175,3 +1175,44 @@ fn folder_made_unreadable_while_watched_is_reported() {
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(unreadable, vec![PathBuf::from("d/locked")]);
 }
+
+#[test]
+fn a_folder_whose_mode_changes_is_scanned_once_and_then_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("d/inner")).unwrap();
+    fs::write(root.join("d/x"), "x").unwrap();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(500))
+        .unwrap()
+        .root
+        .is_some()
+    {
+        assert!(Instant::now() < deadline, "the first scan never settled");
+    }
+
+    fs::set_permissions(root.join("d"), fs::Permissions::from_mode(0o700)).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(300))
+        .unwrap()
+        .root
+        .is_none()
+    {
+        assert!(Instant::now() < deadline, "the mode change woke no scan");
+    }
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(500))
+        .unwrap()
+        .root
+        .is_some()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "every poll still scans after the mode change"
+        );
+    }
+}
