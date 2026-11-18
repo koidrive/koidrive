@@ -16677,7 +16677,8 @@
               "status": "TRASHED",
               "parent": "d",
               "name": "b.txt",
-              "content": "c2"
+              "content": "c2",
+              "kind": "FILE"
             },
             {
               "node": "d",
@@ -21212,7 +21213,8 @@
               "status": "TRASHED",
               "parent": "u",
               "name": "q.txt",
-              "content": "c2"
+              "content": "c2",
+              "kind": "FILE"
             },
             {
               "node": "vc",
@@ -21279,7 +21281,8 @@
               "status": "LIVE",
               "parent": "u",
               "name": "q.txt",
-              "content": "c2"
+              "content": "c2",
+              "kind": "FILE"
             }
           ],
           "live": [
@@ -21515,7 +21518,8 @@
                   "author": "b",
                   "replay": true
                 }
-              }
+              },
+              "kind": "FILE"
             },
             {
               "node": "g",
@@ -21631,7 +21635,8 @@
               "status": "LIVE",
               "parent": "t",
               "name": "seen.txt",
-              "content": "c1"
+              "content": "c1",
+              "kind": "FILE"
             },
             {
               "node": "g",

@@ -5,7 +5,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
-import { type ChangeRecord, type Content, FieldIntentsSchema, type Intent, IntentSchema, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
+import { type ChangeRecord, type Content, FieldIntentsSchema, type Intent, IntentSchema, NodeKind, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
 import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
@@ -728,23 +728,27 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
   });
 
   it("stores a carried file whose content a trashed folder's view lists in that folder's trash group with that content, and brings it back on restore", async () => {
-    const { space, a, b, root } = await setup();
+    const { space, a, b, values, root } = await setup();
     const dir = uuidv7();
     await a.commit([op.mkdir(dir, root, "Gone")]);
     const [place, body] = [intent(b.session.deviceId, { replay: true }), intent(b.session.deviceId, { replay: true })];
     await a.commit([sent(del(dir, { held: [place.id, body.id] }), intent(a.session.deviceId))]);
+    const source = (await stateOf(space, await file(a, root, "source.txt", values[0]!)))!.current!.versionId;
     const lost = await content("lost " + uuidv7());
     const nodeId = uuidv7();
-    const created = await b.commit([sent(op.create(nodeId, dir, "kept.txt", lost.content), place, { content: body })], { receipts: await b.uploadParts(lost) });
+    const replay = op.create(nodeId, dir, "kept.txt", lost.content);
+    if (replay.op.case === "createFile") replay.op.value.sourceVersionId = source;
+    const created = await b.commit([sent(replay, place, { content: body })], { receipts: await b.uploadParts(lost) });
     expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     expect(created.changes.map(changedId)).toEqual([nodeId]);
     const stored = (await stateOf(space, nodeId))!;
-    expect(stored).toMatchObject({ parentId: dir, name: "kept.txt", status: NodeStatus.TRASHED, trashGroup: (await stateOf(space, dir))!.trashGroup });
+    expect(stored).toMatchObject({ parentId: dir, name: "kept.txt", kind: NodeKind.FILE, status: NodeStatus.TRASHED, trashGroup: (await stateOf(space, dir))!.trashGroup });
+    expect(stored.current!.madeOver).toContain(source);
     expect([idOf(stored.intents!.place), idOf(stored.intents!.content)]).toEqual([idOf(place), idOf(body)]);
     const restored = await a.commit([sent(op.restore(dir), intent(a.session.deviceId))]);
     expect(restored.results[0]!.code).toBe(OpResult_Code.APPLIED);
     const back = (await stateOf(space, nodeId))!;
-    expect(back).toMatchObject({ parentId: dir, name: "kept.txt", status: NodeStatus.LIVE });
+    expect(back).toMatchObject({ parentId: dir, name: "kept.txt", kind: NodeKind.FILE, status: NodeStatus.LIVE });
     expect(toHex(back.current!.content!.manifestDigest)).toBe(toHex(lost.content.manifestDigest));
   });
 
@@ -777,10 +781,26 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     const purged = created.changes.flatMap(({ change }) => (change.case === "purged" ? [change.value] : []));
     expect(purged.map(({ nodeId: id, lastParentId, held }) => [id, lastParentId, held.map(toHex)])).toEqual([[nodeId, deepest, [toHex(lost.id)]]]);
+    expect([idOf(purged[0]!.intents!.place), idOf(purged[0]!.intents!.content), idOf(purged[0]!.intents!.status)]).toEqual([idOf(lost), idOf(lost), idOf(lost)]);
     expect(await stateOf(space, nodeId)).toBeUndefined();
     await a.commit([sent(op.restore(deepest), intent(a.session.deviceId))]);
     expect(await stateOf(space, deepest)).toMatchObject({ status: NodeStatus.LIVE });
     expect(await stateOf(space, nodeId)).toBeUndefined();
+  });
+
+  it("stores a carried file in a trashed folder one level above the depth limit and brings it back on restore", async () => {
+    const { space, a, b, values, root } = await setup();
+    const chain = Array.from({ length: MAX_DEPTH - 1 }, () => uuidv7());
+    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const deepest = chain.at(-1)!;
+    const lost = intent(b.session.deviceId, { replay: true });
+    await a.commit([sent(del(deepest, { held: [lost.id] }), intent(a.session.deviceId))]);
+    const nodeId = uuidv7();
+    const created = await b.commit([sent(op.create(nodeId, deepest, "edge.txt", values[0]!), lost)]);
+    expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect(created.changes.map(changedId)).toEqual([nodeId]);
+    await a.commit([sent(op.restore(deepest), intent(a.session.deviceId))]);
+    expect(await stateOf(space, nodeId)).toMatchObject({ parentId: deepest, kind: NodeKind.FILE, status: NodeStatus.LIVE });
   });
 
   it("leaves a tombstone, reported as NodePurged, for a carried folder that a trashed folder at the depth limit supersedes, and answers ops into it from that tombstone's held alone", async () => {
