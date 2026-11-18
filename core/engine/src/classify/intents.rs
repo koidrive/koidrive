@@ -4,9 +4,11 @@
 //! user's changes write. R's history and S's intents follow R's intents implicitly; the journal keeps a history,
 //! and Trees keeps S's intents, only once they differ from what R's intents give.
 
+use koidrive_proto::v1::{self as proto, op};
+
 use crate::journal::{
-    Field, FieldIntent, HistoryEntry, IntentId, Journal, NodeIntents, Place, RowState, Seen, Value,
-    WireBase,
+    Author, Field, FieldIntent, HistoryEntry, IntentId, Journal, NodeIntents, Place, RemoteField,
+    Row, RowState, Seen, Value, WireBase, delete_view,
 };
 use crate::names::nfc;
 use crate::state::ContentValue;
@@ -44,6 +46,94 @@ fn remote_value(node: &RemoteNode, field: Field) -> Option<Value> {
 
 fn remote_intent_of(node: &RemoteNode, field: Field) -> Option<&FieldIntent> {
     node.intents.as_ref()?.get(field)
+}
+
+fn named_place(parent: &str, name: &str, mark: &str) -> Value {
+    Value::Place(Place {
+        parent: parent.to_owned(),
+        name: name.to_owned(),
+        mark: Some(mark.to_owned()).filter(|mark| !mark.is_empty()),
+    })
+}
+
+fn sent_content(content: Option<&proto::Content>) -> Option<Value> {
+    content.map(|content| Value::Content {
+        version_id: None,
+        value: ContentValue::from(content),
+    })
+}
+
+fn op_fields(op: &op::Op) -> (&str, Vec<(Field, Option<Value>)>, bool) {
+    let live = |live| Some(Value::Status { live });
+    match op {
+        op::Op::CreateDir(create) => (
+            &create.node_id,
+            vec![
+                (
+                    Field::Place,
+                    Some(named_place(
+                        &create.parent_id,
+                        &create.name,
+                        &create.pending_for,
+                    )),
+                ),
+                (Field::Status, live(true)),
+            ],
+            false,
+        ),
+        op::Op::CreateFile(create) => (
+            &create.node_id,
+            vec![
+                (
+                    Field::Place,
+                    Some(named_place(
+                        &create.parent_id,
+                        &create.name,
+                        &create.pending_for,
+                    )),
+                ),
+                (Field::Content, sent_content(create.content.as_ref())),
+                (Field::Status, live(true)),
+            ],
+            !create.source_version_id.is_empty(),
+        ),
+        op::Op::UpdateContent(update) => (
+            &update.node_id,
+            vec![(Field::Content, sent_content(update.content.as_ref()))],
+            update.resend,
+        ),
+        op::Op::Move(moved) => (
+            &moved.node_id,
+            vec![(
+                Field::Place,
+                Some(named_place(
+                    &moved.new_parent_id,
+                    &moved.new_name,
+                    &moved.pending_for,
+                )),
+            )],
+            moved.from.is_some(),
+        ),
+        op::Op::Delete(delete) => (&delete.node_id, vec![(Field::Status, live(false))], false),
+        op::Op::Restore(restore) if restore.version_id.is_empty() => {
+            (&restore.node_id, vec![(Field::Status, live(true))], false)
+        }
+        op::Op::Restore(restore) => (&restore.node_id, vec![(Field::Content, None)], false),
+        op::Op::MarkGitTracked(mark) => (&mark.node_id, Vec::new(), false),
+    }
+}
+
+fn wire_intent(row: &Row, device_id: &str) -> proto::Intent {
+    proto::Intent {
+        id: row.intent.as_bytes().to_vec(),
+        author_device_id: match &row.author {
+            Author::Own => device_id.to_owned(),
+            Author::Carried(author) => author.clone(),
+        },
+        replay: row.replay,
+        over: Vec::new(),
+        applied_at_ms: if row.replay { row.time_ms } else { 0 },
+    }
 }
 
 fn same(a: Option<&Value>, b: Option<&Value>) -> bool {
@@ -340,12 +430,20 @@ impl Trees {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
-            nodes.extend(self.l_names.children(&node).cloned());
+            let deleted = (self.r_names.children(&node)).filter(|child| {
+                self.l.get(child).is_none() && !self.journal.seen(child).is_empty()
+            });
+            let children: Vec<NodeId> = (self.l_names.children(&node))
+                .chain(deleted)
+                .cloned()
+                .collect();
+            nodes.extend(children);
             next += 1;
         }
         let mut seen = Vec::new();
         for node in &nodes {
             let Some(local) = self.l.get(node) else {
+                seen.extend(self.journal.seen(node).iter().cloned());
                 continue;
             };
             for field in Field::ALL {
@@ -404,5 +502,115 @@ impl Trees {
             }
         }
         self.keep_synced_intents(id, intents);
+    }
+
+    /// Puts the rows of the fields each op sets in the commit being built (RFC 0029 §5.2): a `local` row becomes
+    /// `sent` at `time_ms`, R's head time, and an op no row covers gets an own `sent` row over the intent R or S
+    /// holds for the field, unless an earlier rule made it carry another device's value. With `wire`, the session's
+    /// server records intents and each op names them, with the view of each `Delete` (§5.3). Returns how many ops
+    /// went without an intent.
+    pub fn stamp_intents(
+        &mut self,
+        ops: &mut [proto::Op],
+        device_id: &str,
+        time_ms: i64,
+        wire: bool,
+    ) -> usize {
+        let mut unrecorded = 0;
+        for op in ops.iter_mut() {
+            let Some(kind) = &op.op else {
+                continue;
+            };
+            let (node, fields, carried) = op_fields(kind);
+            let node = node.to_owned();
+            let mut rows: Vec<(Field, Row)> = Vec::new();
+            for (field, value) in fields {
+                let row = match self.journal.row(&node, field) {
+                    Some(row) if matches!(row.state, RowState::Local { .. }) => {
+                        self.journal.send(&node, field, time_ms).cloned()
+                    }
+                    Some(row) => Some(row.clone()),
+                    None if carried => None,
+                    None => value.map(|value| {
+                        let base = (self.r.get(&node))
+                            .and_then(|remote| remote_intent_of(remote, field))
+                            .map(|intent| intent.id)
+                            .or_else(|| {
+                                self.synced_intents(&node)?
+                                    .get(field)
+                                    .map(|intent| intent.id)
+                            });
+                        (self.journal)
+                            .send_unrecorded(&node, value, WireBase::None, base, time_ms)
+                            .clone()
+                    }),
+                };
+                if let Some(row) = row {
+                    rows.push((field, row));
+                }
+            }
+            if rows.is_empty() {
+                unrecorded += 1;
+                continue;
+            }
+            if !wire {
+                continue;
+            }
+            let intents: Vec<(Field, proto::Intent)> = (rows.iter())
+                .map(|(field, row)| (*field, wire_intent(row, device_id)))
+                .collect();
+            op.intent = Some(intents[0].1.clone());
+            if matches!(kind, op::Op::CreateDir(_) | op::Op::CreateFile(_))
+                && intents.iter().any(|(_, intent)| *intent != intents[0].1)
+            {
+                let mut fields = proto::FieldIntents::default();
+                for (field, intent) in intents {
+                    match field {
+                        Field::Place => fields.place = Some(intent),
+                        Field::Content => fields.content = Some(intent),
+                        Field::Status => fields.status = Some(intent),
+                    }
+                }
+                op.fields = Some(fields);
+            }
+            if let Some(op::Op::Delete(delete)) = &mut op.op {
+                let view = delete_view(self.journal.seen(&node), &self.remote_fields_below(&node));
+                delete.unseen = view
+                    .unseen
+                    .iter()
+                    .map(|id| id.as_bytes().to_vec())
+                    .collect();
+                delete.held = view.held.iter().map(|id| id.as_bytes().to_vec()).collect();
+            }
+        }
+        unrecorded
+    }
+
+    fn remote_fields_below(&self, id: &str) -> Vec<RemoteField> {
+        let mut nodes: Vec<NodeId> = vec![id.to_owned()];
+        let mut next = 0;
+        while let Some(node) = nodes.get(next).cloned() {
+            nodes.extend(self.r_names.children(&node).cloned());
+            next += 1;
+        }
+        let mut fields = Vec::new();
+        for node in nodes {
+            let Some(remote) = self.r.get(&node) else {
+                continue;
+            };
+            for field in Field::ALL {
+                if let (Some(intent), Some(value)) =
+                    (remote_intent_of(remote, field), remote_value(remote, field))
+                {
+                    fields.push(RemoteField {
+                        node: node.clone(),
+                        field,
+                        intent: intent.id,
+                        value,
+                    });
+                }
+            }
+        }
+        fields
     }
 }
