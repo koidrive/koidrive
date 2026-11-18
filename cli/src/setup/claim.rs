@@ -270,6 +270,16 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                         let mut message = format!(
                             "the server no longer accepts this device's saved credential, but cleanup is incomplete: {failures}. Run koi device leave to finish cleanup before setting up this device again"
                         );
+                        let recovered = crate::report::SetAsideData::of(&set_aside).lines();
+                        if !recovered.is_empty() {
+                            message.push_str(". ");
+                            message.push_str(
+                                recovered
+                                    .trim_end()
+                                    .replace('\n', " ")
+                                    .trim_end_matches('.'),
+                            );
+                        }
                         if let Some(unconfirmed) = &unconfirmed {
                             message.push_str(". ");
                             message.push_str(

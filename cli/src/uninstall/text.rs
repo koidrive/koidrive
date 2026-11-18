@@ -104,7 +104,7 @@ pub(super) fn text(data: &UninstalledData) -> String {
         }
     }
     for removed in &data.removed {
-        let shown = |path: &str| shown_folder(Path::new(path));
+        let shown = |path: &str| crate::output::path(Path::new(path));
         lines.push(match removed {
             Removed::Service { name } => format!("Removed the background service {name}."),
             Removed::App { path } => format!("Removed the app {}.", shown(path)),
@@ -120,7 +120,7 @@ pub(super) fn text(data: &UninstalledData) -> String {
     for path in &data.brought_back {
         lines.push(format!(
             "Brought back {}, which Koidrive had set aside while syncing.",
-            shown_folder(Path::new(path))
+            crate::output::path(Path::new(path))
         ));
     }
     let mut text = lines.join("\n");
@@ -134,7 +134,7 @@ pub(super) fn text(data: &UninstalledData) -> String {
 pub(super) fn kept_text(kept: &[Kept]) -> String {
     let mut text = String::new();
     for kept in kept {
-        let shown = |path: &str| shown_folder(Path::new(path));
+        let shown = |path: &str| crate::output::path(Path::new(path));
         let line = match kept {
             Kept::Folder { path } => format!("Kept {} and every file in it.", shown(path)),
             Kept::FolderData { path } => format!(

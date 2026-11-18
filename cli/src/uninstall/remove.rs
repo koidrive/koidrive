@@ -268,7 +268,10 @@ pub(super) fn folder_data(private: &Path, owner: Option<&Owner>) -> io::Result<C
     for name in RECOVERY_RECORDS {
         let record = private.join(name);
         if fs::symlink_metadata(&record).is_ok_and(|meta| !meta.is_dir()) {
-            remove_path(&record)?;
+            match fs::remove_file(&record) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
         }
     }
     let trash = private.join("trash");

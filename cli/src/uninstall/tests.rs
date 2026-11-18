@@ -279,6 +279,19 @@ fn a_device_id_with_control_characters_reaches_the_terminal_escaped() {
 }
 
 #[test]
+fn set_aside_paths_reach_the_terminal_escaped() {
+    let shown = text(&UninstalledData {
+        device: DeviceOutcome::NotPaired,
+        removed: Vec::new(),
+        brought_back: vec!["/Docs/a\u{1b}[31m (recovered 2026-11-18)".into()],
+        kept: vec![Kept::SetAside {
+            path: "/Docs/.koidrive/parked/n\u{7}1".into(),
+        }],
+    });
+    assert!(!shown.contains(['\u{1b}', '\u{7}']), "{shown}");
+}
+
+#[test]
 fn only_what_koidrive_writes_leaves_a_state_folder() {
     let entry = |name: &str| Paths::state_entry(Path::new(name));
     assert_eq!(entry(RECORD), Some(StateEntry::File));

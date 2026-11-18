@@ -476,13 +476,22 @@ struct Folder {
 const UNLINK_BROUGHT_BACK: &str = "unlink-brought-back.json";
 
 fn recorded_brought_back(store: &Path) -> Vec<PathBuf> {
+    use rustix::fs::{Mode, OFlags};
     use std::os::unix::ffi::OsStringExt;
-    (fs::read(store.with_file_name(UNLINK_BROUGHT_BACK)).ok())
-        .and_then(|bytes| serde_json::from_slice::<Vec<Vec<u8>>>(&bytes).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
-        .collect()
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    (rustix::fs::open(
+        store.with_file_name(UNLINK_BROUGHT_BACK),
+        flags,
+        Mode::empty(),
+    )
+    .ok())
+    .and_then(|file| {
+        serde_json::from_reader::<_, Vec<Vec<u8>>>(io::BufReader::new(File::from(file))).ok()
+    })
+    .unwrap_or_default()
+    .into_iter()
+    .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
+    .collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2572,6 +2581,11 @@ fn roots(folders: &BTreeMap<String, Folder>) -> Vec<PathBuf> {
 
 fn held_aside(root: &Path) -> Vec<PathBuf> {
     let private = root.join(koidrive_fs::PRIVATE_DIR);
+    match fs::symlink_metadata(&private) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) if meta.is_symlink() => return vec![private],
+        _ => return Vec::new(),
+    }
     let mut held = Vec::new();
     for dir in [koidrive_fs::PARKED_DIR, koidrive_fs::QUARANTINE_DIR].map(|dir| private.join(dir)) {
         let listed = fs::symlink_metadata(&dir).and_then(|meta| match meta.is_dir() {
@@ -4334,6 +4348,19 @@ mod tests {
 
         assert_eq!(set_aside.kept, std::slice::from_ref(&parked));
         assert_eq!(fs::read(elsewhere.join("mine")).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_symlinked_koidrive_folder_is_named_as_kept_and_nothing_is_listed_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Koidrive");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(elsewhere.join("parked")).unwrap();
+        fs::write(elsewhere.join("parked/mine"), b"mine").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".koidrive")).unwrap();
+
+        assert_eq!(held_aside(&root), [root.join(".koidrive")]);
     }
 
     #[tokio::test]
@@ -8222,6 +8249,21 @@ mod tests {
         assert!(!paths.state_dir.join("leaving").exists());
         assert_eq!(fs::read(root.join("keep.txt")).unwrap(), b"keep");
         assert_eq!(fs::read(other.join("keep.txt")).unwrap(), b"keep too");
+    }
+
+    #[test]
+    fn a_record_of_versions_an_unlink_brought_back_that_is_not_a_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.path().join(UNLINK_BROUGHT_BACK))
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        assert_eq!(
+            recorded_brought_back(&dir.path().join("store")),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
