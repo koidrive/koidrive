@@ -7,6 +7,8 @@ import {
   type Content,
   ContentSchema,
   NodeKind,
+  type NodePurged,
+  NodePurgedSchema,
   type NodeState,
   NodeStateSchema,
   NodeStatus,
@@ -14,6 +16,7 @@ import {
   VersionInfoSchema,
 } from "../gen/koidrive/v1/model_pb";
 import type { Sql, SqlCursor, SqlRow, SqlValue } from "../host";
+import { intentBytes, type NodeIntents, readIntents, trashHeld, wireIntents } from "./intents";
 
 export const PAGE_CHUNKS = 4096;
 export const INLINE_CHUNKS = 16384;
@@ -42,6 +45,8 @@ export interface NodeRow {
   trashed_at_ms: number | null;
   pending_for: string | null;
   pending_by: string | null;
+  status_before: string | null;
+  copy_mark: string | null;
 }
 
 export interface VersionRow {
@@ -108,6 +113,34 @@ export function setMeta(sql: Sql, key: string, value: SqlValue): void {
 
 export function getNode(sql: Sql, nodeId: string): NodeRow | undefined {
   return rows<NodeRow>(sql.exec("SELECT * FROM nodes WHERE node_id = ?", nodeId))[0];
+}
+
+export interface Tombstone {
+  parent_id: string | null;
+  name: string;
+  knows: Set<string>;
+}
+
+export function tombstoneOf(sql: Sql, nodeId: string): Tombstone | undefined {
+  const row = sql.exec("SELECT parent_id, name, intents, held FROM tombstones WHERE node_id = ?", nodeId).toArray()[0];
+  if (!row) return undefined;
+  const intents = JSON.parse(String(row.intents)) as NodeIntents;
+  const held = JSON.parse(String(row.held)) as string[];
+  return {
+    parent_id: row.parent_id === null ? null : String(row.parent_id),
+    name: String(row.name),
+    knows: new Set([...Object.values(intents).map((intent) => intent.id), ...held]),
+  };
+}
+
+export function purgedRecord(nodeId: string, parentId: string | null, intents: NodeIntents, held: readonly string[]): NodePurged {
+  return create(NodePurgedSchema, { nodeId, lastParentId: parentId ?? "", intents: wireIntents(intents), held: held.map(intentBytes) });
+}
+
+export function tombstoneRecord(sql: Sql, nodeId: string): NodePurged | undefined {
+  const row = sql.exec("SELECT parent_id, intents, held FROM tombstones WHERE node_id = ?", nodeId).toArray()[0];
+  if (!row) return undefined;
+  return purgedRecord(nodeId, row.parent_id === null ? null : String(row.parent_id), JSON.parse(String(row.intents)) as NodeIntents, JSON.parse(String(row.held)) as string[]);
 }
 
 export function getVersion(sql: Sql, versionId: string): VersionRow | undefined {
@@ -201,5 +234,7 @@ export function nodeState(sql: Sql, node: NodeRow, complete = false): NodeState 
     current: version ? versionInfo(sql, version, complete) : undefined,
     pendingFor: node.pending_for ?? "",
     pendingBy: node.pending_by ?? "",
+    intents: wireIntents(readIntents(sql, node.node_id), node.status === 2 ? node.status_before : null),
+    trashHeld: node.status === 2 ? trashHeld(sql, node.trash_group).map(intentBytes) : [],
   });
 }

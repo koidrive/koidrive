@@ -255,7 +255,7 @@ describe("a server deployed to a real account", () => {
       return listed.includes("space.json") && listed.includes(manifestKey) ? listed : undefined;
     });
     const manifest = JSON.parse(new TextDecoder().decode(await getObject(account, state.name, prefix + manifestKey)));
-    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 1, space_id: run.spaceId, history_id: result.historyId, start_seq: Number(result.restoreSeq) });
+    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 2, space_id: run.spaceId, history_id: result.historyId, start_seq: Number(result.restoreSeq) });
     expect(manifest.pages.length).toBeGreaterThan(0);
     const descriptor = JSON.parse(new TextDecoder().decode(await getObject(account, state.name, prefix + "space.json")));
     expect(descriptor).toMatchObject({ history_id: result.historyId, rewind_number: 1 });

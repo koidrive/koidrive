@@ -503,6 +503,13 @@ impl SpaceDo {
         &self.history_id
     }
 
+    fn commit_time(&self, now_ms: i64) -> i64 {
+        match self.token_at(self.head_seq) {
+            Some((_, head_ms)) if self.head_seq > 0 => now_ms.max(head_ms + 1),
+            _ => now_ms,
+        }
+    }
+
     pub fn head_seq(&self) -> u64 {
         self.head_seq
     }
@@ -651,6 +658,7 @@ impl SpaceDo {
             ..Default::default()
         };
         let seq = self.head_seq + 1;
+        let now_ms = self.commit_time(now_ms);
         self.log.push(CommitRecord {
             seq,
             commit_id: self.state.ids.uuid_v7(now_ms as u64),
@@ -875,6 +883,7 @@ impl SpaceDo {
         }
 
         let seq = self.head_seq + 1;
+        let now_ms = self.commit_time(now_ms);
         let mut state = self.state.clone();
         let ctx = Context {
             seq,

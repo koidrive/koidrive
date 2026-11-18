@@ -993,6 +993,25 @@ fn resumes_from_the_log_or_asks_for_a_resync() {
 }
 
 #[test]
+fn stamps_each_commit_after_the_head_once_the_log_is_truncated() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let mut stamps = vec![];
+    for name in ["one", "two", "three"] {
+        if name == "three" {
+            s.space.truncate_log(s.space.head_seq());
+        }
+        let id = s.id();
+        stamps.push(
+            s.commit(&mut a, vec![mkdir(&id, &root, name)], vec![])
+                .committed_at_ms,
+        );
+    }
+    assert_eq!(stamps, [NOW, NOW + 1, NOW + 2]);
+}
+
+#[test]
 fn lists_the_live_tree_in_pages() {
     let mut s = Space::new();
     let root = s.root();

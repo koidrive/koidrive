@@ -110,7 +110,20 @@ export const MIGRATIONS: readonly Migration[] = [
   `
   CREATE TABLE IF NOT EXISTS commit_bookmarks (seq INTEGER PRIMARY KEY, bookmark TEXT NOT NULL, from_ms INTEGER NOT NULL);
   `,
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS field_intents (node_id TEXT NOT NULL, field TEXT NOT NULL, intent_id TEXT NOT NULL, author TEXT NOT NULL,
+      carried INTEGER NOT NULL, applied_at_ms INTEGER NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (node_id, field))`);
+    sql.exec("CREATE INDEX IF NOT EXISTS field_intents_intent ON field_intents(intent_id)");
+    sql.exec("CREATE TABLE IF NOT EXISTS trash_held (trash_group TEXT NOT NULL, intent_id TEXT NOT NULL, PRIMARY KEY (trash_group, intent_id))");
+    sql.exec("CREATE TABLE IF NOT EXISTS tombstones (node_id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, intents TEXT NOT NULL, held TEXT NOT NULL)");
+    const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
+    if (!columns.includes("status_before")) sql.exec("ALTER TABLE nodes ADD COLUMN status_before TEXT");
+    if (!columns.includes("copy_mark")) sql.exec("ALTER TABLE nodes ADD COLUMN copy_mark TEXT");
+    sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('${LEGACY_INTENTS_DUE}', 1)`);
+  },
 ];
+
+export const LEGACY_INTENTS_DUE = "legacy_intents_due";
 
 export function migrate(sql: Sql): void {
   runMigrations(sql, "meta", MIGRATIONS);

@@ -11,7 +11,7 @@ import { toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { conflictName, nameKey } from "../src/space/names";
 import { chunkKey } from "../src/space/store";
-import { client, content, newSpace, op, storedObjects, type TestClient } from "./helpers";
+import { client, content, freezeClock, newSpace, op, storedObjects, type TestClient } from "./helpers";
 
 const DAY = 24 * 3_600_000;
 
@@ -476,7 +476,7 @@ describe("conflict rules", () => {
 describe("RFC 0023 deletion time and device in ListTrash", () => {
   function setClock(space: { stub: Awaited<ReturnType<typeof newSpace>>["stub"] }, atMs: number) {
     return runInDurableObject(space.stub, (instance: SpaceDO) => {
-      instance.clock = () => atMs;
+      freezeClock(instance, atMs);
     });
   }
 
@@ -505,6 +505,7 @@ describe("RFC 0023 deletion time and device in ListTrash", () => {
     const space = await setup();
     const { a, b, root } = space;
     const [dir, sub] = [uuidv7(), uuidv7()];
+    await setClock(space, 500_000);
     await a.commit([op.mkdir(dir, root, "Project"), op.mkdir(sub, dir, "slides")]);
     const { nodeId: deck } = await createFile(a, sub, "pitch.key", "deck");
     const { nodeId: old } = await createFile(a, dir, "old.xlsx", "old");
@@ -527,6 +528,7 @@ describe("RFC 0023 deletion time and device in ListTrash", () => {
   it("reports the second deletion of a node that was restored and deleted again", async () => {
     const space = await setup();
     const { a, b, root } = space;
+    await setClock(space, 500_000);
     const { nodeId: file } = await createFile(a, root, "notes.pages", "notes");
     await setClock(space, 1_000_000);
     await a.commit([op.delete(file)]);

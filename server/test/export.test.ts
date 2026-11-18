@@ -12,7 +12,7 @@ import { SpaceDO } from "../src/space-do";
 import { descriptorDurable } from "../src/space/export";
 import { encodeChunkList, setMeta } from "../src/space/store";
 import { type Manifest, restoreFromR2, serverState } from "./export-reader";
-import { client, content, newSpace, op, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
+import { client, content, freezeClock, newSpace, op, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -22,7 +22,7 @@ type Space = Awaited<ReturnType<typeof newSpace>>;
 function setClock(space: Space, device: TestClient, atMs: number) {
   device.nowMs = atMs;
   return runInDurableObject(space.stub, (instance: SpaceDO) => {
-    instance.clock = () => atMs;
+    freezeClock(instance, atMs);
   });
 }
 
@@ -173,7 +173,7 @@ describe("R2 metadata export (spec v0 section 11, RFC 0004)", () => {
     pause.released = true;
     await running;
     const [manifest] = await manifests(prefix);
-    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 1, space_id: spaceId, start_seq: 5, end_seq: Number(during) });
+    expect(manifest).toMatchObject({ format: "koidrive.snapshot", format_version: 2, space_id: spaceId, start_seq: 5, end_seq: Number(during) });
     expect(manifest!.pages.map((page) => page.name)).toEqual(["0.fbsnap", "1.fbsnap", "2.fbsnap", "3.fbsnap"]);
     expect(manifest!.pages.reduce((sum, page) => sum + page.records, 0)).toBe(7);
     expect(await listKeys(prefix + "log/")).toEqual([segmentKey(prefix, 1, 4), segmentKey(prefix, 5, 5), segmentKey(prefix, 6, 6)]);
@@ -282,8 +282,9 @@ describe("R2 metadata export (spec v0 section 11, RFC 0004)", () => {
 
     await runSpaceAlarm(space.stub, now);
     expect((await manifests(prefix)).map((manifest) => [manifest.start_seq, manifest.end_seq])).toEqual([[1, 1]]);
+    await setClock(space, a, now + 1);
     await a.commit([op.move(file, space.spaceId, "renamed.bin")]);
-    await runSpaceAlarm(space.stub, now + 5 * MINUTE);
+    await runSpaceAlarm(space.stub, now + 1 + 5 * MINUTE);
     const restored = await expectRestorable(space);
     expect(restored.nodes.get(file)!.state.current!.content!.chunks).toHaveLength(16_385);
   });

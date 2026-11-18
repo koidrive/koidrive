@@ -7,7 +7,7 @@ import type { CommitRecord } from "../gen/koidrive/v1/model_pb";
 import { sha256 } from "../crypto";
 import type { Database, ObjectStore, Sql } from "../host";
 import { toHex, uuidv7Ms } from "../ids";
-import { getMeta, INLINE_CHUNKS, type NodeRow, nodeState, rows, setMeta, type VersionRow, versionInfo } from "./store";
+import { getMeta, getNode, INLINE_CHUNKS, type NodeRow, nodeState, rows, setMeta, tombstoneRecord, type VersionRow, versionInfo } from "./store";
 
 const DAY_MS = 24 * 3_600_000;
 const SEGMENT_COMMITS = 1000;
@@ -16,6 +16,7 @@ const SEGMENT_BYTES = 16 * 1024 * 1024;
 const SNAPSHOT_COMMITS = 50_000;
 const PAGE_BYTES = 8 * 1024 * 1024;
 const KEPT_SNAPSHOTS = 2;
+const SNAPSHOT_FORMAT_VERSION = 2;
 const STEPS_PER_RUN = 25;
 const LIST_LIMIT = 1000;
 
@@ -92,6 +93,17 @@ export function bootstrapExport(sql: Sql, atMs: number): void {
   const state = readState(sql);
   state.dueSeq ??= Number(getMeta(sql, "head_seq"));
   setMeta(sql, "export_state", JSON.stringify(state));
+}
+
+export function requestSnapshot(sql: Sql, atMs: number): void {
+  if (getMeta(sql, "export_state") === undefined) return;
+  const state = readState(sql);
+  const head = Number(getMeta(sql, "head_seq"));
+  if (state.running?.manifest === undefined) state.running = undefined;
+  const named = [...state.done, ...(state.running ? [state.running] : [])].some((snapshot) => snapshot.startSeq === head);
+  state.dueSeq = named ? head + 1 : head;
+  setMeta(sql, "export_state", JSON.stringify(state));
+  scheduleExport(sql, atMs, true);
 }
 
 export function descriptorDurable(sql: Sql): boolean {
@@ -190,7 +202,7 @@ export class Exporter {
     if (running) return running.endSeq === undefined ? "page" : "manifest";
     if (!state.descriptor && (!state.baseline || state.done.length > 0)) return "descriptor";
     const { since } = state;
-    if (state.dueSeq !== null || (head > since.seq && (nowMs - since.atMs >= DAY_MS || head - since.seq >= SNAPSHOT_COMMITS))) return "start";
+    if ((state.dueSeq !== null && head >= state.dueSeq) || (head > since.seq && (nowMs - since.atMs >= DAY_MS || head - since.seq >= SNAPSHOT_COMMITS))) return "start";
     return undefined;
   }
 
@@ -226,8 +238,8 @@ export class Exporter {
     }
   }
 
-  private header(format: string): Uint8Array {
-    return toBinary(ExportHeaderSchema, create(ExportHeaderSchema, { format, formatVersion: 1, spaceId: this.spaceId, historyId: this.historyId }));
+  private header(format: string, formatVersion: number): Uint8Array {
+    return toBinary(ExportHeaderSchema, create(ExportHeaderSchema, { format, formatVersion, spaceId: this.spaceId, historyId: this.historyId }));
   }
 
   private cutSegment(): void {
@@ -249,7 +261,7 @@ export class Exporter {
   private async writeSegment(): Promise<void> {
     const { first, last } = readState(this.sql).segment!;
     const writer = new BinaryWriter();
-    writer.bytes(this.header("koidrive.log"));
+    writer.bytes(this.header("koidrive.log", 1));
     let expected = first;
     for (const row of this.sql.exec("SELECT seq, record FROM commits WHERE seq BETWEEN ? AND ? ORDER BY seq", first, last)) {
       if (Number(row.seq) !== expected++) throw new Error(`commit ${expected - 1} is missing from the log`);
@@ -276,13 +288,23 @@ export class Exporter {
   private async writePage(): Promise<void> {
     const running = readState(this.sql).running!;
     const head = this.headSeq;
-    const found = rows<NodeRow>(this.sql.exec("SELECT * FROM nodes WHERE node_id > ? ORDER BY node_id LIMIT ?", running.cursor, this.pageNodes));
+    const found = rows<{ node_id: string; purged: number }>(
+      this.sql.exec(
+        `SELECT node_id, 0 AS purged FROM nodes WHERE node_id > ? UNION ALL SELECT node_id, 1 AS purged FROM tombstones WHERE node_id > ?
+         ORDER BY node_id LIMIT ?`,
+        running.cursor,
+        running.cursor,
+        this.pageNodes,
+      ),
+    );
     const writer = new BinaryWriter();
-    writer.bytes(this.header("koidrive.snapshot"));
+    writer.bytes(this.header("koidrive.snapshot", SNAPSHOT_FORMAT_VERSION));
     let records = 0;
     let bytes = 0;
-    for (const node of found) {
-      const record = this.nodeSnapshot(node);
+    for (const entry of found) {
+      const record = entry.purged
+        ? toBinary(NodeSnapshotSchema, create(NodeSnapshotSchema, { tombstone: tombstoneRecord(this.sql, entry.node_id) }))
+        : this.nodeSnapshot(getNode(this.sql, entry.node_id)!);
       if (records > 0 && bytes + record.length > PAGE_BYTES) break;
       writer.bytes(record);
       records++;
@@ -314,7 +336,7 @@ export class Exporter {
     if (running.manifest === undefined) {
       const manifest = JSON.stringify({
         format: "koidrive.snapshot",
-        format_version: 1,
+        format_version: SNAPSHOT_FORMAT_VERSION,
         space_id: this.spaceId,
         history_id: this.historyId,
         start_seq: running.startSeq,
